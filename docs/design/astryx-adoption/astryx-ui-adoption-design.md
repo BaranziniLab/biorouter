@@ -83,7 +83,7 @@ Everything below 11px is deleted, not migrated. Body line-height moves from the 
 | Table row | 36px | one value with the list row |
 | Icon-label gap | 8px | everywhere; retires 7px and 6px |
 | Sidebar width | 240px | unchanged (Astryx's 260 is a docs rail, not an app rail) |
-| Reading column | 760px chat · 1120px pages | unchanged; the 896px replay fork is deleted |
+| Reading column | 760px chat · 1120px pages | unchanged; the 896px replay fork is deleted. **Settings joined the 760px chat column on 2026-09-07** — it is a stack of labelled rows, not a document, so page width separated each control from its label rather than showing more. The page measure now governs sessions, extensions, skills, schedules, workflows and applications only. |
 
 **A-03** is the content-row change: 40 → 36px contradicts D-12·B, which fixed 40px as "one rhythm, no compact mode". The rhythm survives — it just tightens by one grid step, and the app gains ~10% more rows per screen.
 
