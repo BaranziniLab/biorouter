@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import cronstrue from 'cronstrue';
 import { ScheduledJob } from '../../schedule';
 import { errorMessage } from '../../utils/conversionUtils';
+import { Select } from '../ui/Select';
 
 type Period = 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year';
 
@@ -78,6 +79,131 @@ const to12Hour = (hour24: number): { hour: number; isPM: boolean } => {
   return { hour: hour24, isPM: false };
 };
 
+type Option = { value: string; label: string };
+
+const PERIOD_OPTIONS: Option[] = [
+  { value: 'minute', label: 'Minute' },
+  { value: 'hour', label: 'Hour' },
+  { value: 'day', label: 'Day' },
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+  { value: 'year', label: 'Year' },
+];
+
+const MONTH_OPTIONS: Option[] = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+].map((label, index) => ({ value: String(index + 1), label }));
+
+const DAY_OF_WEEK_OPTIONS: Option[] = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+].map((label, index) => ({ value: String(index), label }));
+
+const DAY_OF_MONTH_OPTIONS: Option[] = Array.from({ length: 31 }, (_, index) => ({
+  value: String(index + 1),
+  label: String(index + 1),
+}));
+
+const HOUR_OPTIONS: Option[] = Array.from({ length: 12 }, (_, index) => ({
+  value: String(index + 1),
+  label: String(index + 1),
+}));
+
+/**
+ * Minutes and seconds are the same 0–59 ladder, and both are read back as a
+ * clock face — so they are zero-padded in the label and bare in the value, the
+ * way the cron expression itself is written.
+ */
+const SIXTY_OPTIONS: Option[] = Array.from({ length: 60 }, (_, index) => ({
+  value: String(index),
+  label: String(index).padStart(2, '0'),
+}));
+
+const MERIDIEM_OPTIONS: Option[] = [
+  { value: 'AM', label: 'AM' },
+  { value: 'PM', label: 'PM' },
+];
+
+/**
+ * One control in the cron sentence.
+ *
+ * `Select`'s own container is `w-full`, so the sentence's rhythm is set by the
+ * width of the box each control sits in rather than by a per-control override —
+ * which is what keeps the trigger identical, class for class, to the `Input`
+ * beside it in the dialog (§3.2).
+ *
+ * ⚠ **The menu is portalled, and it has to be.** The picker lives inside
+ * `ModalShell`, whose `DialogContent` is `overflow-hidden` and whose scrolling
+ * body is `overflow-y-auto`; an absolutely-positioned menu inside either is cut
+ * off at the box's edge no matter how high it is stacked. Measured: the period
+ * select showed one option of six. `menuPortalTarget` escapes both clips and
+ * `Select`'s own `menuPortal` z-index puts the escaped menu back above the
+ * dialog; `menuPlacement="auto"` still flips it upward near the window's bottom.
+ */
+function CronSelect({
+  label,
+  value,
+  options,
+  onChange,
+  width,
+}: {
+  label: string;
+  value: string;
+  options: Option[];
+  onChange: (value: string) => void;
+  width: string;
+}) {
+  const selected = options.find((option) => option.value === value) ?? null;
+  return (
+    <div className={width}>
+      <Select
+        aria-label={label}
+        value={selected}
+        options={options}
+        isSearchable={false}
+        menuPlacement="auto"
+        menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
+        onChange={(newValue: unknown) => {
+          const option = newValue as Option | null;
+          if (option) onChange(option.value);
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * The schedule, read as one sentence of controls — "Every [Day] at [3] : [00]
+ * [PM]" — rather than as a stack of labelled boxes.
+ *
+ * Two things changed together and both matter. The controls are the shared
+ * `Select` (§3.2: the trigger IS the `Input` chrome), so the picker stops
+ * carrying its own `border … rounded-md` recipe; and every `<input
+ * type="number">` is gone, because a spinner box is the "tablet" the flat
+ * redesign is removing — an hour, a minute, a second and a day-of-month are all
+ * closed ladders, so each is a list to pick from rather than a field to type an
+ * out-of-range value into.
+ *
+ * The words between the controls are `text-label` — the one role every control's
+ * text shares — so the sentence reads at a single weight instead of alternating
+ * between prose and chrome.
+ */
 export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isValid }) => {
   const [period, setPeriod] = useState<Period>('day');
   const [second, setSecond] = useState('0');
@@ -143,146 +269,123 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period, second, minute, hour12, isPM, dayOfWeek, dayOfMonth, month]);
 
-  const selectClassName =
-    'px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default  focus:border-border-default';
+  const showClock =
+    period === 'day' || period === 'week' || period === 'month' || period === 'year';
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-medium">Every</span>
-        <select
-          value={period}
-          onChange={(e) => setPeriod(e.target.value as Period)}
-          className={selectClassName}
-        >
-          <option value="minute">Minute</option>
-          <option value="hour">Hour</option>
-          <option value="day">Day</option>
-          <option value="week">Week</option>
-          <option value="month">Month</option>
-          <option value="year">Year</option>
-        </select>
-      </div>
+    <div className="flex flex-col gap-3">
+      {/* One wrapping sentence, not one row per clause — and each CLAUSE is its
+          own flex item, so a fold happens between clauses instead of inside
+          one. Without the grouping, "Every [Week] on [Monday] at [2] :" filled
+          the first line and stranded the colon at its end with "[00] [PM]"
+          beneath: a time broken across two lines by the box it sits in. */}
+      <div className="flex flex-wrap items-center gap-2 text-label text-text-default">
+        <span className="flex items-center gap-2">
+          Every
+          <CronSelect
+            label="Repeat every"
+            value={period}
+            options={PERIOD_OPTIONS}
+            onChange={(value) => setPeriod(value as Period)}
+            width="w-28"
+          />
+        </span>
 
-      <div className="space-y-3">
         {period === 'year' && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm">in</span>
-            <select
+          <span className="flex items-center gap-2">
+            in
+            <CronSelect
+              label="Month"
               value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              className={selectClassName}
-            >
-              <option value="1">January</option>
-              <option value="2">February</option>
-              <option value="3">March</option>
-              <option value="4">April</option>
-              <option value="5">May</option>
-              <option value="6">June</option>
-              <option value="7">July</option>
-              <option value="8">August</option>
-              <option value="9">September</option>
-              <option value="10">October</option>
-              <option value="11">November</option>
-              <option value="12">December</option>
-            </select>
-          </div>
+              options={MONTH_OPTIONS}
+              onChange={setMonth}
+              width="w-36"
+            />
+          </span>
         )}
 
         {(period === 'month' || period === 'year') && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm">on day</span>
-            <input
-              type="number"
-              min="1"
-              max="31"
+          <span className="flex items-center gap-2">
+            on day
+            <CronSelect
+              label="Day of the month"
               value={dayOfMonth}
-              onChange={(e) => setDayOfMonth(e.target.value)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
+              options={DAY_OF_MONTH_OPTIONS}
+              onChange={setDayOfMonth}
+              width="w-20"
             />
-          </div>
+          </span>
         )}
 
         {period === 'week' && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm">on</span>
-            <select
+          <span className="flex items-center gap-2">
+            on
+            <CronSelect
+              label="Day of the week"
               value={dayOfWeek}
-              onChange={(e) => setDayOfWeek(e.target.value)}
-              className={selectClassName}
-            >
-              <option value="0">Sunday</option>
-              <option value="1">Monday</option>
-              <option value="2">Tuesday</option>
-              <option value="3">Wednesday</option>
-              <option value="4">Thursday</option>
-              <option value="5">Friday</option>
-              <option value="6">Saturday</option>
-            </select>
-          </div>
+              options={DAY_OF_WEEK_OPTIONS}
+              onChange={setDayOfWeek}
+              width="w-32"
+            />
+          </span>
         )}
 
-        {(period === 'day' || period === 'week' || period === 'month' || period === 'year') && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm">at</span>
-            <input
-              type="number"
-              min="1"
-              max="12"
-              value={hour12}
-              onChange={(e) => setHour12(parseInt(e.target.value) || 1)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
+        {showClock && (
+          <span className="flex items-center gap-2">
+            at
+            <CronSelect
+              label="Hour"
+              value={String(hour12)}
+              options={HOUR_OPTIONS}
+              onChange={(value) => setHour12(parseInt(value, 10))}
+              width="w-16"
             />
-            <span className="text-sm">:</span>
-            <input
-              type="number"
-              min="0"
-              max="59"
+            :
+            <CronSelect
+              label="Minute"
               value={minute}
-              onChange={(e) => setMinute(e.target.value.padStart(2, '0'))}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
+              options={SIXTY_OPTIONS}
+              onChange={setMinute}
+              width="w-16"
             />
-            <select
+            <CronSelect
+              label="AM or PM"
               value={isPM ? 'PM' : 'AM'}
-              onChange={(e) => setIsPM(e.target.value === 'PM')}
-              className={selectClassName}
-            >
-              <option value="AM">AM</option>
-              <option value="PM">PM</option>
-            </select>
-          </div>
+              options={MERIDIEM_OPTIONS}
+              onChange={(value) => setIsPM(value === 'PM')}
+              width="w-[4.5rem]"
+            />
+          </span>
         )}
 
         {period === 'hour' && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm">at minute</span>
-            <input
-              type="number"
-              min="0"
-              max="59"
+          <span className="flex items-center gap-2">
+            at minute
+            <CronSelect
+              label="Minute"
               value={minute}
-              onChange={(e) => setMinute(e.target.value)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
+              options={SIXTY_OPTIONS}
+              onChange={setMinute}
+              width="w-20"
             />
-          </div>
+          </span>
         )}
 
         {period === 'minute' && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm">at second</span>
-            <input
-              type="number"
-              min="0"
-              max="59"
+          <span className="flex items-center gap-2">
+            at second
+            <CronSelect
+              label="Second"
               value={second}
-              onChange={(e) => setSecond(e.target.value)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
+              options={SIXTY_OPTIONS}
+              onChange={setSecond}
+              width="w-20"
             />
-          </div>
+          </span>
         )}
       </div>
 
-      <div className="text-xs text-text-muted mt-2">{readableCron}</div>
+      <p className="text-supporting text-text-muted">{readableCron}</p>
     </div>
   );
 };
