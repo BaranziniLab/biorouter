@@ -145,7 +145,7 @@ export function WorkflowResourcePicker({
                             {item.label}
                           </span>
                           {item.badge && (
-                            <span className="shrink-0 rounded-inner bg-background-muted px-1.5 py-0.5 text-caps uppercase text-text-muted">
+                            <span className="shrink-0 rounded-inner bg-background-muted px-1.5 py-0.5 text-caps text-text-muted">
                               {item.badge}
                             </span>
                           )}

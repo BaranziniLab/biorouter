@@ -20,6 +20,7 @@ import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { BrxtInstallModal } from '../BrxtInstallModal';
 import BrowseExtensionsModal from '../baam/BrowseExtensionsModal';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { PageHeader } from '../Layout/PageHeader';
 
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -153,46 +154,51 @@ export default function ExtensionsView({
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        {/* Flat page header */}
-        <div className="flex-shrink-0 border-b border-border-subtle">
-          <ReadableContent className="px-8 pt-12 pb-6">
-            <div className="flex flex-col page-transition">
-              <h1 className="text-title mb-1">Extensions</h1>
-              <p className="text-body text-text-muted mb-0">
-                MCP extensions expand Biorouter's capabilities with Prompts, Resources, and Tools.
-                Enabled extensions apply to all new chats. {getSearchShortcutText()} to search.
-              </p>
-            </div>
-            <div className="flex gap-3 mt-5">
-              <Button
-                className="flex items-center gap-2"
-                variant="default"
-                onClick={() => setIsBrxtModalOpen(true)}
-              >
-                <Plus className="h-4 w-4" />
+        {/* This view is one of the four `PageHeader`'s docblock names as the
+            shape the rest of the app was matched to — title, description, then
+            a button strip on its own line — so it now mounts that header rather
+            than restating it. What the shared component supplies and this call
+            site must NOT restate: the full-bleed hairline, the `pt-12 pb-6`
+            column, `text-title`/`text-secondary`, and `.biorouter-settings-control-strip`
+            for the actions.
+
+            The three Buttons carry variant and nothing else. `className="flex
+            items-center gap-2"` used to sit on all three, and it is not
+            harmless duplication of the cva base: a bare `flex` FLIPS the base's
+            own `inline-flex` through tailwind-merge (vocabulary V7), and the
+            `gap-2` and the icons' `h-4 w-4` are already what `buttonVariants`
+            emits.
+
+            The reading column is the chat measure, matching the body below it:
+            the hairline is full-bleed, so a header and a body on two different
+            measures show the step along the edge they share. */}
+        <PageHeader
+          title="Extensions"
+          description={
+            <>
+              MCP extensions expand Biorouter's capabilities with Prompts, Resources, and Tools.
+              Enabled extensions apply to all new chats. {getSearchShortcutText()} to search.
+            </>
+          }
+          actions={
+            <>
+              <Button variant="default" onClick={() => setIsBrxtModalOpen(true)}>
+                <Plus />
                 Add Extension
               </Button>
-              <Button
-                className="flex items-center gap-2"
-                variant="outline"
-                onClick={() => setIsBrowseModalOpen(true)}
-              >
-                <Search className="h-4 w-4" />
+              <Button variant="outline" onClick={() => setIsBrowseModalOpen(true)}>
+                <Search />
                 Browse Extensions
               </Button>
-              <Button
-                className="flex items-center gap-2"
-                variant="outline"
-                onClick={() => setIsAddModalOpen(true)}
-              >
-                <Plus className="h-4 w-4" />
+              <Button variant="outline" onClick={() => setIsAddModalOpen(true)}>
+                <Plus />
                 Add Custom Extension
               </Button>
-            </div>
-          </ReadableContent>
-        </div>
+            </>
+          }
+        />
 
-        <ReadableContent className="px-8 pt-6 pb-8">
+        <ReadableContent size="chat" className="px-6 pt-6 pb-8">
           <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search extensions...">
             <ExtensionsSection
               key={refreshKey}

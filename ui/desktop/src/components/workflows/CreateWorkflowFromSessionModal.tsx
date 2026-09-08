@@ -507,12 +507,15 @@ export default function CreateWorkflowFromSessionModal({
 
           {!isAnalyzing && (
             <div className="flex gap-3">
+              {/* V7 — this was `ghost` repainted into `secondary` by hand: a
+                  `bg-background-medium` ground, a `rounded-element`, and a
+                  `hover:bg-overlay-hover` that `tint-interactive` already owns.
+                  The variant meaning "the quieter of two committing actions"
+                  has a name, so it uses the name. */}
               <Button
                 onClick={() => form.handleSubmit()}
                 disabled={!isFormValid || isCreating}
-                variant="ghost"
-                size="default"
-                className="inline-flex items-center justify-center gap-2 rounded-element bg-background-medium px-4 py-2 hover:bg-overlay-hover"
+                variant="secondary"
                 data-testid="create-workflow-button"
               >
                 <Save className="w-4 h-4" />
@@ -522,8 +525,6 @@ export default function CreateWorkflowFromSessionModal({
                 onClick={() => handleCreateWorkflow(form.state.values, true)}
                 disabled={!isFormValid || isCreating}
                 variant="default"
-                size="default"
-                className="inline-flex items-center justify-center gap-2 px-4 py-2"
                 data-testid="create-and-run-workflow-button"
               >
                 <Play className="w-4 h-4" />

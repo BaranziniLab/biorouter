@@ -13,6 +13,7 @@ import ChatSettingsSection from './chat/ChatSettingsSection';
 import PrivacyPanel from './privacy/PrivacyPanel';
 import { CONFIGURATION_ENABLED } from '../../updates';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { PageHeader } from '../Layout/PageHeader';
 
 export type SettingsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -78,33 +79,32 @@ export default function SettingsView({
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          {/* §4.2 — the hairline is FULL-BLEED. It used to sit on the
-              ReadableContent itself, so it stopped at the reading column while
-              every other view's ran edge to edge. */}
-          <div className="flex-shrink-0 border-b border-border-subtle">
-            {/* ⚠ All THREE of this view's `ReadableContent`s are `size="chat"`,
-                and they move together or not at all. Settings is a column of
-                labelled rows — a label on the left, a control on the right —
-                and at the page measure a wider window bought margin between
-                the two rather than content, dragging every control away from
-                the thing it names. The chat measure is what Home already uses
-                (SessionsInsights.tsx), so Settings, Home, the transcript and
-                the composer are one edge.
+          {/* ⚠ All THREE of this view's reading columns are `size="chat"`, and
+              they move together or not at all. Settings is a column of labelled
+              rows — a label on the left, a control on the right — and at the
+              page measure a wider window bought margin between the two rather
+              than content, dragging every control away from the thing it names.
+              The chat measure is what Home already uses (SessionsInsights.tsx),
+              so Settings, Home, the transcript and the composer are one edge.
 
-                The header, the tab strip and the scrolling body are three
-                separate boxes precisely because the hairline under the header
-                is full-bleed (the §4.2 note just above), so a size on one and
-                not the others is a visible step in that shared left edge
-                rather than a mistake in a single component. `measures.test.ts`
-                asserts at the source that no `<ReadableContent` here is left
-                without it. */}
-            <ReadableContent size="chat" className="px-6 pt-12 pb-6">
-              <h1 className="text-title mb-1 page-transition">Settings</h1>
-              <p className="text-secondary text-text-muted">
-                Manage models, chat behavior, and app preferences
-              </p>
-            </ReadableContent>
-          </div>
+              The header, the tab strip and the scrolling body are three
+              separate boxes precisely because the hairline under the header is
+              FULL-BLEED (§4.2; it used to sit on the ReadableContent itself, so
+              it stopped at the reading column while every other view's ran edge
+              to edge), so a size on one and not the others is a visible step in
+              that shared left edge rather than a mistake in a single component.
+              `PageHeader` owns the header's box and its hairline now, and
+              `measures.test.ts` asserts at the source that neither of the two
+              columns still written here is left without the size.
+
+              Settings passes no `actions`: it has none, and its tab strip is
+              NOT one — a tab switches which rows you are looking at, so it
+              stays below the header where it is, rather than being folded into
+              the action strip the other views use. */}
+          <PageHeader
+            title="Settings"
+            description="Manage models, chat behavior, and app preferences"
+          />
 
           <div className="flex-1 min-h-0 flex flex-col">
             <Tabs

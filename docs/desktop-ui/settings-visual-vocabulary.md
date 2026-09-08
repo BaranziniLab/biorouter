@@ -1,6 +1,6 @@
 # The settings visual vocabulary
 
-> **What this is.** The nine rules that govern how the desktop Settings view (Models, Chat, App) — and, since 2026-09-07, the chat-history surfaces (`components/sessions/`) and the Scheduler (`components/schedule/`) — are built, and the two primitives they lean on — a living reference for anyone adding or changing a control there.
+> **What this is.** The ten rules that govern how the desktop Settings view (Models, Chat, App) — and, since 2026-09-07, the chat-history surfaces (`components/sessions/`), the Scheduler (`components/schedule/`) and the four component views Workflows / Extensions / Skills / Built apps, plus MCP apps — are built, and the primitives they lean on — a living reference for anyone adding or changing a control there.
 > **Status:** Current.
 > **Audience:** contributors working on the desktop renderer.
 
@@ -27,7 +27,7 @@ row computes to nothing there and a render test passes whether the class is pres
 not. Two of the rules are worse than invisible to a render test, because the defect only
 appears in the cascade — see rule 1.
 
-## The nine rules
+## The ten rules
 
 ### 1. A row's fill never depends on its state
 
@@ -197,6 +197,35 @@ of it moves for a style change:
 
 **Read the comment before you touch the element.**
 
+### 10. One page header
+
+Every top-level view's header is `components/Layout/PageHeader.tsx`, and no view writes its
+own. It renders a full-bleed hairline on a wrapper OUTSIDE the reading column, the title as
+`text-title`, the description in `text-secondary text-text-muted`, and **the view's actions
+on their own line under the description** in a `.biorouter-settings-control-strip` — rule 5's
+strip, so a page's actions and a section's actions are one shape rather than two that nearly
+match. Buttons inside it carry variant and size only (rule 7).
+
+The action placement is the operator's decision of 2026-09-07 and it REVERSES astryx §4.2's
+original "actions right-aligned on the title row"; §4.2 carries the dated amendment. Beyond
+consistency, the argument is that a title row carrying controls has to give the title
+`min-w-0 truncate` so the pair yields in the right order, which makes a page title something
+its own buttons can clip.
+
+Eight views each had their own copy of this header before the primitive existed, and the
+copies had already drifted in four ways, counted across the eight: the hairline full-bleed in
+**seven** and capped at the reading column in Skills; the description `text-body` in **five**
+and `text-secondary` in **three**; the padding `px-8` in **five** and `px-6` in **three**; the
+actions a button strip in **four**, a title-row cluster in **two**, absent in **two**. The
+same five/three split appearing three times over is the tell — this was not eight decisions,
+it was one header copied twice and then edited — which is the whole argument for the rule. `styles/measures.test.ts` asserts **at the source** that each of
+those views imports `PageHeader`, so a ninth view cannot quietly grow a ninth copy.
+
+Two things are deliberately NOT actions. A **tab strip** switches which rows you are looking
+at, so Settings' stays below the header. A **filter** — Chat history's "Show subagent runs" —
+changes what the page shows rather than doing something, so it is `PageHeader`'s `children`,
+under the strip rather than in it.
+
 ## The two primitives
 
 ### `components/ui/note.tsx`
@@ -255,6 +284,22 @@ exactly the shape both of these rules and that measure assume.
 `components/sessions/`, where chat history actually lives. Deleting that name sweeps session
 sharing and leaves chat history uncovered, which is the opposite of what it looks like it
 does. The exclusions are per root for exactly this reason.
+
+**The component views** (`components/workflows/`, `components/extensions/`,
+`components/skills/`, `components/applications/`, `components/apps/`) joined on 2026-09-07,
+in the pass that also gave them the 760px chat measure and rule 10's shared header. The two
+belong together: the vocabulary assumes a column of labelled rows, and the measure is the
+width that shape reads at. Before the sweep these five views were the app's largest reservoir
+of the constructions the rules ban — a `flex items-center gap-2` on every header button, a
+bare "No extensions available" line for an empty state, a hand-rolled centred block with a
+Retry button for another, `text-caps … uppercase` group headers where `text-caps` already
+uppercases, and an accent-filled Run button living inside a workflow row.
+
+⚠ **`components/settings/extensions/` is still out of scope**, and its exclusion is not a
+sibling of these roots. That directory holds the extension ROWS, which `components/extensions/`
+merely lays out; it stays in the settings root's own out-of-scope list for the reason the
+original scope note gives — sweeping it triples the diff. The chat-measure pass touched it for
+`min-w-0` / `truncate` only. Deleting its name from that list is how the work gets finished.
 
 **The Scheduler** (`components/schedule/`) was swept onto it on 2026-09-07 as well. Two of its
 constructions are worth naming because they are what the vocabulary looks like on a surface

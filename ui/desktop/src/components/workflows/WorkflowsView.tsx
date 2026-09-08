@@ -17,8 +17,10 @@ import {
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 import { Skeleton } from '../ui/skeleton';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
+import { MODAL_SIZE } from '../ModalShell';
 import { toastSuccess, toastError } from '../../toasts';
 import {
   deleteWorkflow,
@@ -33,7 +35,14 @@ import CreateEditWorkflowModal from './CreateEditWorkflowModal';
 import { generateDeepLink, Workflow } from '../../workflow';
 import { useNavigation } from '../../hooks/useNavigation';
 import { CronPicker } from '../schedule/CronPicker';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
 import { SearchView } from '../conversation/SearchView';
 import cronstrue from 'cronstrue';
 import { getInitialWorkingDir } from '../../utils/workingDir';
@@ -45,6 +54,7 @@ import {
   DropdownMenuSeparator,
 } from '../ui/dropdown-menu';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import { PageHeader } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins';
@@ -435,36 +445,76 @@ export default function WorkflowsView() {
   }: {
     workflowManifestResponse: WorkflowManifest;
   }) => (
-    <div className="biorouter-list-row py-3 px-3 group">
-      <div className="flex justify-between items-start gap-3">
+    <div className="biorouter-list-row group px-3 py-3">
+      {/*
+       * The row has to survive the chat measure, and the arithmetic is tight:
+       * 760px column − 48 (the body's `px-6`) = 712, − 24 (this row's `px-3`) =
+       * 688 for the row, − 248 for the seven 32px actions and their six 4px gaps
+       * − 12 for the `gap-3` between the two halves = 428px of text.
+       *
+       * So every FLEX ITEM holding text carries `min-w-0` and the action cluster
+       * carries `shrink-0`. A flex item's default `min-width: auto` resolves to
+       * its min-content width, and `truncate` is `white-space: nowrap`, whose
+       * min-content width is the WHOLE string — so without `min-w-0` a long
+       * title does not truncate, it pushes the actions out of the row.
+       * `break-words` is not the fix either: it lowers the min-content width of
+       * a box that WRAPS, and this one does not.
+       *
+       * ⚠ `min-w-0` is written ONLY on the real flex items. The three flex
+       * CONTAINERS here — this outer row, the title line and the metadata line —
+       * are themselves block-level boxes, and `min-width: auto` computes to 0
+       * outside a flex or grid item, so a `min-w-0` on any of them would be one
+       * more class that reads as intent and does nothing (vocabulary rule 4).
+       * `flex-1`'s box below is the exception that proves it: that one IS a flex
+       * item, of this row, and so it does carry one.
+       *
+       * The title's old `max-w-[50vw]` was a second measure keyed to the
+       * VIEWPORT rather than to the pane: at 1440px it resolved to 720px — wider
+       * than the 428 it was meant to fit inside — so it capped nothing here and
+       * clipped arbitrarily in a narrow pane.
+       */}
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <h3 className="text-label text-text-default truncate max-w-[50vw]">{workflow.title}</h3>
+            <h3 className="min-w-0 truncate text-label text-text-default" title={workflow.title}>
+              {workflow.title}
+            </h3>
+            {/* No `shrink-0` wrapper: `Badge` already carries `flex-shrink-0`,
+                and restating it here would be a second place for the two to
+                drift (vocabulary V8 — reuse the primitive, do not re-declare
+                what it already says). */}
             {isBuiltinWorkflow(workflowManifestResponse.file_path) && (
               <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
             )}
           </div>
-          <p className="text-supporting text-text-muted mt-0.5 line-clamp-1">
+          <p className="mt-0.5 line-clamp-1 text-supporting text-text-muted">
             {workflow.description}
           </p>
-          <div className="flex items-center gap-3 mt-1 text-supporting text-text-subtle">
-            <span className="flex items-center">
-              <Calendar className="w-3 h-3 mr-1" />
+          {/* Wraps rather than overflows: the readable cron is a whole sentence
+              ("at 02:00 PM every day"), so in a narrow pane it takes its own
+              line instead of pushing the date off the row. */}
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-supporting text-text-subtle">
+            <span className="flex shrink-0 items-center gap-1">
+              <Calendar className="h-3 w-3 shrink-0" />
               {convertToLocaleDateString(lastModified)}
             </span>
             {schedule_cron && (
-              <span className="flex items-center text-text-info">
-                <Clock className="w-3 h-3 mr-1" />
-                Runs {getReadableCron(schedule_cron)}
+              // Two nested flex contexts, so `min-w-0` twice: once so this span
+              // can shrink inside the metadata line, and once so the truncating
+              // text can shrink inside this span. Either one alone leaves the
+              // whole cron sentence at its min-content width.
+              <span className="flex min-w-0 items-center gap-1 text-text-info">
+                <Clock className="h-3 w-3 shrink-0" />
+                <span className="min-w-0 truncate">Runs {getReadableCron(schedule_cron)}</span>
               </span>
             )}
             {slash_command && (
-              <span className="flex items-center text-text-info">/{slash_command}</span>
+              <span className="min-w-0 truncate text-text-info">/{slash_command}</span>
             )}
           </div>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+        <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
           <Button
             onClick={(e) => {
               e.stopPropagation();
@@ -482,21 +532,29 @@ export default function WorkflowsView() {
              * selection is a state the app sets, not a user interaction. Paired
              * with `tint-interactive` because hover alone (5%) is lighter than
              * the selected wash (14%) and would visibly un-select on hover.
+             *
+             * The Run action beside it has since become a ghost like the rest
+             * (operator decision: a CTA does not live inside a list row), so
+             * this tint and its schedule twin are now the ONLY non-ghost
+             * treatments left in the cluster — which is the point. They are the
+             * two that say something about the workflow rather than about what
+             * the button does, and that is what earns them the fill.
              */
             className={slash_command ? 'tint-selected tint-interactive' : undefined}
             title={slash_command ? 'Edit slash command' : 'Add slash command'}
           >
-            <Terminal className="w-4 h-4" />
+            <Terminal />
           </Button>
           <Button
             onClick={(e) => {
               e.stopPropagation();
               handleStartWorkflowChat(workflow, workflowManifestResponse.id);
             }}
+            variant="ghost"
             shape="round"
             title="Use workflow"
           >
-            <Play className="w-4 h-4" />
+            <Play />
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -506,14 +564,14 @@ export default function WorkflowsView() {
                 shape="round"
                 title="Launch workflow"
               >
-                <NewWindow className="w-4 h-4" />
+                <NewWindow />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
               <DropdownMenuItem
                 onClick={() => handleStartWorkflowChatInNewWindow(workflowManifestResponse.id)}
               >
-                <NewWindow className="w-4 h-4" />
+                <NewWindow />
                 Open in new window
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -527,7 +585,7 @@ export default function WorkflowsView() {
             shape="round"
             title="Edit workflow"
           >
-            <Edit className="w-4 h-4" />
+            <Edit />
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -537,21 +595,21 @@ export default function WorkflowsView() {
                 shape="round"
                 title="Share workflow"
               >
-                <Share2 className="w-4 h-4" />
+                <Share2 />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
               <DropdownMenuItem onClick={() => handleCopyDeeplink(workflowManifestResponse)}>
-                <Link className="w-4 h-4" />
+                <Link />
                 Copy Deeplink
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => handleCopyYaml(workflowManifestResponse)}>
-                <Copy className="w-4 h-4" />
+                <Copy />
                 Copy YAML
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => handleExportFile(workflowManifestResponse)}>
-                <Download className="w-4 h-4" />
+                <Download />
                 Export to File
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -567,7 +625,7 @@ export default function WorkflowsView() {
             className={schedule_cron ? 'tint-selected tint-interactive' : undefined}
             title={schedule_cron ? 'Edit schedule' : 'Add schedule'}
           >
-            <Clock className="w-4 h-4" />
+            <Clock />
           </Button>
           <Button
             onClick={(e) => {
@@ -575,32 +633,34 @@ export default function WorkflowsView() {
               setWorkflowToDelete(workflowManifestResponse);
             }}
             variant="ghost"
-            size="sm"
+            shape="round"
             className="text-text-danger"
             title="Delete workflow"
           >
-            <Trash2 className="w-4 h-4" />
+            <Trash2 />
           </Button>
         </div>
       </div>
     </div>
   );
 
-  const WorkflowSkeleton = () => (
-    <div className="biorouter-list-row py-4 px-3">
-      <div className="flex justify-between items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <Skeleton className="h-5 w-3/4 mb-2" />
-          <Skeleton className="h-4 w-full mb-2" />
-          <Skeleton className="h-4 w-24" />
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <Skeleton className="h-8 w-8" />
-          <Skeleton className="h-8 w-8" />
-          <Skeleton className="h-8 w-8" />
-          <Skeleton className="h-8 w-8" />
-          <Skeleton className="h-8 w-8" />
-        </div>
+  /**
+   * Loading is rows that are the shape of rows, on the same hairline list the
+   * loaded workflows land in — the shape `ScheduleRowSkeleton` uses next door.
+   *
+   * The three action placeholders this replaced were the wrong count (five
+   * blocks for seven buttons) and the wrong promise: the actions are
+   * `sm:opacity-0` until the row is hovered, so a skeleton that draws them
+   * shows a cluster the loaded row will not. The padding is the ROW's `px-3
+   * py-3`, not the `py-4` it used to carry, so the list does not step when the
+   * placeholders are swapped for rows.
+   */
+  const WorkflowRowSkeleton = () => (
+    <div className="biorouter-list-row px-3 py-3">
+      <div className="min-w-0 flex-1">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="mt-2 h-3 w-64" />
+        <Skeleton className="mt-2 h-3 w-32" />
       </div>
     </div>
   );
@@ -608,29 +668,22 @@ export default function WorkflowsView() {
   const renderContent = () => {
     if (loading) {
       return (
-        <div className="space-y-6">
-          <div className="space-y-3">
-            <Skeleton className="h-6 w-24" />
-            <div className="space-y-2">
-              <WorkflowSkeleton />
-              <WorkflowSkeleton />
-              <WorkflowSkeleton />
-            </div>
-          </div>
+        <div className="biorouter-list-shell" aria-hidden>
+          <WorkflowRowSkeleton />
+          <WorkflowRowSkeleton />
+          <WorkflowRowSkeleton />
         </div>
       );
     }
 
     if (error) {
       return (
-        <div className="flex flex-col items-center justify-center h-full text-text-muted">
-          <AlertCircle className="h-12 w-12 text-text-danger mb-4" />
-          <p className="text-subheading mb-2">Error Loading Workflows</p>
-          <p className="text-body text-center mb-4">{error}</p>
-          <Button onClick={loadSavedWorkflows} variant="default">
-            Try Again
-          </Button>
-        </div>
+        <EmptyState
+          icon={AlertCircle}
+          title="Couldn’t load workflows"
+          description={error}
+          actions={<Button onClick={loadSavedWorkflows}>Try again</Button>}
+        />
       );
     }
 
@@ -643,7 +696,7 @@ export default function WorkflowsView() {
           actions={
             <>
               <Button onClick={() => setShowCreateDialog(true)}>
-                <WorkflowIcon className="h-4 w-4" />
+                <WorkflowIcon />
                 Create workflow
               </Button>
               <Button onClick={() => setShowImportDialog(true)} variant="outline">
@@ -682,35 +735,35 @@ export default function WorkflowsView() {
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Flat page header */}
-          <div className="flex-shrink-0 border-b border-border-subtle">
-            <ReadableContent className="px-8 pt-12 pb-6">
-              <h1 className="text-title mb-1 page-transition">Workflows</h1>
-              <p className="text-body text-text-muted mb-0">
-                View and manage your saved workflows to quickly start new chats with predefined
-                configurations. {getSearchShortcutText()} to search.
-              </p>
-              <div className="flex gap-3 mt-5">
-                <Button
-                  onClick={() => setShowCreateDialog(true)}
-                  variant="default"
-                  className="flex items-center gap-2"
-                >
-                  <WorkflowIcon className="w-4 h-4" />
+          {/* The shared header (Layout/PageHeader.tsx), not a ninth copy of the
+              same eleven lines. It owns the full-bleed hairline, the chat
+              measure, the `text-secondary` description and the control strip
+              the actions sit in — so the two Buttons below carry variant and
+              nothing else. */}
+          <PageHeader
+            title="Workflows"
+            description={`View and manage your saved workflows to quickly start new chats with predefined configurations. ${getSearchShortcutText()} to search.`}
+            actions={
+              <>
+                <Button onClick={() => setShowCreateDialog(true)}>
+                  <WorkflowIcon />
                   Create Workflow
                 </Button>
                 <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />
-              </div>
-            </ReadableContent>
-          </div>
+              </>
+            }
+          />
 
-          <ReadableContent className="flex-1 min-h-0 relative px-8 pt-6">
+          {/* The body's column carries the SAME size as the header's, or the
+              step between them is visible along the full-bleed hairline they
+              share. */}
+          <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6">
             <ScrollArea className="h-full">
               <SearchView
                 onSearch={(term) => setSearchTerm(term)}
                 placeholder="Search workflows..."
               >
-                <div className="h-full relative">{renderContent()}</div>
+                <div className="h-full relative pb-8">{renderContent()}</div>
               </SearchView>
             </ScrollArea>
           </ReadableContent>
@@ -748,10 +801,16 @@ export default function WorkflowsView() {
           open={showScheduleDialog}
           onOpenChange={(open) => !isSavingSchedule && setShowScheduleDialog(open)}
         >
+          {/* ⚠ `max-w-md` did nothing above 640px. `DialogContent`'s base already
+              ends in `sm:max-w-lg`, and an UNPREFIXED `max-w-md` does not merge
+              with a `sm:`-prefixed class — so the dialog was 512px on every
+              desktop window and 448px only below the breakpoint. `MODAL_SIZE`
+              is the ladder (V8: never a pixel literal for a dialog width), and
+              its rungs are `sm:`-prefixed for exactly that reason. */}
           <DialogContent
             aria-describedby={undefined}
             dismissible={!isSavingSchedule}
-            className="max-w-md"
+            className={MODAL_SIZE.md}
           >
             <DialogHeader>
               <DialogTitle>
@@ -775,7 +834,7 @@ export default function WorkflowsView() {
                 onChange={setScheduleCron}
                 isValid={setScheduleIsValid}
               />
-              <div className="flex gap-2 justify-end">
+              <DialogFooter>
                 {scheduleWorkflowManifest.schedule_cron && (
                   <Button
                     variant="outline"
@@ -795,7 +854,7 @@ export default function WorkflowsView() {
                 <Button onClick={handleSaveSchedule} disabled={!scheduleValid || isSavingSchedule}>
                   {isSavingSchedule ? 'Saving…' : 'Save'}
                 </Button>
-              </div>
+              </DialogFooter>
             </div>
           </DialogContent>
         </Dialog>
@@ -806,33 +865,41 @@ export default function WorkflowsView() {
           open={showSlashCommandDialog}
           onOpenChange={(open) => !isSavingSlashCommand && setShowSlashCommandDialog(open)}
         >
-          <DialogContent dismissible={!isSavingSlashCommand} className="max-w-md">
+          {/* Same ladder, same reason as the schedule dialog above. */}
+          <DialogContent dismissible={!isSavingSlashCommand} className={MODAL_SIZE.md}>
             <DialogHeader>
               <DialogTitle>Slash Command</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <DialogDescription className="text-body text-text-muted mb-3">
+                {/* `DialogDescription` already carries `text-body
+                    text-text-muted`; restating them here is the drift V6 bans,
+                    so only the layout margin stays. */}
+                <DialogDescription className="mb-3">
                   Set a slash command to quickly run this workflow from any chat
                 </DialogDescription>
-                <div className="flex gap-2 items-center">
-                  <span className="text-text-muted">/</span>
-                  <input
+                <div className="flex items-center gap-2">
+                  <span className="text-label text-text-muted">/</span>
+                  {/* The `Input` primitive, not a fifth hand-rolled field: it is
+                      the 32px md rung every other control in the app sits on,
+                      and it owns the `--border-emphasized` edge and the global
+                      focus surface the hand-rolled one had neither of. */}
+                  <Input
                     type="text"
                     value={slashCommand}
                     onChange={(e) => setSlashCommand(e.target.value)}
                     placeholder="command-name"
-                    className="flex-1 px-3 py-2 border border-border-subtle rounded-element text-body"
+                    className="flex-1"
                   />
                 </div>
                 {slashCommand && (
-                  <p className="text-supporting text-text-muted mt-2">
+                  <p className="mt-2 text-supporting text-text-muted">
                     Use /{slashCommand} in any chat to run this workflow
                   </p>
                 )}
               </div>
 
-              <div className="flex gap-2 justify-end">
+              <DialogFooter>
                 {slashCommandWorkflowManifest.slash_command && (
                   <Button
                     variant="outline"
@@ -852,7 +919,7 @@ export default function WorkflowsView() {
                 <Button onClick={handleSaveSlashCommand} disabled={isSavingSlashCommand}>
                   {isSavingSlashCommand ? 'Saving…' : 'Save'}
                 </Button>
-              </div>
+              </DialogFooter>
             </div>
           </DialogContent>
         </Dialog>

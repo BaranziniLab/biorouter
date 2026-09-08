@@ -1,9 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
+import { PageHeader } from '../Layout/PageHeader';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { EmptyState } from '../ui/empty-state';
+import { Note } from '../ui/note';
+import { Skeleton } from '../ui/skeleton';
 import { Plus, Upload, Globe, Trash2, ChevronRight } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import SkillItem from './SkillItem';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import AddSkillModal from './AddSkillModal';
@@ -180,108 +185,144 @@ export default function SkillsView() {
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        <ReadableContent className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0">
-          <div className="flex flex-col page-transition">
-            <h1 className="text-title mb-1">Skills</h1>
-            <p className="text-body text-text-muted mb-0">
-              Reusable instruction sets that guide Biorouter's behavior. {getSearchShortcutText()}{' '}
-              to search.
-            </p>
-          </div>
-          <div className="flex gap-3 mt-5">
-            <Button
-              className="flex items-center gap-2"
-              variant="default"
-              onClick={() => setIsAddModalOpen(true)}
-            >
-              <Upload className="h-4 w-4" />
-              Add Skill
-            </Button>
-            <Button
-              className="flex items-center gap-2"
-              variant="outline"
-              onClick={() => setIsBrowseModalOpen(true)}
-            >
-              <Globe className="h-4 w-4" />
-              Browse Skills
-            </Button>
-            <Button
-              className="flex items-center gap-2"
-              variant="outline"
-              onClick={() => setIsCustomModalOpen(true)}
-            >
-              <Plus className="h-4 w-4" />
-              Add Custom Skill
-            </Button>
-          </div>
-        </ReadableContent>
+        {/* The one page header. The hairline it draws is full-bleed because the
+            wrapper carrying it sits OUTSIDE the reading column — which is the
+            defect this view used to be the only holder of: a `border-b` on the
+            `ReadableContent` itself stopped the rule at the measure while every
+            sibling view's ran edge to edge. */}
+        <PageHeader
+          title="Skills"
+          // Written as one template string rather than JSX text: the sentence is
+          // interrupted by a keyboard shortcut, and JSX drops the whitespace
+          // around a line break next to an expression, so the spacing here was
+          // being held up by an explicit `{' '}` that any reflow could lose.
+          description={`Reusable instruction sets that guide Biorouter's behavior. ${getSearchShortcutText()} to search.`}
+          actions={
+            <>
+              <Button variant="default" onClick={() => setIsAddModalOpen(true)}>
+                <Upload className="h-4 w-4" />
+                Add Skill
+              </Button>
+              <Button variant="outline" onClick={() => setIsBrowseModalOpen(true)}>
+                <Globe className="h-4 w-4" />
+                Browse Skills
+              </Button>
+              <Button variant="outline" onClick={() => setIsCustomModalOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Add Custom Skill
+              </Button>
+            </>
+          }
+        />
 
         <SearchView
           onSearch={(term, _caseSensitive) => setSearchTerm(term)}
           placeholder="Search skills..."
         >
-          <ReadableContent className="px-8 py-4">
-            {groups.map((group) => (
-              <div key={group.key}>
-                <h2 className="text-caps text-text-muted uppercase mt-6 mb-3 flex items-center gap-2 first:mt-0">
-                  {/* Punctuation, not semantics — see the note this replaced:
-                      two group markers once carried different hues in the same
-                      role, which a reader could not recover a meaning for. */}
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-strong flex-shrink-0" />
-                  {group.title} ({group.entries.length})
-                </h2>
-                <div className="biorouter-list-shell">
-                  {group.entries.map((entry) =>
-                    entry.kind === 'bundle' ? (
-                      <BundleRow
-                        key={entry.key}
-                        bundle={entry.bundle}
-                        skills={catalog.skills}
-                        enabled={entry.enabled}
-                        expanded={expanded.has(entry.key)}
-                        onExpandToggle={() =>
-                          setExpanded((current) => {
-                            const next = new Set(current);
-                            if (next.has(entry.key)) next.delete(entry.key);
-                            else next.add(entry.key);
-                            return next;
-                          })
-                        }
-                        onOpen={() =>
-                          void window.electron.openDirectoryInExplorer(entry.bundle.directory)
-                        }
-                        onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
-                        onToggle={(enabled) => void toggle(entry, enabled)}
-                      />
-                    ) : (
-                      <SkillItem
-                        key={entry.key}
-                        skill={entry.skill}
-                        enabled={entry.enabled}
-                        onClick={() =>
-                          void window.electron.openDirectoryInExplorer(entry.skill.directory)
-                        }
-                        onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
-                        onShare={() => void copySkill(entry.skill)}
-                        onToggle={(enabled) => void toggle(entry, enabled)}
-                      />
-                    )
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {total === 0 && (
-              <p className="text-body text-text-muted mt-10 text-center">
-                {catalog.error
-                  ? catalog.error
-                  : catalog.loading
-                    ? 'Loading skills…'
-                    : searchTerm
-                      ? 'No skills match your search.'
-                      : 'No skills found. Add one to get started.'}
-              </p>
+          <ReadableContent size="chat" className="px-6 py-4">
+            {catalog.error && (
+              <Note tone="danger" role="alert" className="mb-4">
+                {catalog.error}
+              </Note>
             )}
+
+            {/* ⚠ Guarded on an EMPTY list, not on `loading` alone. `reload` sets
+                `loading` after every install, delete and `catalog:changed`
+                rescan as well as on first load, so a bare `loading` branch would
+                swap the whole list for skeletons every time a switch was
+                flipped. The three branches stay mutually exclusive without it:
+                skeletons and the empty state both require `total === 0`, and the
+                empty state additionally requires the load to have finished. */}
+            {catalog.loading && !catalog.error && total === 0 && (
+              <div className="biorouter-list-shell" aria-hidden>
+                <SkillRowSkeleton />
+                <SkillRowSkeleton />
+                <SkillRowSkeleton />
+              </div>
+            )}
+
+            <div className="flex flex-col gap-6">
+              {groups.map((group) => (
+                <div key={group.key} className="min-w-0">
+                  {/* ⚠ The gap between groups lives on the wrapper above, not on
+                      this header. It was `mt-6 … first:mt-0` here, and the
+                      header is ALWAYS the first child of its group's div — so
+                      `first:mt-0` (0,2,0) beat `mt-6` (0,1,0) for every group
+                      and the rhythm it was written for never rendered. */}
+                  <h2 className="text-caps text-text-muted mb-3 flex min-w-0 items-center gap-2">
+                    {/* Punctuation, not semantics — see the note this replaced:
+                        two group markers once carried different hues in the same
+                        role, which a reader could not recover a meaning for. */}
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-background-strong" />
+                    <span className="min-w-0 truncate">
+                      {group.title} ({group.entries.length})
+                    </span>
+                  </h2>
+                  <div className="biorouter-list-shell">
+                    {group.entries.map((entry) =>
+                      entry.kind === 'bundle' ? (
+                        <BundleRow
+                          key={entry.key}
+                          bundle={entry.bundle}
+                          skills={catalog.skills}
+                          enabled={entry.enabled}
+                          expanded={expanded.has(entry.key)}
+                          onExpandToggle={() =>
+                            setExpanded((current) => {
+                              const next = new Set(current);
+                              if (next.has(entry.key)) next.delete(entry.key);
+                              else next.add(entry.key);
+                              return next;
+                            })
+                          }
+                          onOpen={() =>
+                            void window.electron.openDirectoryInExplorer(entry.bundle.directory)
+                          }
+                          onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
+                          onToggle={(enabled) => void toggle(entry, enabled)}
+                        />
+                      ) : (
+                        <SkillItem
+                          key={entry.key}
+                          skill={entry.skill}
+                          enabled={entry.enabled}
+                          onClick={() =>
+                            void window.electron.openDirectoryInExplorer(entry.skill.directory)
+                          }
+                          onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
+                          onShare={() => void copySkill(entry.skill)}
+                          onToggle={(enabled) => void toggle(entry, enabled)}
+                        />
+                      )
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {!catalog.loading &&
+              !catalog.error &&
+              total === 0 &&
+              (searchTerm ? (
+                <EmptyState
+                  icon={ENTITY_ICONS.skill}
+                  title="No matching skills"
+                  description="Try a different name, description or package."
+                  compact
+                />
+              ) : (
+                <EmptyState
+                  icon={ENTITY_ICONS.skill}
+                  title="No skills yet"
+                  description="Add a skill from a repository or a .zip file, browse the ones Biorouter publishes, or write your own."
+                  actions={
+                    <Button onClick={() => setIsAddModalOpen(true)}>
+                      <Upload className="h-4 w-4" />
+                      Add Skill
+                    </Button>
+                  }
+                />
+              ))}
           </ReadableContent>
         </SearchView>
       </div>
@@ -327,6 +368,21 @@ export default function SkillsView() {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Loading is rows that are the shape of rows, not a "Loading skills…" line in
+ * the middle of an empty column — the same construction the Scheduler uses.
+ */
+function SkillRowSkeleton() {
+  return (
+    <div className="biorouter-list-row flex items-start gap-3 px-3 py-3">
+      <div className="min-w-0 flex-1">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="mt-2 h-3 w-64" />
+      </div>
+    </div>
+  );
+}
 
 function sourceOf(entry: SkillCatalogEntry) {
   return entry.kind === 'single' ? entry.skill.source : entry.bundle.source;
@@ -416,12 +472,19 @@ function BundleRow({
   // the daemon, in `skill_package::refuse_shipped`.
   const builtin = bundle.builtin;
   return (
-    <div className="biorouter-list-row px-3 py-3 group">
+    <div className="biorouter-list-row group px-3 py-3">
       <div className="flex items-start gap-2">
+        {/* A disclosure trigger, drawn the way the swept settings surfaces draw
+            theirs (`settings/memory/MemorySection.tsx`): a bare glyph inside a
+            plain button, not the `Button` primitive. `variant="ghost"
+            shape="round"` is for the row's TRAILING actions; a 32px tinted box
+            at the leading edge would also break the `ml-7` the expanded list
+            below is indented by, which is this button's own width plus the
+            row's gap. */}
         <button
           type="button"
           onClick={onExpandToggle}
-          className="mt-0.5 flex-shrink-0 cursor-pointer rounded-inner p-0.5 text-text-muted hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          className="mt-0.5 shrink-0 cursor-pointer rounded-inner p-0.5 text-text-muted hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
           aria-expanded={expanded}
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${bundle.displayName}`}
         >
@@ -433,21 +496,30 @@ function BundleRow({
         </button>
         <button
           type="button"
-          className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          className="min-w-0 flex-1 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
           onClick={onOpen}
           aria-label={`Open skill package ${bundle.displayName}`}
         >
-          <div className="flex items-center gap-1.5 min-w-0">
-            <p className="text-label text-text-default truncate">{bundle.displayName}</p>
+          {/* ⚠ `min-w-0` on the name and `shrink-0` on the two metadata spans,
+              not the other way round. A flex item's `min-width: auto` resolves
+              to its min-content width, so without this the version and the skill
+              count are what give — the count wrapping or being clipped by a long
+              package name, at the 704px the chat measure leaves for content. */}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="min-w-0 truncate text-label text-text-default">{bundle.displayName}</p>
             {bundle.package?.version && (
-              <span className="text-supporting text-text-subtle">{bundle.package.version}</span>
+              <span className="shrink-0 text-supporting text-text-subtle">
+                {bundle.package.version}
+              </span>
             )}
-            <span className="text-supporting text-text-subtle">
+            <span className="shrink-0 text-supporting text-text-subtle">
               · {bundle.skills.length} skill{bundle.skills.length === 1 ? '' : 's'}
             </span>
           </div>
           {entryPoint && (
-            <p className="text-supporting text-text-subtle mt-0.5">entry point: {entryPoint}</p>
+            <p className="mt-0.5 truncate text-supporting text-text-subtle">
+              entry point: {entryPoint}
+            </p>
           )}
           {!expanded && (
             // ⚠ NOT `font-mono`. These are skill NAMES, and `entryPoint` three
@@ -461,21 +533,25 @@ function BundleRow({
             // align… Mono for data, sans for chrome." A skill name is a name,
             // and every other skill-name render in the app (SkillItem, the
             // composer picker, the @-mention list, BrowseSkillsModal) is body.
-            <p className="text-supporting text-text-subtle mt-1 truncate">
+            <p className="mt-1 truncate text-supporting text-text-subtle">
               {bundle.skills.join(' · ')}
             </p>
           )}
         </button>
-        <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+        <div className="mt-0.5 flex shrink-0 items-center gap-2">
           {builtin && <BuiltInBadge />}
           {onDelete && !builtin && (
             <div
               className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
               onClick={(e) => e.stopPropagation()}
             >
+              {/* A row-trailing glyph-only action is `ghost` + `round` (V7), the
+                  one 32×32 rung row actions share. It was `size="sm"` — a 28px
+                  PILL — beside the 32px round controls on the skill rows next to
+                  it, which is the off-ladder 28px V7 exists to retire. */}
               <Button
                 variant="ghost"
-                size="sm"
+                shape="round"
                 className="text-text-danger"
                 onClick={onDelete}
                 title="Delete package"

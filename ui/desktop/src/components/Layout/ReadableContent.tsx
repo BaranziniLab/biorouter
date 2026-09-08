@@ -13,8 +13,11 @@ type ReadableContentProps = {
  * up. It names the TOKEN rather than a literal precisely so that alignment
  * survives the measure changing.
  *
- * Four surfaces read it, for two different reasons (operator decision,
- * 2026-09-07; see the `--measure-page` note in main.css):
+ * EVERY top-level view reads it now, for two different reasons (operator
+ * decision, 2026-09-07; see the `--measure-page` note in main.css). Home's is
+ * alignment; every other one's is that it is a column of labelled rows rather
+ * than a document, so width past the measure lands between a row's two halves
+ * instead of showing more:
  *
  * - **Home** (SessionsInsights.tsx) — the alignment case above: it sits
  *   directly over the composer.
@@ -33,8 +36,23 @@ type ReadableContentProps = {
  *   its actions, the detail pairs a label with the fact it names, so width past
  *   the measure lands between the two halves of every row.
  *
- * Everything else — extensions, skills, workflows, applications — is
- * document-shaped and stays on the fluid page measure below.
+ * - **The component views** (workflows/WorkflowsView.tsx,
+ *   extensions/ExtensionsView.tsx, skills/SkillsView.tsx,
+ *   applications/ApplicationsView.tsx, apps/AppsView.tsx) — the last five, and
+ *   the ones the argument was originally made AGAINST: they were called
+ *   document-shaped, on the theory that a wide window buys more columns or more
+ *   cards. It buys neither; each is a list of rows with a title on the left and
+ *   controls on the right. MCP apps had no reading column at all before this,
+ *   just a `px-8` div, so it is the one that gains a measure rather than
+ *   changing one.
+ *
+ * ⚠ **So `text` has no caller left in `components/`** — but it is still the
+ * DEFAULT below, which means a `<ReadableContent>` written tomorrow with no
+ * `size` silently gets the page measure. That is why `styles/measures.test.ts`
+ * asserts the size at the SOURCE, view by view, instead of trusting the
+ * default. Neither the size nor `--measure-page` is deleted here: a view that
+ * genuinely is a document should still have a measure to reach for, and
+ * removing them is a separate decision from this one.
  */
 /**
  * ⚠ Every one of these is a CLAMP, not a flat cap, for the reason spelled out

@@ -149,3 +149,187 @@ describe('WorkflowsView loading transition', () => {
     });
   });
 });
+
+/**
+ * The visual vocabulary, where a DOM test can actually see it.
+ *
+ * jsdom runs no Tailwind, so nothing here reads a colour or a width — a class
+ * string that paints a row computes to nothing in this environment. What these
+ * assertions prove is which class string is PRESENT, which is the same
+ * statement `Layout/PageHeader.test.tsx` makes about the strip and the
+ * hairline, and the companion `styles/measures.test.ts` makes at the source.
+ */
+describe('WorkflowsView on the settings visual vocabulary', () => {
+  const WORKFLOW = {
+    id: 'workflow-1',
+    file_path: '/tmp/workflow.yaml',
+    last_modified: '2026-07-11',
+    schedule_cron: '0 0 14 * * *',
+    slash_command: 'cohort-review',
+    workflow: {
+      title:
+        'A workflow whose title is long enough to need the whole column and then some more besides',
+      description: 'Review cohort results across every arm of the study, then summarise them',
+    },
+  };
+
+  const renderView = () =>
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+
+  it('mounts the shared page header rather than a ninth copy of it', async () => {
+    mocks.listSavedWorkflows.mockResolvedValueOnce([]);
+    const { container } = renderView();
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Workflows' })).toBeInTheDocument();
+
+    // The operator's decision, pinned here as well as in PageHeader's own
+    // suite: the page's actions sit in the control strip under the description,
+    // not in a hand-rolled `flex gap-3` beside the title.
+    const strip = container.querySelector('.biorouter-settings-control-strip');
+    expect(strip).not.toBeNull();
+    expect(strip).toContainElement(screen.getByRole('button', { name: 'Create Workflow' }));
+    expect(strip).toContainElement(screen.getByRole('button', { name: 'Import Workflow' }));
+
+    // `page-transition` matches no CSS rule in this repo and resolves to no
+    // animation in the running app. It was on this header; it does not come back.
+    expect(container.querySelector('.page-transition')).toBeNull();
+
+    await screen.findByRole('heading', { name: 'No workflows yet' });
+  });
+
+  it('keeps the description’s words, including the search shortcut', async () => {
+    mocks.listSavedWorkflows.mockResolvedValueOnce([]);
+    renderView();
+
+    expect(
+      screen.getByText(
+        /^View and manage your saved workflows to quickly start new chats with predefined configurations\. .+ to search\.$/
+      )
+    ).toBeInTheDocument();
+
+    await screen.findByRole('heading', { name: 'No workflows yet' });
+  });
+
+  /**
+   * Both reading columns, not just the body's. The header's hairline is
+   * full-bleed, so a header on one measure and a body on another shows as a
+   * step in the left edge they share — which is invisible to jsdom and visible
+   * immediately in the app.
+   */
+  it('puts every reading column on the chat measure', async () => {
+    mocks.listSavedWorkflows.mockResolvedValueOnce([WORKFLOW]);
+    const { container } = renderView();
+    await screen.findByTitle('Use workflow');
+
+    const columns = container.querySelectorAll('.biorouter-readable-content');
+    // The vacuous pass: with no columns the loop below asserts nothing.
+    expect(columns.length).toBeGreaterThan(1);
+    for (const column of columns) expect(column).toHaveAttribute('data-size', 'chat');
+  });
+
+  /**
+   * The row has to survive ~704px of content box with seven actions in it. A
+   * flex item's `min-width: auto` is what let the title push its siblings out,
+   * and `truncate` makes that min-content width the WHOLE string — so the two
+   * classes are a pair and neither alone is the fix.
+   *
+   * The old cap this replaced was `max-w-[50vw]`: keyed to the viewport rather
+   * than to the pane, so at 1440px it resolved wider than the column it was
+   * supposed to fit inside. Asserted as "no `vw` cap anywhere in the row"
+   * rather than as the one spelling, because any viewport-keyed ceiling on a
+   * row inside a fixed measure is the same mistake.
+   */
+  it('lets a long row title shrink instead of pushing the actions out', async () => {
+    mocks.listSavedWorkflows.mockResolvedValueOnce([WORKFLOW]);
+    renderView();
+
+    const title = await screen.findByRole('heading', { level: 3, name: WORKFLOW.workflow.title });
+    expect(title).toHaveClass('min-w-0');
+    expect(title).toHaveClass('truncate');
+
+    const row = title.closest('.biorouter-list-row');
+    expect(row).not.toBeNull();
+    // `getAttribute` rather than `.className`: on an SVG element the property
+    // is an `SVGAnimatedString`, which stringifies to `[object
+    // SVGAnimatedString]` and would make the regex below vacuously true there.
+    const viewportCapped = Array.from(row!.querySelectorAll('*'))
+      .map((element) => element.getAttribute('class') ?? '')
+      .filter((classes) => /max-w-\[[^\]]*vw\]/.test(classes));
+    expect(viewportCapped).toEqual([]);
+
+    // The action cluster is the box that must NOT give ground.
+    const actions = screen.getByTitle('Use workflow').parentElement;
+    expect(actions).toHaveClass('shrink-0');
+  });
+
+  /**
+   * A CTA does not live inside a list row (operator decision). The Run action
+   * was the one accent-filled button in the list; it is a ghost like its six
+   * siblings now, and the two `tint-selected` buttons are the only fills left —
+   * those say something about the WORKFLOW (it has a slash command, it has a
+   * schedule) rather than about what the button does.
+   */
+  it('draws every row action as a ghost on the 32px round rung', async () => {
+    mocks.listSavedWorkflows.mockResolvedValueOnce([WORKFLOW]);
+    renderView();
+
+    const run = await screen.findByTitle('Use workflow');
+    expect(run).toHaveClass('bg-transparent');
+    expect(run.className).not.toContain('bg-background-accent');
+
+    for (const label of [
+      'Use workflow',
+      'Launch workflow',
+      'Edit workflow',
+      'Share workflow',
+      'Delete workflow',
+      'Edit slash command',
+      'Edit schedule',
+    ]) {
+      const action = screen.getByTitle(label);
+      expect(action.className).not.toContain('bg-background-accent');
+      // `shape="round"` at the default rung — the one row-action size. The
+      // delete button used to be `size="sm"` with no shape, so it alone was a
+      // 28px pill in a line of 32px squares.
+      expect(action).toHaveClass('w-8');
+      expect(action).toHaveClass('h-8');
+    }
+  });
+
+  /**
+   * Loading is rows that are the shape of rows. The list shell is what makes
+   * them share the loaded list's hairlines rather than sitting in a second,
+   * differently-spaced stack.
+   */
+  it('loads as skeleton rows inside the list shell', () => {
+    mocks.listSavedWorkflows.mockReturnValueOnce(new Promise(() => {}));
+    const { container } = renderView();
+
+    const shell = container.querySelector('.biorouter-list-shell');
+    expect(shell).not.toBeNull();
+    expect(shell!.querySelectorAll('.biorouter-list-row').length).toBe(3);
+    expect(shell!.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The error state fills the body, so it is the shared `EmptyState` — not a
+   * hand-rolled centred stack with its own icon size and its own type ramp.
+   * The daemon's message is the description, so a failure still says what
+   * failed.
+   */
+  it('reports a failed load through the shared empty state, with a retry', async () => {
+    mocks.listSavedWorkflows.mockRejectedValueOnce(new Error('the daemon is not reachable'));
+    renderView();
+
+    const title = await screen.findByRole('heading', { name: 'Couldn’t load workflows' });
+    expect(title.closest('section')).toHaveAccessibleDescription('the daemon is not reachable');
+
+    mocks.listSavedWorkflows.mockResolvedValueOnce([WORKFLOW]);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByTitle('Use workflow')).toBeInTheDocument();
+  });
+});

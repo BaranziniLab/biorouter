@@ -50,6 +50,7 @@ import {
 import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { PageHeader } from '../Layout/PageHeader';
 import { Dialog, DialogContent, DialogFooter, DialogTitle } from '../ui/dialog';
 import { MODAL_SIZE } from '../ModalShell';
 import { Badge } from '../ui/badge';
@@ -1201,66 +1202,77 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       <>
         <MainPanelLayout>
           <div className="flex-1 flex flex-col min-h-0">
-            {/* Flat page header */}
-            <div className="flex-shrink-0 border-b border-border-subtle">
-              {/* ⚠ BOTH of this view's `ReadableContent`s are `size="chat"`, and
-                  they move together or not at all — the header's hairline is
-                  full-bleed (the wrapper above owns it), so a size on one box
-                  and not the other is a visible step in the left edge they
-                  share rather than a mistake inside one component.
+            {/* ⚠ The header's column and the body's below it are BOTH
+                `size="chat"`, and they move together or not at all — the
+                header's hairline is full-bleed (`PageHeader` owns the wrapper),
+                so a size on one box and not the other is a visible step in the
+                left edge they share rather than a mistake inside one component.
 
-                  Chat history reads the CHAT measure for the same reason
-                  Settings does (operator decision, 2026-09-07): a row here is a
-                  title on the left and a stats cluster on the right, so the
-                  extra width a wide window handed the page measure landed
-                  BETWEEN them — at 1440 the message/token/extension counts sat
-                  roughly 700px from the chat they count. There is a second
-                  argument this view has and Settings does not: clicking a row
-                  RESUMES the chat, which is already on the chat measure, so
-                  the list and the thing it opens now share one left edge.
-                  `measures.test.ts` asserts at the source that no
-                  `<ReadableContent` here is left on the default size. */}
-              <ReadableContent size="chat" className="px-6 pt-12 pb-6">
-                {/* §4.2 header recipe: full-bleed hairline, `text-title`,
-                    description in `text-secondary` muted, and the view's actions
-                    right-aligned ON the title row rather than in a button row
-                    below it. */}
-                <div className="flex justify-between items-center gap-4 mb-1 page-transition">
-                  <h1 className="text-title min-w-0 truncate">Chat history</h1>
-                  {/* V7 — no `className`. It carried `flex flex-shrink-0
-                      items-center gap-2`, and every token of that is already in
-                      `buttonVariants`' base (`inline-flex items-center
-                      justify-center gap-2 … shrink-0`). The bare `flex` was not
-                      merely redundant: tailwind-merge lets it FLIP the base's
-                      `inline-flex`, which is how a row action elsewhere became
-                      a full-width bar. The title beside it takes `min-w-0
-                      truncate` so the pair gives way in the right order. */}
-                  <Button onClick={handleImportClick} variant="outline">
-                    <Upload className="w-4 h-4" />
-                    Import chat
-                  </Button>
-                </div>
-                <p className="text-secondary text-text-muted">
+                Chat history reads the CHAT measure for the same reason
+                Settings does (operator decision, 2026-09-07): a row here is a
+                title on the left and a stats cluster on the right, so the
+                extra width a wide window handed the page measure landed
+                BETWEEN them — at 1440 the message/token/extension counts sat
+                roughly 700px from the chat they count. There is a second
+                argument this view has and Settings does not: clicking a row
+                RESUMES the chat, which is already on the chat measure, so
+                the list and the thing it opens now share one left edge.
+                `measures.test.ts` asserts at the source that no
+                `<ReadableContent` here is left on the default size.
+
+                ⚠ **Import chat moved OFF the title row** (operator decision,
+                2026-09-07). This view was built to §4.2's original recipe —
+                actions right-aligned on the title row — and §4.2 has since been
+                amended: the actions go on their own line under the description,
+                the shape Workflows / Extensions / Skills / Built apps use. One
+                consequence is worth naming, because it deletes the reason for a
+                construction that used to be load-bearing here: the title no
+                longer shares its row with a button, so it no longer needs
+                `min-w-0 truncate` to give way to one, and a page title is no
+                longer a thing that can be clipped by its own controls. */}
+            <PageHeader
+              title="Chat history"
+              description={
+                <>
                   View and search your past chats with Biorouter. {getSearchShortcutText()} to
                   search.
-                </p>
-                {/* §3.3's checkbox, not the OS one. A bare `<input
-                    type="checkbox">` here rendered as macOS system blue in light
-                    mode and a bare white square in dark — the only unstyled
-                    control in the app, directly under a page title. `-ml-px`
-                    pulls back the 1px by which the 24px hit target overhangs its
-                    22px visible box, so the box's edge lines up with the title
-                    and description above it rather than the target's. */}
-                <label className="mt-3 flex cursor-pointer items-center gap-2 text-supporting text-text-muted">
-                  <Checkbox
-                    className="-ml-px"
-                    checked={showSubagents}
-                    onChange={(e) => setShowSubagents(e.target.checked)}
-                  />
-                  Show subagent runs
-                </label>
-              </ReadableContent>
-            </div>
+                </>
+              }
+              actions={
+                /* V7 — no `className`. It carried `flex flex-shrink-0
+                   items-center gap-2`, and every token of that is already in
+                   `buttonVariants`' base (`inline-flex items-center
+                   justify-center gap-2 … shrink-0`). The bare `flex` was not
+                   merely redundant: tailwind-merge lets it FLIP the base's
+                   `inline-flex`, which is how a row action elsewhere became a
+                   full-width bar. */
+                <Button onClick={handleImportClick} variant="outline">
+                  <Upload className="w-4 h-4" />
+                  Import chat
+                </Button>
+              }
+            >
+              {/* §3.3's checkbox, not the OS one. A bare `<input
+                  type="checkbox">` here rendered as macOS system blue in light
+                  mode and a bare white square in dark — the only unstyled
+                  control in the app, directly under a page title. `-ml-px`
+                  pulls back the 1px by which the 24px hit target overhangs its
+                  22px visible box, so the box's edge lines up with the title
+                  and description above it rather than the target's.
+
+                  It is `PageHeader`'s `children`, NOT another `actions` entry:
+                  a filter that changes what the list shows is not an action the
+                  page offers, and putting it in the strip would give it the
+                  same standing as Import chat. */}
+              <label className="mt-3 flex cursor-pointer items-center gap-2 text-supporting text-text-muted">
+                <Checkbox
+                  className="-ml-px"
+                  checked={showSubagents}
+                  onChange={(e) => setShowSubagents(e.target.checked)}
+                />
+                Show subagent runs
+              </label>
+            </PageHeader>
 
             <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6 pb-8">
               <ScrollArea

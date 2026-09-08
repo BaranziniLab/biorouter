@@ -201,6 +201,34 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
     expect(CODE).not.toContain('<Card');
   });
 
+  /**
+   * The operator's decision, 2026-09-07: both header actions sit on their own
+   * line UNDER the description, not on the title row. This view shipped the
+   * §4.2 original and is the one the operator named ("the orange button that
+   * says 'New Schedule' and the little refresh icon would appear on different
+   * lines"), so the placement is pinned here rather than only in
+   * `PageHeader.test.tsx` — the primitive can be correct while this call site
+   * has quietly grown its own header back.
+   *
+   * Asserted through the DOM, not the source: `PageHeader` is what guarantees
+   * the strip, and a source grep for `<PageHeader` would pass on a view that
+   * mounted it and then put a button somewhere else as well.
+   */
+  it('puts both header actions on their own line, not on the title row', async () => {
+    renderSchedules();
+
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Scheduler' });
+    const titleRow = heading.parentElement as HTMLElement;
+    expect(titleRow.querySelector('button')).toBeNull();
+
+    const create = screen.getAllByRole('button', { name: 'New schedule' })[0];
+    const strip = create.closest('.biorouter-settings-control-strip');
+    expect(strip).not.toBeNull();
+    // Both of them, in the same strip — the refresh glyph moved off the title
+    // row with the primary rather than being left behind on it.
+    expect(strip).toContainElement(screen.getByRole('button', { name: 'Refresh schedules' }));
+  });
+
   it('says a paused schedule is paused as text, never as a filled pill', async () => {
     mocks.listSchedules.mockResolvedValue([{ ...schedule, paused: true }]);
     renderSchedules();

@@ -61,6 +61,21 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   // fitted cell geometry rather than prose styling.
   { dir: HISTORY_DIR, outOfScope: ['SessionsInsights.tsx', 'UsageHeatmap.tsx'] },
   { dir: join(SETTINGS_DIR, '../schedule'), outOfScope: [] }, // the Scheduler, 2026-09-07
+  // The five component views, 2026-09-07 — swept in the pass that also put them
+  // on the chat measure and the shared page header.
+  //
+  // ⚠ `components/extensions/` is the extensions PAGE. The extension rows live
+  // in `components/settings/extensions/`, which is in the settings root's own
+  // out-of-scope list above and STAYS there: sweeping it triples the diff, and
+  // deleting the name from that list is how that work gets finished. Adding
+  // this root does not reach it — different tree, different root.
+  { dir: join(SETTINGS_DIR, '../workflows'), outOfScope: [] },
+  { dir: join(SETTINGS_DIR, '../extensions'), outOfScope: [] },
+  { dir: join(SETTINGS_DIR, '../skills'), outOfScope: [] },
+  { dir: join(SETTINGS_DIR, '../applications'), outOfScope: [] },
+  // `StandaloneAppView` is the app's own window, not a page in this family: it
+  // renders a third party's UI resource in a frame and has no rows of its own.
+  { dir: join(SETTINGS_DIR, '../apps'), outOfScope: ['StandaloneAppView.tsx'] },
 ];
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {

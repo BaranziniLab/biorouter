@@ -41,8 +41,22 @@ vi.mock('../Layout/MainPanelLayout', () => ({
 vi.mock('../Layout/ReadableContent', () => ({
   ReadableContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
+// The real SearchView owns a cmd-F overlay and a scroll-area contract; all the
+// view reads from it is the term it reports, so the mock is that one wire —
+// without it the search-filtered branches below are unreachable from a test.
 vi.mock('../conversation/SearchView', () => ({
-  SearchView: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SearchView: ({
+    children,
+    onSearch,
+  }: {
+    children: React.ReactNode;
+    onSearch: (term: string, caseSensitive: boolean) => void;
+  }) => (
+    <div>
+      <input aria-label="Search skills" onChange={(event) => onSearch(event.target.value, false)} />
+      {children}
+    </div>
+  ),
 }));
 vi.mock('../baam/BrowseSkillsModal', () => ({ default: () => null }));
 vi.mock('./AddSkillModal', () => ({ default: () => null }));
@@ -310,6 +324,74 @@ describe('SkillsView', () => {
     mocks.refreshSkillCatalog.mockRejectedValue(new Error('daemon is down'));
     render(<SkillsView />);
     expect(await screen.findByText(/Could not read the skill catalog/)).toBeInTheDocument();
+    // The failure is the only thing said. An empty state beside it would be the
+    // "there are no skills" claim this test is named for, in a second voice.
+    expect(screen.queryByRole('region', { name: 'No skills yet' })).not.toBeInTheDocument();
+  });
+
+  /** The page title is the shared header's `<h1>`, not a heading of this view's own. */
+  it('titles the page once, at level 1', async () => {
+    render(<SkillsView />);
+    await screen.findByText('my-skill');
+    expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * The empty, loading and search-empty branches, which were one `<p>` holding
+ * four different sentences.
+ *
+ * ⚠ The skeletons are keyed on an EMPTY list, not on `loading` alone, and the
+ * last test here is what pins that. `reload` raises `loading` after every
+ * install, delete and `catalog:changed` rescan as well as on first load — so a
+ * branch that asked only whether a load was in flight would replace the whole
+ * list with placeholders every time a package was removed. That is the defect
+ * `SchedulesView` shipped and had to be rescued from; it is cheaper to assert it
+ * here than to rediscover it.
+ */
+describe('SkillsView empty and loading states', () => {
+  const skeletons = () => document.querySelectorAll('[data-slot="skeleton"]');
+
+  it('offers a way out of an empty catalog instead of a bare line of prose', async () => {
+    serve({});
+    render(<SkillsView />);
+
+    const empty = await screen.findByRole('region', { name: 'No skills yet' });
+    expect(within(empty).getByRole('button', { name: 'Add Skill' })).toBeInTheDocument();
+  });
+
+  it('says a search matched nothing without claiming the catalog is empty', async () => {
+    serve({ skills: [skill('alpha')] });
+    render(<SkillsView />);
+    await screen.findByText('alpha');
+
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'zzz' } });
+
+    expect(await screen.findByRole('region', { name: 'No matching skills' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'No skills yet' })).not.toBeInTheDocument();
+  });
+
+  it('shows rows in the shape of rows while the catalog first loads', async () => {
+    mocks.skillCatalogHandler.mockReturnValue(new Promise(() => {}));
+    render(<SkillsView />);
+
+    await waitFor(() => expect(skeletons().length).toBeGreaterThan(0));
+    expect(screen.queryByRole('region', { name: 'No skills yet' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the rows on screen while a rescan is in flight', async () => {
+    serve({ skills: [skill('alpha')] });
+    mocks.removeSkillPackage.mockResolvedValue({ data: { id: 'alpha' } });
+    // A rescan that never settles, which is what a delete leaves in flight.
+    mocks.refreshSkillCatalog.mockReturnValue(new Promise(() => {}));
+    render(<SkillsView />);
+
+    fireEvent.click(await screen.findByLabelText('Delete alpha'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(mocks.removeSkillPackage).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('alpha')).toBeInTheDocument();
+    expect(skeletons()).toHaveLength(0);
   });
 });
 

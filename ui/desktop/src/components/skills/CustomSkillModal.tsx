@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
+import { Note } from '../ui/note';
+import { MODAL_SIZE } from '../ModalShell';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
@@ -71,7 +73,11 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
     <Dialog open onOpenChange={(open) => !open && !isSaving && onClose()}>
       <DialogContent
         dismissible={!isSaving}
-        className="flex max-h-[85vh] w-[640px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] md:max-w-[640px]"
+        // `MODAL_SIZE.lg` IS 640px — the three-rung ladder, not the two
+        // breakpoint-forked literals plus a `w-[640px]` this was built from.
+        // `DialogContent` already carries `w-full max-w-[calc(100%-2rem)]`, so
+        // the narrow-window behaviour those spelled out is the default.
+        className={`flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 ${MODAL_SIZE.lg}`}
       >
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <DialogTitle>Add Custom Skill</DialogTitle>
@@ -90,9 +96,9 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
             spellCheck={false}
           />
           {error && (
-            <div className="text-body text-text-danger bg-background-danger/10 rounded-element px-4 py-2">
+            <Note tone="danger" role="alert">
               {error}
-            </div>
+            </Note>
           )}
         </div>
 

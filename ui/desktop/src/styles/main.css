@@ -476,14 +476,28 @@
      (docs/design/astryx-adoption/astryx-ui-adoption-design.md §1), so 760 is
      the measure, not the floor of one.
 
-     `--measure-page` stays FLUID. It governs the document-shaped views —
-     extensions, skills, workflows, applications — where a wide window
-     genuinely does buy content (more table columns, more cards per row) rather
-     than a longer line. PERCENTAGES, not `vw`, for the reason that has not
-     changed: a percentage resolves against the containing block, which is the
-     content pane, while `vw` is the whole viewport and would over-count by the
-     sidebar's width — widening the column exactly when the sidebar opened and
-     took the room away.
+     `--measure-page` stays FLUID, and as of 2026-09-07 it has NO READER LEFT
+     in `components/`. It governed the document-shaped views — extensions,
+     skills, workflows, applications, MCP apps — on the argument that a wide
+     window there buys content (more table columns, more cards per row) rather
+     than a longer line. Measured against the real views, it did not: each of
+     them is a column of rows carrying a title on the left and controls on the
+     right, which is the shape Settings and Chat history had already moved off
+     this measure for, so all five joined them (operator decision — "please
+     make sure that you're also applying the 760 pixels redesign").
+
+     ⚠ **The token stays, and so does `ReadableContent`'s `text` size.**
+     Deleting either is a separate decision, not a consequence of this one, and
+     `text` is still the DEFAULT a `<ReadableContent>` gets when it says
+     nothing — which is exactly why `styles/measures.test.ts` names every view
+     at the source rather than trusting the default. A view that genuinely is a
+     document still has a measure to reach for; today none of them is.
+
+     PERCENTAGES, not `vw`, for the reason that has not changed: a percentage
+     resolves against the containing block, which is the content pane, while
+     `vw` is the whole viewport and would over-count by the sidebar's width —
+     widening the column exactly when the sidebar opened and took the room
+     away.
 
      ⚠ **Neither Settings NOR the chat-history surfaces are in that list any
      more** (operator decision, 2026-09-07), and this paragraph used to name

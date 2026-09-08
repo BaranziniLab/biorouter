@@ -1,23 +1,54 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { EmptyState } from '../ui/empty-state';
+import { Note } from '../ui/note';
+import { Skeleton } from '../ui/skeleton';
 import { Play } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
+import { PageHeader } from '../Layout/PageHeader';
+import { ReadableContent } from '../Layout/ReadableContent';
 import { BioRouterApp, listApps } from '../../api';
 import { useChatContext } from '../../contexts/ChatContext';
 
+/**
+ * The card grid, measured against the reading column this view now sits on.
+ *
+ * At the chat measure the usable width is 760 − 2×24 (`px-6`) − 8 (`p-1`) =
+ * 704px, so `auto-fill` with a 280px floor and a 16px gap seats TWO columns of
+ * ~344px (2×280 + 16 = 576 ≤ 704; three would need 872). That is the intended
+ * outcome: a card falls out of the row rather than being squeezed under its own
+ * floor, and 344px is wider than the 280px these cards were designed to survive.
+ *
+ * The template is an inline `style` rather than a `grid-cols-[…]` arbitrary
+ * class on purpose — the same reason `.biorouter-note-clamp` is authored CSS:
+ * under `BIOROUTER_NO_HMR` the renderer ignores every watch path, which is the
+ * signal Tailwind's scanner uses to notice new class strings, so a freshly
+ * written arbitrary utility can silently fail to generate. A grid that fails to
+ * generate does not degrade — it stacks every card in one column.
+ */
 const GridLayout = ({ children }: { children: React.ReactNode }) => {
   return (
     <div
       className="grid gap-4 p-1"
-      style={{
-        gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-        justifyContent: 'center',
-      }}
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}
     >
       {children}
     </div>
   );
 };
+
+/** Loading is cards that are the shape of cards, not a line of prose in dead space. */
+const AppCardSkeleton = () => (
+  <div className="flex min-w-0 flex-col rounded-container border border-border-subtle bg-background-default p-4">
+    <Skeleton className="h-5 w-40" />
+    <Skeleton className="mt-3 h-3 w-full" />
+    <Skeleton className="mt-2 h-3 w-2/3" />
+    <Skeleton className="mt-4 h-6 w-24" />
+    <Skeleton className="mt-4 h-8 w-full" />
+  </div>
+);
 
 export default function AppsView() {
   const [apps, setApps] = useState<BioRouterApp[]>([]);
@@ -104,73 +135,110 @@ export default function AppsView() {
     }
   };
 
-  // Only show error-only UI if we have no apps to display
-  if (error && apps.length === 0) {
-    return (
-      <MainPanelLayout>
-        <div className="flex flex-col items-center justify-center h-64 text-center">
-          <p className="text-text-danger mb-4">Error loading apps: {error}</p>
-          <Button onClick={loadApps}>Retry</Button>
-        </div>
-      </MainPanelLayout>
-    );
-  }
-
   return (
     <MainPanelLayout>
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="bg-background-default px-8 pt-12 pb-6 border-b border-border-subtle">
-          <div className="flex flex-col page-transition">
-            <div className="flex justify-between items-center mb-1">
-              <h1 className="text-title">MCP apps</h1>
-            </div>
-            <p className="text-body text-text-muted mb-0">
-              Apps your installed extensions provide, which can run in standalone windows. Apps you
-              built yourself live under Built apps.
-            </p>
-          </div>
-        </div>
+        {/* The one page header. This view has no actions of its own — the list
+            is whatever the installed extensions advertise, so there is nothing
+            here to create, import or refresh by hand. `PageHeader` also brings
+            the reading column this view never had: its header and its body were
+            raw `px-8` divs, so the cards ran the full width of the window while
+            every sibling view stopped at a measure. */}
+        <PageHeader
+          title="MCP apps"
+          description="Apps your installed extensions provide, which can run in standalone windows. Apps you built yourself live under Built apps."
+        />
 
-        <div className="flex-1 overflow-y-auto bg-background-canvas px-8 pb-8">
-          {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <p className="text-text-muted">Loading apps...</p>
-            </div>
+        <ReadableContent size="chat" className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-8">
+          {/* The load-bearing half of "only show error-only UI if we have no
+              apps to display": a refresh that fails while cards are on screen
+              must not replace them with an error. It no longer takes the whole
+              view with it either — the error was an early `return` above the
+              header, so a failed load removed the page's own title. Rule 4: an
+              inline error is a `Note`, and Retry rides its action slot. */}
+          {error && apps.length === 0 ? (
+            <Note
+              tone="danger"
+              role="alert"
+              action={
+                <Button variant="outline" size="sm" onClick={loadApps}>
+                  Retry
+                </Button>
+              }
+            >
+              Error loading apps: {error}
+            </Note>
+          ) : loading ? (
+            <GridLayout>
+              <AppCardSkeleton />
+              <AppCardSkeleton />
+            </GridLayout>
           ) : apps.length === 0 ? (
-            <div className="flex items-center justify-center h-64">
-              <div className="text-center">
-                <h3 className="text-subheading mb-2">No apps available</h3>
-                <p className="text-body text-text-muted">
-                  Install MCP servers that provide UI resources to see apps here.
-                </p>
-              </div>
-            </div>
+            <EmptyState
+              icon={ENTITY_ICONS.mcpApp}
+              title="No apps available"
+              description="Install MCP servers that provide UI resources to see apps here."
+            />
           ) : (
             <GridLayout>
               {apps.map((app) => (
+                /* `tint-interactive`, NOT `hover:bg-overlay-hover`. The overlay
+                   tokens are a background COLOUR, so on an opaque card they
+                   REPLACE `--background-default` with 5% ink over the canvas —
+                   the card loses its surface on hover instead of darkening,
+                   which is the same inversion `main.css` records for a filled
+                   control. The tint is a background-IMAGE composited over
+                   whatever fill is already there, and it carries press as well
+                   as hover. `transition-colors` names `--tint-ink`, so the
+                   fade eases rather than snapping. */
                 <div
                   key={`${app.uri}-${app.mcpServer}`}
-                  className="flex min-w-0 flex-col p-4 border border-border-subtle rounded-container bg-background-default transition-colors hover:bg-overlay-hover hover:border-border-strong"
+                  className="flex min-w-0 flex-col p-4 border border-border-subtle rounded-container bg-background-default tint-interactive transition-colors hover:border-border-strong"
                 >
                   <div className="flex-1 min-w-0 mb-4">
-                    <h3 className="font-medium text-text-default mb-2 break-words">{app.name}</h3>
+                    {/* `[overflow-wrap:anywhere]`, not `break-words`. An MCP app
+                        name is a server-authored string with no guaranteed break
+                        opportunity, and `overflow-wrap: break-word` changes only
+                        where a line MAY break — it leaves the min-content width
+                        intact, so a long name still forces the grid track wider
+                        than its own card. `anywhere` is the spelling that
+                        shrinks it. */}
+                    <h3 className="mb-2 min-w-0 text-label text-text-default [overflow-wrap:anywhere]">
+                      {app.name}
+                    </h3>
                     {app.description && (
-                      <p className="text-body text-text-muted mb-2">{app.description}</p>
+                      <p className="mb-2 min-w-0 text-supporting text-text-muted [overflow-wrap:anywhere]">
+                        {app.description}
+                      </p>
                     )}
+                    {/* V8 — the shared `Badge`, in the 24px `chip` tier: the
+                        server name is what the app is FILED UNDER, not a status
+                        it is currently in. The hand-rolled span it replaces was
+                        a fifth spelling of the same neutral chip. */}
                     {app.mcpServer && (
-                      <span className="inline-block px-2 py-1 text-supporting bg-background-medium text-text-muted rounded-inner">
-                        {app.mcpServer}
-                      </span>
+                      <Badge variant="chip" className="max-w-full" title={app.mcpServer}>
+                        <span className="truncate">{app.mcpServer}</span>
+                      </Badge>
                     )}
                   </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={() => handleLaunchApp(app)}
-                      className="flex items-center gap-2 flex-1"
-                    >
-                      <Play className="h-4 w-4" />
+                  {/* V7 — the Button carries variant and NOTHING else. It had
+                      `className="flex items-center gap-2 flex-1"`: `gap-2` and
+                      `items-center` are already in the cva base, and the bare
+                      `flex` FLIPS that base's own `inline-flex` through
+                      tailwind-merge — the mechanism that once rendered a row
+                      action as a full-width bar.
+
+                      The action row is a one-column `grid`, not a `flex`, so the
+                      full-width Launch the card was designed with comes from the
+                      row stretching its item rather than from a `flex-1` on the
+                      control. Two reasons beyond taste: it leaves the Button
+                      with no `className` at all, and `flex-1` matches the
+                      `\bflex\b` word boundary the vocabulary guard tests Button
+                      tags against — a false positive waiting for the day this
+                      directory joins its ROOTS list. */}
+                  <div className="grid gap-2">
+                    <Button variant="default" onClick={() => handleLaunchApp(app)}>
+                      <Play />
                       Launch
                     </Button>
                   </div>
@@ -178,7 +246,7 @@ export default function AppsView() {
               ))}
             </GridLayout>
           )}
-        </div>
+        </ReadableContent>
       </div>
     </MainPanelLayout>
   );

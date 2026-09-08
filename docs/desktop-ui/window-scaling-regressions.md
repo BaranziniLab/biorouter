@@ -157,10 +157,13 @@ Settings' title and Chat history's title start at **x = 508.00**.
 The distinction that decides which of the two you are looking at is **what the
 extra width would have bought**, not whether the column moved:
 
-- A **document-shaped** view — extensions, skills, workflows, applications —
-  gains real content from a wider window: more table columns, more cards per
-  row. Those stay on `--measure-page` and a flat cap there is the regression
-  this page is about.
+- A **document-shaped** view gains real content from a wider window: more table
+  columns, more cards per row. Those stay on `--measure-page` and a flat cap
+  there is the regression this page is about. ⚠ **This bullet used to name
+  extensions, skills, workflows and applications as the examples, and they were
+  the wrong ones** — see the component-views paragraph below. There is no view
+  left in the app that is document-shaped by this test; the category and the
+  measure both stay because the next one might be.
 - **Settings is a column of labelled rows**: a label on the left, the control it
   names on the right, one per row. Widening the column adds nothing to either
   half — it only pushes them apart, so at 1800px the Local Model Inventory's
@@ -198,11 +201,29 @@ hands either one lands between the two halves of every row. Both
 `styles/measures.test.ts` asserts it at the source for the same jsdom reason as
 the paragraph below.
 
+**The component views joined on 2026-09-07 too**, and they are the reason the
+document-shaped bullet above lost its examples: Workflows, Extensions, Skills,
+Built apps and MCP apps were the four-or-five views that bullet named, and the
+prediction it made about them did not survive being looked at. None of them
+grows a column or a card per 100px of window. Each is a list of rows — a
+workflow's name and its seven hover actions, an extension's name and its
+switch, a skill's name and its three buttons — which is Settings' shape exactly,
+so the extra width landed between the two halves of every row there as well.
+The operator asked for it directly: *"for those different components like
+workflows, scheduler, extensions, skills, and applications or build apps, please
+make sure that you're also applying the 760 pixels redesign"*.
+
+MCP apps is the odd one: it had no reading column at all, only a `px-8` div, so
+at 1440 its title started at **x = 320** while its four siblings started at
+**x = 336** and Settings at **x = 508** — three different left edges across one
+family of eight pages. All eight are 508 now, which is also what made a single
+`PageHeader` primitive possible (rule 10 of the settings visual vocabulary).
+
 ⚠ **jsdom cannot see any of this**, exactly as with the fixed cap: there is no
 layout engine and Tailwind never runs, so the component tests assert the
 `data-size` attribute and the column count, and `styles/measures.test.ts` asserts
-at the source that no `<ReadableContent` in those four files is left on the
-default size — and that none of them declares a second `max-w-*`, which would
+at the source that no `<ReadableContent` in any of the eleven listed files is
+left on the default size — and that none of them declares a second `max-w-*`, which would
 silently take precedence over the column. The widths themselves were measured in
 the running app.
 

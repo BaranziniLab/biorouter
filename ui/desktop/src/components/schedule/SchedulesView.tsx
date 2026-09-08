@@ -38,6 +38,7 @@ import {
   scheduleDisplayName,
 } from '../../utils/builtins';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { PageHeader } from '../Layout/PageHeader';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
 import { Note } from '../ui/note';
@@ -464,39 +465,41 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          {/* §4.2 — the hairline is FULL-BLEED, and the view's actions sit on
-              the TITLE ROW rather than in a button strip under the description.
-              The reading column is the chat measure, as in Settings (#172),
-              Chat history and the provider catalog: this is a column of rows,
-              not a document, so width past the measure buys margin. */}
-          <div className="flex-shrink-0 border-b border-border-subtle">
-            <ReadableContent size="chat" className="px-6 pt-12 pb-6">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h1 className="text-title mb-1 page-transition">Scheduler</h1>
-                  <p className="text-secondary text-text-muted">
-                    Run a saved workflow automatically, at the time you choose.
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button
-                    onClick={handleRefresh}
-                    disabled={isRefreshing || isLoading}
-                    variant="ghost"
-                    shape="round"
-                    title="Refresh"
-                    aria-label="Refresh schedules"
-                  >
-                    <RefreshCw className={isRefreshing ? 'animate-spin' : undefined} />
-                  </Button>
-                  <Button onClick={openCreateModal}>
-                    <Plus />
-                    New schedule
-                  </Button>
-                </div>
-              </div>
-            </ReadableContent>
-          </div>
+          {/* ⚠ The two actions sit on their OWN LINE under the description, not
+              on the title row — the operator's decision, 2026-09-07, naming
+              Workflows / Extensions / Skills / Built apps as the shape the rest
+              of the app should match. This view shipped the §4.2 original
+              (right-aligned on the title row) and §4.2 is amended rather than
+              quietly contradicted; `PageHeader` owns the placement now, so the
+              Scheduler cannot drift from its siblings again.
+
+              `New schedule` comes FIRST because the strip reads left to right
+              and the primary leads it, the same order Workflows uses (Create,
+              then Import). The reading column is still the chat measure, for
+              the reason it always was: this is a column of rows, not a
+              document, so width past the measure buys margin. */}
+          <PageHeader
+            title="Scheduler"
+            description="Run a saved workflow automatically, at the time you choose."
+            actions={
+              <>
+                <Button onClick={openCreateModal}>
+                  <Plus />
+                  New schedule
+                </Button>
+                <Button
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || isLoading}
+                  variant="ghost"
+                  shape="round"
+                  title="Refresh"
+                  aria-label="Refresh schedules"
+                >
+                  <RefreshCw className={isRefreshing ? 'animate-spin' : undefined} />
+                </Button>
+              </>
+            }
+          />
 
           <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6">
             <ScrollArea className="h-full">
