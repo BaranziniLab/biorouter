@@ -1,6 +1,6 @@
 # The settings visual vocabulary
 
-> **What this is.** The nine rules that govern how the desktop Settings view (Models, Chat, App) is built, and the two primitives they lean on — a living reference for anyone adding or changing a control there.
+> **What this is.** The nine rules that govern how the desktop Settings view (Models, Chat, App) and the chat-history surfaces are built, and the two primitives they lean on — a living reference for anyone adding or changing a control there.
 > **Status:** Current.
 > **Audience:** contributors working on the desktop renderer.
 
@@ -235,12 +235,34 @@ component's own type classes; `variant` is `note` (the boxed neutral `Note`) or 
 one surface can mount several. It renders nothing on the desktop, so every call site mounts
 it unconditionally.
 
+## What this covers now
+
+The rules were written for Settings and have since been applied, unchanged, to the
+**chat-history surfaces** (2026-09-07): the Chat history page, the saved transcript, the
+shared transcript and the three dialogs they mount. Those views moved onto the 760px chat
+measure in the same pass, and the two facts are related — a column of labelled rows is
+exactly the shape both of these rules and that measure assume.
+
+⚠ **`settingsVocabulary.test.ts` walks TWO roots, and adding a third is not the same as
+deleting an exclusion.** Its original root is `components/settings`, so the `sessions/`
+entry in that root's out-of-scope list means `components/settings/sessions/` — the session
+SHARING section, still unswept — and not `components/sessions/`, where chat history
+actually lives. Deleting that name sweeps session sharing and leaves chat history
+uncovered, which is the opposite of what it looks like it does.
+
 ## What this does not cover
 
 Extensions, the provider-configuration page, the permission modals, dictation, the tunnel
 and session sharing share these primitives and will inherit the rules, but were not swept
-when the vocabulary landed. They are named in `OUT_OF_SCOPE` in
-`settingsVocabulary.test.ts`; deleting a name from that list is how the work gets finished.
+when the vocabulary landed. They are named in the per-root `outOfScope` lists in
+`settingsVocabulary.test.ts`; deleting a name from one of those lists — or adding a root
+for a directory the walker has never reached — is how the work gets finished.
+
+Two files in the chat-history root are excluded for a different reason: `SessionsInsights`
+is the **Home** view and `UsageHeatmap` is its grid, whose `leading-*` values and per-mille
+alphas are fitted cell geometry rather than prose styling. `ui/ConfirmationModal.tsx`'s
+`sm:max-w-[425px]` is likewise left alone — it is a shared primitive, so moving it onto the
+`MODAL_SIZE` ladder changes every confirmation in the app rather than one feature's.
 
 Also deliberately outside it: the 40px → 36px row retune (astryx A-03, still a later
 phase), promoting a `ghost-danger` variant into `buttonVariants`, and adding `size` /

@@ -151,11 +151,19 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                   }
 
                   return (
+                    /* ⚠ `bg-background-default`, not `bg-bgSecondary`. That
+                       name is defined NOWHERE — no token, no `@theme` mirror —
+                       so it generated nothing and the user card had a border
+                       over the page ground while the assistant card beside it
+                       had a real fill. Same failure mode as
+                       `border-borderStandard` and `text-iconStandard`: a class
+                       that reads as intent and paints nothing. This is the
+                       ground the live chat gives the same message. */
                     <Card
                       key={index}
                       className={`p-4 ${
                         message.role === 'user'
-                          ? 'bg-bgSecondary border border-border-subtle'
+                          ? 'bg-background-default border border-border-subtle'
                           : 'bg-background-medium'
                       }`}
                     >
