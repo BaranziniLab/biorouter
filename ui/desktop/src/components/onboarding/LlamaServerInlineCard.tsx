@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
 import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
 import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
-import OnboardingSectionLabel from './OnboardingSectionLabel';
+import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 
 interface LlamaServerInlineCardProps {
   onSuccess: () => void;
+  /** See `OnboardingCardShell`. Defaults to the standalone card. */
+  chrome?: OnboardingCardChrome;
 }
 
 const acceleratorMemoryLabel = (kind: string | undefined) =>
@@ -64,8 +65,10 @@ const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
-export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
-  const navigate = useNavigate();
+export default function LlamaServerInlineCard({
+  onSuccess,
+  chrome = 'card',
+}: LlamaServerInlineCardProps) {
   const { upsert } = useConfig();
   const { status, operation, lastError } = useLlamaServer();
   // Skip the "Checking…" state when the shared store already has a status
@@ -344,19 +347,14 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
 
   return (
     <>
-      <section
-        aria-labelledby="llamacpp-setup-title"
-        className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+      <OnboardingCardShell
+        chrome={chrome}
+        titleId="llamacpp-setup-title"
+        category="local"
+        label="Local · Run on your computer"
+        title="Llama Server"
+        description="Pick a built-in local model and start chatting in minutes. Free, private, offline, nothing else to install."
       >
-        <OnboardingSectionLabel category="local" label="Local · Run on your computer" />
-        <h2 id="llamacpp-setup-title" className="mt-2 text-base font-medium text-text-default">
-          Llama Server
-        </h2>
-        <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
-          Pick a built-in local model and start chatting in minutes. Free, private, offline, nothing
-          else to install.
-        </p>
-
         {isChecking ? (
           <div className="flex items-center gap-2 text-xs text-text-muted">
             <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
@@ -491,17 +489,10 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                   {startButtonLabel}
                 </Button>
               )}
-              <button
-                type="button"
-                onClick={() => navigate('/welcome', { replace: true })}
-                className="w-full py-1 text-center text-xs text-text-muted transition-colors duration-150 hover:text-text-default sm:w-auto sm:text-left"
-              >
-                View all local providers →
-              </button>
             </div>
           </div>
         )}
-      </section>
+      </OnboardingCardShell>
       <ConfirmationModal
         isOpen={pendingModelStart !== null}
         title={`Load ${selectedEntry?.display_name ?? 'this model'} anyway?`}

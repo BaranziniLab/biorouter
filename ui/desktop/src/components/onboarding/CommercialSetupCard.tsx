@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { detectProvider, getDetectableProviders } from '../../api';
 import { Button } from '../ui/button';
 import { ArrowRight } from '../icons/ArrowRight';
-import OnboardingSectionLabel from './OnboardingSectionLabel';
+import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 
 interface CommercialSetupCardProps {
   onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
   onStartTesting?: () => void;
+  /** See `OnboardingCardShell`. Defaults to the standalone card. */
+  chrome?: OnboardingCardChrome;
 }
 
 export interface DetectedProviderSetup {
@@ -17,6 +18,31 @@ export interface DetectedProviderSetup {
   apiKey: string;
   apiKeyConfigKey: string;
   extraConfig: Record<string, string>;
+}
+
+/**
+ * Persist a detected provider: the secret, then any non-secret endpoint config,
+ * then the provider selection itself.
+ *
+ * ⚠ **The ORDER is the contract, and it is asserted by `ProviderGuard.test.tsx`.**
+ * The endpoint config is written before `BIOROUTER_PROVIDER` so the saved
+ * provider targets the same endpoint detection validated against — a regional
+ * host written *after* the selection leaves a window in which the bound provider
+ * points somewhere the key was never checked against.
+ *
+ * Exported because two hosts reach the detection card — the first-run guard and
+ * the `welcome` route — and a second copy of this sequence is a second place for
+ * that ordering to be got wrong.
+ */
+export async function persistDetectedProviderSetup(
+  upsert: (key: string, value: unknown, isSecret: boolean) => Promise<unknown>,
+  { provider, apiKey, apiKeyConfigKey, extraConfig }: DetectedProviderSetup
+): Promise<void> {
+  await upsert(apiKeyConfigKey, apiKey, true);
+  for (const [key, value] of Object.entries(extraConfig)) {
+    await upsert(key, value, false);
+  }
+  await upsert('BIOROUTER_PROVIDER', provider, false);
 }
 
 interface DetectionResult {
@@ -65,8 +91,8 @@ function messageForReason(reason: string | null | undefined): { title: string; d
 export default function CommercialSetupCard({
   onSuccess,
   onStartTesting,
+  chrome = 'card',
 }: CommercialSetupCardProps) {
-  const navigate = useNavigate();
   const [apiKey, setApiKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<DetectionResult | null>(null);
@@ -147,18 +173,14 @@ export default function CommercialSetupCard({
   const supportedLabel = supported.join(', ');
 
   return (
-    <section
-      aria-labelledby="commercial-setup-title"
-      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+    <OnboardingCardShell
+      chrome={chrome}
+      titleId="commercial-setup-title"
+      category="commercial"
+      label="Commercial APIs"
+      title="Auto-detect from API key"
+      description={`Paste a key from ${supportedLabel}. We'll detect the provider for you.`}
     >
-      <OnboardingSectionLabel category="commercial" label="Commercial APIs" />
-      <h2 id="commercial-setup-title" className="mt-2 text-base font-medium text-text-default">
-        Auto-detect from API key
-      </h2>
-      <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
-        Paste a key from {supportedLabel}. We'll detect the provider for you.
-      </p>
-
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
         <label htmlFor="commercial-provider-api-key" className="sr-only">
           Commercial provider API key
@@ -223,20 +245,10 @@ export default function CommercialSetupCard({
           <ul className="text-xs text-text-muted space-y-1 pl-1">
             <li>· Supported providers: {supportedLabel}</li>
             <li>· Verify the key is active and has sufficient credits</li>
-            <li>· For local models, use the Local card above</li>
+            <li>· For local models, use the Local tab</li>
           </ul>
         </div>
       )}
-
-      <div className="mt-4 border-t border-border-subtle pt-4">
-        <button
-          type="button"
-          onClick={() => navigate('/welcome', { replace: true })}
-          className="text-xs text-text-muted hover:text-text-default transition-colors duration-150"
-        >
-          View all commercial providers →
-        </button>
-      </div>
-    </section>
+    </OnboardingCardShell>
   );
 }
