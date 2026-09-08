@@ -11,10 +11,16 @@ import {
   Calendar,
   Clock,
 } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
+import { Badge } from '../ui/badge';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { EmptyState } from '../ui/empty-state';
+import { Note } from '../ui/note';
+import { Skeleton } from '../ui/skeleton';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { toastSuccess, toastError } from '../../toasts';
+import { PageHeader } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
 import {
   appUrl,
@@ -26,6 +32,19 @@ import {
 } from './appManagement';
 import type { AppManifest, ExportOptions } from './appManagement';
 import ExportAppDialog from './ExportAppDialog';
+
+/** Loading is rows that are the shape of rows, not a line of prose in dead space. */
+function ApplicationItemSkeleton() {
+  return (
+    <div className="biorouter-list-row flex items-start gap-3 px-3 py-3">
+      <div className="min-w-0 flex-1">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="mt-2 h-3 w-64" />
+        <Skeleton className="mt-2 h-3 w-40" />
+      </div>
+    </div>
+  );
+}
 
 /** Format a Unix-seconds timestamp as a short, readable date (e.g. "Jun 24, 2026"). */
 function formatDate(secs?: number | null): string {
@@ -170,51 +189,87 @@ export default function ApplicationsView() {
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        {/* Header */}
-        <div className="flex-shrink-0 border-b border-border-subtle">
-          <ReadableContent className="px-8 pt-12 pb-6">
-            <div className="flex flex-col page-transition">
-              <h1 className="text-title mb-1">Built apps</h1>
-              <p className="text-body text-text-muted mb-0">
-                Apps you built with Agent Drafter. Each one runs a full Biorouter agent with its own
-                model, extensions, skills, and knowledge, and opens in your browser.{' '}
-                {getSearchShortcutText()} to search.
-              </p>
-            </div>
-            <div className="flex gap-3 mt-5">
-              <Button variant="outline" className="flex items-center gap-2" onClick={load}>
-                <RefreshCw className="h-4 w-4" />
-                Refresh
-              </Button>
-            </div>
-          </ReadableContent>
-        </div>
+        {/* The one page header (`Layout/PageHeader`), which owns the full-bleed
+            hairline, the chat measure and the button strip under the
+            description. Refresh keeps its LABEL where the Scheduler's is a bare
+            glyph: the Scheduler's sits beside "New schedule", which anchors the
+            cluster, and this strip has no labelled sibling for a lone circular
+            glyph to borrow meaning from. `variant="outline"` is the family
+            spelling for a non-committing header action (Extensions' Browse,
+            Skills' two) — a re-fetch is not the view's committing action, so it
+            does not take the solid `default` fill. */}
+        <PageHeader
+          title="Built apps"
+          description={
+            <>
+              Apps you built with Agent Drafter. Each one runs a full Biorouter agent with its own
+              model, extensions, skills, and knowledge, and opens in your browser.{' '}
+              {getSearchShortcutText()} to search.
+            </>
+          }
+          actions={
+            <Button variant="outline" onClick={load}>
+              <RefreshCw />
+              Refresh
+            </Button>
+          }
+        />
 
         {/* List */}
         <SearchView
           onSearch={(term, _caseSensitive) => setSearchTerm(term)}
           placeholder="Search built apps..."
         >
-          <ReadableContent className="px-8 py-4">
-            {loading ? (
-              <p className="text-body text-text-muted mt-10 text-center">Loading apps…</p>
-            ) : error && apps.length === 0 ? (
-              <div className="flex flex-col items-center justify-center mt-16 text-center">
-                <p className="text-text-danger mb-4">Could not load apps: {error}</p>
-                <Button onClick={load}>Retry</Button>
+          <ReadableContent size="chat" className="px-6 py-4">
+            {/* ⚠ The error is rendered whether or not there are apps to show.
+                It used to be an `apps.length === 0` branch, so a refresh that
+                failed while rows were already on screen said nothing at all and
+                the list silently went stale. Retry rides the note (`Note`'s
+                `action` slot names exactly this control) rather than sitting in
+                a hand-rolled centred block of its own. */}
+            {error && (
+              <Note
+                tone="danger"
+                role="alert"
+                className="mb-4"
+                action={
+                  <Button variant="outline" size="sm" onClick={load}>
+                    Retry
+                  </Button>
+                }
+              >
+                Could not load apps: {error}
+              </Note>
+            )}
+
+            {loading && apps.length === 0 && (
+              <div className="biorouter-list-shell" aria-hidden>
+                <ApplicationItemSkeleton />
+                <ApplicationItemSkeleton />
+                <ApplicationItemSkeleton />
               </div>
-            ) : filtered.length === 0 ? (
-              <div className="text-center mt-16 max-w-md mx-auto">
-                <h3 className="text-subheading text-text-default mb-1">
-                  {searchTerm ? 'No matching apps' : 'No apps built yet'}
-                </h3>
-                <p className="text-body text-text-muted">
-                  {searchTerm
+            )}
+
+            {!loading && !error && filtered.length === 0 && (
+              <EmptyState
+                icon={ENTITY_ICONS.application}
+                title={searchTerm ? 'No matching apps' : 'No apps built yet'}
+                description={
+                  searchTerm
                     ? 'No apps match your search.'
-                    : 'Ask Biorouter to build one, for example "use Agent Drafter to build a dashboard app". It will appear here.'}
-                </p>
-              </div>
-            ) : (
+                    : 'Ask Biorouter to build one, for example "use Agent Drafter to build a dashboard app". It will appear here.'
+                }
+              />
+            )}
+
+            {/* ⚠ Deliberately NOT `!loading && filtered.length > 0`. `load()`
+                sets `loading` on every Refresh as well as on first mount, so
+                gating the list on it would UNMOUNT the rows for the length of
+                every request — the defect `SchedulesView` records for its own
+                fifteen-second poll. The three branches stay mutually exclusive
+                without it: the skeletons require an empty list, and the empty
+                state requires the load to have finished and to have succeeded. */}
+            {filtered.length > 0 && (
               <div className="biorouter-list-shell">
                 {filtered.map((app) => (
                   <ApplicationItem
@@ -298,80 +353,100 @@ export function ApplicationItem({
       className="biorouter-list-row flex items-start py-3 px-3 group gap-3"
       aria-busy={isLaunching || isExporting}
     >
+      {/* ⚠ Every box down this column carries `min-w-0`. A flex item's
+          `min-width` is `auto`, which resolves to its CONTENT's minimum — so an
+          app id, a model name or a KB name with no break opportunity pushes the
+          column wider than the row and bleeds past the reading measure.
+          `break-words` does not help: it changes where a line MAY break, not
+          the min-content width the flex algorithm reads. The title, the model
+          and the KB additionally `truncate` (which also zeroes that automatic
+          minimum, because the overflow is no longer `visible`) and carry a
+          `title` so the whole value is still reachable. */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <p className="text-label text-text-default truncate">{app.title}</p>
-          <span className="text-supporting px-1.5 py-0.5 rounded-inner bg-background-medium text-text-muted flex-shrink-0">
-            {app.kind}
-          </span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <p className="min-w-0 truncate text-label text-text-default" title={app.title}>
+            {app.title}
+          </p>
+          <Badge>{app.kind}</Badge>
           {surfaceSummary && (
-            <span
-              className="text-supporting px-1.5 py-0.5 rounded-inner bg-background-medium text-text-muted flex-shrink-0"
-              title="Declared app surface: verbs the agent can call and signals it can subscribe to"
-            >
+            <Badge title="Declared app surface: verbs the agent can call and signals it can subscribe to">
               {surfaceSummary}
-            </span>
+            </Badge>
           )}
         </div>
         {app.description && (
-          <p className="text-supporting text-text-muted mt-0.5 line-clamp-1">{app.description}</p>
+          <p className="mt-0.5 line-clamp-1 text-supporting text-text-muted">{app.description}</p>
         )}
-        <div className="flex items-center gap-3 mt-1 text-supporting text-text-subtle flex-wrap">
-          <span className="flex items-center">
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-3 text-supporting text-text-subtle">
+          <span className="flex shrink-0 items-center whitespace-nowrap">
             <Calendar className="w-3 h-3 mr-1" />
             Created {formatDate(app.created_at)}
           </span>
-          <span className="flex items-center">
+          <span className="flex shrink-0 items-center whitespace-nowrap">
             <Clock className="w-3 h-3 mr-1" />
             Updated {formatDate(app.updated_at)}
           </span>
-          {model && <span className="font-mono">{model}</span>}
-          {kb && <span className="font-mono">KB: {kb}</span>}
+          {model && (
+            <span className="min-w-0 truncate font-mono" title={model}>
+              {model}
+            </span>
+          )}
+          {kb && (
+            <span className="min-w-0 truncate font-mono" title={kb}>
+              KB: {kb}
+            </span>
+          )}
         </div>
       </div>
+      {/* V7 — glyph-only row actions are `ghost` + `round` (the 32px rung the
+          shape carries itself), never a `size="sm"` button re-geometried to
+          28px with `h-7 w-7 p-0`, and never a `hover:bg-*`: `tint-interactive`
+          inside the variant owns hover and press. Delete is the quiet
+          destructive spelling — ghost with `text-text-danger` — because this is
+          the ONE place an Agent Drafter app can be deleted at all (the in-chat
+          artifact card deliberately has no delete control), so it must read as
+          consequential without becoming the loudest thing in the row. */}
       <div className="flex items-center gap-1 flex-shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
         <Button
           onClick={onLaunch}
-          size="sm"
-          className="h-7 w-7 p-0"
+          variant="ghost"
+          shape="round"
           title="Launch in browser"
           aria-label={`Launch ${app.title} in browser`}
           disabled={isLaunching}
         >
-          <Play className="w-4 h-4" />
+          <Play />
         </Button>
         {app.session_id && (
           <Button
             onClick={onOpenConversation}
-            variant="outline"
-            size="sm"
-            className="h-7 w-7 p-0"
+            variant="ghost"
+            shape="round"
             title="Open the chat where this app was built"
             aria-label={`Open the chat where ${app.title} was built`}
           >
-            <MessageSquare className="w-4 h-4" />
+            <MessageSquare />
           </Button>
         )}
         <Button
           onClick={onExport}
-          variant="outline"
-          size="sm"
-          className="h-7 w-7 p-0"
+          variant="ghost"
+          shape="round"
           title="Export to a folder"
           aria-label={`Export ${app.title} to a folder`}
           disabled={isExporting}
         >
-          <Download className="w-4 h-4" />
+          <Download />
         </Button>
         <Button
           onClick={onDelete}
           variant="ghost"
-          size="sm"
-          className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
+          shape="round"
+          className="text-text-danger"
           title="Delete this app"
           aria-label={`Delete ${app.title}`}
         >
-          <Trash2 className="w-4 h-4" />
+          <Trash2 />
         </Button>
       </div>
     </div>

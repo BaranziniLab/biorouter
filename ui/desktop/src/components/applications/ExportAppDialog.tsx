@@ -1,7 +1,14 @@
 import { useState } from 'react';
-import { Checkbox } from '@radix-ui/themes';
 import { Button } from '../ui/button';
+// V8 — the app's OWN checkbox, not `@radix-ui/themes`'. It is built exactly
+// like the `CustomRadio` it sits under (a `peer sr-only` input driving styled
+// siblings, 22px inside a 24px target), so the two controls in this dialog share
+// an optical axis and one theme. The Radix Themes control is a different design
+// system's box: it reads its own accent, not the family's, and nothing around it
+// can reach inside.
+import { Checkbox } from '../ui/Checkbox';
 import CustomRadio from '../ui/CustomRadio';
+import { MODAL_SIZE } from '../ModalShell';
 import {
   Dialog,
   DialogContent,
@@ -18,7 +25,18 @@ interface ExportAppDialogProps {
   onCancel: () => void;
 }
 
-/** A compact labelled checkbox with a one-line explanation underneath. */
+/**
+ * A compact labelled checkbox with a one-line explanation underneath.
+ *
+ * V2 — **no `min-h-*`**: `.biorouter-list-row` already carries
+ * `min-height: var(--row-height)`, and the `min-h-10` this replaced was a
+ * second spelling of the same 40px that could drift from the token.
+ *
+ * The 4px horizontal inset is deliberately NOT the settings row's `px-3`.
+ * These rows sit directly under the `CustomRadio`s above them, which carry no
+ * horizontal padding at all, so `px-3` would indent every checkbox past the
+ * radio ring it is meant to line up with.
+ */
 function IncludeCheckbox({
   id,
   checked,
@@ -33,11 +51,11 @@ function IncludeCheckbox({
   hint: string;
 }) {
   return (
-    <div className="biorouter-list-row flex min-h-10 items-start gap-2 rounded-none px-1 py-2">
+    <div className="biorouter-list-row flex items-start gap-2 rounded-none px-1 py-2">
       <Checkbox
         id={id}
         checked={checked}
-        onCheckedChange={(value) => onChange(value === true)}
+        onChange={(event) => onChange(event.target.checked)}
         className="mt-0.5"
       />
       <label htmlFor={id} className="min-w-0 cursor-pointer">
@@ -95,7 +113,11 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
         if (!open) onCancel();
       }}
     >
-      <DialogContent className="sm:max-w-md">
+      {/* V8 — a dialog's width comes off the `MODAL_SIZE` ladder, never from a
+          Tailwind `max-w-*` fork. `md` is the forms rung, and this dialog is a
+          form: a mode choice plus a column of include toggles. The `sm:max-w-md`
+          it replaces was 448px, a fifteenth width nobody chose. */}
+      <DialogContent className={MODAL_SIZE.md}>
         <DialogHeader>
           <DialogTitle>Export “{app.title}”</DialogTitle>
           <DialogDescription>

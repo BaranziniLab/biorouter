@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
@@ -134,6 +134,123 @@ const exportableApp = {
 
 const okJson = (body: unknown) =>
   ({ ok: true, status: 200, json: async () => body, text: async () => '' }) as Response;
+
+// ---------------------------------------------------------------------------
+// The view's four states, on the settings visual vocabulary
+// ---------------------------------------------------------------------------
+
+describe('ApplicationsView', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const renderView = () =>
+    render(
+      <MemoryRouter>
+        <ApplicationsView />
+      </MemoryRouter>
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock = vi.fn(async () => okJson([exportableApp]));
+    vi.stubGlobal('fetch', fetchMock);
+    window.electron = {
+      platform: 'darwin',
+      getSecretKey: vi.fn().mockResolvedValue('test-secret'),
+      openExternal: vi.fn().mockResolvedValue(undefined),
+    } as unknown as typeof window.electron;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * The header comes from `Layout/PageHeader`, so this asserts the two things
+   * that were the view's own before it did: that the action lands in the
+   * control strip under the description rather than beside the title, and that
+   * the `page-transition` class — which matches no CSS rule in this repo — did
+   * not survive the move.
+   */
+  it('renders the shared page header with Refresh in its control strip', async () => {
+    const { container } = renderView();
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Built apps' })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Apps you built with Agent Drafter/)).toBeInTheDocument();
+
+    const strip = container.querySelector('.biorouter-settings-control-strip');
+    expect(strip).not.toBeNull();
+    expect(strip).toContainElement(screen.getByRole('button', { name: 'Refresh' }));
+    expect(container.querySelector('.page-transition')).toBeNull();
+  });
+
+  it('shows skeleton rows while the first load is in flight, not a line of prose', async () => {
+    let release: (value: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        })
+    );
+
+    const { container } = renderView();
+
+    // ⚠ Wait for the call before releasing it. `load()` awaits `secretHeader()`
+    // first, so `fetch` is invoked a microtask after mount — release it any
+    // earlier and `release` is still the no-op initializer, the deferred
+    // promise never settles, and the test times out looking like a render bug.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Loading apps/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      release(okJson([exportableApp]));
+    });
+
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
+  });
+
+  it('shows the shared empty state when nothing has been built', async () => {
+    fetchMock.mockResolvedValue(okJson([]));
+
+    renderView();
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: 'No apps built yet' })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/use Agent Drafter to build a dashboard app/)).toBeInTheDocument();
+  });
+
+  /**
+   * ⚠ The rows have to SURVIVE the failure. The branch this replaces was
+   * `error && apps.length === 0`, so a refresh that failed with rows on screen
+   * reported nothing at all and the list silently went stale; the fix is only
+   * half done if the note appears and the rows go with it.
+   */
+  it('reports a failed refresh in a danger note without hiding the rows it already has', async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => 'boom',
+    } as Response);
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    const note = await screen.findByRole('alert');
+    expect(note).toHaveTextContent('Could not load apps: HTTP 500: boom');
+    expect(within(note).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByText('Cohort Explorer')).toBeInTheDocument();
+
+    await user.click(within(note).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  });
+});
 
 describe('ApplicationsView export dialog', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
