@@ -4,12 +4,13 @@ import { Button } from '../../ui/button';
 import { useConfig } from '../../ConfigContext';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { cn } from '../../../utils';
-import { Save, RotateCcw, FileText, Settings } from '../../icons/app-icons';
+import { Save, RotateCcw, FileText, Loader2, Settings } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
 import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
 import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
 import { HOST_MANAGED_MODEL_REASON } from '../../privacy/hostManagedModelCopy';
 import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
+import { MODAL_SIZE } from '../../ModalShell';
 import type { ConfigData, ConfigValue } from '../../../types/config';
 import {
   Dialog,
@@ -191,7 +192,7 @@ export default function ConfigSettings() {
     <div className="biorouter-settings-section">
       <div className="biorouter-settings-section-header">
         <h2 className="text-caps text-text-muted mb-1">Configuration</h2>
-        <p className="text-xs text-text-muted">
+        <p className="text-supporting text-text-muted">
           Edit your Biorouter configuration settings
           {currentProvider && ` (current settings for ${currentProvider})`}
         </p>
@@ -199,15 +200,19 @@ export default function ConfigSettings() {
       <div className="biorouter-settings-control-strip">
         <Dialog open={isModalOpen} onOpenChange={handleModalClose}>
           <DialogTrigger asChild>
-            <Button className="flex items-center gap-2" variant="secondary">
+            <Button variant="secondary">
               <Settings className="h-4 w-4" />
               Edit Configuration
             </Button>
           </DialogTrigger>
-          <DialogContent className="max-w-4xl max-h-[80vh]">
+          {/* `MODAL_SIZE.lg`, not `max-w-4xl` — which additionally carried no
+              `sm:` prefix and so ate the primitive's small-window gutter. */}
+          <DialogContent className={`${MODAL_SIZE.lg} max-h-[80vh]`}>
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <FileText className="text-iconStandard" size={20} />
+                {/* `text-iconStandard` is not a token: it had no definition and
+                    no effect. */}
+                <FileText size={20} />
                 Configuration Editor
               </DialogTitle>
               <DialogDescription>
@@ -224,8 +229,11 @@ export default function ConfigSettings() {
                   configEntries.map(([key, _value]) => {
                     const fixedByHost = isFixedByHost(key);
                     return (
-                      <div key={key} className="grid grid-cols-[200px_1fr_auto] gap-3 items-center">
-                        <label className="text-sm font-medium text-text-default" title={key}>
+                      <div
+                        key={key}
+                        className="grid grid-cols-[minmax(0,200px)_1fr_auto] items-center gap-3"
+                      >
+                        <label className="text-label text-text-default" title={key}>
                           {getUiNames(key)}
                         </label>
                         <div className="min-w-0">
@@ -233,10 +241,16 @@ export default function ConfigSettings() {
                             value={String(configValues[key] || '')}
                             onChange={(e) => handleChange(key, e.target.value)}
                             disabled={fixedByHost}
-                            className={cn(
-                              'text-text-default border-border-subtle hover:border-border-subtle transition-colors',
-                              modifiedKeys.has(key) && 'border-border-info '
-                            )}
+                            // ⚠ Only the modified-key marker survives. The three
+                            // deleted overrides each fought the primitive:
+                            // `border-border-subtle` replaced the input's own
+                            // `--border-emphasized` with the divider hairline,
+                            // `hover:border-border-subtle` pinned hover to the
+                            // resting colour while the primitive's inset ring
+                            // still fired, and `transition-colors` REPLACED the
+                            // input's transition list, dropping `box-shadow`
+                            // from it.
+                            className={cn(modifiedKeys.has(key) && 'border-border-info')}
                             placeholder={`Enter ${getUiNames(key)}`}
                           />
                           {/* The `fixedByHost &&` guard is load-bearing and stays:
@@ -254,19 +268,18 @@ export default function ConfigSettings() {
                             />
                           )}
                         </div>
+                        {/* Icon-only at both states, so it takes the 32×32 round
+                            rung and an `aria-label` rather than a `min-w-[60px]`
+                            box sized to hold a word it only sometimes shows. */}
                         <Button
                           onClick={() => handleSave(key)}
                           disabled={fixedByHost || !modifiedKeys.has(key) || saving === key}
                           title={fixedByHost ? HOST_MANAGED_MODEL_REASON : undefined}
                           variant="ghost"
-                          size="sm"
-                          className="min-w-[60px]"
+                          shape="round"
+                          aria-label={`Save ${getUiNames(key)}`}
                         >
-                          {saving === key ? (
-                            <span className="text-xs">Saving...</span>
-                          ) : (
-                            <Save className="h-4 w-4" />
-                          )}
+                          {saving === key ? <Loader2 className="animate-spin" /> : <Save />}
                         </Button>
                       </div>
                     );
@@ -275,14 +288,18 @@ export default function ConfigSettings() {
               </div>
             </div>
 
+            {/* Footer roles, per the button table: the dismiss is `outline` and
+                the quiet secondary action is `ghost`. ⚠ Do NOT touch either
+                `onClick` — `setIsModalOpen(false)` deliberately differs from
+                `handleModalClose` in whether unsaved edits are discarded. */}
             <DialogFooter className="gap-2">
               {modifiedKeys.size > 0 && (
-                <Button onClick={handleReset} variant="outline">
-                  <RotateCcw className="h-4 w-4 mr-2" />
+                <Button onClick={handleReset} variant="ghost">
+                  <RotateCcw />
                   Reset Changes
                 </Button>
               )}
-              <Button onClick={() => setIsModalOpen(false)} variant="default">
+              <Button onClick={() => setIsModalOpen(false)} variant="outline">
                 Done
               </Button>
             </DialogFooter>

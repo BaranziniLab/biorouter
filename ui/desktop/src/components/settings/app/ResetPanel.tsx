@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, History, Loader2, RotateCcw } from '../../icons/app-icons';
+import { ChevronDown, History, Loader2, RotateCcw } from '../../icons/app-icons';
 import { ENTITY_ICONS, type EntityIcon } from '../../icons/entity-icons';
 import { previewReset, resetAppData } from '../../../api';
 import type { ResetCategory, ResetCounts } from '../../../api';
@@ -8,6 +8,9 @@ import { clearAllSessionCache } from '../../../utils/sessionCache';
 import { clearSessionListCache } from '../../../utils/sessionListCache';
 import { LocalMessageStorage } from '../../../utils/localMessageStorage';
 import { Button } from '../../ui/button';
+import { Checkbox } from '../../ui/Checkbox';
+import { MODAL_SIZE } from '../../ModalShell';
+import { cn } from '../../../utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
 import {
   Dialog,
@@ -207,25 +210,27 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
       <div className="biorouter-settings-section-header flex flex-wrap items-end justify-between gap-2">
         <div>
           <h2 className="mb-1 text-caps text-text-muted">Reset</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Choose what to clean up. Built-in content is restored; models, credentials, and
             preferences are kept.
           </p>
         </div>
-        <div className="flex items-center gap-2 pb-0.5">
-          <span className="text-xs tabular-nums text-text-muted">
+        {/* `mr-3` so the cluster's box shares the rows' 12px inset while the
+            `text-caps` label opposite it stays flush. Both actions carry labels,
+            so neither may sit on the 24px `xs` rung. */}
+        <div className="mr-3 flex items-center gap-2 pb-0.5">
+          <span className="text-supporting tabular-nums text-text-muted">
             {selected.size} of {CATEGORIES.length} selected
           </span>
           <Button
             type="button"
-            size="xs"
             variant="ghost"
             onClick={() => setSelected(new Set(ALL_CATEGORIES))}
           >
             Select all
           </Button>
           {selected.size > 0 && (
-            <Button type="button" size="xs" variant="ghost" onClick={() => setSelected(new Set())}>
+            <Button type="button" variant="ghost" onClick={() => setSelected(new Set())}>
               Clear
             </Button>
           )}
@@ -251,14 +256,18 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
               open={isExpanded}
               onOpenChange={(open) => setExpanded(open ? category.id : null)}
               data-testid={`reset-option-${category.id}`}
-              className={`biorouter-settings-row ${isSelected ? 'bg-background-accent/5' : ''}`}
+              // No `bg-background-accent/5` while selected: the checkbox states
+              // the selection, and an accent-tinted row ground is what P3 rules
+              // out. The row also brought its own `min-h-12`, a fifth row height
+              // beside the one `--row-height` declares.
+              className="biorouter-settings-row"
             >
-              <div className="flex min-h-12 items-center gap-3 px-3 py-2">
+              <div className="flex items-center gap-3 px-3 py-2.5">
                 <CollapsibleTrigger
                   aria-label={`${isExpanded ? 'Hide' : 'Show'} details for ${category.title}`}
                   className="group flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
                 >
-                  <span className="min-w-0 truncate text-sm font-medium text-text-default">
+                  <span className="min-w-0 truncate text-label text-text-default">
                     {category.title}
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
@@ -277,21 +286,18 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
                     />
                   </span>
                 </CollapsibleTrigger>
-                <button
-                  type="button"
-                  aria-pressed={isSelected}
-                  aria-label={`${isSelected ? 'Deselect' : 'Select'} ${category.title} for reset`}
-                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors ${
-                    isSelected
-                      ? 'border-border-accent bg-background-accent text-text-on-accent'
-                      : 'border-border-strong bg-background-default hover:border-border-accent'
-                  }`}
-                  onClick={() => toggleCategory(category.id)}
-                >
-                  {isSelected && <Check className="h-3 w-3" />}
-                </button>
+                {/* The real `Checkbox` primitive, in place of a hand-rolled
+                    `<button aria-pressed>` on an off-ladder 20px box. The label
+                    stops flipping to "Deselect" with it: a checkbox exposes its
+                    state through `checked`, so saying it again in the name means
+                    a screen reader announces the state twice, once inverted. */}
+                <Checkbox
+                  checked={isSelected}
+                  onChange={() => toggleCategory(category.id)}
+                  aria-label={`Select ${category.title} for reset`}
+                />
               </div>
-              <CollapsibleContent className="-mt-1 px-3 pb-2.5 text-xs leading-5 text-text-muted">
+              <CollapsibleContent className="-mt-1 px-3 pb-2.5 text-supporting text-text-muted">
                 {category.description}
               </CollapsibleContent>
             </Collapsible>
@@ -302,15 +308,18 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-start gap-2">
           <RotateCcw className="mt-0.5 h-4 w-4 shrink-0 text-text-danger" />
-          <p className="max-w-xl text-xs leading-5 text-text-muted">
+          <p className="max-w-xl text-supporting text-text-muted">
             Resetting is permanent. Export anything you want to keep before continuing.
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* A plain `outline`. The danger border plus a second hover fill made
+              two loud destructive buttons side by side; the pair now mirrors this
+              file's own dialog footer, where the dismiss is outline and the
+              confirm is destructive. */}
           <Button
             type="button"
             variant="outline"
-            className="border-border-danger text-text-danger hover:bg-background-danger/10"
             disabled={selectedCategories.length === 0 || resetting}
             onClick={() => openConfirmation(selectedCategories)}
           >
@@ -330,7 +339,10 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
 
       {status && (
         <p
-          className={`mt-2 text-xs ${status.startsWith('Reset complete') ? 'text-text-muted' : 'text-text-danger'}`}
+          className={cn(
+            'mt-2 text-supporting',
+            status.startsWith('Reset complete') ? 'text-text-muted' : 'text-text-danger'
+          )}
           role="status"
         >
           {status}
@@ -341,7 +353,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
         open={pendingCategories !== null}
         onOpenChange={(open) => !open && !resetting && setPendingCategories(null)}
       >
-        <DialogContent dismissible={!resetting} className="sm:max-w-[520px]">
+        <DialogContent dismissible={!resetting} className={MODAL_SIZE.md}>
           <DialogHeader>
             <DialogTitle>{isEverything ? 'Reset everything?' : 'Reset selected data?'}</DialogTitle>
             <DialogDescription>
@@ -349,13 +361,13 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid grid-cols-1 gap-2 rounded-element border border-border-subtle bg-background-muted/40 p-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-2 rounded-element border border-border-subtle bg-background-muted p-3 sm:grid-cols-2">
             {pendingDefinitions.map((category) => {
               const Icon = category.icon;
               return (
                 <div
                   key={category.id}
-                  className="flex items-center gap-2 text-sm text-text-default"
+                  className="flex items-center gap-2 text-label text-text-default"
                 >
                   <Icon className="h-4 w-4 text-text-muted" />
                   {category.title}
@@ -364,7 +376,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
             })}
           </div>
 
-          <p className="text-xs leading-5 text-text-muted">
+          <p className="text-supporting text-text-muted">
             Your configured models, provider credentials, theme, and app preferences will stay in
             place.
           </p>

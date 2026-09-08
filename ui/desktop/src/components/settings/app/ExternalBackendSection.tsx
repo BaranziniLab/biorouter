@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Switch } from '../../ui/switch';
 import { Input } from '../../ui/input';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
+import { Note } from '../../ui/note';
 import { AlertCircle } from '../../icons/app-icons';
 
 interface ExternalBiorouterdConfig {
@@ -116,106 +116,108 @@ export default function ExternalBackendSection() {
     }
   };
 
+  // ⚠ **Nothing mounts this today**, and it is rebuilt rather than deleted
+  // because it is the only UI that can set `userActionKey` (see the field's own
+  // comment above: without it an external backend cannot reach its own private
+  // chats at all). It was the last `Card`-based settings block; on the shell it
+  // now lands right the day it is wired in, rather than arriving as the one
+  // section on the tab with a card, a title style and a row spec of its own.
   return (
-    <section id="external-backend" className="space-y-4 pr-4 mt-1">
-      <Card className="pb-2">
-        <CardHeader className="pb-0">
-          <CardTitle>Biorouter Server</CardTitle>
-          <CardDescription>
-            By default Biorouter launches a server for you, use this to connect to an external
-            Biorouter server
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-4 space-y-4 px-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-text-default text-xs">Use external server</h3>
-              <p className="text-xs text-text-muted max-w-md mt-[2px]">
-                Connect to a Biorouter server running elsewhere (requires app restart)
+    <section id="external-backend" className="biorouter-settings-section">
+      <div className="biorouter-settings-section-header">
+        <h2 className="text-caps text-text-muted mb-1">Biorouter Server</h2>
+        <p className="text-supporting text-text-muted">
+          By default Biorouter launches a server for you, use this to connect to an external
+          Biorouter server
+        </p>
+      </div>
+
+      <div className="biorouter-settings-list">
+        <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-label text-text-default">Use external server</h3>
+            <p className="mt-0.5 max-w-md text-supporting text-text-muted">
+              Connect to a Biorouter server running elsewhere (requires app restart)
+            </p>
+          </div>
+          <Switch
+            checked={config.enabled}
+            onCheckedChange={(checked) => saveConfig(updateField('enabled', checked))}
+            disabled={isSaving}
+            variant="mono"
+            aria-label="Use external server"
+          />
+        </div>
+      </div>
+
+      {config.enabled && (
+        <div className="mt-3 space-y-4 px-3">
+          <div className="space-y-2">
+            <label htmlFor="external-url" className="text-label text-text-default">
+              Server URL
+            </label>
+            <Input
+              id="external-url"
+              type="url"
+              placeholder="http://127.0.0.1:3000"
+              value={config.url}
+              onChange={(e) => handleUrlChange(e.target.value)}
+              onBlur={handleUrlBlur}
+              disabled={isSaving}
+              className={urlError ? 'border-border-danger' : ''}
+            />
+            {urlError && (
+              <p className="flex items-center gap-1 text-supporting text-text-danger">
+                <AlertCircle size={16} />
+                {urlError}
               </p>
-            </div>
-            <div className="flex items-center">
-              <Switch
-                checked={config.enabled}
-                onCheckedChange={(checked) => saveConfig(updateField('enabled', checked))}
-                disabled={isSaving}
-                variant="mono"
-              />
-            </div>
+            )}
           </div>
 
-          {config.enabled && (
-            <>
-              <div className="space-y-2">
-                <label htmlFor="external-url" className="text-text-default text-xs">
-                  Server URL
-                </label>
-                <Input
-                  id="external-url"
-                  type="url"
-                  placeholder="http://127.0.0.1:3000"
-                  value={config.url}
-                  onChange={(e) => handleUrlChange(e.target.value)}
-                  onBlur={handleUrlBlur}
-                  disabled={isSaving}
-                  className={urlError ? 'border-border-danger' : ''}
-                />
-                {urlError && (
-                  <p className="text-xs text-text-danger flex items-center gap-1">
-                    <AlertCircle size={12} />
-                    {urlError}
-                  </p>
-                )}
-              </div>
+          <div className="space-y-2">
+            <label htmlFor="external-secret" className="text-label text-text-default">
+              Secret Key
+            </label>
+            <Input
+              id="external-secret"
+              type="password"
+              placeholder="Enter the server's secret key"
+              value={config.secret}
+              onChange={(e) => updateField('secret', e.target.value)}
+              onBlur={() => saveConfig(config)}
+              disabled={isSaving}
+            />
+            <p className="text-supporting text-text-muted">
+              The secret key configured on the biorouterd server (BIOROUTER_SERVER__SECRET_KEY)
+            </p>
+          </div>
 
-              <div className="space-y-2">
-                <label htmlFor="external-secret" className="text-text-default text-xs">
-                  Secret Key
-                </label>
-                <Input
-                  id="external-secret"
-                  type="password"
-                  placeholder="Enter the server's secret key"
-                  value={config.secret}
-                  onChange={(e) => updateField('secret', e.target.value)}
-                  onBlur={() => saveConfig(config)}
-                  disabled={isSaving}
-                />
-                <p className="text-xs text-text-muted">
-                  The secret key configured on the biorouterd server (BIOROUTER_SERVER__SECRET_KEY)
-                </p>
-              </div>
+          <div className="space-y-2">
+            <label htmlFor="external-user-action-key" className="text-label text-text-default">
+              User Action Key
+            </label>
+            <Input
+              id="external-user-action-key"
+              type="password"
+              placeholder="Enter the key the server was started with"
+              value={config.userActionKey}
+              onChange={(e) => updateField('userActionKey', e.target.value)}
+              onBlur={() => saveConfig(config)}
+              disabled={isSaving}
+            />
+            <p className="text-supporting text-text-muted">
+              Proves a request came from you rather than from the model. The server is given the
+              SHA-256 of this key on stdin when it starts. Without it, private chats cannot be
+              opened, branched, or reported through this backend.
+            </p>
+          </div>
 
-              <div className="space-y-2">
-                <label htmlFor="external-user-action-key" className="text-text-default text-xs">
-                  User Action Key
-                </label>
-                <Input
-                  id="external-user-action-key"
-                  type="password"
-                  placeholder="Enter the key the server was started with"
-                  value={config.userActionKey}
-                  onChange={(e) => updateField('userActionKey', e.target.value)}
-                  onBlur={() => saveConfig(config)}
-                  disabled={isSaving}
-                />
-                <p className="text-xs text-text-muted">
-                  Proves a request came from you rather than from the model. The server is given the
-                  SHA-256 of this key on stdin when it starts. Without it, private chats cannot be
-                  opened, branched, or reported through this backend.
-                </p>
-              </div>
-
-              <div className="bg-background-warning/10 border border-border-warning/40 rounded-element p-3">
-                <p className="text-xs text-text-warning">
-                  <strong>Note:</strong> Changes require restarting Biorouter to take effect. New
-                  chat windows will connect to the external server.
-                </p>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+          <Note tone="warning">
+            <strong>Note:</strong> Changes require restarting Biorouter to take effect. New chat
+            windows will connect to the external server.
+          </Note>
+        </div>
+      )}
     </section>
   );
 }

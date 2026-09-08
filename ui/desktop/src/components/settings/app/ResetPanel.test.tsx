@@ -69,7 +69,7 @@ describe('ResetPanel', () => {
       screen.getByText('Remove managed workflows and restore the Meditation workflow.')
     ).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Built apps for reset' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Built apps for reset' }));
     expect(resetSelected).toBeEnabled();
     fireEvent.click(resetSelected);
 
@@ -85,7 +85,9 @@ describe('ResetPanel', () => {
     render(<ResetPanel onReset={onReset} />);
     await screen.findByText('12 chats');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Chat & usage history for reset' }));
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'Select Chat & usage history for reset' })
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Reset selected' }));
     fireEvent.click(
       within(screen.getByRole('dialog')).getByRole('button', { name: 'Reset selected' })

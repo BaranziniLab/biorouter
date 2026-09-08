@@ -6,6 +6,7 @@ import {
   UsageSummaryResponse,
 } from '../../../api';
 import { Button } from '../../ui/button';
+import { Note } from '../../ui/note';
 import { Skeleton } from '../../ui/skeleton';
 import { fillCalendarDays, UsagePanel } from './UsagePanel';
 
@@ -61,30 +62,31 @@ export default function UsageSection() {
     <div className="biorouter-settings-section">
       <div className="biorouter-settings-section-header">
         <h2 className="mb-1 text-caps text-text-muted">Usage</h2>
-        <p className="text-xs text-text-muted">
+        <p className="text-supporting text-text-muted">
           Billed tokens and estimated cost for the current month, grouped by day and model.
         </p>
       </div>
 
       {loadError && (
-        <div
-          className="flex items-center justify-between gap-3 rounded-element border border-border-subtle bg-background-medium px-3 py-2"
+        <Note
+          tone="neutral"
           role="alert"
-          data-testid="usage-load-error"
+          testId="usage-load-error"
+          className="mb-2"
+          action={
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setRetryVersion((version) => version + 1)}
+            >
+              Retry
+            </Button>
+          }
         >
-          <p className="text-xs text-text-muted">
-            {loadError}
-            {summary ? ' Showing the last loaded month-to-date report.' : ''}
-          </p>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            onClick={() => setRetryVersion((version) => version + 1)}
-          >
-            Retry
-          </Button>
-        </div>
+          {loadError}
+          {summary ? ' Showing the last loaded month-to-date report.' : ''}
+        </Note>
       )}
 
       {loading && !summary ? (
@@ -97,7 +99,7 @@ export default function UsageSection() {
         <UsagePanel summary={summary} dayRows={dayRows} modelRows={modelRows} />
       ) : null}
       {loading && summary && (
-        <p className="text-xs text-text-muted" role="status">
+        <p className="text-supporting text-text-muted" role="status">
           Refreshing usage…
         </p>
       )}

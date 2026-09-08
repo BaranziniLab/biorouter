@@ -42,7 +42,7 @@ function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
             </span>
           )}
         </span>
-        <ChevronRight className="h-4 w-4 flex-shrink-0 text-iconStandard" />
+        <ChevronRight className="h-4 w-4 flex-shrink-0" />
       </Button>
       {isModalOpen && (
         <PermissionModal
