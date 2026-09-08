@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import BackButton from '../ui/BackButton';
-import { Card } from '../ui/card';
+import { Note } from '../ui/note';
+import { Skeleton } from '../ui/skeleton';
+import { EmptyState } from '../ui/empty-state';
 import {
   getScheduleSessions,
   runScheduleNow,
@@ -16,10 +18,15 @@ import {
 } from '../../schedule';
 import SessionHistoryView from '../sessions/SessionHistoryView';
 import { ScheduleModal, NewSchedulePayload } from './ScheduleModal';
+import { ScheduleStatus, readableCronOf } from './scheduleStatus';
 import { toastError, toastSuccess } from '../../toasts';
-import { Loader2, Pause, Play, Edit, Square, Eye, AlertTriangle } from '../icons/app-icons';
-import cronstrue from 'cronstrue';
+import { Pause, Play, Edit, Square, Eye, MessageSquareText, Target } from '../icons/app-icons';
+import { MainPanelLayout } from '../Layout/MainPanelLayout';
+import { ReadableContent } from '../Layout/ReadableContent';
+import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
+import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
+import { scheduleDisplayName } from '../../utils/builtins';
 import { getSession, Session } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 
@@ -43,6 +50,166 @@ interface ScheduleDetailViewProps {
   onNavigateBack: () => void;
 }
 
+/**
+ * A definition row: the label on the left, the fact on the right.
+ *
+ * This is astryx §4.5's definition-row pattern, and it replaces the
+ * `**Label:** value` colon sentences inside a `<Card>` that this view used to
+ * stack. It is literally `.biorouter-settings-row` — the same 40px hairline row
+ * Settings uses for a label and the control it names — because a fact and a
+ * control are the same shape of thing on the page, and giving the Scheduler its
+ * own near-miss of that row is how the two drift.
+ *
+ * ⚠ The rows must be DIRECT children of `.biorouter-settings-list`, so this
+ * component returns the row itself and never a wrapper:
+ * `.biorouter-settings-row:last-child` is relative to a row's own parent, and a
+ * per-row wrapper makes every row a `:last-child` and suppresses every hairline
+ * in the list.
+ *
+ * At narrow widths the value wraps beneath the label rather than being squeezed
+ * against it, which is what `flex-wrap` plus `justify-between` buys.
+ */
+function DefinitionRow({
+  label,
+  children,
+  mono = false,
+  tone,
+  title,
+}: {
+  label: string;
+  children: React.ReactNode;
+  mono?: boolean;
+  tone?: 'danger';
+  title?: string;
+}) {
+  return (
+    <div className="biorouter-settings-row flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2.5 text-text-default">
+      <span className="text-label text-text-muted">{label}</span>
+      <span
+        title={title}
+        className={[
+          'min-w-0 text-label [overflow-wrap:anywhere]',
+          mono ? 'font-mono' : '',
+          tone === 'danger' ? 'text-text-danger' : 'text-text-default',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {children}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * One past run, as a hairline row.
+ *
+ * ⚠ This is a SMALLER row than `SessionListView`'s, deliberately. That row is
+ * welded to History's machinery — the right-click context menu, the row-action
+ * builders, the selection checkbox, the search highlighter and a `sessionRef`
+ * registry — none of which exists here, and lifting it would have meant either
+ * importing all of it or splitting it out in a PR that is about a visual
+ * vocabulary. What IS shared is everything that decides how a chat LOOKS: the
+ * kind glyph (`ChatKindIcon`), the billed-token selection and its format, and
+ * `.biorouter-list-row`.
+ */
+function RunRow({ session, onOpen }: { session: ScheduleSessionMeta; onOpen: () => void }) {
+  // `SessionDisplayInfo` is camelCase and `billedSessionTokenEstimate` reads the
+  // session row's snake_case columns, so the mapping happens here rather than
+  // the figure being re-derived: issue #1's whole point is that ONE helper
+  // decides billed-vs-last-turn, and a second call site picking
+  // `accumulatedTotalTokens` by hand is how the two answers diverge again.
+  const billed = billedSessionTokenEstimate({
+    accumulated_total_tokens: session.accumulatedTotalTokens,
+    accumulated_input_tokens: session.accumulatedInputTokens,
+    accumulated_output_tokens: session.accumulatedOutputTokens,
+    total_tokens: session.totalTokens,
+  });
+
+  return (
+    <div className="biorouter-list-row group flex items-center gap-3 px-3 py-2">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="min-w-0 flex-1 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        aria-label={`Open run ${session.name || session.id}`}
+      >
+        <div className="flex min-w-0 items-center gap-1.5">
+          <ChatKindIcon
+            session={{ name: session.name, session_type: 'scheduled' }}
+            className="h-4 w-4"
+          />
+          <h3 className="min-w-0 truncate text-label" title={session.name || session.id}>
+            {session.name || <span className="font-mono">{session.id}</span>}
+          </h3>
+        </div>
+        {session.workingDir && (
+          <p
+            className="mt-0.5 truncate font-mono text-supporting text-text-muted"
+            title={session.workingDir}
+          >
+            {session.workingDir}
+          </p>
+        )}
+      </button>
+
+      {/* §3.10, one optical axis per row: a 20px box with `items-center`, and
+          `tabular-nums` in min-width cells so the figures form real columns. */}
+      <div className="flex h-5 shrink-0 items-center gap-3 font-mono text-supporting text-text-muted tabular-nums">
+        <span className="whitespace-nowrap">
+          {session.createdAt ? formatToLocalDateWithTimezone(session.createdAt) : '—'}
+        </span>
+        {session.messageCount !== undefined && (
+          <span className="flex items-center gap-2">
+            <MessageSquareText className="h-3 w-3" />
+            <span className="sr-only">Messages: </span>
+            <span className="min-w-8 whitespace-nowrap text-right">{session.messageCount}</span>
+          </span>
+        )}
+        {billed && (
+          <span
+            className="flex items-center gap-2"
+            title={
+              billed.lowerBound
+                ? 'At least this many tokens; only last-turn usage is available for this older chat'
+                : 'Billed tokens across every turn, including recorded cache usage'
+            }
+          >
+            <Target className="h-3 w-3" />
+            <span className="sr-only">Billed tokens: </span>
+            <span className="min-w-12 whitespace-nowrap text-right">
+              {formatBilledTokenEstimate(billed)}
+            </span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const RunRowSkeleton: React.FC = () => (
+  <div className="biorouter-list-row flex items-center gap-3 px-3 py-2">
+    <div className="min-w-0 flex-1">
+      <Skeleton className="h-4 w-56" />
+      <Skeleton className="mt-2 h-3 w-40" />
+    </div>
+  </div>
+);
+
+/**
+ * One schedule, rebuilt on the standard scaffold (astryx §4.5).
+ *
+ * What it stopped being: an `h-screen w-full … bg-background-muted` shell — the
+ * exact anti-pattern `MainPanelLayout`'s own comment warns breaks embedded
+ * panes — holding a `<Card>` of `**Label:** value` sentences, three
+ * per-semantic tinted button variants that exist nowhere else in the app, and a
+ * three-column grid of cards for the run history. That was the box in a box in
+ * a box.
+ *
+ * What it is now: `MainPanelLayout` → `ReadableContent size="chat"`, a §4.2
+ * header whose title IS the schedule, one hairline list of definition rows, one
+ * control strip, and the runs as a hairline list of rows.
+ */
 const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onNavigateBack }) => {
   const [sessions, setSessions] = useState<ScheduleSessionMeta[]>([]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
@@ -248,277 +415,232 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
 
   if (!scheduleId) {
     return (
-      <div className="h-screen w-full flex flex-col items-center justify-center bg-background-muted text-text-default p-8">
-        <BackButton onClick={onNavigateBack} />
-        <h1 className="text-2xl font-semibold tracking-tight text-text-default mt-4">
-          Schedule Not Found
-        </h1>
-        <p className="text-text-muted mt-2">No schedule ID provided. Return to schedules list.</p>
-      </div>
+      <MainPanelLayout>
+        <ReadableContent size="chat" className="px-6 pt-6">
+          <BackButton onClick={onNavigateBack} />
+          <h1 className="text-title mt-6 mb-1">Schedule not found</h1>
+          <p className="text-secondary text-text-muted">
+            No schedule id was provided. Go back to the schedule list.
+          </p>
+        </ReadableContent>
+      </MainPanelLayout>
     );
   }
 
-  const readableCron = scheduleDetails
-    ? (() => {
-        try {
-          return cronstrue.toString(scheduleDetails.cron);
-        } catch {
-          return scheduleDetails.cron;
-        }
-      })()
-    : '';
+  const readableCron = scheduleDetails ? readableCronOf(scheduleDetails.cron) : '';
+  const running = scheduleDetails?.currently_running ?? false;
 
   return (
-    <div className="h-screen w-full flex flex-col bg-background-muted text-text-default">
-      <div className="px-8 pt-6 pb-4 border-b border-border-subtle flex-shrink-0">
-        <BackButton onClick={onNavigateBack} />
-        <h1 className="text-2xl font-semibold tracking-tight mt-1 mb-1 pt-8">Schedule Details</h1>
-        <p className="text-sm text-text-muted mb-1">Viewing Schedule ID: {scheduleId}</p>
-      </div>
-
-      <ScrollArea className="flex-grow">
-        <div className="p-8 space-y-6">
-          <section>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-              Schedule Information
-            </h2>
-            {isLoadingSchedule && (
-              <div className="flex items-center text-text-muted">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading schedule...
+    <>
+      <MainPanelLayout>
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* §4.2 — one page header: a FULL-BLEED hairline, `text-title`, and
+              one supporting line. The title is the schedule, not the word
+              "Schedule Details"; the id it used to spell out in a "Viewing
+              Schedule ID:" sentence is a definition row below. */}
+          <div className="flex-shrink-0 border-b border-border-subtle">
+            <ReadableContent size="chat" className="px-6 pt-6 pb-6">
+              <BackButton onClick={onNavigateBack} />
+              <h1 className="text-title mt-6 mb-1 min-w-0 break-words">
+                {scheduleDisplayName(scheduleId)}
+              </h1>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-supporting text-text-muted">
+                <span>{readableCron || 'Loading…'}</span>
+                {scheduleDetails && <ScheduleStatus job={scheduleDetails} />}
               </div>
-            )}
-            {scheduleError && (
-              <p className="text-text-danger text-sm p-3 bg-background-danger/10 border border-border-danger/40 rounded-md">
-                Error: {scheduleError}
-              </p>
-            )}
-            {scheduleDetails && (
-              <Card className="p-4 mb-6">
-                <div className="space-y-2">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between">
-                    <h3 className="text-base font-semibold text-text-default">
-                      {scheduleDetails.id}
-                    </h3>
-                    <div className="mt-2 md:mt-0 flex items-center gap-2">
-                      {scheduleDetails.currently_running && (
-                        <div className="text-sm text-text-success font-semibold flex items-center">
-                          <span className="inline-block w-2 h-2 bg-background-success rounded-full mr-1 animate-pulse"></span>
-                          Currently Running
-                        </div>
-                      )}
-                      {scheduleDetails.paused && (
-                        <div className="text-sm text-text-warning font-semibold flex items-center">
-                          <Pause className="w-3 h-3 mr-1" />
-                          Paused
-                        </div>
-                      )}
-                      {scheduleDetails.last_error && !scheduleDetails.currently_running && (
-                        <div className="text-sm text-text-danger font-semibold flex items-center">
-                          <AlertTriangle className="w-3 h-3 mr-1" />
-                          Last Run Failed
-                        </div>
-                      )}
-                    </div>
+            </ReadableContent>
+          </div>
+
+          <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6">
+            <ScrollArea className="h-full">
+              <div className="pb-8">
+                <div className="biorouter-settings-section">
+                  <div className="biorouter-settings-section-header">
+                    <h2 className="text-caps text-text-muted">Schedule</h2>
                   </div>
-                  <p className="text-sm text-text-default">
-                    <span className="font-semibold">Schedule:</span> {readableCron}
-                  </p>
-                  <p className="text-sm text-text-default">
-                    <span className="font-semibold">Cron Expression:</span> {scheduleDetails.cron}
-                  </p>
-                  <p className="text-sm text-text-default">
-                    <span className="font-semibold">Workflow Source:</span> {scheduleDetails.source}
-                  </p>
-                  <p className="text-sm text-text-default">
-                    <span className="font-semibold">Last Run:</span>{' '}
-                    {formatToLocalDateWithTimezone(scheduleDetails.last_run)}
-                  </p>
-                  {/*
-                    Issue #56. Without this the only record of a repeatedly
-                    failing job is a daemon log line: each run mints a fresh
-                    session, so there is no chat to open and read either.
-                  */}
-                  {scheduleDetails.last_error && (
-                    <p className="text-sm text-text-danger break-words">
-                      <span className="font-semibold">Last Error:</span>{' '}
-                      {scheduleDetails.last_error}
-                    </p>
+                  {isLoadingSchedule && !scheduleDetails && (
+                    <div className="biorouter-settings-list" aria-hidden>
+                      <div className="biorouter-settings-row flex items-center justify-between gap-3 px-3 py-2.5">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-4 w-40" />
+                      </div>
+                      <div className="biorouter-settings-row flex items-center justify-between gap-3 px-3 py-2.5">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-4 w-56" />
+                      </div>
+                      <div className="biorouter-settings-row flex items-center justify-between gap-3 px-3 py-2.5">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-4 w-32" />
+                      </div>
+                    </div>
                   )}
-                  {scheduleDetails.currently_running && scheduleDetails.current_session_id && (
-                    <p className="text-sm text-text-default">
-                      <span className="font-semibold">Current session ID:</span>{' '}
-                      <span className="font-mono">{scheduleDetails.current_session_id}</span>
-                    </p>
+                  {scheduleError && (
+                    <Note tone="danger" role="alert">
+                      {scheduleError}
+                    </Note>
                   )}
-                  {scheduleDetails.currently_running && scheduleDetails.process_start_time && (
-                    <p className="text-sm text-text-default">
-                      <span className="font-semibold">Process Started:</span>{' '}
-                      {formatToLocalDateWithTimezone(scheduleDetails.process_start_time)}
-                    </p>
+                  {scheduleDetails && (
+                    <div className="biorouter-settings-list">
+                      <DefinitionRow label="Runs">{readableCron}</DefinitionRow>
+                      <DefinitionRow label="Cron" mono>
+                        {scheduleDetails.cron}
+                      </DefinitionRow>
+                      <DefinitionRow label="Workflow" mono title={scheduleDetails.source}>
+                        {scheduleDetails.source}
+                      </DefinitionRow>
+                      <DefinitionRow label="Last run">
+                        {formatToLocalDateWithTimezone(scheduleDetails.last_run)}
+                      </DefinitionRow>
+                      {/*
+                        Issue #56. Without this the only record of a repeatedly
+                        failing job is a daemon log line: each run mints a fresh
+                        session, so there is no chat to open and read either.
+                      */}
+                      {scheduleDetails.last_error && (
+                        <DefinitionRow label="Last error" tone="danger">
+                          {scheduleDetails.last_error}
+                        </DefinitionRow>
+                      )}
+                      {running && scheduleDetails.current_session_id && (
+                        <DefinitionRow label="Current chat" mono>
+                          {scheduleDetails.current_session_id}
+                        </DefinitionRow>
+                      )}
+                      {running && scheduleDetails.process_start_time && (
+                        <DefinitionRow label="Started">
+                          {formatToLocalDateWithTimezone(scheduleDetails.process_start_time)}
+                        </DefinitionRow>
+                      )}
+                      <DefinitionRow label="Id" mono>
+                        {scheduleDetails.id}
+                      </DefinitionRow>
+                    </div>
                   )}
                 </div>
-              </Card>
-            )}
-          </section>
 
-          <section>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-              Actions
-            </h2>
-            <div className="flex flex-col md:flex-row gap-2">
-              <Button
-                onClick={handleRunNow}
-                disabled={isActionLoading || scheduleDetails?.currently_running}
-                className="w-full md:w-auto"
-              >
-                Run Schedule Now
-              </Button>
+                <div className="biorouter-settings-section">
+                  <div className="biorouter-settings-section-header">
+                    <h2 className="text-caps text-text-muted">Actions</h2>
+                  </div>
+                  {/* One control strip and one button ladder. The per-semantic
+                      blue and green outlined variants this replaced exist
+                      nowhere else in the app, and what they were encoding —
+                      "this schedule is paused" — is already said by the status
+                      line in the header. */}
+                  <div className="biorouter-settings-control-strip">
+                    <Button onClick={handleRunNow} disabled={isActionLoading || running}>
+                      Run now
+                    </Button>
 
-              {scheduleDetails && !scheduleDetails.currently_running && (
-                <>
-                  <Button
-                    onClick={() => setIsModalOpen(true)}
-                    variant="outline"
-                    className="w-full md:w-auto flex items-center gap-2 text-text-info border-border-info hover:bg-background-info/10"
-                    disabled={isActionLoading}
-                  >
-                    <Edit className="w-4 h-4" />
-                    Edit Schedule
-                  </Button>
-                  <Button
-                    onClick={handlePauseToggle}
-                    variant="outline"
-                    className={`w-full md:w-auto flex items-center gap-2 ${
-                      scheduleDetails.paused
-                        ? 'text-text-success border-border-success hover:bg-background-success/10'
-                        : 'text-text-warning border-border-warning hover:bg-background-warning/10'
-                    }`}
-                    disabled={isActionLoading}
-                  >
-                    {scheduleDetails.paused ? (
+                    {scheduleDetails && !running && (
                       <>
-                        <Play className="w-4 h-4" />
-                        Unpause Schedule
-                      </>
-                    ) : (
-                      <>
-                        <Pause className="w-4 h-4" />
-                        Pause Schedule
+                        <Button
+                          onClick={handlePauseToggle}
+                          variant="secondary"
+                          disabled={isActionLoading}
+                        >
+                          {scheduleDetails.paused ? <Play /> : <Pause />}
+                          {scheduleDetails.paused ? 'Unpause' : 'Pause'}
+                        </Button>
+                        <Button
+                          onClick={() => setIsModalOpen(true)}
+                          variant="secondary"
+                          disabled={isActionLoading}
+                        >
+                          <Edit />
+                          Edit
+                        </Button>
                       </>
                     )}
-                  </Button>
-                </>
-              )}
 
-              {scheduleDetails?.currently_running && (
-                <>
-                  <Button
-                    onClick={handleInspect}
-                    variant="outline"
-                    className="w-full md:w-auto flex items-center gap-2 text-text-info border-border-info hover:bg-background-info/10"
-                    disabled={isActionLoading}
-                  >
-                    <Eye className="w-4 h-4" />
-                    Inspect Running Job
-                  </Button>
-                  <Button
-                    onClick={handleKill}
-                    variant="outline"
-                    className="w-full md:w-auto flex items-center gap-2 text-text-danger border-border-danger hover:bg-background-danger/10"
-                    disabled={isActionLoading}
-                  >
-                    <Square className="w-4 h-4" />
-                    Stop the running job
-                  </Button>
-                </>
-              )}
-            </div>
-
-            {isRunPending && (
-              <p role="status" className="text-xs text-text-muted mt-2">
-                Waiting for the scheduled run to finish. This can take several minutes.
-              </p>
-            )}
-
-            {scheduleDetails?.currently_running && (
-              <p className="text-sm text-text-warning mt-2">
-                Cannot trigger or modify a schedule while it's already running.
-              </p>
-            )}
-
-            {scheduleDetails?.paused && (
-              <p className="text-sm text-text-warning mt-2">
-                This schedule is paused and will not run automatically. Use "Run Schedule Now" to
-                trigger it manually or unpause to resume automatic execution.
-              </p>
-            )}
-          </section>
-
-          <section>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-4">
-              Recent chats
-            </h2>
-            {isLoadingSessions && <p className="text-text-muted">Loading chats...</p>}
-            {sessionsError && (
-              <p className="text-text-danger text-sm p-3 bg-background-danger/10 border border-border-danger/40 rounded-md">
-                Error: {sessionsError}
-              </p>
-            )}
-            {!isLoadingSessions && sessions.length === 0 && (
-              <p className="text-text-muted text-center py-4">No chats found for this schedule.</p>
-            )}
-
-            {sessions.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {sessions.map((session) => (
-                  <Card
-                    key={session.id}
-                    className="p-4 cursor-pointer hover:bg-background-muted transition-colors duration-200"
-                    onClick={() => loadSession(session.id)}
-                  >
-                    <h3
-                      className="text-sm font-semibold text-text-default truncate"
-                      title={session.name || session.id}
-                    >
-                      {session.name || (
-                        <>
-                          Session ID: <span className="font-mono">{session.id}</span>
-                        </>
-                      )}
-                    </h3>
-                    <p className="text-xs text-text-muted mt-1">
-                      Created:{' '}
-                      {session.createdAt ? formatToLocalDateWithTimezone(session.createdAt) : 'N/A'}
-                    </p>
-                    {session.messageCount !== undefined && (
-                      <p className="text-xs text-text-muted mt-1">
-                        Messages: {session.messageCount}
-                      </p>
+                    {running && (
+                      <>
+                        <Button
+                          onClick={handleInspect}
+                          variant="secondary"
+                          disabled={isActionLoading}
+                        >
+                          <Eye />
+                          Inspect run
+                        </Button>
+                        {/* The app's tinted danger fill, not a hand-rolled
+                            danger-bordered outline: stopping a run throws away
+                            work in flight, which is what `destructive` is for. */}
+                        <Button
+                          onClick={handleKill}
+                          variant="destructive"
+                          disabled={isActionLoading}
+                        >
+                          <Square />
+                          Stop run
+                        </Button>
+                      </>
                     )}
-                    {session.workingDir && (
-                      <p
-                        className="text-xs text-text-muted mt-1 truncate"
-                        title={session.workingDir}
-                      >
-                        Dir: <span className="font-mono">{session.workingDir}</span>
-                      </p>
-                    )}
-                    {session.accumulatedTotalTokens !== undefined &&
-                      session.accumulatedTotalTokens !== null && (
-                        <p className="text-xs text-text-muted mt-1">
-                          Tokens: {session.accumulatedTotalTokens}
-                        </p>
-                      )}
-                    <p className="text-xs text-text-muted mt-1">
-                      ID: <span className="font-mono">{session.id}</span>
-                    </p>
-                  </Card>
-                ))}
+                  </div>
+
+                  {isRunPending && (
+                    <Note role="status" className="mt-3">
+                      Waiting for the scheduled run to finish. This can take several minutes.
+                    </Note>
+                  )}
+
+                  {/* One note, only when it applies. These were two sentences in
+                      raw `text-text-warning` under the buttons. */}
+                  {running && (
+                    <Note tone="warning" icon={Pause} className="mt-3">
+                      This schedule is running. It cannot be triggered again or edited until the run
+                      finishes.
+                    </Note>
+                  )}
+                  {!running && scheduleDetails?.paused && (
+                    <Note tone="warning" icon={Pause} className="mt-3">
+                      This schedule is paused and will not run automatically. Run it now to trigger
+                      it once, or unpause to resume automatic runs.
+                    </Note>
+                  )}
+                </div>
+
+                <div className="biorouter-settings-section">
+                  <div className="biorouter-settings-section-header">
+                    <h2 className="text-caps text-text-muted">Recent chats</h2>
+                  </div>
+                  {isLoadingSessions && sessions.length === 0 && (
+                    <div className="biorouter-list-shell" aria-hidden>
+                      <RunRowSkeleton />
+                      <RunRowSkeleton />
+                      <RunRowSkeleton />
+                    </div>
+                  )}
+                  {sessionsError && (
+                    <Note tone="danger" role="alert">
+                      {sessionsError}
+                    </Note>
+                  )}
+                  {!isLoadingSessions && !sessionsError && sessions.length === 0 && (
+                    <EmptyState
+                      compact
+                      icon={MessageSquareText}
+                      title="No runs yet"
+                      description="Each run of this schedule starts a new chat. They will appear here once it has run."
+                    />
+                  )}
+                  {sessions.length > 0 && (
+                    <div className="biorouter-list-shell">
+                      {sessions.map((session) => (
+                        <RunRow
+                          key={session.id}
+                          session={session}
+                          onOpen={() => loadSession(session.id)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
-          </section>
+            </ScrollArea>
+          </ReadableContent>
         </div>
-      </ScrollArea>
+      </MainPanelLayout>
 
       <ScheduleModal
         isOpen={isModalOpen}
@@ -529,7 +651,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
         apiErrorExternally={null}
         initialDeepLink={null}
       />
-    </div>
+    </>
   );
 };
 
