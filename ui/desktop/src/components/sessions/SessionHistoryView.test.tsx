@@ -119,3 +119,48 @@ describe('SessionHistoryView — declassification', () => {
     );
   });
 });
+
+/**
+ * The saved transcript sits on the CHAT measure, and on ONE measure. It used to
+ * draw its conversation in a `max-w-4xl` box nested inside the page's reading
+ * column — the 896px "replay column" the design of record §4.4 retires — so a
+ * saved chat was rendered at a width the live chat never uses, and the inner
+ * ceiling won whatever the outer one said.
+ *
+ * ⚠ jsdom sees the ATTRIBUTE and the class STRING, never a width: there is no
+ * layout engine and Tailwind never runs, so `max-w-measure-chat` computes to
+ * nothing here. The 760px column was measured in a browser. The complementary
+ * source rule — no `<ReadableContent` without a `size`, and no second
+ * `max-w-*` anywhere in the file — lives in `styles/measures.test.ts`.
+ */
+describe('SessionHistoryView sits on one chat measure', () => {
+  it('renders a single reading column, at the chat size', () => {
+    const { container } = renderView();
+
+    const columns = [...container.querySelectorAll('.biorouter-readable-content')];
+    expect(columns).toHaveLength(1);
+    expect((columns[0] as HTMLElement).dataset.size).toBe('chat');
+  });
+
+  it('nests no second measure inside it', () => {
+    const { container } = renderView({
+      conversation: [
+        {
+          id: 'm1',
+          role: 'user',
+          created: 1757200000,
+          metadata: { provenance: null },
+          content: [{ type: 'text', text: 'hello' }],
+        },
+      ],
+      message_count: 1,
+    } as Partial<Session>);
+
+    // Every descendant, not just the transcript wrapper: the fork this replaces
+    // was one `<div>` deep inside a conditional branch, which is exactly where
+    // a replacement would go too.
+    for (const element of container.querySelectorAll<HTMLElement>('*')) {
+      expect(element.className.toString()).not.toMatch(/\bmax-w-(?:3xl|4xl|5xl|6xl|7xl)\b/);
+    }
+  });
+});
