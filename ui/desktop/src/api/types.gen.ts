@@ -253,13 +253,6 @@ export type AuthorRequest = {
     metadata?: string | null;
 };
 
-/**
- * A Biorouter App combining MCP resource data with Biorouter-specific metadata
- */
-export type BioRouterApp = McpAppResource & (WindowProps | null) & {
-    mcpServer?: string | null;
-};
-
 export type CallToolRequest = {
     arguments: unknown;
     name: string;
@@ -727,21 +720,6 @@ export type CrossAffiliationGrantResponse = {
      * (`privacy::grant::GRANT_SCOPE_COPY`).
      */
     accepted: string;
-};
-
-/**
- * Content Security Policy metadata for MCP Apps
- * Specifies allowed domains for network connections and resource loading
- */
-export type CspMetadata = {
-    /**
-     * Domains allowed for connect-src (fetch, XHR, WebSocket)
-     */
-    connectDomains?: Array<string> | null;
-    /**
-     * Domains allowed for resource loading (scripts, styles, images, fonts, media)
-     */
-    resourceDomains?: Array<string> | null;
 };
 
 /**
@@ -1665,14 +1643,6 @@ export type LintResult = {
     report: LintReport;
 };
 
-export type ListAppsRequest = {
-    session_id?: string | null;
-};
-
-export type ListAppsResponse = {
-    apps: Array<BioRouterApp>;
-};
-
 export type ListPagesQuery = {
     path_prefix?: string | null;
 };
@@ -1845,38 +1815,6 @@ export type Manifest = {
      */
     okf_version?: string | null;
     schema_version: number;
-};
-
-/**
- * MCP App Resource
- * Represents a UI resource that can be rendered in an MCP App
- */
-export type McpAppResource = {
-    _meta?: ResourceMetadata | null;
-    /**
-     * Base64-encoded binary content (alternative to text)
-     */
-    blob?: string | null;
-    /**
-     * Optional description of what this resource does
-     */
-    description?: string | null;
-    /**
-     * MIME type (should be "text/html;profile=mcp-app" for MCP Apps)
-     */
-    mimeType: string;
-    /**
-     * Human-readable name of the resource
-     */
-    name: string;
-    /**
-     * Text content of the resource (HTML for MCP Apps)
-     */
-    text?: string | null;
-    /**
-     * URI of the resource (must use ui:// scheme)
-     */
-    uri: string;
 };
 
 /**
@@ -2954,13 +2892,6 @@ export type ResourceContents = {
     uri: string;
 };
 
-/**
- * Resource metadata containing UI configuration
- */
-export type ResourceMetadata = {
-    ui?: UiMetadata | null;
-};
-
 export type Response = {
     json_schema?: unknown;
 };
@@ -3872,21 +3803,6 @@ export type TunnelState = 'idle' | 'starting' | 'running' | 'error' | 'disabled'
 
 export type TurnErrorScope = 'provider' | 'session' | 'inference' | 'internal';
 
-/**
- * UI-specific metadata for MCP resources
- */
-export type UiMetadata = {
-    csp?: CspMetadata | null;
-    /**
-     * Preferred domain for the app (used for CORS)
-     */
-    domain?: string | null;
-    /**
-     * Whether the app prefers to have a border around it
-     */
-    prefersBorder?: boolean | null;
-};
-
 export type UpdateCustomProviderRequest = {
     api_key: string;
     api_url: string;
@@ -4090,12 +4006,6 @@ export type UsageTotals = {
      */
     totalTokens?: number | null;
     turns: number;
-};
-
-export type WindowProps = {
-    height: number;
-    resizable: boolean;
-    width: number;
 };
 
 export type Workflow = {
@@ -4513,37 +4423,6 @@ export type AgentCrossAffiliationGrantResponses = {
 };
 
 export type AgentCrossAffiliationGrantResponse = AgentCrossAffiliationGrantResponses[keyof AgentCrossAffiliationGrantResponses];
-
-export type ListAppsData = {
-    body?: never;
-    path?: never;
-    query?: {
-        session_id?: string | null;
-    };
-    url: '/agent/list_apps';
-};
-
-export type ListAppsErrors = {
-    /**
-     * Unauthorized - Invalid or missing API key
-     */
-    401: ErrorResponse;
-    /**
-     * Internal server error
-     */
-    500: ErrorResponse;
-};
-
-export type ListAppsError = ListAppsErrors[keyof ListAppsErrors];
-
-export type ListAppsResponses = {
-    /**
-     * List of apps retrieved successfully
-     */
-    200: ListAppsResponse;
-};
-
-export type ListAppsResponse2 = ListAppsResponses[keyof ListAppsResponses];
 
 export type ReadResourceData = {
     body: ReadResourceRequest;
