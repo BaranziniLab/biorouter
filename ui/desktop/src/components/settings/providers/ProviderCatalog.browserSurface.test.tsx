@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../api';
-import ProviderGrid from './ProviderGrid';
+import ProviderCatalog from './ProviderCatalog';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
 
@@ -19,6 +19,8 @@ import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
 const mocks = vi.hoisted(() => ({
   getPrivacyDisclosure: vi.fn(),
   ackPrivacyDisclosure: vi.fn(),
+  fetchCodingAgentStatus: vi.fn(),
+  upsert: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
@@ -28,6 +30,20 @@ vi.mock('../../../api', async (importOriginal) => ({
 }));
 vi.mock('../../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
+}));
+vi.mock('../../onboarding/codingAgentStatus', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  fetchCodingAgentStatus: mocks.fetchCodingAgentStatus,
+}));
+// `useCodingAgents` writes the provider selection through `useConfig`, so the
+// catalog now needs the config context that `ProviderGrid` never touched.
+vi.mock('../../ConfigContext', () => ({
+  useConfig: () => ({
+    upsert: mocks.upsert,
+    read: vi.fn(async () => null),
+    getProviders: vi.fn(async () => []),
+  }),
+  usePrivacyTiersEnabled: () => true,
 }));
 
 function provider(name: string): ProviderDetails {
@@ -49,10 +65,11 @@ function provider(name: string): ProviderDetails {
   } as ProviderDetails;
 }
 
-describe('ProviderGrid on a browser-served surface', () => {
+describe('ProviderCatalog on a browser-served surface', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetDisclosureStoreForTests();
+    mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
     mocks.getPrivacyDisclosure.mockResolvedValue({
       data: {
         title_template: '{provider} is not hosted by your institution.',
@@ -68,17 +85,28 @@ describe('ProviderGrid on a browser-served surface', () => {
   });
 
   /**
-   * ⚠ Fails against today's code: nothing on this page mentions the host, so a
-   * browser user configures a provider, is handed the model picker, and only
-   * then meets a refusal written for an AI agent.
+   * ⚠ The note is on the PAGE, above the tabs, not inside a panel — a per-tab
+   * note would be missed by exactly the user who opens the catalog on their own
+   * institution's tab and never visits Public.
+   *
+   * The fixture is one public provider, which also exercises the default-tab
+   * rule's last clause: Local is the computed default and is empty here, so the
+   * catalog opens on the first tab that has anything in it rather than on a
+   * blank panel.
    */
   it('says once, at the top, that the host owns the choice', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
-    render(<ProviderGrid providers={[provider('anthropic')]} isOnboarding={false} />);
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
 
     const note = await screen.findByTestId('host-managed-model-note');
     expect(note.textContent).toMatch(/biorouter configure/);
-    // Still a provider page: the cards are not taken away, because storing a
+    // Still a provider page: the rows are not taken away, because storing a
     // key is not what gets refused.
     expect(screen.getByText('anthropic')).toBeInTheDocument();
     expect(screen.getByTestId('add-custom-provider-card')).toBeInTheDocument();
@@ -86,7 +114,13 @@ describe('ProviderGrid on a browser-served surface', () => {
 
   /** The control: passes before and after. */
   it('adds nothing in the desktop application', async () => {
-    render(<ProviderGrid providers={[provider('anthropic')]} isOnboarding={false} />);
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
     // Settle the disclosure fetch first, so this asserts the resolved page
     // rather than winning a race against a note that has not arrived yet.
     await screen.findByTestId('non-private-model-note');

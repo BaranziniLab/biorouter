@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
@@ -13,16 +12,17 @@ import {
   getPreferredModel,
   type PullProgress,
 } from '../../utils/ollamaDetection';
-import OnboardingSectionLabel from './OnboardingSectionLabel';
+import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 
 interface OllamaInlineCardProps {
   onSuccess: () => void;
+  /** See `OnboardingCardShell`. Defaults to the standalone card. */
+  chrome?: OnboardingCardChrome;
 }
 
 type ModelStatus = 'checking' | 'available' | 'not-available' | 'downloading';
 
-export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
-  const navigate = useNavigate();
+export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaInlineCardProps) {
   const { upsert } = useConfig();
   const [isChecking, setIsChecking] = useState(true);
   const [ollamaDetected, setOllamaDetected] = useState(false);
@@ -127,18 +127,14 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   );
 
   return (
-    <section
-      aria-labelledby="ollama-setup-title"
-      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+    <OnboardingCardShell
+      chrome={chrome}
+      titleId="ollama-setup-title"
+      category="local"
+      label="Local · Run on your computer"
+      title="Ollama"
+      description="Run open-source models on your own machine. Free, private, offline."
     >
-      <OnboardingSectionLabel category="local" label="Local · Run on your computer" />
-      <h2 id="ollama-setup-title" className="mt-2 text-base font-medium text-text-default">
-        Ollama
-      </h2>
-      <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
-        Run open-source models on your own machine. Free, private, offline.
-      </p>
-
       {isChecking ? (
         <div className="flex items-center gap-2 text-xs text-text-muted">
           <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
@@ -207,13 +203,6 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
                 {isConnecting ? 'Connecting…' : 'Connect to Ollama'}
               </Button>
             )}
-            <button
-              type="button"
-              onClick={() => navigate('/welcome', { replace: true })}
-              className="w-full py-1 text-center text-xs text-text-muted transition-colors duration-150 hover:text-text-default sm:w-auto sm:text-left"
-            >
-              View all local providers →
-            </button>
           </div>
         </div>
       ) : (
@@ -236,16 +225,9 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
                 Install Ollama
               </a>
             )}
-            <button
-              type="button"
-              onClick={() => navigate('/welcome', { replace: true })}
-              className="w-full py-1 text-center text-xs text-text-muted transition-colors duration-150 hover:text-text-default sm:w-auto sm:text-left"
-            >
-              View all local providers →
-            </button>
           </div>
         </div>
       )}
-    </section>
+    </OnboardingCardShell>
   );
 }
