@@ -76,11 +76,18 @@ and `best` both resolve to `claude-fable-5-1`, `opus` to `claude-opus-5`, `sonne
 `claude-sonnet-5`, and `haiku` to `claude-haiku-4-5-20251001`. Advertising concrete ids rather than
 these aliases is the context-window decision above, not a claim that aliases are unsupported.
 
-> **Why `claude-sonnet-4-6` is no longer advertised.** It still runs if you type it, but its entry
-> was wrong. A bare `claude-sonnet-4-6` gets a **200,000**-token window on a Max plan, not the 1M
-> this table used to claim: the million needs the `[1m]` suffix *and* usage credits, so the gauge
-> was showing a number the CLI does not honour. `claude-fable-5` left for a duller reason — Fable
-> 5.1 supersedes it at the same tier — and it too remains usable by hand.
+> **Why `claude-sonnet-4-6` is no longer advertised.** A bare `claude-sonnet-4-6` gets a
+> **200,000**-token window on a Max plan, not the 1M this table used to claim: the million needs
+> the `[1m]` suffix *and* usage credits. What this change does is take the id out of the
+> **picker**, and nothing more. Typed by hand it still runs, and its gauge still reads 1M, because
+> the window comes from `MODEL_CONTEXT_WINDOWS` in
+> [`crates/biorouter/src/model.rs`](../../../crates/biorouter/src/model.rs), which is keyed by
+> model name alone: the anthropic, Bedrock and Databricks providers serve that id at a genuine 1M,
+> and one shared entry cannot say "1M there, 200k here". Keeping the claim that narrow is the
+> point — an id nobody is offered is better than one offered with a number the CLI does not
+> honour, and the typed case stays wrong until the window becomes a per-provider fact.
+> `claude-fable-5` left for a duller reason — Fable 5.1 supersedes it at the same tier — and it
+> too remains usable by hand.
 
 On the Codex side, `gpt-5.4` and `gpt-5.4-mini` were **retired by OpenAI on 2026-08-31**, with
 `gpt-5.6-terra` and `gpt-5.6-luna` named as their replacements. They no longer appear in

@@ -58,9 +58,10 @@ name or path of its executable, which defaults to `claude` and `codex` respectiv
 > **Note — which models you can pick depends on your CLI version.** The newest model in each
 > catalogue has a vendor-set version floor: `claude-fable-5-1` needs `claude` **2.1.251** or newer,
 > and `gpt-6-astra` needs `codex-cli` **0.153.4** or newer. On an older CLI the turn fails with the
-> vendor's own upgrade message, which BioRouter shows you verbatim; `claude update`, or re-running
-> the `npm install -g` line in step 1, fixes it. Every other advertised model works on older CLIs
-> too. Details, including the exact messages, are on
+> vendor's own upgrade message, which BioRouter shows you verbatim. Each CLI has its own remedy:
+> for Claude Code, `claude update` (or updating the Claude desktop app); for Codex, `codex update`,
+> or re-running step 1's `npm install -g @openai/codex@latest`. Every other advertised model works
+> on older CLIs too. Details, including the exact messages, are on
 > [which models you can pick depends on the CLI version](how-it-works.md#which-models-you-can-pick-depends-on-the-cli-version).
 
 ## The four states a card can show
