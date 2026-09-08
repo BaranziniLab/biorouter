@@ -459,8 +459,11 @@
   --titlebar-drag-height: 32px;
 
   /* Reading measures. Both are already shipped as arbitrary values in
-     ReadableContent.tsx; naming them is what lets the 896px replay fork be
-     deleted against something rather than against a comment.
+     ReadableContent.tsx; naming them is what let the 896px replay fork be
+     deleted against something rather than against a comment — which it now has
+     been (2026-09-07): the saved transcript's inner `max-w-4xl` is gone and
+     sessions/SessionHistoryView.tsx reads `--measure-chat` like everything else
+     that draws a conversation.
 
      ⚠ THE CHAT MEASURE IS FLAT, AND DELIBERATELY SO. It was briefly a clamp
      (`clamp(760px, 78%, 1180px)`) on the argument that a wide window buying
@@ -474,24 +477,28 @@
      the measure, not the floor of one.
 
      `--measure-page` stays FLUID. It governs the document-shaped views —
-     sessions, extensions, skills, schedules, workflows, applications — where a
-     wide window genuinely does buy content (more table columns, more cards per
-     row) rather than a longer line. PERCENTAGES, not `vw`, for the reason that
-     has not changed: a percentage resolves against the containing block, which
-     is the content pane, while `vw` is the whole viewport and would over-count
-     by the sidebar's width — widening the column exactly when the sidebar
-     opened and took the room away.
+     extensions, skills, schedules, workflows, applications — where a wide
+     window genuinely does buy content (more table columns, more cards per row)
+     rather than a longer line. PERCENTAGES, not `vw`, for the reason that has
+     not changed: a percentage resolves against the containing block, which is
+     the content pane, while `vw` is the whole viewport and would over-count by
+     the sidebar's width — widening the column exactly when the sidebar opened
+     and took the room away.
 
-     ⚠ **Settings is NOT in that list any more** (operator decision,
-     2026-09-07), and this paragraph used to name it first. Settings is not a
-     document, it is a column of labelled rows: a label on the left and the
-     control it names on the right. A wider window therefore buys the SAME
-     rows with more space between the two halves — margin, not content — and
-     pushes each control away from its own label, which is exactly the failure
-     the fluid measure exists to prevent everywhere else. All three of its
-     `ReadableContent`s (header, tab strip, scrolling body) read the chat
-     measure now, so Settings, Home, the transcript and the composer share one
-     left edge. See components/settings/SettingsView.tsx.
+     ⚠ **Neither Settings NOR the chat-history surfaces are in that list any
+     more** (operator decision, 2026-09-07), and this paragraph used to name
+     both — Settings first, sessions second. Neither is a document; each is a
+     column of labelled rows, a label on the left and the thing it names on the
+     right. A wider window therefore buys the SAME rows with more space between
+     the two halves — margin, not content. In Settings that pushed every
+     control away from its own label; in Chat history it pushed the
+     message/token/extension counts about 700px from the chat they count, at
+     1440. All three of Settings' `ReadableContent`s (header, tab strip,
+     scrolling body) and both of Chat history's (header, scrolling body) read
+     the chat measure now, as do the two read-only transcripts — so Settings,
+     Home, Chat history, a saved conversation and the composer share one left
+     edge. See components/settings/SettingsView.tsx and
+     components/sessions/{SessionListView,SessionHistoryView,SharedSessionView}.tsx.
 
      Nothing narrow changes either way: `max-width` never forces a box wider
      than its parent, so below 760px the chat column is simply pane-wide. */

@@ -1189,7 +1189,24 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           <div className="flex-1 flex flex-col min-h-0">
             {/* Flat page header */}
             <div className="flex-shrink-0 border-b border-border-subtle">
-              <ReadableContent className="px-8 pt-12 pb-6">
+              {/* ⚠ BOTH of this view's `ReadableContent`s are `size="chat"`, and
+                  they move together or not at all — the header's hairline is
+                  full-bleed (the wrapper above owns it), so a size on one box
+                  and not the other is a visible step in the left edge they
+                  share rather than a mistake inside one component.
+
+                  Chat history reads the CHAT measure for the same reason
+                  Settings does (operator decision, 2026-09-07): a row here is a
+                  title on the left and a stats cluster on the right, so the
+                  extra width a wide window handed the page measure landed
+                  BETWEEN them — at 1440 the message/token/extension counts sat
+                  roughly 700px from the chat they count. There is a second
+                  argument this view has and Settings does not: clicking a row
+                  RESUMES the chat, which is already on the chat measure, so
+                  the list and the thing it opens now share one left edge.
+                  `measures.test.ts` asserts at the source that no
+                  `<ReadableContent` here is left on the default size. */}
+              <ReadableContent size="chat" className="px-6 pt-12 pb-6">
                 {/* §4.2 header recipe: full-bleed hairline, `text-title`,
                     description in `text-secondary` muted, and the view's actions
                     right-aligned ON the title row rather than in a button row
@@ -1227,7 +1244,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
               </ReadableContent>
             </div>
 
-            <ReadableContent className="flex-1 min-h-0 relative px-8 pt-6 pb-8">
+            <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6 pb-8">
               <ScrollArea
                 handleScroll={handleScroll}
                 className="h-full"

@@ -85,7 +85,11 @@ const SessionHeader: React.FC<{
   actionButtons?: React.ReactNode;
 }> = ({ onBack, children, title, titleAdornment, actionButtons }) => {
   return (
-    <div className="biorouter-page-header -mx-8 flex flex-col px-8 pb-8">
+    /* `-mx-6 … px-6` cancels the reading column's own inset so the hairline
+       runs the full width of that column, then puts the inset back on the
+       content. The pair must always match the `px-*` on the `ReadableContent`
+       below — they were `8` while the column was on the page measure. */
+    <div className="biorouter-page-header -mx-6 flex flex-col px-6 pb-8">
       <div className="flex items-center pt-0 mb-1">
         <BackButton onClick={onBack} />
       </div>
@@ -134,34 +138,39 @@ const SessionMessages: React.FC<{
               }
             />
           ) : filteredMessages?.length > 0 ? (
-            <div className="max-w-4xl mx-auto w-full">
-              <SearchView placeholder="Search history...">
-                <ProgressiveMessageList
-                  messages={filteredMessages}
-                  // The REAL session id. This was the string 'session-preview',
-                  // which is nobody's session: every consumer that scopes work
-                  // by id — the scroll broadcast, Branch, an MCP app card —
-                  // silently addressed a chat that does not exist.
-                  chat={{ sessionId }}
-                  toolCallNotifications={new Map()}
-                  // No `append`. It used to be `() => {}`, which is TRUTHY, so
-                  // read-only surfaces advertised send-a-prompt controls that
-                  // did nothing when clicked. Absent means absent.
-                  isUserMessage={isUserMessage} // Use the same function as BaseChat
-                  onOpenArtifact={onOpenArtifact}
-                  // No terminal on this surface, and no chat to open one in: a
-                  // saved transcript is a record, and a shell code block in it
-                  // is history, not an offer. Explicitly null rather than
-                  // omitted, so the absence is a decision and not an oversight
-                  // — the same reason `append` is absent above.
-                  onRunInTerminal={null}
-                  workingDir={workingDir}
-                  batchSize={15} // Same as BaseChat default
-                  batchDelay={30} // Same as BaseChat default
-                  showLoadingThreshold={30} // Same as BaseChat default
-                />
-              </SearchView>
-            </div>
+            /* ⚠ NO measure of its own. This was `max-w-4xl mx-auto w-full` —
+               the 896px replay column — nested inside the page's own reading
+               column, so the transcript had two ceilings and neither was the
+               one the live chat uses. The outer `ReadableContent size="chat"`
+               is the measure now (design of record §4.4, done 2026-09-07); a
+               second `max-w-*` here would silently take precedence again and
+               `styles/measures.test.ts` fails on one. */
+            <SearchView placeholder="Search history...">
+              <ProgressiveMessageList
+                messages={filteredMessages}
+                // The REAL session id. This was the string 'session-preview',
+                // which is nobody's session: every consumer that scopes work
+                // by id — the scroll broadcast, Branch, an MCP app card —
+                // silently addressed a chat that does not exist.
+                chat={{ sessionId }}
+                toolCallNotifications={new Map()}
+                // No `append`. It used to be `() => {}`, which is TRUTHY, so
+                // read-only surfaces advertised send-a-prompt controls that
+                // did nothing when clicked. Absent means absent.
+                isUserMessage={isUserMessage} // Use the same function as BaseChat
+                onOpenArtifact={onOpenArtifact}
+                // No terminal on this surface, and no chat to open one in: a
+                // saved transcript is a record, and a shell code block in it
+                // is history, not an offer. Explicitly null rather than
+                // omitted, so the absence is a decision and not an oversight
+                // — the same reason `append` is absent above.
+                onRunInTerminal={null}
+                workingDir={workingDir}
+                batchSize={15} // Same as BaseChat default
+                batchDelay={30} // Same as BaseChat default
+                showLoadingThreshold={30} // Same as BaseChat default
+              />
+            </SearchView>
           ) : (
             <EmptyState
               icon={MessageSquareText}
@@ -339,7 +348,13 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             is meant to sit beside. `splitPaneRef` goes here because rung 2
             measures this box — the one the transcript and the panel share. */}
         <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
-          <ReadableContent className="flex-1 flex flex-col min-h-0 px-8">
+          {/* ⚠ `size="chat"`, and it is the ONLY measure on this surface. The
+              transcript used to sit in a second, narrower box inside this one
+              (`max-w-4xl` — the 896px "replay fork"), so a saved conversation
+              was drawn at a width the live chat never uses. §4.4 of the design
+              of record retires it: one column, one number, and it is the same
+              `--measure-chat` the composer reads. */}
+          <ReadableContent size="chat" className="flex-1 flex flex-col min-h-0 px-6">
             <SessionHeader
               onBack={onBack}
               title={session.name}
