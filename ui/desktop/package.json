@@ -47,7 +47,8 @@
     "check:contrast": "node scripts/check-contrast.mjs",
     "check:tokens": "node scripts/check-token-mirrors.mjs",
     "themes": "node scripts/generate-themes.mjs",
-    "check:themes": "node scripts/generate-themes.mjs --check"
+    "check:themes": "node scripts/generate-themes.mjs --check",
+    "cdp:viewport-check": "node scripts/cdp-viewport-check.mjs"
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "^1.2.4",

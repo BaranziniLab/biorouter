@@ -14,7 +14,11 @@ triage below before changing any CSS.
 
 ## Triage: two minutes, in this order
 
-Run these against the dev GUI over CDP (see
+**Read the renderer's console first.** In a development build the app diagnoses
+the commonest of these itself: a line beginning `Viewport pinned at …` means the
+tooling pinned the viewport and no reading below can be trusted — skip straight
+to *Viewport emulation*, and do not open the CSS. Then run these against the dev
+GUI over CDP (see
 [Debugging the dev GUI with agent-browser](agent-browser-debugging.md)).
 
 ```js
@@ -32,7 +36,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 |---------|-----------|
 | `text` is `Loading BioRouter…` and the console is EMPTY | **Not a layout bug.** The renderer's assets 404'd — see *`--base ./`* below. |
 | `text` empty, or `hash` is `#/pair` | **Not a layout bug.** The app is not rendering — see *A dead daemon* below. |
-| `inner` ≠ `outer` | **Not a layout bug.** Your tooling pinned the viewport — see *Viewport emulation* below. |
+| `inner` ≠ `outer`, or the console carries `Viewport pinned at …` | **Not a layout bug.** Your tooling pinned the viewport — confirm with `npm run cdp:viewport-check -- <port>` and see *Viewport emulation* below. |
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
 | Everything tracks, but the view is **Settings**, **Home**, **Chat history** or a saved/shared transcript, and its column stops at 760px | **Not a layout bug.** All of them read the chat measure by decision — see *Settings and Chat history, on the chat measure* below. |
 | Everything tracks, but content stays the same width | **The real one.** A fixed pixel cap — see below. |
@@ -235,12 +239,134 @@ the running app.
 the renderer's viewport regardless of the real window. Resizing the OS window
 then changes nothing on screen and every measurement lies.
 
+**This repo has now hit it at least twice**, and the second time it arrived as a
+bug report about the merged `main` — "weird empty space at the bottom", "the app
+doesn't scale with the window", with a screenshot of Provider Configuration
+ending at a fixed area inside a larger window. The three subsections below are
+what that recurrence bought: a warning the app prints itself, a script that
+answers the question in one command, and the measurement that settles which cure
+actually works.
+
 **Tell:** `outerWidth` moves and `innerWidth` does not. Observed as
 `outer: [800, 600]` with `inner: [1400, 900]` — a round 1400×900 that nobody set
 is itself the giveaway.
 
-**Fix:** use a fresh session with no override, or set the viewport explicitly to
-the size you mean to test.
+#### First line of defence: the app says so itself
+
+In a **development** build the renderer checks its own viewport against its
+window on load and after every (debounced) resize, and `console.warn`s once per
+distinct pinned size:
+
+> Viewport pinned at 1440×900 while the window is 1638×963: a DevTools
+> device-metrics override (agent-browser set_viewport, Playwright
+> setViewportSize, or DevTools device mode) is holding the renderer, so the
+> layout cannot follow the window and every measurement lies — this is NOT a
+> layout bug. …
+
+The decision lives in `ui/desktop/src/utils/viewportPin.ts`
+(`describeViewportPin`), a module with no React and no DOM, unit-tested in
+`viewportPin.test.ts`; `renderer.tsx` installs it behind `import.meta.env.DEV`,
+so it is dropped from a packaged bundle entirely. It is a console line and
+nothing else — never a toast, never a throw. A user who has never opened
+DevTools cannot cause this and is never shown it.
+
+The tolerances are the tell above, made precise: macOS windows have **no side
+frame**, so any width difference at all is emulation; the height may differ by
+the title bar (40px allowed, ~28px real); Windows and Linux get 16px more on
+both axes for their frame. The comparison is signed, so a viewport *larger* than
+its window is a pin on every platform.
+
+#### Diagnosis: one command
+
+```bash
+cd ui/desktop
+npm run cdp:viewport-check -- 9333          # exit 0 = clean, 1 = PINNED, 2 = harness
+npm run cdp:viewport-check -- 9333 --json
+npm run cdp:viewport-check -- 9333 --clear  # attempt the clear too; read the caveat below
+```
+
+`scripts/cdp-viewport-check.mjs` prints `inner`, `outer` and `client` for the
+Biorouter page and applies the same tolerances as the renderer's warning. Node
+≥ 22, no dependencies — deliberately, because the thing being debugged is the
+tooling.
+
+#### Fix: restart the instance
+
+Use a fresh session with no override, or set the viewport explicitly to the size
+you mean to test. Once an override is already stuck, **restart the instance** —
+or have the driver session that set it clear it before detaching (see
+[Debugging the dev GUI with agent-browser](agent-browser-debugging.md), "Reset
+the viewport you set").
+
+⚠ **Clearing the override from a *different* CDP session is unreliable — it is
+not the cure, even when it looks like one.** Chromium keeps emulation state per
+DevTools session, so a foreign session has to apply its own override before it
+can drop one, and what it hands back is not the state the page started in. Both
+outcomes have been measured:
+
+- On the operator's affected instance (2026-09-08) the clear restored
+  `inner == outer` at once and left the renderer **half-frozen** — it followed
+  the next OS resize once and then stopped, with `outerWidth` stale.
+- On a fresh instance pinned and cleared the same way while building this guard,
+  the clear recovered fully and the next three OS resizes tracked exactly.
+
+You cannot tell from inside which one you got, and the second is the dangerous
+one: it looks fixed. A **restart**, with no emulation ever applied, tracked OS
+resizes exactly at 1200×800, 1900×1050 and 1440×1000 in both runs. `--clear`
+exists only for the case where a restart would cost you the state you are
+debugging; it is a stopgap, and the script says so.
+
+#### The measurements
+
+The two affected instances, over CDP, with the layout correct throughout
+(2026-09-08):
+
+| Instance | `inner` | `outer` | Verdict |
+|---|---|---|---|
+| A | 1440×900 | 1638×963 | pinned — width differs at all on macOS |
+| B | 1440×900 | 1440×1000 | pinned — width *matched*, height off by 100 |
+
+Instance B is the one worth remembering: a check that compares widths alone
+passes it. The override came from an `agent-browser set_viewport(1440, 900)`
+during a post-merge test drive, which is why the rule in
+[agent-browser-debugging.md](agent-browser-debugging.md) now names resetting it
+as part of the call.
+
+**A live override and an orphaned one are not the same state**, which is most of
+why this is so confusing to look at. Both were reproduced on a dev instance
+while building the guard:
+
+| State | `inner` | `outer` on an OS resize |
+|---|---|---|
+| Override live, setting session still attached | pinned | **follows the window** |
+| Override orphaned — setting session detached | pinned | **freezes too** |
+
+So an override survives `agent-browser close`; detaching does not undo it, it
+only takes the last thing that could. In the orphaned state the window really
+does move — `get size of window 1` reads back the new size — while the page
+insists on both numbers it had at the moment it was orphaned. That stale
+`outerWidth` is the reading that makes people doubt the OS resize itself.
+
+⚠ **Two blind spots, stated so nobody assumes the warning's silence is an
+all-clear.** The check script is the backstop for both — it measures on demand
+and depends on no event.
+
+1. **A pin at exactly the window size, then orphaned.** Warning and script both
+   compare `inner` against `outer`, and an orphaned override freezes both, so
+   they stop moving while still agreeing and the page has nothing to disagree
+   with. While the setting session is still attached this resolves itself:
+   measured, a 1440×1000 pin on a 1440×1000 window was invisible until the window
+   moved, at which point `outer` followed to 1200×800 and the warning fired. The
+   uncoverable combination needs a driver to pin the window's exact current size
+   *and* detach, which neither recurrence did.
+2. **A `resize` Chromium never emits.** The warning runs on load and on resize,
+   so it is only as reliable as that event. Measured: a fresh instance pinned by
+   a driver fires one and the warning appears (reproduced twice), but an override
+   *stacked on an already-emulated page* did not always emit one, and the warning
+   stayed silent until something else caused a resize — while
+   `npm run cdp:viewport-check` reported the pin correctly throughout. **If the
+   symptom is there and the console is quiet, run the script before believing the
+   silence.**
 
 ### `osascript … set size of front window` silently no-ops
 
