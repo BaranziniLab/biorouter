@@ -18,14 +18,19 @@ export const SpellcheckToggle = () => {
   };
 
   return (
-    <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-      <div>
-        <p className="text-sm font-medium text-text-default">Enable Spellcheck</p>
-        <p className="text-xs text-text-muted mt-0.5 max-w-md">
+    <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default">
+      <div className="min-w-0 flex-1">
+        <p className="text-label text-text-default">Enable spellcheck</p>
+        <p className="mt-0.5 max-w-md text-supporting text-text-muted">
           Check spelling in the chat input. Requires restart to take effect.
         </p>
       </div>
-      <Switch checked={enabled} onCheckedChange={handleToggle} variant="mono" />
+      <Switch
+        checked={enabled}
+        onCheckedChange={handleToggle}
+        variant="mono"
+        aria-label="Enable spellcheck"
+      />
     </div>
   );
 };
