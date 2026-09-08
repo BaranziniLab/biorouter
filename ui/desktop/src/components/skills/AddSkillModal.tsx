@@ -1,6 +1,8 @@
 import { useState, useRef, DragEvent } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
+import { Note } from '../ui/note';
+import { MODAL_SIZE } from '../ModalShell';
 import { toastSuccess, toastError } from '../../toasts';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 import { installSkillPackage, previewSkillPackage } from '../../api';
@@ -133,7 +135,11 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       <DialogContent
         aria-describedby={undefined}
         dismissible={!busy}
-        className="flex max-h-[80vh] w-[520px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]"
+        // `MODAL_SIZE.lg`, not the 520px literal this carried: L is the rung for
+        // "anything with a list", and the preview below is one. The `w-[520px]`
+        // that came with it is gone too — `DialogContent`'s own `w-full` plus
+        // the rung's cap is what every other dialog in the app is sized by.
+        className={`flex max-h-[80vh] flex-col gap-0 overflow-hidden p-0 ${MODAL_SIZE.lg}`}
       >
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <DialogTitle>Add Skill</DialogTitle>
@@ -154,7 +160,10 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void previewUrl();
                 }}
-                className="h-9 flex-1"
+                // No height here: `Input` is already the 32px md rung, the same
+                // box the "Look up" Button beside it takes. The `h-9` this
+                // carried made the field 36px next to a 32px button.
+                className="flex-1"
                 disabled={busy}
               />
               <Button
@@ -179,13 +188,26 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
+            // ⚠ **Not `biorouter-modal-panel`, and that is the whole point.**
+            // That class is UNLAYERED in main.css, so its `background` and
+            // `border` beat any Tailwind utility in `@layer utilities` whatever
+            // the specificity — which meant every background and border class
+            // this element used to carry beside it was a no-op, and the dropzone
+            // never changed appearance on drag, on error, or on hover. The
+            // panel's own two values are spelled out here instead, as utilities,
+            // so the state can actually move them.
+            //
+            // Hover/press is `tint-interactive`, never `hover:bg-overlay-hover`:
+            // that sets a background-COLOUR, which REPLACES an opaque ground
+            // rather than compositing over it, so the zone got LIGHTER under the
+            // pointer (main.css, "the interaction tints").
             className={[
-              'biorouter-modal-panel rounded-container p-8 text-center cursor-pointer select-none transition-colors',
+              'rounded-container border bg-background-muted p-8 text-center cursor-pointer select-none tint-interactive transition-colors',
               isDragging
-                ? 'border-border-accent bg-background-accent/5'
+                ? 'border-border-accent'
                 : error
-                  ? 'border-border-danger bg-background-danger/10'
-                  : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-overlay-hover',
+                  ? 'border-border-danger'
+                  : 'border-border-subtle',
             ].join(' ')}
           >
             <p className="text-label text-text-default mb-1">Or drop a skill file here</p>
@@ -201,19 +223,20 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             onChange={handleBrowse}
           />
 
+          {/* One note (V4). Both of these were hand-rolled prose boxes — the
+              error on a hand-mixed `bg-background-danger/10`, the question on a
+              flat surface step. Tone is a `--wash-*` now, derived per family and
+              per mode, so each reads correctly under all three themes in both
+              modes with no `.dark` fork. */}
           {error && (
-            <div className="text-body text-text-danger bg-background-danger/10 rounded-element px-4 py-3">
+            <Note tone="danger" role="alert">
               {error}
-            </div>
+            </Note>
           )}
 
           {preview && <PreviewCard preview={preview} sourceLabel={sourceLabel} />}
 
-          {ambiguity && (
-            <div className="text-body text-text-default bg-background-muted rounded-element px-4 py-3">
-              {ambiguity.reason}
-            </div>
-          )}
+          {ambiguity && <Note tone="info">{ambiguity.reason}</Note>}
         </div>
 
         <div className="px-6 py-4 border-t border-border-subtle flex justify-end gap-2">
