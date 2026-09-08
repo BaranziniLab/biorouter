@@ -26,6 +26,7 @@
 //! session talks to is less capable than the one the desktop application
 //! starts, and anything assuming otherwise is wrong.
 
+use crate::commands::exe_path::current_exe_resolved;
 use anyhow::{bail, Context, Result};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -271,17 +272,24 @@ fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> R
 /// tree both pair the two binaries that were built together, rather than
 /// whichever one is earliest on `PATH`.
 fn resolve_biorouterd() -> Result<PathBuf> {
-    let name = format!("biorouterd{}", std::env::consts::EXE_SUFFIX);
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let beside = dir.join(&name);
-            if beside.is_file() {
-                return Ok(beside);
-            }
-        }
+    if let Some(found) = current_exe_resolved().and_then(|exe| biorouterd_beside(&exe)) {
+        return Ok(found);
     }
     // Fall back to PATH, and let the spawn report a missing binary.
-    Ok(PathBuf::from(name))
+    Ok(PathBuf::from(format!(
+        "biorouterd{}",
+        std::env::consts::EXE_SUFFIX
+    )))
+}
+
+/// The daemon installed alongside `exe`, if it is there.
+///
+/// Split out from [`resolve_biorouterd`] so a test can hand it a path instead
+/// of being at the mercy of wherever the test binary itself happens to live.
+fn biorouterd_beside(exe: &Path) -> Option<PathBuf> {
+    let name = format!("biorouterd{}", std::env::consts::EXE_SUFFIX);
+    let beside = exe.parent()?.join(name);
+    beside.is_file().then_some(beside)
 }
 
 /// Candidate locations for the built interface, in order.
@@ -290,26 +298,36 @@ fn resolve_biorouterd() -> Result<PathBuf> {
 /// says only "not found" leaves the reader guessing which of four layouts the
 /// installation is in.
 fn web_dir_candidates() -> Vec<PathBuf> {
+    web_dir_candidates_for(current_exe_resolved().as_deref())
+}
+
+/// The candidate list for a given executable path.
+///
+/// ⚠ `exe` must be the **resolved** path, not `current_exe()` — see
+/// [`crate::commands::exe_path`]. Everything below is a sibling of the binary,
+/// so a symlink one directory up from the installation moves every candidate
+/// with it: through `~/.local/bin/biorouter` the two exe-relative entries
+/// became `~/.local/web` and `~/ui/desktop/src/web`, and `serve` reported that
+/// the interface was missing on an installation that ships it.
+fn web_dir_candidates_for(exe: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(dir) = std::env::var("BIOROUTER_SERVE_UI") {
         out.push(PathBuf::from(dir));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            // Packaged: the binaries sit in `Resources/bin`, the bundle beside
-            // them in `Resources/web`.
-            out.push(dir.join("..").join("web"));
-            // A development tree: target/<profile>/biorouter, with the bundle
-            // where `npm run build:web` writes it.
-            out.push(
-                dir.join("..")
-                    .join("..")
-                    .join("ui")
-                    .join("desktop")
-                    .join("src")
-                    .join("web"),
-            );
-        }
+    if let Some(dir) = exe.and_then(Path::parent) {
+        // Packaged: the binaries sit in `Resources/bin`, the bundle beside
+        // them in `Resources/web`.
+        out.push(dir.join("..").join("web"));
+        // A development tree: target/<profile>/biorouter, with the bundle
+        // where `npm run build:web` writes it.
+        out.push(
+            dir.join("..")
+                .join("..")
+                .join("ui")
+                .join("desktop")
+                .join("src")
+                .join("web"),
+        );
     }
     // The Linux packages, where the exe-relative rule does not survive: from
     // /usr/bin, `../web` is /usr/web.
@@ -418,6 +436,9 @@ mod tests {
     /// installation layouts they are in.
     #[test]
     fn a_missing_interface_names_every_path_it_tried() {
+        // Held because the sibling tests below set this variable, and
+        // `web_dir_candidates` reads it.
+        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let candidates = web_dir_candidates();
         assert!(
             candidates.len() >= 2,
@@ -429,19 +450,130 @@ mod tests {
         );
     }
 
+    /// Restated against `web_dir_candidates_for`, which takes the executable as
+    /// an argument: the previous version scanned this file's own source for the
+    /// order two string literals appear in, and would have passed against a
+    /// build that never read the variable at all.
     #[test]
     fn an_explicit_setting_is_looked_at_before_anything_else() {
-        // Not `set_var` on a shared process: assert the ordering property that
-        // matters instead, which is that the env candidate is first when set.
-        // `web_dir_candidates` reads it at position 0 by construction; this
-        // pins that construction against a reordering.
-        let src = include_str!("serve.rs");
-        let env_at = src.find("BIOROUTER_SERVE_UI").expect("env var read");
-        let usr_at = src.find("/usr/share/biorouter/web").expect("fhs path");
-        assert!(
-            env_at < usr_at,
-            "the explicit setting must be consulted before the packaged locations"
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_SERVE_UI",
+            Some("/somewhere/explicit/web".to_string()),
+        )]);
+        let candidates =
+            web_dir_candidates_for(Some(Path::new("/opt/Biorouter/resources/bin/biorouter")));
+        assert_eq!(
+            candidates.first(),
+            Some(&PathBuf::from("/somewhere/explicit/web")),
+            "the explicit setting must be consulted before the packaged locations: \
+             {candidates:?}"
         );
+    }
+
+    /// The operator's report, reduced to a fixture: a macOS install reached
+    /// through the symlink `biorouter setup-path` creates.
+    ///
+    /// Before the fix, `current_exe()` on macOS returned the link and every
+    /// candidate below was derived from *its* directory — so the packaged
+    /// bundle two directories away from the link was never looked at, and the
+    /// error named `~/.local/web` and `~/ui/desktop/src/web`.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_executable_resolves_to_the_real_installation() {
+        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
+        let tmp = tempfile::tempdir().unwrap();
+
+        let bin = tmp.path().join("Resources").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let real = bin.join("biorouter");
+        std::fs::write(&real, b"#!/bin/sh\n").unwrap();
+        let web = tmp.path().join("Resources").join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), b"<!doctype html>").unwrap();
+
+        let link_dir = tmp.path().join("local").join("bin");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("biorouter");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let resolved = crate::commands::exe_path::resolve_exe_path(&link);
+        let candidates = web_dir_candidates_for(Some(&resolved));
+        let found = candidates
+            .iter()
+            .find(|c| c.join("index.html").is_file())
+            .unwrap_or_else(|| {
+                panic!("no candidate held the bundle that is on disk: {candidates:?}")
+            });
+        assert_eq!(
+            normalise(found),
+            std::fs::canonicalize(&web).unwrap(),
+            "the packaged bundle must be found through the symlink"
+        );
+
+        // And the unresolved path is what the bug looked like, so pin that the
+        // two really do differ — otherwise this test would pass on a platform
+        // where it proves nothing.
+        let unresolved = web_dir_candidates_for(Some(&link));
+        assert!(
+            !unresolved.iter().any(|c| c.join("index.html").is_file()),
+            "fixture is wrong: the bundle must be unreachable from the link's \
+             own directory, or this test cannot fail"
+        );
+    }
+
+    /// The other half of the same defect: `serve` could not start the daemon
+    /// either, because it looked for it beside the link.
+    #[cfg(unix)]
+    #[test]
+    fn the_daemon_is_found_beside_the_real_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("Resources").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let real = bin.join("biorouter");
+        std::fs::write(&real, b"#!/bin/sh\n").unwrap();
+        let daemon = bin.join(format!("biorouterd{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&daemon, b"#!/bin/sh\n").unwrap();
+
+        let link_dir = tmp.path().join("local").join("bin");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("biorouter");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(
+            biorouterd_beside(&link).is_none(),
+            "fixture is wrong: the daemon must not be beside the link"
+        );
+        // Compared after canonicalising both: on macOS the temp directory is
+        // itself reached through `/var -> /private/var`, so the resolved path
+        // is spelled differently while naming the same file.
+        assert_eq!(
+            biorouterd_beside(&crate::commands::exe_path::resolve_exe_path(&link))
+                .map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&daemon).unwrap()),
+            "the daemon must be found beside the binary the link points at"
+        );
+    }
+
+    /// A candidate list derived from a verbatim Windows path would be printed
+    /// at the user and handed to the daemon in `BIOROUTER_SERVE_UI`. Runs
+    /// everywhere; only Windows can fail it.
+    #[test]
+    fn the_resolved_candidates_are_never_windows_verbatim_paths() {
+        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp
+            .path()
+            .join(format!("biorouter{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&exe, b"x").unwrap();
+
+        let resolved = crate::commands::exe_path::resolve_exe_path(&exe);
+        for candidate in web_dir_candidates_for(Some(&resolved)) {
+            assert!(
+                !normalise(&candidate).to_string_lossy().starts_with(r"\\?\"),
+                "verbatim path in a candidate: {}",
+                candidate.display()
+            );
+        }
     }
 
     #[test]

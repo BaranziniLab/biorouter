@@ -25,6 +25,10 @@ cliclack = "0.3.5"
 console = "0.16.1"
 uuid = { version = "1.11", features = ["v4"] }
 dotenvy = "0.15.7"
+# `serve` derives the interface bundle and the daemon from the real path of the
+# running executable, and on Windows `canonicalize` hands back a verbatim
+# `\\?\C:\…` path that must not reach a message or a child's environment.
+dunce = "1"
 bat = "0.25.0"
 pulldown-cmark = { version = "0.13", default-features = false }
 anyhow = { workspace = true }
