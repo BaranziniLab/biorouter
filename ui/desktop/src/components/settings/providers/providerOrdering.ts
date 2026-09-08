@@ -245,21 +245,31 @@ function institutionalSections(providers: ProviderDetails[]): OrderedProviderSec
 
   const sections: OrderedProviderSection[] = [...byInstitution.entries()]
     .sort(([, a], [, b]) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
-    .map(([id, entry]) => ({
-      key: id,
-      label: entry.label,
-      // Built from the providers' OWN descriptions, so the sub-line names what
-      // this institution actually hosts without a literal here naming a gateway.
-      note: entry.providers.map((provider) => displayName(provider)).join(' · '),
-      providers: entry.providers.sort(byDisplayName),
-    }));
+    .map(([id, entry]) => {
+      // ⚠ SORT FIRST. The note is derived from this list, and an object literal
+      // evaluates its properties in order — deriving the note before the sort
+      // printed the gateways in whatever order the daemon happened to serve
+      // them, so the sub-line and the rows below it disagreed. Measured in the
+      // dev GUI: "Versa API Bedrock · Versa API Azure" above rows reading
+      // Azure, then Bedrock.
+      const providers = [...entry.providers].sort(byDisplayName);
+      return {
+        key: id,
+        label: entry.label,
+        // Built from the providers' own display names, so the sub-line names
+        // what this institution actually hosts without a literal here naming a
+        // gateway.
+        note: providers.map((provider) => displayName(provider)).join(' · '),
+        providers,
+      };
+    });
 
   if (unaffiliated.length > 0) {
     sections.push({
       key: 'unaffiliated',
       label: 'Unaffiliated private gateways',
       note: 'Private because Biorouter recognises the endpoint, but no institution is named for it.',
-      providers: unaffiliated.sort(byDisplayName),
+      providers: [...unaffiliated].sort(byDisplayName),
     });
   }
 

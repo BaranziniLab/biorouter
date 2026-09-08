@@ -195,6 +195,35 @@ describe('the institutional tab: grouped by the daemon-supplied institution', ()
     expect(names(sections[0]!.providers)).toEqual(['versa_azure', 'versa_bedrock']);
   });
 
+  /**
+   * ⚠ The sub-line is DERIVED from the rows, so it has to be derived from the
+   * sorted ones. Measured in the dev GUI before this was pinned: a section
+   * headed "Versa API Bedrock · Versa API Azure" above rows reading Azure, then
+   * Bedrock — because an object literal evaluates its properties in order and
+   * the note was built before the sort. The fixture is served in reverse for
+   * exactly that reason; input order must not reach the screen.
+   */
+  it('derives the sub-line from the sorted rows, not the served order', () => {
+    const groups = getOrderedProviderGroups([
+      provider('versa_bedrock', { ...PRIVATE_REMOTE, institutions: UCSF }, 'Versa API Bedrock'),
+      provider('versa_azure', { ...PRIVATE_REMOTE, institutions: UCSF }, 'Versa API Azure'),
+    ]);
+    const section = groups[1]!.sections[0]!;
+    expect(names(section.providers)).toEqual(['versa_azure', 'versa_bedrock']);
+    expect(section.note).toBe('Versa API Azure · Versa API Bedrock');
+  });
+
+  /** ⚠ And the caller's array is not reordered underneath it. */
+  it('does not mutate the array it was handed', () => {
+    const rows = [
+      provider('zzz', { ...PRIVATE_REMOTE, institutions: UCSF }, 'Zebra'),
+      provider('aaa', { ...PRIVATE_REMOTE, institutions: UCSF }, 'Aardvark'),
+    ];
+    const before = names(rows);
+    getOrderedProviderGroups(rows);
+    expect(names(rows)).toEqual(before);
+  });
+
   it('lists a provider under every institution that covers it', () => {
     const groups = getOrderedProviderGroups([
       provider('shared_gateway', {

@@ -190,6 +190,41 @@ function renderHarness() {
   );
 }
 
+/**
+ * ⚠ **The return type was a lie, and the lie crashed the whole renderer.**
+ * `getCurrentModelDisplayName` is declared `Promise<string>`, and
+ * `getModelDisplayName` returns its argument unchanged for a model it does not
+ * recognise — so an install with no `BIOROUTER_MODEL` got `null`.
+ * `ModelsBottomBar` stores that and reads `.length` off it, and the app fell to
+ * the error boundary with "Cannot read properties of null (reading 'length')".
+ *
+ * It was unreachable only because first-run onboarding could not be skipped.
+ * The moment a user could enter the app unconfigured — which is the point of
+ * "Explore Biorouter first →" — it became the first thing they saw.
+ */
+describe('getCurrentModelDisplayName with nothing configured', () => {
+  function Probe() {
+    const { getCurrentModelDisplayName } = useModelAndProvider();
+    const [name, setName] = useState<string>('pending');
+    return (
+      <button onClick={() => void getCurrentModelDisplayName().then((n) => setName(String(n)))}>
+        {name}
+      </button>
+    );
+  }
+
+  it('never resolves null, whatever the config holds', async () => {
+    mocks.read.mockResolvedValue(null);
+    render(
+      <ModelAndProviderProvider>
+        <Probe />
+      </ModelAndProviderProvider>
+    );
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Select Model'));
+  });
+});
+
 describe('ModelAndProviderProvider Llama Server warm-up', () => {
   beforeEach(() => {
     vi.clearAllMocks();

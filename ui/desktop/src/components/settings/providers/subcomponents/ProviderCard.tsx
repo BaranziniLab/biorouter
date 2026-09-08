@@ -93,11 +93,13 @@ export const ProviderCard = function ProviderCard({
           Configured
         </span>
       )}
+      {/* ⚠ Keyed on the MODE, not on whether the row expands. Exempting
+          expandable rows left the two coding-agent rows wearing a permanent
+          Configure button in a list where every other row reveals one on hover,
+          which reads as two different kinds of row rather than as one list. */}
       <div
         className={
-          !isOnboarding && !expandable
-            ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-150'
-            : ''
+          !isOnboarding ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-150' : ''
         }
       >
         <DefaultCardButtons
