@@ -13,21 +13,27 @@ type ReadableContentProps = {
  * up. It names the TOKEN rather than a literal precisely so that alignment
  * survives the measure changing.
  *
- * Two views read it: **Home** (SessionsInsights.tsx) and **Settings**
- * (settings/SettingsView.tsx, all three of its boxes). Home is the alignment
- * case above — it sits directly over the composer. Settings is a different
- * argument for the same measure and does not depend on adjacency: it is a
- * column of labelled rows, so width beyond the measure separates each control
- * from the label it names instead of showing more (operator decision,
- * 2026-09-07; see the `--measure-page` note in main.css).
+ * Four surfaces read it, for two different reasons (operator decision,
+ * 2026-09-07; see the `--measure-page` note in main.css):
  *
- * **The Scheduler** (schedule/SchedulesView.tsx, schedule/ScheduleDetailView.tsx)
- * reads it too, on Settings' argument rather than Home's: the list pairs a
- * schedule with its status and its actions, the detail pairs a label with the
- * fact it names, so width past the measure lands between the two halves of
- * every row (2026-09-07).
+ * - **Home** (SessionsInsights.tsx) — the alignment case above: it sits
+ *   directly over the composer.
+ * - **Settings** (settings/SettingsView.tsx, all three of its boxes) — a
+ *   column of labelled rows, so width beyond the measure separates each
+ *   control from the label it names instead of showing more.
+ * - **Chat history and the two read-only transcripts**
+ *   (sessions/SessionListView.tsx, SessionHistoryView.tsx,
+ *   SharedSessionView.tsx) — the same row argument as Settings, plus one of
+ *   its own: a history row opens the live chat, and a transcript IS a chat, so
+ *   both must line up with the column the conversation is read in. The
+ *   transcript's old second ceiling — `max-w-4xl`, the 896px replay column —
+ *   is deleted rather than converted; one box, one measure.
+ * - **The Scheduler** (schedule/SchedulesView.tsx, schedule/ScheduleDetailView.tsx)
+ *   — Settings' argument again: the list pairs a schedule with its status and
+ *   its actions, the detail pairs a label with the fact it names, so width past
+ *   the measure lands between the two halves of every row.
  *
- * Everything else — sessions, extensions, skills, workflows, applications — is
+ * Everything else — extensions, skills, workflows, applications — is
  * document-shaped and stays on the fluid page measure below.
  */
 /**

@@ -40,6 +40,7 @@ import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { MODAL_SIZE } from '../ModalShell';
 import { EmptyState } from '../ui/empty-state';
 
 const isUserMessage = (message: Message): boolean => {
@@ -85,7 +86,11 @@ const SessionHeader: React.FC<{
   actionButtons?: React.ReactNode;
 }> = ({ onBack, children, title, titleAdornment, actionButtons }) => {
   return (
-    <div className="biorouter-page-header -mx-8 flex flex-col px-8 pb-8">
+    /* `-mx-6 … px-6` cancels the reading column's own inset so the hairline
+       runs the full width of that column, then puts the inset back on the
+       content. The pair must always match the `px-*` on the `ReadableContent`
+       below — they were `8` while the column was on the page measure. */
+    <div className="biorouter-page-header -mx-6 flex flex-col px-6 pb-8">
       <div className="flex items-center pt-0 mb-1">
         <BackButton onClick={onBack} />
       </div>
@@ -134,34 +139,39 @@ const SessionMessages: React.FC<{
               }
             />
           ) : filteredMessages?.length > 0 ? (
-            <div className="max-w-4xl mx-auto w-full">
-              <SearchView placeholder="Search history...">
-                <ProgressiveMessageList
-                  messages={filteredMessages}
-                  // The REAL session id. This was the string 'session-preview',
-                  // which is nobody's session: every consumer that scopes work
-                  // by id — the scroll broadcast, Branch, an MCP app card —
-                  // silently addressed a chat that does not exist.
-                  chat={{ sessionId }}
-                  toolCallNotifications={new Map()}
-                  // No `append`. It used to be `() => {}`, which is TRUTHY, so
-                  // read-only surfaces advertised send-a-prompt controls that
-                  // did nothing when clicked. Absent means absent.
-                  isUserMessage={isUserMessage} // Use the same function as BaseChat
-                  onOpenArtifact={onOpenArtifact}
-                  // No terminal on this surface, and no chat to open one in: a
-                  // saved transcript is a record, and a shell code block in it
-                  // is history, not an offer. Explicitly null rather than
-                  // omitted, so the absence is a decision and not an oversight
-                  // — the same reason `append` is absent above.
-                  onRunInTerminal={null}
-                  workingDir={workingDir}
-                  batchSize={15} // Same as BaseChat default
-                  batchDelay={30} // Same as BaseChat default
-                  showLoadingThreshold={30} // Same as BaseChat default
-                />
-              </SearchView>
-            </div>
+            /* ⚠ NO measure of its own. This was `max-w-4xl mx-auto w-full` —
+               the 896px replay column — nested inside the page's own reading
+               column, so the transcript had two ceilings and neither was the
+               one the live chat uses. The outer `ReadableContent size="chat"`
+               is the measure now (design of record §4.4, done 2026-09-07); a
+               second `max-w-*` here would silently take precedence again and
+               `styles/measures.test.ts` fails on one. */
+            <SearchView placeholder="Search history...">
+              <ProgressiveMessageList
+                messages={filteredMessages}
+                // The REAL session id. This was the string 'session-preview',
+                // which is nobody's session: every consumer that scopes work
+                // by id — the scroll broadcast, Branch, an MCP app card —
+                // silently addressed a chat that does not exist.
+                chat={{ sessionId }}
+                toolCallNotifications={new Map()}
+                // No `append`. It used to be `() => {}`, which is TRUTHY, so
+                // read-only surfaces advertised send-a-prompt controls that
+                // did nothing when clicked. Absent means absent.
+                isUserMessage={isUserMessage} // Use the same function as BaseChat
+                onOpenArtifact={onOpenArtifact}
+                // No terminal on this surface, and no chat to open one in: a
+                // saved transcript is a record, and a shell code block in it
+                // is history, not an offer. Explicitly null rather than
+                // omitted, so the absence is a decision and not an oversight
+                // — the same reason `append` is absent above.
+                onRunInTerminal={null}
+                workingDir={workingDir}
+                batchSize={15} // Same as BaseChat default
+                batchDelay={30} // Same as BaseChat default
+                showLoadingThreshold={30} // Same as BaseChat default
+              />
+            </SearchView>
           ) : (
             <EmptyState
               icon={MessageSquareText}
@@ -287,6 +297,15 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
 
   const actionButtons = showActionButtons ? (
     <>
+      {/* V7 — the Share button carries no `className`. It hand-painted the
+          disabled look (`cursor-not-allowed opacity-50`) that
+          `buttonVariants`' base already supplies as
+          `disabled:pointer-events-none disabled:opacity-50`, keyed off the same
+          `disabled` prop. ⚠ That base rule also means the tooltip explaining
+          WHY sharing is unavailable has never fired — a pointer-events-none
+          trigger receives no hover — and deleting the override does not change
+          that either way. Restoring it needs a wrapper the trigger can sit on,
+          which is a behaviour change and not this PR's. */}
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -294,7 +313,6 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             disabled={!canShare || isSharing}
             size="sm"
             variant="outline"
-            className={canShare ? '' : 'cursor-not-allowed opacity-50'}
           >
             {isSharing ? (
               <>
@@ -339,7 +357,13 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             is meant to sit beside. `splitPaneRef` goes here because rung 2
             measures this box — the one the transcript and the panel share. */}
         <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
-          <ReadableContent className="flex-1 flex flex-col min-h-0 px-8">
+          {/* ⚠ `size="chat"`, and it is the ONLY measure on this surface. The
+              transcript used to sit in a second, narrower box inside this one
+              (`max-w-4xl` — the 896px "replay fork"), so a saved conversation
+              was drawn at a width the live chat never uses. §4.4 of the design
+              of record retires it: one column, one number, and it is the same
+              `--measure-chat` the composer reads. */}
+          <ReadableContent size="chat" className="flex-1 flex flex-col min-h-0 px-6">
             <SessionHeader
               onBack={onBack}
               title={session.name}
@@ -387,7 +411,9 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                     </div>
                   </>
                 ) : (
-                  <div className="flex items-center text-secondary text-text-muted">
+                  // V6 — a status line takes `text-supporting`, the role the
+                  // metadata it stands in for uses.
+                  <div className="flex items-center text-supporting text-text-muted">
                     <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
                     <span>Loading chat details...</span>
                   </div>
@@ -415,7 +441,10 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       </MainPanelLayout>
 
       <Dialog open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>
-        <DialogContent className="sm:max-w-md">
+        {/* V8 — the `MODAL_SIZE` ladder, not `sm:max-w-md`. That alias is 448px,
+            a fourth width beside the ladder's 400/480/640, and nothing chose
+            it: it is `DialogContent`'s own `sm:max-w-lg` typed one rung down. */}
+        <DialogContent className={MODAL_SIZE.md}>
           <DialogHeader>
             <DialogTitle className="flex justify-center items-center gap-2">
               <Share2 className="w-6 h-6 text-text-default" />

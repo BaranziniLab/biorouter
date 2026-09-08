@@ -42,6 +42,13 @@ const ARTIFACT_PANEL_MAX_WIDTH = 920;
 // is wider than 640 anyway, so parameterising this would only create a way for
 // the panel to behave differently depending on which surface you opened it
 // from — the exact divergence this hook exists to end.
+//
+// ⚠ That "wider than 640" was written when a transcript's measure was 896px
+// (the replay fork) or 1120px (the page measure). Both are gone: all three
+// surfaces read `--measure-chat` = 760px now, so the margin is 120px rather
+// than 250+. Still true, and still the right number — but it is the value to
+// re-check first if the chat measure ever moves, because at 640 this floor
+// stops being a floor under the column and becomes the column.
 const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
 const ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO = 0.48;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
