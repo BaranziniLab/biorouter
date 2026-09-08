@@ -16,11 +16,19 @@ import {
  * The reading measures. **The two are governed by opposite rules, and that is
  * the whole point of this file.**
  *
- * `--measure-page` must stay FLUID. It governs settings, sessions and the other
- * document-shaped views, where a wider window genuinely buys content — more
- * table columns, more cards per row. It was once a flat cap, and the symptom was
- * reported as "the app doesn't rescale with the window": dragging the window
- * wider bought margin rather than content.
+ * `--measure-page` must stay FLUID. It governs the document-shaped views —
+ * sessions, extensions, skills, schedules, workflows, applications — where a
+ * wider window genuinely buys content: more table columns, more cards per row.
+ * It was once a flat cap, and the symptom was reported as "the app doesn't
+ * rescale with the window": dragging the window wider bought margin rather than
+ * content.
+ *
+ * ⚠ **Settings is no longer one of them** (operator decision, 2026-09-07), and
+ * this paragraph named it first until that date. Settings is a column of
+ * labelled rows rather than a document, so the extra width a wide window hands
+ * it lands BETWEEN each label and the control it names — margin again, just
+ * distributed differently. It reads the chat measure now, which is why the
+ * last describe block in this file guards that at the source.
  *
  * `--measure-chat` must stay FLAT at 760px. It was briefly widened into a clamp
  * on the same reasoning, and that was wrong for this measure specifically: a
@@ -44,6 +52,10 @@ import {
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const READABLE = readFileSync(join(__dirname, '../components/Layout/ReadableContent.tsx'), 'utf8');
 const MAIN = readFileSync(join(__dirname, '../main.ts'), 'utf8');
+const SETTINGS_VIEW = readFileSync(
+  join(__dirname, '../components/settings/SettingsView.tsx'),
+  'utf8'
+);
 
 function declaration(name: string): string {
   const match = CSS.match(new RegExp(`--${name}:\\s*([^;]+);`));
@@ -196,5 +208,43 @@ describe('the minimum window width is derived from the sidebar and the chat meas
    */
   it('is expressed in content coordinates', () => {
     expect(MAIN).toMatch(/useContentSize: true/);
+  });
+});
+
+/**
+ * Settings reads the CHAT measure, not the page measure (operator decision,
+ * 2026-09-07). The reasoning is in the header of this file and in the
+ * `--measure-page` note in main.css; what is asserted here is only that the
+ * view has not drifted back.
+ *
+ * ⚠ **Asserted at the SOURCE, for the same reason every other assertion in
+ * this file is.** jsdom has no layout engine and never runs Tailwind, so a test
+ * that renders SettingsView and reads a column's `getBoundingClientRect()` sees
+ * zero whatever the size prop says — the widths this guards are only real in a
+ * browser against the built stylesheet. The neighbouring
+ * `SettingsView.test.tsx` asserts the rendered `data-size` attribute and its
+ * count, which is the strongest statement a DOM test can make; this one closes
+ * the case that test cannot see, a `<ReadableContent` added to the JSX with no
+ * `size` at all, since the prop DEFAULTS to the page measure and so a
+ * forgotten size is silently the wrong one.
+ */
+describe('Settings sits on the chat measure', () => {
+  const OPENING_TAGS = SETTINGS_VIEW.match(/<ReadableContent\b[^>]*>/g) ?? [];
+
+  /**
+   * Guards against the vacuous pass: with no matches the loop below asserts
+   * nothing, and renaming or removing the component would look like success.
+   */
+  it('renders the reading column at all', () => {
+    expect(OPENING_TAGS.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Every one, not "the body one". The header, the tab strip and the scrolling
+   * body are three separate boxes sharing one left edge, so a size on one and
+   * not its siblings is a visible step in that edge.
+   */
+  it('gives every reading column the chat size, none left on the default', () => {
+    for (const tag of OPENING_TAGS) expect(tag).toContain('size="chat"');
   });
 });

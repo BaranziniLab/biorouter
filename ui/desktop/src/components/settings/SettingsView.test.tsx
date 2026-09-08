@@ -85,3 +85,51 @@ describe('SettingsView', () => {
     expect(await screen.findByRole('switch', { name: /Privacy tiers/ })).toBeInTheDocument();
   });
 });
+
+/**
+ * Settings reads the CHAT measure (760px), not the fluid page measure
+ * (operator decision, 2026-09-07): it is a column of labelled rows, so width
+ * beyond the measure separates each control from the label it names instead of
+ * showing more.
+ *
+ * ⚠ **What this can and cannot see.** jsdom has no layout engine and never runs
+ * Tailwind, so `getBoundingClientRect()` here is zero for every box and the
+ * WIDTH is unassertable — the alignment was measured in a real browser instead
+ * (see the PR). What is assertable is the attribute that selects the width, and
+ * that all three boxes agree on it: the header, the tab strip and the scrolling
+ * body are three separate `ReadableContent`s meeting at one left edge, so a
+ * size on one and not its siblings is a visible step in that edge rather than
+ * an invisible inconsistency. The count is pinned so that a fourth column added
+ * on the default size fails here rather than shipping a step, and
+ * `styles/measures.test.ts` closes the remaining case this file cannot see: a
+ * `<ReadableContent` written with no `size` prop at all.
+ */
+describe('SettingsView sits on the chat measure', () => {
+  const readableColumns = () =>
+    [...document.querySelectorAll('.biorouter-readable-content')] as HTMLElement[];
+
+  it('renders exactly three reading columns, all of them the chat size', () => {
+    renderSettings();
+
+    const columns = readableColumns();
+    expect(columns).toHaveLength(3);
+    for (const column of columns) expect(column.dataset.size).toBe('chat');
+  });
+
+  /**
+   * The tab strip and the body are inside `Tabs`, so switching tabs re-renders
+   * the body. Asserted on the App tab as well because that is the tab with the
+   * most sections under it, and the one a later edit is most likely to wrap in
+   * a column of its own.
+   */
+  it('keeps every column on the chat size after switching tabs', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByTestId('settings-app-tab'));
+    await screen.findByRole('switch', { name: /Privacy tiers/ });
+
+    const columns = readableColumns();
+    expect(columns).toHaveLength(3);
+    for (const column of columns) expect(column.dataset.size).toBe('chat');
+  });
+});

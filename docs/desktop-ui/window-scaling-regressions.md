@@ -34,6 +34,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 | `text` empty, or `hash` is `#/pair` | **Not a layout bug.** The app is not rendering — see *A dead daemon* below. |
 | `inner` ≠ `outer` | **Not a layout bug.** Your tooling pinned the viewport — see *Viewport emulation* below. |
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
+| Everything tracks, but the view is **Settings** (or Home) and its column stops at 760px | **Not a layout bug.** Both read the chat measure by decision — see *Settings, on the chat measure* below. |
 | Everything tracks, but content stays the same width | **The real one.** A fixed pixel cap — see below. |
 
 ## The real product cause: a fixed pixel cap
@@ -43,13 +44,20 @@ a wider window buys **margin**, not content: at 1800px the chat column sat at
 760px with roughly 400px of dead band on each side, which is exactly what
 "doesn't scale with the window" looks like to someone dragging the edge.
 
-The fix is that every measure is a `clamp()` whose middle term is a
+The fix was to make the **page** measure a `clamp()` whose middle term is a
 **percentage**:
 
 ```css
---measure-chat: clamp(760px, 78%, 1180px);
 --measure-page: clamp(1120px, 88%, 1720px);
 ```
+
+⚠ **The chat measure is NOT one of them, and this block listed it as
+`clamp(760px, 78%, 1180px)` until 2026-09-07.** It was briefly widened that way
+on the reasoning above, and reverted: a 1180px composer is not a more capable
+composer, it is a line of prose the eye has to track back across. It is a flat
+`--measure-chat: 760px`, and `styles/measures.test.ts` asserts that literal
+string precisely so a re-widening cannot land quietly. Read main.css before
+quoting either value.
 
 Two invariants, both learned the hard way:
 
@@ -126,6 +134,43 @@ and Dock are removed — a worse bug than the one being fixed. The heatmap keeps
 its chrome locked to its own grid instead (`UsageHeatmap`'s `heatStyle` sets the
 block's width from the fitted footprint), so a compressed grid stays a coherent
 block rather than leaving its labels and legend pinned to the old edge.
+
+### Not this: Settings, on the chat measure by decision (2026-09-07)
+
+**Settings stops widening at 760px, and that is the intended behaviour** — not
+the fixed-cap bug above, and not a measure someone forgot to clamp. All three of
+its reading columns (header, tab strip, scrolling body) are
+`<ReadableContent size="chat">` in `components/settings/SettingsView.tsx`, so
+Settings, Home, the chat transcript and the composer share one left edge and one
+width at every window size.
+
+The distinction that decides which of the two you are looking at is **what the
+extra width would have bought**, not whether the column moved:
+
+- A **document-shaped** view — sessions, extensions, skills, schedules,
+  workflows, applications — gains real content from a wider window: more table
+  columns, more cards per row. Those stay on `--measure-page` and a flat cap
+  there is the regression this page is about.
+- **Settings is a column of labelled rows**: a label on the left, the control it
+  names on the right, one per row. Widening the column adds nothing to either
+  half — it only pushes them apart, so at 1800px the Local Model Inventory's
+  Install button sat about a foot from the model it installs. That is the same
+  "margin, not content" failure as the fixed cap, arriving from the opposite
+  direction.
+
+So a report of the form *"Settings doesn't use my big monitor"* is expected and
+closes as working-as-intended; a report of the form *"Settings truncates / hides
+something at 760px"* is a real bug, and the fix belongs in the section that
+truncates — `min-w-0`, `flex-wrap`, or letting a line wrap — never in the
+measure. (One such fix shipped with the move: the model inventory's metadata
+line was `truncate`, which at the 508px label block ate the context window and
+the model id; it wraps now.)
+
+⚠ **jsdom cannot see any of this**, exactly as with the fixed cap: there is no
+layout engine and Tailwind never runs, so `SettingsView.test.tsx` asserts the
+`data-size` attribute and its count, and `styles/measures.test.ts` asserts at the
+source that no `<ReadableContent` in that file is left on the default size. The
+widths themselves were measured in the running app.
 
 ## The four impostors
 

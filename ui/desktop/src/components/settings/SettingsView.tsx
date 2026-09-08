@@ -82,7 +82,23 @@ export default function SettingsView({
               ReadableContent itself, so it stopped at the reading column while
               every other view's ran edge to edge. */}
           <div className="flex-shrink-0 border-b border-border-subtle">
-            <ReadableContent className="px-8 pt-12 pb-6">
+            {/* ⚠ All THREE of this view's `ReadableContent`s are `size="chat"`,
+                and they move together or not at all. Settings is a column of
+                labelled rows — a label on the left, a control on the right —
+                and at the page measure a wider window bought margin between
+                the two rather than content, dragging every control away from
+                the thing it names. The chat measure is what Home already uses
+                (SessionsInsights.tsx), so Settings, Home, the transcript and
+                the composer are one edge.
+
+                The header, the tab strip and the scrolling body are three
+                separate boxes precisely because the hairline under the header
+                is full-bleed (the §4.2 note just above), so a size on one and
+                not the others is a visible step in that shared left edge
+                rather than a mistake in a single component. `measures.test.ts`
+                asserts at the source that no `<ReadableContent` here is left
+                without it. */}
+            <ReadableContent size="chat" className="px-6 pt-12 pb-6">
               <h1 className="text-title mb-1 page-transition">Settings</h1>
               <p className="text-secondary text-text-muted">
                 Manage models, chat behavior, and app preferences
@@ -96,7 +112,7 @@ export default function SettingsView({
               onValueChange={handleTabChange}
               className="h-full flex flex-col"
             >
-              <ReadableContent className="px-8 pt-4">
+              <ReadableContent size="chat" className="px-6 pt-4">
                 {/* §4.2 — one rule, not two. `TabsList` carries its own bottom
                     hairline, which landed a few pixels under the header's and
                     read as a double rule unique to Settings. */}
@@ -129,7 +145,7 @@ export default function SettingsView({
               </ReadableContent>
 
               <ScrollArea className="flex-1" paddingX={1}>
-                <ReadableContent className="px-8 py-5">
+                <ReadableContent size="chat" className="px-6 py-5">
                   <TabsContent value="models" className="mt-0">
                     <ModelsSection setView={setView} />
                   </TabsContent>

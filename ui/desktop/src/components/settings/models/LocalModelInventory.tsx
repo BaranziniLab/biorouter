@@ -492,7 +492,19 @@ export default function LocalModelInventory() {
                         {fitLabel(model)}
                       </span>
                     </div>
-                    <p className="mt-1 truncate text-xs text-text-muted">
+                    {/* ⚠ WRAPS, never truncates. This line was `truncate`,
+                        which was survivable while Settings read the fluid page
+                        measure and the label block was ~1000px wide. On the
+                        chat measure the block is 508px (measured, 712px column
+                        minus the action group and the row's own padding) and
+                        the longest catalog entry needs 680 — so an ellipsis ate
+                        the last two fields, which are the two that identify the
+                        model: its context window and its `ollama_name`/`hf_spec`.
+                        Truncation is for a NAME whose head identifies it; this
+                        is a sentence whose tail does, so it wraps to a second
+                        line instead. The name above still truncates, correctly:
+                        the chips beside it wrap first. */}
+                    <p className="mt-1 text-xs leading-5 text-text-muted">
                       {model.family} · {model.download_size} · {model.speed_hint} ·{' '}
                       {formatContext(model.context_limit)} context ·{' '}
                       {model.ollama_name ?? model.hf_spec}
