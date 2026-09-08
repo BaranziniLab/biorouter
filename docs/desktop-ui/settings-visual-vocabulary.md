@@ -226,6 +226,20 @@ at, so Settings' stays below the header. A **filter** — Chat history's "Show s
 changes what the page shows rather than doing something, so it is `PageHeader`'s `children`,
 under the strip rather than in it.
 
+**A tab in that strip takes no focus fill (2026-09-08).** D-15 makes focus a surface shift, and
+`ui/desktop/src/components/ui/tabs.tsx` renders a `<button role="tab">` that Radix activates on
+focus — so the focused tab is always the _active_ tab and `--background-focus` parked itself on it
+permanently, a grey box around the accent underline. Measured in Parchment light: a mouse click read
+`rgba(0, 0, 0, 0)`, but one arrow key inside the strip read `rgb(224, 224, 220)` and it then stayed.
+The base rule in `styles/main.css` now excludes `[role='tab']`, and a focused tab firms its
+underline instead — the `after:` bar goes 2px → 3px with the label at `--text-default`. The rule is
+on the TRIGGER, not on this page: `settings/providers/ProviderCatalog.tsx` reuses the same
+`.biorouter-settings-tabs` strip, and Knowledge's Sources/Graph strip uses the same primitive.
+`styles/tabFocus.test.ts` guards it. Two traps recorded there: the exclusion must wrap the whole
+`:where()` list (a trigger matches `button`, `[role='tab']` _and_ `[tabindex]:not([tabindex='-1'])`,
+so removing one arm changes nothing), and the underline rule must be **unlayered** or the Tailwind
+utility that sets the bar's height beats it silently.
+
 ## The two primitives
 
 ### `components/ui/note.tsx`
