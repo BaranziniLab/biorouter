@@ -16,21 +16,29 @@ import {
  * The reading measures. **The two are governed by opposite rules, and that is
  * the whole point of this file.**
  *
- * `--measure-page` must stay FLUID. It governs the document-shaped views —
- * extensions, skills, schedules, workflows, applications — where a wider window
- * genuinely buys content: more table columns, more cards per row. It was once a
- * flat cap, and the symptom was reported as "the app doesn't rescale with the
- * window": dragging the window wider bought margin rather than content.
+ * `--measure-page` must stay FLUID, and it is still a clamp for that reason: it
+ * was once a flat cap, and the symptom was reported as "the app doesn't rescale
+ * with the window" — dragging the window wider bought margin rather than
+ * content. That rule has not changed and this file still guards it.
  *
- * ⚠ **Neither Settings nor the chat-history surfaces are among them any more**
- * (operator decision, 2026-09-07), and this paragraph named Settings first and
- * sessions second until that date. Neither is a document: each is a column of
- * labelled rows, so the extra width a wide window hands it lands BETWEEN each
- * label and the thing it names — margin again, just distributed differently. In
- * Settings that separated a control from its label; in Chat history it left the
- * per-chat counts about 700px from the chat they count, measured at 1440. Both
- * read the chat measure now, which is why the last describe block in this file
- * guards that at the source for all four views.
+ * ⚠ **What HAS changed is that nothing reads it any more** (operator decision,
+ * 2026-09-07). This paragraph used to say the token "governs the
+ * document-shaped views — extensions, skills, schedules, workflows,
+ * applications", and named Settings and sessions before that. Every one of
+ * those has since been measured and moved: none is a document, each is a column
+ * of labelled rows, so the extra width a wide window handed it landed BETWEEN
+ * each label and the thing it names — margin again, just distributed
+ * differently. In Settings that separated a control from its label; in Chat
+ * history it left the per-chat counts about 700px from the chat they count,
+ * measured at 1440; in the component views it opened a gap between a row's
+ * title and its own actions.
+ *
+ * So `CHAT_MEASURE_VIEWS` below is now every view in `components/`, and the
+ * page measure's readers number zero. Neither the token nor `ReadableContent`'s
+ * `text` size is deleted for that: `text` is still the DEFAULT, which is
+ * precisely why the guard names each view at the SOURCE instead of trusting
+ * it, and a view that genuinely is a document should still have a measure to
+ * reach for.
  *
  * `--measure-chat` must stay FLAT at 760px. It was briefly widened into a clamp
  * on the same reasoning, and that was wrong for this measure specifically: a
