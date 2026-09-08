@@ -1,6 +1,6 @@
 # The settings visual vocabulary
 
-> **What this is.** The nine rules that govern how the desktop Settings view (Models, Chat, App) is built, and the two primitives they lean on — a living reference for anyone adding or changing a control there.
+> **What this is.** The nine rules that govern how the desktop Settings view (Models, Chat, App) — and, since 2026-09-07, the Scheduler (`components/schedule/`) — is built, and the two primitives they lean on — a living reference for anyone adding or changing a control there.
 > **Status:** Current.
 > **Audience:** contributors working on the desktop renderer.
 
@@ -17,7 +17,11 @@ repo — [`design.md`](../../design.md) (the Parchment design system),
 `ui/desktop/src/styles/main.css` with its own comments.
 
 Six of the rules are enforced at the source by
-`ui/desktop/src/components/settings/settingsVocabulary.test.ts`. That is a source test and
+`ui/desktop/src/components/settings/settingsVocabulary.test.ts`, which walks a
+`ROOTS` list — the settings directory, plus each surface since swept onto the
+vocabulary. Adding a directory to that list is how a surface joins; one root per
+line, so two sweeps of two different surfaces merge without touching each
+other's. That is a source test and
 not a render test on purpose: jsdom never runs Tailwind, so a class string that paints a
 row computes to nothing there and a render test passes whether the class is present or
 not. Two of the rules are worse than invisible to a render test, because the defect only
@@ -234,6 +238,24 @@ component's own type classes; `variant` is `note` (the boxed neutral `Note`) or 
 (flush, hairline-separated, for inside a dropdown's item list); `testId` is overridable so
 one surface can mount several. It renders nothing on the desktop, so every call site mounts
 it unconditionally.
+
+## What this covers beyond Settings
+
+**The Scheduler** (`components/schedule/`) was swept onto it on 2026-09-07 and is the
+second root the guard walks. Two of its constructions are worth naming because they are
+what the vocabulary looks like on a surface that is not Settings:
+
+- **A definition row is `.biorouter-settings-row`.** Astryx §4.5 asks the schedule detail
+  for "definition rows"; rather than invent one, the label/value pair takes the row
+  Settings already uses for a label and the control it names — muted label left, value on
+  the trailing edge, `font-mono` where the value is a path, a cron expression or an id.
+  A fact and a control are the same shape of thing on a page, and a near-miss of one row
+  is how two rows drift.
+- **A status is a dot plus a word, never a filled pill.** Running / Paused / Failed /
+  Scheduled were `rounded-md` chips on hand-mixed `bg-background-{tone}` alphas — rule 4's
+  banned construction, and a fill §2.5 reserves for a `Note` rather than for a word inside
+  a row. `components/schedule/scheduleStatus.tsx` is the one definition both Scheduler
+  surfaces read.
 
 ## What this does not cover
 

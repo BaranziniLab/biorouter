@@ -21,8 +21,14 @@ type ReadableContentProps = {
  * from the label it names instead of showing more (operator decision,
  * 2026-09-07; see the `--measure-page` note in main.css).
  *
- * Everything else — sessions, extensions, skills, schedules, workflows,
- * applications — is document-shaped and stays on the fluid page measure below.
+ * **The Scheduler** (schedule/SchedulesView.tsx, schedule/ScheduleDetailView.tsx)
+ * reads it too, on Settings' argument rather than Home's: the list pairs a
+ * schedule with its status and its actions, the detail pairs a label with the
+ * fact it names, so width past the measure lands between the two halves of
+ * every row (2026-09-07).
+ *
+ * Everything else — sessions, extensions, skills, workflows, applications — is
+ * document-shaped and stays on the fluid page measure below.
  */
 /**
  * ⚠ Every one of these is a CLAMP, not a flat cap, for the reason spelled out

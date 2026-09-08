@@ -474,9 +474,9 @@
      the measure, not the floor of one.
 
      `--measure-page` stays FLUID. It governs the document-shaped views —
-     sessions, extensions, skills, schedules, workflows, applications — where a
-     wide window genuinely does buy content (more table columns, more cards per
-     row) rather than a longer line. PERCENTAGES, not `vw`, for the reason that
+     sessions, extensions, skills, workflows, applications — where a wide
+     window genuinely does buy content (more table columns, more cards per row)
+     rather than a longer line. PERCENTAGES, not `vw`, for the reason that
      has not changed: a percentage resolves against the containing block, which
      is the content pane, while `vw` is the whole viewport and would over-count
      by the sidebar's width — widening the column exactly when the sidebar
@@ -492,6 +492,14 @@
      `ReadableContent`s (header, tab strip, scrolling body) read the chat
      measure now, so Settings, Home, the transcript and the composer share one
      left edge. See components/settings/SettingsView.tsx.
+
+     ⚠ **The Scheduler is not in that list any more either** (2026-09-07),
+     which is why `schedules` came out of it above. Both of its surfaces are
+     columns of rows on the same argument Settings makes: the list pairs a
+     schedule with its status and its actions, the detail pairs a label with
+     the fact it names, and width past the measure lands between the two
+     halves of every row. See components/schedule/SchedulesView.tsx and
+     components/schedule/ScheduleDetailView.tsx.
 
      Nothing narrow changes either way: `max-width` never forces a box wider
      than its parent, so below 760px the chat column is simply pane-wide. */

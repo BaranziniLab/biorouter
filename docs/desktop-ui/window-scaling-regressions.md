@@ -147,10 +147,10 @@ width at every window size.
 The distinction that decides which of the two you are looking at is **what the
 extra width would have bought**, not whether the column moved:
 
-- A **document-shaped** view — sessions, extensions, skills, schedules,
-  workflows, applications — gains real content from a wider window: more table
-  columns, more cards per row. Those stay on `--measure-page` and a flat cap
-  there is the regression this page is about.
+- A **document-shaped** view — sessions, extensions, skills, workflows,
+  applications — gains real content from a wider window: more table columns,
+  more cards per row. Those stay on `--measure-page` and a flat cap there is
+  the regression this page is about.
 - **Settings is a column of labelled rows**: a label on the left, the control it
   names on the right, one per row. Widening the column adds nothing to either
   half — it only pushes them apart, so at 1800px the Local Model Inventory's
@@ -165,6 +165,16 @@ truncates — `min-w-0`, `flex-wrap`, or letting a line wrap — never in the
 measure. (One such fix shipped with the move: the model inventory's metadata
 line was `truncate`, which at the 508px label block ate the context window and
 the model id; it wraps now.)
+
+**The Scheduler joined it on 2026-09-07**, which is why `schedules` left the
+document-shaped list above. Both of its surfaces are columns of rows on the same
+argument: the list pairs a schedule with its status and its actions, and the
+detail pairs a label with the fact it names, so the extra width a wide window
+hands either one lands between the two halves of every row. Both
+`components/schedule/SchedulesView.tsx` and
+`components/schedule/ScheduleDetailView.tsx` read `size="chat"`, and
+`styles/measures.test.ts` asserts it at the source for the same jsdom reason as
+the paragraph below.
 
 ⚠ **jsdom cannot see any of this**, exactly as with the fixed cap: there is no
 layout engine and Tailwind never runs, so `SettingsView.test.tsx` asserts the
