@@ -156,8 +156,8 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
     await goToSkills();
     await page.screenshot({ path: 'test-results/spoke-03-skills-settings.png' });
 
-    // "Add Skill" button always present
-    await expect(page.locator('button:has-text("Add Skill")')).toBeVisible({ timeout: 5000 });
+    // "Add skill" button always present
+    await expect(page.locator('button:has-text("Add skill")')).toBeVisible({ timeout: 5000 });
 
     // Count any switch elements — each skill row should have one
     const switches = page.locator('button[role="switch"]');

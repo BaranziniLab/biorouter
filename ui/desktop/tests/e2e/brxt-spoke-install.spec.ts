@@ -123,7 +123,7 @@ test.describe('SPOKEAgent .brxt install flow', () => {
 
   test('2. Click "Add extension" — modal opens', async () => {
     await mainWindow.click(
-      'button:has-text("Add extension"), button:has-text("Add Extension")',
+      'button:has-text("Add extension")',
       { timeout: 5000 }
     );
     // Verify the modal dialog is open (avoid strict-mode by targeting the dialog role)

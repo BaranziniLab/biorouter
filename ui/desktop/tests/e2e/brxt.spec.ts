@@ -197,26 +197,29 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
   // ---------------------------------------------------------------------------
   // Test 1: Button layout in the Extensions tab header
   // ---------------------------------------------------------------------------
-  test('Extensions tab has correct button layout — Add Extension, Browse Extensions, Add Custom Extension', async () => {
+  test('Extensions tab has correct button layout — Add extension, Browse extensions, Add custom extension', async () => {
     await goToExtensions();
 
-    // Verify all three buttons are visible (UI uses title-case)
-    const addExtBtn = page.locator('button:has-text("Add Extension")').first();
-    const browseBtn = page.locator('button:has-text("Browse Extensions")').first();
-    const addCustomBtn = page.locator('button:has-text("Add Custom Extension")').first();
+    // Verify all three buttons are visible (UI copy is sentence case)
+    const addExtBtn = page.locator('button:has-text("Add extension")').first();
+    const browseBtn = page.locator('button:has-text("Browse extensions")').first();
+    const addCustomBtn = page.locator('button:has-text("Add custom extension")').first();
 
     await expect(addExtBtn).toBeVisible();
     await expect(browseBtn).toBeVisible();
     await expect(addCustomBtn).toBeVisible();
 
-    // Verify DOM order in the header button row (.flex.gap-3 above the scroll area)
+    // Verify DOM order in the header button row. The strip is
+    // `PageHeader`'s `.biorouter-settings-control-strip`; the `.flex.gap-3.mt-5`
+    // this used to name is the hand-rolled row that component replaced, and
+    // `styles/measures.test.ts` now bans it at the source.
     const buttonTexts: string[] = await page.$$eval(
-      '.flex.gap-3.mt-5 button',
+      '.biorouter-settings-control-strip button',
       (btns: Element[]) => btns.map((b) => b.textContent?.trim() ?? '')
     );
-    const addIdx = buttonTexts.findIndex((t) => t.includes('Add Extension'));
-    const browseIdx = buttonTexts.findIndex((t) => t.includes('Browse Extensions'));
-    const customIdx = buttonTexts.findIndex((t) => t.includes('Add Custom Extension'));
+    const addIdx = buttonTexts.findIndex((t) => t.includes('Add extension'));
+    const browseIdx = buttonTexts.findIndex((t) => t.includes('Browse extensions'));
+    const customIdx = buttonTexts.findIndex((t) => t.includes('Add custom extension'));
 
     expect(addIdx).toBeGreaterThanOrEqual(0);
     expect(browseIdx).toBeGreaterThan(addIdx);
@@ -251,7 +254,7 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     await expect(dialog.getByText('Test Extension', { exact: true })).toBeVisible();
     await expect(dialog.locator('text=1.0.0')).toBeVisible();
 
-    // The modal title should still say "Add Extension" (step === 'drop')
+    // The modal title should still say "Add extension" (step === 'drop')
     await expect(page.locator('[role="dialog"] [data-slot="dialog-title"]')).toHaveText(
       /Add extension/i
     );

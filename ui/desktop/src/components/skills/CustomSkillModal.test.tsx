@@ -20,7 +20,7 @@ describe('CustomSkillModal', () => {
     };
 
     render(<CustomSkillModal onClose={onClose} onSaved={() => {}} />);
-    await user.click(screen.getByRole('button', { name: 'Save Skill' }));
+    await user.click(screen.getByRole('button', { name: 'Save skill' }));
 
     expect(await screen.findByRole('button', { name: 'Saving…' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument();
@@ -29,6 +29,6 @@ describe('CustomSkillModal', () => {
     expect(onClose).not.toHaveBeenCalled();
 
     finishWrite(false);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save Skill' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save skill' })).toBeEnabled());
   });
 });

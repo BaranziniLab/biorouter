@@ -201,15 +201,15 @@ export default function SkillsView() {
             <>
               <Button variant="default" onClick={() => setIsAddModalOpen(true)}>
                 <Upload className="h-4 w-4" />
-                Add Skill
+                Add skill
               </Button>
               <Button variant="outline" onClick={() => setIsBrowseModalOpen(true)}>
                 <Globe className="h-4 w-4" />
-                Browse Skills
+                Browse skills
               </Button>
               <Button variant="outline" onClick={() => setIsCustomModalOpen(true)}>
                 <Plus className="h-4 w-4" />
-                Add Custom Skill
+                Add custom skill
               </Button>
             </>
           }
@@ -318,7 +318,7 @@ export default function SkillsView() {
                   actions={
                     <Button onClick={() => setIsAddModalOpen(true)}>
                       <Upload className="h-4 w-4" />
-                      Add Skill
+                      Add skill
                     </Button>
                   }
                 />
@@ -356,7 +356,7 @@ export default function SkillsView() {
             ? `This will permanently remove all ${pendingDelete.bundle.skills.length} skills in this package. This action cannot be undone.`
             : 'This will permanently remove the skill folder from disk. This action cannot be undone.'
         }
-        confirmLabel={pendingDelete?.kind === 'bundle' ? 'Delete Package' : 'Delete'}
+        confirmLabel={pendingDelete?.kind === 'bundle' ? 'Delete package' : 'Delete'}
         cancelLabel="Cancel"
         confirmVariant="destructive"
         isSubmitting={isDeleting}

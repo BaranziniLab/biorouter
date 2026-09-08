@@ -14,7 +14,7 @@ interface Props {
 }
 
 /**
- * Add Skill.
+ * Add skill.
  *
  * ⚠ **Nothing here parses an archive.** The modal used to read a `.md` in the
  * renderer and hand a `.zip` to a depth-counting daemon parser, and it had no
@@ -142,7 +142,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         className={`flex max-h-[80vh] flex-col gap-0 overflow-hidden p-0 ${MODAL_SIZE.lg}`}
       >
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
-          <DialogTitle>Add Skill</DialogTitle>
+          <DialogTitle>Add skill</DialogTitle>
         </div>
 
         <div className="p-6 flex flex-col gap-4 overflow-y-auto">
@@ -265,7 +265,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
 
 function installLabel(preview: ImportPreview | null): string {
   if (!preview) return 'Install';
-  if (preview.kind === 'single') return 'Install Skill';
+  if (preview.kind === 'single') return 'Install skill';
   return `Install ${preview.components.length} skills`;
 }
 

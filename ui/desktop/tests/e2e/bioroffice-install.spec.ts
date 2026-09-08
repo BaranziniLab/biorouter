@@ -113,11 +113,8 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
     await mainWindow.screenshot({ path: 'test-results/bioroffice-1-extensions.png' });
   });
 
-  test('2. Open Add Extension modal and load bioroffice.brxt', async () => {
-    await mainWindow.click(
-      'button:has-text("Add extension"), button:has-text("Add Extension")',
-      { timeout: 5000 }
-    );
+  test('2. Open Add extension modal and load bioroffice.brxt', async () => {
+    await mainWindow.click('button:has-text("Add extension")', { timeout: 5000 });
     await expect(mainWindow.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });
     // PLAYWRIGHT_BRXT_FILE hook returns our path without a native dialog
     await mainWindow.click('button:has-text("Browse file")', { timeout: 5000 });

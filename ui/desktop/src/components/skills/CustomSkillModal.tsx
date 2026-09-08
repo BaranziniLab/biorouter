@@ -80,7 +80,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
         className={`flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 ${MODAL_SIZE.lg}`}
       >
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
-          <DialogTitle>Add Custom Skill</DialogTitle>
+          <DialogTitle>Add custom skill</DialogTitle>
         </div>
 
         <div className="p-6 flex flex-col gap-3 flex-1 overflow-hidden">
@@ -107,7 +107,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
             Cancel
           </Button>
           <Button variant="default" onClick={handleSave} disabled={isSaving}>
-            {isSaving ? 'Saving…' : 'Save Skill'}
+            {isSaving ? 'Saving…' : 'Save skill'}
           </Button>
         </div>
       </DialogContent>

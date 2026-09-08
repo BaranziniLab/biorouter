@@ -120,11 +120,11 @@ describe('ExtensionsView — the shared page header', () => {
   it('puts all three actions in one control strip under the description', async () => {
     renderView();
 
-    const add = await screen.findByRole('button', { name: 'Add Extension' });
+    const add = await screen.findByRole('button', { name: 'Add extension' });
     const strip = add.closest('.biorouter-settings-control-strip');
     expect(strip).not.toBeNull();
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Browse Extensions' }));
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Add Custom Extension' }));
+    expect(strip).toContainElement(screen.getByRole('button', { name: 'Browse extensions' }));
+    expect(strip).toContainElement(screen.getByRole('button', { name: 'Add custom extension' }));
   });
 
   /**
@@ -138,7 +138,7 @@ describe('ExtensionsView — the shared page header', () => {
   it('lets the Button primitive own its own layout', async () => {
     renderView();
 
-    for (const name of ['Add Extension', 'Browse Extensions', 'Add Custom Extension']) {
+    for (const name of ['Add extension', 'Browse extensions', 'Add custom extension']) {
       const button = await screen.findByRole('button', { name });
       expect(button.className.split(/\s+/)).not.toContain('flex');
     }

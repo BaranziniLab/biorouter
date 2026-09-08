@@ -519,7 +519,7 @@ export default function CreateWorkflowFromSessionModal({
                 data-testid="create-workflow-button"
               >
                 <Save className="w-4 h-4" />
-                {isCreating ? 'Creating…' : 'Create Workflow'}
+                {isCreating ? 'Creating…' : 'Create workflow'}
               </Button>
               <Button
                 onClick={() => handleCreateWorkflow(form.state.values, true)}

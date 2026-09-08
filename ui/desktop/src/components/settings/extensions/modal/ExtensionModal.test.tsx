@@ -34,7 +34,7 @@ describe('ExtensionModal', () => {
         initialData={initialData}
         onClose={mockOnClose}
         onSubmit={mockOnSubmit}
-        submitLabel="Add Extension"
+        submitLabel="Add extension"
         modalType="add"
       />
     );
@@ -172,7 +172,7 @@ describe('ExtensionModal', () => {
         initialData={initialData}
         onClose={vi.fn()}
         onSubmit={vi.fn()}
-        submitLabel="Add Extension"
+        submitLabel="Add extension"
         modalType="add"
       />
     );

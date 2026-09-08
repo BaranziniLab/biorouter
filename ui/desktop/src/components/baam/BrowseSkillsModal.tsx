@@ -147,7 +147,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
         {/* Header */}
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <div>
-            <DialogTitle>Browse Skills</DialogTitle>
+            <DialogTitle>Browse skills</DialogTitle>
             <DialogDescription className="text-xs text-text-muted mt-0.5">
               Install skills from the Biorouter marketplace. Select as many as you like. Skills need
               no setup.

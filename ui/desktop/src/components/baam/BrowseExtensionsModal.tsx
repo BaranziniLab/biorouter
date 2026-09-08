@@ -159,7 +159,7 @@ export default function BrowseExtensionsModal({
         {/* Header */}
         <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <div>
-            <DialogTitle>Browse Extensions</DialogTitle>
+            <DialogTitle>Browse extensions</DialogTitle>
             <DialogDescription className="text-xs text-text-muted mt-0.5">
               Install MCP extensions from the Biorouter marketplace. Add one at a time. Most need
               credentials configured during install.
