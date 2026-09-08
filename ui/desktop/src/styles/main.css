@@ -1455,7 +1455,29 @@
      is a `<button>` (arm 1), carries `role="tab"` (arm 2), and Radix's roving
      tabindex gives the ACTIVE one `tabindex="0"` (arm 3,
      `[tabindex]:not([tabindex='-1'])`). The `:not()` lives INSIDE the
-     `:where()` so the rule stays at specificity 0. */
+     `:where()` so the rule stays at specificity 0.
+
+     ⚠ **A REGION is exempt too (2026-09-08), and that is a different claim
+     from the tab one.** D-15 is written for CONTROLS: a control deepens its
+     own fill because the fill is the size of the thing you are about to
+     operate. A focusable region is not operated, it is entered — and the arm
+     that reaches one is `[tabindex]:not([tabindex='-1'])`, which cannot tell
+     an 8px checkbox from a page. Measured on the running app before this
+     change (Parchment light, `#/settings`, one Tab out of the tab strip):
+     Radix's `TabsContent` carries `role="tabpanel"` + `tabindex="0"`, took
+     `background-color: rgb(224, 224, 220)` = `--background-focus` (`#e0e0dc`)
+     over its whole **712 × 2676 px** box, and CDP's
+     `CSS.getMatchedStylesForNode` named this rule as the one that painted it.
+     The Knowledge view's panel is the same element (772 × 744 px).
+     `role="application"` — the knowledge graph, the app's one instance —
+     measured `rgb(224, 224, 220)` on the same probe and is exempt for the same
+     reason; it already draws its own 2px inset `--border-accent` ring.
+
+     ⚠ **`[role='tablist']` is NOT exempt, deliberately.** It matches (Radix's
+     roving-focus group gives the LIST `tabindex="0"` while focus is outside
+     it), but focusing it was measured to redirect to the active trigger inside
+     the same event, so it never holds `:focus-visible` and the rule never
+     paints it. An exemption there would be unfalsifiable. */
   :where(
     :is(
         a,
@@ -1467,11 +1489,33 @@
         input[type='checkbox'],
         input[type='radio'],
         [tabindex]:not([tabindex='-1'])
-      ):not([role='tab'])
+      ):not([role='tab'], [role='tabpanel'], [role='application'])
   ):focus-visible {
     outline: none;
     background-color: var(--background-focus);
     color: var(--text-default);
+  }
+
+  /* ⚠ **Dropping the panel from the block above drops its `outline: none` with
+     the fill, and the UA stylesheet is waiting underneath.** Chrome's own
+     `:focus-visible { outline: auto 1px -webkit-focus-ring-color }` matched the
+     panel in the same `CSS.getMatchedStylesForNode` dump; without this rule the
+     grey box is traded for a focus ring drawn around the same 712 × 2676 px
+     body, which is the louder half of what D-15 exists to prevent. A region
+     gets NO focus treatment: the next Tab lands on the first control inside,
+     which has its own indicator.
+
+     Only the tabpanel needs this. `role="application"` keeps whatever it draws
+     for itself — the graph canvas writes `outline-none` plus a ring as
+     utilities, and for any future region that draws nothing the UA ring is the
+     better fallback than silence.
+
+     The `prefers-contrast: more` / `forced-colors` block below is deliberately
+     NOT narrowed by any of this: it still reaches the panel through the same
+     `[tabindex]` arm, so a user who asked their OS for a stronger signal keeps
+     the ring here as everywhere else. */
+  :where([role='tabpanel']):focus-visible {
+    outline: none;
   }
 
   /* Text fields already own a border, so they shift their fill AND firm that

@@ -240,6 +240,19 @@ on the TRIGGER, not on this page: `settings/providers/ProviderCatalog.tsx` reuse
 so removing one arm changes nothing), and the underline rule must be **unlayered** or the Tailwind
 utility that sets the bar's height beats it silently.
 
+**Neither does the PANEL under it (2026-09-08).** The same fill, on a bigger box, found while
+verifying the paragraph above. Radix `TabsContent` renders `role="tabpanel"` with `tabindex="0"`, so
+the `[tabindex]:not([tabindex='-1'])` arm reached it and one Tab out of the strip turned the whole
+Settings body `rgb(224, 224, 220)` — measured over **712 × 2676 px** in Parchment light, and the same
+element in the Provider catalog (712 × 1763) and in Knowledge (772 × 744). D-15 is written for
+controls: a control's fill is the size of the thing you are about to operate, a region's is the size
+of the page, so the panel is excluded from the fill and given no focus treatment at all — the next
+Tab lands on the first control inside, which has its own. The trap, guarded in
+`styles/tabFocus.test.ts`: excluding the panel also drops the block's `outline: none`, and Chrome's
+own `:focus-visible` ring is underneath it, so a second rule has to put the suppression back or the
+grey box becomes a ring around the same box. The `prefers-contrast` escape hatch still reaches the
+panel and is deliberately untouched.
+
 ## The two primitives
 
 ### `components/ui/note.tsx`
