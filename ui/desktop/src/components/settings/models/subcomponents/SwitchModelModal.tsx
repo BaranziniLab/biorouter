@@ -708,7 +708,7 @@ export const SwitchModelModal = ({
           to be readable before the user tries it, which is the whole of SD-1's
           consequence clause. Renders nothing on the desktop.
         */}
-        <HostManagedModelNote className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-xs leading-relaxed text-text-muted" />
+        <HostManagedModelNote />
 
         <div className="flex flex-col gap-4 py-4">
           {usePredefinedModels ? (

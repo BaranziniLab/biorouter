@@ -49,7 +49,7 @@ export default function ModelSettingsButtons({ setView }: ConfigureModelButtonsP
           </Button>
         )}
       </div>
-      <HostManagedModelNote className="mt-3 max-w-prose text-xs leading-relaxed text-text-muted" />
+      <HostManagedModelNote className="mt-3" />
     </div>
   );
 }

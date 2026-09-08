@@ -57,10 +57,7 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
         would say the same thing twice on one screen; the button's `title`
         holds the whole of it for anyone who reaches for the control.
       */}
-      <HostManagedModelNote
-        short
-        className="mt-3 max-w-prose text-xs leading-relaxed text-text-muted"
-      />
+      <HostManagedModelNote short className="mt-3" />
     </div>
   );
 }

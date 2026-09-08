@@ -8,10 +8,8 @@ import { Save, RotateCcw, FileText, Settings } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
 import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
 import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
-import {
-  HOST_MANAGED_MODEL_REASON,
-  HOST_MANAGED_MODEL_SHORT,
-} from '../../privacy/hostManagedModelCopy';
+import { HOST_MANAGED_MODEL_REASON } from '../../privacy/hostManagedModelCopy';
+import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
 import type { ConfigData, ConfigValue } from '../../../types/config';
 import {
   Dialog,
@@ -241,13 +239,19 @@ export default function ConfigSettings() {
                             )}
                             placeholder={`Enter ${getUiNames(key)}`}
                           />
+                          {/* The `fixedByHost &&` guard is load-bearing and stays:
+                              it carries the per-key `isHostManagedConfigKey`
+                              half, which the note itself cannot know. What went
+                              is the hand-copied paragraph inside it — a seventh
+                              implementation of the one sentence
+                              `hostManagedModelCopy.ts` exists to keep in one
+                              place. */}
                           {fixedByHost && (
-                            <p
-                              data-testid={`host-managed-config-${key}`}
-                              className="mt-1 text-xs leading-relaxed text-text-muted"
-                            >
-                              {HOST_MANAGED_MODEL_SHORT}
-                            </p>
+                            <HostManagedModelNote
+                              short
+                              testId={`host-managed-config-${key}`}
+                              className="mt-1"
+                            />
                           )}
                         </div>
                         <Button

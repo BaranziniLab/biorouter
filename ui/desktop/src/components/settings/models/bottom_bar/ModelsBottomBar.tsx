@@ -459,7 +459,7 @@ export default function ModelsBottomBar({
             same block as the items, so the reason is visible in the act of
             reading why they are grey.
           */}
-          <HostManagedModelNote className="border-b border-border-subtle px-3 py-2 text-[11px] leading-4 text-text-muted" />
+          <HostManagedModelNote variant="inset" />
           <div className="p-1.5">
             <DropdownMenuItem
               className="h-auto rounded-element px-2 py-1.5 text-xs font-medium text-text-default"
