@@ -1,6 +1,7 @@
 import { SlidersHorizontal, Brain } from '../../../icons/app-icons';
 import React, { useEffect, useState } from 'react';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
+import { NO_MODEL_CHIP_LABEL, hasNoModelConfigured } from '../../../composerNoProvider';
 import { SwitchModelModal } from '../subcomponents/SwitchModelModal';
 import { LeadWorkerSettings } from '../subcomponents/LeadWorkerSettings';
 import { View } from '../../../../utils/navigationUtils';
@@ -69,6 +70,7 @@ export default function ModelsBottomBar({
   const {
     currentModel,
     currentProvider,
+    modelConfigStatus,
     getCurrentModelAndProviderForDisplay,
     getCurrentModelDisplayName,
     getCurrentProviderDisplayName,
@@ -329,6 +331,42 @@ export default function ModelsBottomBar({
   // Both axes come off one sample of one endpoint, so they can be said in one
   // breath without risking a cross-provider pairing.
   const modelClause = [modelTierWords, affiliationWords?.label].filter(Boolean).join(', ');
+
+  /**
+   * Nothing is bound, so there is no "current model" for the dropdown to be
+   * about. The chip becomes the way IN to the catalog instead — reachable since
+   * a user can now enter the app before configuring anything.
+   *
+   * ⚠ A plain button rather than a disabled dropdown: the menu's items are
+   * "Change Model" and "Lead/Worker Settings", both of which read as adjustments
+   * to a model that does not exist. One control, one meaning.
+   */
+  if (hasNoModelConfigured(modelConfigStatus, currentProvider)) {
+    return (
+      <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
+        {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => setView?.('ConfigureProviders')}
+              data-testid="model-chip-choose-model"
+              aria-label={NO_MODEL_CHIP_LABEL}
+              className="flex h-7 min-w-0 max-w-[220px] items-center rounded-element px-0.5 hover:cursor-pointer text-text-default/70 tint-interactive hover:text-text-default transition-colors"
+            >
+              <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
+                <Brain className="size-[18px] flex-shrink-0" />
+                <span className="truncate text-supporting">{NO_MODEL_CHIP_LABEL}</span>
+              </div>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            No model is configured yet. Opens the provider catalog.
+          </TooltipContent>
+        </Tooltip>
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
