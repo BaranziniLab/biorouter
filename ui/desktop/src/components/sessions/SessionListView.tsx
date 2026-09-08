@@ -50,7 +50,9 @@ import {
 import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from '../ui/dialog';
+import { MODAL_SIZE } from '../ModalShell';
+import { Badge } from '../ui/badge';
 import { EmptyState } from '../ui/empty-state';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
@@ -160,10 +162,15 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
         open={isOpen}
         onOpenChange={(open) => !open && !isUpdating && !disabled && handleCancel()}
       >
+        {/* V8 — `MODAL_SIZE.md`, the ladder's form rung, not the `w-[500px]
+            max-w-[90vw] sm:max-w-[500px]` triple this carried. 500 is not a
+            rung, and the `w-[500px]` half additionally forced the width rather
+            than capping it, so the dialog could not narrow with the viewport
+            the way every other one in the app does. */}
         <DialogContent
           aria-describedby={undefined}
           dismissible={!isUpdating && !disabled}
-          className="w-[500px] max-w-[90vw] sm:max-w-[500px]"
+          className={MODAL_SIZE.md}
         >
           <DialogTitle>Edit chat description</DialogTitle>
 
@@ -184,8 +191,12 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
             </div>
           </div>
 
-          <div className="flex justify-end space-x-3 mt-6">
-            <Button onClick={handleCancel} variant="ghost" disabled={isUpdating || disabled}>
+          {/* V8 again: the shared footer, not a hand-rolled `flex justify-end
+              space-x-3`. V7's dialog row is an `outline` dismiss beside the
+              `default` confirm — `ghost` reads as the quieter of two actions
+              that are not ranked that way here. */}
+          <DialogFooter>
+            <Button onClick={handleCancel} variant="outline" disabled={isUpdating || disabled}>
               Cancel
             </Button>
             <Button
@@ -195,7 +206,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
             >
               {isUpdating ? 'Saving...' : 'Save'}
             </Button>
-          </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     );
@@ -404,13 +415,13 @@ const SessionItem = React.memo(function SessionItem({
           whose parent is missing from the list is still labelled instead of
           reading as an unexplained bare conversation. */}
         {session.session_type === 'sub_agent' && (
-          <span
-            data-testid="subagent-badge"
-            title="Subagent run"
-            className="flex-shrink-0 rounded-inner bg-background-code px-1 text-chip text-text-subtle"
-          >
+          // V8 — the `Badge` primitive, not a fourth hand-rolled chip recipe.
+          // `badge` is the 20px STATUS tier (§3.4): "sub" is a read-only fact
+          // about this row, not a category you can act on, so it takes the
+          // smaller of the two and gets out of the way.
+          <Badge data-testid="subagent-badge" title="Subagent run">
             sub
-          </span>
+          </Badge>
         )}
 
         {/* Title + metadata */}
@@ -1173,7 +1184,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
           {visibleSessionCount < topLevelSessions.length && (
             <div className="flex justify-center py-8">
-              <div className="flex items-center gap-2 text-secondary text-text-muted">
+              {/* V6 — a status line is `text-supporting`, the same role the
+                  metadata under every row above it uses. `text-secondary` is
+                  the dense-CONTROL exception, and this is not a control. */}
+              <div className="flex items-center gap-2 text-supporting text-text-muted">
                 <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
                 <span>Loading more chats...</span>
               </div>
@@ -1212,12 +1226,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                     right-aligned ON the title row rather than in a button row
                     below it. */}
                 <div className="flex justify-between items-center gap-4 mb-1 page-transition">
-                  <h1 className="text-title">Chat history</h1>
-                  <Button
-                    onClick={handleImportClick}
-                    variant="outline"
-                    className="flex flex-shrink-0 items-center gap-2"
-                  >
+                  <h1 className="text-title min-w-0 truncate">Chat history</h1>
+                  {/* V7 — no `className`. It carried `flex flex-shrink-0
+                      items-center gap-2`, and every token of that is already in
+                      `buttonVariants`' base (`inline-flex items-center
+                      justify-center gap-2 … shrink-0`). The bare `flex` was not
+                      merely redundant: tailwind-merge lets it FLIP the base's
+                      `inline-flex`, which is how a row action elsewhere became
+                      a full-width bar. The title beside it takes `min-w-0
+                      truncate` so the pair gives way in the right order. */}
+                  <Button onClick={handleImportClick} variant="outline">
                     <Upload className="w-4 h-4" />
                     Import chat
                   </Button>

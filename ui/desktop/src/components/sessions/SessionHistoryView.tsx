@@ -40,6 +40,7 @@ import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { MODAL_SIZE } from '../ModalShell';
 import { EmptyState } from '../ui/empty-state';
 
 const isUserMessage = (message: Message): boolean => {
@@ -296,6 +297,15 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
 
   const actionButtons = showActionButtons ? (
     <>
+      {/* V7 — the Share button carries no `className`. It hand-painted the
+          disabled look (`cursor-not-allowed opacity-50`) that
+          `buttonVariants`' base already supplies as
+          `disabled:pointer-events-none disabled:opacity-50`, keyed off the same
+          `disabled` prop. ⚠ That base rule also means the tooltip explaining
+          WHY sharing is unavailable has never fired — a pointer-events-none
+          trigger receives no hover — and deleting the override does not change
+          that either way. Restoring it needs a wrapper the trigger can sit on,
+          which is a behaviour change and not this PR's. */}
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -303,7 +313,6 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             disabled={!canShare || isSharing}
             size="sm"
             variant="outline"
-            className={canShare ? '' : 'cursor-not-allowed opacity-50'}
           >
             {isSharing ? (
               <>
@@ -402,7 +411,9 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                     </div>
                   </>
                 ) : (
-                  <div className="flex items-center text-secondary text-text-muted">
+                  // V6 — a status line takes `text-supporting`, the role the
+                  // metadata it stands in for uses.
+                  <div className="flex items-center text-supporting text-text-muted">
                     <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
                     <span>Loading chat details...</span>
                   </div>
@@ -430,7 +441,10 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       </MainPanelLayout>
 
       <Dialog open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>
-        <DialogContent className="sm:max-w-md">
+        {/* V8 — the `MODAL_SIZE` ladder, not `sm:max-w-md`. That alias is 448px,
+            a fourth width beside the ladder's 400/480/640, and nothing chose
+            it: it is `DialogContent`'s own `sm:max-w-lg` typed one rung down. */}
+        <DialogContent className={MODAL_SIZE.md}>
           <DialogHeader>
             <DialogTitle className="flex justify-center items-center gap-2">
               <Share2 className="w-6 h-6 text-text-default" />

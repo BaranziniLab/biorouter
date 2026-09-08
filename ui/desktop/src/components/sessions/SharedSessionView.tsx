@@ -107,7 +107,10 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
                   </div>
                 </>
               ) : (
-                <div className="flex items-center text-secondary text-text-muted">
+                // V6 — a status line takes `text-supporting`, matching the
+                // metadata row it stands in for and its twin in
+                // SessionHistoryView.
+                <div className="flex items-center text-supporting text-text-muted">
                   <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
                   <span>Loading chat details...</span>
                 </div>
