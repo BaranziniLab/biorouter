@@ -717,4 +717,51 @@ describe('SessionListView sits on the chat measure', () => {
       expect((column as HTMLElement).dataset.size).toBe('chat');
     }
   });
+
+  /**
+   * Import chat moved OFF the title row (operator decision, 2026-09-07): the
+   * page's actions go on their own line under the description, which is what
+   * §4.2 now says and what Workflows / Extensions / Skills / Built apps already
+   * did. Pinned at this call site as well as in `PageHeader.test.tsx`, because
+   * the primitive can be correct while a view has grown a second header of its
+   * own beside it.
+   *
+   * The title's `min-w-0 truncate` went with the button: it existed only so the
+   * heading would give way to the control sharing its row, and nothing shares
+   * that row now.
+   */
+  it('puts Import chat on its own line under the description', async () => {
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Chat history' });
+    expect(heading.parentElement?.querySelector('button')).toBeNull();
+    expect(heading.className).not.toMatch(/\btruncate\b/);
+
+    const strip = screen
+      .getAllByRole('button', { name: 'Import chat' })[0]
+      .closest('.biorouter-settings-control-strip');
+    expect(strip).not.toBeNull();
+  });
+
+  /**
+   * The subagent filter is `PageHeader`'s `children`, not a second `actions`
+   * entry: a control that changes what the list SHOWS is not an action the page
+   * offers, and sharing the strip with Import chat would give the two the same
+   * standing.
+   */
+  it('keeps the subagent filter out of the action strip', async () => {
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Chat history');
+    const checkbox = screen.getByRole('checkbox', { name: /Show subagent runs/i });
+    expect(checkbox.closest('.biorouter-settings-control-strip')).toBeNull();
+  });
 });
