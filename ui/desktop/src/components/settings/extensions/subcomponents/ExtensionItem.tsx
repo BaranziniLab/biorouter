@@ -124,8 +124,25 @@ export default function ExtensionItem({
       className="biorouter-list-row flex items-center gap-4 px-3 py-3 group"
     >
       <div className="flex-1 min-w-0">
+        {/*
+         * ⚠ `min-w-0` belongs on the TITLE, not only on the column above it. A
+         * flex item's `min-width` is `auto`, so this <p> refuses to shrink below
+         * its own min-content and pushes the two badges — which carry
+         * `flex-shrink-0` from `Badge` itself, so they cannot give way — out
+         * past the row's trailing switch. `break-words` would not help: it
+         * breaks lines, it does not lower min-content.
+         *
+         * The case that made it visible is this view moving onto the 760px chat
+         * measure, where the content box is ~704px: a long marketplace name
+         * beside a `Private (enforcement off)` pill overruns it. `min-w-0
+         * truncate` is the same construction `schedule/SchedulesView.tsx` uses
+         * on its own row title, and `title` keeps the full name reachable.
+         */}
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium text-text-default leading-snug">
+          <p
+            className="min-w-0 truncate text-sm font-medium text-text-default leading-snug"
+            title={getFriendlyTitle(extension)}
+          >
             {getFriendlyTitle(extension)}
           </p>
           {builtIn && <BuiltInBadge />}
@@ -136,7 +153,14 @@ export default function ExtensionItem({
         )}
         {command && <p className="text-xs font-mono text-text-muted mt-0.5 truncate">{command}</p>}
         {provenance && <p className="text-xs text-text-subtle mt-1">{provenance}</p>}
-        {pairingNotice && <p className="text-xs text-text-muted mt-1">{pairingNotice}</p>}
+        {/* The only line here that interpolates a value from config — the
+            default provider's display name — so it is the only one that can
+            meet a token with no break opportunity in it and no ceiling to clip
+            it. The other four are a truncated title, a clamped description, a
+            truncated command and one of four fixed sentences. */}
+        {pairingNotice && (
+          <p className="text-xs text-text-muted mt-1 [overflow-wrap:anywhere]">{pairingNotice}</p>
+        )}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {editable && (
