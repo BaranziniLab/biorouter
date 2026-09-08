@@ -2672,6 +2672,38 @@ export type ProviderMetadata = {
      */
     display_name: string;
     /**
+     * The institution(s) whose gateway this provider *ships* pointed at — the
+     * **type-level** institution claim, exactly as [`Self::tier`] is the
+     * type-level tier claim, and declared by the same builder pattern
+     * ([`Self::with_institution`]) in the provider's own module.
+     *
+     * ## Why this exists beside `ProviderDetails::affiliation`
+     *
+     * `ProviderDetails::affiliation` is instance-resolved and strictly better,
+     * and it is what any surface should prefer. But `GET /config/providers`
+     * resolves it **only for a configured provider** — an unconfigured one has
+     * no keys, cannot be constructed, and must not have every provider module's
+     * constructor run on a plain GET (see `resolve_provider_axes`). So on a
+     * machine where nothing is set up yet — first-run onboarding, the one place
+     * a user most needs to be told which gateway belongs to their institution —
+     * every row's `affiliation` is `null`. This field is the answer for exactly
+     * that gap: it lets a catalog head a group "UCSF" from the daemon's own
+     * data rather than from a name-keyed table in the renderer.
+     *
+     * ⚠ **Not a badge, and not an enforcement input.** Same warning as
+     * [`Self::tier`]'s, and for the same reason: this is what the provider
+     * *ships* pointed at, so a Versa instance repointed at another host still
+     * carries `ucsf` here while [`Provider::affiliation`] correctly reports
+     * `None`. It may only ever be read as a *fallback for a row the daemon did
+     * not resolve*, never in preference to an instance answer, and never by a
+     * gate. `privacy::affiliation` reads [`Provider::affiliation`] and nothing
+     * else.
+     *
+     * Empty for every provider that ships pointed at no institution, which is
+     * almost all of them.
+     */
+    institutions?: Array<AffiliationInstitution>;
+    /**
      * A list of currently known models with their capabilities
      */
     known_models: Array<ModelInfo>;

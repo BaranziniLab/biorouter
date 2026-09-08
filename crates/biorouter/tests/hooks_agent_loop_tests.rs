@@ -102,6 +102,7 @@ impl Provider for ScriptedProvider {
             allows_unlisted_models: false,
             tier: Default::default(),
             runs_locally: false,
+            institutions: Vec::new(),
         }
     }
 

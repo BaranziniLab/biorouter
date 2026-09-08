@@ -93,6 +93,24 @@ export const AGENT_COMMAND_CONFIG: Record<CodingAgentKind, { key: string; value:
 };
 
 /**
+ * The fixed order these agents are offered in, wherever they are listed —
+ * the provider catalog's "AI agents" section, and the onboarding card.
+ *
+ * ⚠ **The one definition of the SET as well as the order.** The provider ids are
+ * the kinds (`CodingAgentAvailability.providerId` is `"claude_code"` |
+ * `"codex"`, the `BIOROUTER_PROVIDER` value), so `providerOrdering.ts` imports
+ * this rather than keeping a second list — a catalog that recognised these names
+ * itself is how a third coding agent gets a status pill and no section, or a
+ * section and no pill. `codingAgentStatus.test.ts` asserts it stays in step with
+ * {@link AGENT_COMMAND_CONFIG}'s keys, which is what makes "one definition"
+ * enforced rather than hoped for.
+ *
+ * The order itself is a habit rule, not a taxonomy one: both are Public, both
+ * carry the same disclosure.
+ */
+export const CODING_AGENT_ORDER: readonly CodingAgentKind[] = ['claude_code', 'codex'];
+
+/**
  * The metered, per-token provider for the same vendor — the alternative offered to
  * a user who is signed in with an API key.
  *

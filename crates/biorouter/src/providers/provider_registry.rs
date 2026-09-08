@@ -126,6 +126,7 @@ impl ProviderRegistry {
             // its own tier from the base URL it resolved.
             tier: crate::privacy::ProviderTier::default(),
             runs_locally: false,
+            institutions: Vec::new(),
         };
 
         self.entries.insert(

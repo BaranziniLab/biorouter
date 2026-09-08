@@ -207,6 +207,37 @@ pub struct ProviderMetadata {
     /// type and Public by instance.
     #[serde(default)]
     pub runs_locally: bool,
+    /// The institution(s) whose gateway this provider *ships* pointed at — the
+    /// **type-level** institution claim, exactly as [`Self::tier`] is the
+    /// type-level tier claim, and declared by the same builder pattern
+    /// ([`Self::with_institution`]) in the provider's own module.
+    ///
+    /// ## Why this exists beside `ProviderDetails::affiliation`
+    ///
+    /// `ProviderDetails::affiliation` is instance-resolved and strictly better,
+    /// and it is what any surface should prefer. But `GET /config/providers`
+    /// resolves it **only for a configured provider** — an unconfigured one has
+    /// no keys, cannot be constructed, and must not have every provider module's
+    /// constructor run on a plain GET (see `resolve_provider_axes`). So on a
+    /// machine where nothing is set up yet — first-run onboarding, the one place
+    /// a user most needs to be told which gateway belongs to their institution —
+    /// every row's `affiliation` is `null`. This field is the answer for exactly
+    /// that gap: it lets a catalog head a group "UCSF" from the daemon's own
+    /// data rather than from a name-keyed table in the renderer.
+    ///
+    /// ⚠ **Not a badge, and not an enforcement input.** Same warning as
+    /// [`Self::tier`]'s, and for the same reason: this is what the provider
+    /// *ships* pointed at, so a Versa instance repointed at another host still
+    /// carries `ucsf` here while [`Provider::affiliation`] correctly reports
+    /// `None`. It may only ever be read as a *fallback for a row the daemon did
+    /// not resolve*, never in preference to an instance answer, and never by a
+    /// gate. `privacy::affiliation` reads [`Provider::affiliation`] and nothing
+    /// else.
+    ///
+    /// Empty for every provider that ships pointed at no institution, which is
+    /// almost all of them.
+    #[serde(default)]
+    pub institutions: Vec<AffiliationInstitution>,
 }
 
 impl ProviderMetadata {
@@ -242,6 +273,7 @@ impl ProviderMetadata {
             allows_unlisted_models: false,
             tier: ProviderTier::default(),
             runs_locally: false,
+            institutions: Vec::new(),
         }
     }
 
@@ -265,6 +297,7 @@ impl ProviderMetadata {
             allows_unlisted_models: false,
             tier: ProviderTier::default(),
             runs_locally: false,
+            institutions: Vec::new(),
         }
     }
 
@@ -280,6 +313,7 @@ impl ProviderMetadata {
             allows_unlisted_models: false,
             tier: ProviderTier::default(),
             runs_locally: false,
+            institutions: Vec::new(),
         }
     }
 
@@ -300,6 +334,26 @@ impl ProviderMetadata {
     /// Declare that this provider's inference runs on the user's machine.
     pub fn with_local_compute(mut self) -> Self {
         self.runs_locally = true;
+        self
+    }
+
+    /// Declare the institution whose gateway this provider ships pointed at —
+    /// the type-level half of DR-26's third axis. See [`Self::institutions`] for
+    /// what it may and may not be read for.
+    ///
+    /// The display name is looked up in the same institution registry every
+    /// warning and badge reads, so a catalog printing this name and a warning
+    /// printing that name cannot drift. An institution the registry does not
+    /// publish keeps its bare id, exactly as `privacy::affiliation::label` does
+    /// — a real constraint must never disappear from a surface because nobody
+    /// wrote it a pretty name.
+    pub fn with_institution(mut self, id: &str) -> Self {
+        let interned = crate::privacy::affiliation::InstitutionId::new(id);
+        self.institutions.push(AffiliationInstitution {
+            id: interned.as_str().to_string(),
+            display_name: crate::privacy::affiliation::institution_display_name(interned)
+                .map(str::to_string),
+        });
         self
     }
 }
@@ -1266,6 +1320,98 @@ mod provider_steering_tests {
 pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> MessageStream {
     let stream = futures::stream::once(async move { Ok((Some(message), Some(usage), None)) });
     Box::pin(stream)
+}
+
+#[cfg(test)]
+mod type_level_institution_tests {
+    //! [`ProviderMetadata::institutions`] — the *type-level* institution claim.
+    //!
+    //! It exists because `GET /config/providers` resolves the instance-level
+    //! [`ProviderDetails::affiliation`] only for a **configured** provider, so on
+    //! a machine where nothing is set up yet every row's affiliation is `null`.
+    //! A catalog that groups private gateways by institution would then have
+    //! nothing to group by on exactly the screen — first-run onboarding — where
+    //! naming the institution matters most.
+
+    use super::*;
+
+    #[test]
+    fn a_provider_declares_no_institution_by_default() {
+        // The direction that matters: forgetting to declare one costs a group
+        // heading, never invents an institutional claim for a provider that
+        // ships pointed nowhere in particular.
+        assert!(ProviderMetadata::empty().institutions.is_empty());
+    }
+
+    #[test]
+    fn a_declared_institution_carries_the_registry_display_name() {
+        // Both halves travel, and the name comes from the SAME registry every
+        // warning and badge reads (`institution_display_name`) rather than from
+        // a literal in the provider module — two spellings of "UCSF" is exactly
+        // the drift `AffiliationInstitution` exists to prevent.
+        let meta = ProviderMetadata::empty().with_institution("ucsf");
+        assert_eq!(
+            meta.institutions,
+            vec![AffiliationInstitution {
+                id: "ucsf".to_string(),
+                display_name: Some("UCSF".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unpublished_institution_keeps_its_bare_id_rather_than_disappearing() {
+        // Mirrors `privacy::affiliation::label`: a real constraint must never
+        // vanish from a surface because nobody wrote it a pretty name. A
+        // renderer that dropped the row would hide the group entirely.
+        let meta = ProviderMetadata::empty().with_institution("not-in-the-registry");
+        assert_eq!(meta.institutions.len(), 1);
+        assert_eq!(meta.institutions[0].id, "not-in-the-registry");
+        assert_eq!(meta.institutions[0].display_name, None);
+    }
+
+    #[test]
+    fn the_id_is_normalised_by_the_same_normaliser_the_gates_use() {
+        // `InstitutionId::new` interns through `name_to_key`. Declaring "UCSF"
+        // and declaring "ucsf" must produce the same id, or a catalog would show
+        // two groups for one institution while the gates saw one.
+        assert_eq!(
+            ProviderMetadata::empty().with_institution("UCSF").institutions,
+            ProviderMetadata::empty().with_institution("ucsf").institutions
+        );
+    }
+
+    /// ⚠ The field is `institutions`, **not** `affiliation`, and that is load
+    /// bearing rather than cosmetic: `config_management`'s
+    /// `the_affiliation_travels_beside_the_metadata_not_inside_it` asserts that
+    /// `metadata` carries no `affiliation` key, because a renderer reading
+    /// `row.metadata.affiliation` would silently find an unresolved type-level
+    /// claim where it asked for an instance-resolved one.
+    #[test]
+    fn the_type_level_claim_does_not_serialise_under_the_instance_level_key() {
+        let json = serde_json::to_value(ProviderMetadata::empty().with_institution("ucsf")).unwrap();
+        assert!(json.get("affiliation").is_none());
+        assert_eq!(json["institutions"][0]["id"], "ucsf");
+        assert_eq!(json["institutions"][0]["display_name"], "UCSF");
+    }
+
+    /// Metadata from a daemon that predates the field still reads — the
+    /// `#[serde(default)]` that keeps the addition non-breaking for every
+    /// fixture round-tripping this type.
+    #[test]
+    fn metadata_without_the_field_still_reads() {
+        let parsed: ProviderMetadata = serde_json::from_value(serde_json::json!({
+            "name": "openai",
+            "display_name": "OpenAI",
+            "description": "",
+            "default_model": "",
+            "known_models": [],
+            "model_doc_link": "",
+            "config_keys": [],
+        }))
+        .expect("metadata predating the field is still metadata");
+        assert!(parsed.institutions.is_empty());
+    }
 }
 
 #[cfg(test)]

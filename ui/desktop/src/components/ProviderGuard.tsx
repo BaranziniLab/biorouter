@@ -1,21 +1,29 @@
-import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
-import { ChevronDown } from './icons/app-icons';
 import { BioRouterMark } from './icons/BioRouterMark';
 import { BioRouterWordmark } from './icons/BioRouterWordmark';
 import { toastService } from '../toasts';
-import InstitutionalSetupCard from './onboarding/InstitutionalSetupCard';
-import LlamaServerInlineCard from './onboarding/LlamaServerInlineCard';
-import OllamaInlineCard from './onboarding/OllamaInlineCard';
-import CodingAgentInlineCard from './onboarding/CodingAgentInlineCard';
-import CommercialSetupCard from './onboarding/CommercialSetupCard';
+import ProviderCatalog from './settings/providers/ProviderCatalog';
+import { persistDetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from './onboarding/CommercialSetupCard';
-import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
+import { ProviderDetails } from '../api';
 import { createNavigationHandler } from '../utils/navigationUtils';
 import { isBrowserSurface } from '../utils/surface';
 import { HostManagedModelPanel } from './privacy/HostManagedModelPanel';
 import { HOST_SERVE_COMMAND } from './privacy/hostManagedModelCopy';
+
+/**
+ * The config key that records "let me in without a provider".
+ *
+ * ⚠ **Not a secret, and deliberately a config key rather than `localStorage`.**
+ * It is a property of this install, not of this browser profile: a user who
+ * skipped setup on Monday must not meet the first-run wall again after a
+ * renderer reset. It is cleared the moment a provider is chosen, so a machine
+ * that is set up never carries a stale "skipped" flag that would suppress the
+ * wall if the provider were later removed.
+ */
+export const ONBOARDING_SKIPPED_KEY = 'BIOROUTER_ONBOARDING_SKIPPED';
 
 interface ProviderGuardProps {
   didSelectProvider: boolean;
@@ -23,93 +31,78 @@ interface ProviderGuardProps {
 }
 
 export default function ProviderGuard({ didSelectProvider, children }: ProviderGuardProps) {
-  const { read, upsert } = useConfig();
+  const { read, upsert, getProviders } = useConfig();
   const navigate = useNavigate();
   const [isChecking, setIsChecking] = useState(true);
   const [hasProvider, setHasProvider] = useState(false);
   const [showFirstTimeSetup, setShowFirstTimeSetup] = useState(false);
   const [userInActiveSetup, setUserInActiveSetup] = useState(false);
-  const [showSwitchModelModal, setShowSwitchModelModal] = useState(false);
-  const [switchModelProvider, setSwitchModelProvider] = useState<string | null>(null);
-  const [switchModel, setSwitchModel] = useState<string | null>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [showScrollIndicator, setShowScrollIndicator] = useState(true);
-
-  const checkScrollPosition = useCallback(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const isNearBottom = scrollTop + clientHeight >= scrollHeight - 50;
-    const canScroll = scrollHeight > clientHeight;
-
-    setShowScrollIndicator(canScroll && !isNearBottom);
-  }, []);
+  const [providers, setProviders] = useState<ProviderDetails[]>([]);
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
-  const handleCommercialSuccess = async ({
-    provider,
-    model,
-    apiKey,
-    apiKeyConfigKey,
-    extraConfig,
-  }: DetectedProviderSetup) => {
-    await upsert(apiKeyConfigKey, apiKey, true);
-    // Persist any non-secret endpoint config (e.g. a regional host) so the saved
-    // provider targets the same endpoint detection validated against.
-    for (const [key, value] of Object.entries(extraConfig)) {
-      await upsert(key, value, false);
-    }
-    await upsert('BIOROUTER_PROVIDER', provider, false);
-    setSwitchModelProvider(provider);
-    setSwitchModel(model || null);
-    setShowSwitchModelModal(true);
+  const handleCommercialSuccess = async (setup: DetectedProviderSetup) => {
+    await persistDetectedProviderSetup(upsert, setup);
+  };
+
+  const handleModelSelected = () => {
+    setUserInActiveSetup(false);
+    setShowFirstTimeSetup(false);
+    setHasProvider(true);
+    navigate('/', { replace: true });
+  };
+
+  /** Llama Server and Ollama configure themselves *and* pick their own model. */
+  const handleLocalComplete = () => {
+    setUserInActiveSetup(false);
+    setShowFirstTimeSetup(false);
+    setHasProvider(true);
+    navigate('/', { replace: true });
   };
 
   /**
-   * A card that did its own config writes (including `BIOROUTER_PROVIDER`) and has
-   * nothing left but model selection. Shared by the institutional card and the
-   * coding-agent card — both write their keys themselves and hand back only the
-   * provider id, unlike `CommercialSetupCard` (whose key is a secret this component
-   * persists) and the two local cards (which pick their own model).
+   * "Explore Biorouter first" — the app renders with no provider bound.
+   *
+   * ⚠ **The wall exists to stop a confusing failure, not to gate the product.**
+   * Everything that does not need a model — Home, sessions, the Knowledge view,
+   * settings, extensions — works perfectly well unconfigured, and a first-run
+   * screen with no way past it turned "I want to look at this before pasting a
+   * key" into "I cannot open the application". What the composer then owes the
+   * user is the *reason* they cannot send, at the moment they try, which is what
+   * `ChatInput`'s no-model hint and the model chip's "Choose a model" are for.
    */
-  const handleProviderReady = (provider: string) => {
-    setSwitchModelProvider(provider);
-    setShowSwitchModelModal(true);
-  };
-
-  const handleModelSelected = (_model: string) => {
-    setShowSwitchModelModal(false);
-    setUserInActiveSetup(false);
-    setShowFirstTimeSetup(false);
-    setHasProvider(true);
-    navigate('/', { replace: true });
-  };
-
-  const handleSwitchModelClose = () => {
-    setShowSwitchModelModal(false);
-  };
-
-  const handleOllamaComplete = () => {
-    setUserInActiveSetup(false);
-    setShowFirstTimeSetup(false);
-    setHasProvider(true);
-    navigate('/', { replace: true });
-  };
-
-  const handleLlamaServerComplete = () => {
-    setUserInActiveSetup(false);
-    setShowFirstTimeSetup(false);
-    setHasProvider(true);
-    navigate('/', { replace: true });
-  };
+  const handleSkip = useCallback(async () => {
+    try {
+      await upsert(ONBOARDING_SKIPPED_KEY, true, false);
+      setShowFirstTimeSetup(false);
+      navigate('/', { replace: true });
+    } catch (error) {
+      console.error('Failed to record the skipped onboarding:', error);
+      toastService.error({
+        title: 'Could not continue without a provider',
+        msg: 'Biorouter could not save that choice, so the setup screen is still showing.',
+        traceback: error instanceof Error ? error.stack || '' : '',
+      });
+    }
+  }, [navigate, upsert]);
 
   useEffect(() => {
     const checkProvider = async () => {
       try {
         const provider = ((await read('BIOROUTER_PROVIDER', false)) as string) || '';
         const hasConfiguredProvider = provider.trim() !== '';
+        const wasSkipped = (await read(ONBOARDING_SKIPPED_KEY, false)) === true;
+
+        // Choosing a provider retires the skip: leaving it set would mean a
+        // machine that later loses its provider silently skips the wall it now
+        // needs.
+        if (hasConfiguredProvider && wasSkipped) {
+          try {
+            await upsert(ONBOARDING_SKIPPED_KEY, false, false);
+          } catch (error) {
+            console.error('Failed to clear the skipped-onboarding flag:', error);
+          }
+        }
 
         if (userInActiveSetup) {
           setHasProvider(false);
@@ -119,7 +112,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           setShowFirstTimeSetup(false);
         } else {
           setHasProvider(false);
-          setShowFirstTimeSetup(true);
+          setShowFirstTimeSetup(!wasSkipped);
         }
       } catch (error) {
         console.error('Error checking provider:', error);
@@ -136,15 +129,30 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     };
 
     checkProvider();
-  }, [read, didSelectProvider, userInActiveSetup]);
+  }, [read, upsert, didSelectProvider, userInActiveSetup]);
 
+  /**
+   * The catalog needs the daemon's provider list. Fetched only once the wall is
+   * actually going to render — an already-configured install must not pay for a
+   * provider listing (which constructs every configured provider) on every
+   * launch just to render its children.
+   */
+  const needsCatalog = !isChecking && !hasProvider && showFirstTimeSetup && !isBrowserSurface();
   useEffect(() => {
-    if (!isChecking && !hasProvider && showFirstTimeSetup) {
-      const timer = setTimeout(checkScrollPosition, 100);
-      return () => clearTimeout(timer);
-    }
-    return undefined;
-  }, [isChecking, hasProvider, showFirstTimeSetup, checkScrollPosition]);
+    if (!needsCatalog) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await getProviders(false);
+        if (!cancelled && result) setProviders(result);
+      } catch (error) {
+        console.error('Failed to load providers for onboarding:', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsCatalog, getProviders]);
 
   if (isChecking) {
     return (
@@ -161,19 +169,45 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (!hasProvider && showFirstTimeSetup) {
     /**
-     * SD-1's dead end, closed. Every card below writes `BIOROUTER_PROVIDER`, and
-     * on a browser-served surface all five of those writes are refused with a
-     * 409 whose body is addressed to an AI agent. Offering the picker and then
-     * refusing it is the exact failure SD-1 rules out, so the browser gets the
-     * one instruction that actually works — go and run it on the host — and the
-     * cards are not rendered at all.
+     * SD-1's dead end, closed. Every path in the catalog below writes
+     * `BIOROUTER_PROVIDER`, and on a browser-served surface all of those writes
+     * are refused with a 409 whose body is addressed to an AI agent. Offering
+     * the picker and then refusing it is the exact failure SD-1 rules out, so
+     * the browser gets the one instruction that actually works — go and run it
+     * on the host — and the catalog is not rendered at all.
      */
     const hostManaged = isBrowserSurface();
+    /**
+     * The skip is offered for the desktop application only. On a browser surface
+     * there is nothing to explore *and* nothing the user can do about it from
+     * here: the host owns the choice, and a "continue without a provider" that
+     * led to a chat which can never be configured from this tab would be a
+     * second dead end dressed as an escape.
+     */
+    /**
+     * ⚠ Rendered TWICE — under the header and again at the foot — so the way out
+     * is visible from wherever the user stopped reading rather than only from
+     * the top. Each instance carries its own test id: one shared id would make
+     * every `getByTestId` in the suites throw "found multiple elements", which
+     * reads as a bug in the test rather than as two deliberate copies.
+     */
+    const skipAction = (placement: 'header' | 'foot') =>
+      hostManaged ? null : (
+        <button
+          type="button"
+          onClick={() => void handleSkip()}
+          data-testid={`onboarding-skip-${placement}`}
+          className="text-sm text-text-muted transition-colors duration-150 hover:text-text-default"
+        >
+          Explore Biorouter first →
+        </button>
+      );
+
     return (
-      <div className="fixed inset-0 flex flex-col overflow-hidden bg-background-muted">
-        {/* Flat page header */}
-        <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-8 sm:pb-6 sm:pt-10">
-          <div className="max-w-2xl mx-auto">
+      <div className="flex h-screen w-full flex-col overflow-hidden bg-background-muted">
+        {/* Flat page header, on the same reading column as the panels below. */}
+        <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-6 sm:pb-6 sm:pt-10">
+          <div className="mx-auto max-w-measure-chat">
             <div className="mb-4 sm:mb-5 biorouter-icon-animation origin-bottom-left">
               <BioRouterWordmark className="h-9 w-auto" />
             </div>
@@ -185,64 +219,32 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                 ? `Biorouter is being served to this browser by ${HOST_SERVE_COMMAND}. One more step is needed on that machine before you can start a chat.`
                 : 'An integrated research environment that connects local, institution-hosted, and commercial AI models in one interface, built for biomedical discovery.'}
             </p>
+            {!hostManaged && <div className="mt-4">{skipAction('header')}</div>}
           </div>
         </div>
 
         {/* Scrollable body */}
-        <div
-          ref={scrollContainerRef}
-          onScroll={checkScrollPosition}
-          className="flex-1 min-h-0 overflow-y-auto bg-background-muted"
-        >
-          <div className="mx-auto max-w-2xl space-y-4 px-4 py-4 sm:px-8 sm:py-6">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-background-muted">
+          <div className="mx-auto max-w-measure-chat px-5 py-6 sm:px-6">
             {hostManaged ? (
               <HostManagedModelPanel />
             ) : (
               <>
-                <LlamaServerInlineCard onSuccess={handleLlamaServerComplete} />
-                <OllamaInlineCard onSuccess={handleOllamaComplete} />
-                <InstitutionalSetupCard
-                  onSuccess={handleProviderReady}
+                <ProviderCatalog
+                  providers={providers}
+                  mode="onboarding"
+                  setView={setView}
+                  onModelSelected={handleModelSelected}
+                  onLocalComplete={handleLocalComplete}
                   onStartTesting={() => setUserInActiveSetup(true)}
+                  onCommercialSuccess={handleCommercialSuccess}
+                  configuredProvider={null}
                 />
-                {/* Above CommercialSetupCard on purpose: a user who already pays for a
-                    coding-agent plan needs no key at all, so the cheaper path is offered
-                    before the one that asks them to paste a secret. */}
-                <CodingAgentInlineCard onSuccess={handleProviderReady} />
-                <CommercialSetupCard
-                  onSuccess={handleCommercialSuccess}
-                  onStartTesting={() => setUserInActiveSetup(true)}
-                />
+                <div className="mt-8 border-t border-border-subtle pt-5">{skipAction('foot')}</div>
               </>
             )}
           </div>
         </div>
-
-        {/* Scroll indicator */}
-        <div className="h-10 flex-shrink-0 bg-background-muted flex items-center justify-center">
-          <div
-            className={`pointer-events-none transition-opacity duration-300 ${
-              showScrollIndicator ? 'opacity-50 animate-bounce' : 'opacity-0'
-            }`}
-          >
-            <div className="flex flex-col items-center gap-1 text-text-muted">
-              <span className="text-xs">Scroll for more</span>
-              <ChevronDown className="w-4 h-4" />
-            </div>
-          </div>
-        </div>
-
-        {showSwitchModelModal && (
-          <SwitchModelModal
-            sessionId={null}
-            onClose={handleSwitchModelClose}
-            setView={setView}
-            onModelSelected={handleModelSelected}
-            initialProvider={switchModelProvider}
-            initialModel={switchModel}
-            titleOverride="Choose Model"
-          />
-        )}
       </div>
     );
   }
