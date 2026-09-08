@@ -595,10 +595,11 @@ The focused control instead **deepens its own fill by one step** and firms its e
 is added around it.
 
 ```css
-/* Controls: the fill steps past hover, and the label firms up. */
-:where(a, button, summary, [role='button'], [role='tab'], [role='menuitem'],
-       [role='option'], input[type='checkbox'], input[type='radio'],
-       [tabindex]:not([tabindex='-1'])):focus-visible {
+/* Controls: the fill steps past hover, and the label firms up.
+   A TAB TRIGGER is exempt — see the amendment below. */
+:where(:is(a, button, summary, [role='button'], [role='menuitem'],
+           [role='option'], input[type='checkbox'], input[type='radio'],
+           [tabindex]:not([tabindex='-1'])):not([role='tab'])):focus-visible {
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
@@ -621,6 +622,23 @@ is added around it.
   border-color: var(--border-focus);
 }
 ```
+
+**Amendment, 2026-09-08 — a tab trigger is exempt from the fill; its underline is the indicator.**
+Radix `TabsTrigger` activates on focus, so the focused tab is always the _active_ tab and the fill
+parked itself permanently on it: a grey box around the accent underline, reported against Settings
+("that weird shade") and equally present on the Provider catalog strip. Measured in Parchment light
+before the change: a mouse click read `rgba(0, 0, 0, 0)` (Chrome withholds `:focus-visible` from a
+mouse-clicked button) but one arrow key inside the strip read `rgb(224, 224, 220)` = `--background-focus`,
+and it then stayed for as long as the strip kept focus. D-15 forbids a ring and the fill is what was
+rejected, so what remains is the indicator the component already draws: `:focus-visible` takes the
+`after:` bar from 2px to 3px and firms the label to `--text-default`, in
+`ui/desktop/src/styles/main.css` beside the block above and guarded by `styles/tabFocus.test.ts`.
+Two things about the exclusion are load-bearing. It is a `:not([role='tab'])` around the **whole**
+list, because three arms match one trigger — it is a `<button>`, it carries `role="tab"`, and Radix's
+roving tabindex gives the active one `tabindex="0"` — so deleting the obvious arm changes nothing on
+screen. And the underline half is **unlayered**, because the bar's height and colour come from
+Tailwind utilities and a layered rule would lose to them silently. `.br-tab` (chat header, artifact
+panel, terminal dock) is untouched: it draws no underline and owns its own `::after`.
 
 All three tokens are **shared** — the focus treatment was always explicitly neutral rather than accented
 (D-15), so unifying it changed its values without changing its intent.
@@ -1266,7 +1284,7 @@ ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--te
 >
 > | ID | Decision | Resolved value |
 > |---|---|---|
-> | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill — as decided `#e4dcc9` / `#4d4430`, **now the shared `#e0e0dc` / `#35342f`**; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* |
+> | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill — as decided `#e4dcc9` / `#4d4430`, **now the shared `#e0e0dc` / `#35342f`**; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* **Amended 2026-09-08: a `[role='tab']` trigger takes no fill** — it activates on focus, so the fill sat permanently on the active tab as a grey box; its underline firming (2px → 3px, label at `--text-default`) is its focus indicator instead. |
 > | D-16 | The user's turn | **Tinted, not accent.** `--background-medium` + hairline + `--text-default`. A solid coral block shouted. |
 > | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = colour + a 5% wash. A persistent rectangle reads as a stuck focus ring. |
 > | D-18 | Hairlines | **One value.** `border-border-subtle` at full strength. Eight alpha-diluted variants (`/35`…`/70`) made adjacent panels' edges read at different weights, so they never visually aligned. |

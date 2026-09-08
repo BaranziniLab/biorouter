@@ -1440,18 +1440,34 @@
      `:focus-visible`, it fired on a plain mouse click too. Instead the focused
      control deepens its own fill by one step and firms its text.
 
-     `:where()` keeps specificity at 0 so any component can still opt out. */
+     `:where()` keeps specificity at 0 so any component can still opt out.
+
+     ⚠ **A tab TRIGGER is exempt (2026-09-08).** Radix `TabsTrigger` activates
+     on focus, so the focused tab is always the active tab — the fill therefore
+     sat permanently on the active tab as a grey box around its accent
+     underline, which is what was reported ("that weird shade"). A tab's focus
+     indicator is its underline firming instead; see the unlayered
+     `[role='tab']:focus-visible` rule immediately after this layer.
+
+     ⚠ **The exclusion is a `:not()` around the WHOLE list, not the removal of
+     `[role='tab']` from it** — three arms match one tab trigger and dropping
+     the obvious one changes nothing. Measured on the running app: the trigger
+     is a `<button>` (arm 1), carries `role="tab"` (arm 2), and Radix's roving
+     tabindex gives the ACTIVE one `tabindex="0"` (arm 3,
+     `[tabindex]:not([tabindex='-1'])`). The `:not()` lives INSIDE the
+     `:where()` so the rule stays at specificity 0. */
   :where(
-    a,
-    button,
-    summary,
-    [role='button'],
-    [role='tab'],
-    [role='menuitem'],
-    [role='option'],
-    input[type='checkbox'],
-    input[type='radio'],
-    [tabindex]:not([tabindex='-1'])
+    :is(
+        a,
+        button,
+        summary,
+        [role='button'],
+        [role='menuitem'],
+        [role='option'],
+        input[type='checkbox'],
+        input[type='radio'],
+        [tabindex]:not([tabindex='-1'])
+      ):not([role='tab'])
   ):focus-visible {
     outline: none;
     background-color: var(--background-focus);
@@ -1499,6 +1515,56 @@
       border-radius: inherit;
     }
   }
+}
+
+/* D-15, amended 2026-09-08 — a TAB TRIGGER's focus indicator is its underline
+ * firming, never a fill.
+ *
+ * The base block above no longer paints `--background-focus` on `[role='tab']`.
+ * Measured on the running app before the change (Parchment light, Settings):
+ * mouse click on the App tab left `backgroundColor: rgba(0, 0, 0, 0)` because
+ * Chrome withholds `:focus-visible` from a mouse-clicked button, but one arrow
+ * key inside the strip gave `rgb(224, 224, 220)` = `--background-focus`
+ * (`#e0e0dc`) — a grey box that then SITS on the active tab for as long as the
+ * strip keeps focus, because Radix activates on focus. Same value measured on
+ * the Provider catalog strip (`catalog-tab-institutional`).
+ *
+ * D-15 forbids a ring and the fill is what was reported, so what is left is the
+ * indicator the component already draws: the `after:` bar goes from 2px to 3px
+ * and the label firms to `--text-default`. A tab that is focused without being
+ * active (manual activation) gets the bar painted rather than left transparent,
+ * so focus is never invisible.
+ *
+ * ⚠ **Unlayered, deliberately, and that is the whole mechanism** — same as
+ * `.biorouter-focus-surface` below. The bar's height and colour come from
+ * Tailwind utilities (`after:h-0.5`, `after:bg-transparent`,
+ * `data-[state=active]:after:bg-accent-bar`), and every layered utility beats
+ * every `@layer base` rule whatever the specificity. A copy of this rule inside
+ * `@layer base` would lose silently and the bar would stay 2px.
+ *
+ * ⚠ **`--accent-bar`, not `--border-accent`.** `--accent-bar` is the token the
+ * underline already uses in every family, and "the stronger accent" is not a
+ * property `--border-accent` has: it is darker than `--accent-bar` in Parchment
+ * and Alma Mater light but LIGHTER in Roche Limit light (`#ee6c1a` over
+ * `#d95b08`), so swapping it in would cut the bar's contrast in one family
+ * while raising it in two. Thickness firms the same colour everywhere.
+ *
+ * ⚠ **`.br-tab` is excluded from the underline half, and it has to be.** The
+ * chat/artifact/dock tab also carries `role="tab"`, draws no underline, and
+ * already owns its `::after`: `.br-tab[data-dropbefore='true']::after` is the
+ * drag insertion hairline, positioned with `top`/`bottom` and no `height`. A
+ * `height: 3px` landing on it over-constrains the box and collapses the
+ * hairline to a stub the moment a tab is both mid-drag and focused. Dropping
+ * the FILL still applies to it (harmlessly — `.br-tab` writes its own
+ * unlayered `background: transparent`, so the base fill never reached it). */
+:where([role='tab']:not(.br-tab)):focus-visible {
+  outline: none;
+  color: var(--text-default);
+}
+
+:where([role='tab']:not(.br-tab)):focus-visible::after {
+  height: 3px;
+  background-color: var(--accent-bar);
 }
 
 /* Motion is short and informative. Everything animated must null out here —
