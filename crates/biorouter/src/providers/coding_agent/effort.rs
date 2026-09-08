@@ -5,9 +5,11 @@
 //!
 //! The shared helper maps `Quick -> low`, `Deep -> high`, `Normal -> None`, which
 //! is right for an API where `high` is the top of the scale. Both coding-agent
-//! CLIs have a taller ladder — `low, medium, high, xhigh, max` — so `Deep` landing
-//! on `high` would leave two rungs unused and make "deep" mean *less* here than the
-//! word implies. These providers therefore climb their own ladder:
+//! CLIs have a taller ladder — `low, medium, high, xhigh, max`, and Codex alone
+//! adds `ultra` above `max`, which `Deep` deliberately does not reach (see
+//! `CODEX_MODELS_WITH_MAX`) — so `Deep` landing on `high` would leave two rungs
+//! unused and make "deep" mean *less* here than the word implies. These providers
+//! therefore climb their own ladder:
 //!
 //! | BioRouter | Claude Code | Codex |
 //! |---|---|---|
@@ -20,7 +22,8 @@
 //! **The default is no longer silent.** Elsewhere in Biorouter `Normal` means "say
 //! nothing and let the model decide". Here it emits `high`, so *every* turn from a
 //! user who never touched `/effort` asks for more reasoning than the vendor default
-//! (`medium` on `gpt-5.5`). That is a deliberate product choice — a coding agent is
+//! (`model/list`'s own `defaultReasoningEffort`: `medium` on `gpt-6-astra`, `low`
+//! on `gpt-5.6-sol`). That is a deliberate product choice — a coding agent is
 //! reached for when the work is hard — and it costs thinking tokens against the
 //! user's own subscription on every turn.
 //!
@@ -167,6 +170,26 @@ mod tests {
         }
     }
 
+    /// `codex-auto-review` must stay OFF `CODEX_MODELS_WITH_MAX`.
+    ///
+    /// It needs its own assertion because
+    /// `codex_deep_never_exceeds_what_the_model_advertises` cannot see it: that
+    /// test walks the *advertised* catalog, and this model is advertised
+    /// nowhere, so re-adding it to the const table would break nothing.
+    ///
+    /// The reason it does not belong there: `codex exec -m codex-auto-review`
+    /// is accepted on both 0.147.0 and 0.153.4, but the id is absent from
+    /// `model/list` on **both**, so its `supportedReasoningEfforts` cannot be
+    /// read and the `max` it used to be given was never evidence.
+    #[test]
+    fn codex_auto_review_gets_the_safe_rung_because_no_model_list_declares_it() {
+        assert_eq!(
+            codex_effort(Some(ReasoningEffort::Deep), "codex-auto-review"),
+            "xhigh",
+            "absent from `model/list` on 0.147.0 and 0.153.4, so its ladder is unverifiable"
+        );
+    }
+
     /// An unknown or user-typed model gets the safe floor rather than a guess —
     /// `with_unlisted_models` means anything can arrive here.
     #[test]
@@ -187,6 +210,12 @@ mod tests {
 
     /// `ultra` is the delegating tier above the ordinary ladder. `/effort deep`
     /// must not silently buy it on the models that have it.
+    ///
+    /// ⚠ This guards the *values* in the const tables above — `CLAUDE_TOP`,
+    /// `CODEX_SAFE_TOP` and the `"max"` literal — not the mapping logic:
+    /// `codex_top_rung` can only ever return one of those two strings, so the
+    /// assertion cannot fail while they say what they say. It is a tripwire on
+    /// someone editing a constant, not evidence that the ladder is right.
     #[test]
     fn deep_never_reaches_ultra() {
         for model in ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] {

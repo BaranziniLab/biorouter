@@ -145,8 +145,10 @@ async fn ingest_under(provider: Arc<dyn Provider>, label: &str) {
 #[ignore = "needs the `claude` CLI installed and signed in; spends the user's own plan quota"]
 async fn a_real_ingest_macro_runs_on_claude_code() {
     use biorouter::providers::claude_code::ClaudeCodeProvider;
+    // Haiku 4.5: the cheapest advertised model, served by both CLI generations
+    // on this machine (2.1.235 and 2.1.260) with no version floor of its own.
     let provider =
-        ClaudeCodeProvider::from_env(ModelConfig::new("claude-sonnet-4-6").expect("a known model"))
+        ClaudeCodeProvider::from_env(ModelConfig::new("claude-haiku-4-5").expect("a known model"))
             .await
             .expect("the claude CLI is installed");
     ingest_under(Arc::new(provider), "claude_code").await;

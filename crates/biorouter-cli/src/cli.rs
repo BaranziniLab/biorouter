@@ -275,7 +275,7 @@ pub struct ModelOptions {
     #[arg(
         long = "model",
         value_name = "MODEL",
-        help = "Specify the model to use (e.g., 'claude-fable-5-1', 'gpt-6-astra')",
+        help = "Specify the model to use (e.g., 'claude-opus-5', 'gpt-5.5')",
         long_help = "Override the BIOROUTER_MODEL environment variable for this run. The model must be supported by the specified provider."
     )]
     pub model: Option<String>,

@@ -214,9 +214,21 @@ fn known_models() -> Vec<ModelInfo> {
     //     128,000). `model/list` carries no context-window field on either CLI
     //     version, so the window can never come from the probe.
     //
-    // `gpt-5.6`, `gpt-5.6-pro`, `gpt-6` and `codex-auto-review` are absent from
-    // the catalog and deliberately not offered: a model the account cannot
-    // select from the picker is worse than one missing from the list.
+    // Four ids are deliberately not offered, for two different reasons — and
+    // the two must not be collapsed, because only the first group is a model
+    // the account cannot select:
+    //
+    //   * `gpt-5.6`, `gpt-5.6-pro` and `gpt-6` are **refused by the account**.
+    //     `codex exec -m <id>` fails on both CLI versions with `400 The
+    //     '<id>' model is not supported when using Codex with a ChatGPT
+    //     account`. Putting one in the picker would only ever produce that.
+    //   * `codex-auto-review` **runs**: `codex exec -m codex-auto-review` is
+    //     accepted on both 0.147.0 and 0.153.4. It is absent from `model/list`
+    //     on both, so it is a *hidden review model* rather than an unselectable
+    //     one, and advertising a model the vendor does not list would be a
+    //     guess about a surface that can change with no notice. Its absence
+    //     from `model/list` is also why its effort ladder cannot be read — see
+    //     `CODEX_MODELS_WITH_MAX` in `coding_agent/effort.rs`.
     //
     // Re-derive rather than trusting this comment:
     //   codex app-server --strict-config   # then: {"id":1,"method":"model/list"}
@@ -2458,10 +2470,19 @@ for line in sys.stdin:
             hint.contains("gpt-5.5-codex"),
             "the hint must name the model that was asked for: {hint}"
         );
+        // ⚠ Assert against the parenthesised catalog only, never against the
+        // whole hint. The hint embeds the id that was asked for, and
+        // `gpt-5.5-codex` *contains* `gpt-5.5` — so a bare
+        // `hint.contains("gpt-5.5")` passes on a hint that lists no models at
+        // all.
+        let catalog = hint
+            .split_once('(')
+            .unwrap_or_else(|| panic!("the hint must carry a parenthesised catalog: {hint}"))
+            .1;
         assert!(
-            hint.contains("gpt-6-astra")
-                && hint.contains("gpt-5.5")
-                && hint.contains("gpt-5.3-codex-spark"),
+            catalog.contains("gpt-6-astra")
+                && catalog.contains("gpt-5.5")
+                && catalog.contains("gpt-5.3-codex-spark"),
             "and the ones that exist, so the fix is in the message: {hint}"
         );
         assert!(

@@ -134,13 +134,20 @@ pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "claude-fable-5-1";
 
 pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/headless";
 
-/// Models advertised in the picker, with the context window each alias resolves
-/// to today.
+/// Models advertised in the picker, with each id's measured context window.
 ///
-/// `ProviderMetadata::with_models` is used rather than `::new` on purpose: `::new`
-/// derives each limit by looking the *name* up as a model id, and these are
-/// aliases rather than ids, so every one of them would silently take the default
-/// limit and the settings UI would display a wrong window.
+/// `ProviderMetadata::with_models` is used rather than `::new` because `::new`
+/// hard-codes `supports_vision: None` (see `base.rs`), and this catalog carries a
+/// per-model vision answer: all four of these take image input, and Codex's
+/// `gpt-5.3-codex-spark` next door does not — recording a known fact as unknown is
+/// its own defect.
+///
+/// The windows are *not* the reason. These are concrete ids rather than the CLI's
+/// `sonnet`/`opus` aliases (see `CLAUDE_CODE_DEFAULT_MODEL` above on why), each
+/// with its own exact `MODEL_CONTEXT_WINDOWS` entry, so `::new`'s
+/// `ModelConfig::new_or_fail(name).context_limit()` would resolve every one of
+/// them correctly — and `tests/context_windows.rs` pins them under either
+/// constructor.
 fn known_models() -> Vec<ModelInfo> {
     // Each window must equal the one `MODEL_CONTEXT_WINDOWS` declares, because
     // `tests/context_windows.rs::provider_declared_windows_match_the_registry`
@@ -148,10 +155,11 @@ fn known_models() -> Vec<ModelInfo> {
     //
     // Anthropic's **current** lineup, and nothing else. Measured 2026-09-08
     // against two CLIs rather than read off a changelog: `claude` 2.1.235 (the
-    // copy on this machine's PATH) for the first three plus Haiku, and `claude`
-    // 2.1.260 (the binary the desktop app bundles) for `claude-fable-5-1`,
-    // which 2.1.235 cannot run at all. Each window below is the number the CLI
-    // itself reported in `modelUsage[<id>].contextWindow` for a real one-turn
+    // copy on this machine's PATH) for `claude-opus-5`, `claude-sonnet-5` and
+    // `claude-haiku-4-5`, and `claude` 2.1.260 (the binary the desktop app
+    // bundles) for `claude-fable-5-1`, which 2.1.235 cannot run at all. Each
+    // window below is the number the CLI itself reported in
+    // `modelUsage[<id>].contextWindow` for a real one-turn
     // completion, and it matches
     // https://platform.claude.com/docs/en/about-claude/models/overview, which
     // also states that every current model takes text *and* image input —
@@ -176,11 +184,21 @@ fn known_models() -> Vec<ModelInfo> {
     //   * `claude-fable-5` — legacy, superseded at the same tier by Fable 5.1.
     //     Anthropic still serves it, and `with_unlisted_models` still lets a
     //     user type it, so nothing breaks; it just is not advertised.
-    //   * `claude-sonnet-4-6` — legacy, and its declared 1,000,000 was a live
-    //     **defect**. A bare `claude-sonnet-4-6` runs at **200,000** on this
-    //     plan (measured); Sonnet 4.6's 1M window needs the `[1m]` id suffix
-    //     plus usage credits on Max, so the picker was showing a budget five
-    //     times the one the agent actually had.
+    //   * `claude-sonnet-4-6` — legacy, and the 1,000,000 this catalog
+    //     declared for it was a live **defect** in the picker. A bare
+    //     `claude-sonnet-4-6` runs at **200,000** on this plan (measured);
+    //     Sonnet 4.6's 1M window needs the `[1m]` id suffix plus usage credits
+    //     on Max, so the picker was offering a budget five times the one the
+    //     agent actually had.
+    //
+    //     ⚠ Dropping it from this list fixes the **picker** and nothing else.
+    //     `MODEL_CONTEXT_WINDOWS` still declares `("claude-sonnet-4-6",
+    //     1_000_000)`, because the anthropic, Bedrock and Databricks providers
+    //     genuinely serve that id at 1M and need the entry; and
+    //     `with_unlisted_models` still lets a user type it here. So a
+    //     hand-typed `claude-sonnet-4-6` on *this* provider still shows 1M
+    //     against a CLI serving 200k. The window is a per-provider fact, and a
+    //     registry keyed on the model name alone has no way to say so.
     vec![
         ModelInfo::new("claude-fable-5-1", 1_000_000).with_vision(),
         ModelInfo::new("claude-opus-5", 1_000_000).with_vision(),

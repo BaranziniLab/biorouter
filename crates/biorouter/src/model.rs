@@ -274,10 +274,12 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
 static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
     vec![
         // openai
-        // `gpt-5` does not match `gpt-6-astra`, so nothing shadows it today;
-        // this exists for the dated variants a future catalog may carry
-        // (`gpt-6-astra-2026-xx-xx`), which have no exact entry.
-        ("gpt-6", 1_050_000),
+        // Scoped to Astra rather than to the whole `gpt-6` generation. It
+        // exists only for the dated variants a future catalog may carry
+        // (`gpt-6-astra-2026-xx-xx`), which have no exact entry; a bare
+        // `"gpt-6"` would additionally hand 1,050,000 to an unreleased
+        // `gpt-6-mini`, which is a claim nothing has measured.
+        ("gpt-6-astra", 1_050_000),
         ("gpt-5.6", 1_050_000), // covers gpt-5.6 and its -sol/-terra/-luna variants
         ("gpt-5.5", 1_050_000), // covers gpt-5.5 and gpt-5.5-pro
         ("gpt-5.4-mini", 400_000),
@@ -1228,9 +1230,12 @@ mod tests {
         );
         // The two ids the coding-agent providers now default to. Both are
         // advertised, so both must resolve from the exact registry rather than
-        // from a pattern: "gpt-6" would answer for Astra either way, but
-        // "claude-fable-5" is a prefix of "claude-fable-5-1", and a prefix
-        // answering for its successor is how a wrong window goes unnoticed.
+        // from a pattern — and for each one a pattern would answer with the
+        // same number ("gpt-6-astra" and "claude-fable-5" are each a prefix of
+        // the id asked about), so `context_window_for` alone cannot tell an
+        // exact entry from an inherited one. That is precisely how a wrong
+        // window goes unnoticed, which is why `has_declared_context_window`
+        // below is the assertion that separates them.
         assert_eq!(ModelConfig::context_window_for("gpt-6-astra"), 1_050_000);
         assert_eq!(
             ModelConfig::context_window_for("claude-fable-5-1"),
