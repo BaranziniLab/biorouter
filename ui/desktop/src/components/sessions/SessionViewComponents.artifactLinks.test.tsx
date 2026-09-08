@@ -69,6 +69,33 @@ describe('file-link reliability: read-only transcript provenance', () => {
     });
   });
 
+  // A shared transcript is fetched from an operator-configured remote
+  // `base_url` and JSON-parsed without validating message shape, so it is the
+  // one `Message[]` that can violate the generated type. Measured in a running
+  // dev GUI on 2026-09-07: rendering `#/shared-session` with messages that
+  // carried no `metadata` replaced the whole page with the app's error boundary
+  // ("Cannot read properties of undefined (reading 'provenance')"). A malformed
+  // message must cost its own provenance, not the transcript.
+  it('renders the transcript when a message carries no metadata at all', async () => {
+    const shapeless = {
+      id: 'shapeless',
+      role: 'assistant',
+      created: 1,
+      content: [{ type: 'text', text: 'Created `/remote/report.md`.' }],
+    } as unknown as Message;
+    const onOpenArtifact = renderMessages([shapeless, assistant('current', '[Open](report.md)')]);
+
+    expect(await screen.findByText(/Created/)).toBeVisible();
+    // Degraded, not crashed: the shapeless message proves no path, so the later
+    // link resolves against the working directory instead of its `/remote` one.
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    expect(onOpenArtifact).toHaveBeenCalledWith({
+      kind: 'file',
+      title: 'report.md',
+      path: '/work/report.md',
+    });
+  });
+
   it('keeps an explicit absolute path unchanged', async () => {
     const onOpenArtifact = renderMessages([
       assistant('prior', 'Created `/one/report.md`.'),

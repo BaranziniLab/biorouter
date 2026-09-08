@@ -12,8 +12,14 @@ type PathIndex = { paths: KnownPath[]; byBasename: Map<string, KnownPath[]> };
 type ProvenanceIndex = PathIndex & { sessionId: string; workingDir?: string };
 const provenanceCache = new WeakMap<readonly Message[], ProvenanceIndex>();
 
+// Belt and braces for the shape `sharedSessions.normalizeSharedMessages` fills
+// in at the boundary. This index is built for EVERY message of both transcript
+// renderers, so it is the first thing a malformed shared transcript reaches —
+// and it is where the error boundary was measured. `?.` here contradicts the
+// generated `Message` type on purpose: the type is a promise about the local
+// daemon's payload, not about a remote one.
 function localOrigin(message: Message, sessionId: string): boolean {
-  const origin = message.metadata.provenance?.fromSessionId;
+  const origin = message.metadata?.provenance?.fromSessionId;
   return !origin || origin === sessionId;
 }
 
@@ -69,9 +75,13 @@ function buildIndex(
 
   messages.forEach((message, index) => {
     if (!localOrigin(message, sessionId)) return;
-    if (message.role === 'assistant' && message.metadata.userVisible) {
-      for (const path of referencedFilePaths(getTextContent(message), workingDir)) add(path, index);
-      for (const content of message.content) {
+    // Read once: a message that arrives without content indexes nothing, and
+    // `getTextContent` reads the same field without a guard of its own.
+    const contents = message.content ?? [];
+    if (message.role === 'assistant' && message.metadata?.userVisible) {
+      const text = contents.length ? getTextContent(message) : '';
+      for (const path of referencedFilePaths(text, workingDir)) add(path, index);
+      for (const content of contents) {
         if (content.type !== 'toolRequest') continue;
         const call = content.toolCall as {
           status?: string;
@@ -83,7 +93,7 @@ function buildIndex(
       }
     }
 
-    for (const content of message.content) {
+    for (const content of contents) {
       if (content.type !== 'toolResponse') continue;
       const call = calls.get(content.id);
       if (!call) continue;
