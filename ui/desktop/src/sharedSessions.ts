@@ -1,5 +1,5 @@
 import { safeJsonParse } from './utils/conversionUtils';
-import { Message } from './api';
+import { Message, MessageMetadata } from './api';
 
 export interface SharedSessionDetails {
   share_token: string;
@@ -10,6 +10,57 @@ export interface SharedSessionDetails {
   messages: Message[];
   message_count: number;
   total_tokens: number | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeSharedMessage(message: Record<string, unknown>): Message {
+  const metadata = isRecord(message.metadata) ? message.metadata : {};
+  return {
+    ...(message as unknown as Message),
+    // Only the two CONTAINER fields are filled in, because they are the only
+    // ones a consumer dereferences. A missing scalar (`created`, `role`, `id`)
+    // degrades a label rather than throwing — `formatMessageTimestamp` already
+    // takes an optional — and inventing one would disguise a malformed payload
+    // instead of surviving it.
+    content: Array.isArray(message.content) ? (message.content as Message['content']) : [],
+    metadata: {
+      ...(metadata as Partial<MessageMetadata>),
+      // A shared transcript is what the sharer chose to publish, so a message
+      // arriving without a visibility flag is SHOWN, and hidden only when the
+      // payload says so explicitly. Defaulting to `false` would trade the error
+      // boundary for a silently truncated transcript, which is worse: the
+      // reader cannot tell that anything is missing.
+      userVisible: metadata.userVisible !== false,
+      agentVisible: metadata.agentVisible !== false,
+    },
+  };
+}
+
+/**
+ * Fill in the shape the generated `Message` type promises, for the one
+ * `Message[]` in the renderer that does not come from the local daemon.
+ *
+ * `Message` declares `content` and `metadata` as REQUIRED, so every consumer
+ * downstream — `getTextContent`, `isUserMessage`, `localOrigin` in
+ * `artifacts/artifactFileProvenance.ts`, both transcript renderers — reads them
+ * without a guard, and is right to. But `fetchSharedSessionDetails` reads this
+ * payload from an operator-configured remote `base_url` and `safeJsonParse`
+ * *asserts* the type rather than checking it, so a server on an older schema
+ * (or any malformed response) hands the renderer a message that violates it.
+ * Measured: a transcript whose messages carried no `metadata` replaced the
+ * whole page with the app's error boundary ("Cannot read properties of
+ * undefined (reading 'provenance')").
+ *
+ * Filling the shape once, here, is what keeps that promise true for every
+ * consumer. Guarding each consumer instead is an open-ended list that the next
+ * consumer written against the type would not join.
+ */
+export function normalizeSharedMessages(messages: unknown): Message[] {
+  if (!Array.isArray(messages)) return [];
+  return messages.filter(isRecord).map(normalizeSharedMessage);
 }
 
 /**
@@ -51,7 +102,7 @@ export async function fetchSharedSessionDetails(
       base_url: data.base_url,
       description: data.description,
       working_dir: data.working_dir,
-      messages: data.messages,
+      messages: normalizeSharedMessages(data.messages),
       message_count: data.message_count,
       total_tokens: data.total_tokens,
     };

@@ -83,6 +83,7 @@ impl Provider for FailingProvider {
             allows_unlisted_models: false,
             tier: Default::default(),
             runs_locally: false,
+            institutions: Vec::new(),
         }
     }
 
@@ -137,6 +138,7 @@ impl Provider for HappyProvider {
             allows_unlisted_models: false,
             tier: Default::default(),
             runs_locally: false,
+            institutions: Vec::new(),
         }
     }
 

@@ -14,45 +14,30 @@ import { BROWSER_SURFACE_MARKER } from '../utils/surface';
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   upsert: vi.fn(),
+  getProviders: vi.fn(),
   navigate: vi.fn(),
 }));
 
 vi.mock('./ConfigContext', () => ({
-  useConfig: () => ({ read: mocks.read, upsert: mocks.upsert }),
+  useConfig: () => ({
+    read: mocks.read,
+    upsert: mocks.upsert,
+    getProviders: mocks.getProviders,
+  }),
 }));
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
 }));
 
-// Each card gets a distinguishable marker, because the assertion that matters
-// most here is an ABSENCE — a stub rendering `null` (as the sibling suite's do)
-// could not tell "not rendered" from "rendered and empty".
-vi.mock('./onboarding/LlamaServerInlineCard', () => ({
-  default: () => <div>CARD:llama</div>,
-}));
-vi.mock('./onboarding/OllamaInlineCard', () => ({ default: () => <div>CARD:ollama</div> }));
-vi.mock('./onboarding/InstitutionalSetupCard', () => ({
-  default: () => <div>CARD:institutional</div>,
-}));
-vi.mock('./onboarding/CodingAgentInlineCard', () => ({
-  default: () => <div>CARD:coding-agent</div>,
-}));
-vi.mock('./onboarding/CommercialSetupCard', () => ({
-  default: () => <div>CARD:commercial</div>,
+// The catalog gets a distinguishable marker, because the assertion that matters
+// most here is an ABSENCE — a stub rendering `null` could not tell
+// "not rendered" from "rendered and empty".
+vi.mock('./settings/providers/ProviderCatalog', () => ({
+  default: () => <div>CATALOG</div>,
 }));
 
-vi.mock('./settings/models/subcomponents/SwitchModelModal', () => ({
-  SwitchModelModal: () => <div>SWITCH-MODEL-MODAL</div>,
-}));
-
-const CARD_MARKERS = [
-  'CARD:llama',
-  'CARD:ollama',
-  'CARD:institutional',
-  'CARD:coding-agent',
-  'CARD:commercial',
-];
+const CARD_MARKERS = ['CATALOG'];
 
 function renderGuard() {
   return render(
@@ -67,6 +52,7 @@ describe('ProviderGuard on a browser-served surface', () => {
     vi.clearAllMocks();
     mocks.read.mockResolvedValue('');
     mocks.upsert.mockResolvedValue(undefined);
+    mocks.getProviders.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -74,12 +60,15 @@ describe('ProviderGuard on a browser-served surface', () => {
   });
 
   /**
-   * ⚠ **Fails against today's code**, which renders all five cards on every
-   * surface: `queryByText('CARD:llama')` finds one, and there is no panel for
-   * `findByTestId` to resolve. The user reaches a picker whose every path ends
-   * in a refusal.
+   * ⚠ The user must not reach a picker whose every path ends in a refusal: every
+   * route through the catalog writes `BIOROUTER_PROVIDER`, and a browser-served
+   * daemon refuses that write with a 409 addressed to an AI agent.
+   *
+   * ⚠ **The skip is withheld here too**, and for the same reason rather than as
+   * an oversight: "continue without a provider" would lead to a chat that this
+   * tab can never configure — a second dead end wearing the clothes of an escape.
    */
-  it('replaces the provider cards with what to run on the host', async () => {
+  it('replaces the provider catalog with what to run on the host', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     renderGuard();
 
@@ -92,6 +81,7 @@ describe('ProviderGuard on a browser-served surface', () => {
     for (const marker of CARD_MARKERS) {
       expect(screen.queryByText(marker)).toBeNull();
     }
+    expect(screen.queryByTestId('onboarding-skip-header')).toBeNull();
   });
 
   /**
@@ -99,8 +89,6 @@ describe('ProviderGuard on a browser-served surface', () => {
    * screen that said only "run this on the host" would read as a limitation
    * rather than as the thing keeping a private conversation off a public model.
    *
-   * ⚠ Fails against today's code for the same reason as above — there is no
-   * panel to carry the sentence.
    */
   it('says why a browser tab cannot choose, not only that it cannot', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
@@ -125,6 +113,8 @@ describe('ProviderGuard on a browser-served surface', () => {
       expect(await screen.findByText(marker)).toBeInTheDocument();
     }
     expect(screen.queryByTestId('host-managed-model-panel')).toBeNull();
+    // …and the desktop keeps its way past the wall.
+    expect(screen.getByTestId('onboarding-skip-header')).toBeInTheDocument();
   });
 
   /**

@@ -10825,6 +10825,13 @@
             "type": "string",
             "description": "Display name for the provider in UIs"
           },
+          "institutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AffiliationInstitution"
+            },
+            "description": "The institution(s) whose gateway this provider *ships* pointed at — the\n**type-level** institution claim, exactly as [`Self::tier`] is the\ntype-level tier claim, and declared by the same builder pattern\n([`Self::with_institution`]) in the provider's own module.\n\n## Why this exists beside `ProviderDetails::affiliation`\n\n`ProviderDetails::affiliation` is instance-resolved and strictly better,\nand it is what any surface should prefer. But `GET /config/providers`\nresolves it **only for a configured provider** — an unconfigured one has\nno keys, cannot be constructed, and must not have every provider module's\nconstructor run on a plain GET (see `resolve_provider_axes`). So on a\nmachine where nothing is set up yet — first-run onboarding, the one place\na user most needs to be told which gateway belongs to their institution —\nevery row's `affiliation` is `null`. This field is the answer for exactly\nthat gap: it lets a catalog head a group \"UCSF\" from the daemon's own\ndata rather than from a name-keyed table in the renderer.\n\n⚠ **Not a badge, and not an enforcement input.** Same warning as\n[`Self::tier`]'s, and for the same reason: this is what the provider\n*ships* pointed at, so a Versa instance repointed at another host still\ncarries `ucsf` here while [`Provider::affiliation`] correctly reports\n`None`. It may only ever be read as a *fallback for a row the daemon did\nnot resolve*, never in preference to an instance answer, and never by a\ngate. `privacy::affiliation` reads [`Provider::affiliation`] and nothing\nelse.\n\nEmpty for every provider that ships pointed at no institution, which is\nalmost all of them."
+          },
           "known_models": {
             "type": "array",
             "items": {

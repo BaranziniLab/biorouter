@@ -506,7 +506,15 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   const getCurrentModelDisplayName = useCallback(async () => {
     try {
       const currentModelName = (await read('BIOROUTER_MODEL', false)) as string;
-      return getModelDisplayName(currentModelName);
+      // ⚠ `?? 'Select Model'`, and the return type was a lie without it. This is
+      // declared `Promise<string>`, but `getModelDisplayName` answers `null` for
+      // a model it does not recognise — including the empty one an install with
+      // no provider has — and `ModelsBottomBar` stores the result and then reads
+      // `.length` off it. The whole renderer crashed to the error boundary with
+      // "Cannot read properties of null (reading 'length')". It was unreachable
+      // only because onboarding could not be skipped; the moment a user could
+      // enter the app unconfigured, it was the first thing they saw.
+      return getModelDisplayName(currentModelName) ?? 'Select Model';
     } catch {
       return 'Select Model';
     }

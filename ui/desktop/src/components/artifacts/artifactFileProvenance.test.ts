@@ -128,4 +128,38 @@ describe('file-link reliability: provenance boundaries', () => {
     }
     expect(filePathsBeforeMessage([request, response], 2, 'local', '/work')).toEqual([]);
   });
+
+  // The index is built for EVERY message of both transcript renderers, so it is
+  // the first thing a shared transcript from a remote `base_url` reaches — and
+  // `message.metadata.provenance` was read there without a guard. Measured in a
+  // running dev GUI: a shared transcript whose messages carried no `metadata`
+  // replaced the whole page with the app's error boundary. The payload is
+  // repaired at the boundary now (`sharedSessions.normalizeSharedMessages`);
+  // this pins the module itself as total, so the repair is belt and braces
+  // rather than the only thing standing between a reader and a blank page.
+  it('indexes nothing, and throws nothing, for a message missing metadata or content', () => {
+    const noMetadata = {
+      id: 'no-metadata',
+      role: 'assistant',
+      created: 1,
+      content: [{ type: 'text', text: 'Created `/remote/report.md`.' }],
+    } as unknown as Message;
+    const noContent = {
+      id: 'no-content',
+      role: 'assistant',
+      created: 2,
+      metadata: { userVisible: true, agentVisible: true },
+    } as unknown as Message;
+    const wellFormed: Message = {
+      id: 'well-formed',
+      role: 'assistant',
+      created: 3,
+      metadata: { userVisible: true, agentVisible: true },
+      content: [{ type: 'text', text: 'Created `/work/kept.md`.' }],
+    };
+
+    const messages = [noMetadata, noContent, wellFormed];
+    expect(filePathsBeforeMessage(messages, 3, 'local', '/work')).toEqual(['/work/kept.md']);
+    expect(filePathLookupBeforeMessage(messages, 3, 'local', '/work')('report.md')).toEqual([]);
+  });
 });
