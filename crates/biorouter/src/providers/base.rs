@@ -1376,8 +1376,12 @@ mod type_level_institution_tests {
         // and declaring "ucsf" must produce the same id, or a catalog would show
         // two groups for one institution while the gates saw one.
         assert_eq!(
-            ProviderMetadata::empty().with_institution("UCSF").institutions,
-            ProviderMetadata::empty().with_institution("ucsf").institutions
+            ProviderMetadata::empty()
+                .with_institution("UCSF")
+                .institutions,
+            ProviderMetadata::empty()
+                .with_institution("ucsf")
+                .institutions
         );
     }
 
@@ -1389,7 +1393,8 @@ mod type_level_institution_tests {
     /// claim where it asked for an instance-resolved one.
     #[test]
     fn the_type_level_claim_does_not_serialise_under_the_instance_level_key() {
-        let json = serde_json::to_value(ProviderMetadata::empty().with_institution("ucsf")).unwrap();
+        let json =
+            serde_json::to_value(ProviderMetadata::empty().with_institution("ucsf")).unwrap();
         assert!(json.get("affiliation").is_none());
         assert_eq!(json["institutions"][0]["id"], "ucsf");
         assert_eq!(json["institutions"][0]["display_name"], "UCSF");
