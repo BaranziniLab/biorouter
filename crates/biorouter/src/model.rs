@@ -95,6 +95,10 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gpt-5.6-luna", 1_050_000),
         ("gpt-5.6-sol", 1_050_000),
         ("gpt-5.6-terra", 1_050_000),
+        // OpenAI's published figure for Astra (max output 128,000). Codex's
+        // `model/list` carries no context-window field, so this cannot come
+        // from the CLI probe that establishes the rest of that catalog.
+        ("gpt-6-astra", 1_050_000),
         ("o3", 200_000),
         ("o3-2025-04-16", 200_000),
         // ── Anthropic ──
@@ -104,6 +108,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("anthropic/claude-sonnet-5", 1_000_000),
         ("claude-4-sonnet", 200_000),
         ("claude-fable-5", 1_000_000),
+        ("claude-fable-5-1", 1_000_000),
         ("claude-haiku-4-5", 200_000),
         ("claude-haiku-4-5-20251001", 200_000),
         ("claude-haiku-4-5@20251001", 200_000),
@@ -269,6 +274,10 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
 static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
     vec![
         // openai
+        // `gpt-5` does not match `gpt-6-astra`, so nothing shadows it today;
+        // this exists for the dated variants a future catalog may carry
+        // (`gpt-6-astra-2026-xx-xx`), which have no exact entry.
+        ("gpt-6", 1_050_000),
         ("gpt-5.6", 1_050_000), // covers gpt-5.6 and its -sol/-terra/-luna variants
         ("gpt-5.5", 1_050_000), // covers gpt-5.5 and gpt-5.5-pro
         ("gpt-5.4-mini", 400_000),
@@ -1217,6 +1226,18 @@ mod tests {
             ModelConfig::context_window_for("claude-sonnet-5"),
             1_000_000
         );
+        // The two ids the coding-agent providers now default to. Both are
+        // advertised, so both must resolve from the exact registry rather than
+        // from a pattern: "gpt-6" would answer for Astra either way, but
+        // "claude-fable-5" is a prefix of "claude-fable-5-1", and a prefix
+        // answering for its successor is how a wrong window goes unnoticed.
+        assert_eq!(ModelConfig::context_window_for("gpt-6-astra"), 1_050_000);
+        assert_eq!(
+            ModelConfig::context_window_for("claude-fable-5-1"),
+            1_000_000
+        );
+        assert!(ModelConfig::has_declared_context_window("gpt-6-astra"));
+        assert!(ModelConfig::has_declared_context_window("claude-fable-5-1"));
         // An id nobody declared still falls back to the pattern table.
         assert_eq!(ModelConfig::context_window_for("qwen3.6:latest"), 262_144);
         // And an id nothing matches gets the default.

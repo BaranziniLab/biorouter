@@ -57,7 +57,19 @@ use crate::model::ModelConfig;
 
 const KIND: CodingAgentKind = CodingAgentKind::Codex;
 
-pub const CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
+/// The model a Codex session starts on.
+///
+/// Astra is the vendor's own bundled default: codex-cli 0.153.4's changelog
+/// entry is "Fixed Astra's visibility in the bundled model picker and made it
+/// the bundled default", and `model/list` on 0.153.4 returns it first with
+/// `isDefault: true` (measured 2026-09-08). It is also what the operator's own
+/// `~/.codex/config.toml` selects.
+///
+/// ⚠ It needs **codex-cli 0.153.4 or newer**. On 0.147.0 the request is
+/// refused with `400 The 'gpt-6-astra' model requires a newer version of Codex.
+/// Please upgrade to the latest app or CLI and try again.` — which Biorouter
+/// surfaces verbatim, so a stale CLI fails actionably rather than silently.
+pub const CODEX_DEFAULT_MODEL: &str = "gpt-6-astra";
 pub const CODEX_DOC_URL: &str = "https://developers.openai.com/codex/cli";
 
 /// How long the turn will wait for the app server to say which account it bills.
@@ -165,36 +177,55 @@ fn link_codex_auth(source: &Path, target: &Path) -> std::io::Result<()> {
 fn known_models() -> Vec<ModelInfo> {
     // Read from the CLI itself, not from a blog post: `codex app-server`
     // answers `model/list` with the catalog the signed-in account actually
-    // has. Measured against codex-cli 0.147.0 on 2026-08-27 —
+    // has. Measured against codex-cli **0.153.4** on 2026-09-08, from an
+    // isolated `CODEX_HOME` holding only `auth.json` — exactly what this
+    // provider does at runtime, so the list is the one a Biorouter turn sees:
     //
-    //   gpt-5.6-sol          GPT-5.6-Sol    text+image   (account default)
+    //   gpt-6-astra          GPT-6-Astra    text+image   (bundled default)
+    //   gpt-5.6-sol          GPT-5.6-Sol    text+image
     //   gpt-5.6-terra        GPT-5.6-Terra  text+image
     //   gpt-5.6-luna         GPT-5.6-Luna   text+image
     //   gpt-5.5              GPT-5.5        text+image
-    //   gpt-5.4              GPT-5.4        text+image
-    //   gpt-5.4-mini         GPT-5.4-Mini   text+image
     //   gpt-5.3-codex-spark  Spark          TEXT ONLY
     //
-    // Two corrections fall out of that, and both were live defects:
+    // codex-cli 0.147.0 (the copy on this machine's PATH) answers with the
+    // same six **minus Astra**, and makes `gpt-5.6-sol` the default instead;
+    // `codex exec -m gpt-6-astra` there fails `400 … requires a newer version
+    // of Codex`. So Astra needs **0.153.4 or newer** — see
+    // `CODEX_DEFAULT_MODEL`.
     //
-    //   * `gpt-5.3-codex` was offered and DOES NOT EXIST. The real id gained a
-    //     `-spark` suffix; choosing the old one could only ever fail.
+    // Two ids that used to be advertised here are **retired**, not merely
+    // stale: OpenAI's models page gives `gpt-5.4` and `gpt-5.4-mini` an
+    // end-of-life of 2026-08-31 (replacements `gpt-5.6-terra` and
+    // `gpt-5.6-luna`), both have left `model/list` on *both* CLI versions, and
+    // `codex exec -m gpt-5.4` now fails `400 The 'gpt-5.4' model is not
+    // supported when using Codex with a ChatGPT account`. Offering either
+    // could only ever fail.
+    //
+    // Facts about the surviving entries, each of which was or would have been
+    // a live defect:
+    //
+    //   * `gpt-5.3-codex` DOES NOT EXIST. The real id gained a `-spark`
+    //     suffix; choosing the old one could only ever fail.
     //   * `gpt-5.3-codex-spark` is text-only, so it must NOT be marked
-    //     `with_vision()` — the other six are.
+    //     `with_vision()` — the other five are.
+    //   * Astra's 1,050,000 window is OpenAI's published figure
+    //     (developers.openai.com/api/docs/models/gpt-6-astra; max output
+    //     128,000). `model/list` carries no context-window field on either CLI
+    //     version, so the window can never come from the probe.
     //
-    // `gpt-5.6-pro` appears in the binary's strings but is absent from the
-    // catalog, so it is deliberately not offered: a model the account cannot
-    // select is worse than one missing from the list.
+    // `gpt-5.6`, `gpt-5.6-pro`, `gpt-6` and `codex-auto-review` are absent from
+    // the catalog and deliberately not offered: a model the account cannot
+    // select from the picker is worse than one missing from the list.
     //
     // Re-derive rather than trusting this comment:
     //   codex app-server --strict-config   # then: {"id":1,"method":"model/list"}
     vec![
+        ModelInfo::new("gpt-6-astra", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.6-sol", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.6-terra", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.6-luna", 1_050_000).with_vision(),
         ModelInfo::new("gpt-5.5", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-5.4", 1_050_000).with_vision(),
-        ModelInfo::new("gpt-5.4-mini", 400_000).with_vision(),
         // ⚠ `without_vision()`, not a bare `new()`. A bare one leaves vision
         // UNKNOWN, and `model/list` told us the answer: inputModalities is
         // `["text"]`. Recording a known fact as unknown is its own defect.
@@ -2428,7 +2459,9 @@ for line in sys.stdin:
             "the hint must name the model that was asked for: {hint}"
         );
         assert!(
-            hint.contains("gpt-5.5") && hint.contains("gpt-5.3-codex"),
+            hint.contains("gpt-6-astra")
+                && hint.contains("gpt-5.5")
+                && hint.contains("gpt-5.3-codex-spark"),
             "and the ones that exist, so the fix is in the message: {hint}"
         );
         assert!(
@@ -2515,12 +2548,35 @@ for line in sys.stdin:
             "`gpt-5.3-codex` is not a real model id any more — `model/list` \
              reports only `gpt-5.3-codex-spark`, so offering it can only fail"
         );
-        for id in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        for id in [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.3-codex-spark",
+        ] {
             assert!(
                 m.known_models.iter().any(|model| model.name == id),
                 "{id} is in the live catalog and must be offered"
             );
         }
+        // ⚠ Retired, not merely superseded. OpenAI's models page ends both on
+        // 2026-08-31; they have left `model/list` on codex-cli 0.147.0 and
+        // 0.153.4 alike, and `codex exec -m gpt-5.4` answers `400 … not
+        // supported when using Codex with a ChatGPT account`. Advertising
+        // either offers the user a choice that can only fail.
+        for retired in ["gpt-5.4", "gpt-5.4-mini"] {
+            assert!(
+                !m.known_models.iter().any(|model| model.name == retired),
+                "{retired} retired on 2026-08-31 and must not be offered"
+            );
+        }
+        assert_eq!(
+            m.default_model, "gpt-6-astra",
+            "Astra is the vendor's own bundled default from codex-cli 0.153.4 \
+             (`model/list` returns it first with isDefault: true)"
+        );
     }
 }
 
