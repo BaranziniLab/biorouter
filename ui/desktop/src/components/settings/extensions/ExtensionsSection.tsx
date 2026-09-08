@@ -375,7 +375,7 @@ export default function ExtensionsSection({
               onClick={() => setIsBrxtModalOpen(true)}
             >
               <Plus className="h-4 w-4" />
-              Add Extension
+              Add extension
             </Button>
             <Button
               className="flex items-center gap-2 justify-center"
@@ -383,7 +383,7 @@ export default function ExtensionsSection({
               onClick={() => setIsBrowseModalOpen(true)}
             >
               <Search className="h-4 w-4" />
-              Browse Extensions
+              Browse extensions
             </Button>
             <Button
               className="flex items-center gap-2 justify-center"
@@ -391,7 +391,7 @@ export default function ExtensionsSection({
               onClick={() => setIsAddModalOpen(true)}
             >
               <Plus className="h-4 w-4" />
-              Add Custom Extension
+              Add custom extension
             </Button>
           </div>
         )}
@@ -399,12 +399,12 @@ export default function ExtensionsSection({
         {/* Modal for updating an existing extension */}
         {isModalOpen && selectedExtension && (
           <ExtensionModal
-            title="Update Extension"
+            title="Update extension"
             initialData={extensionToFormData(selectedExtension)}
             onClose={handleModalClose}
             onSubmit={handleUpdateExtension}
             onDelete={handleDeleteExtension}
-            submitLabel="Save Changes"
+            submitLabel="Save changes"
             modalType={'edit'}
           />
         )}
@@ -416,7 +416,7 @@ export default function ExtensionsSection({
             initialData={getDefaultFormData()}
             onClose={handleModalClose}
             onSubmit={handleAddExtension}
-            submitLabel="Add Extension"
+            submitLabel="Add extension"
             modalType={'add'}
           />
         )}
@@ -431,7 +431,7 @@ export default function ExtensionsSection({
             } as FixedExtensionEntry)}
             onClose={handleModalClose}
             onSubmit={handleAddExtension}
-            submitLabel="Add Extension"
+            submitLabel="Add extension"
             modalType={'add'}
           />
         )}

@@ -371,7 +371,7 @@ export default function CreateEditWorkflowModal({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 pr-14 border-b border-border-subtle flex-shrink-0">
           <div>
-            <DialogTitle>{isCreateMode ? 'Create Workflow' : 'Edit Workflow'}</DialogTitle>
+            <DialogTitle>{isCreateMode ? 'Create workflow' : 'Edit workflow'}</DialogTitle>
             <DialogDescription className="text-supporting text-text-muted mt-0.5">
               {isCreateMode
                 ? 'Define agent behavior and capabilities for reusable chats.'
@@ -469,7 +469,7 @@ export default function CreateEditWorkflowModal({
               variant="outline"
             >
               <Save className="w-4 h-4" />
-              {isSaving ? 'Saving...' : 'Save Workflow'}
+              {isSaving ? 'Saving...' : 'Save workflow'}
             </Button>
             <Button
               onClick={handleSaveAndRunWorkflowClick}

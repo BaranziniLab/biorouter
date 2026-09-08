@@ -291,7 +291,7 @@ describe('SkillsView', () => {
     render(<SkillsView />);
 
     fireEvent.click(await screen.findByLabelText('Delete skill package pack'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete Package' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete package' }));
 
     await waitFor(() => expect(mocks.removeSkillPackage).toHaveBeenCalledTimes(1));
     expect(mocks.removeSkillPackage.mock.calls[0][0].body).toEqual({
@@ -357,7 +357,7 @@ describe('SkillsView empty and loading states', () => {
     render(<SkillsView />);
 
     const empty = await screen.findByRole('region', { name: 'No skills yet' });
-    expect(within(empty).getByRole('button', { name: 'Add Skill' })).toBeInTheDocument();
+    expect(within(empty).getByRole('button', { name: 'Add skill' })).toBeInTheDocument();
   });
 
   it('says a search matched nothing without claiming the catalog is empty', async () => {

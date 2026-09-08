@@ -406,6 +406,25 @@
   --dock-height: 36px;
   --tab-height: 32px; /* chat, artifact and dock tabs; pulled from 34 */
 
+  /* The height of a scroller's top scroll-edge fade (`.biorouter-scroll-fade-top`,
+     authored below). 10px is the middle of the 8-12px band: tall enough that a
+     row clipped to its last pixel is gone rather than reduced to a hairline,
+     short enough that the first fully visible row is not dimmed. It is a token
+     rather than a literal because the fade height and the `scroll-padding-top`
+     that keeps keyboard focus out of it must be the SAME number, and two places
+     writing 10px is how they stop being the same number. */
+  --scroll-fade-top: 10px;
+  /* ⚠ The gradient does NOT start fading at 0 — its first `--scroll-fade-clear`
+     are FULLY transparent, and that pair of stops is the whole fix rather than
+     a refinement of it. A gradient anchored at 0 gives the topmost device pixel
+     the average alpha over its own span, and sub-pixel placement put the
+     clipped "Configuration guide" link at mask position 1-2 rather than 0-1:
+     MEASURED in the running app, the accent line went from a deviation of
+     (80,175,211) off the ground to (12,26,31) — six times fainter, and still
+     a visible pink rule at 4x. Two clear pixels remove it outright, and cost
+     nothing visible: at 10px those pixels were already under 20% alpha. */
+  --scroll-fade-clear: 2px;
+
   /* Rows. Two rhythms and no more: the rail (sidebar, nav, menu item, recents,
      select option) and the content list. They are separate because they answer
      different questions — a rail row is navigation, a content row is data. */
@@ -2988,6 +3007,61 @@
 .biorouter-settings-tabs {
   background: transparent;
   box-shadow: none;
+}
+
+/* A scroller whose top edge is FLUSH against another rule, faded so a clipped
+   row cannot masquerade as one.
+ *
+ * ⚠ Written for a specific defect, not as decoration. In Settings the tab
+ * strip's bottom edge and the scroll viewport's top edge are the same y — the
+ * strip carries `border-b-0` on purpose (§4.2: its own hairline landed a few
+ * pixels under the header's and read as a double rule), so there is nothing
+ * between them. Scroll the App tab to 663px at 1440x900 and the last 1px of the
+ * "Configuration guide" link survives the clip as an accent-coloured hairline
+ * sitting beside the active tab's underline, at the same y and in the same
+ * colour: a second, thinner tab indicator. A ~3px window of scroll positions
+ * produces it (660 shows 4px of the link, 666 shows none).
+ *
+ * ⚠ The mask is applied to the VIEWPORT, not the Root, and only while the
+ * scroller is actually scrolled. Masking the Root would fade the scrollbar with
+ * the content; fading unconditionally would dim the first row of a page nobody
+ * has scrolled, which is the one place a page has nothing to hide. The hook is
+ * `data-scrolled`, which `ui/scroll-area.tsx` has always written from
+ * `scrollTop > 0` and which nothing consumed until now.
+ *
+ * ⚠ Authored CSS, not a Tailwind arbitrary variant. `mask-image:
+ * linear-gradient(...)` inside a `data-[scrolled=true]:[...]` utility is a
+ * newly written class string, and a newly written class can silently fail to
+ * generate — see `styles/composerFocus.test.ts`, where three spellings were
+ * each measured in the running app with the class on the element and no rule
+ * anywhere in the stylesheet.
+ *
+ * It is a mask rather than an overlay gradient for one reason: an overlay has
+ * to be painted in the ground's colour, and the ground differs per theme
+ * family and per mode. A mask removes alpha, so it is correct in light and dark
+ * of all three families without a single colour being named.
+ *
+ * `scroll-padding-top` is the other half: without it, tabbing to a control that
+ * is scrolled just off the top lands it at y=0, inside the fade. With it the
+ * browser stops the scroll a fade's height short, so a focus ring is never the
+ * thing being faded out. */
+.biorouter-scroll-fade-top > [data-radix-scroll-area-viewport] {
+  scroll-padding-top: var(--scroll-fade-top);
+}
+
+.biorouter-scroll-fade-top[data-scrolled='true'] > [data-radix-scroll-area-viewport] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top)
+  );
 }
 
 .biorouter-settings-section {

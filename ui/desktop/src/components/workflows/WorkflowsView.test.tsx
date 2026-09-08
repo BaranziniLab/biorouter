@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -112,8 +112,13 @@ describe('WorkflowsView loading transition', () => {
     expect(emptyState).toHaveAccessibleDescription(
       'Create a reusable workflow here, save one from a chat, or import an existing workflow.'
     );
-    expect(screen.getByRole('button', { name: 'Create workflow' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import workflow' })).toBeInTheDocument();
+    // ⚠ Scoped to the empty state, not to the page. The header offers the SAME
+    // two actions, and until the casing sweep it offered them under different
+    // names ("Create Workflow"/"Import Workflow"), which is the only reason an
+    // unscoped `getByRole` ever resolved to one element here.
+    const emptyActions = within(emptyState as HTMLElement);
+    expect(emptyActions.getByRole('button', { name: 'Create workflow' })).toBeInTheDocument();
+    expect(emptyActions.getByRole('button', { name: 'Import workflow' })).toBeInTheDocument();
   });
 
   it('proves that starting a workflow came from the renderer user', async () => {
@@ -191,8 +196,12 @@ describe('WorkflowsView on the settings visual vocabulary', () => {
     // not in a hand-rolled `flex gap-3` beside the title.
     const strip = container.querySelector('.biorouter-settings-control-strip');
     expect(strip).not.toBeNull();
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Create Workflow' }));
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Import Workflow' }));
+    // Queried INSIDE the strip rather than page-wide and asserted to be
+    // contained: the empty state below offers the same two actions under the
+    // same two names, so a page-wide `getByRole` finds two of each.
+    const stripActions = within(strip as HTMLElement);
+    expect(stripActions.getByRole('button', { name: 'Create workflow' })).toBeInTheDocument();
+    expect(stripActions.getByRole('button', { name: 'Import workflow' })).toBeInTheDocument();
 
     // `page-transition` matches no CSS rule in this repo and resolves to no
     // animation in the running app. It was on this header; it does not come back.

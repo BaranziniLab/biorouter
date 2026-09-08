@@ -498,8 +498,8 @@ test.describe('Biorouter App', () => {
             // Wait for any animations to complete
             await mainWindow.waitForTimeout(1000);
 
-            // Click Add Extension button in modal footer
-            console.log('Looking for Add Extension button in modal...');
+            // Click Add extension button in modal footer
+            console.log('Looking for Add extension button in modal...');
             const modalAddButton = await mainWindow.waitForSelector('[data-testid="extension-submit-btn"]', {
               timeout: 2000,
               state: 'visible'
@@ -507,12 +507,12 @@ test.describe('Biorouter App', () => {
 
             // Verify button is visible
             const isModalAddButtonVisible = await modalAddButton.isVisible();
-            console.log('Add Extension button visible:', isModalAddButtonVisible);
+            console.log('Add extension button visible:', isModalAddButtonVisible);
 
             // Click the button
             await modalAddButton.click();
 
-            console.log('Clicked Add Extension button');
+            console.log('Clicked Add extension button');
 
             // Wait for the Running Quotes extension to appear in the list
             console.log('Waiting for Running Quotes extension to appear...');

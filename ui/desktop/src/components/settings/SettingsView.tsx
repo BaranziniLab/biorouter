@@ -144,7 +144,19 @@ export default function SettingsView({
                 </TabsList>
               </ReadableContent>
 
-              <ScrollArea className="flex-1" paddingX={1}>
+              {/* ⚠ `biorouter-scroll-fade-top` is not decoration — read the
+                  rule's own comment in `main.css`. The tab strip above carries
+                  `border-b-0` deliberately, so this viewport's top edge and the
+                  strip's bottom edge are the SAME y with nothing between them,
+                  and a row clipped to its last pixel lands beside the active
+                  tab's underline as a second, thinner accent rule (the App tab
+                  at `scrollTop` 663, 1440x900: the "Configuration guide" link).
+                  The class fades the clipped edge only while the scroller is
+                  scrolled, so nothing is dimmed on a page nobody has moved.
+                  Guarded at the source by `styles/settingsScrollFade.test.ts`,
+                  because jsdom computes no `mask-image` and would pass either
+                  way. */}
+              <ScrollArea className="biorouter-scroll-fade-top flex-1" paddingX={1}>
                 <ReadableContent size="chat" className="px-6 py-5">
                   <TabsContent value="models" className="mt-0">
                     <ModelsSection setView={setView} />

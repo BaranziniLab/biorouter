@@ -307,7 +307,7 @@ describe('BrowseExtensionsModal — marketplace install (issue #116)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Back to marketplace' }));
 
-    await waitFor(() => expect(screen.getByText('Browse Extensions')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Browse extensions')).toBeInTheDocument());
     expect(electron.installBrxtBundle).not.toHaveBeenCalled();
     expect(props.onClose).not.toHaveBeenCalled();
     expect(props.onInstalled).not.toHaveBeenCalled();
@@ -322,7 +322,7 @@ describe('BrowseExtensionsModal — marketplace install (issue #116)', () => {
 
     await user.keyboard('{Escape}');
 
-    await waitFor(() => expect(screen.getByText('Browse Extensions')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Browse extensions')).toBeInTheDocument());
     expect(props.onClose).not.toHaveBeenCalled();
   });
 });

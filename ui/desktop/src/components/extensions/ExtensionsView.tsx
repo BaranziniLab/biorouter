@@ -184,15 +184,15 @@ export default function ExtensionsView({
             <>
               <Button variant="default" onClick={() => setIsBrxtModalOpen(true)}>
                 <Plus />
-                Add Extension
+                Add extension
               </Button>
               <Button variant="outline" onClick={() => setIsBrowseModalOpen(true)}>
                 <Search />
-                Browse Extensions
+                Browse extensions
               </Button>
               <Button variant="outline" onClick={() => setIsAddModalOpen(true)}>
                 <Plus />
-                Add Custom Extension
+                Add custom extension
               </Button>
             </>
           }
@@ -221,7 +221,7 @@ export default function ExtensionsView({
           initialData={getDefaultFormData()}
           onClose={handleModalClose}
           onSubmit={handleAddExtension}
-          submitLabel="Add Extension"
+          submitLabel="Add extension"
           modalType={'add'}
         />
       )}

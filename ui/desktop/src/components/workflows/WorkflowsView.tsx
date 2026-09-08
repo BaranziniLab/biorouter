@@ -747,7 +747,7 @@ export default function WorkflowsView() {
               <>
                 <Button onClick={() => setShowCreateDialog(true)}>
                   <WorkflowIcon />
-                  Create Workflow
+                  Create workflow
                 </Button>
                 <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />
               </>
@@ -841,7 +841,7 @@ export default function WorkflowsView() {
                     onClick={handleRemoveSchedule}
                     disabled={isSavingSchedule}
                   >
-                    {isSavingSchedule ? 'Working…' : 'Remove Schedule'}
+                    {isSavingSchedule ? 'Working…' : 'Remove schedule'}
                   </Button>
                 )}
                 <Button
@@ -868,7 +868,7 @@ export default function WorkflowsView() {
           {/* Same ladder, same reason as the schedule dialog above. */}
           <DialogContent dismissible={!isSavingSlashCommand} className={MODAL_SIZE.md}>
             <DialogHeader>
-              <DialogTitle>Slash Command</DialogTitle>
+              <DialogTitle>Slash command</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div>

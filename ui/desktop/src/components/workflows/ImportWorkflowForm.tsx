@@ -117,7 +117,7 @@ export default function ImportWorkflowForm({
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && handleClose()}>
       <DialogContent dismissible={!isSubmitting} className={MODAL_SIZE.md}>
         <DialogHeader>
-          <DialogTitle>Import Workflow</DialogTitle>
+          <DialogTitle>Import workflow</DialogTitle>
           <DialogDescription>
             Drag and drop a workflow YAML or JSON file, or click to browse.
           </DialogDescription>
@@ -179,7 +179,7 @@ export function ImportWorkflowButton({ onClick }: { onClick: () => void }) {
     // (vocabulary V7).
     <Button onClick={onClick} variant="outline">
       <Upload />
-      Import Workflow
+      Import workflow
     </Button>
   );
 }

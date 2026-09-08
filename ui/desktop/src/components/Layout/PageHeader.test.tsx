@@ -35,13 +35,13 @@ describe('PageHeader', () => {
       <PageHeader
         title="Skills"
         description="Add and manage skills."
-        actions={<button type="button">Add Skill</button>}
+        actions={<button type="button">Add skill</button>}
       />
     );
 
     const strip = container.querySelector('.biorouter-settings-control-strip');
     expect(strip).not.toBeNull();
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Add Skill' }));
+    expect(strip).toContainElement(screen.getByRole('button', { name: 'Add skill' }));
     expect(strip).toHaveClass('mt-5');
   });
 
