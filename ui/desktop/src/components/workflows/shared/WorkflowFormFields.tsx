@@ -615,9 +615,7 @@ export function WorkflowFormFields({
               <form.Field name="settings.biorouter_provider">
                 {(field: FormFieldApi<string | undefined>) => (
                   <div>
-                    <label className="block text-caps text-text-muted uppercase mb-1">
-                      Provider
-                    </label>
+                    <label className="block text-caps text-text-muted mb-1">Provider</label>
                     <input
                       type="text"
                       value={field.state.value || ''}
@@ -637,7 +635,7 @@ export function WorkflowFormFields({
               <form.Field name="settings.biorouter_model">
                 {(field: FormFieldApi<string | undefined>) => (
                   <div>
-                    <label className="block text-caps text-text-muted uppercase mb-1">Model</label>
+                    <label className="block text-caps text-text-muted mb-1">Model</label>
                     <input
                       type="text"
                       value={field.state.value || ''}
@@ -655,7 +653,7 @@ export function WorkflowFormFields({
             <form.Field name="settings.temperature">
               {(field: FormFieldApi<number | undefined>) => (
                 <div>
-                  <label className="block text-caps text-text-muted uppercase mb-1">
+                  <label className="block text-caps text-text-muted mb-1">
                     Temperature{' '}
                     <span className="normal-case font-normal">(0 to 2, blank = default)</span>
                   </label>

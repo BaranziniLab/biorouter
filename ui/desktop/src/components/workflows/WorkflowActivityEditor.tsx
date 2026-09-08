@@ -69,7 +69,7 @@ export default function WorkflowActivityEditor({
 
       {/* Message Field */}
       <div className="mb-4">
-        <label htmlFor="message" className="block text-caps text-text-muted uppercase mb-1">
+        <label htmlFor="message" className="block text-caps text-text-muted mb-1">
           Message
         </label>
         <p className="text-supporting text-text-muted mb-2">
@@ -92,7 +92,7 @@ export default function WorkflowActivityEditor({
       {/* Activity Buttons */}
       <div className="space-y-3">
         <div>
-          <label className="block text-caps text-text-muted uppercase mb-1">Activity Buttons</label>
+          <label className="block text-caps text-text-muted mb-1">Activity Buttons</label>
           <p className="text-supporting text-text-muted mb-3">
             Clickable buttons that appear below the message to help users interact with your
             workflow.

@@ -422,13 +422,19 @@ export default function CreateEditWorkflowModal({
                   aria-invalid={deeplinkError}
                   className="flex-1 text-code font-mono"
                 />
+                {/* V7 — `ml-2` is the only class left, and it is spacing
+                    BETWEEN this button and the field beside it rather than
+                    geometry inside it. `px-3 py-2 rounded-element flex
+                    items-center` was the primitive's own job four times over,
+                    and the bare `flex` additionally flips the cva base's
+                    `inline-flex` through tailwind-merge. */}
                 <Button
                   type="button"
                   onClick={handleCopy}
                   variant="outline"
                   disabled={!canCopyDeeplink}
                   aria-label={copied ? 'Link copied' : 'Copy share link'}
-                  className="ml-2 px-3 py-2 rounded-element flex items-center"
+                  className="ml-2"
                 >
                   {copied ? (
                     <Check className="w-4 h-4 text-text-success" />
@@ -461,8 +467,6 @@ export default function CreateEditWorkflowModal({
               onClick={handleSaveWorkflowClick}
               disabled={!requiredFieldsAreFilled() || isSaving}
               variant="outline"
-              size="default"
-              className="inline-flex items-center justify-center gap-2 px-4 py-2"
             >
               <Save className="w-4 h-4" />
               {isSaving ? 'Saving...' : 'Save Workflow'}
@@ -471,8 +475,6 @@ export default function CreateEditWorkflowModal({
               onClick={handleSaveAndRunWorkflowClick}
               disabled={!requiredFieldsAreFilled() || isSaving}
               variant="default"
-              size="default"
-              className="inline-flex items-center justify-center gap-2 px-4 py-2"
             >
               <Play className="w-4 h-4" />
               {isSaving ? 'Saving...' : 'Save & Run Workflow'}

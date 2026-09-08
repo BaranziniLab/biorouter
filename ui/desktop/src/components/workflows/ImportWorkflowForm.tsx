@@ -9,6 +9,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '../ui/dialog';
+import { MODAL_SIZE } from '../ModalShell';
 import { toastSuccess } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
 import { parseWorkflow } from '../../api';
@@ -114,7 +115,7 @@ export default function ImportWorkflowForm({
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && handleClose()}>
-      <DialogContent dismissible={!isSubmitting} className="sm:max-w-[480px]">
+      <DialogContent dismissible={!isSubmitting} className={MODAL_SIZE.md}>
         <DialogHeader>
           <DialogTitle>Import Workflow</DialogTitle>
           <DialogDescription>
@@ -171,8 +172,13 @@ export default function ImportWorkflowForm({
 
 export function ImportWorkflowButton({ onClick }: { onClick: () => void }) {
   return (
-    <Button onClick={onClick} variant="outline" className="flex items-center gap-2">
-      <Upload className="w-4 h-4" />
+    // Variant only. `buttonVariants`' base already emits `inline-flex
+    // items-center justify-center gap-2` and sizes a bare svg to 16px, and a
+    // `flex` on the call site FLIPS that `inline-flex` through tailwind-merge —
+    // which is how a row action elsewhere in the app became a full-width bar
+    // (vocabulary V7).
+    <Button onClick={onClick} variant="outline">
+      <Upload />
       Import Workflow
     </Button>
   );
