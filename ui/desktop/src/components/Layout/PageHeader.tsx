@@ -33,14 +33,15 @@ type PageHeaderProps = {
  * Extensions, Skills, Built apps, MCP apps, Chat history and Settings.
  *
  * Before this existed there were eight copies of the same eleven lines, and
- * they had already drifted in four measurable ways — the hairline was full-bleed
- * in seven of them and column-capped in Skills; the description was `text-body`
- * in five and `text-secondary` in three; the padding was `px-8` in six and
- * `px-6` in two; and the action row was `flex gap-3 mt-5` in four, a
- * right-aligned cluster on the title row in three, and absent in one. None of
- * those is a decision anybody took. `measures.test.ts` asserts at the source
- * that each of those views imports THIS component, so a ninth view cannot
- * quietly grow a ninth copy.
+ * they had already drifted in four ways, counted across the eight: the hairline
+ * was full-bleed in SEVEN and capped at the reading column in Skills; the
+ * description was `text-body` in FIVE and `text-secondary` in THREE; the
+ * padding was `px-8` in FIVE and `px-6` in THREE; and the action row was
+ * `flex gap-3 mt-5` in FOUR, a right-aligned cluster on the title row in TWO,
+ * and absent in TWO. The same five/three split three times over is the tell:
+ * it is not eight decisions, it is one header copied twice and then edited.
+ * `measures.test.ts` asserts at the source that each of those views imports
+ * THIS component, so a ninth view cannot quietly grow a ninth copy.
  *
  * ⚠ **The actions sit on their own line, under the description** (operator
  * decision, 2026-09-07). Astryx §4.2 originally specified the opposite —

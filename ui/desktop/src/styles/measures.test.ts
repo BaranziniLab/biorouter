@@ -58,16 +58,60 @@ const MAIN = readFileSync(join(__dirname, '../main.ts'), 'utf8');
 /**
  * Every view that reads the CHAT measure and is not the chat itself. Settings
  * joined on 2026-09-07 (#172); the three chat-history surfaces joined with it,
- * one PR later. They are listed together because the rule is one rule — a
+ * one PR later; the Scheduler and then the five component views joined in the
+ * two PRs after that. They are listed together because the rule is one rule — a
  * `<ReadableContent` here without `size` silently takes the PAGE measure — and
  * a per-file copy of it is how three of the four would come to say something
- * slightly different.
+ * slightly different. (It had already started: the Scheduler arrived with its
+ * own describe block asserting the same thing in its own words, and that block
+ * is folded in here.)
+ *
+ * ⚠ **After this list, `--measure-page` has NO reader left in `components/`.**
+ * The token and `ReadableContent`'s `text` size both stay: deleting either is a
+ * separate decision, not a consequence of this one, and `text` remains the
+ * default a new view gets when it says nothing — which is exactly why the
+ * source rule below has to name every view rather than trusting the default.
  */
 const CHAT_MEASURE_VIEWS = [
   'settings/SettingsView.tsx',
   'sessions/SessionListView.tsx',
   'sessions/SessionHistoryView.tsx',
   'sessions/SharedSessionView.tsx',
+  'schedule/SchedulesView.tsx',
+  'schedule/ScheduleDetailView.tsx',
+  'workflows/WorkflowsView.tsx',
+  'extensions/ExtensionsView.tsx',
+  'skills/SkillsView.tsx',
+  'applications/ApplicationsView.tsx',
+  'apps/AppsView.tsx',
+].map((rel) => ({
+  rel,
+  source: readFileSync(join(__dirname, '../components', rel), 'utf8'),
+}));
+
+/**
+ * Every view that must mount the SHARED page header rather than write its own.
+ *
+ * This is the assertion that stops the drift coming back, and it has to be a
+ * source assertion: eight views each had their own copy of the header before
+ * `PageHeader` existed, and the copies disagreed about the hairline, the
+ * description's type role, the padding and where the actions went — none of
+ * which any render test noticed, because each view rendered exactly what it
+ * meant to. What no view can now do is mean something different.
+ *
+ * `ScheduleDetailView` and the two transcripts are deliberately ABSENT: they
+ * are drill-in surfaces with a Back-button header, which is a different object
+ * from a page header and keeps its own shape.
+ */
+const PAGE_HEADER_VIEWS = [
+  'settings/SettingsView.tsx',
+  'sessions/SessionListView.tsx',
+  'schedule/SchedulesView.tsx',
+  'workflows/WorkflowsView.tsx',
+  'extensions/ExtensionsView.tsx',
+  'skills/SkillsView.tsx',
+  'applications/ApplicationsView.tsx',
+  'apps/AppsView.tsx',
 ].map((rel) => ({
   rel,
   source: readFileSync(join(__dirname, '../components', rel), 'utf8'),
@@ -297,7 +341,14 @@ describe('the minimum window width is derived from the sidebar and the chat meas
  * forgotten size is silently the wrong one.
  */
 describe.each(CHAT_MEASURE_VIEWS)('$rel sits on the chat measure', ({ source }) => {
-  const OPENING_TAGS = source.match(/<ReadableContent\b[^>]*>/g) ?? [];
+  /**
+   * ⚠ Comments stripped FIRST, and this is not hypothetical tidiness: several of
+   * these views quote the string `<ReadableContent` in a comment explaining why
+   * every one of theirs carries the size. Matched raw, that sentence is a tag
+   * with no `size=` in it and the rule fails on the file that documents itself
+   * best. The same trap `codeWithoutComments` was written for one rule below.
+   */
+  const OPENING_TAGS = codeWithoutComments(source).match(/<ReadableContent\b[^>]*>/g) ?? [];
 
   /**
    * Guards against the vacuous pass: with no matches the loop below asserts
@@ -363,28 +414,14 @@ describe('the comment stripper the measure rule depends on', () => {
 });
 
 /**
- * The Scheduler joined it on 2026-09-07, for the same reason Settings did: both
- * of its surfaces are columns of rows — a schedule and its status, a label and
- * the fact it names — so width past the measure lands between the two halves of
- * every row rather than showing more.
- *
- * ⚠ Asserted at the SOURCE, exactly like the block above. jsdom has no layout
- * engine and never runs Tailwind, so a `ReadableContent` left on the default
- * page measure renders identically in every component test in this repo.
+ * The Scheduler joined the chat measure on 2026-09-07, for the same reason
+ * Settings did: both of its surfaces are columns of rows — a schedule and its
+ * status, a label and the fact it names — so width past the measure lands
+ * between the two halves of every row rather than showing more. Both files are
+ * in `CHAT_MEASURE_VIEWS` above; what is left here is the one assertion that is
+ * about the detail view and nothing else.
  */
-describe('the Scheduler sits on the chat measure', () => {
-  const SOURCES = ['SchedulesView.tsx', 'ScheduleDetailView.tsx'].map((name) => ({
-    name,
-    text: readFileSync(join(__dirname, '../components/schedule', name), 'utf8'),
-  }));
-
-  it.each(SOURCES)('gives every reading column in $name the chat size', ({ text }) => {
-    const tags = text.match(/<ReadableContent\b[^>]*>/g) ?? [];
-    // The vacuous pass: with no matches the loop below asserts nothing.
-    expect(tags.length).toBeGreaterThan(0);
-    for (const tag of tags) expect(tag).toContain('size="chat"');
-  });
-
+describe('the schedule detail sizes itself from its parent', () => {
   /**
    * `ScheduleDetailView` used to size itself `h-screen w-full`, which
    * `MainPanelLayout`'s own comment names as the anti-pattern that breaks an
@@ -397,11 +434,60 @@ describe('the Scheduler sits on the chat measure', () => {
    * defect. The same technique `settingsVocabulary.test.ts` uses for its
    * banned-class rule.
    */
-  it('sizes the schedule detail from its parent, never from the viewport', () => {
-    const detail = SOURCES.find(({ name }) => name === 'ScheduleDetailView.tsx');
-    if (!detail) throw new Error('ScheduleDetailView.tsx is not in SOURCES');
-    const code = detail.text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  it('never forces the viewport height', () => {
+    const detail = CHAT_MEASURE_VIEWS.find(({ rel }) => rel.endsWith('ScheduleDetailView.tsx'));
+    if (!detail) throw new Error('ScheduleDetailView.tsx is not in CHAT_MEASURE_VIEWS');
+    const code = codeWithoutComments(detail.source);
     expect(code).not.toContain('h-screen');
     expect(code).toContain('<MainPanelLayout>');
+  });
+});
+
+/**
+ * One page header, mounted — not eight near-copies of one.
+ *
+ * ⚠ Asserted at the SOURCE, and it has to be. jsdom renders each of the eight
+ * old headers perfectly well; what it cannot see is that they disagreed with
+ * each other. Nor can a `PageHeader.test.tsx` assertion, which proves the
+ * primitive is right and says nothing about whether a view uses it.
+ */
+describe.each(PAGE_HEADER_VIEWS)('$rel mounts the shared page header', ({ source }) => {
+  const code = codeWithoutComments(source);
+
+  it('imports PageHeader and renders it', () => {
+    expect(code).toMatch(/import \{[^}]*\bPageHeader\b[^}]*\} from '[^']*Layout\/PageHeader'/);
+    expect(code).toContain('<PageHeader');
+  });
+
+  /**
+   * The header it replaced, banned by its parts. A view that mounted
+   * `PageHeader` and then left its old block in place beside it would satisfy
+   * the assertion above — that is not hypothetical, it is the shape a partial
+   * conversion takes.
+   *
+   * Two fingerprints, both chosen for being unambiguous. `<h1` because a page
+   * has exactly one title and the primitive owns it. `pt-12` because that is
+   * the page header's top inset and nothing else in these files has a reason
+   * to be inset from a hairline that is not there.
+   *
+   * ⚠ `border-b border-border-subtle` — the pair all eight copies wrote, and
+   * the obvious thing to ban — is NOT usable, and the reason generalises: it is
+   * also how you draw a divider between two ROWS. `SessionListView`'s loading
+   * skeleton uses it correctly, so banning the string reports a view that did
+   * exactly what it was asked. Ban a shape only where the shape has one
+   * meaning.
+   */
+  it('keeps no second copy of the header it replaced', () => {
+    expect(code).not.toContain('<h1');
+    expect(code).not.toMatch(/\bpt-12\b/);
+  });
+
+  /**
+   * The action row is the primitive's, not the call site's. `flex gap-3 mt-5`
+   * is what four of the views wrote; `mt-5` alone is what the strip carries, so
+   * the ban is on the hand-rolled flex row rather than on the offset.
+   */
+  it('hand-rolls no action row of its own', () => {
+    expect(code).not.toMatch(/className="flex gap-3 mt-5"/);
   });
 });
