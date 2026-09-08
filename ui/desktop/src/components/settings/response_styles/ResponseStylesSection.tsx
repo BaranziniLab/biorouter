@@ -27,8 +27,12 @@ export const ResponseStylesSection = () => {
     window.dispatchEvent(new CustomEvent('responseStyleChanged'));
   };
 
+  // A fragment: the rows belong directly to the `.biorouter-settings-list` this
+  // section mounts into. `space-y-1` could only go once the per-item wrapper in
+  // `ResponseStyleSelectionItem` did — before that it was the two rows' only
+  // separation, because every row was suppressing its own hairline.
   return (
-    <div className="space-y-1">
+    <>
       {all_response_styles.map((style) => (
         <ResponseStyleSelectionItem
           key={style.key}
@@ -38,6 +42,6 @@ export const ResponseStylesSection = () => {
           handleStyleChange={handleStyleChange}
         />
       ))}
-    </div>
+    </>
   );
 };

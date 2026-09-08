@@ -163,7 +163,14 @@ export default function SettingsView({
                         behaves) made Privacy feel like a separate product
                         rather than a property of this install; it sits with
                         Configuration now because that is what it is. */}
-                    <div>
+                    {/* The ONE carrier of the tail spacer. Each of the four
+                        below used to bring its own `pb-8` wrapper, which put a
+                        bare `<div>` between every pair of sections and stopped
+                        `.biorouter-settings-section + .biorouter-settings-section`
+                        from ever firing — so the 10px adjacency the stylesheet
+                        declares was dead on this tab and the four blocks read as
+                        four separate pages. */}
+                    <div className="pb-8">
                       {CONFIGURATION_ENABLED && <ConfigSettings />}
                       <PrivacyPanel />
                       <WorkspaceSettingsSection />

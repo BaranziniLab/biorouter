@@ -13,7 +13,13 @@ import {
   useLlamaServer,
   type LlamaServerOperation,
 } from './llamaServerStore';
+import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { ConfirmationModal } from '../../ui/ConfirmationModal';
+import { MODAL_SIZE } from '../../ModalShell';
+import { Note } from '../../ui/note';
+import { Skeleton } from '../../ui/skeleton';
+import { cn } from '../../../utils';
 import {
   Dialog,
   DialogContent,
@@ -101,12 +107,12 @@ function DetailRow({
   mono?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] gap-3 text-xs">
+    <div className="grid grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] gap-3 text-supporting">
       <span className="text-text-muted">{label}</span>
       <span
         className={[
           'min-w-0 text-right text-text-default',
-          mono ? 'break-all font-mono text-supporting leading-relaxed' : 'break-words',
+          mono ? 'break-all font-mono text-supporting' : 'break-words',
         ]
           .filter(Boolean)
           .join(' ')}
@@ -128,6 +134,18 @@ export default function LocalModelInventory() {
   // Deletes are quick, local HTTP calls with no polling; they keep
   // component-local busy state.
   const [deleteAction, setDeleteAction] = useState<{ model: string; message: string } | null>(null);
+  // Two confirmations that used to be `window.confirm`. The OS dialog is
+  // theme-blind, unstyleable and modal to the whole app, and it is the one
+  // control in Settings that could not be read in dark mode. `ConfirmationModal`
+  // is the app's own primitive; the resource check keeps its RESOLVER here
+  // because `runInstall`/`runWarmup` consume it as a boolean guard clause and
+  // must now await the user rather than a synchronous return.
+  const [pendingResourceConfirm, setPendingResourceConfirm] = useState<{
+    message: string;
+    confirmLabel: string;
+    resolve: (proceed: boolean) => void;
+  } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<LlamaCppModel | null>(null);
   // The install/warm-up/refresh flows outlive this panel by design (the
   // store owns the operation), but component-local state must never be set
   // after unmount — including refreshes performed after background installs.
@@ -172,27 +190,34 @@ export default function LocalModelInventory() {
   const installedCount = useMemo(() => catalog.filter(isInstalled).length, [catalog]);
 
   const confirmResources = useCallback(
-    (model: LlamaCppModel) => {
-      const system = snapshot?.system;
-      if (!system || model.suitability_status === 'suitable') return true;
+    (model: LlamaCppModel, confirmLabel: string) =>
+      new Promise<boolean>((resolve) => {
+        const system = snapshot?.system;
+        if (!system || model.suitability_status === 'suitable') {
+          resolve(true);
+          return;
+        }
 
-      const detected =
-        typeof system.accelerator_memory_gib === 'number'
-          ? `${system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(
-              system.accelerator_memory_kind
-            )}`
-          : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
-      return window.confirm(
-        `${model.display_name} recommends ${model.recommended_gpu_memory_gib} GiB GPU-addressable memory.\n\nThis machine reports ${detected}.\n\n${acceleratorMemoryExplanation(system.accelerator_memory_kind)}\n\nContinue anyway?`
-      );
-    },
+        const detected =
+          typeof system.accelerator_memory_gib === 'number'
+            ? `${system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(
+                system.accelerator_memory_kind
+              )}`
+            : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
+        setPendingResourceConfirm({
+          confirmLabel,
+          // The same three sentences the OS dialog carried, in the same order.
+          message: `${model.display_name} recommends ${model.recommended_gpu_memory_gib} GiB GPU-addressable memory. This machine reports ${detected}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`,
+          resolve,
+        });
+      }),
     [snapshot?.system]
   );
 
   const runInstall = useCallback(
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
-      if (!confirmResources(model)) return;
+      if (!(await confirmResources(model, 'Install anyway'))) return;
       let opId = llamaServerStore.beginOperation('install', model.name, 'Preparing install...', {
         poll: false,
       });
@@ -269,7 +294,7 @@ export default function LocalModelInventory() {
   const runWarmup = useCallback(
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
-      if (!confirmResources(model)) return;
+      if (!(await confirmResources(model, 'Warm up anyway'))) return;
       const opId = llamaServerStore.beginOperation('warmup', model.name, 'Warming up model...');
 
       try {
@@ -310,9 +335,6 @@ export default function LocalModelInventory() {
 
   const runDelete = useCallback(
     async (model: LlamaCppModel) => {
-      const label = model.ollama_name ?? model.name;
-      if (!window.confirm(`Delete ${label} from the local model inventory?`)) return;
-
       setDeleteAction({ model: model.name, message: 'Deleting local model...' });
       try {
         let deletedSomething = false;
@@ -359,57 +381,53 @@ export default function LocalModelInventory() {
     const isWarming = operation?.kind === 'warmup' && operation.model === model.name;
     const isDeleting = deleteAction?.model === model.name;
     return (
+      // Every one of these carries a LABEL, so none of them may use the 24px
+      // `xs` rung — `--control-compact`'s own comment says it is for a
+      // glyph-only control in an already-dense cluster. Dropping it also
+      // retires the `h-3 w-3` overrides on their glyphs (including the three
+      // spinners): the cva base supplies 16px at the default rung.
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-        <Button
-          type="button"
-          size="xs"
-          variant="outline"
-          onClick={() => setSelectedModel(model)}
-          disabled={busy}
-        >
-          <Eye className="h-3 w-3" />
-          View Info
+        <Button type="button" size="sm" variant="outline" onClick={() => setSelectedModel(model)}>
+          <Eye />
+          View info
         </Button>
         {isInstalled(model) ? (
           <>
             <Button
               type="button"
-              size="xs"
+              size="sm"
               variant="outline"
               onClick={() => void runWarmup(model)}
               disabled={busy}
             >
-              {isWarming ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Play className="h-3 w-3" />
-              )}
+              {isWarming ? <Loader2 className="animate-spin" /> : <Play />}
               Warm up
             </Button>
             <Button
               type="button"
-              size="xs"
+              size="sm"
               variant="ghost"
-              className="text-text-danger hover:bg-background-danger/10 hover:text-text-danger"
-              onClick={() => void runDelete(model)}
+              className="text-text-danger"
+              onClick={() => setPendingDelete(model)}
               disabled={busy}
               title="Delete local model"
             >
-              {isDeleting ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Trash2 className="h-3 w-3" />
-              )}
+              {isDeleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
               Delete
             </Button>
           </>
         ) : (
-          <Button type="button" size="xs" onClick={() => void runInstall(model)} disabled={busy}>
-            {isInstalling ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Download className="h-3 w-3" />
-            )}
+          // `outline`, matching View info and Warm up. The status chip beside
+          // the name already carries install state, and seven stacked coral
+          // CTAs down one list is exactly what P3 forbids.
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void runInstall(model)}
+            disabled={busy}
+          >
+            {isInstalling ? <Loader2 className="animate-spin" /> : <Download />}
             Install
           </Button>
         )}
@@ -422,37 +440,49 @@ export default function LocalModelInventory() {
       <div className="biorouter-settings-section-header flex items-center justify-between gap-3">
         <div>
           <h2 className="text-caps text-text-muted">Local Model Inventory</h2>
-          <p className="mt-1 text-xs text-text-muted">
+          <p className="mt-1 text-supporting text-text-muted">
             {isLoading
               ? 'Checking local models...'
               : `${installedCount} installed · ${catalog.length} available`}
           </p>
         </div>
+        {/* `mr-3` so the button's BOX shares the rows' 12px inset while the
+            `text-caps` label opposite it stays flush with every other section
+            header on the page. */}
         <Button
           type="button"
-          size="xs"
           shape="round"
           variant="ghost"
+          className="mr-3"
           onClick={() => void refresh()}
           disabled={isLoading || busy}
           title="Refresh local model inventory"
         >
-          <RefreshCw className={isLoading ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+          <RefreshCw className={isLoading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
         </Button>
       </div>
 
       <div className="biorouter-settings-list">
         {error && (
-          <div className="biorouter-settings-row flex items-start gap-2 px-3 py-3 text-xs text-text-warning">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>{error}</span>
-          </div>
+          <Note
+            tone="warning"
+            role="alert"
+            icon={AlertTriangle}
+            className="mb-2"
+            action={
+              <Button type="button" size="sm" variant="outline" onClick={() => void refresh()}>
+                Retry
+              </Button>
+            }
+          >
+            {error}
+          </Note>
         )}
 
         {isLoading ? (
-          <div className="biorouter-settings-row px-3 py-3">
-            <div className="h-4 w-56 animate-pulse rounded bg-background-medium" />
-            <div className="mt-2 h-3 w-80 animate-pulse rounded bg-background-medium" />
+          <div className="biorouter-settings-row px-3 py-2.5">
+            <Skeleton className="h-4 w-56" />
+            <Skeleton className="mt-2 h-3 w-80" />
           </div>
         ) : (
           catalog.map((model) => {
@@ -464,33 +494,23 @@ export default function LocalModelInventory() {
                   : null;
 
             return (
-              <div key={model.name} className="biorouter-settings-row px-3 py-3">
+              <div key={model.name} className="biorouter-settings-row px-3 py-2.5">
                 <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <p className="min-w-0 truncate text-sm font-medium text-text-default">
+                      <p className="min-w-0 truncate text-label text-text-default">
                         {model.display_name}
                       </p>
-                      <span
-                        className={[
-                          'rounded-element px-1.5 py-0.5 text-supporting',
-                          isInstalled(model)
-                            ? 'bg-background-success/15 text-text-success'
-                            : 'bg-background-medium text-text-muted',
-                        ].join(' ')}
-                      >
+                      <Badge tone={isInstalled(model) ? 'success' : 'neutral'}>
                         {installedLabel(model)}
-                      </span>
-                      <span
-                        className={[
-                          'rounded-element px-1.5 py-0.5 text-supporting',
-                          model.suitability_status === 'suitable'
-                            ? 'bg-background-success/15 text-text-success'
-                            : 'bg-background-warning/15 text-text-warning',
-                        ].join(' ')}
-                      >
+                      </Badge>
+                      {/* ⚠ The tone stays CONDITIONAL. An unconditional
+                          `neutral` here would erase the amber "above this Mac's
+                          recommendation" signal, which is the one thing on the
+                          row that qualifies the Install action beside it. */}
+                      <Badge tone={model.suitability_status === 'suitable' ? 'neutral' : 'warning'}>
                         {fitLabel(model)}
-                      </span>
+                      </Badge>
                     </div>
                     {/* ⚠ WRAPS, never truncates. This line was `truncate`,
                         which was survivable while Settings read the fluid page
@@ -504,7 +524,7 @@ export default function LocalModelInventory() {
                         is a sentence whose tail does, so it wraps to a second
                         line instead. The name above still truncates, correctly:
                         the chips beside it wrap first. */}
-                    <p className="mt-1 text-xs leading-5 text-text-muted">
+                    <p className="mt-1 text-supporting text-text-muted">
                       {model.family} · {model.download_size} · {model.speed_hint} ·{' '}
                       {formatContext(model.context_limit)} context ·{' '}
                       {model.ollama_name ?? model.hf_spec}
@@ -512,12 +532,14 @@ export default function LocalModelInventory() {
                   </div>
                   {renderAction(model)}
                 </div>
+                {/* No box. A transient progress line inside a row is the same
+                    object as the header's own status line above it, and a
+                    bordered card on a filled row was a third ground in one
+                    section. */}
                 {busyLabel && (
-                  <div className="mt-3 flex min-w-0 items-start gap-2 rounded-element border border-border-default bg-background-medium/45 px-2.5 py-2 text-xs text-text-muted">
-                    <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" />
-                    <p className="min-w-0 whitespace-normal break-words leading-relaxed">
-                      {busyLabel}
-                    </p>
+                  <div className="mt-2 flex min-w-0 items-start gap-2 text-supporting text-text-muted">
+                    <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                    <p className="min-w-0 whitespace-normal break-words">{busyLabel}</p>
                   </div>
                 )}
               </div>
@@ -528,7 +550,7 @@ export default function LocalModelInventory() {
 
       <Dialog open={!!selectedModel} onOpenChange={(open) => !open && setSelectedModel(null)}>
         {selectedModel && (
-          <DialogContent className="w-[calc(100vw-2rem)] overflow-hidden sm:max-w-[640px]">
+          <DialogContent className={cn('w-[calc(100vw-2rem)] overflow-hidden', MODAL_SIZE.lg)}>
             <DialogHeader>
               <DialogTitle>{selectedModel.display_name}</DialogTitle>
               <DialogDescription>{selectedModel.description}</DialogDescription>
@@ -619,6 +641,48 @@ export default function LocalModelInventory() {
           </DialogContent>
         )}
       </Dialog>
+
+      {/* Not `destructive`: an over-provisioned install is a slow download, not
+          a deletion, and the loud variant would say the wrong thing about it. */}
+      <ConfirmationModal
+        isOpen={pendingResourceConfirm !== null}
+        title="Continue anyway?"
+        message={pendingResourceConfirm?.message ?? ''}
+        confirmLabel={pendingResourceConfirm?.confirmLabel ?? 'Continue'}
+        cancelLabel="Cancel"
+        confirmVariant="default"
+        onConfirm={() => {
+          pendingResourceConfirm?.resolve(true);
+          setPendingResourceConfirm(null);
+        }}
+        onCancel={() => {
+          pendingResourceConfirm?.resolve(false);
+          setPendingResourceConfirm(null);
+        }}
+      />
+
+      {/* `deleteAction` is the IN-FLIGHT state, not the pending one — hence the
+          separate `pendingDelete`. Feeding `deleteAction` in as `isOpen` would
+          reopen the dialog for the duration of the delete it just started. */}
+      <ConfirmationModal
+        isOpen={pendingDelete !== null}
+        title="Delete this local model?"
+        message={
+          pendingDelete
+            ? `${pendingDelete.ollama_name ?? pendingDelete.name} will be removed from the local model inventory. You can download it again later.`
+            : ''
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        isSubmitting={deleteAction !== null}
+        onConfirm={() => {
+          const model = pendingDelete;
+          setPendingDelete(null);
+          if (model) void runDelete(model);
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

@@ -806,6 +806,8 @@ padding on that side. (`react-toastify` needed `padding-inline-end: 38px` for ex
 
 Inline alerts are ad-hoc: `text-destructive bg-destructive/10 rounded-lg px-4 py-3` — **both `text-destructive` and `bg-destructive` are undefined**, so error banners render as unstyled inherited text on a transparent background. Eight such call sites. `DR-22`
 
+⚠ **2026-09-07 — the canonical inline-alert row above is superseded, and part of "Today" is closed.** The shipped primitive is `components/ui/note.tsx`: a **22% status wash with tinted ink and no border**, per the astryx §2.5 formula, rather than an 8% fill inside a 30% status border — one formula for chips, badges, notes and the destructive button, instead of two that drift. It also carries a `--note-max-height` ceiling the canonical row has no equivalent for. It is adopted across Settings (Models, Chat, App); the remaining ad-hoc alerts live in Extensions, the provider page and the modal subtrees. See [the settings visual vocabulary](docs/desktop-ui/settings-visual-vocabulary.md).
+
 ---
 
 ### 4.4 · Tooltips

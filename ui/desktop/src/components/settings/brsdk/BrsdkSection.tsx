@@ -54,8 +54,11 @@ export const BrsdkSection = () => {
     }
   };
 
+  // A fragment: the rows belong directly to the `.biorouter-settings-list` this
+  // section mounts into, so they abut and `:last-child` selects the real last
+  // row rather than the last row of a nested box.
   return (
-    <div className="space-y-1">
+    <>
       {BRSDK_TOGGLES.map((toggle) => {
         const enabled = brsdkConfig[toggle.key] ?? false;
         return (
@@ -64,8 +67,10 @@ export const BrsdkSection = () => {
             className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default"
           >
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-text-default">{toggle.label}</p>
-              <p className="mt-0.5 max-w-md text-xs text-text-muted">{toggle.description}</p>
+              <p className="text-label text-text-default">{toggle.label}</p>
+              <p className="mt-0.5 max-w-md text-supporting text-text-muted">
+                {toggle.description}
+              </p>
             </div>
             <div className="flex flex-shrink-0 items-center">
               <Switch
@@ -78,6 +83,6 @@ export const BrsdkSection = () => {
           </div>
         );
       })}
-    </div>
+    </>
   );
 };

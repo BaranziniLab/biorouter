@@ -19,6 +19,7 @@ import ThemeSelector from '../../BioRouterSidebar/ThemeSelector';
 import ThemeFamilySelector from '../../BioRouterSidebar/ThemeFamilySelector';
 import BlockLogoBlack from './icons/block-lockup_black.png';
 import BlockLogoWhite from './icons/block-lockup_white.png';
+import { useResolvedTheme } from '../../../contexts/ThemeContext';
 
 interface AppSettingsSectionProps {
   scrollToSection?: string;
@@ -32,7 +33,11 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
   const [isDockSwitchDisabled, setIsDockSwitchDisabled] = useState(false);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
   const [showPricing, setShowPricing] = useState(true);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  // The app already resolves light/dark once, in `ThemeContext`. This file kept
+  // its own `MutationObserver` on `<html>`'s class list to answer the same
+  // question — a second source of truth that could disagree with the first, for
+  // one logo swap.
+  const mode = useResolvedTheme();
   const [usageVersion, setUsageVersion] = useState(0);
   const updateSectionRef = useRef<HTMLDivElement>(null);
 
@@ -40,19 +45,6 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
 
   useEffect(() => {
     setIsMacOS(window.electron.platform === 'darwin');
-  }, []);
-
-  useEffect(() => {
-    const updateTheme = () => {
-      setIsDarkMode(document.documentElement.classList.contains('dark'));
-    };
-    updateTheme();
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
-    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -130,25 +122,36 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
     window.dispatchEvent(new CustomEvent('storage'));
   };
 
+  // A fragment, not a `pb-8` wrapper: these five sections are siblings of
+  // Privacy's and Workspace's, so the 10px `.biorouter-settings-section +
+  // .biorouter-settings-section` adjacency fires across all of them. The tail
+  // spacer lives once, on the App tab's own wrapper in `SettingsView`.
   return (
-    <div className="pb-8">
+    <>
       {/* Appearance */}
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted">Appearance</h2>
         </div>
         <div className="biorouter-settings-list">
-          <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-            <div>
-              <p className="text-sm font-medium text-text-default">Notifications</p>
-              <p className="text-xs text-text-muted mt-0.5 max-w-md">
+          <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="text-label text-text-default">Notifications</p>
+              <p className="mt-0.5 max-w-md text-supporting text-text-muted">
                 Notifications are managed by your OS.{' '}
-                <span
-                  className="underline cursor-pointer"
+                {/* A real `<Button variant="link">`, not a `<span onClick>` — it
+                    was unreachable by keyboard and announced as text. The three
+                    neutralisers are required rather than decorative: the cva base
+                    is `text-label` and `link` only underlines on hover, so
+                    without them a 14px semibold word lands mid-sentence and the
+                    control's only affordance disappears until you point at it. */}
+                <Button
+                  variant="link"
+                  className="h-auto p-0 align-baseline text-supporting font-normal underline"
                   onClick={() => setShowNotificationModal(true)}
                 >
                   Configuration guide
-                </span>
+                </Button>
               </p>
             </div>
             <Button
@@ -167,9 +170,11 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           </div>
 
           <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-            <div>
-              <p className="text-sm font-medium text-text-default">Menu bar icon</p>
-              <p className="text-xs text-text-muted mt-0.5">Show Biorouter in the menu bar</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-label text-text-default">Menu bar icon</p>
+              <p className="mt-0.5 max-w-md text-supporting text-text-muted">
+                Show Biorouter in the menu bar
+              </p>
             </div>
             <Switch
               checked={menuBarIconEnabled}
@@ -180,9 +185,11 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
 
           {isMacOS && (
             <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-              <div>
-                <p className="text-sm font-medium text-text-default">Dock icon</p>
-                <p className="text-xs text-text-muted mt-0.5">Show Biorouter in the dock</p>
+              <div className="min-w-0 flex-1">
+                <p className="text-label text-text-default">Dock icon</p>
+                <p className="mt-0.5 max-w-md text-supporting text-text-muted">
+                  Show Biorouter in the dock
+                </p>
               </div>
               <Switch
                 disabled={isDockSwitchDisabled}
@@ -194,9 +201,9 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           )}
 
           <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-            <div>
-              <p className="text-sm font-medium text-text-default">Prevent Sleep</p>
-              <p className="text-xs text-text-muted mt-0.5 max-w-md">
+            <div className="min-w-0 flex-1">
+              <p className="text-label text-text-default">Prevent Sleep</p>
+              <p className="mt-0.5 max-w-md text-supporting text-text-muted">
                 Keep your computer awake while Biorouter is running a task (screen can still lock)
               </p>
             </div>
@@ -209,9 +216,11 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
 
           {COST_TRACKING_ENABLED && (
             <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-              <div>
-                <p className="text-sm font-medium text-text-default">Cost Tracking</p>
-                <p className="text-xs text-text-muted mt-0.5">Show model pricing and usage costs</p>
+              <div className="min-w-0 flex-1">
+                <p className="text-label text-text-default">Cost Tracking</p>
+                <p className="mt-0.5 max-w-md text-supporting text-text-muted">
+                  Show model pricing and usage costs
+                </p>
               </div>
               <Switch
                 checked={showPricing}
@@ -223,25 +232,27 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         </div>
       </div>
 
-      {/* Theme */}
+      {/* Theme. Palette and Mode are two SECTIONS, not two labelled sub-blocks
+          inside one: a `text-xs` paragraph acting as a heading was a fourth
+          heading style on a tab where every other group is a `text-caps`
+          section label, and the `flex flex-col gap-4` wrapper it lived in
+          forked this one group off the section rhythm. */}
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted mb-1">Theme</h2>
-          <p className="text-xs text-text-muted">Change how Biorouter looks</p>
+          <h2 className="text-caps text-text-muted mb-1">Palette</h2>
+          <p className="text-supporting text-text-muted">Change how Biorouter looks</p>
         </div>
-        <div className="flex flex-col gap-4">
-          <div>
-            <p className="text-xs text-text-muted mb-1.5">Palette</p>
-            <div className="biorouter-settings-control-strip">
-              <ThemeFamilySelector className="w-auto" hideTitle horizontal />
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-text-muted mb-1.5">Mode</p>
-            <div className="biorouter-settings-control-strip">
-              <ThemeSelector className="w-auto" hideTitle horizontal />
-            </div>
-          </div>
+        <div className="biorouter-settings-control-strip">
+          <ThemeFamilySelector className="w-auto" horizontal />
+        </div>
+      </div>
+
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-caps text-text-muted">Mode</h2>
+        </div>
+        <div className="biorouter-settings-control-strip">
+          <ThemeSelector className="w-auto" horizontal />
         </div>
       </div>
 
@@ -258,7 +269,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Help &amp; Feedback</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Report a problem, or ask for something Biorouter does not do yet
           </p>
         </div>
@@ -294,17 +305,18 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           <div className="biorouter-settings-section-header">
             <h2 className="text-caps text-text-muted">Version</h2>
           </div>
-          <div className="biorouter-settings-control-strip">
-            <div className="flex items-center gap-3">
-              <img
-                src={isDarkMode ? BlockLogoWhite : BlockLogoBlack}
-                alt="Block Logo"
-                className="h-8 w-auto"
-              />
-              <span className="text-display font-mono text-text-default">
-                {String(window.appConfig.get('BIOROUTER_VERSION') || 'Development')}
-              </span>
-            </div>
+          {/* Not a `.biorouter-settings-control-strip`: the strip is a BUTTON
+              row, and wrapping anything else in it shrink-wraps that thing to
+              content width. */}
+          <div className="flex items-center gap-3">
+            <img
+              src={mode === 'dark' ? BlockLogoWhite : BlockLogoBlack}
+              alt="Block Logo"
+              className="h-8 w-auto"
+            />
+            <span className="text-display font-mono text-text-default">
+              {String(window.appConfig.get('BIOROUTER_VERSION') || 'Development')}
+            </span>
           </div>
         </div>
       )}
@@ -314,11 +326,11 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         <div ref={updateSectionRef} className="biorouter-settings-section">
           <div className="biorouter-settings-section-header">
             <h2 className="text-caps text-text-muted mb-1">Updates</h2>
-            <p className="text-xs text-text-muted">Check for and install updates</p>
+            <p className="text-supporting text-text-muted">Check for and install updates</p>
           </div>
-          <div className="biorouter-settings-control-strip">
-            <UpdateSection />
-          </div>
+          {/* `UpdateSection` is a multi-row panel, not a button row — the strip
+              was shrink-wrapping it to its content width. */}
+          <UpdateSection />
         </div>
       )}
 
@@ -330,7 +342,9 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Settings className="text-iconStandard" size={24} />
+              {/* `text-iconStandard` is not a token — it had no effect and no
+                  definition. The two dialog titles now agree on 20px. */}
+              <Settings size={20} />
               How to Enable Notifications
             </DialogTitle>
           </DialogHeader>
@@ -370,6 +384,6 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }

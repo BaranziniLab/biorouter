@@ -13,19 +13,23 @@ export default function ChatSettingsSection() {
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Mode</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Configure how Biorouter interacts with tools and extensions
           </p>
         </div>
-        <div className="biorouter-settings-list">
-          <ModeSection />
-        </div>
+        {/* No `.biorouter-settings-list` wrapper here: `ModeSection` IS the
+            list, because `role="radiogroup"` has to sit on the element that
+            contains the radios. Every other section below contributes a
+            fragment of rows to the list this file provides — they have no
+            semantics of their own to declare, and rows that are direct children
+            are what make `:last-child` select the real last row. */}
+        <ModeSection />
       </div>
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Response Styles</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Choose how Biorouter should format and style its responses
           </p>
         </div>
@@ -37,7 +41,7 @@ export default function ChatSettingsSection() {
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Capabilities</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Choose which built-in abilities new chats start with. Existing chats keep their current
             capabilities.
           </p>
@@ -62,7 +66,7 @@ export default function ChatSettingsSection() {
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Contexts</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Skills that ship with Biorouter. They load into every chat unless you turn one off.
           </p>
         </div>
@@ -74,7 +78,7 @@ export default function ChatSettingsSection() {
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">App SDK</h2>
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Opt-in safety frameworks for Agent-Drafter apps. All are off by default and apply only
             to Agent-Drafter apps, never to normal chat.
           </p>

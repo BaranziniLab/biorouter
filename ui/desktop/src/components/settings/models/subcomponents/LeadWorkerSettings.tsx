@@ -225,7 +225,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             Configure a lead model for planning and a worker model for execution.
           </DialogDescription>
 
-          <HostManagedModelNote className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-xs leading-relaxed text-text-muted" />
+          <HostManagedModelNote />
 
           <div className="biorouter-modal-panel flex items-center justify-between gap-4 rounded-container px-3 py-2.5">
             <div>

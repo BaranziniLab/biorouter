@@ -126,7 +126,7 @@ describe('Settings > Models — Switch models', () => {
   });
 });
 
-describe('Settings > Models — Reset Provider and Model', () => {
+describe('Settings > Models — Reset provider and model', () => {
   /**
    * ⚠ Fails against today's code, which offers the button on every surface.
    * Worth its own case rather than folding into the picker's: this one reaches
@@ -138,14 +138,14 @@ describe('Settings > Models — Reset Provider and Model', () => {
     browser();
     render(<ResetProviderSection setView={vi.fn()} />);
 
-    expect(screen.getByRole('button', { name: /Reset Provider and Model/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Reset provider and model/ })).toBeDisabled();
     expect(await screen.findByTestId('host-managed-model-note')).toBeInTheDocument();
   });
 
   /** The control: passes before and after. */
   it('is untouched in the desktop application', () => {
     render(<ResetProviderSection setView={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /Reset Provider and Model/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Reset provider and model/ })).toBeEnabled();
     expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
   });
 });

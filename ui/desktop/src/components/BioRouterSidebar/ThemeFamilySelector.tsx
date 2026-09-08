@@ -1,20 +1,31 @@
 import React from 'react';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import { Button } from '../ui/button';
+import { cn } from '../../utils';
 import { useTheme, type ThemeFamily } from '../../contexts/ThemeContext';
 
 interface ThemeFamilySelectorProps {
   className?: string;
-  hideTitle?: boolean;
   horizontal?: boolean;
 }
 
 /**
  * Selects the theme *family* (Parchment / Alma Mater / Roche Limit) — the second
- * axis beside the light/dark ThemeSelector. Both render the same segmented-button
- * look, so they read as siblings in the Appearance settings. The small swatch is
- * the family's accent (terracotta for Parchment, UCSF teal for Alma Mater,
- * Jupyter-adjacent orange for Roche Limit).
+ * axis beside the light/dark {@link ThemeSelector}. Both render the same
+ * segmented-button look, so they read as siblings in the Appearance settings.
+ * The small swatch is the family's accent (terracotta for Parchment, UCSF teal
+ * for Alma Mater, Jupyter-adjacent orange for Roche Limit).
+ *
+ * ⚠ **The swatch is ALWAYS `family.swatch`.** It used to switch to
+ * `currentColor` while active, which discarded the family's identity at exactly
+ * the moment you picked it — the one button whose colour you were choosing was
+ * the one that stopped showing it. Its ring is the authored `.br-swatch-ring`
+ * (a 1px `--background-default` ring, so the mark's adjacent colour is a known
+ * ground) in place of a hardcoded `inset 0 0 0 1px rgba(0,0,0,.15)` that had no
+ * dark value at all.
+ *
+ * See {@link ThemeSelector} for why the active arm is `tint-selected
+ * tint-interactive` rather than the accent fill, and why `aria-pressed` is here.
  */
 /**
  * Tailwind generates utilities by scanning source for literal class names, so
@@ -40,14 +51,12 @@ const FAMILIES: { id: ThemeFamily; label: string; swatch: string }[] = THEME_FAM
 
 const ThemeFamilySelector: React.FC<ThemeFamilySelectorProps> = ({
   className = '',
-  hideTitle = false,
   horizontal = false,
 }) => {
   const { themeFamily, setThemeFamily } = useTheme();
 
   return (
     <div className={`${!horizontal ? 'px-1 py-2 space-y-2' : ''} ${className}`}>
-      {!hideTitle && <div className="text-xs text-text-default px-3">Palette</div>}
       <div
         className={`${horizontal ? 'flex' : `grid ${GRID_COLS[FAMILIES.length] ?? 'grid-cols-3'}`} gap-1 ${!horizontal ? 'px-3' : ''}`}
       >
@@ -58,21 +67,20 @@ const ThemeFamilySelector: React.FC<ThemeFamilySelectorProps> = ({
               key={family.id}
               data-testid={`theme-family-${family.id}-button`}
               onClick={() => setThemeFamily(family.id)}
-              className={`flex items-center justify-center gap-2 p-2 rounded-md border transition-colors text-xs ${
-                active
-                  ? 'bg-background-accent text-text-on-accent border-border-accent hover:!bg-background-accent hover:!text-text-on-accent'
-                  : 'border-border-default hover:!bg-background-muted text-text-muted hover:text-text-default'
-              }`}
+              aria-pressed={active}
               variant="ghost"
               size="sm"
+              className={cn(
+                'border border-border-default transition-colors',
+                active
+                  ? 'tint-selected tint-interactive font-medium text-text-default'
+                  : 'text-text-muted hover:text-text-default'
+              )}
             >
               <span
                 aria-hidden
-                className="h-2.5 w-2.5 rounded-full flex-none"
-                style={{
-                  backgroundColor: active ? 'currentColor' : family.swatch,
-                  boxShadow: active ? 'none' : 'inset 0 0 0 1px rgba(0, 0, 0, 0.15)',
-                }}
+                className="br-swatch-ring h-2.5 w-2.5 flex-none rounded-full"
+                style={{ backgroundColor: family.swatch }}
               />
               <span>{family.label}</span>
             </Button>

@@ -92,7 +92,7 @@ export const BioRouterHintsModal = ({
     <Dialog open={true} onOpenChange={(open) => setIsBioRouterHintsModalOpen(open)}>
       <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Project Hints</DialogTitle>
+          <DialogTitle>Project hints</DialogTitle>
           <DialogDescription>
             Configure <code className="font-mono text-xs">.biorouterhints</code> to give Biorouter
             additional context about your project

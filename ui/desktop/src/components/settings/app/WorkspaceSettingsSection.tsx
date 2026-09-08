@@ -46,28 +46,31 @@ export function WorkspaceSettingsSection() {
   // min-height — but as an unlabelled orphan sitting under the previous
   // section's heading, which reads as part of Updates. The shell is what makes
   // it a Workspace setting.
+  // ⚠ The `<div className="pb-8">` this used to sit in is gone, and the whole
+  // element had to go rather than just its class: a bare `<div>` between two
+  // sections breaks `.biorouter-settings-section + .biorouter-settings-section`
+  // just as effectively, and the tail spacer now lives once on the App tab's own
+  // wrapper in `SettingsView`.
   return (
-    <div className="pb-8">
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted">Workspace</h2>
-        </div>
-        <div className="biorouter-settings-list">
-          <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-text-default">Never open tabs automatically</p>
-              <p className="text-xs text-text-muted mt-0.5 max-w-md">
-                When an agent opens a chat or starts a subagent, notify me instead of opening a tab.
-                Subagents still run; open them from History.
-              </p>
-            </div>
-            <Switch
-              checked={announceOnly}
-              onCheckedChange={(next) => void onToggle(next)}
-              variant="mono"
-              aria-label="Never open tabs automatically"
-            />
+    <div className="biorouter-settings-section">
+      <div className="biorouter-settings-section-header">
+        <h2 className="text-caps text-text-muted">Workspace</h2>
+      </div>
+      <div className="biorouter-settings-list">
+        <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
+          <div className="min-w-0 flex-1">
+            <p className="text-label text-text-default">Never open tabs automatically</p>
+            <p className="mt-0.5 max-w-md text-supporting text-text-muted">
+              When an agent opens a chat or starts a subagent, notify me instead of opening a tab.
+              Subagents still run; open them from History.
+            </p>
           </div>
+          <Switch
+            checked={announceOnly}
+            onCheckedChange={(next) => void onToggle(next)}
+            variant="mono"
+            aria-label="Never open tabs automatically"
+          />
         </div>
       </div>
     </div>

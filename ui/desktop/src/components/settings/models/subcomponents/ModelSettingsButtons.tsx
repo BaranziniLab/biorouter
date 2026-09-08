@@ -21,8 +21,11 @@ export default function ModelSettingsButtons({ setView }: ConfigureModelButtonsP
   const hostManaged = isBrowserSurface();
 
   return (
-    <div className="pt-4">
-      <div className="flex gap-2">
+    <div className="mt-2">
+      {/* `.biorouter-settings-control-strip` is the section-level button row —
+          flex, wrap, 10px gap, no chrome — in place of a hand-rolled
+          `flex gap-2`. */}
+      <div className="biorouter-settings-control-strip">
         <Button
           variant="default"
           disabled={hostManaged}
@@ -49,7 +52,7 @@ export default function ModelSettingsButtons({ setView }: ConfigureModelButtonsP
           </Button>
         )}
       </div>
-      <HostManagedModelNote className="mt-3 max-w-prose text-xs leading-relaxed text-text-muted" />
+      <HostManagedModelNote className="mt-3" />
     </div>
   );
 }

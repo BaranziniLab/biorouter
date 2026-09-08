@@ -412,6 +412,15 @@
   --row-height-rail: 32px;
   --row-height: 40px; /* D-12·B — one row rhythm, no compact mode. A-03 retunes to 36px in phase 8. */
 
+  /* The ceiling on an in-place prose block (`components/ui/note.tsx`). DERIVED:
+     eight lines of `--text-supporting` (8 × 16px) plus the note's own 2 × 10px
+     vertical padding. Above that a notice has stopped being a notice and has
+     become a document, which is the shape the settings audit reported as
+     "banners that are essentially just a long block of text" — so the note
+     clamps here and offers "Show more" instead. The precedent for clamping
+     rather than truncating is `utils/messageClamp.ts`. */
+  --note-max-height: 148px;
+
   /* Overlay widths (§3.6/§3.7). Three dialog widths and one full-screen replace
      the fifteen distinct `max-w` values in use; `full` is not a token because it
      is `100%`, not a measurement. The toast sits mid-band of the 380–420px the
@@ -647,6 +656,20 @@
   --wash-success: color-mix(in oklab, var(--text-success) 22%, transparent);
   --wash-warning: color-mix(in oklab, var(--text-warning) 22%, transparent);
   --wash-info: color-mix(in oklab, var(--text-info) 22%, transparent);
+
+  /* The OPAQUE equivalent of each wash, over the page ground. It exists for one
+     job — terminating a fade — and it is not interchangeable with the wash
+     above. A gradient that ends at `--wash-warning` paints a SECOND 22% wash on
+     top of the note's own, so the bottom of a clamped note reads a step darker
+     than the rest of it; a gradient that ends at `--background-default` reads a
+     step lighter, because it discards the tint the note is wearing. The same
+     mix against the ground is the only stop that lands on the note's actual
+     composite. Same formula, same derivation from `--text-*`, so a family that
+     re-points its status inks moves both together. */
+  --wash-solid-danger: color-mix(in oklab, var(--text-danger) 22%, var(--background-default));
+  --wash-solid-success: color-mix(in oklab, var(--text-success) 22%, var(--background-default));
+  --wash-solid-warning: color-mix(in oklab, var(--text-warning) 22%, var(--background-default));
+  --wash-solid-info: color-mix(in oklab, var(--text-info) 22%, var(--background-default));
 
   /* Focus (D-03, revised by D-15).
      The ring is NEUTRAL, not the brand coral. A 2px coral outline around every
@@ -2583,6 +2606,42 @@
   box-shadow: 0 0 0 1px var(--background-default);
 }
 
+/* The note clamp (`components/ui/note.tsx`).
+   A notice that runs past `--note-max-height` is folded behind a fade with a
+   "Show more" control under it, the way `utils/messageClamp.ts` folds a long
+   message. The fade is painted in the note's OWN ground, handed in as
+   `--note-fade-ground` by the tone, so the same rule reads correctly on the
+   neutral surface step and on each of the four status washes, in all three
+   families and both modes — there is no hardcoded colour here and no `.dark`
+   fork.
+
+   AUTHORED for the same reason `.br-swatch-ring` and the two fades above are:
+   `max-h-[var(--note-max-height)]` and a `bg-linear-to-b` arbitrary pair are
+   exactly the freshly-invented utilities that can silently fail to generate
+   under `BIOROUTER_NO_HMR` (`watch: { ignored: ['**'] }` is the same signal
+   Tailwind's scanner uses to notice new class strings). A clamp that fails to
+   generate does not degrade — it prints the whole document, which is the defect
+   the clamp exists to fix. */
+.biorouter-note-clamp {
+  position: relative;
+  max-height: var(--note-max-height);
+  overflow: hidden;
+}
+
+.biorouter-note-clamp::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 32px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    var(--note-fade-ground, var(--background-muted))
+  );
+}
+
 /* The Knowledge canvas's first-load cross-fade (ui-spec §4.12).
    Two absolutely-stacked opacity layers, never a swap: the loading block fades
    OUT at `--dur-fast` while the content fades IN at `--dur-med`. AUTHORED
@@ -2937,18 +2996,36 @@
   border-bottom: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   min-height: var(--row-height); /* D-12·B */
+  /* `--tint-ink` is in the list for the reason the note above
+     `tint-interactive` (end of this file) records: Chrome does not interpolate
+     `background-image`, so a selection wash composed with `tint-selected` is
+     carried by that registered custom property instead. A row whose own
+     transition list omits it REPLACES the utility's fallback and gets a
+     selection that snaps beside a hover that eases — two behaviours in one
+     control. */
   transition:
     background-color var(--motion-fast) var(--ease-out),
-    color var(--motion-fast) var(--ease-out);
+    color var(--motion-fast) var(--ease-out),
+    --tint-ink var(--motion-fast) var(--ease-out);
 }
 
 .biorouter-settings-row:last-child {
   border-bottom-color: transparent;
 }
 
-.biorouter-settings-row:hover,
-.biorouter-settings-row:focus-within {
-  background: color-mix(in srgb, var(--background-medium) 38%, transparent);
+/* ⚠ `background-color`, NOT the `background` shorthand, and it skips a tinted
+   row. Both halves are load-bearing and both were bugs.
+   This rule is UNLAYERED, so it beats anything inside `@layer utilities`
+   regardless of specificity — including `tint-selected`, whose wash is a
+   `background-image`. The shorthand reset that image to `none`, so pointing at
+   a selected row erased its selection: the same inversion recorded above
+   `.tint-selected.tint-interactive`, arriving by a different route. Narrowing
+   the property leaves the tint alone, and `:not(.tint-selected)` then hands a
+   selected row's hover to that composed pair, which answers the pointer by
+   DARKENING rather than by dropping a step. */
+.biorouter-settings-row:not(.tint-selected):hover,
+.biorouter-settings-row:not(.tint-selected):focus-within {
+  background-color: color-mix(in srgb, var(--background-medium) 38%, transparent);
 }
 
 /* No dark-mode override needed: the block is flat and token-driven in both themes. */

@@ -277,46 +277,51 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
 
   return (
     <div data-testid="usage-panel">
-      <div className="flex flex-col gap-3 rounded-container border border-border-subtle bg-background-card px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-          <Badge tone="accent" className="px-2 py-1 tabular-nums">
-            {summary.month}
-          </Badge>
-          <dl className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-supporting">
-            <div className="flex items-baseline gap-1.5">
-              <dt className="text-text-muted">Tokens</dt>
-              <dd
-                className="font-medium text-text-default tabular-nums"
-                title={formatBilledTokens(month)}
-              >
-                {monthTokens === null
-                  ? formatBilledTokens(month)
-                  : formatCompactTokens(monthTokens)}
-              </dd>
-            </div>
-            <div className="flex items-baseline gap-1.5">
-              <dt className="text-text-muted">Est. cost</dt>
-              <dd className="font-medium text-text-default tabular-nums">
-                {formatCostEstimate(month.cost)}
-              </dd>
-            </div>
-            <div className="flex items-baseline gap-1.5">
-              <dt className="text-text-muted">Turns</dt>
-              <dd className="font-medium text-text-default tabular-nums">
-                {month.turns.toLocaleString('en-US')}
-              </dd>
-            </div>
-          </dl>
+      {/* A settings ROW, not a card. A bordered `--background-card` strip was
+          the only boxed ground on the App tab, and the rows either side of it
+          bring no fill of their own. */}
+      <div className="biorouter-settings-list">
+        <div className="biorouter-settings-row flex flex-col gap-3 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+            <Badge tone="accent" variant="chip" className="tabular-nums">
+              {summary.month}
+            </Badge>
+            <dl className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-supporting">
+              <div className="flex items-baseline gap-1.5">
+                <dt className="text-text-muted">Tokens</dt>
+                <dd
+                  className="font-medium text-text-default tabular-nums"
+                  title={formatBilledTokens(month)}
+                >
+                  {monthTokens === null
+                    ? formatBilledTokens(month)
+                    : formatCompactTokens(monthTokens)}
+                </dd>
+              </div>
+              <div className="flex items-baseline gap-1.5">
+                <dt className="text-text-muted">Est. cost</dt>
+                <dd className="font-medium text-text-default tabular-nums">
+                  {formatCostEstimate(month.cost)}
+                </dd>
+              </div>
+              <div className="flex items-baseline gap-1.5">
+                <dt className="text-text-muted">Turns</dt>
+                <dd className="font-medium text-text-default tabular-nums">
+                  {month.turns.toLocaleString('en-US')}
+                </dd>
+              </div>
+            </dl>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={() => setReportOpen(true)}
+            aria-label="Open detailed usage report"
+          >
+            View report
+          </Button>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          onClick={() => setReportOpen(true)}
-          aria-label="Open detailed usage report"
-        >
-          View report
-        </Button>
       </div>
 
       <Dialog open={reportOpen} onOpenChange={setReportOpen}>
@@ -329,7 +334,7 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
               <span className="flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle bg-background-default text-text-accent">
                 <Activity className="h-4 w-4" />
               </span>
-              <Badge tone="accent" className="px-2 py-1 tabular-nums">
+              <Badge tone="accent" variant="chip" className="tabular-nums">
                 {summary.month}
               </Badge>
             </div>
@@ -401,7 +406,7 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
               Billed usage recorded across all chats
             </p>
           </div>
-          <Badge tone="accent" className="px-2 py-1 tabular-nums">
+          <Badge tone="accent" variant="chip" className="tabular-nums">
             {summary.month}
           </Badge>
         </div>
@@ -434,11 +439,11 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
             className="flex flex-wrap gap-2 border-t border-border-subtle px-3 py-2.5"
             data-testid="usage-mtd-cache"
           >
-            <Badge tone="neutral" className="gap-1.5 px-2 py-1 font-normal tabular-nums">
+            <Badge tone="neutral" variant="chip" className="gap-1.5 font-normal tabular-nums">
               <span className="text-text-subtle">Cache read</span>
               <span className="text-text-default">{formatTokens(mtd.cacheReadTokens)}</span>
             </Badge>
-            <Badge tone="neutral" className="gap-1.5 px-2 py-1 font-normal tabular-nums">
+            <Badge tone="neutral" variant="chip" className="gap-1.5 font-normal tabular-nums">
               <span className="text-text-subtle">Cache write</span>
               <span className="text-text-default">{formatTokens(mtd.cacheCreationTokens)}</span>
             </Badge>

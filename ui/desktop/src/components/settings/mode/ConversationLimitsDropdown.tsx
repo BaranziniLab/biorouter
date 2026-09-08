@@ -17,45 +17,61 @@ export const ConversationLimitsDropdown = ({
     setIsExpanded(!isExpanded);
   };
 
+  /**
+   * TWO ROWS, as siblings — not a row plus a boxed panel inside a wrapper.
+   *
+   * The wrapper was doing two kinds of damage. The trailing hairline is
+   * suppressed by `.biorouter-settings-row:last-child`, which is relative to a
+   * row's own PARENT: inside a wrapper the disclosure's row could never be the
+   * list's last child, so the Mode section ended on a hairline with nothing
+   * under it. And the panel it wrapped was a `rounded-element
+   * bg-background-medium/55` card — a filled, rounded ground on a tab whose
+   * whole rhythm is hairline-separated rows with no fill of their own.
+   *
+   * As siblings, `:last-child` lands correctly in both states with no extra
+   * rule: collapsed, the trigger is last and drops its hairline; expanded, the
+   * trigger keeps it (it is now a separator) and Max Turns drops its own.
+   *
+   * The cost is the max-height/opacity collapse, which needs the panel mounted
+   * to animate. A mount-time fade is the honest replacement — `animate-in
+   * fade-in` is already the app's idiom for content that arrives — and it is the
+   * right trade: a hairline in the wrong place is a defect, an expansion that
+   * does not slide is a preference.
+   */
   return (
-    <div>
+    <>
       <button
         onClick={toggleExpanded}
-        className="biorouter-settings-row w-full flex items-center justify-between px-3 py-2.5 group"
+        aria-expanded={isExpanded}
+        className="biorouter-settings-row group flex w-full items-center justify-between px-3 py-2.5"
       >
-        <h3 className="text-text-default">Chat limits</h3>
+        <h3 className="text-label text-text-default">Chat limits</h3>
 
         <ChevronDown
-          className={`w-4 h-4 text-text-muted transition-transform duration-200 ease-in-out ${
+          className={`h-4 w-4 text-text-muted transition-transform duration-200 ease-in-out ${
             isExpanded ? 'rotate-180' : 'rotate-0'
           }`}
         />
       </button>
 
-      <div
-        className={`overflow-hidden transition-[max-height,opacity] duration-[var(--motion-slow)] ease-[var(--ease-out)] ${
-          isExpanded ? 'max-h-96 opacity-100 mt-2' : 'max-h-0 opacity-0 mt-0'
-        }`}
-      >
-        <div className="px-3 pb-3">
-          <div className="flex items-center justify-between rounded-element bg-background-medium/55 px-3 py-2.5">
-            <div>
-              <h4 className="text-text-default text-sm">Max Turns</h4>
-              <p className="text-xs text-text-muted mt-[2px]">
-                Maximum agent turns before Biorouter asks for user input
-              </p>
-            </div>
-            <Input
-              type="number"
-              min="1"
-              max="10000"
-              value={maxTurns}
-              onChange={(e) => onMaxTurnsChange(Number(e.target.value))}
-              className="w-20"
-            />
+      {isExpanded && (
+        <div className="biorouter-settings-row flex min-w-0 animate-in items-center justify-between gap-3 px-3 py-2.5 fade-in duration-100">
+          <div className="min-w-0 flex-1">
+            <h4 className="text-label text-text-default">Max Turns</h4>
+            <p className="mt-0.5 max-w-md text-supporting text-text-muted">
+              Maximum agent turns before Biorouter asks for user input
+            </p>
           </div>
+          <Input
+            type="number"
+            min="1"
+            max="10000"
+            value={maxTurns}
+            onChange={(e) => onMaxTurnsChange(Number(e.target.value))}
+            className="w-20"
+          />
         </div>
-      </div>
-    </div>
+      )}
+    </>
   );
 };

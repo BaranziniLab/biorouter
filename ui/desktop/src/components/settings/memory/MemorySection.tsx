@@ -11,6 +11,9 @@ import { getInitialWorkingDir } from '../../../utils/workingDir';
 import { Button } from '../../ui/button';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { ChevronDown, ChevronRight, Globe, Folder, RefreshCw, Trash2 } from '../../icons/app-icons';
+import { Badge } from '../../ui/badge';
+import { Note } from '../../ui/note';
+import { Skeleton } from '../../ui/skeleton';
 
 /**
  * Managing what Biorouter has remembered.
@@ -206,27 +209,37 @@ export default function MemorySection() {
   return (
     <div className="biorouter-settings-section" data-testid="memory-section">
       <div className="biorouter-settings-section-header flex flex-wrap items-end justify-between gap-2">
+        {/* The `min-w-0` wrapper is what keeps Refresh clear of the text. The
+            two sentences that were here are gone rather than restyled: the two
+            store headings below say which chats can read which store, and the
+            delete dialog says the delete is permanent — so the header was
+            repeating its own page back at itself, which is the shape the audit
+            called "a banner that is just a long block of text". */}
         <div className="min-w-0">
           <h2 className="mb-1 text-caps text-text-muted">Memory</h2>
-          <p className="max-w-2xl text-xs leading-5 text-text-muted">
+          <p className="text-supporting text-text-muted">
             What Biorouter has been asked to remember, and everything it can disclose when a chat
-            asks to read it. Global memories are shared by every chat on this computer; local ones
-            stay in the project they were saved in. Deleting is permanent.
+            asks to read it.
           </p>
         </div>
-        <Button type="button" size="xs" variant="ghost" onClick={() => void load()}>
-          <RefreshCw className="h-3.5 w-3.5" />
+        <Button type="button" variant="ghost" className="mr-3" onClick={() => void load()}>
+          <RefreshCw />
           Refresh
         </Button>
       </div>
 
       {error && (
-        <p className="mb-2 text-xs text-text-danger" role="status">
+        <Note tone="danger" role="status" className="mb-2">
           {error}
-        </p>
+        </Note>
       )}
 
-      {loading && !global && <p className="text-xs text-text-muted">Reading the memory stores…</p>}
+      {loading && !global && (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      )}
 
       {/* Gated on `global`, not on `!loading`, so a failed load renders neither
           store block. Falling through would show the "no project open" card and
@@ -264,13 +277,11 @@ export default function MemorySection() {
               }
             />
           ) : (
-            <div className="rounded-element border border-border-subtle p-3">
-              <p className="text-xs leading-5 text-text-muted">
-                This window has no project open, so there is no local memory store to show. Local
-                memories live in a project&rsquo;s <code>.biorouter/memory</code> and are managed
-                from a window opened there.
-              </p>
-            </div>
+            <Note tone="neutral">
+              This window has no project open, so there is no local memory store to show. Local
+              memories live in a project&rsquo;s <code>.biorouter/memory</code> and are managed from
+              a window opened there.
+            </Note>
           )}
         </div>
       )}
@@ -317,7 +328,7 @@ function StoreBlock({
   return (
     <div>
       <div className="mb-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-text-default">
+        <span className="flex items-center gap-1.5 text-label text-text-default">
           {icon}
           {heading}
         </span>
@@ -335,12 +346,17 @@ function StoreBlock({
       </p>
 
       {store.categories.length === 0 ? (
-        <p className="rounded-element border border-border-subtle p-3 text-xs leading-5 text-text-muted">
+        <Note tone="neutral">
           Nothing has been remembered here yet. Biorouter adds a memory only when it asks you and
           you agree.
-        </p>
+        </Note>
       ) : (
-        <div className="biorouter-list-shell rounded-element border border-border-subtle">
+        // A flat `.biorouter-settings-list`, not a bordered `biorouter-list-shell`.
+        // The shell and its rows move TOGETHER: `list-row` and `settings-row`
+        // differ only in a 42%-vs-38% hover wash for the identical gesture, and
+        // swapping one without the other would make a pairing that exists
+        // nowhere else in the app.
+        <div className="biorouter-settings-list">
           {store.categories.map((category) => (
             <CategoryRow
               key={`${store.scope}:${category.name}`}
@@ -380,7 +396,7 @@ function CategoryRow({
   const when = formatWhen(category.modified);
 
   return (
-    <div className="biorouter-list-row px-3 py-2">
+    <div className="biorouter-settings-row px-3 py-2.5">
       <div className="flex items-start gap-2">
         <button
           type="button"
@@ -395,7 +411,7 @@ function CategoryRow({
             <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" />
           )}
           <span className="min-w-0 flex-1">
-            <span className="block min-w-0 break-words text-sm text-text-default [overflow-wrap:anywhere]">
+            <span className="block min-w-0 break-words text-label text-text-default [overflow-wrap:anywhere]">
               {category.name}
             </span>
             <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-supporting text-text-subtle">
@@ -407,15 +423,20 @@ function CategoryRow({
             </span>
           </span>
         </button>
+        {/* The one row-trailing glyph action: `ghost` + `shape="round"` is the
+            32×32 rung, and the cva base supplies the 16px glyph. The `h-7 w-7
+            p-0` box was an off-ladder 28px and `hover:bg-background-danger/10`
+            was a second hover behaviour beside the one `tint-interactive`
+            already owns. */}
         <Button
           onClick={onDeleteCategory}
           variant="ghost"
-          size="sm"
-          className="h-7 w-7 shrink-0 p-0 text-text-danger hover:bg-background-danger/10"
+          shape="round"
+          className="shrink-0 text-text-danger"
           title={`Delete the whole ${scopeNoun(scope)} category`}
           aria-label={`Delete the ${scopeNoun(scope)} category ${category.name}`}
         >
-          <Trash2 className="h-4 w-4" />
+          <Trash2 />
         </Button>
       </div>
 
@@ -427,28 +448,32 @@ function CategoryRow({
                 {entry.tags.length > 0 && (
                   <div className="mb-1 flex flex-wrap gap-1">
                     {entry.tags.map((tag) => (
-                      <span
+                      // `h-auto`/`py-0.5` because this badge WRAPS: a model
+                      // may attach a tag longer than the column, and the
+                      // primitive's fixed 20px box would spill it.
+                      <Badge
                         key={tag}
-                        className="min-w-0 break-words rounded bg-background-medium px-1.5 py-0.5 text-supporting text-text-muted [overflow-wrap:anywhere]"
+                        tone="neutral"
+                        className="h-auto min-h-5 min-w-0 shrink break-words py-0.5 [overflow-wrap:anywhere]"
                       >
                         {tag}
-                      </span>
+                      </Badge>
                     ))}
                   </div>
                 )}
-                <p className="min-w-0 whitespace-pre-wrap break-words text-xs leading-5 text-text-default [overflow-wrap:anywhere]">
+                <p className="min-w-0 whitespace-pre-wrap break-words text-supporting text-text-default [overflow-wrap:anywhere]">
                   {entry.content}
                 </p>
               </div>
               <Button
                 onClick={() => onDeleteEntry(entry)}
                 variant="ghost"
-                size="sm"
-                className="h-6 w-6 shrink-0 p-0 text-text-danger hover:bg-background-danger/10"
+                shape="round"
+                className="shrink-0 text-text-danger"
                 title="Delete this memory"
                 aria-label={`Delete this memory from ${category.name}`}
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 />
               </Button>
             </li>
           ))}

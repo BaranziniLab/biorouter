@@ -576,7 +576,7 @@ export default function ProviderCatalog({
         the default, is refused. Saying so here means the user learns it before
         pasting a key rather than after.
       */}
-      <HostManagedModelNote className="mb-6 rounded-container border border-border-subtle bg-background-default px-4 py-3 text-xs leading-relaxed text-text-muted" />
+      <HostManagedModelNote className="mb-6" />
 
       <Tabs
         value={activeTab}

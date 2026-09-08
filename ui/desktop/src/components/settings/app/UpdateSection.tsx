@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
+import { Note } from '../../ui/note';
 import { Progress } from '../../ui/progress';
 import {
   ExternalLink,
@@ -86,7 +87,10 @@ export default function UpdateSection() {
 
   return (
     <div>
-      <div className="text-sm text-text-muted mb-4">
+      {/* The wrapper's own `text-sm text-text-muted` was dead — both children
+          set their own type — and the 16px gap under it belonged to a
+          `.biorouter-settings-control-strip` that no longer wraps this panel. */}
+      <div className="mb-2">
         <div className="flex flex-col">
           <div className="text-text-default text-display font-mono">
             {currentVersion || 'Loading...'}
@@ -95,25 +99,18 @@ export default function UpdateSection() {
         </div>
       </div>
 
-      <div className="flex items-center gap-3 flex-wrap">
+      {/* The control strip, and none of the three Buttons carries geometry any
+          more: `flex items-center gap-2` was flipping the cva base's
+          `inline-flex` through tailwind-merge while restating what the base
+          already emits. */}
+      <div className="biorouter-settings-control-strip">
         {phase === 'downloaded' ? (
-          <Button
-            onClick={handleRestartAndUpdate}
-            variant="default"
-            size="sm"
-            className="flex items-center gap-2"
-          >
+          <Button onClick={handleRestartAndUpdate} variant="default">
             <Rocket className="w-4 h-4" />
             Restart &amp; Update{state.latestVersion ? ` to ${state.latestVersion}` : ''}
           </Button>
         ) : (
-          <Button
-            onClick={checkForUpdates}
-            disabled={busy}
-            variant="secondary"
-            size="sm"
-            className="flex items-center gap-2"
-          >
+          <Button onClick={checkForUpdates} disabled={busy} variant="secondary">
             {busy ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
@@ -122,14 +119,14 @@ export default function UpdateSection() {
             Check for Updates
           </Button>
         )}
-        <p className="text-xs text-text-muted">
+        <p className="text-supporting text-text-muted">
           Biorouter installs updates automatically. Restart to use the new version.
         </p>
       </div>
 
       {/* Status line */}
       {checkRequested && (
-        <div className="mt-3 text-sm">
+        <div className="mt-3 text-supporting">
           {phase === 'checking' && (
             <div className="flex items-center gap-2 text-text-muted">
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -155,7 +152,9 @@ export default function UpdateSection() {
                 value={state.percent}
                 minVisiblePercent={4}
               />
-              <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
+              <p className="text-right font-mono text-supporting text-text-muted">
+                {state.percent}%
+              </p>
             </div>
           )}
 
@@ -173,15 +172,13 @@ export default function UpdateSection() {
                 Could not complete the update.
               </div>
               {state.error && (
-                <p className="text-xs font-mono text-text-muted bg-background-muted rounded px-2 py-1">
+                <Note tone="danger" className="font-mono">
                   {state.error}
-                </p>
+                </Note>
               )}
               <Button
                 variant="secondary"
-                size="sm"
                 onClick={() => window.open(DOWNLOAD_WEBSITE_URL, '_blank')}
-                className="flex items-center gap-2"
               >
                 <ExternalLink className="w-4 h-4" />
                 Download from Biorouter

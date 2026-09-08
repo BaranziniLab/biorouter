@@ -10,6 +10,7 @@ import {
 import { toastError } from '../../../toasts';
 import ResetProviderSection from '../reset_provider/ResetProviderSection';
 import LocalModelInventory from './LocalModelInventory';
+import { Skeleton } from '../../ui/skeleton';
 
 interface ModelsSectionProps {
   setView: (view: View) => void;
@@ -87,21 +88,24 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
           <h2 className="text-caps text-text-muted">Current Model</h2>
         </div>
         <div className="biorouter-settings-list">
-          <div className="biorouter-settings-row px-3 py-3">
+          <div className="biorouter-settings-row px-3 py-2.5">
             {isLoading ? (
               <>
-                <div className="h-5 mb-1.5 bg-background-medium rounded w-48 animate-pulse"></div>
-                <div className="h-4 bg-background-medium rounded w-32 animate-pulse"></div>
+                <Skeleton className="h-5 w-48" />
+                <Skeleton className="mt-1.5 h-4 w-32" />
               </>
             ) : (
               <div className="animate-in fade-in duration-100">
-                <p className="text-sm font-medium text-text-default">{displayModelName}</p>
-                <p className="text-xs text-text-muted mt-0.5">{provider}</p>
+                <p className="text-label text-text-default">{displayModelName}</p>
+                <p className="mt-0.5 text-supporting text-text-muted">{provider}</p>
               </div>
             )}
-            <ModelSettingsButtons setView={setView} />
           </div>
         </div>
+        {/* The button strip is a SECTION action, not a row's trailing control:
+            nested inside the row it inherited the row's hover wash, so pointing
+            anywhere near the buttons washed the whole model readout. */}
+        <ModelSettingsButtons setView={setView} />
       </div>
 
       <LocalModelInventory />

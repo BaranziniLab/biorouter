@@ -8,9 +8,11 @@ surface, or when you are writing automated tests and need the behavioral spec th
 encode — and when the app misbehaves on a platform you cannot run, which in practice
 means Windows, where CI is the only place the code executes.
 
-This is not where the desktop UI is designed or explained. Visual and interaction
+This is not where the desktop UI is designed. Visual and interaction
 design explorations live in `docs/design/` (theme studios, the home-screen and
-UI-cohesion redesigns); how the Electron main process, daemon, and renderer fit
+UI-cohesion redesigns); what this folder does hold, beside the debugging guides, is the
+handful of **rules the GUI is built to** and that its tests enforce — one display surface
+for an artifact, one visual vocabulary for Settings; how the Electron main process, daemon, and renderer fit
 together is in [the architecture overview](../architecture/system-overview.md); the
 terminal surfaces — the CLI and the TUI — have their own guides and QA script in
 `docs/cli/`; and removed desktop features are archived under `docs/history/`. If you
@@ -30,6 +32,7 @@ arrived looking for one of those, leave now.
 | [Where a generated artifact is displayed](artifact-display-surfaces.md) | The rule that a figure, an app card or any generated artifact has exactly ONE display surface — the artifact side panel — on all three transcript surfaces (live chat, saved session, shared session), and why that is enforced by a required prop rather than by convention. Covers what the removed inline renderer actually cost (a second CSP, a second action channel, a second resize contract, a fabricated session id), what was deleted with it, and what deliberately stayed (MCP Apps are a different feature). Current. |
 | [The preview panel](preview-panel/README.md) | The working documents for expanding the artifact side panel: a measured survey of every render branch, image list and guard as it stands, and the plan to widen it along five axes — more image formats, the Office gap around the renderers that already ship, live websites in their own native view, an annotation channel back into the chat, and agent access to what the panel is showing. Plan **executed**; the implementation record covers what shipped, what was verified against real Electron, and what is still open. |
 | [The provider catalog](provider-catalog.md) | The one surface listing every provider the daemon serves: three tabs carrying §14.5's privacy taxonomy, institutions named from the daemon's affiliation payload rather than from a literal, AI agents ahead of the API providers, and a default tab computed from the bound provider / a subscription-ready CLI / Local. Also the first-run screen, which is the same component in `mode="onboarding"`, the `BIOROUTER_ONBOARDING_SKIPPED` escape from it, and the composer's no-model state that makes that escape honest. Current. |
+| [The settings visual vocabulary](settings-visual-vocabulary.md) | The nine rules the Settings view (Models, Chat, App) is built to, and the two primitives they lean on: a row's fill never depends on its state, rows are direct children of their list, one note shape with a ceiling on it, type roles rather than sizes, and the button ladder. Covers why six of them are asserted at the source rather than in a render test — jsdom never runs Tailwind, and two of the defects only appear in the cascade. Current. |
 | [Diverge behavior checklist](diverge-behavior-checklist.md) | A catalog of 68 user actions for Diverge — the feature that branches a conversation into a new session — each paired with the behavior BioRouter must exhibit, serving as both a manual QA script and the spec the automated tests encode. Current; last revised 2026-07-18, when the dashboard-canvas items were deleted alongside dashboard mode itself. |
 
 The checklist and the agent-browser guide are meant to be used together: the checklist
