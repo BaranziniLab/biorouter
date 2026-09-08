@@ -322,6 +322,64 @@ pub struct RunBehavior {
     pub scheduled_job_id: Option<String>,
 }
 
+/// The provider and model a NEW session row would run with.
+///
+/// `build_session` resolves four slots in order — the CLI flag, the provider
+/// saved on the session row, a workflow pin, and the global default from
+/// `config.yaml` (`session/builder.rs`). Three of them apply here: the row is
+/// the one about to be created, so its slot is empty by construction.
+///
+/// ⚠ The global default is read **here** rather than being passed in, and that
+/// placement is the fix rather than an implementation detail. Every call site
+/// forgot it — `handle_default_session` and `doctor --fix` passed literal
+/// `None`s, `session` passed the flags alone, `run` passed the flags or the
+/// workflow pin — so from v1.89.0 to v1.90.2 a fully configured install was
+/// told "No provider is configured" by every command that starts a chat.
+/// Resolving inside the guard is what makes a future call site unable to
+/// reintroduce it.
+///
+/// `Config::get_param` consults the environment before the file, so
+/// `BIOROUTER_PROVIDER=… biorouter` resolves through this same call.
+fn resolution_for_a_new_row(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let config = Config::global();
+    resolution_with_global_default(
+        provider,
+        model,
+        config.get_biorouter_provider().ok(),
+        config.get_biorouter_model().ok(),
+    )
+}
+
+/// The precedence itself, with the configured default handed in.
+///
+/// Separated from [`resolution_for_a_new_row`] only so the tests can drive
+/// every combination of "typed now / configured / neither" without a config
+/// file and without racing the process-global `Config`.
+fn resolution_with_global_default(
+    provider: Option<&str>,
+    model: Option<&str>,
+    default_provider: Option<String>,
+    default_model: Option<String>,
+) -> (Option<String>, Option<String>) {
+    (
+        provider.map(str::to_string).or(default_provider),
+        model.map(str::to_string).or(default_model),
+    )
+}
+
+/// The refusal text for a run that cannot name a provider or a model, or `None`
+/// when the row is safe to create.
+///
+/// The exit is in the caller so that this half — which is all of the logic —
+/// can be unit-tested rather than only observed by killing a process.
+fn refusal_for_a_new_row(provider: Option<&str>, model: Option<&str>) -> Option<String> {
+    let (provider, model) = resolution_for_a_new_row(provider, model);
+    crate::session::unconfigured_precondition(provider.as_deref(), model.as_deref())
+}
+
 /// Refuse an unconfigured run BEFORE a session row exists.
 ///
 /// `build_session` is the authority on provider and model resolution, but it
@@ -330,16 +388,16 @@ pub struct RunBehavior {
 /// every attempt the user made before configuring. Every `create_session` call
 /// below is preceded by this check.
 ///
-/// ⚠ The provider saved on the session row is absent from the resolution the
-/// caller passes in, and that is not an oversight: the row this is guarding is
-/// the one about to be created, so that slot is empty by construction. The
-/// paths here that return an EXISTING id do not call this, because such a row
-/// can legitimately carry the only provider a resumed chat has.
+/// ⚠ The provider saved on the session row is absent from the resolution, and
+/// that is not an oversight: the row this is guarding is the one about to be
+/// created, so that slot is empty by construction. The paths here that return
+/// an EXISTING id do not call this, because such a row can legitimately carry
+/// the only provider a resumed chat has.
 fn refuse_unconfigured_before_creating_a_row(
     provider: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
-    if let Some(text) = crate::session::unconfigured_precondition(provider, model) {
+    if let Some(text) = refusal_for_a_new_row(provider, model) {
         crate::session::output::render_error(&text);
         std::process::exit(1);
     }
@@ -2867,6 +2925,134 @@ mod cli_tests {
                 "a create_session call at byte {create_at} has no precondition check above it"
             );
         }
+
+        // The guard runs; the question this test could not answer is what it is
+        // HANDED. Every call site passed the flags alone, so the configured
+        // default never reached the precondition and a working install was
+        // refused. The resolution now lives inside the guard, and this pins it
+        // there: moving it back out to the call sites is exactly the change
+        // that regresses.
+        let (_, resolution) = src
+            .split_once("fn resolution_for_a_new_row(")
+            .expect("the guard no longer resolves anything");
+        let (resolution, _) = resolution
+            .split_once("\nfn refusal_for_a_new_row(")
+            .expect("could not find the end of resolution_for_a_new_row");
+        for accessor in ["get_biorouter_provider", "get_biorouter_model"] {
+            assert!(
+                resolution.contains(accessor),
+                "a new session row must fall back to the configured default; \
+                 `{accessor}` is not read where the row is guarded"
+            );
+        }
+    }
+
+    /// The reported bug: a configured install answered every session-creating
+    /// command with "No provider is configured".
+    ///
+    /// Driven through the real `Config`, because the wiring between the guard
+    /// and the configuration is the thing that was missing — a test of the
+    /// precedence alone would have passed on the broken build too.
+    /// `Config::get_param` reads the environment before the file, so this is
+    /// deterministic wherever it runs.
+    #[test]
+    fn a_configured_default_satisfies_the_precondition_for_a_new_row() {
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_PROVIDER", Some("claude_code".to_string())),
+            ("BIOROUTER_MODEL", Some("claude-opus-5".to_string())),
+        ]);
+
+        assert_eq!(
+            resolution_for_a_new_row(None, None),
+            (
+                Some("claude_code".to_string()),
+                Some("claude-opus-5".to_string())
+            ),
+            "a bare `biorouter` names no provider, so the configured one is the answer"
+        );
+        assert_eq!(
+            refusal_for_a_new_row(None, None),
+            None,
+            "a configured install must get past the guard with no flags at all"
+        );
+    }
+
+    /// What the user typed now still wins over what they configured earlier.
+    #[test]
+    fn an_explicit_flag_still_outranks_the_configured_default() {
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_PROVIDER", Some("claude_code".to_string())),
+            ("BIOROUTER_MODEL", Some("claude-opus-5".to_string())),
+        ]);
+        assert_eq!(
+            resolution_for_a_new_row(Some("anthropic"), Some("opus")),
+            (Some("anthropic".to_string()), Some("opus".to_string()))
+        );
+    }
+
+    /// The model has the same four slots as the provider, and shipped with the
+    /// same gap: `biorouter run --provider claude_code` got past the provider
+    /// half and was refused with "No model is configured".
+    #[test]
+    fn the_model_slot_falls_back_too() {
+        assert_eq!(
+            resolution_with_global_default(
+                Some("claude_code"),
+                None,
+                Some("versa_azure".to_string()),
+                Some("claude-opus-5".to_string()),
+            ),
+            (
+                Some("claude_code".to_string()),
+                Some("claude-opus-5".to_string())
+            ),
+            "naming a provider must not cost the configured model"
+        );
+    }
+
+    /// The behaviour `5dc1eee1` added, which this fix must not undo: an install
+    /// with nothing configured anywhere is still refused, and the refusal names
+    /// the provider first.
+    #[test]
+    fn an_install_with_nothing_configured_is_still_refused() {
+        assert_eq!(
+            resolution_with_global_default(None, None, None, None),
+            (None, None)
+        );
+        let text = crate::session::unconfigured_precondition(None, None)
+            .expect("nothing configured anywhere must still be refused");
+        assert!(text.contains("No provider is configured"), "{text}");
+
+        // A workflow pin alone is enough — that is the whole reason `run`
+        // resolves one before asking.
+        assert_eq!(
+            resolution_with_global_default(Some("claude_code"), Some("claude-opus-5"), None, None),
+            (
+                Some("claude_code".to_string()),
+                Some("claude-opus-5".to_string())
+            )
+        );
+    }
+
+    /// The refusal tells the reader to do something they can actually do.
+    ///
+    /// `biorouter` with no subcommand has no `--provider` flag (`struct Cli`
+    /// carries only the subcommand), and it is the command the operator's
+    /// report was typed against — so the old "pass --provider <name> for this
+    /// run" named a flag that does not exist on the path printing it.
+    #[test]
+    fn the_refusal_names_a_command_that_takes_the_flag() {
+        let text = crate::session::unconfigured_precondition(None, None).expect("refused");
+        for command in ["biorouter session", "biorouter run"] {
+            assert!(
+                text.contains(command),
+                "the refusal must name a command that accepts --provider: {text}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["biorouter", "--provider", "claude_code"]).is_err(),
+            "if a global --provider is ever added, this refusal should name it instead"
+        );
     }
 
     /// BR-71 / issue #56: `biorouter sessions <verb>` really is a command.

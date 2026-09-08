@@ -610,26 +610,39 @@ fn close_ephemeral_store_blocking(ephemeral_store_dir: Option<tempfile::TempDir>
 /// Takes the already-resolved values rather than reading config itself, so the
 /// two callers keep their own precedence and this stays a pure function a test
 /// can drive directly. `build_session` resolves four slots (CLI flag, the
-/// provider saved on the session row, a workflow pin, the global default);
-/// [`crate::cli::get_or_create_session_id`] resolves the same list minus the
-/// saved one, which is empty by construction at the point it asks, because it
-/// is about to create that row.
+/// provider saved on the session row, a workflow pin, the global default); the
+/// pre-session guard `cli::refuse_unconfigured_before_creating_a_row` resolves
+/// the same list minus the saved one, which is empty by construction at the
+/// point it asks, because it is about to create that row.
+///
+/// ⚠ This doc comment described that guard correctly while the guard did not:
+/// the *callers* passed only the flags, so the global default never reached
+/// here and a configured install was refused (v1.89.0 … v1.90.2). The
+/// resolution now happens inside the guard, where a call site cannot omit it —
+/// `cli::resolution_for_a_new_row`.
 ///
 /// The provider is reported first when both are missing: `biorouter configure`
 /// walks the user through provider and model together, so naming two problems
 /// would describe one fix twice.
+///
+/// The flag is named against the commands that actually accept it. `biorouter`
+/// with no subcommand takes no `--provider`, so "pass --provider for this run"
+/// was an instruction that could not be followed on the one path a new user is
+/// most likely to be reading it from.
 pub fn unconfigured_precondition(provider: Option<&str>, model: Option<&str>) -> Option<String> {
     if provider.is_none() {
         return Some(
             "No provider is configured.\n\
-             Run `biorouter configure` to set one up, or pass --provider <name> for this run."
+             Run `biorouter configure` to set one up, or pass --provider <name> to \
+             `biorouter session` or `biorouter run`."
                 .to_string(),
         );
     }
     if model.is_none() {
         return Some(
             "No model is configured.\n\
-             Run `biorouter configure` to set one up, or pass --model <name> for this run."
+             Run `biorouter configure` to set one up, or pass --model <name> to \
+             `biorouter session` or `biorouter run`."
                 .to_string(),
         );
     }
