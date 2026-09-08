@@ -60,6 +60,15 @@ type PageHeaderProps = {
  * body's column below it must carry the SAME size, or the step between them is
  * visible along the edge they share; `measures.test.ts` asserts that too.
  *
+ * The wrapper takes `.biorouter-page-header` — design.md's D-05/P1 flat header,
+ * already authored in `main.css` and already worn by the two transcript
+ * headers — rather than the `border-b border-border-subtle` pair the eight
+ * copies hand-rolled. Measured in the running app the border is identical
+ * (`1px solid rgb(48,47,44)` in dark Parchment, both ways); what the authored
+ * class adds is the transparent ground and the absent shadow that D-05 also
+ * asks for, and it is authored CSS rather than a utility, which is the safer
+ * side of the class-scanning trap `.br-swatch-ring` records.
+ *
  * ⚠ **No `page-transition` class.** Seven of the eight headers carried one; it
  * matches no CSS rule anywhere in the repo and, measured in the running app,
  * resolves to no animation, no keyframes and no transition. It is the
@@ -75,7 +84,7 @@ export function PageHeader({
   titleAdornment,
 }: PageHeaderProps) {
   return (
-    <div className="flex-shrink-0 border-b border-border-subtle">
+    <div className="biorouter-page-header flex-shrink-0">
       <ReadableContent size="chat" className="px-6 pt-12 pb-6">
         <div className="mb-1 flex min-w-0 items-center gap-3">
           <h1 className="text-title min-w-0">{title}</h1>

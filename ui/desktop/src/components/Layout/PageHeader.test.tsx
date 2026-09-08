@@ -104,8 +104,8 @@ describe('PageHeader', () => {
     const wrapper = container.firstElementChild as HTMLElement;
     const column = container.querySelector('.biorouter-readable-content') as HTMLElement;
 
-    expect(wrapper).toHaveClass('border-b');
-    expect(wrapper).toHaveClass('border-border-subtle');
+    expect(wrapper).toHaveClass('biorouter-page-header');
+    expect(column).not.toHaveClass('biorouter-page-header');
     expect(column).not.toHaveClass('border-b');
     expect(column.parentElement).toBe(wrapper);
   });
