@@ -1,10 +1,10 @@
 # How the coding-agent providers work
 
 > **What this is.** The mechanism behind the two subscription-billed providers — what each one
-> spawns, where each vendor's credential lives and who reads it, how the CLI is located without
-> spawning anything, how a BioRouter conversation becomes one prompt, how a turn streams and its
-> tool calls are mirrored into the transcript, and how usage is accounted for a turn that billed no
-> tokens.
+> spawns, which models each advertises and the CLI version each of those needs, where each vendor's
+> credential lives and who reads it, how the CLI is located without spawning anything, how a
+> BioRouter conversation becomes one prompt, how a turn streams and its tool calls are mirrored into
+> the transcript, and how usage is accounted for a turn that billed no tokens.
 > **Status:** Current.
 > **Audience:** developers working on the provider layer, and maintainers verifying the
 > integration.
@@ -25,8 +25,8 @@ compliance boundary is on [the compliance page](compliance.md).
 | Executable | `claude` | `codex` |
 | Config key naming the executable | `CLAUDE_CODE_COMMAND` | `CODEX_COMMAND` |
 | Surface driven | `claude -p` (headless) | `codex app-server` (JSON-RPC over stdio) |
-| Default model | `claude-sonnet-4-6` | `gpt-5.5` |
-| Advertised models | `claude-sonnet-4-6`, `claude-opus-5`, `claude-fable-5` (1M window each), `claude-haiku-4-5` (200k) | `gpt-5.5`, `gpt-5.4` (1,050,000 each), `gpt-5.4-mini`, `gpt-5.3-codex` (400,000 each) |
+| Default model | `claude-fable-5-1` | `gpt-6-astra` |
+| Advertised models | `claude-fable-5-1`, `claude-opus-5`, `claude-sonnet-5` (1,000,000 each), `claude-haiku-4-5` (200,000) — all accept images | `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` (1,050,000 each), `gpt-5.3-codex-spark` (400,000, **text only** — no images) |
 | Unlisted models | Accepted — a user may type an alias such as `sonnet` by hand | Accepted |
 | Vendor documentation | [Claude Code headless mode](https://code.claude.com/docs/en/headless) | [Codex CLI](https://developers.openai.com/codex/cli) |
 | Privacy tier | `Public`, not `runs_locally` | `Public`, not `runs_locally` |
@@ -51,6 +51,57 @@ when a user types one; only the advertised set is pinned. The authoritative cata
 [`crates/biorouter/src/providers/claude_code.rs`](../../../crates/biorouter/src/providers/claude_code.rs)
 and [`crates/biorouter/src/providers/codex.rs`](../../../crates/biorouter/src/providers/codex.rs),
 not on this page.
+
+## Which models you can pick depends on the CLI version
+
+Both catalogues track the vendor's current lineup, and the newest model in each needs a recent CLI.
+The floors are the vendor's, not BioRouter's:
+
+| Model | Minimum CLI | What an older CLI says |
+| --- | --- | --- |
+| `claude-fable-5-1` | `claude` **2.1.251** | `400 Claude Code 2.1.235 does not support this model; version 2.1.251 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.` |
+| `gpt-6-astra` | `codex-cli` **0.153.4** | `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.` |
+
+BioRouter surfaces that text **verbatim** and stops the turn. It does not quietly retry on an older
+model: the vendor's message already names the fix, and answering from a model you did not pick is
+worse than an error you can act on. Every other advertised model in both catalogues answered on the
+older CLI as well as the newer one, so the gate is per-model, not per-catalogue.
+
+> **Note.** The two sources for the Claude floor disagree by four patch versions — Anthropic's
+> model-configuration page says v2.1.255, the API's own 400 says 2.1.251. BioRouter documents the
+> number the API returns, because that is the one a user will read on their own screen.
+
+Aliases still work, and on a CLI new enough for Fable 5.1 they land where you would expect: `fable`
+and `best` both resolve to `claude-fable-5-1`, `opus` to `claude-opus-5`, `sonnet` to
+`claude-sonnet-5`, and `haiku` to `claude-haiku-4-5-20251001`. Advertising concrete ids rather than
+these aliases is the context-window decision above, not a claim that aliases are unsupported.
+
+> **Why `claude-sonnet-4-6` is no longer advertised.** A bare `claude-sonnet-4-6` gets a
+> **200,000**-token window on a Max plan, not the 1M this table used to claim: the million needs
+> the `[1m]` suffix *and* usage credits. What this change does is take the id out of the
+> **picker**, and nothing more. Typed by hand it still runs, and its gauge still reads 1M, because
+> the window comes from `MODEL_CONTEXT_WINDOWS` in
+> [`crates/biorouter/src/model.rs`](../../../crates/biorouter/src/model.rs), which is keyed by
+> model name alone: the anthropic, Bedrock and Databricks providers serve that id at a genuine 1M,
+> and one shared entry cannot say "1M there, 200k here". Keeping the claim that narrow is the
+> point — an id nobody is offered is better than one offered with a number the CLI does not
+> honour, and the typed case stays wrong until the window becomes a per-provider fact.
+> `claude-fable-5` left for a duller reason — Fable 5.1 supersedes it at the same tier — and it
+> too remains usable by hand.
+
+On the Codex side, `gpt-5.4` and `gpt-5.4-mini` were **retired by OpenAI on 2026-08-31**, with
+`gpt-5.6-terra` and `gpt-5.6-luna` named as their replacements. They no longer appear in
+`model/list`, and a turn on one fails with
+`400 The '<id>' model is not supported when using Codex with a ChatGPT account`. `gpt-5.3-codex`
+was rejected by that same 400 and is listed as deprecated by OpenAI; the surviving member of that
+family is the text-only research preview `gpt-5.3-codex-spark`, which is a **different id** rather
+than a rename BioRouter could have followed.
+
+Measured on 2026-09-08 against `claude` 2.1.235 and 2.1.260, and `codex-cli` 0.147.0 and 0.153.4,
+by running every id through the CLI itself. The Claude windows are what the CLI reports back in
+`modelUsage`; Codex's `model/list` carries no context-window field on either version, so those
+windows come from OpenAI's published model pages and only the *existence* and effort ladder of each
+id is a local measurement.
 
 ## Where each credential lives, and who reads it
 
@@ -318,27 +369,33 @@ Both CLIs expose a taller reasoning scale than the API providers do —
 | --- | --- | --- |
 | `quick` | `low` | `low` |
 | *default* | `high` | `high` |
-| `deep` | `max` | the model's top rung — usually `xhigh` |
+| `deep` | `max` | the model's top rung — `max` on `gpt-6-astra` and the 5.6 family, `xhigh` elsewhere |
 
 Three things follow that are worth knowing before you rely on it.
 
 **The default is no longer silent.** Everywhere else in BioRouter the default effort means "say
 nothing and let the model choose". Here it emits `high`, so every turn — including from someone who
 has never typed `/effort` — asks for more reasoning than the vendor default (`medium` on
-`gpt-5.5`). That is deliberate: a coding agent is what you reach for when the work is hard. It also
-costs thinking tokens against your own subscription on every turn, which is the trade being made.
+`gpt-6-astra`, `low` on `gpt-5.6-sol`). That is deliberate: a coding agent is what you reach for
+when the work is hard. It also costs thinking tokens against your own subscription on every turn,
+which is the trade being made.
 
-**Codex's ladder is per-model, so `deep` lands differently.** `max` and `ultra` exist only on part
-of the 5.6 family; BioRouter's own four advertised Codex models (`gpt-5.5`, `gpt-5.4`,
-`gpt-5.4-mini`, `gpt-5.3-codex`) all stop at `xhigh`. Sending an unadvertised rung is *accepted*
-rather than rejected — measured on `gpt-5.5`, which has no `max` — so the failure mode is a silent
-clamp or a silent ignore, and there is no way to tell which from the outside. An ignore would fall
-back to the model's default and quietly deliver *less* than `deep` asked for, so BioRouter sends
-only what the model advertises.
+**Codex's ladder is per-model, so `deep` lands differently.** Four of the six advertised Codex
+models advertise `max` and get it — `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra` and
+`gpt-5.6-luna`; `gpt-5.5` and `gpt-5.3-codex-spark` stop at `xhigh`. Sending an unadvertised rung
+is *accepted* rather than rejected — measured on `gpt-5.5`, which has no `max` — so the failure
+mode is a silent clamp or a silent ignore, and there is no way to tell which from the outside. An
+ignore would fall back to the model's default and quietly deliver *less* than `deep` asked for, so
+BioRouter sends only what the model advertises.
 
-**`deep` is not `ultra`.** Two Codex models advertise an `ultra` rung above `max`, and Claude Code
-has no such level at all (passing one makes the CLI warn and fall back to its default, which is a
-silent downgrade rather than an error). `deep` is the strongest *ordinary* tier; the delegating mode
+That rule is also why the hidden review model `codex-auto-review` is not on the `max` list. It
+answers a turn on every CLI version probed, but it appears in no `model/list` response, so its
+ladder cannot be read — and a rung nobody can verify is exactly the silent-clamp case above.
+
+**`deep` is not `ultra`.** Three Codex models advertise an `ultra` rung above `max` — `gpt-6-astra`,
+`gpt-5.6-sol` and `gpt-5.6-terra` — and Claude Code has no such level at all (passing one makes the
+CLI warn and fall back to its default, which is a silent downgrade rather than an error). `deep` is
+the strongest *ordinary* tier; the delegating mode
 above it is not something `/effort deep` should buy without being asked for.
 
 ## Using one for a single task, without rebinding the chat

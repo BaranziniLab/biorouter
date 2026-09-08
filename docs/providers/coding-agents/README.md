@@ -47,7 +47,7 @@ machine holding credentials you care about.
 
 | Document | What it covers |
 | --- | --- |
-| [How the coding-agent providers work](how-it-works.md) | The mechanism: what each provider spawns, where each vendor's credential lives, how the binary is found without spawning anything, how the conversation becomes one prompt, and how usage is accounted for a run that billed no tokens. |
+| [How the coding-agent providers work](how-it-works.md) | The mechanism: what each provider spawns, which models each advertises and the CLI version each of those needs, where each vendor's credential lives, how the binary is found without spawning anything, how the conversation becomes one prompt, and how usage is accounted for a run that billed no tokens. |
 | [Installing and signing in](installing-and-signing-in.md) | The user-facing setup: install each CLI, sign in by running the vendor's own command yourself, the four states the settings card can show, and the `CLAUDE_CODE_COMMAND` / `CODEX_COMMAND` escape hatch when the binary lives somewhere BioRouter does not search. |
 | [The tool bridge](tool-bridge.md) | How the audited Workspace and Knowledge subsets, plus bounded workflow-owned tools, reach the child over MCP while BioRouter still executes them behind its gates; and why arbitrary host-reading extensions are deliberately excluded. |
 | [What the child agent may not do](child-agent-isolation.md) | The isolation flags, each of which is security-relevant rather than hygiene: the hostile-fixture result behind `--setting-sources ""`, the measured MCP leak behind `--strict-mcp-config`, why `--tools ""` is not a substitute for either, and why `--bare` must never be passed. |

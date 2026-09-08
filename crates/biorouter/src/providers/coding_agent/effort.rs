@@ -5,22 +5,25 @@
 //!
 //! The shared helper maps `Quick -> low`, `Deep -> high`, `Normal -> None`, which
 //! is right for an API where `high` is the top of the scale. Both coding-agent
-//! CLIs have a taller ladder — `low, medium, high, xhigh, max` — so `Deep` landing
-//! on `high` would leave two rungs unused and make "deep" mean *less* here than the
-//! word implies. These providers therefore climb their own ladder:
+//! CLIs have a taller ladder — `low, medium, high, xhigh, max`, and Codex alone
+//! adds `ultra` above `max`, which `Deep` deliberately does not reach (see
+//! `CODEX_MODELS_WITH_MAX`) — so `Deep` landing on `high` would leave two rungs
+//! unused and make "deep" mean *less* here than the word implies. These providers
+//! therefore climb their own ladder:
 //!
 //! | BioRouter | Claude Code | Codex |
 //! |---|---|---|
 //! | `Quick` | `low` | `low` |
 //! | `Normal` (and unset) | `high` | `high` |
-//! | `Deep` | `max` | the model's top rung, usually `xhigh` |
+//! | `Deep` | `max` | the model's own top rung: `max` on Astra and 5.6, else `xhigh` |
 //!
 //! # Two consequences worth knowing before changing this
 //!
 //! **The default is no longer silent.** Elsewhere in Biorouter `Normal` means "say
 //! nothing and let the model decide". Here it emits `high`, so *every* turn from a
 //! user who never touched `/effort` asks for more reasoning than the vendor default
-//! (`medium` on `gpt-5.5`). That is a deliberate product choice — a coding agent is
+//! (`model/list`'s own `defaultReasoningEffort`: `medium` on `gpt-6-astra`, `low`
+//! on `gpt-5.6-sol`). That is a deliberate product choice — a coding agent is
 //! reached for when the work is hard — and it costs thinking tokens against the
 //! user's own subscription on every turn.
 //!
@@ -45,8 +48,8 @@ const CLAUDE_TOP: &str = "max";
 ///
 /// `xhigh` is the highest rung **every** model in the live catalogue advertises,
 /// which is what makes it the safe floor: `max` and `ultra` exist only on part of
-/// the 5.6 family, and Biorouter's own four advertised models (`gpt-5.5`,
-/// `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`) top out here.
+/// the 5.6 family and on Astra, and the two advertised models that stop here are
+/// `gpt-5.5` and `gpt-5.3-codex-spark`.
 const CODEX_SAFE_TOP: &str = "xhigh";
 
 /// Codex models known to advertise `max`, from `model/list`'s
@@ -56,16 +59,25 @@ const CODEX_SAFE_TOP: &str = "xhigh";
 /// would otherwise pay on every turn, and being wrong in the safe direction costs
 /// one rung. Re-derive it with
 /// `codex app-server` → `model/list` → `supportedReasoningEfforts` when the
-/// catalogue moves.
+/// catalogue moves. Measured against codex-cli 0.153.4 on 2026-09-08: Astra,
+/// Sol and Terra advertise `low, medium, high, xhigh, max, ultra`; Luna stops at
+/// `max`; `gpt-5.5` and `gpt-5.3-codex-spark` stop at `xhigh`.
 ///
-/// ⚠ Deliberately **not** reaching for `ultra`, which two of these also advertise.
-/// `Deep` is the strongest ordinary tier; `ultra` is the delegating mode above it
-/// and is not what `/effort deep` should silently buy.
+/// ⚠ Deliberately **not** reaching for `ultra`, which three of these also
+/// advertise. `Deep` is the strongest ordinary tier; `ultra` is the delegating
+/// mode above it and is not what `/effort deep` should silently buy.
+///
+/// ⚠ `codex-auto-review` used to sit here and has been removed. It is a hidden
+/// review model: `codex exec -m codex-auto-review` is accepted on both 0.147.0
+/// and 0.153.4, but it is absent from `model/list` on **both**, so its
+/// `supportedReasoningEfforts` cannot be read and the `max` claim was never
+/// evidence. Dropping it costs one rung on a model no picker offers — `Deep`
+/// now sends `xhigh`, which every Codex model accepts.
 const CODEX_MODELS_WITH_MAX: &[&str] = &[
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
-    "codex-auto-review",
 ];
 
 /// The `--effort` value for a Claude Code turn. Always emits: see the module
@@ -135,21 +147,47 @@ mod tests {
         assert_eq!(claude_effort(None), "high");
     }
 
-    /// Codex's ladder is per-model, and Biorouter's own four advertised models all
-    /// stop at `xhigh`. Sending `max` to one of them is accepted but not
-    /// observably applied, so `Deep` must not reach for it.
+    /// Codex's ladder is per-model, and two of Biorouter's advertised models —
+    /// `gpt-5.5` and `gpt-5.3-codex-spark` — stop at `xhigh`. Sending `max` to
+    /// one of them is accepted but not observably applied, so `Deep` must not
+    /// reach for it.
     #[test]
     fn codex_deep_never_exceeds_what_the_model_advertises() {
-        for advertised in ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] {
+        for advertised in ["gpt-5.5", "gpt-5.3-codex-spark"] {
             assert_eq!(
                 codex_effort(Some(ReasoningEffort::Deep), advertised),
                 "xhigh",
                 "{advertised} does not advertise `max`"
             );
         }
-        for taller in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        for taller in [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ] {
             assert_eq!(codex_effort(Some(ReasoningEffort::Deep), taller), "max");
         }
+    }
+
+    /// `codex-auto-review` must stay OFF `CODEX_MODELS_WITH_MAX`.
+    ///
+    /// It needs its own assertion because
+    /// `codex_deep_never_exceeds_what_the_model_advertises` cannot see it: that
+    /// test walks the *advertised* catalog, and this model is advertised
+    /// nowhere, so re-adding it to the const table would break nothing.
+    ///
+    /// The reason it does not belong there: `codex exec -m codex-auto-review`
+    /// is accepted on both 0.147.0 and 0.153.4, but the id is absent from
+    /// `model/list` on **both**, so its `supportedReasoningEfforts` cannot be
+    /// read and the `max` it used to be given was never evidence.
+    #[test]
+    fn codex_auto_review_gets_the_safe_rung_because_no_model_list_declares_it() {
+        assert_eq!(
+            codex_effort(Some(ReasoningEffort::Deep), "codex-auto-review"),
+            "xhigh",
+            "absent from `model/list` on 0.147.0 and 0.153.4, so its ladder is unverifiable"
+        );
     }
 
     /// An unknown or user-typed model gets the safe floor rather than a guess —
@@ -172,9 +210,15 @@ mod tests {
 
     /// `ultra` is the delegating tier above the ordinary ladder. `/effort deep`
     /// must not silently buy it on the models that have it.
+    ///
+    /// ⚠ This guards the *values* in the const tables above — `CLAUDE_TOP`,
+    /// `CODEX_SAFE_TOP` and the `"max"` literal — not the mapping logic:
+    /// `codex_top_rung` can only ever return one of those two strings, so the
+    /// assertion cannot fail while they say what they say. It is a tripwire on
+    /// someone editing a constant, not evidence that the ladder is right.
     #[test]
     fn deep_never_reaches_ultra() {
-        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] {
+        for model in ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] {
             assert_ne!(codex_effort(Some(ReasoningEffort::Deep), model), "ultra");
         }
         assert_ne!(claude_effort(Some(ReasoningEffort::Deep)), "ultra");
