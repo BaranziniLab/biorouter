@@ -11,8 +11,18 @@ type ReadableContentProps = {
  * (`max-w-measure-chat`, see BaseChat.tsx / ChatInput.tsx). A view that sits
  * directly above the composer — Home — must use it, or its edges will not line
  * up. It names the TOKEN rather than a literal precisely so that alignment
- * survives the measure changing, which it since has: the flat 760px this line
- * used to quote is now the floor of a clamp.
+ * survives the measure changing.
+ *
+ * Two views read it: **Home** (SessionsInsights.tsx) and **Settings**
+ * (settings/SettingsView.tsx, all three of its boxes). Home is the alignment
+ * case above — it sits directly over the composer. Settings is a different
+ * argument for the same measure and does not depend on adjacency: it is a
+ * column of labelled rows, so width beyond the measure separates each control
+ * from the label it names instead of showing more (operator decision,
+ * 2026-09-07; see the `--measure-page` note in main.css).
+ *
+ * Everything else — sessions, extensions, skills, schedules, workflows,
+ * applications — is document-shaped and stays on the fluid page measure below.
  */
 /**
  * ⚠ Every one of these is a CLAMP, not a flat cap, for the reason spelled out
