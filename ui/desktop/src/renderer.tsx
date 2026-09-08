@@ -14,6 +14,10 @@ import { wrapArtifactForBrowser } from './utils/artifactSecurity';
 // detects. `utils/surface.ts` imports nothing and touches only `document`, so
 // pulling it in here cannot disturb the polyfill above.
 import { BROWSER_SURFACE_BODY_CLASS, BROWSER_SURFACE_MARKER } from './utils/surface';
+// Development-only self-diagnosis for the "app doesn't scale with the window"
+// impostor. Like `utils/surface`, this module has no top-level side effects and
+// touches no global at import time, so it cannot disturb the polyfill above.
+import { installViewportPinWarning } from './utils/viewportPin';
 
 const App = lazy(() => import('./App'));
 
@@ -535,6 +539,17 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
 }
 
 (async () => {
+  // Say so in the console when a DevTools device-metrics override has pinned the
+  // viewport, so the next report of "the app doesn't scale with the window" does
+  // not cost anyone an hour in the CSS. Development only — `import.meta.env.DEV`
+  // is a build-time constant, so the call and the module behind it are dropped
+  // from a packaged bundle entirely. Installed BEFORE the daemon handshake below
+  // on purpose: a pinned viewport is worth knowing about even on the path where
+  // the backend never comes up and this function returns early.
+  if (import.meta.env.DEV) {
+    installViewportPinWarning();
+  }
+
   // Check if we're in the launcher view (doesn't need biorouterd connection)
   const isLauncher = window.location.hash === '#/launcher';
 
