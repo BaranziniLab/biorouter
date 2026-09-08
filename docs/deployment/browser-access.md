@@ -227,6 +227,11 @@ finds none:
 3. `ui/desktop/src/web/` in a development tree.
 4. `/usr/share/biorouter/web` (where the Linux packages put it).
 
+"Beside" means beside the **real** binary. The CLI is installed on `PATH` as a symlink
+(`~/.local/bin/biorouter` → the application bundle), and steps 2 and 3 follow that link before
+deriving anything from it — otherwise they would name directories in your home folder, which is
+what they did in v1.89.5 through v1.90.2.
+
 In a development tree, build it first:
 
 ```bash

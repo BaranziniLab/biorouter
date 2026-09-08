@@ -241,13 +241,19 @@ pub(crate) async fn daemon_ok(host: &str, port: u16) -> bool {
 /// Locate the `biorouterd` binary: prefer the sibling of the running `biorouter`
 /// executable (dev tree and installed app both colocate them), else fall back to
 /// the bare name so the OS resolves it on `PATH`.
+///
+/// The path is resolved through symlinks first
+/// ([`crate::commands::exe_path::current_exe_resolved`]): on macOS
+/// `current_exe()` reports the link the user typed, and the CLI is installed as
+/// a symlink, so "the sibling" would otherwise be a sibling of
+/// `~/.local/bin/biorouter`.
 fn biorouterd_path() -> PathBuf {
     let bin = if cfg!(windows) {
         "biorouterd.exe"
     } else {
         "biorouterd"
     };
-    if let Ok(exe) = std::env::current_exe() {
+    if let Some(exe) = crate::commands::exe_path::current_exe_resolved() {
         if let Some(sibling) = exe.parent().map(|d| d.join(bin)) {
             if sibling.exists() {
                 return sibling;

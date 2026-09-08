@@ -2,6 +2,7 @@ pub mod apps;
 pub mod bench;
 pub mod configure;
 pub mod doctor;
+pub mod exe_path;
 pub mod extension;
 pub mod info;
 pub mod knowledge;
