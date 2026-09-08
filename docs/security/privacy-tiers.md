@@ -2596,6 +2596,12 @@ Azure/Bedrock → *"Public — Biorouter can't verify where this account's endpo
 > `azure_openai` Public even when it in fact resolves to the UCSF gateway — a conservative,
 > fail-safe error, but the copy must not claim something the configuration contradicts.
 
+**Shipped, as tabs.** The three groups are the three tabs of the provider catalog
+(`ui/desktop/src/components/settings/providers/ProviderCatalog.tsx`), each panel opening with
+the same label and the same one-line note this section specifies, still served from
+`providerOrdering.ts` to both the catalog and `IngestModelPicker` rather than written twice.
+See [the provider catalog](../desktop-ui/provider-catalog.md).
+
 **Show the pairing, not just the extension.** `~/.config/biorouter/config.yaml` enables extensions
 **globally** with a single `enabled:` flag; there is no per-session enablement. Under Gate E a user
 who enables `ucsfomopagent` sees **Enabled** in Settings while the tool is simply *absent* from

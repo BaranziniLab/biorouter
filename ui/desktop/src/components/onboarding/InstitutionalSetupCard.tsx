@@ -1,15 +1,16 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useConfig } from '../ConfigContext';
 import { checkProvider } from '../../api';
 import { Button } from '../ui/button';
 import { ArrowRight } from '../icons/ArrowRight';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
-import OnboardingSectionLabel from './OnboardingSectionLabel';
+import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 
 interface InstitutionalSetupCardProps {
   onSuccess: (provider: string) => void;
   onStartTesting?: () => void;
+  /** See `OnboardingCardShell`. Defaults to the standalone card. */
+  chrome?: OnboardingCardChrome;
 }
 
 type VersaFlavor = 'azure' | 'bedrock';
@@ -30,6 +31,19 @@ const TABS: { id: VersaFlavor; label: string }[] = [
   { id: 'bedrock', label: 'Bedrock (Claude)' },
 ];
 
+/**
+ * The providers this card configures — one per flavour of its own toggle, and
+ * the `BIOROUTER_PROVIDER` value each branch of `handleSubmit` writes.
+ *
+ * ⚠ Exported so the provider catalog can ask *this card* which rows it covers,
+ * rather than keeping a second table mapping an institution to a setup form.
+ * The catalog groups by institution from the daemon's affiliation payload; an
+ * institution whose gateways are not in this list simply gets no bespoke form,
+ * which is the correct outcome — a form written for UCSF's Versa endpoints must
+ * not be offered under another institution's heading.
+ */
+export const INSTITUTIONAL_SETUP_PROVIDER_IDS: readonly string[] = ['versa_azure', 'versa_bedrock'];
+
 const inputClass =
   'w-full h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
 
@@ -39,9 +53,9 @@ const advancedInputClass =
 export default function InstitutionalSetupCard({
   onSuccess,
   onStartTesting,
+  chrome = 'card',
 }: InstitutionalSetupCardProps) {
   const { upsert } = useConfig();
-  const navigate = useNavigate();
   const [flavor, setFlavor] = useState<VersaFlavor>('azure');
   const [bedrockAccessKey, setBedrockAccessKey] = useState('');
   const [bedrockSecretKey, setBedrockSecretKey] = useState('');
@@ -103,18 +117,14 @@ export default function InstitutionalSetupCard({
   };
 
   return (
-    <section
-      aria-labelledby="institutional-setup-title"
-      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+    <OnboardingCardShell
+      chrome={chrome}
+      titleId="institutional-setup-title"
+      category="institutional"
+      label="Institutional · UCSF Versa API"
+      title="UCSF-hosted models"
+      description="Use UCSF-hosted models through the Versa unified API. Best for UCSF affiliates."
     >
-      <OnboardingSectionLabel category="institutional" label="Institutional · UCSF Versa API" />
-      <h2 id="institutional-setup-title" className="mt-2 text-base font-medium text-text-default">
-        UCSF-hosted models
-      </h2>
-      <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
-        Use UCSF-hosted models through the Versa unified API. Best for UCSF affiliates.
-      </p>
-
       {/* Tab toggle */}
       <div
         role="tablist"
@@ -289,13 +299,6 @@ export default function InstitutionalSetupCard({
             </>
           )}
         </Button>
-        <button
-          type="button"
-          onClick={() => navigate('/welcome', { replace: true })}
-          className="w-full py-1 text-center text-xs text-text-muted transition-colors duration-150 hover:text-text-default sm:w-auto sm:text-left"
-        >
-          View all institutional providers →
-        </button>
       </div>
 
       {error && (
@@ -303,6 +306,6 @@ export default function InstitutionalSetupCard({
           {error}
         </div>
       )}
-    </section>
+    </OnboardingCardShell>
   );
 }

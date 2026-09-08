@@ -21,6 +21,11 @@ import { AlertType, useAlerts } from './alerts';
 import { toolCountWarning } from './alerts/toolCountWarning';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
+import {
+  NO_MODEL_COMPOSER_ACTION,
+  NO_MODEL_COMPOSER_HINT,
+  hasNoModelConfigured,
+} from './composerNoProvider';
 import MentionPopover, { DisplayItemWithMatch } from './MentionPopover';
 import { COST_TRACKING_ENABLED } from '../updates';
 import { CostTracker } from './bottom_menu/CostTracker';
@@ -407,6 +412,7 @@ export default function ChatInput({
     getCurrentModelAndProvider,
     currentModel,
     currentProvider,
+    modelConfigStatus,
     currentModelSupportsVision: globalSupportsVision,
     currentModelSupportedInputMimeTypes: globalSupportedInputMimeTypes,
   } = useModelAndProvider();
@@ -1809,8 +1815,17 @@ export default function ChatInput({
     return true;
   };
 
+  /**
+   * Nothing to send TO. Reachable since "Explore Biorouter first →" — the app
+   * renders with no provider bound, and the composer owes the user the reason
+   * at the moment they try to send rather than the daemon's own error toast a
+   * round trip later.
+   */
+  const noModelConfigured = hasNoModelConfigured(modelConfigStatus, currentProvider);
+
   const canSubmit =
     !isLoading &&
+    !noModelConfigured &&
     (displayValue.trim() ||
       (currentModelSupportsVision &&
         pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
@@ -2105,6 +2120,7 @@ export default function ChatInput({
   const visionMismatch = !currentModelSupportsVision && hasPastedImageAttachments;
 
   const isSubmitButtonDisabled =
+    noModelConfigured ||
     !hasSubmittableContent ||
     isAnyImageLoading ||
     isAnyDroppedFileLoading ||
@@ -2583,6 +2599,27 @@ export default function ChatInput({
             isPaused={queuePausedRef.current}
             className="border-b border-border-subtle"
           />
+        )}
+        {/* No-model hint. Same shape as the vision-mismatch banner below and for
+ the same reason: the composer says why Send is off, in the composer, instead
+ of letting the user press it and meet a daemon error written for a developer.
+ It carries the way out, because "choose a provider" is only actionable if the
+ catalog is one click away. */}
+        {noModelConfigured && (
+          <div
+            data-testid="composer-no-model-hint"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 mb-2 bg-background-medium/60 border border-border-subtle rounded-element text-supporting text-text-muted"
+          >
+            <span className="leading-snug">{NO_MODEL_COMPOSER_HINT}</span>
+            <button
+              type="button"
+              onClick={() => setView?.('ConfigureProviders')}
+              data-testid="composer-no-model-action"
+              className="underline underline-offset-2 transition-colors duration-150 hover:text-text-default"
+            >
+              {NO_MODEL_COMPOSER_ACTION}
+            </button>
+          </div>
         )}
         {/* Vision-mismatch banner: shown when the user has images attached but the
  current model does not support vision. Blocks Send until resolved. */}
