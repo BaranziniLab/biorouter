@@ -55,6 +55,14 @@ Choose **Claude Code** or **Codex** in the model picker or in provider settings,
 would any other provider. There is no key to enter. The only setting either provider has is the
 name or path of its executable, which defaults to `claude` and `codex` respectively.
 
+> **Note — which models you can pick depends on your CLI version.** The newest model in each
+> catalogue has a vendor-set version floor: `claude-fable-5-1` needs `claude` **2.1.251** or newer,
+> and `gpt-6-astra` needs `codex-cli` **0.153.4** or newer. On an older CLI the turn fails with the
+> vendor's own upgrade message, which BioRouter shows you verbatim; `claude update`, or re-running
+> the `npm install -g` line in step 1, fixes it. Every other advertised model works on older CLIs
+> too. Details, including the exact messages, are on
+> [which models you can pick depends on the CLI version](how-it-works.md#which-models-you-can-pick-depends-on-the-cli-version).
+
 ## The four states a card can show
 
 BioRouter asks each CLI what it thinks its own situation is, over
