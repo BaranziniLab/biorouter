@@ -226,6 +226,7 @@ impl Provider for AlternatingStormProvider {
             allows_unlisted_models: false,
             tier: Default::default(),
             runs_locally: true,
+            institutions: Vec::new(),
         }
     }
 

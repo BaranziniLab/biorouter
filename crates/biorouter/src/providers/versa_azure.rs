@@ -350,6 +350,11 @@ impl Provider for VersaAzureProvider {
         // The shipped endpoint is the UCSF gateway, so a default install is
         // Private. An instance that resolved elsewhere says so itself, below.
         .with_tier(ProviderTier::Private)
+        // The type-level half of the same claim, for the surfaces that must
+        // name the institution BEFORE anything is configured — see
+        // `ProviderMetadata::institutions`. `affiliation()` below is the
+        // instance answer and outranks it wherever the daemon resolved one.
+        .with_institution(super::UCSF_INSTITUTION)
     }
 
     fn get_name(&self) -> &str {
@@ -567,6 +572,24 @@ mod tests {
             None,
             "an instance that lost Private must lose `ucsf` with it"
         );
+    }
+
+    /// The **type-level** half, which is what a catalog can group by before
+    /// anything is configured. `GET /config/providers` resolves the instance
+    /// affiliation above only for a CONFIGURED provider, so on a fresh machine
+    /// this metadata claim is the only thing that can name the institution.
+    ///
+    /// ⚠ It is deliberately weaker than `affiliation()`: it says where this
+    /// provider SHIPS pointed, so a repointed instance still carries `ucsf`
+    /// here while the test above proves `affiliation()` correctly drops it.
+    /// A surface must prefer the instance answer wherever the daemon resolved
+    /// one — see `ProviderMetadata::institutions`.
+    #[test]
+    fn the_shipped_metadata_names_the_institution_for_an_unconfigured_row() {
+        let institutions = VersaAzureProvider::metadata().institutions.clone();
+        assert_eq!(institutions.len(), 1);
+        assert_eq!(institutions[0].id, "ucsf");
+        assert_eq!(institutions[0].display_name.as_deref(), Some("UCSF"));
     }
 
     #[test]
