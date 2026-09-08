@@ -25,20 +25,21 @@ function CapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
     }
   };
 
+  // ⚠ **No state-dependent fill.** This row used to paint
+  // `bg-background-medium/70` while its switch was ON, which turned a hairline
+  // list into a striped one and said the state a second time in a weaker
+  // language. It was also inverted: `.biorouter-settings-row:hover` is
+  // unlayered and beats a `@layer utilities` background, so pointing at an ON
+  // row dropped its fill from 70% to 38% and the row visibly LIGHTENED. The
+  // switch states the state.
   return (
-    <div
-      className={`biorouter-settings-row flex items-center justify-between text-text-default px-3 py-2.5 ${
-        enabled ? 'bg-background-medium/70' : ''
-      }`}
-    >
-      <div className="flex">
-        <div>
-          <p className="text-sm font-medium text-text-default">{meta.label}</p>
-          <p className="text-xs text-text-muted mt-0.5">{meta.description}</p>
-        </div>
+    <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default">
+      <div className="min-w-0 flex-1">
+        <p className="text-label text-text-default">{meta.label}</p>
+        <p className="mt-0.5 max-w-md text-supporting text-text-muted">{meta.description}</p>
       </div>
 
-      <div className="relative flex items-center gap-2 flex-shrink-0">
+      <div className="flex flex-shrink-0 items-center">
         <Switch
           checked={enabled}
           onCheckedChange={handleToggle}
@@ -75,8 +76,12 @@ export const CapabilitiesSection = () => {
     [addExtension, getExtensions]
   );
 
+  // A fragment, not a `space-y-1` wrapper: the rows belong directly to the
+  // `.biorouter-settings-list` this section mounts into, so they abut, the
+  // hairline is their only separator, and `:last-child` selects the real last
+  // row instead of the last row of a nested box.
   return (
-    <div className="space-y-1">
+    <>
       {CAPABILITIES.map((meta) => (
         <CapabilityItem
           key={meta.key}
@@ -85,6 +90,6 @@ export const CapabilitiesSection = () => {
           onToggle={handleToggle}
         />
       ))}
-    </div>
+    </>
   );
 };

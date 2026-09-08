@@ -54,15 +54,20 @@ export const ModeSection = () => {
     fetchMaxTurns();
   }, [fetchCurrentMode, fetchMaxTurns]);
 
+  // ⚠ This section owns its `.biorouter-settings-list` rather than being mounted
+  // inside one, and the reason is `role="radiogroup"`: the role has to sit on
+  // the element that actually contains the radios. Every other Chat section
+  // contributes a fragment of rows to the list its parent provides — they have
+  // no semantics of their own to declare. `space-y-1` is gone either way: rows
+  // abut inside the list and the hairline is the only separator.
   return (
-    <div className="space-y-1" role="radiogroup" aria-label="Biorouter mode">
+    <div className="biorouter-settings-list" role="radiogroup" aria-label="Biorouter mode">
       {all_biorouter_modes.map((mode) => (
         <ModeSelectionItem
           key={mode.key}
           mode={mode}
           currentMode={currentMode}
           showDescription={true}
-          isApproveModeConfigure={false}
           handleModeChange={handleModeChange}
         />
       ))}
