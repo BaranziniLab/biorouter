@@ -7,11 +7,21 @@ import ReactSelect from 'react-select';
  * The trigger is visually identical to <Input>: same height, radius, border and
  * focus treatment. The menu is the shared popover surface.
  *
- * Layering: every call site lives inside a modal, and the menu is NOT portalled —
- * react-select renders it as an absolutely-positioned sibling. It therefore needs
- * to out-rank the modal surface (--z-modal, 400) without out-ranking a toast
- * (--z-toast, 600). It previously used z-[9999], which painted over the dialog's
- * own close button.
+ * Layering: every call site lives inside a modal, and the menu is NOT portalled by
+ * default — react-select renders it as an absolutely-positioned sibling. It
+ * therefore needs to out-rank the modal surface (--z-modal, 400) without
+ * out-ranking a toast (--z-toast, 600). It previously used z-[9999], which painted
+ * over the dialog's own close button.
+ *
+ * ⚠ **z-index does not answer `overflow: hidden`, and that is a different bug with
+ * the same symptom.** A call site inside a CLIPPING ancestor — `ModalShell`'s
+ * `DialogContent` is `overflow-hidden`, and its scrolling body is `overflow-y-auto`
+ * — has its menu cut off at the box's edge however high the menu is stacked; the
+ * Scheduler's cron picker showed exactly one of six options. Such a call site
+ * passes `menuPortalTarget={document.body}` (with `menuPlacement="auto"`), and the
+ * `menuPortal` entry in `styles` below carries the same tier out to the portal so
+ * the escaped menu still lands above the dialog and below a toast. It is inert
+ * until a call site opts in, so the four non-clipped call sites are unaffected.
  *
  * `unstyled` strips react-select's Emotion base styles, but Emotion still injects
  * `fontSize: inherit` on options AFTER Tailwind's layer. Pinning a 14px type role
@@ -123,6 +133,11 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // asserts the override AT THE SOURCE instead of pretending to measure.
         control: (base) => ({ ...base, minHeight: 0 }),
         menu: (base) => ({ ...base, pointerEvents: 'auto', zIndex: MENU_Z }),
+        // The same tier, carried out to a portalled menu. react-select's own
+        // `menuPortal` default is `zIndex: 1`, which at `document.body` sits
+        // under the modal scrim — so a menu that escaped its clipping ancestor
+        // would then be painted over by the dialog it escaped.
+        menuPortal: (base) => ({ ...base, zIndex: MENU_Z }),
         menuList: (base) => ({
           ...base,
           maxHeight: '240px',

@@ -39,6 +39,17 @@ const SETTINGS_DIR = __dirname;
  */
 const HISTORY_DIR = join(__dirname, '..', 'sessions');
 
+/**
+ * Every directory the vocabulary now governs, each with its own exclusions.
+ * Settings is where it was written down; each further entry is a surface that
+ * has since been swept onto it. One root per line, so two PRs sweeping two
+ * different surfaces add two different lines.
+ *
+ * ⚠ The exclusions are PER ROOT, and that is not cosmetic: `sessions/` excludes
+ * `components/settings/sessions/` (session SHARING, still unswept) and must not
+ * reach `components/sessions/` (chat history, swept). One flat list cannot
+ * express that — it excluded both, or neither.
+ */
 const ROOTS: { dir: string; outOfScope: string[] }[] = [
   {
     dir: SETTINGS_DIR,
@@ -49,6 +60,7 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   // `UsageHeatmap` is its grid, whose `leading-*` and per-mille alphas are
   // fitted cell geometry rather than prose styling.
   { dir: HISTORY_DIR, outOfScope: ['SessionsInsights.tsx', 'UsageHeatmap.tsx'] },
+  { dir: join(SETTINGS_DIR, '../schedule'), outOfScope: [] }, // the Scheduler, 2026-09-07
 ];
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {
@@ -62,10 +74,12 @@ function sourceFiles(): { path: string; rel: string; text: string }[] {
           continue;
         }
         if (!entry.endsWith('.tsx') || entry.includes('.test.')) continue;
+        // The exclusion is tested against the path relative to the root being
+        // walked, because `outOfScope` names subfolders of THAT root.
         if (outOfScope.some((prefix) => relative(root, path).startsWith(prefix))) continue;
         // Reported relative to `components/`, not to the root, so a failure
         // names `sessions/SessionListView.tsx` rather than a bare filename that
-        // could have come from either tree.
+        // could have come from any of the trees below.
         found.push({
           path,
           rel: relative(join(__dirname, '..'), path),
@@ -162,13 +176,18 @@ describe('the settings vocabulary', () => {
   });
 
   /**
-   * BOTH roots, named individually. The whole-count assertion above is
-   * satisfied by Settings alone — a second root that resolved to a missing
-   * directory, or whose every file fell into `outOfScope`, would contribute
-   * nothing and every rule below would silently stop covering chat history
-   * while still reporting green.
+   * Per-root, not just in total: `FILES.length` above is satisfied by the
+   * settings directory alone, so a root that resolves to nothing — a typo, a
+   * renamed folder, or an `outOfScope` that swallows everything under it —
+   * would add its name to the list and change no assertion, and every rule
+   * below would silently stop covering that surface while still reporting
+   * green. The named files are the same guard aimed at the one root whose
+   * exclusions are the easiest to get backwards (see `HISTORY_DIR`).
    */
-  it('covers the chat-history surfaces as well as Settings', () => {
+  it('finds sources under every root it claims to govern', () => {
+    for (const { dir } of ROOTS) {
+      expect(FILES.filter(({ path }) => path.startsWith(dir)).length).toBeGreaterThan(0);
+    }
     const covered = new Set(FILES.map(({ rel }) => rel));
     for (const file of [
       'sessions/SessionListView.tsx',

@@ -23,12 +23,11 @@ import {
   Eye,
   CircleDotDashed,
   Trash2,
-  AlertTriangle,
+  Clock,
 } from '../icons/app-icons';
 import { NewSchedulePayload, ScheduleModal } from './ScheduleModal';
 import ScheduleDetailView from './ScheduleDetailView';
 import { toastError, toastSuccess } from '../../toasts';
-import cronstrue from 'cronstrue';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ViewOptions } from '../../utils/navigationUtils';
@@ -41,12 +40,24 @@ import {
 import { ReadableContent } from '../Layout/ReadableContent';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
+import { Note } from '../ui/note';
+import { Skeleton } from '../ui/skeleton';
+import { ScheduleStatus, readableCronOf } from './scheduleStatus';
 
 interface SchedulesViewProps {
   onClose?: () => void;
 }
 
-const ScheduleCard: React.FC<{
+/**
+ * One schedule, as a hairline row on the canvas.
+ *
+ * There is no card here and no card around the list: §3.10's "a list gets no
+ * container" and design.md's P2 (rows, not cards). Status is TEXT beside a
+ * status dot rather than a filled pill — the alpha-mixed 15% background pills
+ * this replaced are exactly the hand-mixed fills the settings vocabulary bans, and
+ * §2.5 reserves translucent status fills for a `Note`, not for a word in a row.
+ */
+const ScheduleRow: React.FC<{
   job: ScheduledJob;
   onNavigateToDetail: (id: string) => void;
   onEdit: (job: ScheduledJob) => void;
@@ -67,153 +78,140 @@ const ScheduleCard: React.FC<{
   onDelete,
   actionInProgress,
 }) => {
-  let readableCron: string;
-  try {
-    readableCron = cronstrue.toString(job.cron);
-  } catch {
-    readableCron = job.cron;
-  }
-
+  const readableCron = readableCronOf(job.cron);
   const formattedLastRun = formatToLocalDateWithTimezone(job.last_run);
 
   return (
-    <div className="biorouter-list-row group py-3 px-3">
-      <div className="flex justify-between items-start gap-3">
-        <button
-          type="button"
-          className="min-w-0 flex-1 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-          onClick={() => onNavigateToDetail(job.id)}
-          aria-label={`View schedule ${scheduleDisplayName(job.id)}`}
-        >
-          <div className="flex items-center gap-1.5">
-            <h3 className="text-sm text-text-default truncate max-w-[50vw]" title={job.id}>
-              {scheduleDisplayName(job.id)}
-            </h3>
-            {isBuiltinSchedule(job.id) && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
-            {job.currently_running && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-background-success/15 text-text-success">
-                <span className="inline-block w-2 h-2 bg-background-success rounded-full mr-1 animate-pulse"></span>
-                Running
-              </span>
-            )}
-            {job.paused && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-background-warning/15 text-text-warning">
-                <Pause className="w-3 h-3 mr-1" />
-                Paused
-              </span>
-            )}
-            {/*
-              Issue #56. A schedule whose last tick failed looks identical to a
-              healthy one on this list — a fresh session is minted per run, so
-              there is nothing else here to notice. Cleared by the next success.
-            */}
-            {job.last_error && !job.currently_running && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-background-danger/15 text-text-danger">
-                <AlertTriangle className="w-3 h-3 mr-1" />
-                Failed
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-text-muted mt-0.5 line-clamp-1" title={readableCron}>
-            {readableCron}
-          </p>
-          <div className="flex items-center text-[11px] text-text-subtle mt-1">
-            <span>Last run: {formattedLastRun}</span>
-          </div>
-          {job.last_error && (
-            <p
-              className="text-[11px] text-text-danger mt-1 line-clamp-2 break-words"
-              title={job.last_error}
-            >
-              {job.last_error}
-            </p>
-          )}
-        </button>
-
-        <div className="flex items-center gap-1 shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-          {!job.currently_running && (
-            <>
-              <Button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onEdit(job);
-                }}
-                disabled={actionInProgress}
-                variant="ghost"
-                shape="round"
-                title="Edit schedule"
-                aria-label={`Edit ${scheduleDisplayName(job.id)}`}
-              >
-                <Edit className="w-4 h-4" />
-              </Button>
-              <Button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (job.paused) {
-                    onUnpause(job.id);
-                  } else {
-                    onPause(job.id);
-                  }
-                }}
-                disabled={actionInProgress}
-                variant="ghost"
-                shape="round"
-                title={job.paused ? 'Resume this schedule' : 'Pause this schedule'}
-                aria-label={`${job.paused ? 'Resume' : 'Pause'} ${scheduleDisplayName(job.id)}`}
-              >
-                {job.paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-              </Button>
-            </>
-          )}
-          {job.currently_running && (
-            <>
-              <Button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onInspect(job.id);
-                }}
-                disabled={actionInProgress}
-                variant="ghost"
-                shape="round"
-                title="Show the current run"
-                aria-label={`Inspect ${scheduleDisplayName(job.id)}`}
-              >
-                <Eye className="w-4 h-4" />
-              </Button>
-              <Button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onKill(job.id);
-                }}
-                disabled={actionInProgress}
-                variant="ghost"
-                shape="round"
-                title="Stop the running job"
-                aria-label={`Stop ${scheduleDisplayName(job.id)}`}
-              >
-                <Square className="w-4 h-4" />
-              </Button>
-            </>
-          )}
-          <Button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(job.id);
-            }}
-            disabled={actionInProgress}
-            variant="ghost"
-            size="sm"
-            className="text-text-danger"
-            title="Delete schedule"
-            aria-label={`Delete ${scheduleDisplayName(job.id)}`}
-          >
-            <Trash2 className="w-4 h-4" />
-          </Button>
+    <div className="biorouter-list-row group flex items-start justify-between gap-3 px-3 py-3">
+      <button
+        type="button"
+        className="min-w-0 flex-1 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        onClick={() => onNavigateToDetail(job.id)}
+        aria-label={`View schedule ${scheduleDisplayName(job.id)}`}
+      >
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Clock className="h-4 w-4 shrink-0 text-text-muted" aria-hidden />
+          <h3 className="min-w-0 truncate text-label" title={job.id}>
+            {scheduleDisplayName(job.id)}
+          </h3>
+          {isBuiltinSchedule(job.id) && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
+          <ScheduleStatus job={job} />
         </div>
+        <p className="mt-0.5 line-clamp-1 text-supporting text-text-muted" title={readableCron}>
+          {readableCron}
+        </p>
+        <p className="mt-1 text-supporting text-text-muted">
+          Last run <span className="font-mono tabular-nums">{formattedLastRun}</span>
+        </p>
+        {/*
+          Issue #56. A schedule whose last tick failed looks identical to a
+          healthy one on this list — a fresh session is minted per run, so
+          there is nothing else here to notice. Cleared by the next success.
+        */}
+        {job.last_error && (
+          <p
+            className="mt-1 line-clamp-2 text-supporting text-text-danger [overflow-wrap:anywhere]"
+            title={job.last_error}
+          >
+            {job.last_error}
+          </p>
+        )}
+      </button>
+
+      <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+        {!job.currently_running && (
+          <>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(job);
+              }}
+              disabled={actionInProgress}
+              variant="ghost"
+              shape="round"
+              title="Edit schedule"
+              aria-label={`Edit ${scheduleDisplayName(job.id)}`}
+            >
+              <Edit />
+            </Button>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (job.paused) {
+                  onUnpause(job.id);
+                } else {
+                  onPause(job.id);
+                }
+              }}
+              disabled={actionInProgress}
+              variant="ghost"
+              shape="round"
+              title={job.paused ? 'Resume this schedule' : 'Pause this schedule'}
+              aria-label={`${job.paused ? 'Resume' : 'Pause'} ${scheduleDisplayName(job.id)}`}
+            >
+              {job.paused ? <Play /> : <Pause />}
+            </Button>
+          </>
+        )}
+        {job.currently_running && (
+          <>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                onInspect(job.id);
+              }}
+              disabled={actionInProgress}
+              variant="ghost"
+              shape="round"
+              title="Show the current run"
+              aria-label={`Inspect ${scheduleDisplayName(job.id)}`}
+            >
+              <Eye />
+            </Button>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                onKill(job.id);
+              }}
+              disabled={actionInProgress}
+              variant="ghost"
+              shape="round"
+              title="Stop the running job"
+              aria-label={`Stop ${scheduleDisplayName(job.id)}`}
+            >
+              <Square />
+            </Button>
+          </>
+        )}
+        <Button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(job.id);
+          }}
+          disabled={actionInProgress}
+          variant="ghost"
+          shape="round"
+          className="text-text-danger"
+          title="Delete schedule"
+          aria-label={`Delete ${scheduleDisplayName(job.id)}`}
+        >
+          <Trash2 />
+        </Button>
       </div>
     </div>
   );
 };
+
+/** Loading is rows that are the shape of rows, not a spinner in dead space. */
+const ScheduleRowSkeleton: React.FC = () => (
+  <div className="biorouter-list-row flex items-start justify-between gap-3 px-3 py-3">
+    <div className="min-w-0 flex-1">
+      <Skeleton className="h-4 w-48" />
+      <Skeleton className="mt-2 h-3 w-32" />
+      <Skeleton className="mt-2 h-3 w-56" />
+    </div>
+  </div>
+);
 
 const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
   const location = useLocation();
@@ -448,6 +446,11 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     setViewingScheduleId(id);
   };
 
+  const openCreateModal = () => {
+    setSubmitApiError(null);
+    setIsModalOpen(true);
+  };
+
   if (viewingScheduleId) {
     return (
       <ScheduleDetailView
@@ -461,52 +464,54 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Flat page header */}
+          {/* §4.2 — the hairline is FULL-BLEED, and the view's actions sit on
+              the TITLE ROW rather than in a button strip under the description.
+              The reading column is the chat measure, as in Settings (#172),
+              Chat history and the provider catalog: this is a column of rows,
+              not a document, so width past the measure buys margin. */}
           <div className="flex-shrink-0 border-b border-border-subtle">
-            <ReadableContent className="px-8 pt-12 pb-6">
-              <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
-                Scheduler
-              </h1>
-              <p className="text-sm text-text-muted mb-0">
-                Create and manage scheduled tasks to run workflows automatically at specified times.
-              </p>
-              <div className="flex gap-3 mt-5">
-                <Button
-                  onClick={() => {
-                    setSubmitApiError(null);
-                    setIsModalOpen(true);
-                  }}
-                  variant="default"
-                  className="flex items-center gap-2"
-                >
-                  <Plus className="h-4 w-4" />
-                  Create Schedule
-                </Button>
-                <Button
-                  onClick={handleRefresh}
-                  disabled={isRefreshing || isLoading}
-                  variant="outline"
-                  className="flex items-center gap-2"
-                >
-                  <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                  {isRefreshing ? 'Refreshing...' : 'Refresh'}
-                </Button>
+            <ReadableContent size="chat" className="px-6 pt-12 pb-6">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h1 className="text-title mb-1 page-transition">Scheduler</h1>
+                  <p className="text-secondary text-text-muted">
+                    Run a saved workflow automatically, at the time you choose.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    onClick={handleRefresh}
+                    disabled={isRefreshing || isLoading}
+                    variant="ghost"
+                    shape="round"
+                    title="Refresh"
+                    aria-label="Refresh schedules"
+                  >
+                    <RefreshCw className={isRefreshing ? 'animate-spin' : undefined} />
+                  </Button>
+                  <Button onClick={openCreateModal}>
+                    <Plus />
+                    New schedule
+                  </Button>
+                </div>
               </div>
             </ReadableContent>
           </div>
 
-          <ReadableContent className="flex-1 min-h-0 relative px-8 pt-6">
+          <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6">
             <ScrollArea className="h-full">
-              <div className="h-full relative">
+              <div className="h-full relative pb-8">
                 {apiError && (
-                  <div className="mb-4 p-4 bg-background-danger/10 border border-border-danger/40 rounded-md">
-                    <p className="text-text-danger text-sm">Error: {apiError}</p>
-                  </div>
+                  <Note tone="danger" role="alert" className="mb-4">
+                    {apiError}
+                  </Note>
                 )}
 
                 {isLoading && schedules.length === 0 && (
-                  <div className="flex justify-center items-center py-12">
-                    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-text-default"></div>
+                  <div className="biorouter-list-shell" aria-hidden>
+                    <ScheduleRowSkeleton />
+                    <ScheduleRowSkeleton />
+                    <ScheduleRowSkeleton />
                   </div>
                 )}
 
@@ -516,23 +521,26 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                     title="No schedules yet"
                     description="Create a schedule to run a saved workflow automatically at the time you choose."
                     actions={
-                      <Button
-                        onClick={() => {
-                          setSubmitApiError(null);
-                          setIsModalOpen(true);
-                        }}
-                      >
-                        <Plus className="h-4 w-4" />
-                        Create schedule
+                      <Button onClick={openCreateModal}>
+                        <Plus />
+                        New schedule
                       </Button>
                     }
                   />
                 )}
 
-                {!isLoading && schedules.length > 0 && (
-                  <div className="biorouter-list-shell pb-8">
+                {/* ⚠ NOT `!isLoading && schedules.length > 0`, which is what this
+                    was. `fetchSchedules` sets `isLoading` on the 15-second poll
+                    as well as on first load, and with rows already on screen
+                    none of these three branches then matched — so the list
+                    UNMOUNTED for the length of every poll's request and came
+                    back. The three stay mutually exclusive without it: the
+                    skeletons require an empty list, and the empty state
+                    requires the load to have finished. */}
+                {schedules.length > 0 && (
+                  <div className="biorouter-list-shell">
                     {schedules.map((job) => (
-                      <ScheduleCard
+                      <ScheduleRow
                         key={job.id}
                         job={job}
                         onNavigateToDetail={handleNavigateToDetail}

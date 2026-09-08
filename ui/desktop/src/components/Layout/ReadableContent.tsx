@@ -13,7 +13,7 @@ type ReadableContentProps = {
  * up. It names the TOKEN rather than a literal precisely so that alignment
  * survives the measure changing.
  *
- * Three surfaces read it, for two different reasons (operator decision,
+ * Four surfaces read it, for two different reasons (operator decision,
  * 2026-09-07; see the `--measure-page` note in main.css):
  *
  * - **Home** (SessionsInsights.tsx) — the alignment case above: it sits
@@ -28,9 +28,13 @@ type ReadableContentProps = {
  *   both must line up with the column the conversation is read in. The
  *   transcript's old second ceiling — `max-w-4xl`, the 896px replay column —
  *   is deleted rather than converted; one box, one measure.
+ * - **The Scheduler** (schedule/SchedulesView.tsx, schedule/ScheduleDetailView.tsx)
+ *   — Settings' argument again: the list pairs a schedule with its status and
+ *   its actions, the detail pairs a label with the fact it names, so width past
+ *   the measure lands between the two halves of every row.
  *
- * Everything else — extensions, skills, schedules, workflows, applications —
- * is document-shaped and stays on the fluid page measure below.
+ * Everything else — extensions, skills, workflows, applications — is
+ * document-shaped and stays on the fluid page measure below.
  */
 /**
  * ⚠ Every one of these is a CLAMP, not a flat cap, for the reason spelled out

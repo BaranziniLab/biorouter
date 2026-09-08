@@ -1,12 +1,13 @@
 import React, { useState, useEffect, FormEvent } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
+import { Note } from '../ui/note';
 import { ScheduledJob } from '../../schedule';
 import { CronPicker } from './CronPicker';
 import { getStorageDirectory } from '../../workflow/workflow_management';
 import { Folder } from '../icons/app-icons';
-import ClockIcon from '../../assets/clock-icon.svg';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { ModalShell } from '../ModalShell';
+import { scheduleDisplayName } from '../../utils/builtins';
 
 export interface NewSchedulePayload {
   id: string;
@@ -25,8 +26,26 @@ interface ScheduleModalProps {
   initialDeepLink?: string | null;
 }
 
-const modalLabelClassName = 'block text-sm font-medium text-text-default mb-1';
+const FIELD_LABEL = 'mb-1.5 block text-label text-text-default';
 
+/**
+ * Create or edit a schedule.
+ *
+ * It renders through `ModalShell` rather than assembling its own dialog: the
+ * shell owns the size ladder, the header/body/footer geometry and — the reason
+ * that matters here — Astryx's `purpose` axis. This is a FORM, so a stray
+ * backdrop click must not throw away a half-filled one, which is exactly the
+ * bug `purpose="form"` exists to prevent.
+ *
+ * ⚠ **`md`, not `sm`.** The `sm` rung is documented as "confirmations and
+ * single-decision notices", and the cron picker beside it is deliberately one
+ * inline sentence of controls; 400px folds that sentence onto three lines and
+ * turns the thing back into a stack of boxes. `md` is the ladder's own form
+ * rung and is what the dialog's old ad-hoc `max-w-md` was reaching for.
+ *
+ * `purpose` flips to `required` while a save is in flight, so a dismissal
+ * cannot orphan a create that the daemon is already running.
+ */
 export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   isOpen,
   onClose,
@@ -104,120 +123,104 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <Dialog
+    <ModalShell
       open={isOpen}
       onOpenChange={(open) => {
         if (!open && !isLoadingExternally) onClose();
       }}
-    >
-      <DialogContent
-        aria-describedby={undefined}
-        dismissible={!isLoadingExternally}
-        className="flex max-h-[90vh] max-w-md flex-col gap-0 overflow-hidden p-0 sm:max-w-md"
-      >
-        <div className="px-6 pt-5 pb-4 flex-shrink-0 border-b border-border-subtle">
-          <div className="flex items-center gap-3">
-            <img src={ClockIcon} alt="Clock" className="w-7 h-7" />
-            <div className="flex-1">
-              <DialogTitle>{isEditMode ? 'Edit Schedule' : 'Create New Schedule'}</DialogTitle>
-              {isEditMode && <p className="text-xs text-text-muted mt-0.5">{schedule.id}</p>}
-            </div>
-          </div>
-        </div>
-
-        <form
-          id="schedule-form"
-          onSubmit={handleLocalSubmit}
-          className="px-6 py-5 space-y-5 flex-grow overflow-y-auto"
-        >
-          {apiErrorExternally && (
-            <p className="text-text-danger text-sm mb-3 p-2 bg-background-danger/10 border border-border-danger/40 rounded-md">
-              {apiErrorExternally}
-            </p>
-          )}
-          {internalValidationError && (
-            <p className="text-text-danger text-sm mb-3 p-2 bg-background-danger/10 border border-border-danger/40 rounded-md">
-              {internalValidationError}
-            </p>
-          )}
-
-          {!isEditMode && (
-            <>
-              <div>
-                <label htmlFor="scheduleId-modal" className={modalLabelClassName}>
-                  Name
-                </label>
-                <Input
-                  type="text"
-                  id="scheduleId-modal"
-                  value={scheduleId}
-                  onChange={(e) => setScheduleId(e.target.value)}
-                  placeholder="e.g., daily-summary-job"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className={modalLabelClassName}>Workflow File</label>
-                <div className="biorouter-modal-panel flex items-center rounded-lg transition-colors duration-150">
-                  <input
-                    type="text"
-                    value={workflowSourcePath}
-                    onChange={(e) => {
-                      setWorkflowSourcePath(e.target.value);
-                      setInternalValidationError(null);
-                    }}
-                    placeholder="/path/to/workflow.yaml"
-                    className="flex-1 px-3 py-2 text-sm bg-transparent text-text-default placeholder:text-text-muted"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleBrowseFile}
-                    title="Browse for YAML file"
-                    className="px-2.5 py-2 text-text-muted hover:text-text-default transition-colors duration-150"
-                  >
-                    <Folder className="w-4 h-4" />
-                  </button>
-                </div>
-                <p className="mt-1 text-xs text-text-muted">
-                  Select a YAML workflow file (.yaml or .yml)
-                </p>
-              </div>
-            </>
-          )}
-
-          <div>
-            <label className={modalLabelClassName}>Schedule</label>
-            <CronPicker schedule={schedule} onChange={setCronExpression} isValid={setIsValid} />
-          </div>
-        </form>
-
-        <div className="flex gap-2 px-6 py-4 border-t border-border-subtle">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={onClose}
-            disabled={isLoadingExternally}
-            className="flex-1"
-          >
+      size="md"
+      purpose={isLoadingExternally ? 'required' : 'form'}
+      title={isEditMode ? 'Edit schedule' : 'New schedule'}
+      subtitle={schedule ? scheduleDisplayName(schedule.id) : undefined}
+      scrollBody
+      footer={
+        <>
+          <Button type="button" variant="outline" onClick={onClose} disabled={isLoadingExternally}>
             Cancel
           </Button>
-          <Button
-            type="submit"
-            form="schedule-form"
-            disabled={isLoadingExternally || !isValid}
-            className="flex-1"
-          >
+          <Button type="submit" form="schedule-form" disabled={isLoadingExternally || !isValid}>
             {isLoadingExternally
               ? isEditMode
-                ? 'Updating...'
-                : 'Creating...'
+                ? 'Saving…'
+                : 'Creating…'
               : isEditMode
-                ? 'Update Schedule'
-                : 'Create Schedule'}
+                ? 'Save changes'
+                : 'Create schedule'}
           </Button>
+        </>
+      }
+    >
+      <form id="schedule-form" onSubmit={handleLocalSubmit} className="flex flex-col gap-5 py-1">
+        {apiErrorExternally && (
+          <Note tone="danger" role="alert">
+            {apiErrorExternally}
+          </Note>
+        )}
+        {internalValidationError && (
+          <Note tone="danger" role="alert">
+            {internalValidationError}
+          </Note>
+        )}
+
+        {!isEditMode && (
+          <>
+            <div>
+              <label htmlFor="scheduleId-modal" className={FIELD_LABEL}>
+                Name
+              </label>
+              <Input
+                type="text"
+                id="scheduleId-modal"
+                value={scheduleId}
+                onChange={(e) => setScheduleId(e.target.value)}
+                placeholder="e.g., daily-summary-job"
+                required
+              />
+            </div>
+
+            <div>
+              {/* One `Input` with a trailing ghost Browse button, NOT an input
+                  wrapped in a `biorouter-modal-panel` — a bordered panel around
+                  a bordered field inside a bordered dialog was the box in a box
+                  in a box, in miniature. */}
+              <label htmlFor="workflowSource-modal" className={FIELD_LABEL}>
+                Workflow file
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="text"
+                  id="workflowSource-modal"
+                  value={workflowSourcePath}
+                  onChange={(e) => {
+                    setWorkflowSourcePath(e.target.value);
+                    setInternalValidationError(null);
+                  }}
+                  placeholder="/path/to/workflow.yaml"
+                  className="font-mono"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  shape="round"
+                  onClick={handleBrowseFile}
+                  title="Browse for a YAML file"
+                  aria-label="Browse for a YAML file"
+                >
+                  <Folder />
+                </Button>
+              </div>
+              <p className="mt-1.5 text-supporting text-text-muted">
+                Select a YAML workflow file (.yaml or .yml)
+              </p>
+            </div>
+          </>
+        )}
+
+        <div>
+          <span className={FIELD_LABEL}>Schedule</span>
+          <CronPicker schedule={schedule} onChange={setCronExpression} isValid={setIsValid} />
         </div>
-      </DialogContent>
-    </Dialog>
+      </form>
+    </ModalShell>
   );
 };

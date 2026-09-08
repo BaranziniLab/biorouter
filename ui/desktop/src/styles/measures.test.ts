@@ -361,3 +361,47 @@ describe('the comment stripper the measure rule depends on', () => {
     expect(code).toContain('px-6');
   });
 });
+
+/**
+ * The Scheduler joined it on 2026-09-07, for the same reason Settings did: both
+ * of its surfaces are columns of rows — a schedule and its status, a label and
+ * the fact it names — so width past the measure lands between the two halves of
+ * every row rather than showing more.
+ *
+ * ⚠ Asserted at the SOURCE, exactly like the block above. jsdom has no layout
+ * engine and never runs Tailwind, so a `ReadableContent` left on the default
+ * page measure renders identically in every component test in this repo.
+ */
+describe('the Scheduler sits on the chat measure', () => {
+  const SOURCES = ['SchedulesView.tsx', 'ScheduleDetailView.tsx'].map((name) => ({
+    name,
+    text: readFileSync(join(__dirname, '../components/schedule', name), 'utf8'),
+  }));
+
+  it.each(SOURCES)('gives every reading column in $name the chat size', ({ text }) => {
+    const tags = text.match(/<ReadableContent\b[^>]*>/g) ?? [];
+    // The vacuous pass: with no matches the loop below asserts nothing.
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) expect(tag).toContain('size="chat"');
+  });
+
+  /**
+   * `ScheduleDetailView` used to size itself `h-screen w-full`, which
+   * `MainPanelLayout`'s own comment names as the anti-pattern that breaks an
+   * embedded pane: it forces viewport height whatever the parent's rect is, so
+   * a 420px chat pane rendered a ~1050px panel. The rebuild puts the view on
+   * `MainPanelLayout`, whose `h-full` fills the container instead.
+   *
+   * Comments are stripped first: the file's own docblock names `h-screen` while
+   * explaining why it is gone, and a raw substring search reads that as the
+   * defect. The same technique `settingsVocabulary.test.ts` uses for its
+   * banned-class rule.
+   */
+  it('sizes the schedule detail from its parent, never from the viewport', () => {
+    const detail = SOURCES.find(({ name }) => name === 'ScheduleDetailView.tsx');
+    if (!detail) throw new Error('ScheduleDetailView.tsx is not in SOURCES');
+    const code = detail.text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(code).not.toContain('h-screen');
+    expect(code).toContain('<MainPanelLayout>');
+  });
+});
