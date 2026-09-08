@@ -1756,9 +1756,8 @@ function BaseChatContent({
   ]);
 
   // Listen for scroll-to-bottom requests (e.g. from MCP UI prompt actions).
-  // Dispatched by MCPUIResourceRenderer / McpAppRenderer, both of which render
-  // INSIDE a chat — so match by sessionId, or an artifact in chat A scrolls
-  // chat B.
+  // Dispatched by MCPUIResourceRenderer, which renders INSIDE a chat — so
+  // match by sessionId, or an artifact in chat A scrolls chat B.
   useEffect(() => {
     const handleGlobalScrollRequest = createScrollToBottomHandler({
       sessionId,
@@ -2407,7 +2406,6 @@ function BaseChatContent({
                               messages={messages}
                               chat={{ sessionId }}
                               toolCallNotifications={toolCallNotifications}
-                              append={(text: string) => handleSubmit(text)}
                               isUserMessage={(m: Message) => m.role === 'user'}
                               isStreamingMessage={chatState !== ChatState.Idle}
                               chatState={chatState}

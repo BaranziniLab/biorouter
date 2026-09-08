@@ -29,7 +29,6 @@ const mocks = vi.hoisted(() => ({
   cancelTurn: vi.fn(async () => ({ data: { cancelled: true } })),
   getSession: vi.fn(async () => ({ data: null })),
   interrupt: vi.fn(),
-  listApps: vi.fn(async () => ({ data: { apps: [] } })),
   listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
   updateFromSession: vi.fn(async () => ({ data: {} })),
   updateSessionUserWorkflowValues: vi.fn(async () => ({ data: {} })),
@@ -63,7 +62,11 @@ function userMessage(id: string, text: string): Message {
 }
 
 function messageFrame(id: string, text: string): MessageEvent {
-  return { type: 'Message', message: userMessage(id, text), token_state: tokenState } as MessageEvent;
+  return {
+    type: 'Message',
+    message: userMessage(id, text),
+    token_state: tokenState,
+  } as MessageEvent;
 }
 
 const turnStateIdle = { type: 'TurnState', active_turn_id: null } as unknown as MessageEvent;

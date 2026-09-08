@@ -533,7 +533,6 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       // for this unconditionally, so the channel must at least exist.
       onExtensionUpdateEvent: () => {},
       dependencyEnvironment: async () => ({ platform: 'linux' }),
-      launchApp: async (url: string) => window.open(url, '_blank', 'noopener,noreferrer'),
     };
   }
 }

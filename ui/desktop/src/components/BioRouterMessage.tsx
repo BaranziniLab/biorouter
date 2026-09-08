@@ -33,7 +33,6 @@ interface BioRouterMessageProps {
   messages: Message[];
   metadata?: string[];
   toolCallNotifications: Map<string, NotificationEvent[]>;
-  append: (value: string) => void;
   isStreaming?: boolean; // Whether this message is currently being streamed
   /**
    * Whether the chat TURN is still running. Distinct from `isStreaming`, which
@@ -72,7 +71,6 @@ export default function BioRouterMessage({
   message,
   messages,
   toolCallNotifications,
-  append,
   isStreaming = false,
   turnActive = false,
   messageIndex: messageIndexProp,
@@ -272,7 +270,6 @@ export default function BioRouterMessage({
                       notifications={toolCallNotifications.get(toolRequest.id)}
                       isStreamingMessage={isStreaming}
                       turnActive={turnActive}
-                      append={append}
                       onOpenArtifact={onOpenArtifact}
                       workingDir={workingDir}
                     />
@@ -304,7 +301,8 @@ export default function BioRouterMessage({
 
         {/* Issue #117. Unlike every other card here it takes NO submit
             callback: it answers the daemon directly, because routing a
-            credential through `append` would put it in the transcript. */}
+            credential back through the composer would put it in the
+            transcript. */}
         {secretRequestContent && (
           <SecretRequestCard
             isCancelledMessage={false}

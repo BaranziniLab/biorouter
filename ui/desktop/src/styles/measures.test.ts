@@ -91,7 +91,6 @@ const CHAT_MEASURE_VIEWS = [
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
   'applications/ApplicationsView.tsx',
-  'apps/AppsView.tsx',
 ].map((rel) => ({
   rel,
   source: readFileSync(join(__dirname, '../components', rel), 'utf8'),
@@ -119,7 +118,6 @@ const PAGE_HEADER_VIEWS = [
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
   'applications/ApplicationsView.tsx',
-  'apps/AppsView.tsx',
 ].map((rel) => ({
   rel,
   source: readFileSync(join(__dirname, '../components', rel), 'utf8'),

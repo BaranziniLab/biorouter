@@ -24,7 +24,6 @@ vi.mock('../api', () => ({
   editMessage: vi.fn(),
   getSession: vi.fn(async () => ({ data: null })),
   interrupt: vi.fn(),
-  listApps: vi.fn(async () => ({ data: { apps: [] } })),
   listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
   observeSessionEvents: vi.fn(),
   reply: vi.fn(),

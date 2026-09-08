@@ -497,12 +497,12 @@
 
      `--measure-page` stays FLUID, and as of 2026-09-07 it has NO READER LEFT
      in `components/`. It governed the document-shaped views — extensions,
-     skills, workflows, applications, MCP apps — on the argument that a wide
-     window there buys content (more table columns, more cards per row) rather
-     than a longer line. Measured against the real views, it did not: each of
-     them is a column of rows carrying a title on the left and controls on the
-     right, which is the shape Settings and Chat history had already moved off
-     this measure for, so all five joined them (operator decision — "please
+     skills, workflows, applications — on the argument that a wide window there
+     buys content (more table columns, more cards per row) rather than a longer
+     line. Measured against the real views, it did not: each of them is a column
+     of rows carrying a title on the left and controls on the right, which is the
+     shape Settings and Chat history had already moved off this measure for, so
+     they joined them too (operator decision — "please
      make sure that you're also applying the 760 pixels redesign").
 
      ⚠ **The token stays, and so does `ReadableContent`'s `text` size.**

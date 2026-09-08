@@ -13,7 +13,6 @@ vi.mock('../api', async () => {
     editMessage: vi.fn(),
     getSession: vi.fn(async () => ({ data: null })),
     interrupt: vi.fn(),
-    listApps: vi.fn(async () => ({ data: { apps: [] } })),
     listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
     reply: vi.fn(),
     resumeAgent: vi.fn(),

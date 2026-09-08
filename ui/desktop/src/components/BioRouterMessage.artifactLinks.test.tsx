@@ -26,7 +26,6 @@ function messageView(
       message={message}
       messages={messages}
       toolCallNotifications={new Map()}
-      append={vi.fn()}
       onRunInTerminal={null}
       workingDir={workingDir ?? undefined}
       onOpenArtifact={onOpenArtifact}
@@ -69,7 +68,6 @@ describe('BioRouterMessage artifact links', () => {
         message={message}
         messages={[message]}
         toolCallNotifications={new Map()}
-        append={vi.fn()}
         onRunInTerminal={null}
         workingDir="/Users/wgu/Desktop"
         onOpenArtifact={onOpenArtifact}

@@ -1,6 +1,5 @@
 import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
-import { BioRouterApp } from './api';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -361,7 +360,6 @@ type ElectronAPI = {
   hasAcceptedWorkflowBefore: (workflow: Workflow) => Promise<boolean>;
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
-  launchApp: (app: BioRouterApp) => Promise<void>;
   captureRegion: (payload: {
     x: number;
     y: number;
@@ -742,7 +740,6 @@ const electronAPI: ElectronAPI = {
   recordWorkflowHash: (workflow: Workflow) => ipcRenderer.invoke('record-workflow-hash', workflow),
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
-  launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
   captureRegion: (payload: {
     x: number;
     y: number;

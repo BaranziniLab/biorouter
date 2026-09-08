@@ -17,7 +17,6 @@ import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navig
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
-import { listApps } from '../../api';
 import { useRunningChats } from '../../hooks/chatStreamStore';
 import { preloadSessionList } from '../../utils/sessionListCache';
 import { preloadHomeActivity } from '../../utils/homeInsightsCache';
@@ -88,18 +87,15 @@ const primaryItems: NavigationItem[] = [
 ];
 
 /**
- * The six-or-seven destinations behind the `Components` disclosure.
+ * The six destinations behind the `Components` disclosure.
  *
- * ⚠ `/applications` and `/apps` are two rows that used to read "Applications"
- * and "Apps", one word apart, and they are not the same list: `/applications`
- * shows apps you BUILT with Agent Drafter (`GET /apps`), while `/apps` shows
- * apps ADVERTISED by installed extensions (`GET /agent/list_apps`). They are
- * now labelled by their SOURCE ("Built apps" and "MCP apps"), so the two names
- * differ in the word that carries the difference rather than in a suffix.
- * §4.1 would go further and fold the second into the first as a section, but
- * that is a change to the Built-apps VIEW and belongs to the views phase.
- * Recorded here so that phase inherits the observation. Until then `/apps`
- * remains conditional (`hasApps`).
+ * ⚠ `/applications` is labelled "Built apps", by its SOURCE rather than by a
+ * bare noun. It used to read "Applications" and sit one word away from a
+ * second row, "Apps" (`/apps`), which listed the UI resources installed MCP
+ * extensions advertised — a wholly separate feature inherited from the
+ * upstream fork and removed in September 2026. Only Agent Drafter's own
+ * `GET /apps` remains, so "Built apps" now has nothing to be confused with;
+ * the name is kept because it says what the list holds.
  */
 const componentItems: NavigationItem[] = [
   {
@@ -144,13 +140,6 @@ const componentItems: NavigationItem[] = [
     icon: ENTITY_ICONS.application,
     tooltip: 'Apps you built with Agent Drafter',
   },
-  {
-    type: 'item',
-    path: '/apps',
-    label: 'MCP apps',
-    icon: ENTITY_ICONS.mcpApp,
-    tooltip: 'Apps your installed extensions provide',
-  },
 ];
 
 const COMPONENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-components-expanded';
@@ -177,27 +166,11 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const runningChats = useRunningChats();
   const { sessions, hasMore, isLoading, loadMore } = useSidebarSessions();
   const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
-  const [hasApps, setHasApps] = useState(false);
   const runningSessionIds = useMemo(
     () =>
       new Set(runningChats.filter((entry) => !entry.completedAt).map((entry) => entry.sessionId)),
     [runningChats]
   );
-
-  useEffect(() => {
-    const checkApps = async () => {
-      try {
-        const response = await listApps({
-          throwOnError: true,
-        });
-        setHasApps((response.data?.apps || []).length > 0);
-      } catch (err) {
-        console.warn('Failed to check for apps:', err);
-      }
-    };
-
-    checkApps();
-  }, [currentPath]);
 
   useEffect(() => {
     const currentItem = [...primaryItems, ...componentItems, settingsItem].find(
@@ -315,10 +288,6 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     );
   };
 
-  const visibleComponentItems = componentItems.filter((entry) =>
-    entry.path === '/apps' ? hasApps : true
-  );
-
   const [isComponentsExpanded, setIsComponentsExpanded] = useState(readStoredComponentsExpanded);
   const toggleComponents = useCallback(() => {
     setIsComponentsExpanded((wasExpanded) => {
@@ -336,7 +305,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   // on one of these destinations the group opens regardless of the stored
   // preference — and does NOT overwrite it, so navigating away collapses back to
   // whatever they chose.
-  const isOnComponentRoute = visibleComponentItems.some((entry) => entry.path === currentPath);
+  const isOnComponentRoute = componentItems.some((entry) => entry.path === currentPath);
   const showComponentChildren = isComponentsExpanded || isOnComponentRoute;
 
   return (
@@ -433,9 +402,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
 
                 {showComponentChildren && (
                   <div id="sidebar-components-group" data-testid="sidebar-components-group">
-                    {visibleComponentItems.map((entry) =>
-                      renderMenuItem(entry, { indented: true })
-                    )}
+                    {componentItems.map((entry) => renderMenuItem(entry, { indented: true }))}
                   </div>
                 )}
               </SidebarMenu>

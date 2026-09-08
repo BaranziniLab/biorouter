@@ -5,9 +5,9 @@ type PageHeaderProps = {
   /** The page title. `text-title`, and the only `<h1>` on the page. */
   title: string;
   /**
-   * One sentence saying what the page is for. Optional because MCP apps and a
-   * drill-in may have nothing to add, but a page that has something to say says
-   * it here rather than in a `<Note>` under the hairline.
+   * One sentence saying what the page is for. Optional because a drill-in may
+   * have nothing to add, but a page that has something to say says it here
+   * rather than in a `<Note>` under the hairline.
    */
   description?: React.ReactNode;
   /**
@@ -30,7 +30,7 @@ type PageHeaderProps = {
 
 /**
  * The one page header, for every top-level view: Workflows, the Scheduler,
- * Extensions, Skills, Built apps, MCP apps, Chat history and Settings.
+ * Extensions, Skills, Built apps, Chat history and Settings.
  *
  * Before this existed there were eight copies of the same eleven lines, and
  * they had already drifted in four ways, counted across the eight: the hairline

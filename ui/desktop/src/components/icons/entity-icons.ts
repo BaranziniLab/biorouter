@@ -1,13 +1,5 @@
 import type React from 'react';
-import {
-  AppWindow,
-  AppWindowMac,
-  Clock,
-  KnowledgeIcon,
-  Layers,
-  Pipeline,
-  Puzzle,
-} from './app-icons';
+import { AppWindow, Clock, KnowledgeIcon, Layers, Pipeline, Puzzle } from './app-icons';
 
 // One glyph per entity, in one place. A workflow is a Pipeline everywhere it is
 // drawn — the sidebar row, the mention popover, the reset panel, the workflows
@@ -20,7 +12,6 @@ export type EntityKind =
   | 'extension'
   | 'skill'
   | 'application'
-  | 'mcpApp'
   | 'schedule';
 
 export type EntityIcon = React.ComponentType<{
@@ -33,9 +24,6 @@ export const ENTITY_ICONS: Record<EntityKind, EntityIcon> = {
   knowledge: KnowledgeIcon,
   extension: Puzzle,
   skill: Layers,
-  // `application` is the Agent Drafter route; `mcpApp` is the MCP apps browser.
-  // They are adjacent rows, so they must not share a mark.
   application: AppWindow,
-  mcpApp: AppWindowMac,
   schedule: Clock,
 };

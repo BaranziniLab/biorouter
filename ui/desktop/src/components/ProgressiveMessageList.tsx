@@ -32,7 +32,6 @@ interface ProgressiveMessageListProps {
   messages: Message[];
   chat: Pick<ChatType, 'sessionId'>;
   toolCallNotifications?: Map<string, NotificationEvent[]>; // Make optional
-  append?: (value: string) => void; // Make optional
   isUserMessage: (message: Message) => boolean;
   batchSize?: number;
   batchDelay?: number;
@@ -70,7 +69,6 @@ export default function ProgressiveMessageList({
   messages,
   chat,
   toolCallNotifications = new Map(),
-  append = () => {},
   isUserMessage,
   batchSize = 20,
   batchDelay = 20,
@@ -267,7 +265,6 @@ export default function ProgressiveMessageList({
                 messages={messages}
                 messageIndex={index}
                 toolCallChains={toolCallChains}
-                append={append}
                 toolCallNotifications={toolCallNotifications}
                 turnActive={isStreamingMessage}
                 isStreaming={
@@ -292,7 +289,6 @@ export default function ProgressiveMessageList({
     renderMessage,
     isUserMessage,
     chat,
-    append,
     toolCallNotifications,
     isStreamingMessage,
     onMessageUpdate,
