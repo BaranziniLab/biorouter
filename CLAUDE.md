@@ -412,9 +412,17 @@ settings provider grid, `biorouter configure`).
 - **HTTP routes:** `/llamacpp/status|ensure|stop` in
   `crates/biorouter-server/src/routes/llamacpp.rs` (status includes the
   catalog; ensure is async — poll status for download progress).
-- **Frontend:** onboarding card `LlamaServerInlineCard.tsx` (first card),
-  provider ordering in `providerOrdering.ts` + section order in
-  `ProviderGrid.tsx`.
+- **Frontend:** `LlamaServerInlineCard.tsx` (the first row of the Local tab,
+  open by default in onboarding), provider ordering in `providerOrdering.ts`,
+  tab + section order in `settings/providers/ProviderCatalog.tsx` (`ProviderGrid`
+  is deleted). "Local ranks first everywhere" still holds for tab ORDER, which is
+  fixed at Local · Institutional · Public. ⚠ The tab that opens *selected* is a
+  different question and is computed, not fixed: a route hint (`?tab=public`)
+  wins, then the tab holding `BIOROUTER_PROVIDER`, then Public when a coding
+  agent reports `signed_in_subscription`, then Local — and never an empty tab.
+  So a machine with a signed-in `claude` and nothing configured opens on Public,
+  which is not a regression of the Local-first ranking. See
+  [`docs/desktop-ui/provider-catalog.md`](docs/desktop-ui/provider-catalog.md).
 - **Tests:** unit tests in both modules; route tests
   `cargo test -p biorouter-server --test llamacpp_routes`; live end-to-end
   (real server + tiny Qwen3.5 0.8B, ~0.5 GB one-time download):
