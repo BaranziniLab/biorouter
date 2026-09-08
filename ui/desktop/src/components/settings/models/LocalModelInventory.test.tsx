@@ -113,7 +113,7 @@ describe('LocalModelInventory', () => {
 
   it('shows the expected-speed detail row in the model info dialog (#35)', async () => {
     render(<LocalModelInventory />);
-    fireEvent.click(await screen.findByText('View Info'));
+    fireEvent.click(await screen.findByText('View info'));
 
     expect(await screen.findByText('Expected speed')).toBeInTheDocument();
     expect(screen.getAllByText(/Fast — ~4B active parameters/).length).toBeGreaterThanOrEqual(2);
@@ -134,7 +134,7 @@ describe('LocalModelInventory', () => {
   /// whatever the class says. This asserts the CLASS on the value element.
   it('sets model ids in the body font and paths in monospace (#F-21)', async () => {
     render(<LocalModelInventory />);
-    fireEvent.click(await screen.findByText('View Info'));
+    fireEvent.click(await screen.findByText('View info'));
 
     const valueFor = async (label: string) => {
       const node = await screen.findByText(label);
