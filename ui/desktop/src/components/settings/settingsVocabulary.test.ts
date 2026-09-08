@@ -27,6 +27,17 @@ import { describe, expect, it } from 'vitest';
  */
 const SETTINGS_DIR = __dirname;
 
+/**
+ * Every directory the vocabulary now governs. Settings is where it was written
+ * down; each further entry is a surface that has since been swept onto it.
+ * One root per line, so two PRs sweeping two different surfaces add two
+ * different lines and merge without touching each other's.
+ */
+const ROOTS = [
+  SETTINGS_DIR,
+  join(SETTINGS_DIR, '../schedule'), // the Scheduler, 2026-09-07
+];
+
 const OUT_OF_SCOPE = [
   'extensions/',
   'providers/',
@@ -38,20 +49,24 @@ const OUT_OF_SCOPE = [
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {
   const found: { path: string; rel: string; text: string }[] = [];
-  const walk = (dir: string) => {
+  const walk = (root: string, dir: string) => {
     for (const entry of readdirSync(dir)) {
       const path = join(dir, entry);
       if (statSync(path).isDirectory()) {
-        walk(path);
+        walk(root, path);
         continue;
       }
       if (!entry.endsWith('.tsx') || entry.includes('.test.')) continue;
-      const rel = relative(SETTINGS_DIR, path);
-      if (OUT_OF_SCOPE.some((prefix) => rel.startsWith(prefix))) continue;
-      found.push({ path, rel, text: readFileSync(path, 'utf8') });
+      // ⚠ Two different relative paths, on purpose. `OUT_OF_SCOPE` names
+      // subfolders of the root being walked, so the exclusion is tested
+      // against the path relative to THAT root; the name a failure reports
+      // stays relative to the settings directory, so one list can name files
+      // from two roots without two `SchedulesView.tsx`-shaped ambiguities.
+      if (OUT_OF_SCOPE.some((prefix) => relative(root, path).startsWith(prefix))) continue;
+      found.push({ path, rel: relative(SETTINGS_DIR, path), text: readFileSync(path, 'utf8') });
     }
   };
-  walk(SETTINGS_DIR);
+  for (const root of ROOTS) walk(root, root);
   return found;
 }
 
@@ -136,6 +151,17 @@ describe('the settings vocabulary', () => {
     // A walker that silently matched nothing would make every rule below vacuous.
     expect(FILES.length).toBeGreaterThan(15);
     expect(rowExpressions().length).toBeGreaterThan(8);
+  });
+
+  /**
+   * Per-root, not just in total: `FILES.length` above is satisfied by the
+   * settings directory alone, so a root that resolves to nothing — a typo, a
+   * renamed folder — would add its name to the list and change no assertion.
+   */
+  it('finds sources under every root it claims to govern', () => {
+    for (const root of ROOTS) {
+      expect(FILES.filter(({ path }) => path.startsWith(root)).length).toBeGreaterThan(0);
+    }
   });
 
   /**

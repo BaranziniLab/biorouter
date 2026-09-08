@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
@@ -169,7 +171,56 @@ describe('SchedulesView interactions', () => {
       'Create a schedule to run a saved workflow automatically at the time you choose.'
     );
 
-    await user.click(screen.getByRole('button', { name: 'Create schedule' }));
+    // The empty state's action and the header's are the same act, so they are
+    // the same words. There are two of them on screen; the one inside the
+    // empty state is the one this test is about.
+    await user.click(
+      within(emptyState as HTMLElement).getByRole('button', {
+        name: 'New schedule',
+      })
+    );
     expect(screen.getByRole('dialog', { name: 'Create schedule form' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * The flat rebuild (astryx §3.10, §4.2). Each assertion names a shape the list
+ * used to have and no longer may.
+ */
+describe('the schedule list is rows and hairlines, not boxes', () => {
+  const SOURCE = readFileSync(join(__dirname, 'SchedulesView.tsx'), 'utf8');
+  /** See the note on the same constant in `ScheduleDetailView.test.tsx`. */
+  const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  /**
+   * ⚠ At the SOURCE, because jsdom never runs Tailwind: a card and a bare div
+   * render identically there, so only the class string can be asserted.
+   */
+  it('mounts no Card', () => {
+    expect(CODE).not.toMatch(/from '\.\.\/ui\/card'/);
+    expect(CODE).not.toContain('<Card');
+  });
+
+  it('says a paused schedule is paused as text, never as a filled pill', async () => {
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, paused: true }]);
+    renderSchedules();
+
+    const paused = await screen.findByText('Paused');
+    // `bg-background-warning/15` is what the pill was, and rule 4 of the
+    // settings vocabulary bans every hand-mixed alpha.
+    for (let node: HTMLElement | null = paused; node; node = node.parentElement) {
+      expect(node.className).not.toMatch(/bg-background-\w+\/\d/);
+      if (node.classList.contains('biorouter-list-row')) break;
+    }
+    // The hue is a dot beside the word (§3.4), not a fill behind it.
+    expect(paused.querySelector('.rounded-full')).not.toBeNull();
+  });
+
+  it('puts each schedule on the shared hairline row, with no card around the list', async () => {
+    renderSchedules();
+    const open = await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    const row = open.closest('.biorouter-list-row');
+    expect(row).not.toBeNull();
+    expect(row?.parentElement).toHaveClass('biorouter-list-shell');
   });
 });
