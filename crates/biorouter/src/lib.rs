@@ -17,7 +17,6 @@ compile_error!(
 
 pub mod action_required_manager;
 pub mod agents;
-pub mod biorouter_apps;
 pub mod catalog;
 pub mod checkpoint;
 pub mod config;
