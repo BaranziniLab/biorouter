@@ -155,7 +155,10 @@ feature must not reverse.**
   sensitive-prefix list. If the panel's reach widens, `.biorouterignore` will not narrow it.
 - **`frame-src 'self' blob: https: http:`** in *both* CSP sources (index.html:18 and
   main.ts:4825). Remote framing is CSP-permitted today; what prevents it is that nothing does
-  it. `http:` is load-bearing for the MCP-app proxy iframe, which runs at the daemon's origin.
+  it. `http:` was recorded here as load-bearing for the MCP apps proxy iframe, which ran at the
+  daemon's origin; that feature was removed in September 2026 (see the record under
+  `docs/history/`), so **whether `http:` can now be dropped is an open question** — it was not
+  traced to the live policy when this was written, and it is not answered by the removal.
 - No `webviewTag`, no `<webview>`, no `BrowserView`, no `WebContentsView` anywhere in the
   desktop source.
 - No `capturePage` and no `desktopCapturer` anywhere. Screenshotting is entirely new surface.
@@ -171,8 +174,6 @@ Not introduced by any planned work, and worth fixing on their own schedule:
   full preload with **no** `setWindowOpenHandler`, `will-navigate` or `will-frame-navigate`
   guard. There is no `app.on('web-contents-created')` catch-all, so guards are per-window.
 - `window.electron.on(channel, cb)` (preload.ts:585) accepts any channel with no allowlist.
-- `McpApps/utils.ts:40` puts the daemon secret in a **URL query string** consumed by an iframe
-  carrying `allow-same-origin` at the daemon's own origin.
 
 ## 5. Caps
 

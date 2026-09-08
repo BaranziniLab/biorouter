@@ -302,7 +302,7 @@ Every new power maps onto the existing capability lattice (deny-by-default excep
 > app's own served origin) and (b) a per-app socket token minted into the served
 > page (readable same-origin only) and required on upgrade.
 
-**CSP (corrected).** `'unsafe-inline'` in `script-src` would make CSP inert against exactly the injection classes v2 introduces (`html` node output, binding sinks) — the app-proxy already ships `script-src 'self'` without it (`mcp_app_proxy.rs:65`), and apps load their code externally (`dist/app.js`), so served apps get the strict policy: `script-src 'self'`; the injected `BIOROUTER_APP_CONFIG` inline script becomes a non-executable `<script type="application/json">` block the SDK parses; plus `connect-src 'self'` (blocks exfiltration), `img-src 'self' data:`, `form-action 'none'`, `base-uri 'self'`, `frame-ancestors 'self'`. Lint already forbids external scripts, so app authors are unaffected.
+**CSP (corrected).** `'unsafe-inline'` in `script-src` would make CSP inert against exactly the injection classes v2 introduces (`html` node output, binding sinks) — and apps load their code externally (`dist/app.js`), so served apps get the strict policy: `script-src 'self'`; the injected `BIOROUTER_APP_CONFIG` inline script becomes a non-executable `<script type="application/json">` block the SDK parses; plus `connect-src 'self'` (blocks exfiltration), `img-src 'self' data:`, `form-action 'none'`, `base-uri 'self'`, `frame-ancestors 'self'`. Lint already forbids external scripts, so app authors are unaffected.
 
 **Trust boundaries, stated plainly:**
 

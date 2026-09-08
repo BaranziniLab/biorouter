@@ -206,9 +206,9 @@ hands either one lands between the two halves of every row. Both
 the paragraph below.
 
 **The component views joined on 2026-09-07 too**, and they are the reason the
-document-shaped bullet above lost its examples: Workflows, Extensions, Skills,
-Built apps and MCP apps were the four-or-five views that bullet named, and the
-prediction it made about them did not survive being looked at. None of them
+document-shaped bullet above lost its examples: Workflows, Extensions, Skills
+and Built apps were the views that bullet named, and the prediction it made
+about them did not survive being looked at. None of them
 grows a column or a card per 100px of window. Each is a list of rows — a
 workflow's name and its seven hover actions, an extension's name and its
 switch, a skill's name and its three buttons — which is Settings' shape exactly,
@@ -217,11 +217,14 @@ The operator asked for it directly: *"for those different components like
 workflows, scheduler, extensions, skills, and applications or build apps, please
 make sure that you're also applying the 760 pixels redesign"*.
 
-MCP apps is the odd one: it had no reading column at all, only a `px-8` div, so
-at 1440 its title started at **x = 320** while its four siblings started at
-**x = 336** and Settings at **x = 508** — three different left edges across one
-family of eight pages. All eight are 508 now, which is also what made a single
-`PageHeader` primitive possible (rule 10 of the settings visual vocabulary).
+A sixth view, MCP apps, joined at the same time and had no reading column at all
+— only a `px-8` div — so at 1440 its title started at **x = 320** while its
+siblings started at **x = 336** and Settings at **x = 508**: three different left
+edges across one family of pages. That view was an inherited feature and was
+removed in September 2026 (see the record under `docs/history/`), but the reason
+it is recorded here outlives it — every remaining page is 508 now, which is also
+what made a single `PageHeader` primitive possible (rule 10 of the settings
+visual vocabulary).
 
 ⚠ **jsdom cannot see any of this**, exactly as with the fixed cap: there is no
 layout engine and Tailwind never runs, so the component tests assert the

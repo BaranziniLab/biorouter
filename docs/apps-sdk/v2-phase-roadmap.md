@@ -23,9 +23,13 @@ Every phase ends green — `cargo test -p biorouter-mcp --lib agent_drafter::`, 
 | `.brapp` / `.brxt` / `.brkb` | Bundle formats: a prospective one-click app bundle (v2.1), the installed-extension bundle, and the knowledge-base export bundle respectively. |
 
 > **Note on line-number anchors.** Several steps below pin a `file.rs:line`
-> location (`apps.rs:206-216`, `sdk.ts:74`, `mcp_app_proxy.rs:65`,
-> `apps.rs:1099-1111`, `apps.rs:708-737`). These were accurate on 2026-07-12 and
-> drift as the phases land — treat them as "look here", not as coordinates.
+> location (`apps.rs:206-216`, `sdk.ts:74`, `apps.rs:1099-1111`,
+> `apps.rs:708-737`). These were accurate on 2026-07-12 and drift as the phases
+> land — treat them as "look here", not as coordinates. One anchor this note
+> used to carry has gone entirely: the app-proxy it cited as the CSP precedent
+> belonged to the inherited MCP apps feature, removed in September 2026 (see the
+> record under `docs/history/`). The CSP decision it supported had already
+> shipped in `routes/apps.rs` and is unaffected.
 
 > **Note on estimates.** The week figures are effort estimates relative to the
 > 2026-07-12 plan date. No calendar dates were committed, so elapsed progress
@@ -196,7 +200,7 @@ Estimated ~1–2 weeks.
 
 Estimated ~2–3 weeks plus ongoing work.
 
-1. **Strict CSP on served apps** in `routes/apps.rs`: `script-src 'self'` (no `unsafe-inline` — the injected `BIOROUTER_APP_CONFIG` becomes a non-executable `<script type="application/json">` the SDK parses, a `render.rs` change), `connect-src 'self'`, `img-src 'self' data:`, `form-action 'none'`, `base-uri 'self'`, `frame-ancestors 'self'`. Verify export and `serve.mjs` parity. This mirrors the app-proxy's existing `script-src 'self'` at `mcp_app_proxy.rs:65`.
+1. **Strict CSP on served apps** in `routes/apps.rs`: `script-src 'self'` (no `unsafe-inline` — the injected `BIOROUTER_APP_CONFIG` becomes a non-executable `<script type="application/json">` the SDK parses, a `render.rs` change), `connect-src 'self'`, `img-src 'self' data:`, `form-action 'none'`, `base-uri 'self'`, `frame-ancestors 'self'`. Verify export and `serve.mjs` parity.
 
 2. **`autorun` (last, smallest).** The `ui.allow_autorun` capability — default off, user-granted only, never agent-self-granted; per-minute, per-session and daily turn budgets; a presence-layer indicator with a one-click stop. Signals otherwise stay queue-only.
 

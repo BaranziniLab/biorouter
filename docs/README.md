@@ -72,6 +72,7 @@ The largest campaigns in there:
 | [performance-2026-06](history/performance-2026-06/review-findings.md) | A whole-app latency review against v1.86.0 plus an independent comparison against the jcode harness; nine fixes merged. |
 | [streaming-tool-call-ui-2026-07](history/streaming-tool-call-ui-2026-07/README.md) | The July 2026 streaming tool-call campaign: why a tool card appeared late and already finished, the streaming implemented across fourteen providers that never streamed, and three QA rounds over the result. |
 | [dashboard-mode](history/dashboard-mode/README.md) | Four generations of design for a free-floating multi-chat canvas, and the record of its removal on 2026-07-18. **The feature no longer exists.** |
+| [mcp-apps-removal](history/mcp-apps-removal/README.md) | The sandboxed iframe in which a third-party MCP server ran its own UI inside BioRouter — inherited from the upstream fork, never requested, removed on 2026-09-08. **The feature no longer exists**; Agent Drafter's Built apps is a different one and stays. |
 | [legacy-architecture](history/legacy-architecture/README.md) | Two superseded internals designs: a hand-written `Extension` trait framework that was **never shipped**, and the agent error model, whose two-tier policy still holds but whose every type name is gone. |
 
 ## Conventions
