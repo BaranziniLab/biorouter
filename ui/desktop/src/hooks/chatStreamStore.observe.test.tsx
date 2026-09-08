@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
     data: { cancelled: true, settled: true, continuation_lease: 'observer-test-lease' },
   })),
   getSession: vi.fn(async () => ({ data: null })),
-  listApps: vi.fn(async () => ({ data: { apps: [] } })),
   listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
   // Part of agent readiness, which a submit AWAITS: left real, it reaches the
   // generated client and the turn never launches.

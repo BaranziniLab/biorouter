@@ -212,14 +212,13 @@ See `docs/security/secret-storage.md`.
 
 The left sidebar leads with **Home** and **New chat**. Everything else sits
 behind a **Components** disclosure — collapsed by default, and remembered —
-holding **Workflows**, **Scheduler**, **Extensions**, **Skills**, **Knowledge**,
-**Built apps** (apps built with Agent Drafter) and **MCP apps** (apps advertised
-by installed extensions, shown only when some extension provides one). Below
-that is a **Recents** list of recent chats with a **See all** link to the full
-session history, and **Settings** (providers, models, permissions, theme) is
-pinned at the bottom. Chat renders markdown, syntax-highlighted code and
-expandable tool-call messages; figures, reports and other artifacts the agent
-creates open in the **artifact side panel** on the right, never inline.
+holding **Workflows**, **Scheduler**, **Extensions**, **Skills**, **Knowledge**
+and **Built apps** (apps built with Agent Drafter). Below that is a **Recents**
+list of recent chats with a **See all** link to the full session history, and
+**Settings** (providers, models, permissions, theme) is pinned at the bottom.
+Chat renders markdown, syntax-highlighted code and expandable tool-call
+messages; figures, reports and other artifacts the agent creates open in the
+**artifact side panel** on the right, never inline.
 
 ### CLI
 

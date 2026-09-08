@@ -8,13 +8,11 @@ import type { ChatType } from '../../types/chat';
 import { SidebarProvider } from '../ui/sidebar';
 
 const mocks = vi.hoisted(() => ({
-  listApps: vi.fn(),
   listSessions: vi.fn(),
   listSidebarSessions: vi.fn(),
 }));
 
 vi.mock('../../api', () => ({
-  listApps: mocks.listApps,
   listSessions: mocks.listSessions,
   listSidebarSessions: mocks.listSidebarSessions,
 }));
@@ -56,7 +54,6 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  mocks.listApps.mockResolvedValue({ data: { apps: [] } });
   mocks.listSessions.mockResolvedValue({ data: { sessions: [session] } });
   mocks.listSidebarSessions.mockResolvedValue({
     data: { sessions: [session], has_more: false, next_offset: null },
@@ -270,13 +267,6 @@ describe('AppSidebar — the Components disclosure', () => {
 
     renderSidebar('/pair');
     expect(screen.queryByTestId('sidebar-knowledge-button')).toBeNull();
-  });
-
-  it('hides the MCP Apps row until an extension advertises one', async () => {
-    mocks.listApps.mockResolvedValue({ data: { apps: [{ id: 'a' }] } });
-    renderSidebar();
-    fireEvent.click(screen.getByTestId('sidebar-components-disclosure'));
-    expect(await screen.findByTestId('sidebar-mcp-apps-button')).toBeInTheDocument();
   });
 });
 

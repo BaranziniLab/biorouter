@@ -83,8 +83,7 @@ fn store() -> ArtifactStore {
 /// island (see `render::app_config_script`), so `script-src 'self'` — no
 /// `unsafe-inline` — holds. That is what makes CSP a real defense against the
 /// injection classes v2 introduces (agent-emitted `html` nodes, data bindings);
-/// `unsafe-inline` would make the policy inert against exactly those. Mirrors the
-/// app-proxy's existing `script-src 'self'` (`mcp_app_proxy.rs`).
+/// `unsafe-inline` would make the policy inert against exactly those.
 ///
 /// Directive rationale:
 /// - `default-src 'none'` — deny-by-default; every capability is opted in below.

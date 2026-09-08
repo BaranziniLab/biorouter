@@ -172,7 +172,6 @@ import {
   type DiagnosticsArchivePayload,
 } from './utils/diagnosticsExport';
 import { Client, createClient, createConfig } from './api/client';
-import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
 
 // Updater functions (moved here to keep updates.ts minimal for release replacement)
@@ -1239,14 +1238,15 @@ const trackArtifactPreviewFrames = (contents: Electron.WebContents) => {
   };
 };
 
-// A chat window and every Agent Drafter app window it launches share ONE
-// biorouterd (launch-app reuses the launching window's client). The backend
-// must outlive any single dependent window, so it is ref-counted and killed
-// only when the LAST window using it closes. Without this, closing the chat
-// window tore down the backend an app window it launched was still using, and
-// nothing respawned it — the app window then silently failed every call.
-// `app.on('will-quit')` in biorouterd.ts still sweeps every backend on quit,
-// so nothing leaks when the app exits.
+// A backend must outlive any single dependent window, so it is ref-counted and
+// killed only when the LAST window using it closes. It was written for an
+// inherited IPC handler that opened a second window sharing the launcher's
+// client: closing the chat window tore down a backend that window was still
+// using, and nothing respawned it. That handler is gone and every window now
+// retains its own backend, so the count is 1 in practice — the mechanism is kept
+// because a release path that assumed sole ownership would be wrong the day a
+// shared-backend window returns. `app.on('will-quit')` in biorouterd.ts still
+// sweeps every backend on quit, so nothing leaks on exit.
 const windowBackends = new Map<number, ChildProcess>(); // windowId -> its backend
 const backendRefCounts = new Map<ChildProcess, number>(); // backend -> live windows
 
@@ -1802,8 +1802,7 @@ const createChat = async (
       windowPowerSaveBlockers.delete(windowId);
     }
 
-    // Kill this window's backend only if no other window (e.g. an Agent Drafter
-    // app window this chat launched) still shares it.
+    // Kill this window's backend only if no other window still shares it.
     releaseBackend(windowId);
   });
   return mainWindow;
@@ -6099,67 +6098,6 @@ async function appMain() {
   ipcMain.handle('open-artifact-in-browser', (_event, payload: unknown) => {
     const normalized = normalizeArtifactPayload(payload);
     return normalized ? openArtifactInBrowser(normalized) : { ok: false };
-  });
-
-  ipcMain.handle('launch-app', async (event, biorouterApp: BioRouterApp) => {
-    try {
-      const launchingWindow = BrowserWindow.fromWebContents(event.sender);
-      if (!launchingWindow) {
-        throw new Error('Could not find launching window');
-      }
-
-      const launchingWindowId = launchingWindow.id;
-      const launchingClient = biorouterdClients.get(launchingWindowId);
-      if (!launchingClient) {
-        throw new Error('No client found for launching window');
-      }
-
-      const currentUrl = launchingWindow.webContents.getURL();
-      const baseUrl = new URL(currentUrl).origin;
-
-      const appWindow = new BrowserWindow({
-        title: biorouterApp.name,
-        width: biorouterApp.width ?? 800,
-        height: biorouterApp.height ?? 600,
-        resizable: biorouterApp.resizable ?? true,
-        webPreferences: {
-          preload: path.join(__dirname, 'preload.js'),
-          nodeIntegration: false,
-          contextIsolation: true,
-          webSecurity: true,
-          backgroundThrottling: true,
-          partition: 'persist:biorouter',
-        },
-      });
-
-      biorouterdClients.set(appWindow.id, launchingClient);
-      // The app window uses the launcher's backend; retain it so closing the
-      // launcher window doesn't kill the backend out from under this app.
-      const launcherBackend = windowBackends.get(launchingWindowId);
-      if (launcherBackend) retainBackend(appWindow.id, launcherBackend);
-
-      // `closed` (definitive), not `close` (cancelable): a prevented close must
-      // not decrement the refcount and tear down a backend still in use.
-      appWindow.on('closed', () => {
-        biorouterdClients.delete(appWindow.id);
-        releaseBackend(appWindow.id);
-      });
-
-      const workingDir = app.getPath('home');
-      const extensionName = biorouterApp.mcpServer ?? '';
-      const standaloneUrl =
-        `${baseUrl}/#/standalone-app?` +
-        `resourceUri=${encodeURIComponent(biorouterApp.uri)}` +
-        `&extensionName=${encodeURIComponent(extensionName)}` +
-        `&appName=${encodeURIComponent(biorouterApp.name)}` +
-        `&workingDir=${encodeURIComponent(workingDir)}`;
-
-      await appWindow.loadURL(standaloneUrl);
-      appWindow.show();
-    } catch (error) {
-      console.error('Failed to launch app:', error);
-      throw error;
-    }
   });
 }
 

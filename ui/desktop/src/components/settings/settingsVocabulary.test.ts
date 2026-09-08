@@ -73,9 +73,6 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   { dir: join(SETTINGS_DIR, '../extensions'), outOfScope: [] },
   { dir: join(SETTINGS_DIR, '../skills'), outOfScope: [] },
   { dir: join(SETTINGS_DIR, '../applications'), outOfScope: [] },
-  // `StandaloneAppView` is the app's own window, not a page in this family: it
-  // renders a third party's UI resource in a frame and has no rows of its own.
-  { dir: join(SETTINGS_DIR, '../apps'), outOfScope: ['StandaloneAppView.tsx'] },
 ];
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {

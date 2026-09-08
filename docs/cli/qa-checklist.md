@@ -201,7 +201,7 @@ These are future work, not defects:
 - Voice dictation (Whisper) — GUI-only.
 - Knowledge graph view, history/restore, `.brkb` export/import — server/GUI-only.
 - First-class secrets-management command (keys only via `configure` / per-extension `--secret`).
-- Tabs, chat groups and split panes, interactive MCP Apps/MCP-UI, session-sharing tunnel,
+- Tabs, chat groups and split panes, interactive MCP-UI resources, session-sharing tunnel,
   response-style settings — GUI-only.
 
 ## Related documentation

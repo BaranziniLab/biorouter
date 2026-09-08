@@ -11,6 +11,13 @@ A generated artifact has **one** display surface: the right-hand artifact side p
 click-to-open card and nothing else. There is no inline frame, and no second "expand"
 destination.
 
+Nothing routes an artifact away from this path. The transcript used to carry a second
+discriminator — a tool result whose `_meta.ui.resourceUri` named an MCP App, which was drawn inline
+instead — and **no Rust code in this repository has ever emitted that key**. That is why removing
+the MCP apps feature in September 2026 could not change what any Biorouter tool displays: the
+branch it fed was unreachable from our own servers. The removal record is filed under
+[`docs/history/`](../history/README.md).
+
 This holds on all three surfaces that render a transcript:
 
 | Surface | Component | Panel host |
@@ -55,8 +62,8 @@ The inline path was not a lighter version of the panel. It was a second renderer
   with its content. The panel sizes the frame itself. Figures still post `ui-size-change`, which is
   now consumed only by an enclosing dashboard report.
 - **A fabricated session id.** `SessionHistoryView` passed `sessionId: 'session-preview'`, a string
-  belonging to no session. Everything that scopes work by id — the scroll broadcast, Branch, an MCP
-  app card — addressed a chat that does not exist. It now passes the real `session.id`.
+  belonging to no session. Everything that scopes work by id — the scroll broadcast, Branch —
+  addressed a chat that does not exist. It now passes the real `session.id`.
 
 ## What was removed
 
@@ -75,11 +82,6 @@ The inline path was not a lighter version of the panel. It was a second renderer
 
 ## What deliberately stayed
 
-- **MCP Apps** (`components/McpApps/McpAppRenderer.tsx`, served through the separate
-  `/mcp-app-proxy`) still render inline in the transcript. This is not the same feature: an MCP App
-  is an interactive application the user works inside, not a figure to look at, and it is reached
-  only when a tool result carries `_meta.ui.resourceUri`. No Rust code in this repo emits that key,
-  so an Auto Visualiser or Agent Drafter figure can never take that path.
 - **`@mcp-ui/client`.** The panel still mounts `UIResourceRenderer` for the `mcpResource` kind — a
   `ui://` resource that is neither HTML nor a URI list — and `ToolCallWithResponse` still uses
   `isUIResource` as a type guard.

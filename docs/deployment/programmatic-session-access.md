@@ -193,7 +193,7 @@ it would be wrong:
 | `POST /agent/call_tool` | Privacy Gate C at the extension-manager dispatch point, plus the uninspected-boundary refusals. |
 
 **Ungated, and low-yield.** These name a session but return only its tool surface, not its contents:
-`GET /agent/tools`, `GET /agent/callable_tool_count`, `GET /agent/list_apps`,
+`GET /agent/tools`, `GET /agent/callable_tool_count`,
 `POST /agent/read_resource`, `GET /skills/catalog`, `POST /skills/refresh`. They are listed as a
 measurement, not as a ruling — nothing in the source records a decision to exempt them, so read this
 row as "not gated" rather than "deliberately not gated".

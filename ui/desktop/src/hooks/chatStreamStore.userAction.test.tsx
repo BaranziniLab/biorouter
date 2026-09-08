@@ -49,7 +49,6 @@ const mocks = vi.hoisted(() => ({
   cancelTurn: vi.fn(async () => ({ data: { cancelled: true } })),
   getSession: vi.fn(async () => ({ data: null })),
   interrupt: vi.fn(),
-  listApps: vi.fn(async () => ({ data: { apps: [] } })),
   listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
   updateFromSession: vi.fn(async (_options?: unknown) => ({ data: {} })),
   updateSessionUserWorkflowValues: vi.fn(async () => ({ data: {} })),

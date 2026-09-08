@@ -49,7 +49,6 @@ describe('Branch control anchors (issue #167)', () => {
         message={answer()}
         messages={[answer()]}
         toolCallNotifications={new Map()}
-        append={vi.fn()}
         onRunInTerminal={null}
         onOpenArtifact={noopOpenArtifact}
       />

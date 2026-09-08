@@ -151,20 +151,16 @@ const SessionMessages: React.FC<{
                 messages={filteredMessages}
                 // The REAL session id. This was the string 'session-preview',
                 // which is nobody's session: every consumer that scopes work
-                // by id — the scroll broadcast, Branch, an MCP app card —
-                // silently addressed a chat that does not exist.
+                // by id — the scroll broadcast, Branch — silently addressed a
+                // chat that does not exist.
                 chat={{ sessionId }}
                 toolCallNotifications={new Map()}
-                // No `append`. It used to be `() => {}`, which is TRUTHY, so
-                // read-only surfaces advertised send-a-prompt controls that
-                // did nothing when clicked. Absent means absent.
                 isUserMessage={isUserMessage} // Use the same function as BaseChat
                 onOpenArtifact={onOpenArtifact}
                 // No terminal on this surface, and no chat to open one in: a
                 // saved transcript is a record, and a shell code block in it
                 // is history, not an offer. Explicitly null rather than
-                // omitted, so the absence is a decision and not an oversight
-                // — the same reason `append` is absent above.
+                // omitted, so the absence is a decision and not an oversight.
                 onRunInTerminal={null}
                 workingDir={workingDir}
                 batchSize={15} // Same as BaseChat default

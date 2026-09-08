@@ -20,9 +20,8 @@ use crate::workspace::bridge;
 /// State for this module's routes: the app state PLUS the server secret.
 ///
 /// The secret is not global — the daemon threads it into
-/// `routes::configure(state, secret_key)`, which already hands it by value to
-/// exactly one route that needs it, `mcp_app_proxy::routes(secret_key)`. This
-/// route is the second, so `configure` clones it for both.
+/// `routes::configure(state, secret_key)`, which hands it by value to this
+/// route, the only one that needs it.
 #[derive(Clone)]
 struct WorkspaceRouteState {
     /// Held for the socket handler's future use (session lookups when the

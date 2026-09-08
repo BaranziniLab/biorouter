@@ -19,7 +19,7 @@ describe('PageHeader', () => {
   });
 
   it('omits the description paragraph entirely when there is none', () => {
-    const { container } = render(<PageHeader title="MCP apps" />);
+    const { container } = render(<PageHeader title="Extensions" />);
 
     expect(container.querySelectorAll('p')).toHaveLength(0);
   });

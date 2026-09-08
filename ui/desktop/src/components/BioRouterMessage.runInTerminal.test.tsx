@@ -27,7 +27,6 @@ function view(props: {
       message={message}
       messages={[message]}
       toolCallNotifications={new Map()}
-      append={vi.fn()}
       onOpenArtifact={noopOpenArtifact}
       onRunInTerminal={props.onRunInTerminal}
       isStreaming={props.isStreaming ?? false}

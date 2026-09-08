@@ -6,7 +6,6 @@ import {
   ChatRequest,
   getSession,
   interrupt,
-  listApps,
   listSessions,
   Message,
   MessageEvent,
@@ -1646,13 +1645,6 @@ class ChatStreamController {
           // since. The same response that carried the transcript names the
           // turn, so there is no extra round trip and nothing to guess.
           this.noteActiveTurn(resumeData?.active_turn);
-
-          listApps({
-            throwOnError: true,
-            query: { session_id: this.sessionId },
-          }).catch((err) => {
-            console.warn('Failed to populate apps cache:', err);
-          });
         } catch (error) {
           if (isConnectionError(error)) {
             // The backend (biorouterd) was transiently unreachable — it is

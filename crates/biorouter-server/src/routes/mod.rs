@@ -153,7 +153,6 @@ pub mod config_management;
 pub mod errors;
 pub mod knowledge;
 pub mod llamacpp;
-pub mod mcp_app_proxy;
 pub mod memory;
 pub mod reply;
 pub mod reset;
@@ -210,8 +209,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         // authenticate one client and not the other. See the module header.
         .merge(tool_bridge::routes())
         .merge(tunnel::routes(state.clone()))
-        .merge(mcp_app_proxy::routes(secret_key.clone()))
-        .merge(workspace::routes(state.clone(), secret_key.clone()))
+        .merge(workspace::routes(state.clone(), secret_key))
         .merge(session_events::routes(state.clone()))
         .nest(
             "/knowledge",

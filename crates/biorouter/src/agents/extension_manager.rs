@@ -41,7 +41,7 @@ use crate::oauth::oauth_flow;
 use crate::prompt_template;
 use crate::subprocess::configure_command_no_window;
 use rmcp::model::{
-    CallToolRequestParams, Content, ErrorCode, ErrorData, GetPromptResult, Prompt, Resource,
+    CallToolRequestParams, Content, ErrorCode, ErrorData, GetPromptResult, Prompt,
     ResourceContents, ServerInfo, Tool,
 };
 use rmcp::transport::auth::AuthClient;
@@ -2480,51 +2480,6 @@ impl ExtensionManager {
                     None,
                 )
             })
-    }
-
-    pub async fn get_ui_resources(&self) -> Result<Vec<(String, Resource)>, ErrorData> {
-        let mut ui_resources = Vec::new();
-
-        let extensions_to_check: Vec<(String, McpClientBox)> = {
-            let extensions = self.extensions.lock().await;
-            extensions
-                .iter()
-                .filter(|(_, ext)| ext.supports_resources())
-                .map(|(name, ext)| (name.clone(), ext.get_client()))
-                .collect()
-        };
-
-        for (extension_name, client) in extensions_to_check {
-            // Gate C's sibling, INSIDE the loop: one private extension must not
-            // empty a public model's whole UI-resource sweep.
-            if self
-                .assert_extension_reachable(&extension_name, None)
-                .await
-                .is_err()
-            {
-                continue;
-            }
-            let client_guard = &*client;
-
-            match client_guard
-                .list_resources(None, CancellationToken::default())
-                .await
-            {
-                Ok(list_response) => {
-                    for resource in list_response.resources {
-                        if resource.uri.starts_with("ui://") {
-                            ui_resources.push((extension_name.clone(), resource));
-                        }
-                    }
-                }
-                Err(crate::agents::mcp_client::Error::TransportClosed) => {}
-                Err(e) => {
-                    warn!("Failed to list resources for {}: {:?}", extension_name, e);
-                }
-            }
-        }
-
-        Ok(ui_resources)
     }
 
     async fn list_resources_from_extension(
@@ -6792,20 +6747,11 @@ mod tests {
             use rmcp::model::AnnotateAble;
             self.hit();
             Ok(ListResourcesResult {
-                resources: vec![
-                    rmcp::model::RawResource::new(
-                        "res://x",
-                        format!("{}-resource", self.sentinel()),
-                    )
-                    .no_annotation(),
-                    // `get_ui_resources` keeps only `ui://` URIs, so the fixture
-                    // has to publish one or that probe can never leak.
-                    rmcp::model::RawResource::new(
-                        format!("ui://{}/panel", self.sentinel()),
-                        format!("{}-ui-resource", self.sentinel()),
-                    )
-                    .no_annotation(),
-                ],
+                resources: vec![rmcp::model::RawResource::new(
+                    "res://x",
+                    format!("{}-resource", self.sentinel()),
+                )
+                .no_annotation()],
                 next_cursor: None,
                 meta: None,
             })
@@ -6995,50 +6941,6 @@ mod tests {
         (dir, em, private, public)
     }
 
-    #[tokio::test]
-    async fn ui_resource_sweep_only_contacts_reachable_resource_servers() {
-        let (_dir, em, private, public) =
-            siblings_fixture(crate::privacy::ProviderTier::Public, true).await;
-        let resources = em.get_ui_resources().await.unwrap();
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].0, "developer");
-        assert!(resources[0].1.uri.starts_with("ui://"));
-        assert_eq!(public.contacted(), 1);
-        assert_eq!(private.contacted(), 0);
-
-        em.extensions
-            .lock()
-            .await
-            .get_mut("developer")
-            .unwrap()
-            .server_info
-            .as_mut()
-            .unwrap()
-            .capabilities
-            .resources = None;
-        assert!(em.get_ui_resources().await.unwrap().is_empty());
-        assert_eq!(
-            public.contacted(),
-            1,
-            "tools-only servers receive no resources RPC"
-        );
-        assert_eq!(private.contacted(), 0);
-
-        em.extensions
-            .lock()
-            .await
-            .get_mut("developer")
-            .unwrap()
-            .server_info = None;
-        assert!(em.get_ui_resources().await.unwrap().is_empty());
-        assert_eq!(
-            public.contacted(),
-            1,
-            "unknown capabilities receive no resources RPC"
-        );
-        assert_eq!(private.contacted(), 0);
-    }
-
     /// Every non-dispatch entry point that reaches an MCP server, by the name of
     /// the function it exercises. `read_resource_tool` and `list_resources` each
     /// appear twice because their two branches are different code paths: one
@@ -7047,7 +6949,6 @@ mod tests {
         "read_resource_tool (fan-out)",
         "read_resource_tool (named)",
         "read_resource",
-        "get_ui_resources",
         "list_resources_from_extension",
         "list_resources (named)",
         "list_resources (fan-out)",
@@ -7081,7 +6982,6 @@ mod tests {
                 em.read_resource("res://x", "ucsfomopagent", None, tok())
                     .await
             ),
-            "get_ui_resources" => format!("{:?}", em.get_ui_resources().await),
             "list_resources_from_extension" => format!(
                 "{:?}",
                 em.list_resources_from_extension("ucsfomopagent", None, tok())
@@ -7211,19 +7111,12 @@ mod tests {
         assert!(public.contacted() > 0, "the public server was never asked");
     }
 
-    /// The same property for the other two fan-outs: one private extension must
-    /// not empty a public model's UI-resource sweep or its prompt listing.
+    /// The same property for the prompt fan-out: one private extension must not
+    /// empty a public model's prompt listing.
     #[tokio::test]
-    async fn the_other_two_fanouts_still_serve_the_public_extension() {
+    async fn the_prompt_fanout_still_serves_the_public_extension() {
         let (_dir, em, private, public) =
             siblings_fixture(crate::privacy::ProviderTier::Public, true).await;
-
-        let ui = em.get_ui_resources().await.expect("ui sweep");
-        assert!(ui.iter().all(|(name, _)| name == "developer"), "{ui:?}");
-        assert!(
-            !ui.is_empty(),
-            "the public server's ui:// resource vanished"
-        );
 
         let prompts = em
             .list_prompts(CancellationToken::default())

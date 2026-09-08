@@ -1,6 +1,6 @@
 import { ToolIconWithStatus, ToolCallStatus } from './ToolCallStatusIndicator';
 import { getToolCallIcon } from '../utils/toolIconMapping';
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
 import {
@@ -19,11 +19,10 @@ import {
 } from '../types/message';
 import { cn, toolIdentifierToTitleCase } from '../utils';
 import { LoadingStatus } from './ui/Dot';
-import { ChevronRight, FlaskConical } from './icons/app-icons';
+import { ChevronRight } from './icons/app-icons';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
-import McpAppRenderer from './McpApps/McpAppRenderer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { NotificationContent, NotificationSurface } from './alerts/NotificationSurface';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
@@ -44,12 +43,6 @@ interface ToolGraphNode {
   depends_on: number[];
 }
 
-type UiMeta = {
-  ui?: {
-    resourceUri?: string;
-  };
-};
-
 /**
  * One executed sub-call of a coordinated `execute_code` step (#28), recorded
  * by the backend in the result meta under `biorouter/tool-calls`.
@@ -69,7 +62,7 @@ const MAX_EXECUTED_ARGUMENT_BYTES = 2048 + 3; // Backend cap plus a UTF-8 ellips
 const MAX_EXECUTED_TASK_ID_BYTES = 64;
 const MAX_EXECUTED_TASK_TITLE_BYTES = 512;
 
-type ResultMeta = UiMeta & {
+type ResultMeta = {
   'biorouter/tool-calls'?: unknown;
   'biorouter/tool-calls-dropped'?: unknown;
 };
@@ -78,17 +71,6 @@ type ToolResultWithMeta = {
   status?: string;
   value?: CallToolResponse & {
     _meta?: ResultMeta;
-  };
-};
-
-type ToolRequestWithMeta = ToolRequestMessageContent & {
-  _meta?: UiMeta;
-  toolCall: {
-    status: 'success';
-    value: {
-      name: string;
-      arguments?: Record<string, unknown>;
-    };
   };
 };
 
@@ -107,7 +89,6 @@ interface ToolCallWithResponseProps {
    * false so a read-only replay never spins.
    */
   turnActive?: boolean;
-  append?: (value: string) => void;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
@@ -341,85 +322,6 @@ function isEmbeddedResource(content: Content): content is EmbeddedResource {
   return 'resource' in content && typeof (content as Record<string, unknown>).resource === 'object';
 }
 
-interface McpAppWrapperProps {
-  toolRequest: ToolRequestMessageContent;
-  toolResponse?: ToolResponseMessageContent;
-  sessionId: string;
-  append?: (value: string) => void;
-}
-
-function McpAppWrapper({
-  toolRequest,
-  toolResponse,
-  sessionId,
-  append,
-}: McpAppWrapperProps): React.ReactNode {
-  const requestWithMeta = toolRequest as ToolRequestWithMeta;
-  let resourceUri = requestWithMeta._meta?.ui?.resourceUri;
-
-  if (!resourceUri && toolResponse) {
-    const resultWithMeta = toolResponse.toolResult as ToolResultWithMeta;
-    if (resultWithMeta?.status === 'success' && resultWithMeta.value) {
-      resourceUri = resultWithMeta.value._meta?.ui?.resourceUri;
-    }
-  }
-
-  // Tool names are formatted as "{extension_name}__{tool_name}".
-  // Extension names can contain underscores (special chars like parentheses are normalized to "_"),
-  // so we must use lastIndexOf to find the delimiter.
-  // e.g., "my_server(local)" -> "my_server_local_" -> "my_server_local___get_time"
-  const toolCallName =
-    requestWithMeta.toolCall.status === 'success' ? requestWithMeta.toolCall.value.name : '';
-  const delimiterIndex = toolCallName.lastIndexOf('__');
-  const extensionName = delimiterIndex === -1 ? '' : toolCallName.substring(0, delimiterIndex);
-
-  const toolArguments =
-    requestWithMeta.toolCall.status === 'success'
-      ? requestWithMeta.toolCall.value.arguments
-      : undefined;
-
-  // Memoize toolInput to prevent unnecessary re-renders
-  const toolInput = useMemo(() => ({ arguments: toolArguments || {} }), [toolArguments]);
-
-  // Memoize toolResult to prevent unnecessary re-renders
-  const toolResult = useMemo(() => {
-    if (!toolResponse) return undefined;
-    const resultWithMeta = toolResponse.toolResult as ToolResultWithMeta;
-    if (resultWithMeta?.status === 'success' && resultWithMeta.value) {
-      const value = resultWithMeta.value;
-      // An MCP app draws this result for the user, so it is a display surface
-      // like the panel below and the frame comes off the same way. The app
-      // also parses it, and the frame would break any exact-match it does.
-      if (!Array.isArray(value.content)) return value;
-      const content = value.content.map(unwrapGuardrailFrameInContent);
-      return content.every((item, i) => item === value.content[i]) ? value : { ...value, content };
-    }
-    return undefined;
-  }, [toolResponse]);
-
-  if (!resourceUri) return null;
-  if (requestWithMeta.toolCall.status !== 'success') return null;
-
-  return (
-    <div className="mt-3">
-      <McpAppRenderer
-        resourceUri={resourceUri}
-        toolInput={toolInput}
-        toolResult={toolResult}
-        extensionName={extensionName}
-        sessionId={sessionId}
-        append={append}
-      />
-      <div className="mt-3 p-4 py-3 border border-border-subtle rounded-lg bg-background-muted flex items-center">
-        <FlaskConical className="mr-2" size={20} />
-        <div className="text-sm font-sans">
-          MCP Apps are experimental and may change at any time.
-        </div>
-      </div>
-    </div>
-  );
-}
-
 interface ToolCallRenderBoundaryProps {
   children: React.ReactNode;
   resetValue: unknown;
@@ -480,7 +382,6 @@ function ToolCallWithResponseContent({
   notifications,
   isStreamingMessage,
   turnActive = false,
-  append,
   onOpenArtifact,
   workingDir,
 }: ToolCallWithResponseProps) {
@@ -496,11 +397,6 @@ function ToolCallWithResponseContent({
     return null;
   }
 
-  const requestWithMeta = toolRequest as ToolRequestWithMeta;
-  const resultWithMeta = toolResponse?.toolResult as ToolResultWithMeta;
-  const hasMcpAppResourceURI = Boolean(
-    requestWithMeta._meta?.ui?.resourceUri || resultWithMeta?.value?._meta?.ui?.resourceUri
-  );
   const isError = getToolResultError(toolResponse?.toolResult) !== null;
 
   return (
@@ -534,8 +430,7 @@ function ToolCallWithResponseContent({
           card. It is NEVER drawn here: MCPUIResourceRenderer emits a
           click-to-open card and the artifact side panel is the only surface
           that renders the thing itself. */}
-      {!hasMcpAppResourceURI &&
-        toolResponse?.toolResult &&
+      {toolResponse?.toolResult &&
         getToolResultContent(toolResponse.toolResult).map((content, index) => {
           const resourceContent = isEmbeddedResource(content)
             ? { ...content, type: 'resource' as const }
@@ -550,15 +445,6 @@ function ToolCallWithResponseContent({
             return null;
           }
         })}
-
-      {hasMcpAppResourceURI && sessionId && (
-        <McpAppWrapper
-          toolRequest={toolRequest}
-          toolResponse={toolResponse}
-          sessionId={sessionId}
-          append={append}
-        />
-      )}
     </>
   );
 }

@@ -38,13 +38,10 @@ type ReadableContentProps = {
  *
  * - **The component views** (workflows/WorkflowsView.tsx,
  *   extensions/ExtensionsView.tsx, skills/SkillsView.tsx,
- *   applications/ApplicationsView.tsx, apps/AppsView.tsx) — the last five, and
- *   the ones the argument was originally made AGAINST: they were called
- *   document-shaped, on the theory that a wide window buys more columns or more
- *   cards. It buys neither; each is a list of rows with a title on the left and
- *   controls on the right. MCP apps had no reading column at all before this,
- *   just a `px-8` div, so it is the one that gains a measure rather than
- *   changing one.
+ *   applications/ApplicationsView.tsx) — the ones the argument was originally
+ *   made AGAINST: they were called document-shaped, on the theory that a wide
+ *   window buys more columns or more cards. It buys neither; each is a list of
+ *   rows with a title on the left and controls on the right.
  *
  * ⚠ **So `text` has no caller left in `components/`** — but it is still the
  * DEFAULT below, which means a `<ReadableContent>` written tomorrow with no

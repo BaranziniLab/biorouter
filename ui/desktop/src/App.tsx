@@ -51,8 +51,6 @@ import WorkflowsView from './components/workflows/WorkflowsView';
 import SkillsView from './components/skills/SkillsView';
 import KnowledgeView from './components/knowledge/KnowledgeView';
 import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
-import AppsView from './components/apps/AppsView';
-import StandaloneAppView from './components/apps/StandaloneAppView';
 import ApplicationsView from './components/applications/ApplicationsView';
 import { View, ViewOptions } from './utils/navigationUtils';
 
@@ -686,7 +684,6 @@ export function AppInner() {
                 element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
               />
               <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
-              <Route path="standalone-app" element={<StandaloneAppView />} />
               <Route
                 path="/"
                 element={
@@ -708,7 +705,6 @@ export function AppInner() {
                     </ChatProvider>
                   }
                 />
-                <Route path="apps" element={<AppsView />} />
                 <Route path="applications" element={<ApplicationsView />} />
                 <Route path="sessions" element={<SessionsRoute />} />
                 <Route path="schedules" element={<SchedulesRoute />} />
