@@ -257,4 +257,31 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
     renderSchedules();
     expect(await screen.findByText('Scheduled')).toBeInTheDocument();
   });
+
+  /**
+   * The list used to render behind `!isLoading && schedules.length > 0`, and
+   * `fetchSchedules` raises `isLoading` on the fifteen-second POLL as well as
+   * on first load — so with rows already on screen none of the three branches
+   * matched and the list unmounted for the length of every poll's request.
+   * Pre-existing, and much more visible now the rows sit on the canvas with no
+   * card to hold the space.
+   */
+  it('keeps the rows on screen while a refresh is in flight', async () => {
+    renderSchedules();
+    const row = await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+
+    let finishRefresh!: (jobs: unknown[]) => void;
+    mocks.listSchedules.mockReturnValueOnce(
+      new Promise<unknown[]>((resolve) => (finishRefresh = resolve))
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh schedules' }));
+
+    expect(row).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'No schedules yet' })).not.toBeInTheDocument();
+
+    await act(async () => finishRefresh([schedule]));
+    expect(
+      await screen.findByRole('button', { name: 'View schedule nightly-cohort' })
+    ).toBeInTheDocument();
+  });
 });

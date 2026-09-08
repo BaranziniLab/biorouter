@@ -529,7 +529,15 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                   />
                 )}
 
-                {!isLoading && schedules.length > 0 && (
+                {/* ⚠ NOT `!isLoading && schedules.length > 0`, which is what this
+                    was. `fetchSchedules` sets `isLoading` on the 15-second poll
+                    as well as on first load, and with rows already on screen
+                    none of these three branches then matched — so the list
+                    UNMOUNTED for the length of every poll's request and came
+                    back. The three stay mutually exclusive without it: the
+                    skeletons require an empty list, and the empty state
+                    requires the load to have finished. */}
+                {schedules.length > 0 && (
                   <div className="biorouter-list-shell">
                     {schedules.map((job) => (
                       <ScheduleRow
