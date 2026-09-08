@@ -3,7 +3,8 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * The settings visual vocabulary, enforced at the SOURCE.
+ * The settings visual vocabulary, enforced at the SOURCE — over Settings and,
+ * since 2026-09-07, over the chat-history surfaces that adopted it.
  *
  * **Why a source test and not a render test.** Every rule below is about a
  * class STRING, and jsdom never runs Tailwind: `bg-background-medium/70`
@@ -19,54 +20,75 @@ import { describe, expect, it } from 'vitest';
  * The vocabulary itself is written up in
  * `docs/desktop-ui/settings-visual-vocabulary.md`; this file is its teeth.
  *
- * ⚠ **The exclusions are the PR's stated scope, not an amnesty.** Extensions,
- * the provider-configuration page, the permission modals, dictation, the tunnel
- * and session sharing share these primitives and will inherit the rules; they
- * were left out because sweeping them triples the diff. Deleting a name from
- * this list is how that work gets finished — adding one is how the rules rot.
+ * ⚠ **The exclusions are a stated scope, not an amnesty.** Extensions, the
+ * provider-configuration page, the permission modals, dictation, the tunnel and
+ * session sharing share these primitives and will inherit the rules; they were
+ * left out because sweeping them triples the diff. Deleting a name from a
+ * root's list is how that work gets finished — adding one is how the rules rot.
  */
 const SETTINGS_DIR = __dirname;
+/**
+ * Chat history, the saved transcript, the shared transcript and the dialogs
+ * they mount. A SECOND root rather than a name deleted from the list below, and
+ * the distinction is easy to get wrong in exactly one direction: `sessions/` in
+ * `settings`' exclusions is `components/settings/sessions/` — the session
+ * SHARING section, still unswept — while the chat-history surfaces live in
+ * `components/sessions/`, a different directory this walker never reached at
+ * all. Removing that exclusion would sweep session sharing and leave chat
+ * history uncovered, which is the opposite of what it looks like it does.
+ */
+const HISTORY_DIR = join(__dirname, '..', 'sessions');
 
 /**
- * Every directory the vocabulary now governs. Settings is where it was written
- * down; each further entry is a surface that has since been swept onto it.
- * One root per line, so two PRs sweeping two different surfaces add two
- * different lines and merge without touching each other's.
+ * Every directory the vocabulary now governs, each with its own exclusions.
+ * Settings is where it was written down; each further entry is a surface that
+ * has since been swept onto it. One root per line, so two PRs sweeping two
+ * different surfaces add two different lines.
+ *
+ * ⚠ The exclusions are PER ROOT, and that is not cosmetic: `sessions/` excludes
+ * `components/settings/sessions/` (session SHARING, still unswept) and must not
+ * reach `components/sessions/` (chat history, swept). One flat list cannot
+ * express that — it excluded both, or neither.
  */
-const ROOTS = [
-  SETTINGS_DIR,
-  join(SETTINGS_DIR, '../schedule'), // the Scheduler, 2026-09-07
-];
-
-const OUT_OF_SCOPE = [
-  'extensions/',
-  'providers/',
-  'permission/',
-  'dictation/',
-  'tunnel/',
-  'sessions/',
+const ROOTS: { dir: string; outOfScope: string[] }[] = [
+  {
+    dir: SETTINGS_DIR,
+    outOfScope: ['extensions/', 'providers/', 'permission/', 'dictation/', 'tunnel/', 'sessions/'],
+  },
+  // Home's two surfaces sit in this directory but are not chat history and were
+  // not part of that sweep: `SessionsInsights` is the Home view and
+  // `UsageHeatmap` is its grid, whose `leading-*` and per-mille alphas are
+  // fitted cell geometry rather than prose styling.
+  { dir: HISTORY_DIR, outOfScope: ['SessionsInsights.tsx', 'UsageHeatmap.tsx'] },
+  { dir: join(SETTINGS_DIR, '../schedule'), outOfScope: [] }, // the Scheduler, 2026-09-07
 ];
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {
   const found: { path: string; rel: string; text: string }[] = [];
-  const walk = (root: string, dir: string) => {
-    for (const entry of readdirSync(dir)) {
-      const path = join(dir, entry);
-      if (statSync(path).isDirectory()) {
-        walk(root, path);
-        continue;
+  for (const { dir: root, outOfScope } of ROOTS) {
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) {
+          walk(path);
+          continue;
+        }
+        if (!entry.endsWith('.tsx') || entry.includes('.test.')) continue;
+        // The exclusion is tested against the path relative to the root being
+        // walked, because `outOfScope` names subfolders of THAT root.
+        if (outOfScope.some((prefix) => relative(root, path).startsWith(prefix))) continue;
+        // Reported relative to `components/`, not to the root, so a failure
+        // names `sessions/SessionListView.tsx` rather than a bare filename that
+        // could have come from any of the trees below.
+        found.push({
+          path,
+          rel: relative(join(__dirname, '..'), path),
+          text: readFileSync(path, 'utf8'),
+        });
       }
-      if (!entry.endsWith('.tsx') || entry.includes('.test.')) continue;
-      // ⚠ Two different relative paths, on purpose. `OUT_OF_SCOPE` names
-      // subfolders of the root being walked, so the exclusion is tested
-      // against the path relative to THAT root; the name a failure reports
-      // stays relative to the settings directory, so one list can name files
-      // from two roots without two `SchedulesView.tsx`-shaped ambiguities.
-      if (OUT_OF_SCOPE.some((prefix) => relative(root, path).startsWith(prefix))) continue;
-      found.push({ path, rel: relative(SETTINGS_DIR, path), text: readFileSync(path, 'utf8') });
-    }
-  };
-  for (const root of ROOTS) walk(root, root);
+    };
+    walk(root);
+  }
   return found;
 }
 
@@ -156,12 +178,28 @@ describe('the settings vocabulary', () => {
   /**
    * Per-root, not just in total: `FILES.length` above is satisfied by the
    * settings directory alone, so a root that resolves to nothing — a typo, a
-   * renamed folder — would add its name to the list and change no assertion.
+   * renamed folder, or an `outOfScope` that swallows everything under it —
+   * would add its name to the list and change no assertion, and every rule
+   * below would silently stop covering that surface while still reporting
+   * green. The named files are the same guard aimed at the one root whose
+   * exclusions are the easiest to get backwards (see `HISTORY_DIR`).
    */
   it('finds sources under every root it claims to govern', () => {
-    for (const root of ROOTS) {
-      expect(FILES.filter(({ path }) => path.startsWith(root)).length).toBeGreaterThan(0);
+    for (const { dir } of ROOTS) {
+      expect(FILES.filter(({ path }) => path.startsWith(dir)).length).toBeGreaterThan(0);
     }
+    const covered = new Set(FILES.map(({ rel }) => rel));
+    for (const file of [
+      'sessions/SessionListView.tsx',
+      'sessions/SessionHistoryView.tsx',
+      'sessions/SharedSessionView.tsx',
+      'sessions/SessionViewComponents.tsx',
+      'sessions/ImportSessionModal.tsx',
+      'sessions/DeclassifySessionDialog.tsx',
+    ]) {
+      expect(covered).toContain(file);
+    }
+    expect(FILES.some(({ rel }) => rel.startsWith('settings/'))).toBe(true);
   });
 
   /**

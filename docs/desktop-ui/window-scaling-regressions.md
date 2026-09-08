@@ -34,7 +34,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 | `text` empty, or `hash` is `#/pair` | **Not a layout bug.** The app is not rendering — see *A dead daemon* below. |
 | `inner` ≠ `outer` | **Not a layout bug.** Your tooling pinned the viewport — see *Viewport emulation* below. |
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
-| Everything tracks, but the view is **Settings** (or Home) and its column stops at 760px | **Not a layout bug.** Both read the chat measure by decision — see *Settings, on the chat measure* below. |
+| Everything tracks, but the view is **Settings**, **Home**, **Chat history** or a saved/shared transcript, and its column stops at 760px | **Not a layout bug.** All of them read the chat measure by decision — see *Settings and Chat history, on the chat measure* below. |
 | Everything tracks, but content stays the same width | **The real one.** A fixed pixel cap — see below. |
 
 ## The real product cause: a fixed pixel cap
@@ -135,36 +135,58 @@ its chrome locked to its own grid instead (`UsageHeatmap`'s `heatStyle` sets the
 block's width from the fitted footprint), so a compressed grid stays a coherent
 block rather than leaving its labels and legend pinned to the old edge.
 
-### Not this: Settings, on the chat measure by decision (2026-09-07)
+### Not this: Settings and Chat history, on the chat measure by decision (2026-09-07)
 
-**Settings stops widening at 760px, and that is the intended behaviour** — not
-the fixed-cap bug above, and not a measure someone forgot to clamp. All three of
-its reading columns (header, tab strip, scrolling body) are
-`<ReadableContent size="chat">` in `components/settings/SettingsView.tsx`, so
-Settings, Home, the chat transcript and the composer share one left edge and one
-width at every window size.
+**Settings and the chat-history surfaces stop widening at 760px, and that is the
+intended behaviour** — not the fixed-cap bug above, and not a measure someone
+forgot to clamp. Every one of their reading columns is
+`<ReadableContent size="chat">`:
+
+| View | Columns | File |
+|---|---|---|
+| Settings | header, tab strip, scrolling body | `components/settings/SettingsView.tsx` |
+| Chat history | header, scrolling body | `components/sessions/SessionListView.tsx` |
+| Saved transcript | one | `components/sessions/SessionHistoryView.tsx` |
+| Shared transcript | one | `components/sessions/SharedSessionView.tsx` |
+
+so Settings, Home, Chat history, a saved conversation, the live chat and the
+composer share one left edge and one width at every window size. Measured in the
+running app at 1440 with the default sidebar, all three of Home's greeting,
+Settings' title and Chat history's title start at **x = 508.00**.
 
 The distinction that decides which of the two you are looking at is **what the
 extra width would have bought**, not whether the column moved:
 
-- A **document-shaped** view — sessions, extensions, skills, workflows,
-  applications — gains real content from a wider window: more table columns,
-  more cards per row. Those stay on `--measure-page` and a flat cap there is
-  the regression this page is about.
+- A **document-shaped** view — extensions, skills, workflows, applications —
+  gains real content from a wider window: more table columns, more cards per
+  row. Those stay on `--measure-page` and a flat cap there is the regression
+  this page is about.
 - **Settings is a column of labelled rows**: a label on the left, the control it
   names on the right, one per row. Widening the column adds nothing to either
   half — it only pushes them apart, so at 1800px the Local Model Inventory's
   Install button sat about a foot from the model it installs. That is the same
   "margin, not content" failure as the fixed cap, arriving from the opposite
   direction.
+- **Chat history is the same shape**: a chat's name on the left, its
+  message/token/extension counts on the right. At the page measure and 1440
+  those counts sat roughly 700px from the chat they count. It also has an
+  argument Settings does not — clicking a row opens the live chat, and a saved
+  transcript *is* a chat, so both must line up with the column a conversation is
+  read in.
 
-So a report of the form *"Settings doesn't use my big monitor"* is expected and
-closes as working-as-intended; a report of the form *"Settings truncates / hides
-something at 760px"* is a real bug, and the fix belongs in the section that
-truncates — `min-w-0`, `flex-wrap`, or letting a line wrap — never in the
-measure. (One such fix shipped with the move: the model inventory's metadata
-line was `truncate`, which at the 508px label block ate the context window and
-the model id; it wraps now.)
+So a report of the form *"Chat history doesn't use my big monitor"* is expected
+and closes as working-as-intended; a report of the form *"Chat history truncates
+/ hides something at 760px"* is a real bug, and the fix belongs in the section
+that truncates — `min-w-0`, `truncate`, `flex-wrap`, a tighter `min-w-*` on a
+count box — never in the measure. (One such fix shipped with the Settings move:
+the model inventory's metadata line was `truncate`, which at the 508px label
+block ate the context window and the model id; it wraps now. The history row
+needed none: measured at 704px of row — 760 less the `px-6` inset and the scroll
+area's own padding — with a 120-character title, a 7-digit token count, a
+5-digit message count and a deep path, every row stayed 55px tall, nothing
+overflowed, and the stats cluster pushed from 320px to 330px while the title box
+gave way from 340px to 330px, which is what the `min-w-*` floors on those counts
+are for.)
 
 **The Scheduler joined it on 2026-09-07**, which is why `schedules` left the
 document-shaped list above. Both of its surfaces are columns of rows on the same
@@ -177,10 +199,12 @@ hands either one lands between the two halves of every row. Both
 the paragraph below.
 
 ⚠ **jsdom cannot see any of this**, exactly as with the fixed cap: there is no
-layout engine and Tailwind never runs, so `SettingsView.test.tsx` asserts the
-`data-size` attribute and its count, and `styles/measures.test.ts` asserts at the
-source that no `<ReadableContent` in that file is left on the default size. The
-widths themselves were measured in the running app.
+layout engine and Tailwind never runs, so the component tests assert the
+`data-size` attribute and the column count, and `styles/measures.test.ts` asserts
+at the source that no `<ReadableContent` in those four files is left on the
+default size — and that none of them declares a second `max-w-*`, which would
+silently take precedence over the column. The widths themselves were measured in
+the running app.
 
 ## The four impostors
 

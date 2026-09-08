@@ -681,3 +681,40 @@ describe('SessionListView subagent toggle', () => {
     );
   });
 });
+
+/**
+ * Chat history sits on the CHAT measure, not the fluid page measure (operator
+ * decision, 2026-09-07): a row is a title on the left and a stats cluster on
+ * the right, so page width landed between the two rather than showing more, and
+ * a row click opens the live chat — which is already on this measure.
+ *
+ * ⚠ **jsdom can see the ATTRIBUTE and the COUNT, and nothing else.** There is
+ * no layout engine and Tailwind never runs here, so `max-w-measure-chat`
+ * computes to nothing and a column's `getBoundingClientRect()` is zero whatever
+ * the size says; the widths themselves were measured in a browser against the
+ * built stylesheet (760px column, 704px rows, at 1048 / 1280 / 1680). The case
+ * this file cannot see at all — a `<ReadableContent` written with no `size`
+ * prop, which silently DEFAULTS to the page measure — is closed at the source
+ * by `styles/measures.test.ts`.
+ */
+describe('SessionListView sits on the chat measure', () => {
+  it('renders both reading columns at the chat size, neither left on the default', async () => {
+    const { container } = render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Chat history');
+
+    const columns = [...container.querySelectorAll('.biorouter-readable-content')];
+    // The count is pinned as well as the size: the header and the scrolling
+    // body meet at one left edge under a full-bleed hairline, so a third column
+    // added on the default size would be a visible step in that edge rather
+    // than an invisible inconsistency.
+    expect(columns).toHaveLength(2);
+    for (const column of columns) {
+      expect((column as HTMLElement).dataset.size).toBe('chat');
+    }
+  });
+});

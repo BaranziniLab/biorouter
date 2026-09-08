@@ -12,6 +12,8 @@ import {
   DialogTitle,
 } from '../ui/dialog';
 import { Button } from '../ui/button';
+import { Note } from '../ui/note';
+import { MODAL_SIZE } from '../ModalShell';
 
 /**
  * Issue #56 §12.4's graded confirmation, mirrored from
@@ -209,7 +211,10 @@ export function DeclassifySessionDialog({
   if (phase === 'undo') {
     return (
       <Dialog open={open} onOpenChange={(next) => !next && setPhase('confirm')}>
-        <DialogContent className="sm:max-w-[480px]">
+        {/* V8 — the ladder's form rung by name; the literal it replaces was
+            already 480px, so the width is unchanged and only the spelling
+            moves onto the one ladder `ModalShell.tsx` documents. */}
+        <DialogContent className={MODAL_SIZE.md}>
           <DialogHeader>
             <DialogTitle>Marking this chat public…</DialogTitle>
             <DialogDescription>
@@ -253,13 +258,24 @@ export function DeclassifySessionDialog({
       onCancel={() => onClose?.()}
     >
       {/* The ResetPanel precedent: show what is being acted on, so a user who
-          opened the menu on the wrong row sees it before confirming. */}
-      <div className="rounded-lg border border-border-subtle bg-background-muted/40 p-3">
-        <p className="truncate text-sm font-medium text-text-default" title={session.name}>
+          opened the menu on the wrong row sees it before confirming.
+
+          V4/V6/V8 — the `Note` primitive, not a fourth hand-rolled panel. What
+          this replaced carried all three of the bans in one element:
+          `rounded-lg` (the deprecated alias of the element radius),
+          `bg-background-muted/40` (a hand-mixed alpha, so the block sat at a
+          different depth from every other neutral surface in the app) and
+          `text-sm`/`text-xs` (sizes where the roles `text-label` and
+          `text-supporting` say the same thing and carry their own weight and
+          line-height). `Note`'s neutral tone IS `border border-border-subtle
+          bg-background-muted` — the same construction, at full strength, from
+          one definition. */}
+      <Note>
+        <p className="truncate text-label text-text-default" title={session.name}>
           {session.name}
         </p>
-        <p className="mt-0.5 font-mono text-xs text-text-muted">{session.id}</p>
-      </div>
+        <p className="mt-0.5 font-mono text-supporting text-text-muted">{session.id}</p>
+      </Note>
     </DangerousConfirmDialog>
   );
 }

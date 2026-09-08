@@ -17,18 +17,20 @@ import {
  * the whole point of this file.**
  *
  * `--measure-page` must stay FLUID. It governs the document-shaped views —
- * sessions, extensions, skills, schedules, workflows, applications — where a
- * wider window genuinely buys content: more table columns, more cards per row.
- * It was once a flat cap, and the symptom was reported as "the app doesn't
- * rescale with the window": dragging the window wider bought margin rather than
- * content.
+ * extensions, skills, schedules, workflows, applications — where a wider window
+ * genuinely buys content: more table columns, more cards per row. It was once a
+ * flat cap, and the symptom was reported as "the app doesn't rescale with the
+ * window": dragging the window wider bought margin rather than content.
  *
- * ⚠ **Settings is no longer one of them** (operator decision, 2026-09-07), and
- * this paragraph named it first until that date. Settings is a column of
- * labelled rows rather than a document, so the extra width a wide window hands
- * it lands BETWEEN each label and the control it names — margin again, just
- * distributed differently. It reads the chat measure now, which is why the
- * last describe block in this file guards that at the source.
+ * ⚠ **Neither Settings nor the chat-history surfaces are among them any more**
+ * (operator decision, 2026-09-07), and this paragraph named Settings first and
+ * sessions second until that date. Neither is a document: each is a column of
+ * labelled rows, so the extra width a wide window hands it lands BETWEEN each
+ * label and the thing it names — margin again, just distributed differently. In
+ * Settings that separated a control from its label; in Chat history it left the
+ * per-chat counts about 700px from the chat they count, measured at 1440. Both
+ * read the chat measure now, which is why the last describe block in this file
+ * guards that at the source for all four views.
  *
  * `--measure-chat` must stay FLAT at 760px. It was briefly widened into a clamp
  * on the same reasoning, and that was wrong for this measure specifically: a
@@ -52,10 +54,76 @@ import {
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const READABLE = readFileSync(join(__dirname, '../components/Layout/ReadableContent.tsx'), 'utf8');
 const MAIN = readFileSync(join(__dirname, '../main.ts'), 'utf8');
-const SETTINGS_VIEW = readFileSync(
-  join(__dirname, '../components/settings/SettingsView.tsx'),
-  'utf8'
-);
+
+/**
+ * Every view that reads the CHAT measure and is not the chat itself. Settings
+ * joined on 2026-09-07 (#172); the three chat-history surfaces joined with it,
+ * one PR later. They are listed together because the rule is one rule — a
+ * `<ReadableContent` here without `size` silently takes the PAGE measure — and
+ * a per-file copy of it is how three of the four would come to say something
+ * slightly different.
+ */
+const CHAT_MEASURE_VIEWS = [
+  'settings/SettingsView.tsx',
+  'sessions/SessionListView.tsx',
+  'sessions/SessionHistoryView.tsx',
+  'sessions/SharedSessionView.tsx',
+].map((rel) => ({
+  rel,
+  source: readFileSync(join(__dirname, '../components', rel), 'utf8'),
+}));
+
+/**
+ * The source with every comment removed, so a rule can ban a class NAME without
+ * banning the sentence that explains why it is banned. `SessionHistoryView.tsx`
+ * names `max-w-4xl` in prose precisely to stop it coming back, and a plain
+ * `text.includes('max-w-4xl')` would read that as the defect.
+ *
+ * String and template literals are copied through intact rather than scanned,
+ * so a `//` inside one cannot start a comment — which is the direction that
+ * matters, since a className is a string. The residual limitation is a bare
+ * `//` in JSX *text* (a URL, say): it would swallow the rest of that line and
+ * could hide a class written after it on the same line. Prettier puts
+ * `className` on its own line, so that arrangement does not occur here, and the
+ * self-check below pins the stripper against a real comment rather than
+ * trusting this paragraph.
+ */
+function codeWithoutComments(source: string): string {
+  let out = '';
+  let index = 0;
+  while (index < source.length) {
+    const pair = source.slice(index, index + 2);
+    if (pair === '//') {
+      while (index < source.length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (pair === '/*') {
+      index += 2;
+      while (index < source.length && source.slice(index, index + 2) !== '*/') index += 1;
+      index += 2;
+      continue;
+    }
+    const character = source[index];
+    if (character === '"' || character === "'" || character === '`') {
+      out += character;
+      index += 1;
+      while (index < source.length) {
+        if (source[index] === '\\') {
+          out += source.slice(index, index + 2);
+          index += 2;
+          continue;
+        }
+        out += source[index];
+        index += 1;
+        if (source[index - 1] === character) break;
+      }
+      continue;
+    }
+    out += character;
+    index += 1;
+  }
+  return out;
+}
 
 function declaration(name: string): string {
   const match = CSS.match(new RegExp(`--${name}:\\s*([^;]+);`));
@@ -212,24 +280,24 @@ describe('the minimum window width is derived from the sidebar and the chat meas
 });
 
 /**
- * Settings reads the CHAT measure, not the page measure (operator decision,
- * 2026-09-07). The reasoning is in the header of this file and in the
- * `--measure-page` note in main.css; what is asserted here is only that the
- * view has not drifted back.
+ * Settings and the three chat-history surfaces read the CHAT measure, not the
+ * page measure (operator decision, 2026-09-07). The reasoning is in the header
+ * of this file and in the `--measure-page` note in main.css; what is asserted
+ * here is only that the views have not drifted back.
  *
  * ⚠ **Asserted at the SOURCE, for the same reason every other assertion in
  * this file is.** jsdom has no layout engine and never runs Tailwind, so a test
- * that renders SettingsView and reads a column's `getBoundingClientRect()` sees
- * zero whatever the size prop says — the widths this guards are only real in a
- * browser against the built stylesheet. The neighbouring
- * `SettingsView.test.tsx` asserts the rendered `data-size` attribute and its
- * count, which is the strongest statement a DOM test can make; this one closes
- * the case that test cannot see, a `<ReadableContent` added to the JSX with no
- * `size` at all, since the prop DEFAULTS to the page measure and so a
+ * that renders one of these views and reads a column's
+ * `getBoundingClientRect()` sees zero whatever the size prop says — the widths
+ * this guards are only real in a browser against the built stylesheet. The
+ * neighbouring component tests assert the rendered `data-size` attribute and
+ * its count, which is the strongest statement a DOM test can make; this one
+ * closes the case those cannot see, a `<ReadableContent` added to the JSX with
+ * no `size` at all, since the prop DEFAULTS to the page measure and so a
  * forgotten size is silently the wrong one.
  */
-describe('Settings sits on the chat measure', () => {
-  const OPENING_TAGS = SETTINGS_VIEW.match(/<ReadableContent\b[^>]*>/g) ?? [];
+describe.each(CHAT_MEASURE_VIEWS)('$rel sits on the chat measure', ({ source }) => {
+  const OPENING_TAGS = source.match(/<ReadableContent\b[^>]*>/g) ?? [];
 
   /**
    * Guards against the vacuous pass: with no matches the loop below asserts
@@ -240,12 +308,57 @@ describe('Settings sits on the chat measure', () => {
   });
 
   /**
-   * Every one, not "the body one". The header, the tab strip and the scrolling
-   * body are three separate boxes sharing one left edge, so a size on one and
-   * not its siblings is a visible step in that edge.
+   * Every one, not "the body one". A view's header, tab strip and scrolling
+   * body are separate boxes sharing one left edge, so a size on one and not its
+   * siblings is a visible step in that edge.
    */
   it('gives every reading column the chat size, none left on the default', () => {
     for (const tag of OPENING_TAGS) expect(tag).toContain('size="chat"');
+  });
+
+  /**
+   * The 896px "replay fork", closed. `SessionHistoryView` drew its transcript
+   * in a `max-w-4xl` box NESTED inside the page's reading column, so the saved
+   * conversation had two ceilings and the inner one won — a conversation
+   * rendered at a width the live chat never uses. Deleting it is only half the
+   * fix: any `max-w-*` written inside one of these views takes precedence over
+   * the column again, silently, and looks like a local tweak rather than a
+   * second measure. `ReadableContent` is the one box allowed to carry a
+   * ceiling, and it carries it as a token.
+   */
+  it('declares no second measure of its own', () => {
+    expect(codeWithoutComments(source)).not.toMatch(/\bmax-w-(?:3xl|4xl|5xl|6xl|7xl)\b/);
+  });
+});
+
+/**
+ * The instrument, checked before the rule that depends on it. `max-w-4xl` is
+ * named in prose in `SessionHistoryView.tsx` — deliberately, so the fork cannot
+ * come back unexplained — and a stripper that silently did nothing would turn
+ * the rule above into a permanent failure, while one that stripped too much
+ * would turn it into a permanent pass. Both directions are pinned here.
+ */
+describe('the comment stripper the measure rule depends on', () => {
+  const HISTORY = CHAT_MEASURE_VIEWS.find((view) =>
+    view.rel.endsWith('SessionHistoryView.tsx')
+  )!.source;
+
+  it('removes a class named in prose', () => {
+    expect(HISTORY).toContain('max-w-4xl');
+    expect(codeWithoutComments(HISTORY)).not.toContain('max-w-4xl');
+  });
+
+  /**
+   * Deliberately NOT `size="chat"`, which the rule above already asserts: a
+   * self-check that fails for the same reason as the rule it underwrites tells
+   * you nothing about the instrument. These two classes are applied, are not
+   * the subject of any other assertion here, and one of them (`px-6`) sits on
+   * the very line a too-eager stripper would eat.
+   */
+  it('keeps the classes that are actually applied', () => {
+    const code = codeWithoutComments(HISTORY);
+    expect(code).toContain('biorouter-page-header');
+    expect(code).toContain('px-6');
   });
 });
 
