@@ -414,6 +414,16 @@
      that keeps keyboard focus out of it must be the SAME number, and two places
      writing 10px is how they stop being the same number. */
   --scroll-fade-top: 10px;
+  /* ⚠ The gradient does NOT start fading at 0 — its first `--scroll-fade-clear`
+     are FULLY transparent, and that pair of stops is the whole fix rather than
+     a refinement of it. A gradient anchored at 0 gives the topmost device pixel
+     the average alpha over its own span, and sub-pixel placement put the
+     clipped "Configuration guide" link at mask position 1-2 rather than 0-1:
+     MEASURED in the running app, the accent line went from a deviation of
+     (80,175,211) off the ground to (12,26,31) — six times fainter, and still
+     a visible pink rule at 4x. Two clear pixels remove it outright, and cost
+     nothing visible: at 10px those pixels were already under 20% alpha. */
+  --scroll-fade-clear: 2px;
 
   /* Rows. Two rhythms and no more: the rail (sidebar, nav, menu item, recents,
      select option) and the content list. They are separate because they answer
@@ -3040,8 +3050,18 @@
 }
 
 .biorouter-scroll-fade-top[data-scrolled='true'] > [data-radix-scroll-area-viewport] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--scroll-fade-top));
-  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--scroll-fade-top));
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top)
+  );
 }
 
 .biorouter-settings-section {

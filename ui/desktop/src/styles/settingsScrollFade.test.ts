@@ -58,9 +58,34 @@ describe('the settings scroll-edge fade', () => {
   it('fades by masking alpha, so it needs no per-theme colour', () => {
     const rule = scrolledRule();
     expect(rule).toContain('mask-image');
-    expect(rule).toContain('linear-gradient(to bottom, transparent');
+    // Whitespace-tolerant: prettier does not touch main.css (it is in
+    // `.prettierignore`), but the stop list is long enough to be reflowed by
+    // hand and the assertion must survive that.
+    expect(rule?.replace(/\s+/g, ' ')).toContain('linear-gradient( to bottom, transparent 0,');
     // Prefixed alongside the standard property, not instead of it.
     expect(rule).toContain('-webkit-mask-image');
+  });
+
+  /**
+   * ⚠ The gradient's first `--scroll-fade-clear` are FULLY transparent, and
+   * that pair of stops is the fix rather than a refinement of it.
+   *
+   * MEASURED in the running app at the exact repro (Parchment light, App tab,
+   * `scrollTop` 663), reading the clipped link's pixel row against the page
+   * ground four pixels below:
+   *
+   *   no rule at all               (175, 80, 44) on (255,255,255) — a solid rule
+   *   gradient anchored at 0       (243,229,224) — six times fainter, still pink
+   *   2px clear then the gradient  (255,255,255) — gone, delta (0,0,0)
+   *
+   * The middle row is why: a gradient anchored at 0 gives the topmost device
+   * pixel the average alpha over its own span, and sub-pixel placement put the
+   * clipped link at mask position 1-2 rather than 0-1. Two clear pixels cost
+   * nothing visible — at a 10px fade they were already under 20% alpha.
+   */
+  it('clears the first pixels outright rather than only fading them', () => {
+    expect(CSS).toMatch(/--scroll-fade-clear:\s*2px;/);
+    expect(scrolledRule()?.replace(/\s+/g, ' ')).toContain('transparent var(--scroll-fade-clear)');
   });
 
   /**
