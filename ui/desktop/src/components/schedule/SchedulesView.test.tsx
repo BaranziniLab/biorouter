@@ -223,4 +223,38 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
     expect(row).not.toBeNull();
     expect(row?.parentElement).toHaveClass('biorouter-list-shell');
   });
+
+  /**
+   * ⚠ The one state a sandbox cannot be put into. `paused` and `last_error` are
+   * fields on the schedule record and survive a restart; `currently_running` is
+   * reconciled against a live process, so a daemon started against a JSON that
+   * claims a run is in flight clears the flag before the interface ever sees
+   * it — measured. So the branch is exercised here or nowhere.
+   */
+  it('says a running schedule is running, and offers the run’s own actions', async () => {
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, currently_running: true }]);
+    renderSchedules();
+
+    const running = await screen.findByText('Running');
+    for (let node: HTMLElement | null = running; node; node = node.parentElement) {
+      expect(node.className).not.toMatch(/bg-background-\w+\/\d/);
+      if (node.classList.contains('biorouter-list-row')) break;
+    }
+    // Motion means "still going" (astryx §4.4): only this state pulses.
+    expect(running.querySelector('.animate-pulse')).not.toBeNull();
+
+    // Edit and Pause are meaningless mid-run and are replaced, not disabled.
+    expect(screen.getByRole('button', { name: 'Inspect nightly-cohort' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop nightly-cohort' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pause nightly-cohort' })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The resting state is STATED. The pills said nothing at all for a schedule
+   * that was simply live, so a row gave no answer to "will this run?".
+   */
+  it('states the resting state rather than leaving the row silent', async () => {
+    renderSchedules();
+    expect(await screen.findByText('Scheduled')).toBeInTheDocument();
+  });
 });

@@ -228,4 +228,26 @@ describe('the detail view is rows and hairlines, not boxes', () => {
       await screen.findByText(/This schedule is paused and will not run automatically/)
     ).toBeInTheDocument();
   });
+
+  /**
+   * ⚠ The one state a sandbox cannot be put into: `currently_running` is
+   * reconciled against a live process, so a daemon started against a JSON that
+   * claims a run is in flight clears the flag before the interface sees it
+   * (measured). The branch is exercised here or nowhere.
+   */
+  it('replaces the idle actions with the run’s own while a run is in flight', async () => {
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, currently_running: true }]);
+    renderDetails();
+
+    expect(await screen.findByRole('button', { name: 'Inspect run' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Run now' })).toBeDisabled();
+    // Nothing is left greyed out that could simply be absent.
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+
+    // One note, and only the one that applies.
+    expect(await screen.findByText(/This schedule is running/)).toBeInTheDocument();
+    expect(screen.queryByText(/This schedule is paused/)).not.toBeInTheDocument();
+  });
 });
