@@ -4,6 +4,8 @@ import { ExtensionConfig } from '../../../../api';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import type { DefaultProvider } from '../ExtensionsSection';
 import type { RegistryLoad } from '../../../baam/registry';
+import { EmptyState } from '../../../ui/empty-state';
+import { Puzzle } from '../../../icons/app-icons';
 
 interface ExtensionListProps {
   extensions: FixedExtensionEntry[];
@@ -104,8 +106,25 @@ export default function ExtensionList({
         </div>
       )}
 
+      {/* The Extensions page's empty state, and the one vocabulary change made
+          in this directory (2026-09-07). `components/settings/extensions/` is
+          otherwise still OUT of the vocabulary sweep — it sits in the settings
+          root's own `extensions/` exclusion, and sweeping it triples the diff —
+          but this particular line is what the Extensions PAGE renders when it
+          has nothing to show, and a bare `text-sm` sentence pinned to the top
+          left of a 760px column is not an empty state. Rule 4: every in-place
+          prose block is a `Note` or the shared `EmptyState`.
+
+          No action on it. The three ways to get an extension (Add, Browse, Add
+          Custom) are already in the page header directly above, and repeating
+          one of them here would make the same act look like two different
+          offers. */}
       {extensions.length === 0 && (
-        <div className="text-text-muted text-sm py-8">No extensions available</div>
+        <EmptyState
+          icon={Puzzle}
+          title="No extensions yet"
+          description="MCP extensions add prompts, resources and tools to every new chat. Browse the marketplace or add one you already have."
+        />
       )}
     </div>
   );
