@@ -296,7 +296,10 @@ describe('ProviderCatalog — institutions', () => {
     clickTab('institutional');
     const note = screen.getByTestId('other-institutions-note');
     expect(note).toHaveTextContent(/recognises its endpoint as private/i);
-    expect(note).toHaveTextContent(/Add Custom Provider/i);
+    // Case-sensitive on purpose: this used to be `/Add Custom Provider/i`,
+    // which kept passing when the control was renamed to sentence case — so
+    // it was asserting the words, not that the note names the real label.
+    expect(note).toHaveTextContent('Add custom provider');
   });
 });
 

@@ -168,7 +168,7 @@ describe('WorkflowFormFields', () => {
     it('shows editor buttons for instructions and JSON schema', () => {
       render(<TestWrapper />);
 
-      const editorButtons = screen.getAllByText('Open Editor');
+      const editorButtons = screen.getAllByText('Open editor');
       expect(editorButtons.length).toBeGreaterThan(0);
     });
   });
