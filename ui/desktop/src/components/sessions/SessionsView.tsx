@@ -48,12 +48,12 @@ const SessionsView: React.FC = () => {
     }
   }, [location.state, handleSelectSession]);
 
-  // `selectedSessionId` is left unset rather than passed as `null`. It scrolls a
-  // named row into view "when returning from session history view" — the
-  // journey that no longer exists — and this view was already passing a value
-  // that could only ever be null. The prop stays on `SessionListView` because
-  // it is optional and describes something a caller may legitimately want; what
-  // is removed here is the pretence that this caller supplies it.
+  // The list takes no selection. `SessionListView` used to accept a
+  // `selectedSessionId` that scrolled a named row into view "when returning
+  // from session history view"; that journey was removed when history rows
+  // began resuming the chat directly, so the prop and its ref registry are
+  // gone rather than left unpassed. The `location.state` handover above is a
+  // different thing — it opens a chat, it does not scroll a row.
   return <SessionListView onSelectSession={handleSelectSession} />;
 };
 
