@@ -242,8 +242,11 @@ async fn reset_schedules(state: &AppState) -> Result<u64> {
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
     }
-    let workflow_path =
-        tokio::task::spawn_blocking(biorouter::knowledge::soul::ensure_meditation_workflow).await?;
+    let config_dir = biorouter::config::paths::Paths::config_dir();
+    let workflow_path = tokio::task::spawn_blocking(move || {
+        biorouter::knowledge::soul::ensure_meditation_workflow(&config_dir)
+    })
+    .await?;
     let workflow_path = workflow_path?;
     biorouter::knowledge::soul::ensure_meditation_schedule(&scheduler, workflow_path).await?;
     Ok(count)

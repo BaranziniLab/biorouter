@@ -41,7 +41,17 @@ pub enum KbIdError {
 /// macOS; they differ only on Windows, where the old path was never the one the
 /// rest of Biorouter used anyway.
 pub fn knowledge_root() -> anyhow::Result<PathBuf> {
-    Ok(crate::paths::in_config_dir("knowledge"))
+    Ok(knowledge_root_in(&crate::paths::config_dir()))
+}
+
+/// The same store, under a config root the caller resolved itself.
+///
+/// Exists so a caller that must NOT re-read the ambient `BIOROUTER_PATH_ROOT`
+/// at write time — `knowledge::soul`'s seeders, which run in a task spawned by
+/// `AgentManager::new` — can still spell the `<config>/knowledge` join exactly
+/// once, here, rather than growing a second copy of it that drifts.
+pub fn knowledge_root_in(config_dir: &Path) -> PathBuf {
+    config_dir.join("knowledge")
 }
 
 pub fn kb_root(root: &Path, id: &str) -> PathBuf {

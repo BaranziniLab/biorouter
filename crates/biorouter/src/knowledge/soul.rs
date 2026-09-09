@@ -25,8 +25,13 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+// ⚠ `crate::config::paths::Paths` is deliberately NOT imported here. Every
+// seeder in this module takes its config root as an argument, because the
+// startup path that drives them is a task `AgentManager::new` spawns — a
+// `Paths::config_dir()` call in this file therefore reads the process-global
+// `BIOROUTER_PATH_ROOT` at an instant nobody owns. Pinned by
+// `every_seeder_takes_its_root_as_an_argument`.
 use crate::agents::skills_extension;
-use crate::config::paths::Paths;
 use crate::scheduler::ScheduledJob;
 use crate::scheduler_trait::SchedulerTrait;
 use anyhow::Context as _;
@@ -108,16 +113,34 @@ impl Drop for SoulFileLock {
     }
 }
 
-/// Install every Soul component that is missing. Best-effort: a failure in one
-/// component is logged and does not abort the others or block startup.
-pub async fn install(scheduler: &Arc<dyn SchedulerTrait>) {
-    if let Err(e) = ensure_soul_kb() {
+/// Install every Soul component that is missing, under `config_dir`.
+/// Best-effort: a failure in one component is logged and does not abort the
+/// others or block startup.
+///
+/// ⚠ **The root is a PARAMETER, and it is not decoration.** Every seeder below
+/// used to resolve `Paths::config_dir()` — i.e. the ambient
+/// `BIOROUTER_PATH_ROOT` — at the moment it wrote. `AgentManager::new` *spawns*
+/// this whole chain (BR-55, to keep it off the listener's hot path), so "the
+/// moment it wrote" is an arbitrary point after the constructor returned, and
+/// in the test binary that is whichever unrelated test happens to be holding
+/// `env_lock` by then. The result was a `update-soul` skill appearing inside a
+/// temp directory owned by a test that had installed nothing
+/// (`knowledge::conversation_ingest`'s
+/// `missing_or_disabled_soul_skill_fails_before_raw_staging`, CI
+/// `test (ubuntu-latest)`, PR #191 run 34304297956).
+///
+/// A lock in the *reader* cannot close that — the writer never asked for one.
+/// The caller resolves the root once, when the object that owns this work is
+/// constructed, and threads it; a seeder that reads no process-global state has
+/// no race to lose.
+pub async fn install(config_dir: &Path, scheduler: &Arc<dyn SchedulerTrait>) {
+    if let Err(e) = ensure_soul_kb(config_dir) {
         tracing::warn!("Soul: failed to create knowledge base: {e}");
     }
-    if let Err(e) = ensure_soul_skill() {
+    if let Err(e) = ensure_soul_skill(config_dir) {
         tracing::warn!("Soul: failed to install skill: {e}");
     }
-    match ensure_meditation_workflow() {
+    match ensure_meditation_workflow(config_dir) {
         Ok(path) => {
             if let Err(e) = ensure_meditation_schedule(scheduler, path).await {
                 tracing::warn!("Soul: failed to register Daily Meditation schedule: {e}");
@@ -128,23 +151,32 @@ pub async fn install(scheduler: &Arc<dyn SchedulerTrait>) {
 }
 
 /// Install the assets that don't need a running scheduler (KB, skill, workflow
-/// file). Used on surfaces that have no scheduler handy (e.g. CLI-only flows).
-pub fn install_assets() {
-    let _ = ensure_soul_kb_without_purge();
-    let _ = ensure_soul_skill();
-    let _ = ensure_meditation_workflow();
+/// file) under `config_dir`. Used on surfaces that have no scheduler handy
+/// (e.g. CLI-only flows).
+pub fn install_assets(config_dir: &Path) {
+    let _ = ensure_soul_kb_without_purge(config_dir);
+    let _ = ensure_soul_skill(config_dir);
+    let _ = ensure_meditation_workflow(config_dir);
 }
 
-fn ensure_soul_kb_without_purge() -> anyhow::Result<()> {
-    let svc = KnowledgeService::new_default()?;
+/// The knowledge store under a given config root — the same join
+/// [`biorouter_mcp::knowledge::paths::knowledge_root`] makes from the ambient
+/// one, spelled once so the two can never disagree.
+fn knowledge_service(config_dir: &Path) -> KnowledgeService {
+    KnowledgeService::new(paths::knowledge_root_in(config_dir))
+}
+
+fn ensure_soul_kb_without_purge(config_dir: &Path) -> anyhow::Result<()> {
+    let svc = knowledge_service(config_dir);
     let _reconcile_lock = SoulFileLock::acquire(&svc.root().join(SOUL_RECONCILE_LOCK))?;
     ensure_registered_native_soul(&svc)
 }
 
-/// Remove every pre-OKF knowledge base and ensure the built-in Soul is current
-/// plain OKF. Existing OKF and BioOKF bases are preserved.
-pub fn ensure_soul_kb() -> anyhow::Result<()> {
-    let svc = KnowledgeService::new_default()?;
+/// Remove every pre-OKF knowledge base under `config_dir` and ensure the
+/// built-in Soul is current plain OKF. Existing OKF and BioOKF bases are
+/// preserved.
+pub fn ensure_soul_kb(config_dir: &Path) -> anyhow::Result<()> {
+    let svc = knowledge_service(config_dir);
     for id in reconcile_soul_kb(&svc)?.removed {
         tracing::info!("Soul: removed legacy knowledge base '{id}'");
     }
@@ -610,10 +642,10 @@ fn require_registered_native_soul(svc: &KnowledgeService) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Keep the shipped "Meditation" workflow current in the global workflow
-/// library. Returns the workflow file path.
-pub fn ensure_meditation_workflow() -> anyhow::Result<PathBuf> {
-    let dir = Paths::config_dir().join("workflows");
+/// Keep the shipped "Meditation" workflow current in the workflow library under
+/// `config_dir`. Returns the workflow file path.
+pub fn ensure_meditation_workflow(config_dir: &Path) -> anyhow::Result<PathBuf> {
+    let dir = config_dir.join("workflows");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(MEDITATION_WORKFLOW_FILE);
     if create_or_upgrade_built_in_file(
@@ -680,8 +712,8 @@ fn create_built_in_file_if_missing(path: &std::path::Path, content: &str) -> any
 /// is the Context row Settings offers. Seeding it flat would give it a
 /// `bundle_name` of `None`, which is a standalone picker row that the bundle's
 /// Context toggle does not reach.
-pub fn ensure_soul_skill() -> anyhow::Result<()> {
-    if place_soul_skill(&Paths::config_dir().join("skills"))? {
+pub fn ensure_soul_skill(config_dir: &Path) -> anyhow::Result<()> {
+    if place_soul_skill(&skills_extension::skills_root(config_dir))? {
         // Creating `<bundle>/<child>/` bumps the bundle's mtime and not the
         // root's, and mtime is one-second granular — see `skill_catalog`'s
         // header. A writer says what it did rather than hoping to be noticed.
@@ -695,7 +727,9 @@ pub fn ensure_soul_skill() -> anyhow::Result<()> {
 ///
 /// Split out so a test can drive the migration over a `TempDir` without setting
 /// `BIOROUTER_PATH_ROOT`, whose process-global reach would make it depend on
-/// whatever ran before it.
+/// whatever ran before it. That reasoning has since been generalised: its
+/// caller takes a config root for the same reason, so *nothing* on this path
+/// reads the environment any more.
 fn place_soul_skill(skills_root: &Path) -> anyhow::Result<bool> {
     let bundle = skills_extension::knowledge_bundle_dir(skills_root);
 
@@ -971,6 +1005,89 @@ user**, not to log conversations verbatim.
 mod tests {
     use super::*;
     use crate::workflow::Workflow;
+
+    /// The production half of a source file: everything before its first
+    /// test module. Slicing matters — a guard that read the whole file would
+    /// report every `Paths::` a *test* legitimately spells.
+    fn production_half(source: &str) -> &str {
+        source.split("\n#[cfg(test)]").next().unwrap_or(source)
+    }
+
+    /// `source` with every `//` comment removed.
+    ///
+    /// Required, not tidiness: the comments this guard protects *name* the
+    /// call they forbid — that is how a reader learns why it is forbidden — so
+    /// a guard reading raw text fails on its own explanation and gets deleted.
+    fn without_comments(source: &str) -> String {
+        source
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The body of `fn <name>` in `source`, from its signature to the first
+    /// line that closes a block at the given indentation.
+    fn function_body<'a>(source: &'a str, signature: &str, closer: &str) -> &'a str {
+        let after = source
+            .split(signature)
+            .nth(1)
+            .unwrap_or_else(|| panic!("`{signature}` must exist"));
+        after
+            .split(closer)
+            .next()
+            .unwrap_or_else(|| panic!("`{signature}` must have a block body"))
+    }
+
+    /// **Nothing that seeds Soul may resolve its own root.**
+    ///
+    /// This is the fix for the `missing_or_disabled_soul_skill_fails_before_\
+    /// raw_staging` flake (CI `test (ubuntu-latest)`, PR #191 run
+    /// 34304297956), and it is the kind of fix that reverts by accident: adding
+    /// one convenient `Paths::config_dir()` back into any of these three bodies
+    /// restores the bug in full, with every test still green, because the
+    /// damage lands in a *different* test's temp directory.
+    ///
+    /// The rule is not "don't call `Paths`" in general — `AgentManager::new`,
+    /// the CLI and the reset route all call it, and must. It is that a writer
+    /// which runs **detached from the call that scheduled it** takes its root as
+    /// an argument, so it can only ever write where its owner said.
+    ///
+    /// Asserted over source text because there is no runtime signal: a seeder
+    /// that reads the environment is indistinguishable from one that does not
+    /// until two roots exist at once, which is exactly the situation a passing
+    /// suite does not create.
+    #[test]
+    fn every_seeder_takes_its_root_as_an_argument() {
+        let soul = without_comments(production_half(include_str!("soul.rs")));
+        assert!(
+            !soul.contains("Paths::"),
+            "knowledge::soul must resolve no path of its own — every seeder here \
+             runs inside a task `AgentManager::new` spawned, so a `Paths::` call \
+             reads whatever BIOROUTER_PATH_ROOT says at an instant nobody owns."
+        );
+
+        let manager = without_comments(production_half(include_str!("../execution/manager.rs")));
+        let first_run_init = function_body(&manager, "async fn run_first_run_init(", "\n    }");
+        assert!(
+            !first_run_init.contains("Paths::") && !first_run_init.contains("config_dir()"),
+            "`run_first_run_init` is spawned, not awaited — it must receive its \
+             config root, never resolve one. Body was:\n{first_run_init}"
+        );
+        assert!(
+            first_run_init.contains("soul::install(&config_dir"),
+            "the Soul seeding must be handed the root this manager was built \
+             with. Body was:\n{first_run_init}"
+        );
+
+        let skills = without_comments(include_str!("../agents/skills_extension.rs"));
+        let seeder = function_body(&skills, "pub(crate) fn install_builtin_skills(", "\n}");
+        assert!(
+            !seeder.contains("Paths::"),
+            "`install_builtin_skills` is called from `run_first_run_init`, which \
+             is spawned — it must take its skills root. Body was:\n{seeder}"
+        );
+    }
 
     #[test]
     fn workflow_yaml_parses_into_a_valid_workflow() {
