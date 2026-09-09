@@ -136,9 +136,12 @@ async fn agent_with_hooks(
     provider: Arc<dyn Provider>,
     mode: BioRouterMode,
 ) -> (Agent, String, TempDir) {
-    // SAFETY: only flips the project-hook opt-in the HooksManager reads when it
-    // is constructed, a few lines below.
-    std::env::set_var("BIOROUTER_ALLOW_PROJECT_HOOKS", "1");
+    // The project-hooks decision is STATED on the agent's config below rather
+    // than parked in the process environment. `HooksManager::new_with_managed`
+    // reads `BIOROUTER_ALLOW_PROJECT_HOOKS` with a bare `std::env::var` that no
+    // lock and no task-local override can reach, and this file never removed the
+    // variable — so it stood for every agent built in this binary afterwards.
+    // See `docs/testing/process-global-state.md`.
 
     let work_dir = TempDir::new().unwrap();
     std::fs::create_dir_all(work_dir.path().join(".biorouter")).unwrap();
@@ -155,7 +158,8 @@ async fn agent_with_hooks(
         Arc::new(PermissionManager::new(permission_dir.path().to_path_buf())),
         None,
         mode,
-    );
+    )
+    .with_project_hooks(true);
     let agent = Agent::with_config(config);
 
     let session = session_manager

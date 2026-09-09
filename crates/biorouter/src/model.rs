@@ -1172,8 +1172,8 @@ mod tests {
     struct Watched {
         key: &'static str,
         verdict: Verdict,
-        /// How many files under `crates/*/src` must still name this key **in
-        /// code**.
+        /// How many files under `crates/*/src` or `crates/*/tests` must still
+        /// name this key **in code**.
         ///
         /// ⚠ A **mention** count, not a match count, and deliberately so: a
         /// `Presence` row is healthy at zero matches, so a floor on matches
@@ -1364,10 +1364,27 @@ mod tests {
     ///    watchable set is the whole config surface, not this table. This table
     ///    is a list of measured hazards, not a closed set. Green here is not a
     ///    proof of hermeticity.
-    /// 3. **`crates/*/tests/`, which is skipped on purpose.** Each file there
-    ///    compiles to its own binary, so a write cannot reach the lib test
-    ///    binary these readers live in. It can still reach the other tests in
-    ///    its own file; that is a smaller, separate hazard the audit records.
+    /// 3. **`crates/*/examples/` and `build.rs`.** Neither is compiled into a
+    ///    test binary, so a write there cannot reach one at all. Eight files,
+    ///    and the only `.rs` in the workspace this walk does not read.
+    ///
+    /// # What it walks
+    ///
+    /// `crates/*/src/**` **and** `crates/*/tests/**`.
+    ///
+    /// ⚠ **The second half was missing, and the omission read as deliberate.**
+    /// The two guards this table replaced walked all of `crates/**`; the table
+    /// walked `crates/*/src/**` and its own documentation explained why
+    /// `tests/` was skipped — so consolidating three instruments into one
+    /// narrowed the coverage by 129 of the workspace's 762 `.rs` files while
+    /// looking like a strict improvement. The reasoning was half right: a
+    /// crate's top-level `tests/` file compiles to its OWN binary, so a write
+    /// there cannot race the lib tests most of these readers live in. It races
+    /// every other test in that binary, which is a smaller hazard and not a
+    /// different one — and it is invisible from anywhere else, which is the
+    /// part that matters. Two unrestored writes of
+    /// `BIOROUTER_ALLOW_PROJECT_HOOKS` sat there while this guard, the audit's
+    /// ledger and the audit's recipe all reported the key as handled.
     #[test]
     fn no_test_parks_a_shared_setting_in_the_process_environment() {
         // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter; go up twice.
@@ -1410,7 +1427,8 @@ mod tests {
             })
             .collect();
 
-        let mut scanned = 0usize;
+        let mut scanned_src = 0usize;
+        let mut scanned_tests = 0usize;
         let mut mentions = vec![0usize; WATCHED.len()];
         let mut offenders: Vec<String> = Vec::new();
 
@@ -1427,18 +1445,26 @@ mod tests {
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;
             }
-            // In scope: `crates/<crate>/src/**`. A `tests/` directory nested
-            // INSIDE `src` is an ordinary module of that crate's lib and stays
-            // in scope; only a crate's top-level `tests/` is its own binary.
+            // In scope: `crates/<crate>/src/**` and `crates/<crate>/tests/**`.
+            // A `tests/` directory nested INSIDE `src` is an ordinary module of
+            // that crate's lib and is already covered by the first arm.
+            //
+            // Counted per scope rather than in one total, because one number
+            // cannot tell "the tests half was walked" from "the src half grew" —
+            // and narrowing back to `src` alone is exactly the regression the
+            // widening exists to prevent.
             let Ok(relative) = path.strip_prefix(&crates) else {
                 continue;
             };
             let mut parts = relative.components();
             let _crate_name = parts.next();
-            if parts.next().map(|c| c.as_os_str()) != Some(std::ffi::OsStr::new("src")) {
-                continue;
+            match parts.next().and_then(|c| c.as_os_str().to_str()) {
+                Some("src") => scanned_src += 1,
+                Some("tests") => scanned_tests += 1,
+                // `examples/` and `build.rs`: not compiled into a test binary,
+                // so a write there cannot reach one.
+                _ => continue,
             }
-            scanned += 1;
             let Ok(source) = std::fs::read_to_string(path) else {
                 continue;
             };
@@ -1496,11 +1522,19 @@ mod tests {
             }
         }
 
-        // A walk that reads nothing agrees with a walk that finds nothing.
+        // A walk that reads nothing agrees with a walk that finds nothing. One
+        // floor per scope: a single total is satisfied by the `src` half alone,
+        // so it would pass on the very narrowing this widening undid.
         assert!(
-            scanned > 400,
-            "the audit only scanned {scanned} files under crates/*/src, which is too few to \
-             have walked the workspace"
+            scanned_src > 400,
+            "the audit only scanned {scanned_src} files under crates/*/src, which is too few \
+             to have walked the workspace"
+        );
+        assert!(
+            scanned_tests > 90,
+            "the audit only scanned {scanned_tests} files under crates/*/tests, which is too \
+             few to have walked them. A write parked there is invisible to every other test in \
+             its own binary, and to every other instrument in this repository"
         );
 
         // PER-KEY non-vacuity. One global floor lets most rows rot silently
