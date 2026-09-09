@@ -528,6 +528,32 @@ impl ModelConfig {
     //
     // If that recurs, do NOT reach for a lock in the tests. It is already
     // there. Keep the rejection cases off the environment instead.
+    //
+    // ── The second route, found when it recurred anyway ─────────────────────
+    //
+    // It did recur, twice on `main` in one day, on merge commits that touched
+    // only renderer files — and the environment was innocent. `max_tokens` is
+    // the one setting here that is NOT read from the environment: it goes
+    // through `Config::global().get_param`, i.e. through `config.yaml`. That
+    // read can fail for reasons that have nothing to do with the value, and
+    // `validate_max_tokens` used to call every such failure a malformed value.
+    //
+    // The failing runs are what named it: both panicked 28-120 ms into the
+    // FIRST test binary of the job, which is the one moment `config.yaml` does
+    // not exist yet. Every thread that reaches `Config::load` then takes the
+    // create branch, and `save_values` staged all of them through one shared
+    // `config.tmp` while holding `fs2`'s `lock_exclusive`. On Windows that is
+    // `LockFileEx`, a **mandatory** byte-range lock — a concurrent
+    // `read_to_string` of the locked file fails with `ERROR_LOCK_VIOLATION`
+    // instead of returning bytes. On unix `flock` is advisory, so readers never
+    // notice: hence Windows-only, always at start-up, and always the same
+    // handful of alphabetically-first tests.
+    //
+    // Two fixes, and both matter. `config::base::save_values` now stages each
+    // write through its own path, so no writer can end up holding an exclusive
+    // lock on `config.yaml` itself. And `validate_max_tokens` below no longer
+    // reads an unreadable config layer as a bad value — which is the half that
+    // holds no matter what else learns to make that read fail.
 
     fn parse_temperature() -> Result<Option<f32>, ConfigError> {
         let raw = std::env::var("BIOROUTER_TEMPERATURE").ok();
@@ -562,11 +588,42 @@ impl ModelConfig {
     }
 
     /// Pure half of [`Self::parse_max_tokens`]: interpret whatever the config
-    /// layer returned for `BIOROUTER_MAX_TOKENS`. `NotFound` means unset;
-    /// any other lookup error is a malformed value.
+    /// layer returned for `BIOROUTER_MAX_TOKENS`.
+    ///
+    /// Three outcomes, and the middle one is the whole point of this function
+    /// existing separately from [`Self::parse_max_tokens`]:
+    ///
+    /// * a value that is there and usable — take it;
+    /// * a value that is there and **malformed** (`DeserializeError`) — that is
+    ///   a real mistake in the user's configuration, and saying so is useful;
+    /// * the config layer could not answer at all — unset (`NotFound`), or the
+    ///   file/keyring could not be READ this instant (`FileError`, `LockError`,
+    ///   `DirectoryError`, `KeyringError`, `FallbackToFileStorage`). None of
+    ///   those is a statement about the value, so none of them may fail the
+    ///   whole model config.
+    ///
+    /// ⚠ **That last group used to be an error, and it is what made
+    /// `test (windows-latest)` flake.** `ModelConfig::new` calls this on every
+    /// construction, and `new_or_fail` turns any `Err` into a panic — so a
+    /// transient, value-independent I/O failure in the config layer killed a
+    /// test that has nothing to do with max tokens. It happened at the one
+    /// moment `config.yaml` does not exist yet: every thread that reaches
+    /// `Config::load` races to create it, and on Windows `fs2`'s
+    /// `lock_exclusive` is a **mandatory** `LockFileEx` byte-range lock, so a
+    /// concurrent reader gets `ERROR_LOCK_VIOLATION` rather than the file. The
+    /// writers' side of that is fixed in `config::base::save_values` (each
+    /// write now stages through its own path); this half is the reader
+    /// refusing to read an outage as a bad value in the first place, which
+    /// holds however the outage arises.
+    ///
+    /// Degrading to "unset" is also what every other consumer of the config
+    /// layer already does — they reach for `.ok()` or `unwrap_or(default)`.
+    /// A session that runs with the default token budget is strictly better
+    /// than a session that panics.
     fn validate_max_tokens(
         looked_up: Result<i32, crate::config::ConfigError>,
     ) -> Result<Option<i32>, ConfigError> {
+        use crate::config::ConfigError as LookupError;
         match looked_up {
             Ok(tokens) => {
                 if tokens <= 0 {
@@ -577,12 +634,22 @@ impl ModelConfig {
                 }
                 Ok(Some(tokens))
             }
-            Err(crate::config::ConfigError::NotFound(_)) => Ok(None),
-            Err(e) => Err(ConfigError::InvalidValue(
+            // The value is present and cannot be understood — the one case
+            // that is genuinely about the value.
+            Err(LookupError::DeserializeError(detail)) => Err(ConfigError::InvalidValue(
                 "biorouter_max_tokens".to_string(),
                 String::new(),
-                e.to_string(),
+                detail,
             )),
+            Err(LookupError::NotFound(_)) => Ok(None),
+            // Unreadable, not invalid. Report it and carry on unset.
+            Err(unavailable) => {
+                tracing::warn!(
+                    "could not read biorouter_max_tokens from the config layer ({unavailable}); \
+                     treating it as unset"
+                );
+                Ok(None)
+            }
         }
     }
 
@@ -781,9 +848,18 @@ impl ModelConfig {
         Self::context_window_for(&self.model_name)
     }
 
+    /// [`Self::new`], panicking on failure.
+    ///
+    /// ⚠ **The panic must carry the error.** It did not, and that cost two CI
+    /// investigations: `test (windows-latest)` failed twice with
+    /// `Failed to create model config for gpt-5.6-codex` and nothing else, so
+    /// the one fact that identifies the cause — which setting, and what was
+    /// wrong with it — was thrown away at the moment it was known. There are
+    /// 170-odd call sites; the next one to fail should diagnose itself.
     pub fn new_or_fail(model_name: &str) -> ModelConfig {
-        ModelConfig::new(model_name)
-            .unwrap_or_else(|_| panic!("Failed to create model config for {}", model_name))
+        ModelConfig::new(model_name).unwrap_or_else(|e| {
+            panic!("Failed to create model config for {model_name}: {e}");
+        })
     }
 }
 
@@ -962,6 +1038,106 @@ mod tests {
         }
     }
 
+    /// The guard that actually covers the failure, on every route into it.
+    ///
+    /// [`no_test_poisons_a_shared_setting`] below watches the four settings
+    /// `ModelConfig::new` reads out of the **environment**. It cannot watch the
+    /// fifth, because max tokens is not an environment variable — it comes from
+    /// `Config::global().get_param`, and so it can fail for reasons no source
+    /// scan can enumerate: the file is missing, unreadable, locked by another
+    /// thread, on a directory that cannot be created, in a keyring that will
+    /// not answer. That is the hole the Windows flake went through, and closing
+    /// it by listing more writers is hopeless: the writer was the config layer
+    /// itself.
+    ///
+    /// So this guard asserts the *reader's* half instead, which is finite:
+    /// **only a value that is present and malformed may fail a model config.**
+    /// Anything else the config layer can say means "no answer", and no answer
+    /// means unset. That property is what makes `ModelConfig::new` immune to
+    /// whatever the config layer does next, rather than to the one mechanism
+    /// that has bitten so far.
+    ///
+    /// Every variant of `crate::config::ConfigError` is listed on purpose. If
+    /// one is added, this stops compiling and someone has to decide which of
+    /// the two groups it belongs to — which is the decision that was got wrong.
+    #[test]
+    fn a_config_layer_outage_is_never_read_as_a_malformed_value() {
+        use crate::config::ConfigError as LookupError;
+
+        // "The value is there and I cannot understand it" — the only lookup
+        // failure that is about the value, and so the only one that may fail.
+        let malformed = ModelConfig::validate_max_tokens(Err(LookupError::DeserializeError(
+            "invalid type: string \"nope\", expected i32".to_string(),
+        )));
+        assert!(
+            matches!(malformed, Err(ConfigError::InvalidValue(..))),
+            "a malformed configured value must still be reported, got {malformed:?}"
+        );
+
+        // Everything else says nothing about the value. `FileError` is the one
+        // the flake travelled on: on Windows, reading a file another thread has
+        // exclusively locked returns ERROR_LOCK_VIOLATION, not bytes.
+        let outages: Vec<(&str, LookupError)> = vec![
+            (
+                "unset",
+                LookupError::NotFound("BIOROUTER_MAX_TOKENS".into()),
+            ),
+            (
+                // 33 is ERROR_LOCK_VIOLATION on Windows — the code the flake
+                // actually arrived as. It renders under the host's own error
+                // table, so do not assert on its text.
+                "unreadable config file (os error 33: the Windows lock violation)",
+                LookupError::FileError(std::io::Error::from_raw_os_error(33)),
+            ),
+            (
+                "missing config file",
+                LookupError::FileError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such file",
+                )),
+            ),
+            (
+                "unusable config directory",
+                LookupError::DirectoryError("permission denied".into()),
+            ),
+            (
+                "config file locked",
+                LookupError::LockError("would block".into()),
+            ),
+            (
+                "keyring will not answer",
+                LookupError::KeyringError("no backend".into()),
+            ),
+            (
+                "secrets fell back to file",
+                LookupError::FallbackToFileStorage,
+            ),
+        ];
+
+        for (what, outage) in outages {
+            let rendered = outage.to_string();
+            let verdict = ModelConfig::validate_max_tokens(Err(outage));
+            assert_eq!(
+                verdict.as_ref().ok(),
+                Some(&None),
+                "{what}: the config layer could not answer ({rendered}), which is not a claim \
+                 about the value. Failing here fails ModelConfig::new, and new_or_fail turns \
+                 that into a panic in whatever unrelated test happens to be running. Got \
+                 {verdict:?}"
+            );
+        }
+
+        // And the value cases still behave.
+        assert_eq!(
+            ModelConfig::validate_max_tokens(Ok(4096)).unwrap(),
+            Some(4096)
+        );
+        assert!(matches!(
+            ModelConfig::validate_max_tokens(Ok(0)),
+            Err(ConfigError::InvalidRange(..))
+        ));
+    }
+
     /// The standing guard against the race the split above fixed.
     ///
     /// These five variables are read process-wide by `ModelConfig::new`, which
@@ -978,9 +1154,19 @@ mod tests {
     ///
     /// It reads literal values in the two shapes these are actually written in
     /// — `env_lock::lock_env([("KEY", Some("value"))])` and
-    /// `set_var("KEY", "value")`. A value passed through a variable
-    /// (`("KEY", worker_limit)`) is invisible to it; if you need one of those,
-    /// make sure it can only ever hold values these validators accept.
+    /// `set_var("KEY", "value")`. The first also covers `temp_env::with_vars`
+    /// (the same tuple) and `temp_env::with_var("KEY", Some("value"), …)`,
+    /// where the call's own paren plays the part of the tuple's. A value passed
+    /// through a variable (`("KEY", worker_limit)`) is invisible to it; if you
+    /// need one of those, make sure it can only ever hold values these
+    /// validators accept.
+    ///
+    /// ⚠ **Being green here does not mean `ModelConfig::new` is safe.** It
+    /// watches four of the five settings, and the fifth — max tokens — is read
+    /// from the config layer, which no source scan can cover. That is where the
+    /// flake this guard was written for actually came back from;
+    /// [`a_config_layer_outage_is_never_read_as_a_malformed_value`] above is
+    /// the half that covers it.
     #[test]
     fn no_test_poisons_a_shared_setting() {
         fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -1020,7 +1206,15 @@ mod tests {
         // `BIOROUTER_TOOLSHIM_OLLAMA_MODEL`.
         let keys = "BIOROUTER_MAX_TOKENS|BIOROUTER_TEMPERATURE|BIOROUTER_CONTEXT_LIMIT\
                     |BIOROUTER_TOOLSHIM|BIOROUTER_TOOLSHIM_OLLAMA_MODEL";
-        // `("KEY", Some("value"))` — the `env_lock::lock_env` shape.
+        // `("KEY", Some("value"))` — the `env_lock::lock_env` / `temp_env::
+        // with_vars` shape.
+        //
+        // ⚠ This also covers `temp_env::with_var("KEY", Some("value"), …)`,
+        // which reads like a different shape and is not one: the CALL's own
+        // opening paren plays the part of the tuple's. That was measured, not
+        // assumed — a dedicated `with_var\(…` pattern was written, and the only
+        // thing it achieved was reporting every offender twice. Do not add it
+        // back without first checking that this one really misses the shape.
         let tuple = regex::Regex::new(&format!(r#"\(\s*"({keys})"\s*,\s*Some\(\s*"([^"]*)"\s*\)"#))
             .unwrap();
         // `set_var("KEY", "value")`.
