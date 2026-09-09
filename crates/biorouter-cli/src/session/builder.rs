@@ -483,30 +483,42 @@ async fn close_ephemeral_store_with_manager(
 /// The pause *backs off* instead of staying flat, because the two cases it
 /// serves pull in opposite directions. The common one is a handle a
 /// millisecond from release, which wants the first retry almost immediately.
-/// The rare one is a runner under enough load that the same handle takes
-/// seconds, which wants a budget long enough to outlast it. A flat 50 ms over
-/// 40 attempts served the first well and the second not at all: 2 s total,
-/// and it went red on windows-latest while two sibling tests doing the
-/// identical thing passed in the same run — which is what a budget slightly
-/// too short looks like — though the diagnosis was WRONG, and the correction is
-/// worth reading before touching these numbers again.
+/// The rare one is a loaded runner where the file stays locked for seconds,
+/// which wants a budget long enough to outlast it. 64 attempts doubling from
+/// 25 ms to a 200 ms ceiling spend 12.175 s in total — 25 + 50 + 100, then
+/// sixty pauses at the ceiling — and still reach the FIRST retry twice as fast
+/// as the flat 50 ms pause this started life as.
 ///
-/// ⚠ **The budget was never the bug, and a big one costs more than it looks.**
-/// Raising it to ~17.8 s did not fix Windows: the diagnostic showed a removal
-/// attempted after the whole budget still failing with os error 32. The real
-/// defect was that the wait ran ON the runtime thread — see
-/// `close_ephemeral_store_with_manager`, which now uses `spawn_blocking`.
+/// ⚠ **This number has moved three times, and two of those passes recorded a
+/// reason that does not survive measurement. Read this before moving it a
+/// fourth.**
 ///
-/// Meanwhile the long budget did real damage. Many tests in this binary take
-/// ONE process-global `env_lock`, and a test that spends the whole budget holds
-/// it the entire time, so every other test queues behind it. A local run went
-/// from about forty seconds to over an hour with all sixteen threads parked,
-/// and `privacy_tier` alone measured 17.49 s — one budget, exactly.
+/// - A flat 2 s was too short on windows-latest, and raising it to ~17.8 s did
+///   not help: the diagnostic showed a removal attempted AFTER the whole budget
+///   still failing with os error 32. The real defect was that the wait ran ON
+///   the runtime thread — see [`close_ephemeral_store`], which now uses
+///   `spawn_blocking`. That fix is what makes a longer budget mean anything at
+///   all; without it a bigger number only sleeps longer.
+/// - The budget was then cut to ~3.4 s on the grounds that "many tests in this
+///   binary take ONE process-global `env_lock`, and a test that spends the
+///   whole budget holds it the entire time", citing a local run that went from
+///   about forty seconds to over an hour. Measured 2026-09-08, and neither half
+///   holds: **no test that can reach this loop takes `env_lock`** (the modules
+///   that take it are `cli`, `logging` and `commands::{serve, session,
+///   knowledge, extension}`, and no test anywhere calls `build_session`), and
+///   instrumenting the loop across the whole `biorouter-cli --lib` suite on
+///   macOS counted **zero** entries against a real store path — all 40 hits
+///   came from the two injected-closure unit tests, whose sleep is a no-op,
+///   and 40 is exactly what those two spend. What made that local run take an
+///   hour was not re-derived here; what is measured is that nothing spends
+///   this budget off Windows, so the number is not what made it slow.
 ///
-/// So: modest again. Doubling from 25 ms to a 200 ms ceiling spends ~3.6 s over
-/// 20 attempts, still reaches the first retry twice as fast as the original flat
-/// pause, and no longer holds a global lock for the better part of a minute.
-const STORE_REMOVAL_ATTEMPTS: u32 = 20;
+/// So off Windows this budget is not spent at all, and on Windows spending it
+/// is the alternative to a red build and a `--no-session` run's conversation
+/// left in the temp directory. It stays bounded because the same wait is paid
+/// at the end of a real run: a process that will not exit is worse than a
+/// directory that lingers. 12 s is the most that trade is worth.
+const STORE_REMOVAL_ATTEMPTS: u32 = 64;
 const STORE_REMOVAL_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
 const STORE_REMOVAL_MAX_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -524,14 +536,28 @@ fn store_removal_pause(attempt: u32) -> std::time::Duration {
 /// `SessionManager::close()` awaited AND a following query already refused
 /// because the pool is closed, removing the store still fails with os error
 /// 32, "The process cannot access the file because it is being used by another
-/// process", and an immediate second attempt fails identically. sqlx runs each
-/// SQLite connection on its own background thread, and `Pool::close()` waits
-/// for the pool's bookkeeping rather than for that thread to reach
-/// `sqlite3_close`, so the db, `-wal` and `-shm` handles outlive the await by a
-/// little. Unix never notices, because unlinking an open file is allowed there.
+/// process", and an immediate second attempt fails identically. Unix never
+/// notices, because unlinking an open file is allowed there.
 ///
-/// Waiting is therefore the fix and not a workaround: the handles are on their
-/// way out and nothing else can be asked. The pause is bounded, and entered
+/// ⚠ **The mechanism this comment named for a month was wrong, and it matters
+/// because it pointed at a fix that does not exist.** It said sqlx reaches
+/// `sqlite3_close` on a per-connection background thread and `Pool::close()`
+/// waits for the pool's bookkeeping instead, so the db/-wal/-shm handles
+/// "outlive the await by a little" — inviting the next reader to wait on the
+/// pool rather than on the OS. Measured on macOS 2026-09-08 with `lsof` against
+/// the test process's own pid: SIX handles under the store before
+/// `SessionManager::close().await` (db, -wal and -shm on two connections) and
+/// **zero** the instant it returns. sqlx 0.8's `PoolInner::close` awaits every
+/// connection's graceful close, and `sqlx-sqlite`'s `Connection::close` awaits
+/// the worker thread's confirmation, which that thread sends only after
+/// dropping the connection state and therefore the `sqlite3` handle. On our
+/// side of the process there is nothing left to wait for.
+///
+/// What still holds the file on a loaded windows-latest runner could not be
+/// named from here — no Windows machine to point `handle.exe` at — but every
+/// remaining candidate (a scanner reading the freshly written db, a filter
+/// driver) is OUTSIDE this process. Waiting is therefore the fix and not a
+/// workaround: there is nothing else to ask. The pause is bounded, and entered
 /// only after an attempt has already failed, so the ordinary path pays nothing.
 ///
 /// `remove` is injected so the retry can be tested on any platform. A test that
@@ -1308,7 +1334,8 @@ mod tests {
         close_ephemeral_store(Some(dir)).await;
         assert!(
             !path.exists(),
-            "an early exit must not leak the biorouter-no-session-* directory"
+            "an early exit must not leak the biorouter-no-session-* directory{}",
+            why_the_store_survived(&path)
         );
         // A run without --no-session has no store to close.
         close_ephemeral_store(None).await;
@@ -1565,14 +1592,104 @@ mod tests {
         assert_eq!(calls.get(), 1, "and needs no retries");
     }
 
+    /// A lock the OS holds for ten seconds is still waited out.
+    ///
+    /// This is the windows-latest failure in Rust run 34306895174 turned into
+    /// a requirement. `a_finished_run_leaves_no_private_store_behind` spent a
+    /// ~3.4 s budget and then reported
+    ///
+    /// ```text
+    ///   still present: [sessions]
+    ///   a second removal also failed: Os { code: 32, ... "The process cannot
+    ///     access the file because it is being used by another process." }
+    /// ```
+    ///
+    /// so the lock outlived the budget rather than the budget outlasting the
+    /// lock. Ten seconds is the shape of the requirement, not a measurement of
+    /// the runner: nobody has an instrument on that machine, and the honest
+    /// statement is that 3.4 s was not enough.
+    ///
+    /// The clock is simulated — the injected sleep advances a counter instead
+    /// of serving the pause — so ten seconds cost the suite nothing. Same
+    /// reason the schedule test injects its wait: a test that slept the budget
+    /// to prove the budget is a test nobody runs.
+    #[test]
+    fn a_lock_the_os_holds_for_ten_seconds_is_still_waited_out() {
+        use std::cell::Cell;
+        use std::io::Error;
+        use std::time::Duration;
+
+        let held_for = Duration::from_secs(10);
+        let elapsed = Cell::new(Duration::ZERO);
+        let result = remove_dir_all_retrying_with(
+            Path::new("irrelevant"),
+            |_| {
+                if elapsed.get() < held_for {
+                    Err(Error::other(
+                        "The process cannot access the file because it is being used by \
+                         another process.",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |pause| elapsed.set(elapsed.get() + pause),
+        );
+
+        assert!(
+            result.is_ok(),
+            "a lock released after {held_for:?} must still be waited out; this budget gave up \
+             at {:?}",
+            elapsed.get()
+        );
+    }
+
+    /// The diagnostic has to name the FILE, not the directory holding it.
+    ///
+    /// The windows-latest failure this test exists for reported `still
+    /// present: [sessions]` — one entry, a directory, and no clue whether the
+    /// db, its `-wal` or its `-shm` was the thing the OS would not let go of.
+    /// A listing that stops at the top level answers the least useful version
+    /// of the question.
+    ///
+    /// The separator is asserted too: the report is read on Windows and
+    /// written here, so it is normalised rather than inherited from
+    /// `std::path`.
+    #[test]
+    fn the_diagnostic_names_every_surviving_file_under_the_store() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir(&sessions).expect("sessions dir");
+        for name in ["sessions.db", "sessions.db-wal", "sessions.db-shm"] {
+            std::fs::write(sessions.join(name), b"x").expect("store file");
+        }
+
+        let report = why_the_store_survived(dir.path());
+
+        for name in ["sessions.db", "sessions.db-wal", "sessions.db-shm"] {
+            assert!(
+                report.contains(&format!("sessions/{name}")),
+                "the diagnostic must name {name} and the directory it sits in, so the next \
+                 windows-latest failure says WHICH file the OS is refusing: {report}"
+            );
+        }
+        assert!(
+            report.contains("SUCCEEDED"),
+            "nothing was holding this store, so the diagnostic must say the removal took \
+             rather than reporting a lock that is not there: {report}"
+        );
+        assert!(
+            !dir.path().exists(),
+            "the diagnostic removes what it can; a store it reported on must not survive it"
+        );
+    }
+
     /// The budget is the fix, so the budget is what needs pinning.
     ///
-    /// A flat 50 ms pause over these same 40 attempts spent 2 s in total, and
-    /// 2 s was measurably not enough on a loaded windows-latest runner. Both
-    /// halves of the replacement have to hold for that to be addressed: the
-    /// first retry must stay prompt (a backoff that starts slow would make
-    /// the ordinary case worse to fix the rare one), and the tail must be
-    /// long enough that a handle taking seconds to close is still waited out.
+    /// Both halves have to hold: the first retry must stay prompt (a backoff
+    /// that starts slow would make the ordinary case worse to fix the rare
+    /// one), and the tail must be long enough that a lock held for seconds is
+    /// still waited out.
     #[test]
     fn the_removal_budget_backs_off_and_still_outlasts_a_slow_handle() {
         use std::cell::RefCell;
@@ -1607,55 +1724,157 @@ mod tests {
             "the backoff must reach its ceiling rather than growing without bound"
         );
 
-        // ⚠ Bounded on BOTH sides, and the upper bound is the one with a story.
+        // ⚠ Bounded on BOTH sides, and both bounds have a story.
         //
-        // A previous pass raised this budget to ~17.8 s believing the Windows
-        // failure was a wait that was too short. It was not — the wait was
-        // running on the runtime thread — and the oversized budget did its own
-        // damage: many tests in this binary take one process-global `env_lock`,
-        // so a test that spends the whole budget holds it throughout and every
-        // other test queues behind it. A local run went from about forty seconds
-        // to over an hour with all sixteen threads parked.
+        // The floor is the windows-latest failure in run 34306895174: the store
+        // survived a ~3.4 s budget and `why_the_store_survived` was refused
+        // again immediately afterwards, so whatever holds the file holds it for
+        // longer than that. A budget under ten seconds is one that has not
+        // learned from that run.
         //
-        // So the ceiling is a real requirement, not tidiness. Anyone raising it
-        // is re-buying that hour.
+        // The ceiling used to be five seconds, on the grounds that a test
+        // spending the whole budget holds a process-global `env_lock` and
+        // serialises the binary behind it. That reason did not survive
+        // measurement — no test that reaches this loop takes `env_lock`, and
+        // instrumenting the loop over the whole suite on macOS counted zero
+        // entries against a real store path — so the ceiling now guards the
+        // thing it actually protects: a real `--no-session` run pays this same
+        // wait before it can exit.
         let total: std::time::Duration = waits.iter().sum();
         assert!(
-            total >= std::time::Duration::from_secs(3),
-            "the budget must still outlast a handle that is merely slow to release. Got {total:?}"
+            total >= std::time::Duration::from_secs(10),
+            "the budget must outlast the lock that was measured on windows-latest, which was \
+             still held after ~3.4 s. Got {total:?}"
         );
         assert!(
-            total <= std::time::Duration::from_secs(5),
-            "the budget is held under a process-global lock while it runs, so a long one \
-             serialises the whole test binary behind it. If a handle needs more than this, \
-             the answer is not more waiting - it is finding what is holding it. Got {total:?}"
+            total <= std::time::Duration::from_secs(15),
+            "this wait is also paid at the end of a real --no-session run, and a process that \
+             will not exit is worse than a temp directory that lingers. If a lock needs more \
+             than this, the answer is not more waiting - it is finding what is holding it. \
+             Got {total:?}"
         );
+    }
+
+    /// How long the diagnostic keeps asking after the retry budget has already
+    /// given up. Only ever paid by a run that is already red.
+    const DIAGNOSTIC_PROBE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Every path under `root`, relative to it and `/`-separated so the message
+    /// reads the same on a runner as it does here. Directories are suffixed
+    /// with `/`. Bounded, because a panic message nobody can read is a panic
+    /// message nobody reads.
+    fn store_entries(root: &std::path::Path) -> Vec<String> {
+        fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
+            let Ok(read) = std::fs::read_dir(dir) else {
+                out.push(format!("{prefix}<unreadable>"));
+                return;
+            };
+            for entry in read.filter_map(|e| e.ok()) {
+                if out.len() >= 64 {
+                    out.push("…".to_string());
+                    return;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let rel = format!("{prefix}{name}");
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    out.push(format!("{rel}/"));
+                    walk(&entry.path(), &format!("{rel}/"), out);
+                } else {
+                    out.push(rel);
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(root, "", &mut out);
+        out.sort();
+        out
     }
 
     /// Diagnostics for a store directory that outlived the thing meant to
     /// remove it.
     ///
-    /// `TempDir`'s `Drop` calls `remove_dir_all` and throws the error away, so
-    /// a failure here says only "the path is still there" and leaves the two
-    /// candidate causes indistinguishable: a file handle somebody never
-    /// released, or a removal the OS refused for a reason of its own. This
-    /// retries the removal in the foreground purely to capture the message,
-    /// and lists what is left. It runs only on the failure path, so it cannot
-    /// turn a red run green.
+    /// The failure this explains happens only on a runner nobody can attach a
+    /// debugger to, so the message has to answer the next three questions by
+    /// itself:
+    ///
+    /// - **What is left?** Every entry, not just the top level. The
+    ///   windows-latest failure in Rust run 34306895174 reported `still
+    ///   present: [sessions]`, which names a directory and leaves the
+    ///   interesting half — which file inside it — unsaid.
+    /// - **Which file is the OS refusing?** Each one is probed on its own, so
+    ///   the message names it. `remove_file` is the probe because it asks the
+    ///   real question, and every file it takes is one the retry would have
+    ///   taken anyway: the store is being deleted either way.
+    /// - **For how long?** The whole tree is re-probed for a bounded while
+    ///   afterwards. "The budget is two seconds short" and "this is a real
+    ///   leak" are the same message today, and they call for opposite fixes.
+    ///
+    /// The re-probe blocks its thread, which would be a bug if the release
+    /// needed the runtime to make progress — the mistake this file has already
+    /// made once. It cannot be one here: the budget ahead of it was spent on
+    /// `spawn_blocking` with the runtime free, so anything waiting on a tokio
+    /// task has already had its chance.
+    ///
+    /// It runs only on the failure path, so it cannot turn a red run green.
     fn why_the_store_survived(path: &std::path::Path) -> String {
-        let entries = match std::fs::read_dir(path) {
-            Ok(rd) => rd
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(", "),
-            Err(e) => format!("<unreadable: {e}>"),
+        let entries = store_entries(path);
+        let listing = if entries.is_empty() {
+            "<empty or unreadable>".to_string()
+        } else {
+            entries.join(", ")
         };
-        let retry = match std::fs::remove_dir_all(path) {
-            Ok(()) => "a second removal SUCCEEDED, so the first lost a race".to_string(),
-            Err(e) => format!("a second removal also failed: {e:?}"),
+
+        let mut refused = Vec::new();
+        for rel in entries.iter().filter(|e| !e.ends_with('/')) {
+            let target = rel
+                .split('/')
+                .fold(path.to_path_buf(), |acc, segment| acc.join(segment));
+            match std::fs::remove_file(&target) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => refused.push(format!("{rel}: {e:?}")),
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let mut attempts = 0u32;
+        let gone = |attempts: u32, elapsed: std::time::Duration| {
+            if attempts == 1 {
+                "a second removal SUCCEEDED immediately, so the first lost a race".to_string()
+            } else {
+                format!(
+                    "the store became removable {elapsed:?} AFTER the budget ran out, so the \
+                     budget is short by at least that much"
+                )
+            }
         };
-        format!("\n  still present: [{entries}]\n  {retry}")
+        let outcome = loop {
+            attempts += 1;
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => break gone(attempts, started.elapsed()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    break gone(attempts, started.elapsed())
+                }
+                Err(e) => {
+                    if started.elapsed() >= DIAGNOSTIC_PROBE {
+                        break format!(
+                            "still refusing {:?} after the budget ran out, so this is not a \
+                             budget that is merely short: {e:?}",
+                            started.elapsed()
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        };
+
+        let refused = if refused.is_empty() {
+            String::new()
+        } else {
+            format!("\n  refused file by file: [{}]", refused.join(", "))
+        };
+        format!("\n  still present: [{listing}]{refused}\n  {outcome}")
     }
 
     #[test]
