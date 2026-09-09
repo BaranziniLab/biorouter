@@ -1049,76 +1049,126 @@ mod tests {
         );
     }
 
+    /// Two routes describe ONE model-facing surface: the read-only count
+    /// (`callable_tool_count`, behind `GET /agent/callable_tool_count`) and the
+    /// turn's own preparation. They must agree — and the count route must not
+    /// grade, because grading replaces the execution policy a running turn
+    /// approves against.
+    ///
+    /// ⚠ Both reads resolve the platform gates independently
+    /// (`Agent::platform_tool_gates`), and one of those gates —
+    /// `session_blobs` — is `message_blobs::lazy_load_enabled()`, a LIVE read
+    /// of the config layer, which resolves `BIOROUTER_SESSION_BLOB_LAZY_LOAD`
+    /// from the process environment. So this test's surface used to be
+    /// whatever the binary's other tests had left in the environment at each of
+    /// the two instants, and CI caught it: `left: 4, right: 5`, the fifth tool
+    /// being `platform__read_session_blob`, which appeared between the two
+    /// reads because a concurrent `#[serial]` test had just parked the flag.
+    ///
+    /// The gate is therefore an INPUT here, stated once as a task-local config
+    /// override — invisible to every other test, so it needs no lock and gives
+    /// none — and the expected roster is derived from a single sample of the
+    /// same gates rather than from a hard-coded number. A tool that appears
+    /// from somewhere else now names itself instead of moving a count by one.
     #[tokio::test]
     async fn callable_count_is_pure_while_turn_prep_grades_sorted_frontend_tools(
     ) -> anyhow::Result<()> {
-        let agent = crate::agents::Agent::new();
+        let overrides = std::collections::HashMap::from([(
+            "BIOROUTER_SESSION_BLOB_LAZY_LOAD".to_string(),
+            "true".to_string(),
+        )]);
+        crate::config::with_config_overrides(overrides, async {
+            let agent = crate::agents::Agent::new();
 
-        let session = agent
-            .config
-            .session_manager
-            .create_session(
-                std::path::PathBuf::default(),
-                "test-prepare-tools".to_string(),
-                SessionType::Hidden,
-            )
-            .await?;
+            let session = agent
+                .config
+                .session_manager
+                .create_session(
+                    std::path::PathBuf::default(),
+                    "test-prepare-tools".to_string(),
+                    SessionType::Hidden,
+                )
+                .await?;
 
-        let model_config = ModelConfig::new("test-model").unwrap();
-        let provider = std::sync::Arc::new(MockProvider { model_config });
-        agent.update_provider(provider, &session.id).await?;
+            let model_config = ModelConfig::new("test-model").unwrap();
+            let provider = std::sync::Arc::new(MockProvider { model_config });
+            agent.update_provider(provider, &session.id).await?;
 
-        // Add unsorted frontend tools
-        let frontend_tools = vec![
-            Tool::new(
-                "frontend__z_tool".to_string(),
-                "Z tool".to_string(),
-                object!({ "type": "object", "properties": { } }),
-            ),
-            Tool::new(
-                "frontend__a_tool".to_string(),
-                "A tool".to_string(),
-                object!({ "type": "object", "properties": { } }),
-            ),
-        ];
+            // Add unsorted frontend tools
+            let frontend_tools = vec![
+                Tool::new(
+                    "frontend__z_tool".to_string(),
+                    "Z tool".to_string(),
+                    object!({ "type": "object", "properties": { } }),
+                ),
+                Tool::new(
+                    "frontend__a_tool".to_string(),
+                    "A tool".to_string(),
+                    object!({ "type": "object", "properties": { } }),
+                ),
+            ];
 
-        agent
-            .add_extension(crate::agents::extension::ExtensionConfig::Frontend {
-                name: "frontend".to_string(),
-                description: "desc".to_string(),
-                tools: frontend_tools,
-                instructions: None,
-                bundled: None,
-                available_tools: vec![],
-            })
-            .await
-            .unwrap();
+            agent
+                .add_extension(crate::agents::extension::ExtensionConfig::Frontend {
+                    name: "frontend".to_string(),
+                    description: "desc".to_string(),
+                    tools: frontend_tools,
+                    instructions: None,
+                    bundled: None,
+                    available_tools: vec![],
+                })
+                .await
+                .unwrap();
 
-        let working_dir = std::env::current_dir()?;
-        assert!(agent.tool_risks.is_empty());
-        let callable_count = agent.callable_tool_count(&session.id).await?;
-        assert!(callable_count >= 2);
-        assert!(
-            agent.tool_risks.is_empty(),
-            "a read-only count request mutated the shared risk registry"
-        );
+            // The whole roster this agent may advertise, stated rather than
+            // inherited: the two frontend tools registered above, plus whatever the
+            // platform gates open — sampled ONCE, here, from the same accessor both
+            // routes use.
+            let mut expected: Vec<String> = agent
+                .platform_tool_gates()
+                .await
+                .tools(None)
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .chain([
+                    "frontend__a_tool".to_string(),
+                    "frontend__z_tool".to_string(),
+                ])
+                .collect();
+            expected.sort();
+            assert!(
+                expected.contains(&"platform__read_session_blob".to_string()),
+                "the override above must reach the gates, else this test is back to \
+             reading the ambient environment: {expected:?}"
+            );
 
-        let (tools, _toolshim_tools, _system_prompt) = agent
-            .prepare_tools_and_prompt(&session.id, &working_dir)
-            .await?;
-        assert_eq!(callable_count, tools.len());
-        assert_eq!(agent.tool_risks.len(), tools.len());
+            let working_dir = std::env::current_dir()?;
+            assert!(agent.tool_risks.is_empty());
+            let callable_count = agent.callable_tool_count(&session.id).await?;
+            assert_eq!(
+                callable_count,
+                expected.len(),
+                "the count route must report the model-facing surface"
+            );
+            assert!(
+                agent.tool_risks.is_empty(),
+                "a read-only count request mutated the shared risk registry"
+            );
 
-        let names: Vec<String> = tools.iter().map(|t| t.name.clone().into_owned()).collect();
-        assert!(names.iter().any(|n| n == "frontend__a_tool"));
-        assert!(names.iter().any(|n| n == "frontend__z_tool"));
+            let (tools, _toolshim_tools, _system_prompt) = agent
+                .prepare_tools_and_prompt(&session.id, &working_dir)
+                .await?;
+            assert_eq!(callable_count, tools.len());
+            assert_eq!(agent.tool_risks.len(), tools.len());
 
-        // Verify the names are sorted ascending
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted);
+            // Sorted ascending, and exactly the roster named above — a stable order
+            // is what preserves multi-session prompt caching.
+            let names: Vec<String> = tools.iter().map(|t| t.name.clone().into_owned()).collect();
+            assert_eq!(names, expected);
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     #[tokio::test]
@@ -1256,155 +1306,171 @@ mod tests {
     async fn every_tool_absent_from_the_code_execution_catalogue_stays_directly_callable() {
         let path_root = tempfile::TempDir::new().expect("an isolated capability root");
         let path_root_value = path_root.path().to_string_lossy().into_owned();
-        let _env = env_lock::lock_env([
-            ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
-            ("BIOROUTER_SESSION_BLOB_LAZY_LOAD", Some("true")),
-        ]);
+        let _env = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str()))]);
 
-        let store = tempfile::TempDir::new().expect("an isolated session store");
-        let session_manager = Arc::new(crate::session::SessionManager::new(
-            store.path().to_path_buf(),
-        ));
-        let session = session_manager
-            .create_session(
+        // ⚠ `BIOROUTER_SESSION_BLOB_LAZY_LOAD` is set as a TASK-LOCAL config
+        // override, never in the process environment. It decides whether
+        // `platform__read_session_blob` reaches the model-facing roster
+        // (`PlatformToolGates::session_blobs`), and every agent in this binary
+        // reads it live through `Config::get_param` without asking for
+        // `env_lock` — so parking it in the environment silently changed the
+        // callable-tool count of every concurrently running test. It did:
+        // `callable_count_is_pure_while_turn_prep_grades_sorted_frontend_tools`
+        // below failed on CI with `left: 4, right: 5`, the missing tool being
+        // this one, because the flag flipped between its two reads.
+        // `no_test_parks_the_session_blob_flag_in_the_process_environment` in
+        // `platform_tools.rs` is the standing guard.
+        let overrides = std::collections::HashMap::from([(
+            "BIOROUTER_SESSION_BLOB_LAZY_LOAD".to_string(),
+            "true".to_string(),
+        )]);
+        crate::config::with_config_overrides(overrides, async {
+            let store = tempfile::TempDir::new().expect("an isolated session store");
+            let session_manager = Arc::new(crate::session::SessionManager::new(
                 store.path().to_path_buf(),
-                "code-execution-catalogue".to_string(),
-                SessionType::User,
-            )
-            .await
-            .expect("create the session under test");
-        let agent = crate::agents::Agent::with_config(crate::agents::AgentConfig::new(
-            Arc::clone(&session_manager),
-            crate::config::permission::PermissionManager::instance(),
-            None,
-            crate::config::BioRouterMode::Auto,
-        ));
-
-        // One ordinary extension, so the catalogue is not empty …
-        agent
-            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
-                name: "todo".into(),
-                description: "todo".into(),
-                bundled: Some(true),
-                available_tools: vec![],
-            })
-            .await
-            .expect("add the ordinary extension");
-        // … Knowledge, which is what opens two of the platform tools …
-        for name in ["knowledge", "code_execution"] {
-            let target = crate::agents::extension_manager::resolve_bundled_extension(name)
-                .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
-            agent
-                .add_extension(target.into_config(format!("{name} for the catalogue guard")))
+            ));
+            let session = session_manager
+                .create_session(
+                    store.path().to_path_buf(),
+                    "code-execution-catalogue".to_string(),
+                    SessionType::User,
+                )
                 .await
-                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
-        }
-        // … a frontend tool, which lives only in `Agent::frontend_tools` …
-        agent
-            .add_extension(crate::agents::extension::ExtensionConfig::Frontend {
-                name: "frontend".to_string(),
-                description: "desc".to_string(),
-                tools: vec![Tool::new(
-                    "frontend__pick_a_file".to_string(),
-                    "Ask the interface for a file".to_string(),
-                    object!({ "type": "object", "properties": { } }),
-                )],
-                instructions: None,
-                bundled: None,
-                available_tools: vec![],
-            })
-            .await
-            .expect("register the frontend tool");
-        // … and an armed structured-output response, which is the whole reason
-        // a workflow ever has `workflow__final_output` on its roster.
-        agent
-            .add_final_output_tool(crate::workflow::Response {
-                json_schema: Some(json!({ "type": "object" })),
-            })
-            .await;
+                .expect("create the session under test");
+            let agent = crate::agents::Agent::with_config(crate::agents::AgentConfig::new(
+                Arc::clone(&session_manager),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ));
 
-        let provider: Arc<dyn Provider> = Arc::new(MockProvider {
-            model_config: ModelConfig::new("test-model").unwrap(),
-        });
-        agent
-            .update_provider(Arc::clone(&provider), &session.id)
-            .await
-            .expect("bind the mock provider");
+            // One ordinary extension, so the catalogue is not empty …
+            agent
+                .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                    name: "todo".into(),
+                    description: "todo".into(),
+                    bundled: Some(true),
+                    available_tools: vec![],
+                })
+                .await
+                .expect("add the ordinary extension");
+            // … Knowledge, which is what opens two of the platform tools …
+            for name in ["knowledge", "code_execution"] {
+                let target = crate::agents::extension_manager::resolve_bundled_extension(name)
+                    .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
+                agent
+                    .add_extension(target.into_config(format!("{name} for the catalogue guard")))
+                    .await
+                    .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+            }
+            // … a frontend tool, which lives only in `Agent::frontend_tools` …
+            agent
+                .add_extension(crate::agents::extension::ExtensionConfig::Frontend {
+                    name: "frontend".to_string(),
+                    description: "desc".to_string(),
+                    tools: vec![Tool::new(
+                        "frontend__pick_a_file".to_string(),
+                        "Ask the interface for a file".to_string(),
+                        object!({ "type": "object", "properties": { } }),
+                    )],
+                    instructions: None,
+                    bundled: None,
+                    available_tools: vec![],
+                })
+                .await
+                .expect("register the frontend tool");
+            // … and an armed structured-output response, which is the whole reason
+            // a workflow ever has `workflow__final_output` on its roster.
+            agent
+                .add_final_output_tool(crate::workflow::Response {
+                    json_schema: Some(json!({ "type": "object" })),
+                })
+                .await;
 
-        let surface = agent
-            .prepare_model_tool_surface(&session.id, &provider)
-            .await;
-        assert!(
-            surface.code_execution_active,
-            "precondition: Code Execution narrowing must be in force, else this proves nothing"
-        );
+            let provider: Arc<dyn Provider> = Arc::new(MockProvider {
+                model_config: ModelConfig::new("test-model").unwrap(),
+            });
+            agent
+                .update_provider(Arc::clone(&provider), &session.id)
+                .await
+                .expect("bind the mock provider");
 
-        let catalogue: HashSet<String> = agent
-            .extension_manager
-            .get_prefixed_tools_excluding(CODE_EXECUTION_EXTENSION, None)
-            .await
-            .expect("build the importable-module catalogue")
-            .into_iter()
-            .map(|tool| tool.name.to_string())
-            .collect();
-        assert!(
-            !catalogue.is_empty(),
-            "an empty catalogue satisfies the implication for free"
-        );
-
-        let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
-        let uncatalogued: Vec<String> = surface
-            .available_tools
-            .iter()
-            .map(|tool| tool.name.to_string())
-            .filter(|name| !catalogue.contains(name))
-            .filter(|name| !name.starts_with(&code_exec_prefix))
-            .collect();
-
-        // Non-vacuity, family by family: each of these is in the roster and NOT
-        // in the catalogue, so each is a real obligation rather than a name the
-        // loop below never sees.
-        for expected in [
-            crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME,
-            crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
-            crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
-            FINAL_OUTPUT_TOOL_NAME,
-            "frontend__pick_a_file",
-            // The fifth family, and the one whose absence from the catalogue is
-            // a POLICY rather than a plumbing fact: the sandbox could dispatch
-            // `kb_delete_base` perfectly well, and must not, because the
-            // approval it is contracted to show cannot be raised from there.
-            // Listed here so removing the catalogue strip cannot quietly retire
-            // the obligation below along with it.
-            "knowledge__kb_delete_base",
-        ] {
+            let surface = agent
+                .prepare_model_tool_surface(&session.id, &provider)
+                .await;
             assert!(
-                uncatalogued.iter().any(|name| name == expected),
-                "{expected} must be in the roster and outside the catalogue for this \
+                surface.code_execution_active,
+                "precondition: Code Execution narrowing must be in force, else this proves nothing"
+            );
+
+            let catalogue: HashSet<String> = agent
+                .extension_manager
+                .get_prefixed_tools_excluding(CODE_EXECUTION_EXTENSION, None)
+                .await
+                .expect("build the importable-module catalogue")
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            assert!(
+                !catalogue.is_empty(),
+                "an empty catalogue satisfies the implication for free"
+            );
+
+            let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+            let uncatalogued: Vec<String> = surface
+                .available_tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .filter(|name| !catalogue.contains(name))
+                .filter(|name| !name.starts_with(&code_exec_prefix))
+                .collect();
+
+            // Non-vacuity, family by family: each of these is in the roster and NOT
+            // in the catalogue, so each is a real obligation rather than a name the
+            // loop below never sees.
+            for expected in [
+                crate::agents::platform_tools::PLATFORM_INGEST_SOURCE_TOOL_NAME,
+                crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
+                crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
+                FINAL_OUTPUT_TOOL_NAME,
+                "frontend__pick_a_file",
+                // The fifth family, and the one whose absence from the catalogue is
+                // a POLICY rather than a plumbing fact: the sandbox could dispatch
+                // `kb_delete_base` perfectly well, and must not, because the
+                // approval it is contracted to show cannot be raised from there.
+                // Listed here so removing the catalogue strip cannot quietly retire
+                // the obligation below along with it.
+                "knowledge__kb_delete_base",
+            ] {
+                assert!(
+                    uncatalogued.iter().any(|name| name == expected),
+                    "{expected} must be in the roster and outside the catalogue for this \
                  guard to mean anything: {uncatalogued:?}"
-            );
-        }
+                );
+            }
 
-        let frontend_tool_names: HashSet<String> =
-            agent.frontend_tools.lock().await.keys().cloned().collect();
-        let callable: HashSet<String> = surface
-            .directly_callable_tools
-            .iter()
-            .map(|tool| tool.name.to_string())
-            .collect();
-        for name in &uncatalogued {
-            assert!(
-                survives_code_execution_filter(name, &code_exec_prefix, &frontend_tool_names),
-                "`{name}` is in the model's roster and in no importable module, so Code \
+            let frontend_tool_names: HashSet<String> =
+                agent.frontend_tools.lock().await.keys().cloned().collect();
+            let callable: HashSet<String> = surface
+                .directly_callable_tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            for name in &uncatalogued {
+                assert!(
+                    survives_code_execution_filter(name, &code_exec_prefix, &frontend_tool_names),
+                    "`{name}` is in the model's roster and in no importable module, so Code \
                  Execution mode would leave it reachable from NOWHERE"
-            );
-            // The same statement one layer out: the exemption has to actually
-            // reach the surface the model is handed.
-            assert!(
-                callable.contains(name),
-                "`{name}` survives the predicate but is missing from the prepared roster"
-            );
-        }
+                );
+                // The same statement one layer out: the exemption has to actually
+                // reach the surface the model is handed.
+                assert!(
+                    callable.contains(name),
+                    "`{name}` survives the predicate but is missing from the prepared roster"
+                );
+            }
+        })
+        .await;
     }
 
     #[test]
