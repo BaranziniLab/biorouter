@@ -449,10 +449,12 @@ string `*[image omitted]*`. They exist to feed an LLM cheaply and deliberately d
 | C4 | Deny every permission by default; `setWindowOpenHandler`; block `file:` and `127.0.0.1` from that partition |
 | C5 | Per-origin policy with turn-scoped approval (PP-04) |
 | C6 | The "Open here" control on the existing `externalUrl` card — the only way a live page loads |
-| C7 | Tighten `frame-src` in both CSP sources once nothing needs remote framing |
+| C7 | ~~Tighten `frame-src` in both CSP sources once nothing needs remote framing~~ — **done 2026-09-09**, ahead of the rest of C |
 
-C7 is worth calling out: `frame-src 'self' blob: https: http:` is in both CSPs today and **nothing
-uses the remote part**. It is a latent hole that this workstream should close rather than inherit.
+C7 was worth calling out, and it is now closed: both policies read `frame-src 'self'`, and
+`ui/desktop/src/frameSrcCsp.test.ts` pins them. It landed before C1–C6 rather than after, because
+the live browser is a `WebContentsView` and never needed a frame source — so the latent hole could
+be closed without waiting on the feature that was expected to justify it.
 
 ### D — Annotation
 

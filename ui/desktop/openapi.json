@@ -495,14 +495,20 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "Refused: this entry reaches extensions as a public caller, and the named extension is private"
+          },
           "404": {
-            "description": "Resource not found"
+            "description": "Resource or extension not found"
           },
           "424": {
             "description": "Agent not initialized"
           },
           "500": {
             "description": "Internal server error"
+          },
+          "502": {
+            "description": "The extension failed the read"
           }
         }
       }

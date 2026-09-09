@@ -14,8 +14,13 @@
       stricter wins, so they must stay in step; `src/workspaceChannelCsp.test.ts` pins it.
       `wss:` is blanket where `ws:` is loopback-only, mirroring this policy's own
       cleartext-vs-TLS asymmetry for http (`http://127.0.0.1:*` vs blanket `https:`).
+
+      `frame-src` is `'self'` alone: every frame this document creates is `srcdoc`,
+      and the `blob: https: http:` it carried until September 2026 was dead — see the
+      comment on the same directive in src/main.ts. The two must move together, which
+      `src/frameSrcCsp.test.ts` pins.
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https: wss:; object-src 'none'; font-src 'self' data: https:; media-src 'self' mediastream:; form-action 'none'; base-uri 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self' blob: https: http:;"/>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https: wss:; object-src 'none'; font-src 'self' data: https:; media-src 'self' mediastream:; form-action 'none'; base-uri 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self';"/>
     <title>Biorouter</title>
     <script>
       // Initialize theme before any content loads

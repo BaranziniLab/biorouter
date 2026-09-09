@@ -109,9 +109,10 @@ have shipped:
   Region capture covers every artifact kind and shipped first, as the plan intended; a text
   selector needs an injected agent posting through the existing trusted-frame gate.
 - **PDF text selection** needs pdf.js's `TextLayer` added to the canvas-only preview.
-- The **`frame-src`** hole (`'self' blob: https: http:` in both CSPs) is still open. Nothing uses
-  the remote part, and the live browser deliberately does not — it is a native view, not a frame —
-  so it can now be tightened.
+- ~~The **`frame-src`** hole (`'self' blob: https: http:` in both CSPs).~~ **Closed 2026-09-09**:
+  both policies now read `frame-src 'self'`, pinned by `ui/desktop/src/frameSrcCsp.test.ts`, which
+  also scans every `<iframe>` the renderer writes so the policy cannot outlive the fact that makes
+  it right.
 
 ## Related documentation
 
