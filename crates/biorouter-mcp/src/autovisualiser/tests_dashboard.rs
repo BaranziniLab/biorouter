@@ -2115,3 +2115,149 @@ fn every_advertised_description_fits_the_provider_cap() {
         );
     }
 }
+
+/// Every chart payload MEASURED coming out of the real model, replayed.
+///
+/// ⚠ These are not invented fixtures. They are the ten `show_chart` payloads
+/// Versa GPT-5.5 was rejected for on the prompt "Use the auto visualiser to
+/// render a bar chart of three values a=1, b=2, c=3, no explanation needed."
+/// over six runs, captured by instrumenting the dispatch table's reject path.
+/// A synthetic matrix would not have produced one of them: the dominant shape
+/// is the whole series written long-form with `data` where `datasets` goes, and
+/// the second is `chart_type` — neither appears anywhere in this repository's
+/// schemas or docs.
+///
+/// Each is compared against the canonical payload it obviously meant, so a
+/// normalization that renders SOMETHING but drops the labels or the axis titles
+/// fails here. The pre-fix tree refuses all six shapes.
+#[tokio::test]
+async fn chart_accepts_the_payloads_the_real_model_sends() {
+    let router = AutoVisualiserRouter::new();
+
+    let rows = json!([
+        {"label": "a", "value": 1}, {"label": "b", "value": 2}, {"label": "c", "value": 3}
+    ]);
+    let points = json!([{"x": "a", "y": 1}, {"x": "b", "y": 2}, {"x": "c", "y": 3}]);
+    let canonical = |title: &str, x: &str, y: &str| {
+        json!({
+            "type": "bar",
+            "labels": ["a", "b", "c"],
+            "datasets": [{"label": y, "data": [1.0, 2.0, 3.0]}],
+            "title": title,
+            "xAxisLabel": x,
+            "yAxisLabel": y,
+        })
+    };
+
+    for (measured, expected) in [
+        // The long-form series, with no `datasets` at all (5 of 10 rejections).
+        (
+            json!({"data": rows, "title": "Values by category", "type": "bar",
+                   "x_label": "Category", "y_label": "Value"}),
+            canonical("Values by category", "Category", "Value"),
+        ),
+        // The same, camelCased. `xLabel` was not itself a rejection: it is an
+        // unknown field, so serde drops it and the chart renders WITHOUT the
+        // axis titles the model wrote. Pinned here because the canonical
+        // payload compared against carries them.
+        (
+            json!({"data": rows, "title": "Values by label", "type": "bar",
+                   "xLabel": "Label", "yLabel": "Value"}),
+            canonical("Values by label", "Label", "Value"),
+        ),
+        // `chart_type` for `type` (4 of 10).
+        (
+            json!({"chart_type": "bar", "labels": ["a", "b", "c"],
+                   "datasets": [{"data": [1, 2, 3], "label": "Value"}],
+                   "title": "Values by label", "x_axis_label": "Label",
+                   "y_axis_label": "Value"}),
+            canonical("Values by label", "Label", "Value"),
+        ),
+        // `name` for `label`, `values` for `data`, and the chart's `type`
+        // written inside the dataset instead of beside it.
+        (
+            json!({"datasets": [{"name": "Value", "type": "bar", "values": points}],
+                   "title": "Values by category", "x_label": "Category",
+                   "y_label": "Value"}),
+            canonical("Values by category", "Category", "Value"),
+        ),
+        // `{x, y}` points whose `x` is a CATEGORY, not a coordinate (3 of 10).
+        (
+            json!({"chart_type": "bar",
+                   "datasets": [{"data": points, "name": "Value"}],
+                   "title": "Values by category", "x_label": "Category",
+                   "y_label": "Value"}),
+            canonical("Values by category", "Category", "Value"),
+        ),
+        (
+            json!({"datasets": [{"chart_type": "bar", "data": points, "name": "Value"}],
+                   "title": "Values by category", "x_label": "Category",
+                   "y_label": "Value"}),
+            canonical("Values by category", "Category", "Value"),
+        ),
+    ] {
+        let want = router
+            .render_figure(
+                figure_params_from(json!({"kind": "chart", "data": expected}))
+                    .expect("the canonical payload must deserialize"),
+            )
+            .await
+            .expect("the canonical payload must render");
+        let got = router
+            .render_figure(
+                figure_params_from(json!({"kind": "chart", "data": measured.clone()}))
+                    .unwrap_or_else(|e| panic!("{measured} was refused before dispatch: {e}")),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{measured} was refused: {}", e.message));
+        assert_eq!(
+            decode_html(&want),
+            decode_html(&got),
+            "{measured} must draw the figure it meant, labels and axis titles included"
+        );
+    }
+}
+
+/// The leniency must not swallow the two things it could plausibly break.
+#[tokio::test]
+async fn chart_normalization_keeps_scatter_points_and_still_refuses_a_typeless_chart() {
+    let router = AutoVisualiserRouter::new();
+
+    // A real scatter: `{x, y}` with NUMERIC `x` is a coordinate, not a category,
+    // and must stay `ChartDataValues::Points`. A normalization that folded every
+    // `{x, y}` list into labels-plus-numbers would silently turn every scatter
+    // plot in the product into a bar chart.
+    let scatter = json!({
+        "type": "scatter",
+        "datasets": [{"label": "S", "data": [{"x": 1.0, "y": 2.0}, {"x": 2.0, "y": 4.0}]}],
+    });
+    let rendered = router
+        .render_figure(
+            figure_params_from(json!({"kind": "chart", "data": scatter}))
+                .expect("a scatter must deserialize"),
+        )
+        .await
+        .expect("a scatter must render");
+    let html = decode_html(&rendered);
+    assert!(
+        html.contains("\"x\""),
+        "the scatter's points were flattened into labels"
+    );
+
+    // No `type` anywhere. Guessing one would draw a chart the user did not ask
+    // for; the round trip is the cheaper mistake.
+    let message = match figure_params_from(json!({
+        "kind": "chart",
+        "data": {"labels": ["a"], "datasets": [{"label": "V", "data": [1.0]}]},
+    })) {
+        Err(message) => message,
+        Ok(params) => router
+            .render_figure(params)
+            .await
+            .expect_err("a chart naming no type anywhere must be refused")
+            .message
+            .to_string(),
+    };
+    assert!(message.contains("type"), "{message}");
+    assert!(message.contains("describe_figure"), "{message}");
+}
