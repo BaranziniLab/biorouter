@@ -46,7 +46,7 @@ non-empty string. That freedom is only useful if you are consistent, so:
 
 - look at what the base already uses (`kb_list_pages` shows the directory names);
 - reuse an existing type before coining a new one;
-- coin in the singular, capitalised: `Method`, `Dataset`, `Decision`, `Person`;
+- coin in the singular, capitalized: `Method`, `Dataset`, `Decision`, `Person`;
 - put the page at `knowledge/<lowercased type>/<slug>.md`.
 
 **6 — Validate, then write.** Call `kb_validate_page` with the draft and the path you

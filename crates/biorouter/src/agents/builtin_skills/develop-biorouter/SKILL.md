@@ -99,7 +99,7 @@ Entry points worth bookmarking: `crates/biorouter-cli/src/main.rs`,
 
 ## Where a new feature goes
 
-Implement non-trivial behaviour **in the `biorouter` crate**, then expose it
+Implement non-trivial behavior **in the `biorouter` crate**, then expose it
 twice:
 
 1. **CLI:** add or extend a subcommand in `crates/biorouter-cli/src/commands/`
@@ -108,7 +108,7 @@ twice:
    `just generate-openapi`, then call the generated client from TypeScript.
 
 Do not reimplement logic in the CLI or the server. Both are thin surfaces over
-the same library, and a behaviour that exists in only one of them is a bug
+the same library, and a behavior that exists in only one of them is a bug
 report waiting to happen.
 
 A new built-in MCP tool belongs in `crates/biorouter-mcp/src/<server>/`. A new
@@ -184,7 +184,7 @@ build.
   passes whether or not the change is present is worse than no test, because it
   reads as coverage. Verify a new test fails before your fix and passes after.
 - **jsdom cannot see layout, Tailwind, or `:has()`.** Anything about geometry,
-  generated utility classes, drag regions or computed colour has to be asserted
+  generated utility classes, drag regions or computed color has to be asserted
   at the source (read the CSS or the token file in the test) or checked in a
   real browser. A component test that reads `getComputedStyle` in jsdom passes
   whether the rule exists or not.
@@ -252,7 +252,7 @@ build.
 
 ```
 [ ] source bin/activate-hermit before building anything
-[ ] Behaviour implemented in the biorouter crate, surfaced through the CLI
+[ ] Behavior implemented in the biorouter crate, surfaced through the CLI
     and/or a server route rather than duplicated
 [ ] cargo fmt clean
 [ ] cargo check, then cargo test -p <crate> for what you touched
