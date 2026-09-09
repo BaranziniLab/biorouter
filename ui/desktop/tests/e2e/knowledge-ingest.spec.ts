@@ -1,11 +1,12 @@
-import { test, expect, ElectronApplication, Page } from '@playwright/test';
-import { _electron as electron } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 import AdmZip from 'adm-zip';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { closeApp, launchApp, type LaunchedApp } from './helpers/app';
+import { openSidebarEntry } from './helpers/sidebar';
 
-let electronApp: ElectronApplication;
+let launched: LaunchedApp;
 let page: Page;
 let tmpDir: string;
 let folderFixturePath: string;
@@ -17,60 +18,40 @@ type FixtureCase = {
 };
 
 test.describe('Knowledge ingest workflow', () => {
-  const liveRoot = process.env.BIOROUTER_E2E_PATH_ROOT;
   test.skip(
-    process.env.BIOROUTER_E2E_LIVE !== '1' || !liveRoot,
-    'Set BIOROUTER_E2E_LIVE=1 and BIOROUTER_E2E_PATH_ROOT to a seeded isolated config.'
+    process.env.BIOROUTER_E2E_LIVE !== '1',
+    'Set BIOROUTER_E2E_LIVE=1 to run the Electron end-to-end suite.'
   );
 
   test.beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'biorouter-knowledge-ingest-'));
     folderFixturePath = writeFixtures(tmpDir);
 
-    electronApp = await electron.launch({
-      args: [path.join(__dirname, '../../.vite/build/main.js')],
-      cwd: path.join(__dirname, '../..'),
+    // BIOROUTER_KNOWLEDGE_TEST_MODE keeps the digest off a real provider, so
+    // this suite ingests without spending a model turn.
+    launched = await launchApp({
       env: {
-        ...process.env,
-        ELECTRON_IS_DEV: '1',
-        NODE_ENV: 'development',
-        BIOROUTER_ALLOWLIST_BYPASS: 'true',
         BIOROUTER_KNOWLEDGE_TEST_MODE: '1',
-        BIOROUTER_PATH_ROOT: liveRoot,
         PLAYWRIGHT_SELECT_PATH: folderFixturePath,
-        ELECTRON_RUN_AS_NODE: '',
       },
     });
-
-    page = await electronApp.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForFunction(() => {
-      const root = document.getElementById('root');
-      return root && root.children.length > 0;
-    });
+    page = launched.page;
     await page.waitForTimeout(1500);
   });
 
   test.afterAll(async () => {
-    if (electronApp) {
-      await electronApp.close().catch(() => {});
-    }
+    await closeApp(launched);
     if (tmpDir && fs.existsSync(tmpDir)) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
   test('digests supported files and updates the graph without errors', async () => {
-    await page.getByTestId('sidebar-knowledge-button').click();
+    await openSidebarEntry(page, 'Knowledge');
     await expect(page.getByRole('heading', { name: 'Knowledge' })).toBeVisible();
 
     const kbName = `Playwright KB ${Date.now()}`;
-    await page.getByTestId('knowledge-kb-selector-trigger').click();
-    await page.getByTestId('knowledge-kb-create').click();
-    await page.getByTestId('knowledge-kb-name-input').fill(kbName);
-    await page.getByTestId('knowledge-kb-submit').click();
-    await expect(page.getByTestId('knowledge-kb-selector-trigger')).toContainText(kbName);
-    await page.keyboard.press('Escape');
+    await createKnowledgeBase(page, kbName);
 
     const digestButton = page.getByTestId('knowledge-digest-button');
     const graphSummary = page.getByTestId('knowledge-graph-summary');
@@ -87,8 +68,12 @@ test.describe('Knowledge ingest workflow', () => {
       await expect(digestButton).toBeEnabled();
 
       await digestButton.click();
-      await expect(digestButton).toHaveText(/Checking model…|Digesting…|Stopping…/);
-      await expect(digestButton).toHaveText('Digest Staged Sources', {
+      // While busy the button is the ABORT control: `Stop`, or `Stopping…`
+      // once abort is pending (IngestPanel.tsx:636). `digestLabel`'s busy
+      // branches — 'Checking model…' / 'Digesting…' — are unreachable there,
+      // because `busy` is exactly `digestState !== 'idle'`.
+      await expect(digestButton).toHaveText(/^Stop(ping…)?$/);
+      await expect(digestButton).toHaveText('Digest staged sources', {
         timeout: 90000,
       });
       await expect(stagedItem).toHaveCount(0, { timeout: 90000 });
@@ -106,16 +91,11 @@ test.describe('Knowledge ingest workflow', () => {
   });
 
   test('stages folders and archives through the desktop flow and still forms the graph', async () => {
-    await page.getByTestId('sidebar-knowledge-button').click();
+    await openSidebarEntry(page, 'Knowledge');
     await expect(page.getByRole('heading', { name: 'Knowledge' })).toBeVisible();
 
     const kbName = `Playwright Path KB ${Date.now()}`;
-    await page.getByTestId('knowledge-kb-selector-trigger').click();
-    await page.getByTestId('knowledge-kb-create').click();
-    await page.getByTestId('knowledge-kb-name-input').fill(kbName);
-    await page.getByTestId('knowledge-kb-submit').click();
-    await expect(page.getByTestId('knowledge-kb-selector-trigger')).toContainText(kbName);
-    await page.keyboard.press('Escape');
+    await createKnowledgeBase(page, kbName);
 
     const digestButton = page.getByTestId('knowledge-digest-button');
     const graphSummary = page.getByTestId('knowledge-graph-summary');
@@ -130,7 +110,7 @@ test.describe('Knowledge ingest workflow', () => {
     ).toBeVisible();
 
     await digestButton.click();
-    await expect(digestButton).toHaveText('Digest Staged Sources', {
+    await expect(digestButton).toHaveText('Digest staged sources', {
       timeout: 90000,
     });
     await expect(graphSummary).toContainText('2 pages', { timeout: 90000 });
@@ -147,13 +127,40 @@ test.describe('Knowledge ingest workflow', () => {
     ).toBeVisible();
 
     await digestButton.click();
-    await expect(digestButton).toHaveText('Digest Staged Sources', {
+    await expect(digestButton).toHaveText('Digest staged sources', {
       timeout: 90000,
     });
     await expect(graphSummary).toContainText('4 pages', { timeout: 90000 });
     await expect(page.getByTestId('knowledge-graph-canvas')).toBeVisible();
   });
 });
+
+/**
+ * Creates a knowledge base and leaves it as the session's primary.
+ *
+ * Three steps, not one, and the shape has changed since this spec was written:
+ * the selector menu only OFFERS creation (`knowledge-kb-open-create`), the
+ * manager dialog hosts it, and the name is typed into `KbFormatChooser` — which
+ * exists because a base now declares a `format` (defaulting to OKF, so no radio
+ * needs touching). `knowledge-kb-create` / `knowledge-kb-name-input` /
+ * `knowledge-kb-submit`, which this spec used to drive, are the MANAGER's own
+ * controls: the first opens the chooser and the other two belong to the RENAME
+ * draft, which only renders once a rename is in progress.
+ */
+async function createKnowledgeBase(page: Page, kbName: string): Promise<void> {
+  await page.getByTestId('knowledge-kb-selector-trigger').click();
+  await page.getByTestId('knowledge-kb-open-create').click();
+  await page.getByTestId('knowledge-format-name').fill(kbName);
+  await page.getByTestId('knowledge-format-submit').click();
+  // The manager dialog stays open behind the chooser; its overlay would
+  // intercept every click on the ingest panel underneath.
+  await expect(page.getByTestId('knowledge-format-submit')).toHaveCount(0, { timeout: 30000 });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-slot="dialog-overlay"][data-state="open"]')).toHaveCount(0, {
+    timeout: 10000,
+  });
+  await expect(page.getByTestId('knowledge-kb-selector-trigger')).toContainText(kbName);
+}
 
 function fixtureCases(baseDir: string): FixtureCase[] {
   return [

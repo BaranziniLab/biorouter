@@ -17,11 +17,15 @@ import { test, expect, chromium } from '@playwright/test';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import type { Page, Browser } from '@playwright/test';
+import { configRoot } from './helpers/sandbox';
+import { openSidebarEntry } from './helpers/sidebar';
 
 const CDP_PORT = 9226;
-const EXT_DIR = join(os.homedir(), '.config', 'biorouter', 'extensions', 'bioroffice');
+// Follows BIOROUTER_PATH_ROOT / BIOROUTER_E2E_PATH_ROOT, so this reads back the
+// tree `bioroffice-install.spec.ts` wrote to rather than the operator's real
+// config. Export BIOROUTER_E2E_PATH_ROOT to run the two specs as a pair.
+const EXT_DIR = () => join(configRoot(), 'extensions', 'bioroffice');
 const AGENT_OUT_DIR = '/tmp/bioroffice-e2e';
 const AGENT_PPTX = join(AGENT_OUT_DIR, 'demo.pptx');
 
@@ -38,7 +42,7 @@ test.describe('BiorOffice — dynamic skills + live agent usage', () => {
   test.setTimeout(420_000);
 
   test.beforeAll(async () => {
-    if (!fs.existsSync(join(EXT_DIR, 'manifest.json'))) {
+    if (!fs.existsSync(join(EXT_DIR(), 'manifest.json'))) {
       throw new Error('bioroffice extension not installed — run bioroffice-install spec first');
     }
     fs.rmSync(AGENT_OUT_DIR, { recursive: true, force: true });
@@ -53,6 +57,10 @@ test.describe('BiorOffice — dynamic skills + live agent usage', () => {
         ELECTRON_IS_DEV: '1',
         NODE_ENV: 'development',
         BIOROUTER_ALLOWLIST_BYPASS: 'true',
+        BIOROUTER_DISABLE_KEYRING: 'true',
+        ...(process.env.BIOROUTER_E2E_PATH_ROOT
+          ? { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_E2E_PATH_ROOT }
+          : {}),
         ENABLE_PLAYWRIGHT: 'true',
         PLAYWRIGHT_CDP_PORT: String(CDP_PORT),
       },
@@ -101,7 +109,7 @@ test.describe('BiorOffice — dynamic skills + live agent usage', () => {
       'bioroffice-powerpoint',
     ];
     for (const slug of slugs) {
-      const p = join(EXT_DIR, 'skills', slug, 'SKILL.md');
+      const p = join(EXT_DIR(), 'skills', slug, 'SKILL.md');
       expect(fs.existsSync(p), `${p} missing`).toBe(true);
       const content = fs.readFileSync(p, 'utf8');
       const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -114,16 +122,7 @@ test.describe('BiorOffice — dynamic skills + live agent usage', () => {
 
   test('2. Agent loads a bundled skill and creates a PowerPoint via officecli', async () => {
     // Navigate to the hub (chat input is on the Home view)
-    const home = mainWindow.locator('[data-testid="sidebar-home-button"]').first();
-    if (await home.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await home.click();
-    } else {
-      await mainWindow
-        .locator('nav a:has-text("Home"), text=Home')
-        .first()
-        .click()
-        .catch(() => {});
-    }
+    await openSidebarEntry(mainWindow, 'Home');
     await mainWindow.waitForTimeout(1500);
 
     const input = mainWindow.locator('[data-testid="chat-input"]').first();

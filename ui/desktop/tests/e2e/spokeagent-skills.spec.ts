@@ -14,12 +14,13 @@
  *   project-specific skill fixture, no temp files needed.
  */
 
-import { test, expect, ElectronApplication, Page } from '@playwright/test';
-import { _electron as electron } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
+import { closeApp, launchApp, type LaunchedApp } from './helpers/app';
+import { openSidebarEntry } from './helpers/sidebar';
 
-let electronApp: ElectronApplication;
+let launched: LaunchedApp;
 let page: Page;
 
 const SPOKE_BRXT_PATH = '/tmp/spokeagent-0.2.0.brxt';
@@ -37,53 +38,32 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
       throw new Error(`SPOKEAgent .brxt not found at ${SPOKE_BRXT_PATH}. Build the .brxt first.`);
     }
 
-    electronApp = await electron.launch({
-      args: [path.join(__dirname, '../../.vite/build/main.js')],
-      cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        ELECTRON_IS_DEV: '1',
-        NODE_ENV: 'development',
-        BIOROUTER_ALLOWLIST_BYPASS: 'true',
-        ELECTRON_RUN_AS_NODE: '',
-      },
-    });
-
-    page = await electronApp.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForFunction(() => {
-      const root = document.getElementById('root');
-      return root && root.children.length > 0;
-    });
+    // Sandboxed: this spec used to launch with no BIOROUTER_PATH_ROOT, so it
+    // installed into and read from the developer's real ~/.config/biorouter.
+    launched = await launchApp();
+    page = launched.page;
     await page.waitForTimeout(3000);
   });
 
   test.afterAll(async () => {
-    if (electronApp) await electronApp.close().catch(() => {});
+    await closeApp(launched);
   });
 
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
+  // Both destinations live behind the sidebar's `Components` disclosure, which a
+  // fresh profile renders collapsed. The `text=Extensions` / `text=Skills`
+  // fallbacks these helpers carried could never rescue that: the span they match
+  // is INSIDE the unrendered nav button.
   async function goToExtensions(): Promise<void> {
-    const btn = page.locator('[data-testid="sidebar-extensions-button"]');
-    if (await btn.isVisible()) {
-      await btn.click();
-    } else {
-      await page.locator('text=Extensions').first().click();
-    }
+    await openSidebarEntry(page, 'Extensions');
     await page.waitForSelector('h1:has-text("Extensions")', { timeout: 10000, state: 'visible' });
     await page.waitForTimeout(500);
   }
 
   async function goToSkills(): Promise<void> {
-    // Try testid first, then text fallback
-    const btn = page.locator('[data-testid="sidebar-skills-button"]');
-    if (await btn.isVisible().catch(() => false)) {
-      await btn.click();
-    } else {
-      await page.locator('text=Skills').first().click();
-    }
+    await openSidebarEntry(page, 'Skills');
     await page.waitForSelector('h1:has-text("Skills")', { timeout: 10000, state: 'visible' });
     await page.waitForTimeout(500);
   }
@@ -203,19 +183,15 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
 
     // Navigate to a view where the chat input bar is visible
     // The hub (home) view or a chat session both show the input bar
-    const homeLink = page
-      .locator('[data-testid="sidebar-home-button"], button:has-text("New Chat"), [href="/"]')
-      .first();
-    const homeVisible = await homeLink.isVisible().catch(() => false);
-    if (homeVisible) {
-      await homeLink.click();
-      await page.waitForTimeout(1500);
-    }
+    // Home and New chat are the only two rail entries outside the disclosure, so
+    // this needs no fallback chain.
+    await openSidebarEntry(page, 'Home');
+    await page.waitForTimeout(1500);
 
     await page.screenshot({ path: 'test-results/spoke-05-chat-view.png' });
 
     // Find the skills button in the chat bottom bar
-    const skillsBtn = page.locator('button[title="manage skills"]');
+    const skillsBtn = page.getByRole('button', { name: /^Manage skills \(\d+ enabled\)$/ });
     const skillsBtnVisible = await skillsBtn.isVisible().catch(() => false);
     console.log(`Chat skills button visible: ${skillsBtnVisible}`);
 
@@ -225,7 +201,7 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
       await page.screenshot({ path: 'test-results/spoke-06-skills-dropdown-open.png' });
 
       // The dropdown should open with a search input
-      const searchInput = page.locator('input[placeholder="search skills..."]');
+      const searchInput = page.getByPlaceholder('Search skills...');
       await expect(searchInput).toBeVisible({ timeout: 5000 });
 
       // Search for the ralph project skill
@@ -305,7 +281,7 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
     await page.screenshot({ path: 'test-results/spoke-11-settings-count.png' });
 
     // Get count from chat box skills button
-    const skillsBtn = page.locator('button[title="manage skills"]');
+    const skillsBtn = page.getByRole('button', { name: /^Manage skills \(\d+ enabled\)$/ });
     const skillsBtnVisible = await skillsBtn.isVisible().catch(() => false);
 
     if (skillsBtnVisible) {

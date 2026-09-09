@@ -50,8 +50,13 @@ export function seedRoot(): string {
  * mutates the developer's real config.
  */
 export function configRoot(): string {
-  const provided = process.env.BIOROUTER_PATH_ROOT;
-  if (provided && provided.trim() !== '') return path.join(provided, 'config');
+  // BIOROUTER_PATH_ROOT first: a spec that spawns the app itself sets it, and
+  // that is the root the app is actually using. BIOROUTER_E2E_PATH_ROOT second,
+  // so a root the operator exported is shared by specs that hand off to each
+  // other (bioroffice-install installs, bioroffice-verify reads it back).
+  for (const value of [process.env.BIOROUTER_PATH_ROOT, process.env.BIOROUTER_E2E_PATH_ROOT]) {
+    if (value && value.trim() !== '') return path.join(value, 'config');
+  }
   return path.join(os.homedir(), '.config', 'biorouter');
 }
 
