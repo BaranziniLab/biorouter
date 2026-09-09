@@ -626,6 +626,16 @@ async fn process_message_streaming(
                     Ok(AgentEvent::ModelChange { model, mode }) => {
                         tracing::info!("Model changed to {} in {} mode", model, mode);
                     }
+                    // Issue #56 Gate B's repair arm: this turn ran on the
+                    // provider the session row names. Logged rather than sent:
+                    // the web bridge's frame vocabulary is the transcript, and a
+                    // browser session cannot change its model anyway (SD-1), so
+                    // there is no wrong choice on screen for it to correct.
+                    Ok(AgentEvent::PrivacyProviderPinned { provider, model }) => {
+                        tracing::info!(
+                            "Private chat pinned to its own binding: {provider} / {model}"
+                        );
+                    }
                     // BR-52: the web bridge reads token counts from the session
                     // row when it needs them, so the carried snapshot is a no-op here.
                     Ok(AgentEvent::TokenUsage(_)) => {}

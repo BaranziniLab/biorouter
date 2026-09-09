@@ -600,6 +600,7 @@ mod tests {
                     Ok(AgentEvent::ToolCallPending(_)) => {}
                     Ok(AgentEvent::MessagesPersisted(_)) => {}
                     Ok(AgentEvent::ModelChange { .. }) => {}
+                    Ok(AgentEvent::PrivacyProviderPinned { .. }) => {}
                     Ok(AgentEvent::HistoryReplaced(_updated_conversation)) => {
                         // We should update the conversation here, but we're not reading it
                     }
@@ -790,6 +791,7 @@ mod tests {
                     Ok(AgentEvent::ToolCallPending(_)) => {}
                     Ok(AgentEvent::MessagesPersisted(_)) => {}
                     Ok(AgentEvent::ModelChange { .. }) => {}
+                    Ok(AgentEvent::PrivacyProviderPinned { .. }) => {}
                     Ok(AgentEvent::HistoryReplaced(_)) => {}
                     Ok(AgentEvent::TokenUsage(_)) => {}
                     Ok(AgentEvent::TurnAborted { code, message }) => {
@@ -932,6 +934,7 @@ mod tests {
                     | AgentEvent::ToolCallPending(_)
                     | AgentEvent::MessagesPersisted(_)
                     | AgentEvent::ModelChange { .. }
+                    | AgentEvent::PrivacyProviderPinned { .. }
                     | AgentEvent::HistoryReplaced(_) => {}
                     AgentEvent::TurnAborted { code, message } => {
                         return Err(anyhow::anyhow!(

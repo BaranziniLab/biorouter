@@ -763,12 +763,14 @@ impl CodexProvider {
                 true
             }
             "turn/failed" => {
+                // #180/F8: through `codex_stream::error_message`, which also
+                // unwraps a vendor payload that arrives as a JSON envelope
+                // rather than a sentence. One reader for both surfaces, so the
+                // streaming and non-streaming paths cannot disagree about what
+                // a Codex failure says.
                 outcome.failure = Some(
-                    params
-                        .get("error")
-                        .and_then(|e| e.get("message").and_then(Value::as_str))
-                        .unwrap_or("the Codex turn failed")
-                        .to_string(),
+                    codex_stream::error_message(params.get("error"))
+                        .unwrap_or_else(|| "the Codex turn failed".to_string()),
                 );
                 true
             }
@@ -790,18 +792,20 @@ impl CodexProvider {
                 //
                 // The `turn/failed` arm above already reads the nested spelling,
                 // so this file handled both shapes — just not in this arm.
+                //
+                // Both spellings now come from `codex_stream::error_message`,
+                // the one reader the streaming decoder already used — which is
+                // also what makes the JSON-envelope unwrapping (#180/F8) apply
+                // here without a second copy of it.
                 outcome.failure = Some(
-                    params
-                        .get("error")
-                        .and_then(|error| {
-                            error
-                                .as_str()
-                                .filter(|s| !s.is_empty())
-                                .or_else(|| error.get("message").and_then(Value::as_str))
+                    codex_stream::error_message(params.get("error"))
+                        .or_else(|| {
+                            params
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .map(coding_agent::unwrap_json_error)
                         })
-                        .or_else(|| params.get("message").and_then(Value::as_str))
-                        .unwrap_or("the Codex app server reported an error")
-                        .to_string(),
+                        .unwrap_or_else(|| "the Codex app server reported an error".to_string()),
                 );
                 // Advisory errors can precede `turn.started` and are not fatal, so
                 // this does not end the turn; `turn/failed` or `turn/completed`

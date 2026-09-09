@@ -595,10 +595,17 @@ impl ClaudeCodeProvider {
         };
 
         if result.get("is_error").and_then(Value::as_bool) == Some(true) {
+            // Through `unwrap_json_error`, exactly as `claude_stream`'s terminal
+            // frame is: `result` carries the vendor's own text, usually a
+            // sentence but sometimes the upstream API's JSON body verbatim.
+            // Unwrapping is a no-op on the sentence and is what keeps the
+            // envelope out of the chat. Both surfaces read it the same way, so
+            // a streamed turn and a blocking one cannot say different things
+            // about the same failure.
             let detail = result
                 .get("result")
                 .and_then(Value::as_str)
-                .map(str::to_string)
+                .map(super::coding_agent::unwrap_json_error)
                 .or_else(|| Some(stderr.trim().to_string()))
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "`claude` reported an error".into());

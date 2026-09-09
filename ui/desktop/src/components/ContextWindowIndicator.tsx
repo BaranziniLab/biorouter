@@ -176,7 +176,20 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   }, [handleDragMove, handleDragEnd]);
 
   if (!isTokenLimitLoaded && !current) return null;
-  const ratio = total > 0 ? Math.min(1, current / total) : 0;
+  // NO MODEL, NO GAUGE. A context window is a property of a bound model, so
+  // with none there is no number to report and every number this component
+  // could print would be about a model that does not exist. It read
+  // "128k of 128k tokens remaining" during onboarding — beside a chip that
+  // correctly said "No model yet — choose a provider" — because the composer's
+  // 128k fallback was announced as a loaded limit.
+  //
+  // Asserted on the LIMIT rather than only on the loaded flag: the flag says
+  // whether a lookup finished, and a finished lookup that found nothing is
+  // exactly the case being guarded. A caller with usage but no window is a
+  // state nothing can render honestly either, so it is covered by the same
+  // test.
+  if (total <= 0) return null;
+  const ratio = Math.min(1, current / total);
   const pct = Math.round(ratio * 100);
   const overThreshold = pct >= thresholdPct;
   // Three bands, not four: the old ladder spelled `warning` twice (`ratio <= 0.75`
@@ -343,10 +356,23 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   const current = totalTokens ?? 0;
   if (!isTokenLimitLoaded && !current) return null;
   const total = tokenLimit || 0;
-  const ratio = total > 0 ? Math.min(1, current / total) : 0;
+  // NO MODEL, NO GAUGE. A context window is a property of a bound model, so
+  // with none there is no number to report and every number this component
+  // could print would be about a model that does not exist. It read
+  // "128k of 128k tokens remaining" during onboarding — beside a chip that
+  // correctly said "No model yet — choose a provider" — because the composer's
+  // 128k fallback was announced as a loaded limit.
+  //
+  // Asserted on the LIMIT rather than only on the loaded flag: the flag says
+  // whether a lookup finished, and a finished lookup that found nothing is
+  // exactly the case being guarded. A caller with usage but no window is a
+  // state nothing can render honestly either, so it is covered by the same
+  // test.
+  if (total <= 0) return null;
+  const ratio = Math.min(1, current / total);
   const pct = Math.round(ratio * 100);
-  const remainingTokens = total > 0 ? Math.max(total - current, 0) : 0;
-  const remainingRatio = total > 0 ? Math.max(0, Math.min(1, remainingTokens / total)) : 0;
+  const remainingTokens = Math.max(total - current, 0);
+  const remainingRatio = Math.max(0, Math.min(1, remainingTokens / total));
   const remainingPct = Math.round(remainingRatio * 100);
   const radius = 8;
   const circumference = 2 * Math.PI * radius;

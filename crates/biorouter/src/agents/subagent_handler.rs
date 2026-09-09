@@ -1030,14 +1030,20 @@ fn get_agent_messages(
                         &session_id,
                         crate::session_events::SessionBusEvent::Agent(event.clone()),
                     );
-                    // EIGHT arms, no wildcard: a `_ => {}` here would silently
-                    // swallow a ninth `AgentEvent` variant instead of failing
+                    // NINE arms, no wildcard: a `_ => {}` here would silently
+                    // swallow a tenth `AgentEvent` variant instead of failing
                     // the build.
                     match event {
                         AgentEvent::Message(msg) => conversation.push(msg),
                         AgentEvent::McpNotification(_)
                         | AgentEvent::ModelChange { .. }
                         | AgentEvent::ToolCallPending(_)
+                        // Issue #56 Gate B's repair, addressed to a HUMAN
+                        // reading a composer. A subagent has no composer and its
+                        // parent is not the user, so the parent accumulates
+                        // nothing from it; the tee above still publishes it for
+                        // an observer tab watching the child.
+                        | AgentEvent::PrivacyProviderPinned { .. }
                         // #59: the subagent's own rows are already carried by
                         // the `Message` events above (which now name
                         // themselves); the parent has no `expectedMessageIds`

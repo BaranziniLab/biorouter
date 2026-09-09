@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { listBases, getActive, setActive } from '../../api';
+import { briefSelectionFailure } from './selectionWarning';
 import { userActionHeaders } from '../../utils/userAction';
 /**
  * `KbListEntry` is `Manifest & { tier }` — the manifest the daemon stores plus
@@ -194,7 +195,10 @@ export function KnowledgeProvider({
       } catch (err) {
         // Both the write and the recovery read failed. Keep what is on screen —
         // there is nothing better to show, and the next hydrate will settle it.
-        console.warn('getActive (recovering a failed selection write) failed:', err);
+        console.warn(
+          'Knowledge selection not re-read after a failed write:',
+          briefSelectionFailure(err)
+        );
       }
     },
     [applyHidden, applyPrimary, sessionId]
@@ -324,7 +328,7 @@ export function KnowledgeProvider({
     } catch (err) {
       // Keep the last known default: a failed read is not evidence that there
       // is none, and inventing one would offer a base nobody chose.
-      console.warn('getActive (machine-wide default) failed:', err);
+      console.warn('Machine-wide knowledge default not read:', briefSelectionFailure(err));
     }
   }, [sessionId]);
 
@@ -458,7 +462,13 @@ export function KnowledgeProvider({
         applyHidden(readHidden(res.data) ?? []);
       } catch (err) {
         if (cancelled) return;
-        console.warn('getActive (server hydrate) failed:', err);
+        // ⚠ One quiet line, deliberately. A private chat opened while a
+        // public model is bound refuses this read with a ~900-character
+        // paragraph addressed to an AI agent, and printing it here made a
+        // correct outcome — the chat opened and rendered in full — look like a
+        // crash. The person's answer is the composer's pinned-model note; see
+        // `selectionWarning.ts` for the full reasoning.
+        console.warn('Knowledge selection not hydrated:', briefSelectionFailure(err));
         setPrimaryKbIdState(local);
         setHiddenKbIdsState(localHidden);
       }

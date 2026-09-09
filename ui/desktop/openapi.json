@@ -9935,6 +9935,29 @@
           },
           {
             "type": "object",
+            "description": "Issue #56 Gate B, repair arm: the provider and model that actually\nserved this turn, sent when the agent had to fall back to the one the\nSESSION ROW names because the chat's classification does not admit the\nbound one.\n\nAdvisory display state, exactly like `ToolCallPending`: never persisted,\nnever replayed, never shown to the model, and it changes nothing about\nwhat the privacy gates permit or refuse. Its whole job is that a user who\nswitched the app to a public model and then sent into a private chat can\nsee that the turn went elsewhere — and that the composer's model chip and\ncontext gauge can be sized to the window that was really used.\n\n⚠ It does NOT carry the selection it displaced, so a client must not\ntreat receiving it as \"the user's choice was overridden\". The frame\narrives on every repaired bind, including the ordinary ones (a\nrehydrated agent, a legacy row) where it names exactly what the client is\nalready showing. Compare it against what you display, and say nothing\nwhen they agree.",
+            "required": [
+              "provider",
+              "model",
+              "type"
+            ],
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "PrivacyProviderPinned"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "type"
             ],

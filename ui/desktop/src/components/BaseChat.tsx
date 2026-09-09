@@ -41,6 +41,8 @@ import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
+import { PinnedModelNote } from './privacy/PinnedModelNote';
+import { usePinnedModel } from './privacy/usePinnedModel';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
@@ -1394,6 +1396,7 @@ function BaseChatContent({
     agentReady,
     notifications: toolCallNotifications,
     pendingToolCalls,
+    pinnedModel,
     onMessageUpdate,
   } = useChatStream({
     sessionId,
@@ -2028,6 +2031,18 @@ function BaseChatContent({
     return () => animation.cancel();
   }, [isCleanConversation]);
 
+  /**
+   * Issue #56 / F2 — what THIS chat runs on, when the app-wide selection
+   * provably cannot. `restore_provider_from_session` binds the session row's own
+   * provider, so the composer's model chip and context gauge were naming a model
+   * that never served the turn and sizing the gauge to its window.
+   *
+   * Free: both facts already ride the `/agent/resume` payload the chat stream
+   * holds. See `privacy/usePinnedModel.ts` for the one rule, and for why the
+   * override is gated rather than unconditional.
+   */
+  const { effectiveModel } = usePinnedModel(session, pinnedModel);
+
   const renderChatInput = () => (
     <div
       ref={composerMotionRef}
@@ -2084,8 +2099,24 @@ function BaseChatContent({
           </div>
         </div>
       )}
+      {/*
+        Issue #56 Gate B. Above the composer, on the composer's own rails, in
+        the same slot the Stop-and-send banner already uses — so it sits with
+        the control it is about rather than in the transcript, where it would
+        scroll away from the chip and gauge it explains.
+
+        ⚠ NOT inside `ChatInput`: that component's three rows (context · card ·
+        controls) are one visually grouped object held together by a 6px gap,
+        and a fourth block inside it would join the group and read as more
+        chrome on the input. `mb-2` puts this outside that grouping.
+
+        Mounted unconditionally — it renders nothing when there is nothing to
+        say, which is almost always.
+      */}
+      <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
       <ChatInput
         sessionId={sessionId}
+        effectiveModel={effectiveModel}
         handleSubmit={handleFormSubmit}
         chatState={chatState}
         setChatState={setChatState}
