@@ -596,13 +596,19 @@ is added around it.
 
 ```css
 /* Controls: the fill steps past hover, and the label firms up.
-   A TAB TRIGGER is exempt — see the amendment below. */
+   A TAB TRIGGER and a REGION are exempt — see the two amendments below. */
 :where(:is(a, button, summary, [role='button'], [role='menuitem'],
            [role='option'], input[type='checkbox'], input[type='radio'],
-           [tabindex]:not([tabindex='-1'])):not([role='tab'])):focus-visible {
+           [tabindex]:not([tabindex='-1'])):not([role='tab'], [role='tabpanel'],
+           [role='application'])):focus-visible {
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
+}
+
+/* A region draws nothing, so the UA ring has to be put back down by hand. */
+:where([role='tabpanel']):focus-visible {
+  outline: none;
 }
 
 /* Text fields already own a border, so they shift fill AND firm that edge.
@@ -639,6 +645,24 @@ roving tabindex gives the active one `tabindex="0"` — so deleting the obvious 
 screen. And the underline half is **unlayered**, because the bar's height and colour come from
 Tailwind utilities and a layered rule would lose to them silently. `.br-tab` (chat header, artifact
 panel, terminal dock) is untouched: it draws no underline and owns its own `::after`.
+
+**Amendment, 2026-09-08 (second) — D-15 is written for CONTROLS, so a focusable REGION takes no fill
+either.** A control deepens its own fill because the fill is the size of the thing you are about to
+operate; a region is entered rather than operated, and its fill is the size of the page. The arm that
+reaches one is `[tabindex]:not([tabindex='-1'])`, which cannot tell an 8px checkbox from a document.
+Found while verifying the amendment above: Radix `TabsContent` carries `role="tabpanel"` with
+`tabindex="0"`, so one Tab out of the Settings strip painted `--background-focus` over the whole
+**712 × 2676 px** body — measured `rgb(224, 224, 220)` in Parchment light, with the same rule named by
+CDP's `CSS.getMatchedStylesForNode`. `role="application"` (the knowledge graph canvas, the app's one
+instance) measured the same and is exempt for the same reason. Two things are load-bearing. Dropping
+the panel from the block also drops its `outline: none`, and the UA `:focus-visible { outline: auto }`
+is underneath — so the fill would be traded for a ring around that same box unless the suppression is
+restored on its own, which is the second rule above; `role="application"` needs no such rule because
+it writes `outline-none` plus a 2px inset `--border-accent` ring as utilities. And the
+`prefers-contrast: more` / `forced-colors` block is deliberately **not** narrowed by any of this, so a
+user who asked their OS for a stronger signal still gets the ring on the panel. `[role='tablist']` is
+not exempt: it matches, but focusing it redirects into the active trigger within the same event, so
+the rule never paints it.
 
 All three tokens are **shared** — the focus treatment was always explicitly neutral rather than accented
 (D-15), so unifying it changed its values without changing its intent.
