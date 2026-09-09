@@ -70,6 +70,8 @@ result
 
 # Local agent tooling config (not product source)
 .codex/
+# Codex-style migrated skills (`.agents/skills/…`): local agent tooling, like .claude and .codex
+.agents/
 
 dist/
 
