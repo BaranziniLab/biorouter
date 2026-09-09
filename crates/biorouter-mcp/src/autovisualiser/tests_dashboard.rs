@@ -460,7 +460,7 @@ fn test_render_figure_call_unwraps_the_shapes_a_model_sends() {
         // `kind` when the fault was the quoting.
         json!("{\"kind\": \"chart\", \"data\": {\"type\": \"bar\"}}"),
     ] {
-        let (kind, data) = render_figure_call(payload.clone())
+        let (kind, data) = render_figure_call(payload.clone(), FigureVocabulary::RenderFigure)
             .unwrap_or_else(|e| panic!("{payload} was refused: {}", e.message));
         assert_eq!(kind, FigureKind::Chart, "{payload}");
         assert_eq!(data["type"], "bar", "{payload}");
@@ -468,7 +468,8 @@ fn test_render_figure_call_unwraps_the_shapes_a_model_sends() {
 
     // A string that is not JSON at all must say so, not fall through to a
     // complaint about a missing `kind`.
-    let err = render_figure_call(json!("kind=chart")).unwrap_err();
+    let err =
+        render_figure_call(json!("kind=chart"), FigureVocabulary::RenderFigure).unwrap_err();
     assert!(
         err.message.contains("did not parse"),
         "{}",
@@ -479,7 +480,8 @@ fn test_render_figure_call_unwraps_the_shapes_a_model_sends() {
     // omitted `tool`, `DashboardFigure` will already have consumed
     // `type`/`name`/`kind` hunting for the TOOL name; and in every case, a chart
     // payload's own `type: "bar"` must not be able to choose the figure.
-    let err = render_figure_call(json!({"type": "chart", "data": {}})).unwrap_err();
+    let err = render_figure_call(json!({"type": "chart", "data": {}}), FigureVocabulary::RenderFigure)
+        .unwrap_err();
     assert!(err.message.contains("needs a `kind`"), "{}", err.message);
 }
 
@@ -1815,4 +1817,301 @@ fn result_text(result: &CallToolResult) -> String {
         .filter_map(|c| c.as_text().map(|t| t.text.clone()))
         .collect::<Vec<_>>()
         .join("")
+}
+
+// ---------------------------------------------------------------------------
+// The first `render_figure` call must land (handoff 07; #150 one layer up)
+// ---------------------------------------------------------------------------
+
+/// The strict door — what `rmcp` itself does with a model's raw arguments.
+///
+/// ⚠ Every other `render_figure` test in this file builds
+/// `RenderFigureParams { kind, data }` in Rust, which skips deserialization
+/// altogether, so none of them can see a payload refused *before* the tool body
+/// runs. `rmcp` calls
+/// `serde_json::from_value::<RenderFigureParams>(Value::Object(arguments))`
+/// (`handler/server/tool.rs`) and turns any failure into a bare
+/// "failed to deserialize parameters: …". This mirrors that call exactly as
+/// `params_from` mirrors it for `render_dashboard`.
+fn figure_params_from(value: Value) -> Result<Parameters<RenderFigureParams>, String> {
+    serde_json::from_value::<RenderFigureParams>(value)
+        .map(Parameters)
+        .map_err(|e| e.to_string())
+}
+
+/// The canonical bar-chart payload, as `describe_figure` reports it.
+fn first_call_chart_data() -> Value {
+    json!({
+        "type": "bar",
+        "labels": ["a", "b", "c"],
+        "datasets": [{"label": "Value", "data": [1.0, 2.0, 3.0]}],
+    })
+}
+
+/// A model's FIRST `render_figure` call must render, not cost a round trip.
+///
+/// Measured on Versa GPT-5.5 in the round-2 and round-3 walkthroughs: "render a
+/// bar chart of three values a=1, b=2, c=3" cost four or five tool-call cards,
+/// two or three of them rejections, before the model called `describe_figure`,
+/// read the schema and succeeded — once even *after* `describe_figure` had
+/// already answered.
+///
+/// The rejections did not come from this crate. The advertised `render_figure`
+/// had a DERIVED `Deserialize`, so `rmcp` refused the arguments with
+/// "missing field `data`" — no kind, no `describe_figure` pointer — before a
+/// line of Auto Visualiser ran, while the lenient `render_figure_call` sat one
+/// door over, wired only to dashboard panels and Agent Drafter's `ui_figure`.
+/// Through the `code_execution` sandbox (default-enabled) the model sees
+/// `data: any` and one line of description, so it cannot read the shape off the
+/// schema either.
+///
+/// Fails the shipped implementation on the flattened, envelope-wrapped and
+/// chart-type-as-kind shapes.
+#[tokio::test]
+async fn render_figure_accepts_the_first_call_shapes_a_model_sends() {
+    let router = AutoVisualiserRouter::new();
+
+    let canonical = router
+        .render_figure(
+            figure_params_from(json!({"kind": "chart", "data": first_call_chart_data()}))
+                .expect("the documented shape must deserialize"),
+        )
+        .await
+        .expect("the documented shape must render");
+    let canonical = decode_html(&canonical);
+
+    for payload in [
+        // (a) Flattened: the payload written straight onto the arguments. The
+        //     shape `rmcp` answered with "missing field `data`".
+        json!({
+            "kind": "chart",
+            "type": "bar",
+            "labels": ["a", "b", "c"],
+            "datasets": [{"label": "Value", "data": [1.0, 2.0, 3.0]}],
+        }),
+        // The envelope keys a model reaches for because that is what a
+        // dashboard panel calls the same object.
+        json!({"kind": "chart", "params": first_call_chart_data()}),
+        json!({"kind": "chart", "arguments": first_call_chart_data()}),
+        json!({"kind": "chart", "args": first_call_chart_data()}),
+        // The `{"tool": …, "params": {…}}` envelope the panel vocabulary uses —
+        // and, before this fix, the shape the missing-`kind` error itself told a
+        // direct caller to send.
+        json!({
+            "tool": "render_figure",
+            "params": {"kind": "chart", "data": first_call_chart_data()},
+        }),
+        // (e) Stringified `data`, and the whole object stringified.
+        json!({"kind": "chart", "data": first_call_chart_data().to_string()}),
+        json!(json!({"kind": "chart", "data": first_call_chart_data()}).to_string()),
+        // (d) A chart TYPE used as the kind. `FigureKind` had no lenient
+        //     `Deserialize` (unlike `ChartType`), so this died at
+        //     "unknown variant `bar`".
+        json!({"kind": "bar", "data": first_call_chart_data()}),
+        json!({"kind": "Bar Chart", "data": first_call_chart_data()}),
+        // …and the same, with the `type` the model already stated as the kind
+        // left out of the payload.
+        json!({
+            "kind": "bar",
+            "data": {
+                "labels": ["a", "b", "c"],
+                "datasets": [{"label": "Value", "data": [1.0, 2.0, 3.0]}],
+            },
+        }),
+        // The kind named by the tool it dispatches to — the spelling
+        // `describe_figure`'s own guidance is written in.
+        json!({"kind": "show_chart", "data": first_call_chart_data()}),
+    ] {
+        let params = figure_params_from(payload.clone())
+            .unwrap_or_else(|e| panic!("{payload} was refused before dispatch: {e}"));
+        let rendered = router
+            .render_figure(params)
+            .await
+            .unwrap_or_else(|e| panic!("{payload} was refused: {}", e.message));
+        assert_eq!(
+            canonical,
+            decode_html(&rendered),
+            "{payload} must draw the SAME figure, not merely draw one"
+        );
+    }
+}
+
+/// A kind a model can plausibly write must resolve; one it cannot must fail with
+/// a message it can act on.
+///
+/// Goes through `serde_json::from_value` rather than a helper so it exercises
+/// the same door `rmcp` uses. Fails the shipped implementation, whose derived
+/// enum `Deserialize` accepted the 32 slugs and nothing else.
+#[test]
+fn figure_kind_resolves_the_names_a_model_writes() {
+    for (written, expected) in [
+        ("chart", FigureKind::Chart),
+        ("Chart", FigureKind::Chart),
+        ("show_chart", FigureKind::Chart),
+        ("bar", FigureKind::Chart),
+        ("bar chart", FigureKind::Chart),
+        ("scatter-plot", FigureKind::Chart),
+        ("pie", FigureKind::Donut),
+        ("render_volcano", FigureKind::Volcano),
+        ("Volcano", FigureKind::Volcano),
+        ("kaplan-meier", FigureKind::KaplanMeier),
+        ("kaplanmeier", FigureKind::KaplanMeier),
+        ("word cloud", FigureKind::Wordcloud),
+        ("ER Diagram", FigureKind::ErDiagram),
+        ("calendar heatmap", FigureKind::CalendarHeatmap),
+    ] {
+        let parsed: FigureKind = serde_json::from_value(json!(written))
+            .unwrap_or_else(|e| panic!("`{written}` must resolve to a kind: {e}"));
+        assert_eq!(parsed, expected, "`{written}`");
+    }
+
+    // A word that names no figure must not be guessed at, and must say where the
+    // list of kinds is.
+    let err = serde_json::from_value::<FigureKind>(json!("wombat")).unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("wombat"), "{message}");
+    assert!(message.contains("describe_figure"), "{message}");
+}
+
+/// A payload that is genuinely wrong must still be reported against a call the
+/// model can make, whichever door refused it.
+///
+/// The kind-and-`describe_figure` phrasing already held for a payload that
+/// reached dispatch (`test_bad_arguments_name_render_figure_and_the_kind`).
+/// What it did NOT hold for was a payload refused during deserialization, which
+/// is where the walkthrough's rejections actually came from.
+#[tokio::test]
+async fn render_figure_refusals_name_render_figure_the_kind_and_describe_figure() {
+    let router = AutoVisualiserRouter::new();
+    let retired: Vec<&str> = FigureKind::ALL.iter().map(|k| k.tool_name()).collect();
+
+    // (c) A chart payload with no `type`, and nothing in the kind to imply one.
+    let message = match figure_params_from(json!({"kind": "chart", "data": {"labels": ["a"]}})) {
+        Err(message) => message,
+        Ok(params) => router
+            .render_figure(params)
+            .await
+            .expect_err("a chart with no `type` must be refused")
+            .message
+            .to_string(),
+    };
+    assert!(message.contains("type"), "must say what is missing: {message}");
+    assert!(message.contains("render_figure"), "{message}");
+    assert!(message.contains("\"chart\""), "must name the kind: {message}");
+    assert!(message.contains("describe_figure"), "{message}");
+    for name in &retired {
+        assert!(
+            !message.contains(name),
+            "the model cannot call `{name}`: {message}"
+        );
+    }
+
+    // No `kind` at all: the example the message offers must be one this door
+    // accepts. It used to hand a direct caller the PANEL spelling
+    // (`{"tool": …, "params": {…}}`), teaching the shape that had just failed.
+    let message =
+        figure_params_from(json!({"data": first_call_chart_data()})).expect_err("no kind");
+    assert!(message.contains("kind"), "{message}");
+    assert!(message.contains("describe_figure"), "{message}");
+    // Brace-matched from the first `{`, char by char: `clippy::string_slice` is
+    // denied repo-wide, and a byte index into a message that carries `…` would
+    // be the exact panic that lint exists for.
+    let example: Value = {
+        let mut depth = 0usize;
+        let mut json = String::new();
+        for ch in message.chars() {
+            if depth == 0 && ch != '{' {
+                continue;
+            }
+            json.push(ch);
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            json.contains("\"kind\""),
+            "the missing-`kind` message must show a shape this door accepts: {message}"
+        );
+        serde_json::from_str(&json)
+            .unwrap_or_else(|e| panic!("the example must be valid JSON ({e}): {json}"))
+    };
+    let params = figure_params_from(example.clone())
+        .unwrap_or_else(|e| panic!("the example the error offers is itself refused: {e}"));
+    router
+        .render_figure(params)
+        .await
+        .unwrap_or_else(|e| panic!("the example the error offers does not render: {}", e.message));
+}
+
+/// Azure and OpenAI reject a request whose `tools[n].function.description`
+/// exceeds 1024 characters with a non-retryable 400 — the same class of failure
+/// as the 128-tool ceiling, and the reason the comment above `render_figure`
+/// says to keep its description short. The limit is real and unhandled:
+/// `providers::utils` classifies that exact 400 (`http_context_classifier_keeps_
+/// tool_description_limits_as_request_failures`) and nothing truncates a
+/// description on the way out.
+///
+/// `per_kind_documentation_stays_out_of_the_declarations` caps the SUM at 4096,
+/// which a single 1500-byte description passes. Nothing pinned the per-tool
+/// limit until now.
+///
+/// ⚠ **`render_dashboard` is already over it**, at 2705 bytes, measured on
+/// `main` at f350cdfc — so this is a RATCHET, not a clean gate. A gate that
+/// fails on arrival gets disabled rather than obeyed. Every other advertised
+/// tool must fit the real cap, and the one that does not may only shrink toward
+/// it; when it fits, delete its entry. Fixing that description is a change to
+/// `render_dashboard`'s call-once guidance and belongs to whoever owns it.
+#[test]
+fn every_advertised_description_fits_the_provider_cap() {
+    /// Tools measured over the cap today, with the size they must not exceed.
+    const KNOWN_OVER_CAP: &[(&str, usize)] = &[("render_dashboard", 2_705)];
+
+    let router = AutoVisualiserRouter::new();
+    for tool in router.tool_router.list_all() {
+        let len = tool.description.as_deref().unwrap_or_default().len();
+        let (cap, note) = match KNOWN_OVER_CAP
+            .iter()
+            .find(|(name, _)| *name == tool.name.as_ref())
+        {
+            Some((_, allowed)) => (
+                *allowed,
+                "it is a known offender and may only shrink; it must never grow",
+            ),
+            None => (
+                1_024,
+                "Azure and OpenAI reject a tool description over 1024 characters \
+                 with a non-retryable 400",
+            ),
+        };
+        assert!(
+            len <= cap,
+            "`{}`'s description is {len} bytes against a budget of {cap}: {note}",
+            tool.name
+        );
+    }
+
+    // An entry that has become unnecessary must be deleted, not left to rot into
+    // a licence for a description that now fits to grow again.
+    for (name, allowed) in KNOWN_OVER_CAP {
+        let len = router
+            .tool_router
+            .list_all()
+            .iter()
+            .find(|tool| tool.name.as_ref() == *name)
+            .and_then(|tool| tool.description.as_deref())
+            .map(str::len)
+            .unwrap_or_else(|| panic!("`{name}` is exempted here but is not advertised"));
+        assert!(
+            len > 1_024,
+            "`{name}` now fits the 1024-byte cap at {len} bytes; remove its \
+             KNOWN_OVER_CAP entry (budget was {allowed})"
+        );
+    }
 }

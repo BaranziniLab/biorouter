@@ -441,7 +441,7 @@ impl AutoVisualiserRouter {
         // which is why one unwrap is always enough: `tool_name()` never returns
         // `render_figure`, so this cannot recurse.
         let (name, params) = if name == RENDER_FIGURE {
-            let (kind, data) = render_figure_call(params)?;
+            let (kind, data) = render_figure_call(params, vocab)?;
             (kind.tool_name(), figure_arguments(data))
         } else {
             (name, params)
@@ -902,7 +902,19 @@ macro_rules! figure_kinds {
     ($($variant:ident => ($slug:literal, $tool:literal)),+ $(,)?) => {
         /// Which figure to draw. Enumerated in the schema, so a model cannot
         /// invent a kind and a wrong guess is refused before any work happens.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        //
+        // ⚠ `Deserialize` is HAND-WRITTEN, below this macro. The derive accepted
+        // the 32 slugs and nothing else, so a model that answered with a chart
+        // type (`"bar"`), the tool name `describe_figure`'s own guidance is
+        // written in (`"show_chart"`) or a capitalised slug (`"Chart"`) was
+        // refused by serde before a line of Auto Visualiser ran — with serde's
+        // "unknown variant" text, which names neither `describe_figure` nor a
+        // kind it could have used instead.
+        //
+        // `Serialize` and `JsonSchema` keep the derive, so the schema the model
+        // is SHOWN is still the strict enum of canonical slugs. The leniency is
+        // what this accepts, never what it advertises.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
         #[derive(rmcp::schemars::JsonSchema)]
         pub enum FigureKind {
             $(
@@ -964,6 +976,77 @@ figure_kinds! {
     Choropleth      => ("choropleth",       "render_choropleth"),
 }
 
+impl FigureKind {
+    /// Resolve a figure name however a model spelled it.
+    ///
+    /// The advertised schema names one spelling per kind, but a model does not
+    /// always answer with it — and through the `code_execution` sandbox it never
+    /// sees the enum at all, only `kind: FigureKind` in a one-line signature.
+    /// Every rung below is a spelling the model was handed somewhere: the slug
+    /// is in the schema, the tool name is in `describe_figure`'s `guidance`
+    /// (it is the underlying tool's own description), and `bar`/`line`/
+    /// `scatter`/`pie` are the words the server instructions use to say what
+    /// `chart` and `donut` are FOR.
+    ///
+    /// ⚠ This resolves the figure's NAME. It is not a licence to guess: a word
+    /// that names no figure still fails, because rendering the wrong figure is
+    /// worse than one more round trip.
+    pub fn from_alias(raw: &str) -> Option<FigureKind> {
+        // Folds case, spaces, dashes and a missing `render_` prefix into the
+        // dispatch table's own spelling — including `chart` → `show_chart`.
+        let tool = normalize_tool_name(raw);
+        if let Some(kind) = Self::ALL.iter().copied().find(|k| k.tool_name() == tool) {
+            return Some(kind);
+        }
+        // Word breaks a model put somewhere else, or nowhere: `kaplanmeier`,
+        // `word cloud`, `ERdiagram`.
+        let squashed = tool.replace('_', "");
+        if let Some(kind) = Self::ALL
+            .iter()
+            .copied()
+            .find(|k| k.tool_name().replace('_', "") == squashed)
+        {
+            return Some(kind);
+        }
+        let word = tool.trim_start_matches("render_").replace('_', "");
+        if implied_chart_type(&word).is_some() {
+            return Some(FigureKind::Chart);
+        }
+        match word.as_str() {
+            // "donut: pie/donut charts for categorical proportions".
+            "pie" | "piechart" | "doughnut" | "doughnutchart" => Some(FigureKind::Donut),
+            _ => None,
+        }
+    }
+}
+
+/// The `ChartData` `type` a kind alias has already named.
+///
+/// `{"kind": "bar"}` states the chart type in the kind, so the payload beside it
+/// usually carries no `type` of its own — and `ChartData::chart_type` is
+/// required. Refusing that call would mean rejecting a model for saying what it
+/// wanted twice rather than once.
+fn implied_chart_type(word: &str) -> Option<&'static str> {
+    match word {
+        "bar" | "barchart" | "column" | "columnchart" => Some("bar"),
+        "line" | "linechart" => Some("line"),
+        "scatter" | "scatterplot" | "scatterchart" => Some("scatter"),
+        _ => None,
+    }
+}
+
+impl<'de> Deserialize<'de> for FigureKind {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as DeError;
+        let raw = String::deserialize(d)?;
+        FigureKind::from_alias(&raw).ok_or_else(|| {
+            DeError::custom(format!(
+                "unknown figure kind {raw:?}; call describe_figure for the list of kinds"
+            ))
+        })
+    }
+}
+
 /// Turn a `render_figure` payload into the arguments the underlying tool takes.
 ///
 /// All thirty-two land on `{"data": …}` — including `donut`, whose
@@ -1002,7 +1085,10 @@ const RENDER_FIGURE: &str = "render_figure";
 /// keys that were meant as the tool. Independently — and this is the one that
 /// bites when `tool` WAS present — a figure's own `type` field (`show_chart`
 /// payloads have one) must not be able to decide which figure gets drawn.
-fn render_figure_call(params: Value) -> Result<(FigureKind, Value), ErrorData> {
+fn render_figure_call(
+    params: Value,
+    vocab: FigureVocabulary,
+) -> Result<(FigureKind, Value), ErrorData> {
     // Some models stringify nested tool-call arguments; `DashboardFigure`
     // accepts that and this used to refuse it, so a stringified panel body
     // failed one level in with a message about `kind` rather than about the
@@ -1025,14 +1111,29 @@ fn render_figure_call(params: Value) -> Result<(FigureKind, Value), ErrorData> {
         }
     };
 
-    let raw_kind = map.remove("kind").ok_or_else(|| {
-        invalid(
-            "`render_figure` needs a `kind` naming the figure to draw, e.g. \
-             {\"tool\": \"render_figure\", \"params\": {\"kind\": \"volcano\", \"data\": {…}}}. \
-             Call describe_figure for the list of kinds."
-                .to_string(),
-        )
-    })?;
+    // A call wrapped the way a dashboard panel writes one:
+    // `{"tool": "render_figure", "params": {"kind": …, "data": …}}`. Descend
+    // before hunting `kind` — and note WHY this shape reaches the declared door
+    // at all: until this change the missing-`kind` error handed every caller the
+    // panel spelling as its worked example, so a direct caller that followed the
+    // advice it was just given failed a second time on the shape the message
+    // recommended.
+    if !map.contains_key("kind") {
+        if let Some(inner) = ["params", "arguments", "args", "data"]
+            .iter()
+            .filter_map(|key| map.get(*key))
+            .find_map(|value| match de_stringified(value.clone()) {
+                Value::Object(inner) if inner.contains_key("kind") => Some(inner),
+                _ => None,
+            })
+        {
+            map = inner;
+        }
+    }
+
+    let raw_kind = map
+        .remove("kind")
+        .ok_or_else(|| invalid(missing_kind_error(vocab)))?;
     let kind: FigureKind = serde_json::from_value(raw_kind.clone()).map_err(|_| {
         invalid(format!(
             "Unknown figure kind {raw_kind}. Call describe_figure for the list of kinds."
@@ -1042,11 +1143,53 @@ fn render_figure_call(params: Value) -> Result<(FigureKind, Value), ErrorData> {
     // An explicit payload key wins; otherwise whatever is left on the object IS
     // the payload, which is how a model that wrote `{"kind": "chart", "type":
     // "bar", "datasets": […]}` still lands on a figure.
-    let data = ["data", "params", "arguments", "args"]
+    let mut data = ["data", "params", "arguments", "args"]
         .iter()
         .find_map(|key| map.remove(*key))
         .unwrap_or(Value::Object(map));
+
+    // `{"kind": "bar", …}` already named the chart type; see `implied_chart_type`.
+    if kind == FigureKind::Chart {
+        if let (Some(implied), Value::Object(fields)) = (
+            raw_kind
+                .as_str()
+                .map(|raw| normalize_tool_name(raw).trim_start_matches("render_").replace('_', ""))
+                .as_deref()
+                .and_then(implied_chart_type),
+            &mut data,
+        ) {
+            fields
+                .entry("type")
+                .or_insert_with(|| Value::String(implied.to_string()));
+        }
+    }
     Ok((kind, data))
+}
+
+/// The example a missing `kind` is answered with, in the caller's own vocabulary.
+///
+/// ⚠ The two are NOT interchangeable, and the wrong one costs the round trip
+/// this message exists to save. `render_figure`'s declared door takes
+/// `{"kind": …, "data": …}` directly; a dashboard panel wraps that same object
+/// as `{"tool": "render_figure", "params": {…}}`. Handing the panel spelling to
+/// a direct caller told it to retry with a shape that door then refused. Both
+/// are accepted now, but the example should still be the one the caller's own
+/// surface documents — a model copies the example it is given.
+fn missing_kind_error(vocab: FigureVocabulary) -> String {
+    let example = match vocab {
+        FigureVocabulary::RenderFigure => {
+            "{\"kind\": \"chart\", \"data\": {\"type\": \"bar\", \
+             \"labels\": [\"a\", \"b\"], \
+             \"datasets\": [{\"label\": \"Value\", \"data\": [1, 2]}]}}"
+        }
+        FigureVocabulary::ToolName => {
+            "{\"tool\": \"render_figure\", \"params\": {\"kind\": \"volcano\", \"data\": {…}}}"
+        }
+    };
+    format!(
+        "`render_figure` needs a `kind` naming the figure to draw, e.g. {example}. \
+         Call describe_figure for the list of kinds."
+    )
 }
 
 /// Which figure names the caller's model can actually emit.
@@ -1133,14 +1276,44 @@ fn unknown_figure_error(vocab: FigureVocabulary, name: &str) -> String {
 }
 
 /// Parameters for `render_figure`.
-#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 pub struct RenderFigureParams {
     /// Which figure to draw.
     pub kind: FigureKind,
     /// The figure's payload. Its shape depends on `kind` — call
     /// `describe_figure` with that kind for the exact schema and a worked
-    /// example.
+    /// example. For `kind: "chart"`: {"type": "bar", "labels": ["a", "b"],
+    /// "datasets": [{"label": "Value", "data": [1, 2]}]}.
     pub data: Value,
+}
+
+/// ⚠ **Hand-written, and this is the fix.** The declared `render_figure` had a
+/// DERIVED `Deserialize`, so `rmcp` refused a model's arguments inside
+/// `Parameters::from_context_part` — `serde_json::from_value::<RenderFigureParams>`
+/// — and answered with its own "failed to deserialize parameters: missing field
+/// `data`". That message names no kind and no `describe_figure`, and it arrives
+/// before any Auto Visualiser code runs, so none of the careful phrasing in
+/// `figure_argument_error` could reach the model.
+///
+/// Meanwhile `render_figure_call` — which unwraps exactly the shapes models are
+/// recorded sending — sat one door over, wired only to dashboard panels and
+/// Agent Drafter's `ui_figure`. Two doors, two behaviours, and the lenient one
+/// was not the door a chat agent uses. Measured on Versa GPT-5.5: "render a bar
+/// chart of three values" cost four or five tool-call cards, two or three of
+/// them rejections, before the model gave in and called `describe_figure`.
+///
+/// This routes the declared door through the same parser, so the two agree.
+/// `render_figure`'s body then calls in as `kind.tool_name()`, which is never
+/// `render_figure`, so `call_figure_tool`'s own unwrap is not re-entered and the
+/// payload is unwrapped exactly once.
+impl<'de> Deserialize<'de> for RenderFigureParams {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as DeError;
+        let (kind, data) =
+            render_figure_call(Value::deserialize(d)?, FigureVocabulary::RenderFigure)
+                .map_err(|e| DeError::custom(e.message))?;
+        Ok(RenderFigureParams { kind, data })
+    }
 }
 
 /// Parameters for `describe_figure`.
@@ -1163,7 +1336,7 @@ impl AutoVisualiserRouter {
     // `describe_figure`, which has no such budget because it is a RESULT.
     #[tool(
         name = "render_figure",
-        description = "Draw one interactive figure. Pick `kind` from the enum, and pass that kind's payload as `data`. The Auto Visualiser instructions in your system prompt list what each kind is for; call describe_figure with a kind to get its exact schema and a worked example. For an answer that needs more than one figure, call render_dashboard once instead of calling this repeatedly."
+        description = "Draw one interactive figure. Pick `kind` from the enum, and pass that kind's payload as `data`. Example: {\"kind\": \"chart\", \"data\": {\"type\": \"bar\", \"labels\": [\"a\", \"b\", \"c\"], \"datasets\": [{\"label\": \"Value\", \"data\": [1, 2, 3]}]}}. The Auto Visualiser instructions in your system prompt list what each kind is for; call describe_figure with a kind to get its exact schema and a worked example. For an answer that needs more than one figure, call render_dashboard once instead of calling this repeatedly."
     )]
     pub async fn render_figure(
         &self,
