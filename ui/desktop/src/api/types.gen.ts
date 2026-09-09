@@ -4460,7 +4460,11 @@ export type ReadResourceErrors = {
      */
     401: unknown;
     /**
-     * Resource not found
+     * Refused: this entry reaches extensions as a public caller, and the named extension is private
+     */
+    403: unknown;
+    /**
+     * Resource or extension not found
      */
     404: unknown;
     /**
@@ -4471,6 +4475,10 @@ export type ReadResourceErrors = {
      * Internal server error
      */
     500: unknown;
+    /**
+     * The extension failed the read
+     */
+    502: unknown;
 };
 
 export type ReadResourceResponses = {

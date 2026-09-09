@@ -263,9 +263,19 @@ const EXPECTED: &[Site] = &[
     Site {
         needle: "CallCapability::public_enforced(",
         file: "crates/biorouter-server/src/routes/agent.rs",
-        count: 1,
-        what: "`POST /agent/call_tool`, an entry with no caller identity, which \
-               therefore takes the most restrictive pair this type can express",
+        count: 2,
+        what: "the two entries with no caller identity — `POST /agent/call_tool` and \
+               `POST /agent/read_resource` — which therefore take the most \
+               restrictive pair this type can express. ⚠ `read_resource` reached \
+               2026-09-09 passing `None` instead, which made the guard sample the \
+               NAMED session's bound model: an HTTP client holding the daemon \
+               secret could name a private chat and read its private extensions' \
+               resources on that chat's reach. That is the same \"borrow another \
+               session's capability\" hole the execution plan closed at \
+               `call_tool`; it ruled the resource route the same way for the same \
+               reason (§13012) and only `call_tool` was migrated. The route lost \
+               its last in-repo caller when MCP apps was removed, which is why \
+               nothing noticed",
     },
     Site {
         needle: "CallCapability::public_enforced(",

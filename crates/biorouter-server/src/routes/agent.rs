@@ -2289,40 +2289,63 @@ async fn update_working_dir(
     responses(
         (status = 200, description = "Resource read successfully", body = ReadResourceResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused: this entry reaches extensions as a public caller, and the named extension is private"),
         (status = 424, description = "Agent not initialized"),
-        (status = 404, description = "Resource not found"),
+        (status = 404, description = "Resource or extension not found"),
+        (status = 502, description = "The extension failed the read"),
         (status = 500, description = "Internal server error")
     )
 )]
 async fn read_resource(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ReadResourceRequest>,
-) -> Result<Json<ReadResourceResponse>, StatusCode> {
+) -> Result<Json<ReadResourceResponse>, ErrorResponse> {
     use rmcp::model::ResourceContents;
 
     let agent = state
         .get_agent_for_route(payload.session_id.clone())
-        .await?;
+        .await
+        .map_err(|status| ErrorResponse {
+            message: "could not load that chat".to_string(),
+            status,
+        })?;
 
     let read_result = agent
         .extension_manager
         .read_resource(
             &payload.uri,
             &payload.extension_name,
-            // Issue #56: a route, not a tool call — there is no admitted turn
-            // whose capability this could inherit, so Gate C's sibling guard
-            // takes its own reading of the session's bound model.
-            None,
+            // Issue #56: this entry has NO caller identity, exactly like
+            // `call_tool` below it. It arrives outside the agent loop, so there
+            // is no admitted turn whose capability it could inherit, and the
+            // session's currently-bound provider is not this caller's.
+            //
+            // ⚠ This passed `None` until 2026-09-09, which made the guard
+            // sample the NAMED session's bound model — so an HTTP client holding
+            // the daemon secret could name a private chat and read its private
+            // extensions' resources on that chat's reach. That is the "borrow
+            // another session's capability" hole the execution plan closed at
+            // `call_tool`; it ruled this route the same way for the same reason
+            // and only `call_tool` was migrated. Public + enforced is the most
+            // restrictive pair, and it is a constant, so there is nothing here
+            // to race with `update_provider`.
+            Some(biorouter::privacy::CallCapability::public_enforced()),
             CancellationToken::default(),
         )
         .await
-        .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(read_resource_failure)?;
 
     let content = read_result
         .contents
         .into_iter()
         .next()
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(|| ErrorResponse {
+            message: format!(
+                "`{}` returned no contents for `{}`",
+                payload.extension_name, payload.uri
+            ),
+            status: StatusCode::NOT_FOUND,
+        })?;
 
     let (uri, mime_type, text, meta) = match content {
         ResourceContents::TextResourceContents {
@@ -2338,10 +2361,14 @@ async fn read_resource(
             meta,
         } => {
             let decoded = match base64::engine::general_purpose::STANDARD.decode(&blob) {
-                Ok(bytes) => {
-                    String::from_utf8(bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
+                    ErrorResponse::internal("that resource is binary, not UTF-8 text")
+                })?,
+                Err(_) => {
+                    return Err(ErrorResponse::internal(
+                        "that resource's blob is not valid base64",
+                    ))
                 }
-                Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
             };
             (uri, mime_type, decoded, meta)
         }
@@ -2355,6 +2382,161 @@ async fn read_resource(
         text,
         meta: meta_map,
     }))
+}
+
+/// Classify a resource-read failure: a refusal the caller can act on, an
+/// extension that is not there, an extension that failed the read — or a fault
+/// of this process.
+///
+/// Extracted so the mapping can be tested without `AppState`, which builds the
+/// process-global `AgentManager` and opens the REAL user session database. It
+/// is the resource-path sibling of [`dispatch_failure_response`], and it exists
+/// for the same reason: `.map_err(|_e| INTERNAL_SERVER_ERROR)` threw Gate C's
+/// sibling refusal away and told the caller Biorouter had crashed. A privacy
+/// refusal and a panic were the same 500, which is the one distinction a caller
+/// needs — a refusal is answered by switching the chat to a private model, a
+/// crash is not answered at all.
+///
+/// The three codes are `ExtensionManager::read_resource`'s own, not a taxonomy
+/// invented here, and `is_privacy_refusal` in that module names the same split:
+/// `INVALID_REQUEST` is produced on this path by `privacy::refusal::privacy_refusal`
+/// and by nothing else; `INVALID_PARAMS` is "no such extension"
+/// (`extension_manager.rs`, the `get_server_client` miss); `INTERNAL_ERROR` is
+/// the extension answering badly, which is a bad gateway rather than a fault of
+/// this daemon.
+fn read_resource_failure(error: rmcp::model::ErrorData) -> ErrorResponse {
+    use rmcp::model::ErrorCode;
+
+    // `if`/`else` rather than `match`: `ErrorCode` is a newtype over `i32` whose
+    // variants are associated consts, which are not patterns.
+    let status = if error.code == ErrorCode::INVALID_REQUEST {
+        StatusCode::FORBIDDEN
+    } else if error.code == ErrorCode::INVALID_PARAMS {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+
+    ErrorResponse {
+        message: error.message.to_string(),
+        status,
+    }
+}
+
+#[cfg(test)]
+mod read_resource_route_tests {
+    //! What `POST /agent/read_resource` may reach, and what it says when it is
+    //! refused.
+    //!
+    //! This route lost its last in-repo caller when MCP apps was removed
+    //! (`docs/history/mcp-apps-removal/`) and was kept as a generic MCP
+    //! capability an external client may call. Kept means guarded: the two
+    //! properties below are the ones nothing asserted while it had a caller.
+    //!
+    //! The behaviour is asserted through [`read_resource_failure`] rather than
+    //! over HTTP because `AppState::new()` opens the developer's REAL session
+    //! database — the same reason `cross_affiliation_grant_route_tests` states.
+    //! The capability the route hands the extension manager cannot be reached
+    //! that way at all, so it is pinned at the source, and the refusal it
+    //! produces is proved end-to-end by building the REAL refusal rather than a
+    //! hand-made error with the same code.
+
+    use super::{read_resource_failure, StatusCode};
+    use biorouter::privacy::{refusal::privacy_refusal, ProviderTier};
+    use rmcp::model::{ErrorCode, ErrorData};
+
+    const SOURCE: &str = include_str!("agent.rs");
+
+    /// The property the handoff asks for: a public caller reaching a private
+    /// extension is refused, and the refusal is distinguishable from a crash.
+    ///
+    /// The refusal is the REAL one — `privacy_refusal` is the single producer
+    /// of `INVALID_REQUEST` on this path — so this fails if that function ever
+    /// changes the code it refuses with, which a hand-built `ErrorData` would
+    /// not.
+    #[test]
+    fn a_privacy_refusal_is_a_403_that_carries_its_own_words() {
+        let refusal = privacy_refusal("ucsfomopagent", ProviderTier::Private, ProviderTier::Public)
+            .expect("a public caller reaching a private extension is refused");
+
+        let response = read_resource_failure(refusal);
+
+        assert_eq!(response.status, StatusCode::FORBIDDEN);
+        assert!(
+            response.message.contains("private extension"),
+            "the refusal must reach the caller, not be swallowed: {}",
+            response.message
+        );
+    }
+
+    /// Both real neighbours, because a classifier that answered 403 for
+    /// everything would pass the test above.
+    #[test]
+    fn the_two_neighbours_are_told_apart_from_a_refusal() {
+        // `ExtensionManager::read_resource`'s `get_server_client` miss.
+        let unknown = ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            "Extension 'nope' not found. Here are the available extensions: developer".to_string(),
+            None,
+        );
+        assert_eq!(read_resource_failure(unknown).status, StatusCode::NOT_FOUND);
+
+        // The extension itself failing the read.
+        let unreadable = ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Could not read resource with uri: ui://cohort".to_string(),
+            None,
+        );
+        assert_eq!(
+            read_resource_failure(unreadable).status,
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    /// A refusal that never reaches this classifier is not refused at all.
+    ///
+    /// The handler is the only caller, so the mapping above is worth exactly as
+    /// much as the line that routes through it. This is what regressed:
+    /// `map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)` was the shipped line,
+    /// and it is the shape a future edit reaches for.
+    #[test]
+    fn the_handler_routes_its_failure_through_the_classifier() {
+        let handler = crate::routes::body_of(SOURCE, "async fn read_resource");
+
+        assert!(
+            handler.contains("map_err(read_resource_failure)"),
+            "the route no longer classifies the extension manager's answer"
+        );
+        assert!(
+            !handler.contains("map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)"),
+            "the route collapses every failure to a 500 again, so a privacy \
+             refusal is indistinguishable from a crash"
+        );
+    }
+
+    /// The capability itself, which no test above can see.
+    ///
+    /// Assembled rather than written out, so this assertion is not itself a
+    /// match for `crates/biorouter/tests/privacy_capability.rs`'s whole-tree
+    /// census of the two production constructors.
+    #[test]
+    fn the_route_declares_public_and_never_borrows_the_named_chats_reach() {
+        let public_enforced = concat!("CallCapability::", "public_enforced()");
+        let sample = concat!("CallCapability::", "sample(");
+
+        let handler = crate::routes::body_of(SOURCE, "async fn read_resource");
+
+        assert!(
+            handler.contains(public_enforced),
+            "an entry with no caller identity must declare the most restrictive \
+             pair; passing `None` here samples the NAMED session's bound model, \
+             which lets an HTTP client borrow a private chat's reach"
+        );
+        assert!(
+            !handler.contains(sample),
+            "this route has no caller identity to sample from"
+        );
+    }
 }
 
 /// Classify a dispatch failure: a **tool** error the caller can act on, or a

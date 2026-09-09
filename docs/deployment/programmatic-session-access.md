@@ -191,12 +191,13 @@ it would be wrong:
 | `POST /agent/cross_affiliation_grant`, `POST /action-required/tool-confirmation` | `X-User-Action`, plus a decision-authority check on the resolving surface. |
 | `POST /knowledge/bases/{id}/ingest-conversation` | Its own Gate G: capability is derived from the model named in the request body, and every selected conversation is checked against it before a transcript is rendered. |
 | `POST /agent/call_tool` | Privacy Gate C at the extension-manager dispatch point, plus the uninspected-boundary refusals. |
+| `POST /agent/read_resource` | Gate C's sibling at the extension-manager resource read. Like `call_tool` it has no caller identity, so it declares `CallCapability::public_enforced()` rather than sampling the named session: naming a private chat buys nothing, and a private extension is refused with `403`. |
 
 **Ungated, and low-yield.** These name a session but return only its tool surface, not its contents:
-`GET /agent/tools`, `GET /agent/callable_tool_count`,
-`POST /agent/read_resource`, `GET /skills/catalog`, `POST /skills/refresh`. They are listed as a
-measurement, not as a ruling — nothing in the source records a decision to exempt them, so read this
-row as "not gated" rather than "deliberately not gated".
+`GET /agent/tools`, `GET /agent/callable_tool_count`, `GET /skills/catalog`, `POST /skills/refresh`.
+They are listed as a measurement, not as a ruling — nothing in the source records a decision to
+exempt them, so read this row as "not gated" rather than "deliberately not gated". `POST
+/agent/read_resource` was on this list until 2026-09-09 and is now gated; the row above says how.
 
 **Ungated, and a known residual.** These reach or describe a private session without the gate. None
 returns a transcript, so none is the boundary this feature defends — but none is closed either, and
