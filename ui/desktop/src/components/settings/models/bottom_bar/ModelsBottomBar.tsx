@@ -32,6 +32,19 @@ import { isBrowserSurface } from '../../../../utils/surface';
 import type { ProviderTier, SessionClassification } from '../../../../api/types.gen';
 import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
 
+/**
+ * Round 3 / N1 — the one line explaining why the chip may not name the model the
+ * user last chose.
+ *
+ * Two plain facts and no instruction: what governs this chat, and what the
+ * app-wide choice governs instead. It deliberately says nothing about privacy —
+ * that is a different cause with its own sentence
+ * (`privacy/pinnedModel.pinnedModelNotice`), and it is true of only some of the
+ * chats this line appears in.
+ */
+export const CHAT_KEEPS_ITS_MODEL_NOTE =
+  'This chat keeps the model it was last set to. A model chosen elsewhere applies to new chats.';
+
 interface ModelsBottomBarProps {
   sessionId: string | null;
   dropdownRef: React.RefObject<HTMLDivElement>;
@@ -524,6 +537,31 @@ export default function ModelsBottomBar({
             {affiliationWords && (
               <div className="mt-1.5 flex items-center gap-1.5">
                 <AffiliationBadge affiliation={affiliation} className="max-w-full" />
+              </div>
+            )}
+            {/*
+              Round 3 / N1 — why the two names above may not be the model the
+              user last chose in Settings.
+
+              ⚠ **Here and nowhere else.** The chip and gauge now state the
+              chat's own binding for EVERY chat that has one, which means they
+              disagree with the app-wide selection in every chat older than the
+              user's last model switch — the ordinary case, not an edge one. A
+              standing note above the composer would then be near-permanent
+              chrome restating what the control beside it already says. This is
+              the surface a reader reaches by asking the chip what model this
+              chat is on, so it is where the answer to "did my switch fail?"
+              belongs.
+
+              It names no cause and gives no instruction: the two ways to move
+              this chat are directly below it, and nothing here is broken.
+            */}
+            {effectiveModel && (
+              <div
+                data-testid="chat-binding-note"
+                className="mt-1.5 text-[11px] leading-4 text-text-muted"
+              >
+                {CHAT_KEEPS_ITS_MODEL_NOTE}
               </div>
             )}
             {/*

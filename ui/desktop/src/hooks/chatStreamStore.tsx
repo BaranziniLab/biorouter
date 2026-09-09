@@ -25,6 +25,7 @@ import {
   renameSession,
   subscribeSessionNameChanges,
 } from '../utils/sessionNameSync';
+import { subscribeSessionBindingChanges } from '../utils/sessionBindingSync';
 import {
   createElicitationResponseMessage,
   createUserMessage,
@@ -791,6 +792,42 @@ class ChatStreamController {
         return {
           ...prev,
           session: { ...prev.session, name: change.name, user_set_name: change.userSetName },
+        };
+      });
+    });
+
+    // Round 3 / N1 — a per-chat model switch rewrites this session's row, and
+    // this store holds the only copy of it the composer reads. Same shape as the
+    // name subscription above, and for the same reason: the write has already
+    // landed on the daemon, so re-reading it would be a round trip to learn what
+    // the announcement already carries.
+    subscribeSessionBindingChanges((change) => {
+      if (change.sessionId !== sessionId) return;
+      this.updateSnapshot((prev) => {
+        if (!prev.session) return prev;
+        if (
+          prev.session.provider_name === change.provider &&
+          prev.session.model_config?.model_name === change.model
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          session: {
+            ...prev.session,
+            provider_name: change.provider,
+            // Spread, so the row keeps the fields the bind did not name
+            // (`toolshim`, `reasoning_effort`, …). `context_limit` is written
+            // even when the announcement carries none: a row naming one model
+            // beside another model's window is the lie this patch exists to
+            // avoid, and the post-turn refresh restores the daemon's own value.
+            model_config: {
+              ...prev.session.model_config,
+              model_name: change.model,
+              context_limit: change.contextLimit ?? null,
+              toolshim: prev.session.model_config?.toolshim ?? false,
+            },
+          },
         };
       });
     });
@@ -1722,6 +1759,69 @@ class ChatStreamController {
     onSessionLoaded?.();
   }
 
+  /**
+   * Round 3 / N3 — re-read the four row fields a TURN can change.
+   *
+   * The composer states the chat's own binding, and the classification decides
+   * whether the app-wide selection is barred from it at all. Both are written by
+   * the daemon during a turn and neither is derivable here: the binding may be
+   * `restore_provider_from_session`'s or Gate B's repair of it, and
+   * `privacy_tier` ratchets from whatever the turn touched. Without this, the
+   * measured symptom was a chat that had just gone private still showing a
+   * public model, its window, and no note — until the window was reloaded.
+   *
+   * ⚠ `metadata_only`, so this costs the row and not the transcript. The same
+   * `GET /sessions/{id}` without it re-serialises every message in the chat,
+   * once per turn, to learn three strings.
+   *
+   * ⚠ Four fields, merged — never the whole row. The response carries no
+   * conversation and stale token counters; adopting it wholesale would blank the
+   * transcript this store is the source of truth for.
+   *
+   * ⚠ Failure is silent by design. This runs after the turn has already been
+   * delivered; a refresh that could not complete leaves the composer exactly as
+   * stale as it was before this method existed, which is not worth a toast.
+   */
+  private async refreshSessionBinding(): Promise<void> {
+    if (!this.sessionId || !this.snapshot.session) return;
+    try {
+      const response = await getSession({
+        path: { session_id: this.sessionId },
+        query: { metadata_only: true },
+        // Issue #56 Task 58: reading a private chat needs the proof-of-user —
+        // and a chat this call exists to notice has JUST become private is
+        // exactly the one that would be refused without it.
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
+      const row = response.data;
+      if (!row) return;
+      this.updateSnapshot((prev) => {
+        if (!prev.session) return prev;
+        if (
+          prev.session.provider_name === row.provider_name &&
+          prev.session.model_config?.model_name === row.model_config?.model_name &&
+          prev.session.privacy_tier === row.privacy_tier &&
+          prev.session.privacy_reason === row.privacy_reason
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          session: {
+            ...prev.session,
+            provider_name: row.provider_name,
+            model_config: row.model_config,
+            privacy_tier: row.privacy_tier,
+            privacy_reason: row.privacy_reason,
+          },
+        };
+      });
+    } catch (error) {
+      console.warn('Failed to refresh the chat’s model binding after a turn:', error);
+    }
+  }
+
   private finishCurrentStream = async (error?: ChatTurnErrorData): Promise<void> => {
     if (error) {
       this.updateSnapshot((prev) => ({ ...prev, turnError: error }));
@@ -1755,6 +1855,13 @@ class ChatStreamController {
     if (this.sessionId) {
       window.dispatchEvent(new CustomEvent('message-stream-finished'));
     }
+
+    // Round 3 / N3. A turn is the other thing that changes this chat's binding,
+    // and unlike a model switch it changes fields no client can compute: the
+    // daemon binds `restore_provider_from_session`'s provider, Gate B may repair
+    // it, and the privacy ratchet raises `privacy_tier` from whatever the turn
+    // touched. Not awaited — the turn is over and nothing on screen waits on it.
+    void this.refreshSessionBinding();
 
     if (
       this.sessionId &&

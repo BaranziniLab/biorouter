@@ -32,6 +32,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { notifySessionToolsChanged } from '../utils/sessionToolEvents';
+import { announceSessionBinding } from '../utils/sessionBindingSync';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -364,6 +365,27 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           });
           boundNotice = bound.data;
           notifySessionToolsChanged(sessionId);
+          // Round 3 / N1. The row this chat runs on has just been rewritten, and
+          // the renderer's copy of it is a cache nothing else refreshes — so the
+          // composer, which now states the chat's own binding whenever it
+          // differs from the app-wide selection, would keep naming the model the
+          // user just switched away from.
+          //
+          // ⚠ **Here, not below.** This lands BEFORE `setConfigProvider` and
+          // before `setCurrentProvider`/`setCurrentModel`, so in the only render
+          // where the two can disagree the ROW holds the new binding and the
+          // selection still holds the old one. Announcing after the selection
+          // moved would invert that window and flash the old model.
+          //
+          // ⚠ And only after `updateAgentProvider` RESOLVED: a refusal (Gate A's
+          // 409 for a public model on a private chat) throws past this line, and
+          // the row it did not write must not be reported as written.
+          announceSessionBinding({
+            sessionId,
+            provider: providerName,
+            model: modelName,
+            contextLimit: model.context_limit,
+          });
         }
 
         phase = 'config';

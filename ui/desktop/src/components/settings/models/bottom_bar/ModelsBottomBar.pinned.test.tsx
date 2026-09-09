@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import ModelsBottomBar from './ModelsBottomBar';
+import ModelsBottomBar, { CHAT_KEEPS_ITS_MODEL_NOTE } from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 
 /**
@@ -138,5 +138,39 @@ describe('a chat bound to something other than the app-wide selection', () => {
       ).toBeInTheDocument()
     );
     expect(screen.queryByText('gpt-5.5-2026-04-24')).toBeNull();
+  });
+
+  /**
+   * Round 3 / N1. The chip and gauge now state the chat's own binding for EVERY
+   * chat that has one, so they disagree with the app-wide selection in every
+   * chat older than the user's last model switch — the ordinary case. That
+   * raises a question the chip alone cannot answer ("did my switch fail?"), and
+   * this is where it is answered: inside the dropdown, which is what a reader
+   * opens to ask the chip what model this chat is on.
+   *
+   * ⚠ Deliberately NOT a note above the composer. That surface belongs to the
+   * privacy sentence, which is earned by a barrier and is rare; a standing
+   * banner for the ordinary case would be near-permanent chrome restating what
+   * the control beside it already says.
+   */
+  it('explains in the dropdown why the chip may differ from the app-wide choice', async () => {
+    renderBar(PINNED);
+    await screen.findByRole('button', { name: /Current model:/ });
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+
+    const note = await screen.findByTestId('chat-binding-note');
+    expect(note).toHaveTextContent(CHAT_KEEPS_ITS_MODEL_NOTE);
+    // It names the mechanism, never privacy: this line appears on public chats
+    // too, where privacy is not the cause.
+    expect(note.textContent).not.toMatch(/private/i);
+  });
+
+  it('says nothing when the chat runs on exactly what is selected', async () => {
+    renderBar(undefined);
+    await screen.findByRole('button', { name: /Current model:/ });
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+
+    await screen.findByText('Current model');
+    expect(screen.queryByTestId('chat-binding-note')).toBeNull();
   });
 });

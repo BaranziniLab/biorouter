@@ -3,8 +3,9 @@
  */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelAndProviderProvider, useModelAndProvider } from './ModelAndProviderContext';
+import { subscribeSessionBindingChanges } from '../utils/sessionBindingSync';
 import type Model from './settings/models/modelInterface';
 
 const mocks = vi.hoisted(() => ({
@@ -428,6 +429,130 @@ describe('ModelAndProviderProvider privacy barrier', () => {
       })
     );
     window.removeEventListener('session-tools:changed', changed);
+  });
+});
+
+/**
+ * Round 3 / N1 — the composer now states the chat's own binding whenever it
+ * differs from the app-wide selection, which is only correct while this
+ * renderer's copy of the row is current. A per-chat switch is one of the two
+ * things that makes it stale, and this is where it is closed.
+ */
+describe('ModelAndProviderProvider announces the binding it just wrote', () => {
+  const seen: Array<Record<string, unknown>> = [];
+  let unsubscribe: () => void = () => {};
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    seen.length = 0;
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
+    unsubscribe = subscribeSessionBindingChanges((change) =>
+      seen.push(change as unknown as Record<string, unknown>)
+    );
+  });
+
+  afterEach(() => unsubscribe());
+
+  it('carries the session, the provider, the model and the window', async () => {
+    mocks.updateAgentProvider.mockResolvedValue({ data: '' });
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('true'));
+    expect(seen).toEqual([
+      {
+        sessionId: 'sess-1',
+        provider: 'anthropic',
+        model: 'claude-opus-4',
+        contextLimit: 200000,
+      },
+    ]);
+  });
+
+  /**
+   * ⚠ **Ordering, not just occurrence.** The announcement lands BEFORE
+   * `setConfigProvider` moves the global default, so in the only render where
+   * the row and the selection can disagree it is the ROW that holds the new
+   * binding. Announcing afterwards would invert that window and flash the model
+   * the user had just switched away from — the regression PR #192 narrowed its
+   * rule to avoid.
+   */
+  it('before the global default moves, not after', async () => {
+    const order: string[] = [];
+    unsubscribe();
+    unsubscribe = subscribeSessionBindingChanges(() => order.push('announce'));
+    mocks.updateAgentProvider.mockImplementation(async () => {
+      order.push('bind');
+      return { data: '' };
+    });
+    mocks.setConfigProvider.mockImplementation(async () => {
+      order.push('global');
+    });
+
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('true'));
+    expect(order).toEqual(['bind', 'announce', 'global']);
+  });
+
+  /** A refused bind wrote no row, so there is nothing to announce. */
+  it('says nothing when the bind was refused', async () => {
+    mocks.updateAgentProvider.mockImplementation(clientRejecting(privacyBarrier409));
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(seen).toEqual([]);
+  });
+
+  /**
+   * The app-wide picker (Settings → Models, Settings → Providers) passes
+   * `sessionId = null` and writes no row at all — which is exactly why an
+   * existing chat goes on running its own model after such a switch, and why the
+   * composer must say so. Nothing to announce here either.
+   */
+  it('says nothing for an app-wide switch, which writes no row', async () => {
+    // Already loaded, so the switch takes no warm-up dialog and no download.
+    mocks.llamacppStatus.mockResolvedValue({
+      data: {
+        ...statusResponse.data,
+        sidecar: { ...sidecar, state: 'ready', model: 'qwen3.6', warmed: true },
+      },
+    });
+    render(
+      <ModelAndProviderProvider>
+        <SwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to local' }));
+
+    await waitFor(() => expect(mocks.setConfigProvider).toHaveBeenCalled());
+    expect(mocks.updateAgentProvider).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
   });
 });
 
