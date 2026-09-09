@@ -28,6 +28,25 @@ const CATEGORY_LABELS: Record<SkillCategory, string> = {
 
 type Filter = 'All' | SkillCategory;
 
+/**
+ * The install button's label.
+ *
+ * ⚠ The count goes INSIDE the conditional along with its trailing space, not
+ * beside it. The original wrote `` `Install ${n > 0 ? n : ''} skill…` `` — an
+ * empty substitution between two literal spaces — so the button read
+ * **"Install  skills"** with a double space in the state it spends most of its
+ * life in: nothing selected, and therefore disabled and in front of the user
+ * from the moment the dialog opens.
+ *
+ * Three shapes, all pinned in `BrowseSkillsModal.test.tsx`: 0 → "Install
+ * skills" (plural, because it is an invitation, not a count), 1 → "Install 1
+ * skill", n → "Install n skills".
+ */
+export function installButtonLabel(selectedCount: number): string {
+  const count = selectedCount > 0 ? `${selectedCount} ` : '';
+  return `Install ${count}skill${selectedCount !== 1 ? 's' : ''}`;
+}
+
 export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }: Props) {
   const [registry, setRegistry] = useState<BaamRegistry | null>(null);
   const [live, setLive] = useState(false);
@@ -307,9 +326,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
               Cancel
             </Button>
             <Button onClick={handleInstall} disabled={selectedCount === 0 || installing}>
-              {installing
-                ? 'Installing…'
-                : `Install ${selectedCount > 0 ? selectedCount : ''} skill${selectedCount !== 1 ? 's' : ''}`}
+              {installing ? 'Installing…' : installButtonLabel(selectedCount)}
             </Button>
           </div>
         </div>
