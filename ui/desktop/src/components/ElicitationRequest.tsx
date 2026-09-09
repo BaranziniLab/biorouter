@@ -33,7 +33,7 @@ export default function ElicitationRequest({
   if (isCancelledMessage) {
     return (
       <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
-        Information request was cancelled.
+        Information request was canceled.
       </div>
     );
   }

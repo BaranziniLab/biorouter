@@ -366,7 +366,7 @@ export function catalogFreshnessLine(load: { live: boolean; fetchedAt?: string }
   if (!load.fetchedAt) return 'showing bundled catalog (offline)';
   const when = new Date(load.fetchedAt);
   if (Number.isNaN(when.getTime())) return 'showing a cached catalog of unknown age';
-  return `catalogue last updated ${when.toLocaleDateString()}`;
+  return `catalog last updated ${when.toLocaleDateString()}`;
 }
 
 /** Case-insensitive match of a query against a skill's searchable fields. */

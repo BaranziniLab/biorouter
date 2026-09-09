@@ -149,9 +149,9 @@ describe('ProviderCatalog — the privacy taxonomy, on screen', () => {
   it('says why an institutional endpoint is private, and why a cloud account is not', () => {
     renderCatalog();
 
-    // §14.5, verbatim: the reason is the recognised endpoint, not the vendor.
+    // §14.5, verbatim: the reason is the recognized endpoint, not the vendor.
     clickTab('institutional');
-    expect(screen.getByText(/recognises this institutional gateway endpoint/i)).toBeInTheDocument();
+    expect(screen.getByText(/recognizes this institutional gateway endpoint/i)).toBeInTheDocument();
 
     // §14.5's note: NOT "a direct cloud account, even if your institution pays
     // for it" — `azure.rs` defaults AZURE_OPENAI_ENDPOINT to the UCSF gateway

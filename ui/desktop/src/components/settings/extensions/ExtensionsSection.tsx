@@ -354,7 +354,7 @@ export default function ExtensionsSection({
             is belongs on the same screen, once. */}
         {catalog && catalogFreshnessLine(catalog) && (
           <p className="text-xs text-text-subtle mb-3">
-            Marketplace catalogue · {catalogFreshnessLine(catalog)}
+            Marketplace catalog · {catalogFreshnessLine(catalog)}
           </p>
         )}
         <ExtensionList

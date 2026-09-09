@@ -155,7 +155,10 @@ describe('SecretRequestCard — issue #117', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(submitSecrets).toHaveBeenCalled());
     expect(submitSecrets.mock.calls[0][0].body).toEqual({ id: 'card-1', cancelled: true });
-    expect(await screen.findByText(/cancelled/i)).toBeInTheDocument();
+    // The two spellings on these two lines are both correct and are not the same
+    // kind of thing: `cancelled` above is the daemon's wire value, `canceled` below
+    // is copy, which is American English (design.md §3.10).
+    expect(await screen.findByText(/canceled/i)).toBeInTheDocument();
   });
 
   /**

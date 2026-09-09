@@ -196,7 +196,7 @@ export default function ToolConfirmation({
   // read as a distinct prompt the user is meant to act on.
   return isCancelledMessage ? (
     <div className="biorouter-message-content rounded-2xl border border-border-subtle bg-background-muted px-4 py-3 text-sm text-text-muted">
-      Tool call confirmation was cancelled.
+      Tool call confirmation was canceled.
     </div>
   ) : (
     <>

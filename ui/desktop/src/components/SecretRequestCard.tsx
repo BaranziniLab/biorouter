@@ -112,7 +112,7 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
   if (isCancelledMessage || status.kind === 'cancelled') {
     return (
       <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
-        Credential setup was cancelled. Nothing was installed.
+        Credential setup was canceled. Nothing was installed.
       </div>
     );
   }
