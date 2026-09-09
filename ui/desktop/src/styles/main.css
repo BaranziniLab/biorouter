@@ -1541,9 +1541,9 @@
      `:focus-visible { outline: auto 1px -webkit-focus-ring-color }` matched the
      panel in the same `CSS.getMatchedStylesForNode` dump; without this rule the
      grey box is traded for a focus ring drawn around the same 712 × 2676 px
-     body, which is the louder half of what D-15 exists to prevent. A region
-     gets NO focus treatment: the next Tab lands on the first control inside,
-     which has its own indicator.
+     body, which is the louder half of what D-15 exists to prevent. A PANEL gets
+     no focus treatment: the next Tab lands on the first control inside, which
+     has its own indicator.
 
      The tabpanel and every `.biorouter-focus-region` need this — the class is
      the one way a region with no role can join the exemption, so it joins the
@@ -1552,6 +1552,17 @@
      utilities — and for any future region that draws nothing and carries
      neither the role nor the class, the UA ring is the better fallback than
      silence.
+
+     ⚠ **The class arm is a SUPPRESSION here and an INDICATOR below; the panel
+     arm is only the suppression (2026-09-08, fourth).** Suppressing the ring
+     with nothing in its place is what shipped, and for a `.biorouter-focus-
+     region` it is wrong: the tabpanel's argument is that the next Tab reaches a
+     control inside, and the To Do list has ZERO focusable children. It is
+     entered AND operated — its own scroll container, scrolled with ↓/PageDown —
+     so a keyboard user who lands on it saw no change at all. The indicator is
+     the unlayered `.biorouter-focus-region:focus-visible` rule after this
+     layer; it must stay unlayered, and this rule must stay a bare
+     `outline: none`, or the two halves start fighting.
 
      The `prefers-contrast: more` / `forced-colors` block below is deliberately
      NOT narrowed by any of this: it still reaches the panel and the region
@@ -1652,6 +1663,56 @@
 :where([role='tab']:not(.br-tab)):focus-visible::after {
   height: 3px;
   background-color: var(--accent-bar);
+}
+
+/* D-15, amended 2026-09-08 (fourth) — a KEYBOARD-SCROLLABLE REGION's focus
+ * indicator is a quiet inset edge, because "no treatment" is not an indicator.
+ *
+ * The amendment above exempted `.biorouter-focus-region` from the fill AND put
+ * it into the `outline: none` restoration, so the UA ring was suppressed with
+ * nothing in its place. Measured on the running app afterwards (Parchment dark,
+ * the real chat-summary popover, a 3-row list, focus reached with a real Tab so
+ * `:focus-visible` was Chrome's own verdict): `backgroundColor`
+ * `rgba(0, 0, 0, 0)`, `outline` `rgb(244, 240, 230) none 0px`, `box-shadow`
+ * `none`, `border-width` `0px` and every `<li>` — byte-identical focused and
+ * unfocused. WCAG 2.4.7 with nothing on screen.
+ *
+ * ⚠ **The tabpanel's argument does not reach a region with no role.** A panel
+ * takes nothing because the next Tab lands on the first control inside; the To
+ * Do list has ZERO focusable children (counted on the running app) and is its
+ * own scroll container, so the tab stop exists precisely so ↓/PageDown can
+ * scroll it. It is the thing being operated. `[role='tabpanel']` is deliberately
+ * NOT in this rule.
+ *
+ * D-15's vocabulary decides the shape: a surface shift, never a ring. The
+ * precedent is the composer's own focus edge
+ * (`.biorouter-composer-card:has(textarea:focus)` → `--border-accent`), and
+ * `role="application"` already draws a 2px inset `--border-accent` ring for the
+ * same reason. So: ONE PIXEL, INSET, in `--border-accent`. Inset needs no border
+ * and no geometry change (a real border would reflow the 334px list), and an
+ * inset shadow is painted on the element's own box, so it stays put while the
+ * content scrolls under it.
+ *
+ * ⚠ **`--border-accent`, and the ground it is measured against is
+ * `--background-default`** — the popover surface (`bg-background-default`,
+ * measured `rgb(27, 27, 25)` under the real list). Against that ground the token
+ * clears the 3:1 non-text floor in all three families in both modes: Parchment
+ * 4.62 / 6.71, Alma Mater 4.56 / 9.47, Roche Limit 3.09 / 5.58. It is the only
+ * accent that does — `--accent-bar` falls to 2.66:1 in Alma Mater light, which
+ * is why the tab underline above keeps `--accent-bar` for a job where thickness
+ * carries the signal and this rule does not.
+ *
+ * ⚠ **Unlayered, deliberately — same mechanism as the tab underline above.**
+ * The D-15 block lives in `@layer base`, where a `:where()` rule sits at
+ * specificity 0 and every Tailwind utility in the `utilities` layer beats it
+ * whatever the specificity. A copy of this rule inside `@layer base` would lose
+ * silently the first time the `<ol>` gained a `shadow-*` utility. The
+ * `outline: none` stays in the layered rule, so there is exactly one indicator,
+ * and the `prefers-contrast: more` / `forced-colors` block is still untouched:
+ * a user who asked their OS for a stronger signal keeps the 2px `--ring`
+ * outline through the same `[tabindex]` arm. */
+:where(.biorouter-focus-region):focus-visible {
+  box-shadow: inset 0 0 0 1px var(--border-accent);
 }
 
 /* Motion is short and informative. Everything animated must null out here —

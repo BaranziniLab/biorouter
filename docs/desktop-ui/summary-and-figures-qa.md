@@ -11,6 +11,9 @@ replacement and chat switching must not show another chat's or an obsolete list.
 The task list is a scroll region with a tab stop so a keyboard user can scroll
 it; it takes no focus fill (D-15's third amendment, `.biorouter-focus-region`),
 and the next Tab lands on the panel's own buttons, which do.
+Amended 2026-09-08 (D-15's fourth): the focused list draws a 1px inset
+`--border-accent` edge — the exemption had removed the fill *and* the UA ring,
+leaving a keyboard user with no indicator at all (WCAG 2.4.7).
 
 Generated figures prioritize the data: meaningful titles, units, source or
 assumption notes when relevant, restrained theme-aware colors, and large legible
