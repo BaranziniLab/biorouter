@@ -516,9 +516,30 @@ fn flush_pending_tool_contents(
     )
 }
 
-#[allow(clippy::too_many_lines)]
+/// Decode a Google SSE stream, sampling the tool-call batching kill switch once,
+/// here, at stream construction.
+///
+/// The sample is taken by this wrapper rather than inside the decoder because
+/// the decoder is what tests drive. `tool_call_batching_enabled()` is a bare
+/// `std::env::var` (`providers/base.rs`), so a test that exercised the decoder
+/// read whatever another test had parked in the process environment — and
+/// `env_lock` could not help, because this reader never asked for it. See
+/// `docs/testing/process-global-state.md`.
 pub fn response_to_streaming_message<S>(
+    stream: S,
+) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
+where
+    S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
+{
+    response_to_streaming_message_batching(stream, tool_call_batching_enabled())
+}
+
+/// [`response_to_streaming_message`] with the batching decision supplied by the
+/// caller instead of resolved from the environment.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn response_to_streaming_message_batching<S>(
     mut stream: S,
+    batch_tool_calls: bool,
 ) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
@@ -536,7 +557,6 @@ where
         // dispatches in parallel. Off restores one message per block (serial).
         // Text/thinking parts keep streaming per-part, unchanged. A dropped
         // stream (cancellation) drops this Vec unflushed — never half-delivers.
-        let batch_tool_calls = tool_call_batching_enabled();
         let mut pending_tool_contents: Vec<MessageContent> = Vec::new();
 
         while let Some(line_result) = stream.next().await {
@@ -1398,7 +1418,8 @@ mod tests {
             .map(|l| Ok(l.to_string()))
             .collect();
         let stream = Box::pin(futures::stream::iter(lines));
-        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+        let mut message_stream =
+            std::pin::pin!(response_to_streaming_message_batching(stream, true));
 
         let mut text_parts = Vec::new();
         let mut message_ids: Vec<Option<String>> = Vec::new();
@@ -1443,7 +1464,8 @@ mod tests {
             .map(|l| Ok(l.to_string()))
             .collect();
         let stream = Box::pin(futures::stream::iter(lines));
-        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+        let mut message_stream =
+            std::pin::pin!(response_to_streaming_message_batching(stream, true));
 
         let mut tool_calls = Vec::new();
 
@@ -1483,7 +1505,8 @@ mod tests {
             .map(|l| Ok(l.to_string()))
             .collect();
         let stream = Box::pin(futures::stream::iter(lines));
-        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+        let mut message_stream =
+            std::pin::pin!(response_to_streaming_message_batching(stream, true));
 
         let mut tool_messages: Vec<Message> = Vec::new();
         let mut saw_usage = false;
@@ -1545,7 +1568,8 @@ mod tests {
         let lines: Vec<Result<String, anyhow::Error>> =
             signed_stream.lines().map(|l| Ok(l.to_string())).collect();
         let stream = Box::pin(futures::stream::iter(lines));
-        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+        let mut message_stream =
+            std::pin::pin!(response_to_streaming_message_batching(stream, true));
 
         let mut text_parts = Vec::new();
 
@@ -1572,7 +1596,8 @@ mod tests {
         let lines: Vec<Result<String, anyhow::Error>> =
             error_stream.lines().map(|l| Ok(l.to_string())).collect();
         let stream = Box::pin(futures::stream::iter(lines));
-        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+        let mut message_stream =
+            std::pin::pin!(response_to_streaming_message_batching(stream, true));
 
         let result = message_stream.next().await;
         assert!(result.is_some());
@@ -1598,7 +1623,8 @@ data: [DONE]"#;
         let lines: Vec<Result<String, anyhow::Error>> =
             sse_stream.lines().map(|l| Ok(l.to_string())).collect();
         let stream = Box::pin(futures::stream::iter(lines));
-        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+        let mut message_stream =
+            std::pin::pin!(response_to_streaming_message_batching(stream, true));
 
         let mut text_parts = Vec::new();
 
@@ -1631,7 +1657,8 @@ data: [DONE]"#;
             .map(|l| Ok(l.to_string()))
             .collect();
         let stream = Box::pin(futures::stream::iter(lines));
-        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+        let mut message_stream =
+            std::pin::pin!(response_to_streaming_message_batching(stream, true));
 
         let mut text_parts = Vec::new();
 

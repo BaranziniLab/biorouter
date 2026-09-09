@@ -2325,4 +2325,37 @@ PreToolUse:
             "managed true override should force project hooks on"
         );
     }
+
+    /// A `config::with_config_overrides` entry is **invisible** to this module's
+    /// project-hooks read, and that is not a subtlety — it was a live defect.
+    ///
+    /// `agents/subagent_tool.rs` inserted `BIOROUTER_ALLOW_PROJECT_HOOKS` into an
+    /// override map to unlock project hooks for one arm of a refusal table. The
+    /// task-local is consulted by `Config::get_param` (`config/base.rs`), and
+    /// `HooksManager::new_with_managed` reads the flag with a bare
+    /// `std::env::var` — so the arm was unlocked only when some *other* test had
+    /// leaked the variable into the process, and it passed either way because the
+    /// refusal it asserts holds in both states. The unlock is now stated on
+    /// `AgentConfig::allow_project_hooks` instead.
+    ///
+    /// Written as a before/inside comparison rather than an `is_err()` assertion
+    /// so it does not depend on the ambient environment of the machine running
+    /// it. The other half of the contract — that an override DOES reach a
+    /// `get_param` reader — is `config::base::tests::task_local_override_wins_over_env`.
+    #[tokio::test]
+    async fn a_config_override_never_reaches_the_project_hooks_env_read() {
+        const KEY: &str = "BIOROUTER_ALLOW_PROJECT_HOOKS";
+        let before = std::env::var(KEY).ok();
+        let inside = crate::config::with_config_overrides(
+            std::collections::HashMap::from([(KEY.to_string(), "true".to_string())]),
+            async { std::env::var(KEY).ok() },
+        )
+        .await;
+        assert_eq!(
+            before, inside,
+            "a task-local config override must not change what a bare `std::env::var` \
+             reader sees; if this ever passes by accident, check that nothing in the \
+             binary is writing {KEY}"
+        );
+    }
 }
