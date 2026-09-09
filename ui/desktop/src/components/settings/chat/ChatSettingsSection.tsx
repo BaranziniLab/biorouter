@@ -28,7 +28,7 @@ export default function ChatSettingsSection() {
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted mb-1">Response Styles</h2>
+          <h2 className="text-caps text-text-muted mb-1">Response styles</h2>
           <p className="text-supporting text-text-muted">
             Choose how Biorouter should format and style its responses
           </p>

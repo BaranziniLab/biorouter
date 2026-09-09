@@ -196,7 +196,7 @@ const AddCustomProviderRow = React.memo(function AddCustomProviderRow({
       <div className="w-8 h-8 rounded-element flex items-center justify-center flex-shrink-0">
         <Plus className="w-4 h-4 text-text-muted" />
       </div>
-      <p className="text-label text-text-muted">Add Custom Provider</p>
+      <p className="text-label text-text-muted">Add custom provider</p>
     </button>
   );
 });
@@ -546,7 +546,7 @@ export default function ProviderCatalog({
           <h3 className="text-caps text-text-muted mb-1">Other institutions</h3>
           <p className="text-supporting text-text-muted">
             An institution&apos;s gateway appears here once Biorouter recognises its endpoint as
-            private. Anything else can still be added under Public → Add Custom Provider, and is
+            private. Anything else can still be added under Public → Add custom provider, and is
             treated as public: Biorouter cannot verify where that endpoint points, so it gets none
             of the private tier&apos;s protections.
           </p>
@@ -637,7 +637,7 @@ export default function ProviderCatalog({
           onModelSelected={onModelSelected}
           initialProvider={switchModelProvider}
           initialModel={switchModelInitial}
-          titleOverride="Choose Model"
+          titleOverride="Choose model"
         />
       )}
     </>

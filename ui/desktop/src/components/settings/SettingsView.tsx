@@ -103,7 +103,7 @@ export default function SettingsView({
               the action strip the other views use. */}
           <PageHeader
             title="Settings"
-            description="Manage models, chat behavior, and app preferences"
+            description="Manage models, chat behavior, and app preferences."
           />
 
           <div className="flex-1 min-h-0 flex flex-col">

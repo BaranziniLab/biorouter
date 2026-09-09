@@ -601,7 +601,7 @@ export default function WorkflowsView() {
             <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
               <DropdownMenuItem onClick={() => handleCopyDeeplink(workflowManifestResponse)}>
                 <Link />
-                Copy Deeplink
+                Copy deeplink
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => handleCopyYaml(workflowManifestResponse)}>
                 <Copy />
@@ -610,7 +610,7 @@ export default function WorkflowsView() {
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => handleExportFile(workflowManifestResponse)}>
                 <Download />
-                Export to File
+                Export to file
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -814,7 +814,7 @@ export default function WorkflowsView() {
           >
             <DialogHeader>
               <DialogTitle>
-                {scheduleWorkflowManifest.schedule_cron ? 'Edit' : 'Add'} Schedule
+                {scheduleWorkflowManifest.schedule_cron ? 'Edit' : 'Add'} schedule
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-4">

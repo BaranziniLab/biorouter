@@ -108,7 +108,7 @@ export default function ProviderSettings({
             <BackButton onClick={onClose} />
           </div>
           <h1 className="text-title mb-1" data-testid="provider-selection-heading">
-            {isOnboarding ? 'Choose a provider' : 'Provider Configuration'}
+            {isOnboarding ? 'Choose a provider' : 'Provider configuration'}
           </h1>
           <p className="text-sm text-text-muted">
             {isOnboarding

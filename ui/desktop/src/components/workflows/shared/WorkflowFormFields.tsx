@@ -328,7 +328,7 @@ export function WorkflowFormFields({
                 size="sm"
                 className="h-7 rounded-element bg-background-medium px-2 text-supporting hover:bg-overlay-hover"
               >
-                Open Editor
+                Open editor
               </Button>
             </div>
             <textarea
@@ -371,12 +371,12 @@ export function WorkflowFormFields({
         )}
       </form.Field>
 
-      {/* Initial Prompt Field */}
+      {/* Initial prompt field */}
       <form.Field name="prompt">
         {(field: FormFieldApi<string | undefined>) => (
           <div>
             <label htmlFor="workflow-prompt" className="block text-label text-text-default mb-2">
-              Initial Prompt
+              Initial prompt
             </label>
             <p className="text-supporting text-text-muted mt-2 mb-2">
               (Optional - Instructions or Prompt are required)
@@ -407,7 +407,7 @@ export function WorkflowFormFields({
           <ChevronDown
             className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 relative top-0.5 ${advancedOpen ? 'rotate-0' : '-rotate-90'}`}
           />
-          <span className="text-label text-text-default">Advanced Options</span>
+          <span className="text-label text-text-default">Advanced options</span>
           <span className="text-supporting text-text-muted">
             Activities, parameters, model, resources
           </span>
@@ -563,7 +563,7 @@ export function WorkflowFormFields({
                     size="sm"
                     className="h-7 rounded-element bg-background-medium px-2 text-supporting hover:bg-overlay-hover"
                   >
-                    Open Editor
+                    Open editor
                   </Button>
                 </div>
 

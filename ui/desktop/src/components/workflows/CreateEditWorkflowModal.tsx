@@ -477,7 +477,7 @@ export default function CreateEditWorkflowModal({
               variant="default"
             >
               <Play className="w-4 h-4" />
-              {isSaving ? 'Saving...' : 'Save & Run Workflow'}
+              {isSaving ? 'Saving...' : 'Save & run workflow'}
             </Button>
           </div>
         </div>

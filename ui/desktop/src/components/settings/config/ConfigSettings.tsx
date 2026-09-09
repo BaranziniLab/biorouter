@@ -202,7 +202,7 @@ export default function ConfigSettings() {
           <DialogTrigger asChild>
             <Button variant="secondary">
               <Settings className="h-4 w-4" />
-              Edit Configuration
+              Edit configuration
             </Button>
           </DialogTrigger>
           {/* `MODAL_SIZE.lg`, not `max-w-4xl` — which additionally carried no
@@ -213,7 +213,7 @@ export default function ConfigSettings() {
                 {/* `text-iconStandard` is not a token: it had no definition and
                     no effect. */}
                 <FileText size={20} />
-                Configuration Editor
+                Configuration editor
               </DialogTitle>
               <DialogDescription>
                 Edit your biorouter configuration settings
@@ -296,7 +296,7 @@ export default function ConfigSettings() {
               {modifiedKeys.size > 0 && (
                 <Button onClick={handleReset} variant="ghost">
                   <RotateCcw />
-                  Reset Changes
+                  Reset changes
                 </Button>
               )}
               <Button onClick={() => setIsModalOpen(false)} variant="outline">

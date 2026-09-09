@@ -201,7 +201,7 @@ describe('Settings > Models — Lead/Worker', () => {
 describe('Settings > Configuration editor', () => {
   async function openEditor() {
     render(<ConfigSettings />);
-    fireEvent.click(await screen.findByRole('button', { name: /Edit Configuration/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit configuration' }));
   }
 
   /**
