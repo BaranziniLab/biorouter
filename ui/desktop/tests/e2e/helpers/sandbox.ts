@@ -66,9 +66,17 @@ export function configRoot(): string {
  * An externally supplied `BIOROUTER_E2E_PATH_ROOT` wins and is left alone —
  * the operator who exported it owns its lifetime, so `cleanup()` is a no-op.
  * Otherwise a fresh `mkdtemp` copy of the seed is made and deleted afterwards.
+ *
+ * `forceFresh` overrides that precedence, and exists for one measured reason: a
+ * spec that launches TWO apps in one run (the scheduled-artifact scenario drives
+ * the dev bundle and the packaged app) must not hand both the same root. They
+ * would share one `sessions.db` and one `schedule.json`, so the second launch
+ * would see the first's schedule and its runs. A shared root is right for specs
+ * that hand off to each other on purpose (`bioroffice-install` installs,
+ * `bioroffice-verify` reads it back); it is wrong for concurrent apps.
  */
-export function createSandbox(): Sandbox {
-  const provided = process.env.BIOROUTER_E2E_PATH_ROOT;
+export function createSandbox(options: { forceFresh?: boolean } = {}): Sandbox {
+  const provided = options.forceFresh ? undefined : process.env.BIOROUTER_E2E_PATH_ROOT;
   if (provided && provided.trim() !== '') {
     ensureSkeleton(provided);
     return { root: provided, owned: false, cleanup: () => {} };

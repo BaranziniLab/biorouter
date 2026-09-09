@@ -31,14 +31,14 @@ import { expect, test, type Locator, type Page, type TestInfo } from '@playwrigh
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  createSandbox,
-  dismissStartupModals,
   EVIDENCE_DIR,
   launchDevBundle,
   launchPackagedApp,
   writeBarChartWorkflow,
   type LaunchedApp,
 } from './schedule-artifact.helpers';
+import { dismissFirstRunModals } from './helpers/app';
+import { createSandbox, type Sandbox } from './helpers/sandbox';
 
 /** The card `MCPUIResourceRenderer` renders for a `ui://` resource. */
 const ARTIFACT_CARD = 'button[aria-label^="Open "][aria-label$="in the artifact viewer"]';
@@ -57,7 +57,7 @@ interface Variant {
   name: string;
   /** Why this variant is skipped, or `null` when it should run. */
   skipReason: string | null;
-  launch: (root: string) => Promise<LaunchedApp>;
+  launch: (sandbox: Sandbox) => Promise<LaunchedApp>;
 }
 
 const live = process.env.BIOROUTER_E2E_LIVE === '1';
@@ -74,7 +74,7 @@ const VARIANTS: Variant[] = [
   {
     name: 'dev bundle',
     skipReason: live ? null : 'Set BIOROUTER_E2E_LIVE=1 to run this live scenario.',
-    launch: (root) => launchDevBundle(root),
+    launch: (sandbox) => launchDevBundle(sandbox),
   },
   {
     name: 'packaged app',
@@ -83,7 +83,7 @@ const VARIANTS: Variant[] = [
       : !packagedApp
         ? 'Set BIOROUTER_E2E_APP to a built Biorouter.app to run the packaged variant.'
         : null,
-    launch: (root) => launchPackagedApp(packagedApp!, root, PACKAGED_CDP_PORT),
+    launch: (sandbox) => launchPackagedApp(packagedApp!, sandbox.root, PACKAGED_CDP_PORT),
   },
 ];
 
@@ -99,25 +99,24 @@ for (const variant of VARIANTS) {
 
     let app: LaunchedApp;
     let page: Page;
-    let root: string;
+    let sandbox: Sandbox;
     let workflowPath: string;
-    /** True when this describe made the sandbox, so teardown may remove it. */
-    let sandboxIsOurs = false;
+
     /** Set on the last line of the test body; gates sandbox removal. */
     let scenarioPassed = false;
     const scheduleId = `e2e-bar-chart-${Date.now()}`;
 
     test.beforeAll(async () => {
-      // `BIOROUTER_E2E_PATH_ROOT` is honoured only when the packaged variant is
-      // off: the two variants run two Electron instances, and pointing both at
-      // one root would have them share a sessions database and a schedule file.
-      const supplied = !packagedApp ? process.env.BIOROUTER_E2E_PATH_ROOT : undefined;
-      sandboxIsOurs = !supplied;
-      root = supplied ?? createSandbox('biorouter-e2e-schedule-artifact-');
-      workflowPath = writeBarChartWorkflow(root);
-      app = await variant.launch(root);
+      // `forceFresh` when the packaged variant is on: the two variants run two
+      // Electron instances, and an externally supplied root would have them share
+      // one sessions database and one schedule file.
+      sandbox = createSandbox({ forceFresh: Boolean(packagedApp) });
+      workflowPath = writeBarChartWorkflow(sandbox.root);
+      app = await variant.launch(sandbox);
       page = app.page;
-      await dismissStartupModals(page);
+      // The dev launch already settles the startup dialogs; the packaged one
+      // attaches over CDP and does not, so this is what covers that variant.
+      await dismissFirstRunModals(page);
     });
 
     test.afterAll(async () => {
@@ -127,11 +126,11 @@ for (const variant of VARIANTS) {
       // (six runs measured at 3.0 GB of temp). Removed on a pass; KEPT on a
       // failure, because its config, session database and schedule file are the
       // post-mortem, and the path is printed so it can be found.
-      if (!sandboxIsOurs || !root) return;
+      if (!sandbox?.owned) return;
       if (scenarioPassed) {
-        fs.rmSync(root, { recursive: true, force: true });
+        sandbox.cleanup();
       } else {
-        console.log(`[schedule-artifact] sandbox kept for post-mortem: ${root}`);
+        console.log(`[schedule-artifact] sandbox kept for post-mortem: ${sandbox.root}`);
       }
     });
 
@@ -190,7 +189,7 @@ for (const variant of VARIANTS) {
  *  - **Modals are re-dismissed on every pass.** A dialog open anywhere makes the
  *    background `aria-hidden`, and Playwright's role queries skip aria-hidden
  *    subtrees — so a late-arriving notice does not hide the Scheduler, it makes
- *    the Scheduler *unfindable*. See `dismissStartupModals`.
+ *    the Scheduler *unfindable*. See `dismissFirstRunModals`.
  *  - **The hash is set repeatedly.** A single set races the renderer's boot:
  *    `waitForRenderer` returns as soon as `#root` has any child, which is true
  *    while the shell is still mounting, and a `hashchange` delivered before the
@@ -204,7 +203,7 @@ async function gotoScheduler(page: Page): Promise<void> {
   const newSchedule = page.getByRole('button', { name: 'New schedule' });
   const deadline = Date.now() + 120_000;
   for (;;) {
-    await dismissStartupModals(page);
+    await dismissFirstRunModals(page);
     await page.evaluate(() => {
       window.location.hash = '#/schedules';
     });

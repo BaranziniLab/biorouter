@@ -1,50 +1,37 @@
 /**
  * Sandbox, fixture and launch helpers for `schedule-artifact.spec.ts`.
  *
- * Kept beside the spec rather than in `tests/e2e/helpers/` so the scenario can
- * land without touching the shared helper directory; folding these into the
- * shared helpers later is a move, not a rewrite.
+ * What is here is only what the SHARED helpers cannot provide: the packaged-app
+ * launch, the workflow fixture, and the evidence directory. Sandboxing, the dev
+ * bundle launch and the startup-dialog dance all come from `helpers/sandbox.ts`
+ * and `helpers/app.ts`, so there is ONE implementation of the sandbox invariant
+ * in this directory rather than two that drift.
  *
- * Two things here are load-bearing and were each measured rather than assumed:
+ * The one thing that is load-bearing and local, measured rather than assumed:
  *
- *  1. **Every launch is sandboxed.** `BIOROUTER_PATH_ROOT` relocates the whole
- *     config/data/state triple — `crates/biorouter/src/config/paths.rs:18-27`
- *     resolves `<root>/config`, `<root>/data`, `<root>/state`, and the desktop
- *     main process honours the same variable at `src/main.ts:203`. The daemon
- *     inherits it because `startBiorouterd` spreads `process.env`
- *     (`src/biorouterd.ts:369-372`). Nothing here may run against the real
- *     `~/.config/biorouter`, so the root is always a fresh `mkdtemp` copy of a
- *     seed and never a path the user works in.
- *
- *  2. **The packaged app cannot be launched by `electron.launch`.** Playwright
- *     drives Electron with `--inspect=0` and blocks until the child prints
- *     `Debugger listening on ws://`
- *     (`node_modules/playwright-core/lib/server/electron/electron.js`), and the
- *     packaged build disables `EnableNodeCliInspectArguments`
- *     (`forge.config.ts`), so that line never arrives and the launch hangs
- *     until the test times out. The packaged variant therefore spawns the
- *     executable itself and attaches over CDP — `main.ts:696-699` turns
- *     `ENABLE_PLAYWRIGHT` + `PLAYWRIGHT_CDP_PORT` into a
- *     `remote-debugging-port` switch.
+ *  **The packaged app cannot be launched by `electron.launch`.** Playwright
+ *  drives Electron with `--inspect=0` and blocks until the child prints
+ *  `Debugger listening on ws://`
+ *  (`node_modules/playwright-core/lib/server/electron/electron.js`), and the
+ *  packaged build disables `EnableNodeCliInspectArguments` (`forge.config.ts`),
+ *  so that line never arrives and the launch hangs until the test times out. Measured directly: a 45 s `electron.launch` against the
+ *  notarized 1.90.3 build spent its whole budget and produced no window, failing
+ *  with `TimeoutError` from `ProgressController.run`. So the packaged variant
+ *  spawns the executable itself and attaches over CDP — `main.ts:696-699` turns
+ *  `ENABLE_PLAYWRIGHT` + `PLAYWRIGHT_CDP_PORT` into a `remote-debugging-port`
+ *  switch.
  */
 
-import { _electron as electron, chromium, type Browser, type Page } from '@playwright/test';
+import { chromium, type Browser, type Page } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as http from 'http';
-import * as os from 'os';
 import * as path from 'path';
+import { closeApp, dismissFirstRunModals, launchApp } from './helpers/app';
+import type { Sandbox } from './helpers/sandbox';
 
 /** Repo-relative root of the desktop package (`ui/desktop`). */
 export const DESKTOP_ROOT = path.join(__dirname, '../..');
-
-/**
- * The seed sandbox: a `config/` + `data/` pair holding a provider, an API key
- * and the enabled extensions, copied per run. Overridable so a CI runner can
- * generate one instead of carrying it on disk.
- */
-export const SEED_ROOT =
-  process.env.BIOROUTER_E2E_SEED || path.join(os.homedir(), 'biorouter-runs', 'seed-config');
 
 /**
  * Where evidence (screenshots) is written. Deliberately NOT under Playwright's
@@ -59,31 +46,6 @@ export const EVIDENCE_DIR =
 export interface LaunchedApp {
   page: Page;
   close: () => Promise<void>;
-}
-
-/**
- * Copy the seed into a fresh temp root and neutralise anything in it that
- * points outside the sandbox.
- */
-export function createSandbox(prefix: string): string {
-  if (!fs.existsSync(SEED_ROOT)) {
-    throw new Error(
-      `Seed config not found at ${SEED_ROOT}. Set BIOROUTER_E2E_SEED to a directory holding config/ and data/.`
-    );
-  }
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  fs.cpSync(SEED_ROOT, root, { recursive: true });
-
-  // The seed's own schedule entry names a workflow file OUTSIDE the sandbox, so
-  // the scheduler would read (and could run) something this test does not own.
-  // Start from no schedules at all.
-  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'data', 'schedule.json'), '[]\n');
-
-  // Electron's own profile, kept inside the sandbox so `requestSingleInstanceLock`
-  // (`src/main.ts:740`) cannot collide with a Biorouter the user is running.
-  fs.mkdirSync(path.join(root, 'electron'), { recursive: true });
-  return root;
 }
 
 /**
@@ -164,95 +126,18 @@ export async function waitForRenderer(page: Page): Promise<void> {
 }
 
 /**
- * Close every dialog the app puts up on launch, and report what was closed.
+ * Launch the dev bundle against an already-created sandbox.
  *
- * ⚠ This is not politeness — a startup dialog makes the WHOLE app invisible to
- * Playwright. Radix marks the background `aria-hidden` while a modal is open,
- * and `getByRole` skips aria-hidden subtrees, so every role query returns
- * "element(s) not found" for a page that is plainly rendered behind the dialog.
- * That was measured twice on this spec: `getByRole('heading', { name:
- * 'Scheduler' })` timed out for the full budget while the failure snapshot taken
- * immediately afterwards listed `heading [level=1]: Scheduler`. The blocker was
- * `FirstRunPrivacyNotice` ("Some of your chats are now marked private"), which
- * a seeded sandbox raises because the seed's session database has chats that
- * ratchet private — and whose button reads "Got it", so a helper looking only
- * for "Dismiss" walked straight past it.
- *
- * Dialogs are therefore detected with a CSS locator rather than a role query,
- * and closed in a loop because they stack.
- *
- * Nothing here ever installs anything: `DependencySetupModal`'s control is the
- * outline `Dismiss` (`src/components/DependencySetupModal.tsx:437`), which reads
- * `Done` once every dependency is present.
+ * A thin adapter over the shared `launchApp`, which owns the sandbox invariant,
+ * the `--user-data-dir` half of it, the `ELECTRON_RUN_AS_NODE` clearing and the
+ * startup-dialog dance. All this adds is the `{ page, close }` shape the two
+ * variants share, so the spec can treat a dev bundle and a packaged app alike.
  */
-export async function dismissStartupModals(page: Page): Promise<string[]> {
-  const closed: string[] = [];
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const dialog = page.locator('[role="dialog"]').first();
-    try {
-      await dialog.waitFor({ state: 'visible', timeout: attempt === 0 ? 15_000 : 2_000 });
-    } catch {
-      return closed;
-    }
-    const title =
-      (await dialog
-        .locator('h1, h2')
-        .first()
-        .textContent()
-        .catch(() => null)) ?? '(untitled dialog)';
-    const control = dialog
-      .locator(
-        '[data-testid="notice-acknowledge"], button:has-text("Got it"), button:has-text("Dismiss"), button:has-text("Done")'
-      )
-      .first();
-    if ((await control.count()) === 0) {
-      throw new Error(
-        `A startup dialog titled "${title.trim()}" is open and has no known dismiss control. ` +
-          'Add its control to dismissStartupModals — while it is open every getByRole query fails.'
-      );
-    }
-    await control.click();
-    closed.push(title.trim());
-    await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
-  }
-  return closed;
-}
-
-/** Launch the dev bundle in `.vite/build/` via Playwright's Electron driver. */
-export async function launchDevBundle(root: string): Promise<LaunchedApp> {
-  const main = path.join(DESKTOP_ROOT, '.vite/build/main.js');
-  if (!fs.existsSync(main)) {
-    throw new Error(
-      `Dev bundle missing at ${main}. Run: npm run generate-api && npm run build:e2e`
-    );
-  }
-  const app = await electron.launch({
-    args: [main, `--user-data-dir=${path.join(root, 'electron')}`],
-    cwd: DESKTOP_ROOT,
-    env: {
-      ...process.env,
-      ELECTRON_IS_DEV: '1',
-      NODE_ENV: 'development',
-      ...sandboxEnv(root),
-      // An agent shell commonly exports this, and it makes Electron exit
-      // instantly with no window and no error.
-      ELECTRON_RUN_AS_NODE: '',
-    },
-  });
-  const page = await app.firstWindow();
-  await waitForRenderer(page);
+export async function launchDevBundle(sandbox: Sandbox): Promise<LaunchedApp> {
+  const launched = await launchApp({ sandbox });
   return {
-    page,
-    close: async () => {
-      // ⚠ `ElectronApplication.close()` can hang here — measured once, taking the
-      // 60s `afterAll` budget with it and reporting a hook timeout on top of
-      // whatever the real failure was. The app owns a spawned `biorouterd`, so a
-      // graceful quit is worth attempting but must never be the only exit: fall
-      // back to killing the process this helper started, by pid.
-      const pid = app.process().pid;
-      await Promise.race([app.close().catch(() => {}), new Promise((r) => setTimeout(r, 20_000))]);
-      if (pid) killTree(pid);
-    },
+    page: launched.page,
+    close: () => closeApp(launched),
   };
 }
 
