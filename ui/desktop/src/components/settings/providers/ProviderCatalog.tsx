@@ -545,7 +545,7 @@ export default function ProviderCatalog({
         >
           <h3 className="text-caps text-text-muted mb-1">Other institutions</h3>
           <p className="text-supporting text-text-muted">
-            An institution&apos;s gateway appears here once Biorouter recognises its endpoint as
+            An institution&apos;s gateway appears here once Biorouter recognizes its endpoint as
             private. Anything else can still be added under Public → Add custom provider, and is
             treated as public: Biorouter cannot verify where that endpoint points, so it gets none
             of the private tier&apos;s protections.

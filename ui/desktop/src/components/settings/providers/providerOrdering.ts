@@ -268,7 +268,7 @@ function institutionalSections(providers: ProviderDetails[]): OrderedProviderSec
     sections.push({
       key: 'unaffiliated',
       label: 'Unaffiliated private gateways',
-      note: 'Private because Biorouter recognises the endpoint, but no institution is named for it.',
+      note: 'Private because Biorouter recognizes the endpoint, but no institution is named for it.',
       providers: [...unaffiliated].sort(byDisplayName),
     });
   }
@@ -373,7 +373,7 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
       key: 'institutional',
       label: 'Private · Institutional',
       tabLabel: 'Institutional',
-      note: 'Private because Biorouter recognises this institutional gateway endpoint.',
+      note: 'Private because Biorouter recognizes this institutional gateway endpoint.',
       accentClassName: 'bg-background-info',
     }),
     withSections({

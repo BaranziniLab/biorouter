@@ -67,7 +67,7 @@ rule above, because it is the only one that works everywhere:
 
 A bundle that omits `env_vars`, or leaves `description` blank, installs from the
 terminal and is then rejected by the app the user actually runs — so the CLI's
-laxity is a trap, not a licence. `tools_count` is genuinely optional. Inside an
+laxity is a trap, not a license. `tools_count` is genuinely optional. Inside an
 `env_vars` entry only `key` is required; `required`, `auto_propagate`,
 `description`, `secret` and `default` all default.
 

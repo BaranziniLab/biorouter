@@ -154,7 +154,7 @@ page — just stop writing new ones.
   personal details) and is grown automatically by a "Meditation" workflow and a
   daily 3:00 AM "Daily Meditation" scheduled job, guided by the built-in
   `update-soul` skill. Consult it (`kb_search` with `kb_id="soul"`) to
-  personalise answers; it may be hidden, so search it by explicit id.
+  personalize answers; it may be hidden, so search it by explicit id.
 
 ### Models & providers
 

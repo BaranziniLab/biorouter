@@ -160,5 +160,5 @@ on the two surfaces that name a provider: `biorouter kb lint --fix` in the termi
 the "Check for problems" panel in the Knowledge view. It is not reachable as a tool,
 because a tool that sometimes writes could not be classified as reading or writing, and
 that classification is what keeps a private base out of a public chat. Suggest the CLI
-command to the user if the report is long and mechanical; do the judgement calls —
+command to the user if the report is long and mechanical; do the judgment calls —
 contradictions, re-typing, which source wins — yourself either way.

@@ -1,6 +1,6 @@
 # Biorouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Neutrals shared across all three families 2026-08-08 ([§3.1](#31--colour))** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Neutrals shared across all three families 2026-08-08 ([§3.1](#31--colour))** · **Copy is American English 2026-09-09 ([§3.10](#310--spelling))** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
 > D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile — now 36px content rows and 32px sidebar
@@ -773,6 +773,16 @@ Inline `<svg>` literals in view components are forbidden; promote to `components
 #### The logo
 
 `components/icons/Biorouter.tsx` draws the wordmark with gradient stops at `#EC5D2A` (20×) and `#57B9AF` (20×) — an orange and a teal that **exist nowhere else in the system** and are not the token coral `#cf6d47`. `DR-19`. See **[Decision D-02](#d-02--brand-mark-palette)**.
+
+### 3.10 · Spelling
+
+**Decided 2026-09-09.** User-visible copy is **American English** — `behavior`, `color`, `center`, `catalog`, `recognizes`, `canceled`, `judgment`. This governs the desktop renderer's copy and the shipped skill text; it does not govern this repository's contributor prose (`CLAUDE.md`, `docs/`, code comments), which stays as written.
+
+The choice was measured, not assumed. Across the product's user-visible strings: the landing site is 86 American to 6 British, the CLI 76 to 26, the desktop renderer 11 to 9. Two further reasons the American column was kept: the identifiers cannot move — `color`, `center`, `dialog`, `catalog`, `license`, `artifact` are CSS, DOM, API and product identifiers, so a British copy rule would put every label permanently at odds with the symbol beside it, and that seam had already split (the marketplace said "Marketplace catalogue" in one component and "Loading catalog…" in two others); and UCSF and this repository's operator write American English, so it is the convention that gets written by hand rather than remembered.
+
+**Product names are proper nouns and are exempt** — **Auto Visualiser** keeps its British spelling, as do Biorouter, BAAM, Knowledge and every provider and vendor name.
+
+Enforced at the source by `ui/desktop/src/test/uiCopySpelling.test.ts`, which reads user-visible strings out of the AST (JSX text, a `{…}` JSX child, the copy-bearing attributes and properties, toast arguments) rather than grepping — a grep over `src/` is dominated by class strings, web-platform identifiers and comments, and cannot answer a question about copy. Flipping the convention is one word in `spellingVariants.ts`.
 
 ---
 

@@ -263,7 +263,7 @@ export default function AnnotationOverlay({
       {!drag && (
         <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">
           <p className="rounded-element bg-black/75 px-2.5 py-1 text-supporting text-white">
-            Drag to select a region · Shift square · Option centre · Space move · Esc cancel
+            Drag to select a region · Shift square · Option center · Space move · Esc cancel
           </p>
         </div>
       )}

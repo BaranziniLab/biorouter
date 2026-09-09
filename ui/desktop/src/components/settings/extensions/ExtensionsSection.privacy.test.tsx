@@ -152,7 +152,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
 
     expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'public');
     // Not a bare /marketplace/i: the freshness line above the list legitimately
-    // says "Marketplace catalogue", and matching it would make this pass for the
+    // says "Marketplace catalog", and matching it would make this pass for the
     // wrong reason. Both §13.5 marketplace sentences, by name.
     expect(screen.queryByText(/published on the Biorouter marketplace/i)).toBeNull();
     expect(screen.queryByText(/installed from a file/i)).toBeNull();

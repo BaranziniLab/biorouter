@@ -1,6 +1,6 @@
 # The settings visual vocabulary
 
-> **What this is.** The ten rules that govern how the desktop Settings view (Models, Chat, App) — and, since 2026-09-07, the chat-history surfaces (`components/sessions/`), the Scheduler (`components/schedule/`) and the four component views Workflows / Extensions / Skills / Built apps — are built, and the primitives they lean on — a living reference for anyone adding or changing a control there.
+> **What this is.** The eleven rules that govern how the desktop Settings view (Models, Chat, App) — and, since 2026-09-07, the chat-history surfaces (`components/sessions/`), the Scheduler (`components/schedule/`) and the four component views Workflows / Extensions / Skills / Built apps — are built, and the primitives they lean on — a living reference for anyone adding or changing a control there.
 > **Status:** Current.
 > **Audience:** contributors working on the desktop renderer.
 
@@ -27,7 +27,7 @@ row computes to nothing there and a render test passes whether the class is pres
 not. Two of the rules are worse than invisible to a render test, because the defect only
 appears in the cascade — see rule 1.
 
-## The ten rules
+## The eleven rules
 
 ### 1. A row's fill never depends on its state
 
@@ -252,6 +252,37 @@ Tab lands on the first control inside, which has its own. The trap, guarded in
 own `:focus-visible` ring is underneath it, so a second rule has to put the suppression back or the
 grey box becomes a ring around the same box. The `prefers-contrast` escape hatch still reaches the
 panel and is deliberately untouched.
+
+### 11. One spelling convention — American English
+
+**Added 2026-09-09.** User-visible copy is American English: `behavior`, `color`, `center`,
+`catalog`, `recognizes`, `canceled`, `judgment`. Unlike rules 1–10 this one is not about
+Settings, and it is not about a shape — it governs every user-visible string the desktop
+renderer ships, plus the shipped skill text under
+`crates/biorouter/src/agents/builtin_skills/`. It is recorded here because rule 9 already
+governs words, and because this is where a contributor looks before writing a label.
+
+**Product names are proper nouns and are exempt.** **Auto Visualiser** keeps its British
+spelling; so do Biorouter, BAAM, Knowledge and every provider and vendor name. So do wire
+values — the daemon's `cancelled` status is a value, not a word.
+
+The convention was measured before it was chosen, because a raw grep cannot decide it: over
+`ui/desktop/src` the counts read `color`/`colour` 126/106 and `center`/`centre` 49/35, and
+almost all of that is Tailwind classes, web-platform identifiers and comments. Counting only
+strings a person reads, the landing site is 86 American to 6 British, the CLI 76 to 26, and
+the renderer 11 to 9. The deciding argument is that the identifiers cannot move — `color`,
+`center`, `dialog`, `catalog`, `license`, `artifact` are CSS, DOM, API and product
+identifiers — so a British copy rule would put every label permanently at odds with the
+symbol beside it. That seam had already split: the marketplace said "Marketplace catalogue"
+in one component and "Loading catalog…" in two others.
+
+⚠ **Its guard is a different file.** Rules 1–8 are enforced by
+`components/settings/settingsVocabulary.test.ts`; this one by
+`ui/desktop/src/test/uiCopySpelling.test.ts`, which reads copy out of the TypeScript AST and
+carries the proper-noun allow-list. Adding a name to that allow-list is a claim that the
+words are a name — not a preference for how a sentence reads.
+
+See [`design.md` §3.10](../../design.md#310--spelling) for the decision record.
 
 ## The two primitives
 

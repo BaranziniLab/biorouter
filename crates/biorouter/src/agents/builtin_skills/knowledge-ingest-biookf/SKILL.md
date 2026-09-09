@@ -72,7 +72,7 @@ error before calling the source done.
 Work through these in order. Stop at the first one that answers.
 
 **Step 1 — Is it evidence, or is it biology?** Anything that *reports* — a paper, a
-trial, a database, an organisation — is one of the 8 provenance-and-context types
+trial, a database, an organization — is one of the 8 provenance-and-context types
 (`Publication`, `Study`, `Dataset`, `Agent`, `Population`, `GeographicLocation`,
 `Concept`, `Other`). Everything else is one of the 20 biomedical entity types.
 

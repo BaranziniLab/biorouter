@@ -295,7 +295,7 @@ describe('ProviderCatalog — institutions', () => {
     render(<ProviderCatalog providers={[]} mode="settings" configuredProvider={null} />);
     clickTab('institutional');
     const note = screen.getByTestId('other-institutions-note');
-    expect(note).toHaveTextContent(/recognises its endpoint as private/i);
+    expect(note).toHaveTextContent(/recognizes its endpoint as private/i);
     // Case-sensitive on purpose: this used to be `/Add Custom Provider/i`,
     // which kept passing when the control was renamed to sentence case — so
     // it was asserting the words, not that the note names the real label.
