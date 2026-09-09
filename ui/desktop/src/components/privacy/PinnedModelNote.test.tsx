@@ -1,6 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, renderHook, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PinnedModelNote } from './PinnedModelNote';
+import { usePinnedModel } from './usePinnedModel';
 import {
   bindingDiffersFromSelection,
   bindingLabel,
@@ -40,6 +41,15 @@ const CATALOG = [
 
 const BINDING = { provider: 'versa_azure', model: 'gpt-5.2-2025-12-11' };
 
+/** A row bound to `BINDING`, with the classification under test. */
+const chat = (privacy_tier: 'private' | 'public'): Session =>
+  ({
+    id: '20260610_28',
+    privacy_tier,
+    provider_name: BINDING.provider,
+    model_config: { model_name: BINDING.model },
+  }) as Session;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getProviders.mockResolvedValue(CATALOG);
@@ -56,7 +66,7 @@ beforeEach(() => {
  */
 describe('PinnedModelNote', () => {
   it('names both bindings by their display names, not their ids', async () => {
-    render(<PinnedModelNote binding={BINDING} chatTier="private" />);
+    render(<PinnedModelNote session={chat('private')} />);
 
     const note = await screen.findByTestId('pinned-model-note');
     await waitFor(() =>
@@ -75,12 +85,14 @@ describe('PinnedModelNote', () => {
   it('says nothing when the chat already runs on the selected model', () => {
     mocks.currentProvider = 'versa_azure';
     mocks.currentModel = 'gpt-5.2-2025-12-11';
-    const { container } = render(<PinnedModelNote binding={BINDING} chatTier="private" />);
+    const { container } = render(<PinnedModelNote session={chat('private')} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it('says nothing about a chat with no binding of its own', () => {
-    const { container } = render(<PinnedModelNote binding={undefined} chatTier="private" />);
+    const { container } = render(
+      <PinnedModelNote session={{ ...chat('private'), provider_name: null } as Session} />
+    );
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -90,9 +102,11 @@ describe('PinnedModelNote', () => {
    * private, so…" would name a cause that does not exist.
    */
   it('says nothing about a public chat that merely differs', async () => {
-    const { container } = render(<PinnedModelNote binding={BINDING} chatTier="public" />);
-    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
-    expect(container).toBeEmptyDOMElement();
+    const { container } = render(<PinnedModelNote session={chat('public')} />);
+    // …and reads no catalog to decide it: only a private chat can ever refuse
+    // the selection, so a public one costs nothing.
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+    expect(mocks.getProviders).not.toHaveBeenCalled();
   });
 
   /**
@@ -103,7 +117,7 @@ describe('PinnedModelNote', () => {
     mocks.currentProvider = 'ollama';
     mocks.currentModel = 'qwen3.6';
     mocks.getProviders.mockResolvedValue([...CATALOG, providerRow('ollama', 'Ollama', 'private')]);
-    const { container } = render(<PinnedModelNote binding={BINDING} chatTier="private" />);
+    const { container } = render(<PinnedModelNote session={chat('private')} />);
     await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
   });
@@ -116,7 +130,7 @@ describe('PinnedModelNote', () => {
   it('says nothing while the selection is still unresolved', () => {
     mocks.currentProvider = null;
     mocks.currentModel = null;
-    const { container } = render(<PinnedModelNote binding={BINDING} chatTier="private" />);
+    const { container } = render(<PinnedModelNote session={chat('private')} />);
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -126,7 +140,7 @@ describe('PinnedModelNote', () => {
    */
   it('says nothing when the catalog cannot be read', async () => {
     mocks.getProviders.mockRejectedValue(new Error('offline'));
-    const { container } = render(<PinnedModelNote binding={BINDING} chatTier="private" />);
+    const { container } = render(<PinnedModelNote session={chat('private')} />);
     await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
   });
@@ -140,7 +154,7 @@ describe('PinnedModelNote', () => {
       { name: 'versa_azure', metadata: { tier: 'private' }, resolved_tier: 'private' },
       { name: 'claude_code', metadata: { tier: 'public' }, resolved_tier: 'public' },
     ]);
-    render(<PinnedModelNote binding={BINDING} chatTier="private" />);
+    render(<PinnedModelNote session={chat('private')} />);
     const note = await screen.findByTestId('pinned-model-note');
     expect(note).toHaveTextContent(
       'This chat is marked private, so it stays on gpt-5.2-2025-12-11. ' +
@@ -149,12 +163,51 @@ describe('PinnedModelNote', () => {
   });
 
   it('is a neutral note, not a warning: nothing has gone wrong', async () => {
-    render(<PinnedModelNote binding={BINDING} chatTier="private" />);
+    render(<PinnedModelNote session={chat('private')} />);
     const note = await screen.findByTestId('pinned-model-note');
     expect(note).toHaveAttribute('role', 'status');
     expect(note.className).toContain('bg-background-muted');
     expect(note.className).not.toContain('wash-warning');
     expect(note.className).not.toContain('wash-danger');
+  });
+});
+
+/**
+ * ⚠ The regression this gate exists to prevent, and it is not hypothetical:
+ * `ModelAndProviderContext.changeModel` writes BOTH the session row and the
+ * global default, so right after a per-chat model switch the daemon has them in
+ * step while the client's cached `/agent/resume` copy of the row is the value
+ * from BEFORE the switch. A composer that preferred the row on every
+ * disagreement would answer the switch by showing the model the user had just
+ * switched away from.
+ */
+describe('what the chip and gauge are told to state', () => {
+  it('states the chat’s own binding when the selection is barred from it', async () => {
+    const { result } = renderHook(() => usePinnedModel(chat('private'), undefined));
+    await waitFor(() => expect(result.current.effectiveModel).toEqual(BINDING));
+  });
+
+  it('leaves the app-wide selection standing when it could run here', async () => {
+    // Both private: Gate A admits the selection, so the row may simply be this
+    // client's stale copy and the selection is the fresher fact.
+    mocks.currentProvider = 'ollama';
+    mocks.currentModel = 'qwen3.6';
+    mocks.getProviders.mockResolvedValue([...CATALOG, providerRow('ollama', 'Ollama', 'private')]);
+    const { result } = renderHook(() => usePinnedModel(chat('private'), undefined));
+    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
+    expect(result.current.effectiveModel).toBeUndefined();
+  });
+
+  it('leaves a public chat entirely alone, and reads no catalog for it', async () => {
+    const { result } = renderHook(() => usePinnedModel(chat('public'), undefined));
+    await waitFor(() => expect(result.current.effectiveModel).toBeUndefined());
+    expect(mocks.getProviders).not.toHaveBeenCalled();
+  });
+
+  it('prefers what a turn reported over the row', async () => {
+    const reported = { provider: 'llamacpp', model: 'gemma4' };
+    const { result } = renderHook(() => usePinnedModel(chat('private'), reported));
+    await waitFor(() => expect(result.current.effectiveModel).toEqual(reported));
   });
 });
 

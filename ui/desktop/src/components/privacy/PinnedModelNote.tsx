@@ -1,7 +1,7 @@
 import { Note } from '../ui/note';
 import { usePinnedModel } from './usePinnedModel';
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
-import type { SessionClassification } from '../../api/types.gen';
+import type { Session } from '../../api/types.gen';
 
 /**
  * Issue #56 / F2 — the one line telling the user that this chat is running on a
@@ -26,19 +26,18 @@ import type { SessionClassification } from '../../api/types.gen';
  * this chat can use.
  */
 export function PinnedModelNote({
-  binding,
-  chatTier,
+  session,
+  reportedByTurn,
   className,
 }: {
-  /** What this chat actually runs on: the session row's binding, or the
-   *  authoritative one a turn reported. */
-  binding?: PinnedModelView;
-  /** The chat's ratcheted classification. */
-  chatTier?: SessionClassification;
+  /** The chat's own row: its classification and the binding it runs on. */
+  session?: Session;
+  /** A binding a turn reported for itself, which outranks the row. */
+  reportedByTurn?: PinnedModelView;
   /** Layout only — `mx-*`, `mb-*`. */
   className?: string;
 }) {
-  const { notice } = usePinnedModel(binding, chatTier);
+  const { notice } = usePinnedModel(session, reportedByTurn);
   if (!notice) return null;
   return (
     <Note tone="neutral" role="status" testId="pinned-model-note" className={className}>
