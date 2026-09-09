@@ -383,7 +383,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
 
         toastSuccess({
           title: CHANGE_MODEL_TOAST_TITLE,
-          msg: `${SWITCH_MODEL_SUCCESS_MSG} -- using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
+          msg: `${SWITCH_MODEL_SUCCESS_MSG} — using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
         });
         // Issue #56 DR-26 at the BIND surface. Binding a model covered by one
         // institution's agreements into a chat holding another institution's
