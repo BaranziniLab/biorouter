@@ -468,6 +468,137 @@ fn is_writable(dir: &Path) -> bool {
     }
 }
 
+/// The path a file really has, with symlinks followed and Windows' verbatim
+/// prefix stripped.
+///
+/// Falls back to the path as given when it cannot be resolved: a caller that
+/// treats the result as a hint and checks the file it derives is better served
+/// by a guess than by a failure. `biorouter-cli`'s `commands::exe_path` module
+/// carries the full account of why this matters — it is the one that discovered
+/// it — and delegates here so there is a single implementation.
+pub fn real_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path)
+        .map(|p| dunce::simplified(&p).to_path_buf())
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// File name of the breadcrumb an installed copy leaves beside itself, naming
+/// the directory it was installed from.
+///
+/// Defined once, here, and read by `biorouter-cli`'s resolvers rather than
+/// re-spelled there: an installer and a reader that disagree about this string
+/// fail silently, and only on the platform that needs it.
+pub const INSTALL_ORIGIN_FILE: &str = ".biorouter-origin";
+
+/// Record, beside an installed copy of the CLI, the directory it was taken from.
+///
+/// Windows has no symlink to follow. [`install_cli`] *copies* `biorouter.exe`
+/// into a `PATH` directory, so `biorouterd.exe` and the interface bundle that
+/// shipped with it are no longer anywhere near the executable — and neither
+/// `biorouter serve` nor `biorouter apps` could find them. This one line of text
+/// is how the copy gets back to them, and it is rewritten on every install so it
+/// keeps pointing at the application after an update moves it.
+///
+/// A copy is not made instead: `biorouterd.exe` is over 200 MB and the interface
+/// bundle another 12, and a copy taken at install time goes stale the moment the
+/// application updates.
+///
+/// **Writes nothing when the source and the target are the same directory.** The
+/// installed copy is itself on `PATH`, so `biorouter setup-path` can be run
+/// *from* it — at which point the source directory is the install directory, and
+/// a breadcrumb naming its own directory would resolve nothing while destroying
+/// the usable one the application wrote.
+pub fn record_install_origin(source_dir: &Path, target_dir: &Path) -> std::io::Result<()> {
+    if same_dir(source_dir, target_dir) {
+        return Ok(());
+    }
+    let origin = real_path(source_dir);
+    std::fs::write(
+        target_dir.join(INSTALL_ORIGIN_FILE),
+        origin.to_string_lossy().as_bytes(),
+    )
+}
+
+/// The directory an installed copy in `install_dir` was taken from, if it left a
+/// breadcrumb.
+///
+/// Tolerant by construction, because every one of these is a state a real
+/// machine reaches: no file (a Unix install, or a copy from before this
+/// existed), an empty or truncated file (a write interrupted by a crash), an
+/// unreadable one, a leading byte-order mark or trailing newline from a text
+/// editor, or a path that no longer exists.
+///
+/// A recorded directory that has since been deleted is returned anyway rather
+/// than being filtered out here: the caller checks for the file it wants, and
+/// the stale path then appears in the list of places it looked, which is the
+/// only way the reader learns their breadcrumb is out of date.
+pub fn install_origin(install_dir: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(install_dir.join(INSTALL_ORIGIN_FILE)).ok()?;
+    let line = raw.trim_start_matches('\u{feff}').lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let path = Path::new(line);
+    // Anything that is not an absolute path is not something we wrote. Resolving
+    // it against the working directory would invent a location rather than
+    // report one.
+    path.is_absolute()
+        .then(|| dunce::simplified(path).to_path_buf())
+}
+
+/// Whether two paths name the same directory, comparing what is on disk when it
+/// can and the spellings when it cannot.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Put `source` at `link`: a symlink on Unix, a copy plus an origin breadcrumb
+/// on Windows.
+///
+/// Split out of [`install_cli`] so the platform difference is one small function
+/// rather than two arms in the middle of a long one.
+fn place_cli(source: &Path, link: &Path, target_dir: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = target_dir;
+        std::os::unix::fs::symlink(source, link).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to link {} -> {}: {}",
+                link.display(),
+                source.display(),
+                e
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::copy(source, link).map(|_| ()).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to copy {} -> {}: {}",
+                source.display(),
+                link.display(),
+                e
+            )
+        })?;
+        // The copy has no siblings, so leave it a note saying where it came
+        // from. A failure here is not a failed install — everything except
+        // `serve` and `apps` works without it — so it is reported, not raised.
+        if let Some(source_dir) = source.parent() {
+            if let Err(e) = record_install_origin(source_dir, target_dir) {
+                tracing::warn!(
+                    "installed the CLI, but could not record where it came from in {}: {e}. \
+                     `biorouter serve` may not be able to find biorouterd or the interface.",
+                    target_dir.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Install (symlink on Unix, copy on Windows) `source` onto a PATH directory so
 /// `biorouter` is callable from any terminal. `source` is normally the running
 /// executable (CLI) or the bundled binary (desktop). Returns where it landed.
@@ -520,24 +651,7 @@ pub fn install_cli(source: &Path) -> anyhow::Result<CliInstall> {
         let _ = std::fs::remove_file(&link);
     }
 
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&source, &link).map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to link {} -> {}: {}",
-            link.display(),
-            source.display(),
-            e
-        )
-    })?;
-    #[cfg(not(unix))]
-    std::fs::copy(&source, &link).map(|_| ()).map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to copy {} -> {}: {}",
-            source.display(),
-            link.display(),
-            e
-        )
-    })?;
+    place_cli(&source, &link, &target_dir)?;
 
     Ok(CliInstall {
         on_path: dir_on_path(&target_dir),
@@ -596,6 +710,231 @@ mod tests {
     fn status_of_rust_resolves() {
         // Should return a status (installed or not) rather than None.
         assert!(status_of("rust").is_some());
+    }
+}
+
+/// The breadcrumb a Windows install leaves so the copied `biorouter.exe` can
+/// still find `biorouterd.exe` and the interface bundle.
+///
+/// None of these are gated on Windows: the reader and the writer are plain path
+/// and string handling, and a rule only one platform ever runs is a rule only
+/// one platform's CI can catch a regression in.
+#[cfg(test)]
+mod install_origin_tests {
+    use super::{install_origin, record_install_origin, INSTALL_ORIGIN_FILE};
+    use std::path::{Path, PathBuf};
+
+    /// A fixture shaped like the shipped Windows application: the two binaries
+    /// in `resources/bin`, the interface bundle beside them in `resources/web`.
+    fn application(root: &Path) -> PathBuf {
+        let bin = root.join("resources").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join(format!("biorouter{}", std::env::consts::EXE_SUFFIX)),
+            b"x",
+        )
+        .unwrap();
+        std::fs::write(
+            bin.join(format!("biorouterd{}", std::env::consts::EXE_SUFFIX)),
+            b"x",
+        )
+        .unwrap();
+        let web = root.join("resources").join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), b"<!doctype html>").unwrap();
+        bin
+    }
+
+    #[test]
+    fn an_install_records_the_directory_it_was_copied_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_dir = application(&tmp.path().join("Application"));
+        let install_dir = tmp.path().join("Local").join("Biorouter").join("bin");
+        std::fs::create_dir_all(&install_dir).unwrap();
+
+        record_install_origin(&source_dir, &install_dir).unwrap();
+
+        assert_eq!(
+            install_origin(&install_dir).map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&source_dir).unwrap()),
+            "the copy must be able to name the application it came from"
+        );
+    }
+
+    /// Rewritten on every install, because an application update moves the
+    /// directory the previous breadcrumb names.
+    #[test]
+    fn a_second_install_replaces_the_recorded_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = application(&tmp.path().join("Biorouter-1.90.3"));
+        let second = application(&tmp.path().join("Biorouter-1.91.0"));
+        let install_dir = tmp.path().join("Local").join("Biorouter").join("bin");
+        std::fs::create_dir_all(&install_dir).unwrap();
+
+        record_install_origin(&first, &install_dir).unwrap();
+        record_install_origin(&second, &install_dir).unwrap();
+
+        assert_eq!(
+            install_origin(&install_dir).map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&second).unwrap()),
+            "the newest install must win, or an update strands the CLI on the old bundle"
+        );
+    }
+
+    /// The trap that silently destroys a working install: the installed copy is
+    /// itself on `PATH`, so `biorouter setup-path` can be run **from** it. The
+    /// source directory is then the install directory, and a naive writer would
+    /// record the install directory as its own origin — resolving nothing, and
+    /// overwriting the usable breadcrumb the application card wrote.
+    #[test]
+    fn installing_from_the_install_directory_leaves_the_breadcrumb_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let application_bin = application(&tmp.path().join("Application"));
+        let install_dir = tmp.path().join("Local").join("Biorouter").join("bin");
+        std::fs::create_dir_all(&install_dir).unwrap();
+        record_install_origin(&application_bin, &install_dir).unwrap();
+
+        // `biorouter setup-path`, run from the copy on PATH.
+        record_install_origin(&install_dir, &install_dir).unwrap();
+
+        assert_eq!(
+            install_origin(&install_dir).map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&application_bin).unwrap()),
+            "re-installing from the install directory must not overwrite the good breadcrumb"
+        );
+    }
+
+    #[test]
+    fn installing_from_the_install_directory_writes_nothing_at_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let install_dir = tmp.path().join("Local").join("Biorouter").join("bin");
+        std::fs::create_dir_all(&install_dir).unwrap();
+
+        record_install_origin(&install_dir, &install_dir).unwrap();
+
+        assert!(
+            install_origin(&install_dir).is_none(),
+            "a breadcrumb naming its own directory resolves nothing; none is better"
+        );
+        assert!(
+            !install_dir.join(INSTALL_ORIGIN_FILE).exists(),
+            "no breadcrumb should have been created"
+        );
+    }
+
+    /// A Unix install, or a copy made before this existed.
+    #[test]
+    fn a_missing_breadcrumb_is_none_and_not_a_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(install_origin(tmp.path()).is_none());
+        assert!(install_origin(&tmp.path().join("no-such-directory")).is_none());
+    }
+
+    /// A write interrupted by a crash, or a file a user emptied.
+    #[test]
+    fn an_empty_or_unparseable_breadcrumb_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        for content in ["", "   ", "\n\n", "not a path", "./relative/bin"] {
+            std::fs::write(tmp.path().join(INSTALL_ORIGIN_FILE), content).unwrap();
+            assert!(
+                install_origin(tmp.path()).is_none(),
+                "expected no origin from {content:?}"
+            );
+        }
+    }
+
+    /// A text editor's byte-order mark and trailing newline must not make the
+    /// path unrecognisable.
+    #[test]
+    fn whitespace_and_a_byte_order_mark_are_tolerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_dir = application(&tmp.path().join("Application"));
+        let install_dir = tmp.path().join("Local");
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(
+            install_dir.join(INSTALL_ORIGIN_FILE),
+            format!("\u{feff}  {}  \r\n", source_dir.display()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            install_origin(&install_dir).map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&source_dir).unwrap())
+        );
+    }
+
+    /// A breadcrumb naming a directory that has since been deleted is returned
+    /// rather than filtered out: the caller checks for the file it wants, and
+    /// the stale path then appears in the list of places it looked. Swallowing
+    /// it here would leave the reader with a failure that names one location
+    /// fewer than were actually tried.
+    #[test]
+    fn a_stale_breadcrumb_is_still_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("Application").join("resources").join("bin");
+        let install_dir = tmp.path().join("Local");
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(
+            install_dir.join(INSTALL_ORIGIN_FILE),
+            gone.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            install_origin(&install_dir),
+            Some(gone),
+            "a stale breadcrumb must survive to the error message"
+        );
+    }
+
+    /// Runs everywhere and is only capable of failing on Windows, where
+    /// `install_cli` canonicalises its source and `canonicalize` returns
+    /// `\\?\C:\…`. That string would reach `BIOROUTER_SERVE_UI` in a child
+    /// process's environment and the "Tried:" list a user reads.
+    #[test]
+    fn the_recorded_origin_is_never_a_windows_verbatim_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_dir = application(&tmp.path().join("Application"));
+        // Exactly what `install_cli` hands the writer: the parent of a
+        // canonicalised source path.
+        let canonical_source = std::fs::canonicalize(
+            source_dir.join(format!("biorouter{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .unwrap();
+        let install_dir = tmp.path().join("Local");
+        std::fs::create_dir_all(&install_dir).unwrap();
+
+        record_install_origin(canonical_source.parent().unwrap(), &install_dir).unwrap();
+
+        let written = std::fs::read_to_string(install_dir.join(INSTALL_ORIGIN_FILE)).unwrap();
+        assert!(
+            !written.starts_with(r"\\?\"),
+            "a verbatim path was written into the breadcrumb: {written}"
+        );
+        let read_back = install_origin(&install_dir).expect("an origin");
+        assert!(
+            !read_back.to_string_lossy().starts_with(r"\\?\"),
+            "a verbatim path was read back out of the breadcrumb: {}",
+            read_back.display()
+        );
+    }
+
+    #[test]
+    fn a_verbatim_path_already_in_a_breadcrumb_is_stripped_on_the_way_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(INSTALL_ORIGIN_FILE),
+            r"\\?\C:\Program Files\Biorouter\resources\bin",
+        )
+        .unwrap();
+
+        // Only Windows recognises that string as an absolute path at all; the
+        // point on every other platform is that it does not panic and does not
+        // resolve to something relative to the working directory.
+        match install_origin(tmp.path()) {
+            Some(p) => assert_eq!(p, Path::new(r"C:\Program Files\Biorouter\resources\bin")),
+            None => assert!(!cfg!(windows), "Windows must read its own absolute paths"),
+        }
     }
 }
 

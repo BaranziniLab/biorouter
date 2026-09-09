@@ -1002,6 +1002,7 @@ dependencies = [
  "dashmap",
  "dirs 5.0.1",
  "dotenvy",
+ "dunce",
  "env-lock",
  "etcetera 0.11.0",
  "fs2",

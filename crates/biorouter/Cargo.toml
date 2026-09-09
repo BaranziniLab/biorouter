@@ -27,6 +27,12 @@ anyhow = { workspace = true }
 thiserror = "1.0"
 futures = { workspace = true }
 dirs = "5.0"
+# `system::real_path` canonicalises a path before it is shown to a user, written
+# into the CLI install breadcrumb, or handed to a child process. On Windows
+# `canonicalize` returns a verbatim `\\?\C:\…` path, which is not universally
+# accepted; `dunce::simplified` strips the prefix when the plain form means the
+# same thing and is the identity everywhere else.
+dunce = "1"
 reqwest = { version = "0.12.9", features = [
     "rustls-tls-native-roots",
     "json",
