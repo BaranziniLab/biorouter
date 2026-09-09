@@ -2911,6 +2911,101 @@ mod tests {
         );
     }
 
+    /// Nothing on the uncached load path may reach back through the cache.
+    ///
+    /// `load_shared` holds `values_read` across the whole of `load_uncached`,
+    /// and a `std::sync::Mutex` is not reentrant — so a `get_param` or
+    /// `all_values` added anywhere underneath it (a settings lookup inside a
+    /// backup routine, an extension read while recovering) deadlocks the
+    /// process against itself.
+    ///
+    /// ⚠ Asserted from the source rather than by running anything, because the
+    /// failure mode is a **hung** `cargo test` and not a failing assertion —
+    /// the most expensive shape a defect in this file can take, and one no
+    /// green run can rule out. `load_uncached` writes (it creates a missing
+    /// config), so the reachable set is much larger than it looks.
+    #[test]
+    fn nothing_on_the_uncached_load_path_reaches_back_through_the_cache() {
+        /// The body of `fn <name>`, by brace matching from its declaration.
+        fn body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+            let decl = ["(", "<"]
+                .iter()
+                .filter_map(|suffix| src.find(&format!("fn {name}{suffix}")))
+                .min()?;
+            let open = decl + src[decl..].find('{')?;
+            let mut depth = 0usize;
+            for (offset, ch) in src[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(&src[open..open + offset + 1]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+
+        let source = include_str!("base.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .expect("this file ends with its test module")
+            .0;
+        // ⚠ Slicing at the FIRST `#[cfg(test)]` would cut the file off at
+        // `IoFaults`, half way up the production half, and the scan would go
+        // quietly vacuous. The floor below is what catches that if this
+        // marker ever stops being the last one.
+        let calls = regex::Regex::new(r"(?:self\.|Self::)([a-z_][a-z0-9_]*)\s*\(")
+            .expect("a compile-time-constant pattern");
+
+        let mut reachable = std::collections::BTreeSet::new();
+        let mut frontier = vec!["load_uncached".to_string()];
+        while let Some(name) = frontier.pop() {
+            if !reachable.insert(name.clone()) {
+                continue;
+            }
+            let Some(fn_body) = body(production, &name) else {
+                continue;
+            };
+            for callee in calls.captures_iter(fn_body) {
+                let callee = callee[1].to_string();
+                if !reachable.contains(&callee) && body(production, &callee).is_some() {
+                    frontier.push(callee);
+                }
+            }
+        }
+
+        // Non-vacuity floor: a scan that walks nothing proves nothing, and the
+        // shape it would take here is a body matcher that failed and returned
+        // an empty set.
+        for expected in [
+            "save_values",
+            "create_backup_if_needed",
+            "create_default_config_if_missing",
+            "try_restore_from_backup",
+            "read_config_file",
+            "install_staged_config",
+        ] {
+            assert!(
+                reachable.contains(expected),
+                "the scan did not reach {expected}, so it is not measuring the load path: \
+                 {reachable:?}"
+            );
+        }
+
+        for forbidden in ["load", "load_shared", "get_param", "all_values"] {
+            assert!(
+                !reachable.contains(forbidden),
+                "{forbidden} is reachable from load_uncached, which runs while `values_read` \
+                 is held — that is a self-deadlock, and it will show up as a HUNG test run \
+                 rather than a failing one. Reached via: {reachable:?}"
+            );
+        }
+    }
+
     /// A config the user genuinely cannot read costs the retry budget ONCE,
     /// not once per lookup.
     ///
