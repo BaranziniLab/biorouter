@@ -16,7 +16,7 @@ and chat history.
 
 ## The four gates
 
-Measured with `npx playwright test --list`: 65 tests across 11 files.
+Measured with `npx playwright test --list`: 66 tests across 11 files.
 
 | Gate | Environment | Specs | What it needs |
 |------|-------------|-------|---------------|
@@ -27,15 +27,26 @@ Measured with `npx playwright test --list`: 65 tests across 11 files.
 
 A spec off its gate reports as `skipped`, not as passing.
 
-⚠ **Ungated does not mean harmless.** `brxt.spec.ts` launches Electron with no
-`BIOROUTER_PATH_ROOT`, so it runs against the developer's real
-`~/.config/biorouter`. It only opens modals, so nothing has been observed to change —
-but a bare `npx playwright test` (or `npm run test-e2e`, which is
-`generate-api && build:e2e && playwright test` over the whole directory) points the real
-configuration at a test.
+⚠ **An unsandboxed launch really does write to the developer's own config, and it was
+measured doing so.** `brxt.spec.ts` used to call `electron.launch` with no
+`BIOROUTER_PATH_ROOT`. On 2026-09-09 a run of the whole directory therefore wrote an
+entry naming that spec's launch directory into the real
+`~/.local/share/biorouter/projects.json`. The path is worth following, because the
+obvious suspect is the wrong one: the daemon behaved correctly — `Paths::get_dir` honours
+the redirect, which is why the real `sessions.db` and `schedule.json` were untouched. The
+writer was the CLI. `crates/biorouter-cli/src/cli.rs` records the process's working
+directory into `projects.json` on *every* subcommand before dispatch, and the desktop app
+runs `biorouter doctor` at startup, inheriting whatever environment it was given. So "this
+spec only opens modals" is not a reason to skip the sandbox: the app writes on its own
+behalf, at startup, before a test does anything.
+
+Every spec now launches through `launchApp`, which creates the root itself. That is
+enforced rather than documented — `src/test/e2eSandboxInvariant.test.ts` fails if a file
+in this directory calls `electron.launch` outside the sanctioned launcher, and it runs in
+the ordinary vitest job.
 
 ⚠ **A bare positional filter does not filter.** `npx playwright test schedule-artifact`
-ran all 65 tests, including the unsandboxed ones; `npx playwright test
+ran all 66 tests, including, at the time, the unsandboxed ones; `npx playwright test
 tests/e2e/schedule-artifact.spec.ts` correctly selects 2. Always pass the path.
 
 ## Running each gate
@@ -82,7 +93,10 @@ A conforming spec:
 4. overwrites `data/schedule.json` with `[]`, because a seed's schedule entries name
    workflow files outside the sandbox.
 
-`schedule-artifact.helpers.ts` implements all four and is the reference.
+`tests/e2e/helpers/sandbox.ts` and `tests/e2e/helpers/app.ts` implement all four and are
+the single reference; `launchApp` is the only sanctioned way to start the app.
+`schedule-artifact.helpers.ts` adds just what the shared pair cannot: the packaged-app
+launch, the workflow fixture and the evidence directory.
 
 Two things the contract does **not** buy you, both measured:
 
@@ -209,8 +223,8 @@ and the only place in the repo that already downloads Electron for a test:
 
 ### What is CI-able and what never is
 
-**CI-able now:** the ungated specs — once `brxt.spec.ts` is sandboxed, which it is not
-today.
+**CI-able now:** the ungated specs. `brxt.spec.ts` is sandboxed as of this document's
+revision, and the invariant test keeps it that way.
 
 **CI-able given the secret and a generated seed:** `schedule-artifact.spec.ts` (dev
 variant), and the LIVE specs generally.
