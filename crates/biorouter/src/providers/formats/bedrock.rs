@@ -1929,7 +1929,7 @@ mod bedrock_stream_tests {
     /// killing the turn.
     #[test]
     fn two_tool_use_blocks_batch_into_one_assistant_message() {
-        let mut decoder = BedrockStreamDecoder::new("m");
+        let mut decoder = BedrockStreamDecoder::with_batching("m", true);
         let items = drain(
             &mut decoder,
             &[
@@ -2010,7 +2010,7 @@ mod bedrock_stream_tests {
     /// so block 2's request was dispatched and persisted ahead of block 1's.
     #[test]
     fn batched_tools_keep_block_order_when_stops_arrive_reversed() {
-        let mut decoder = BedrockStreamDecoder::new("m");
+        let mut decoder = BedrockStreamDecoder::with_batching("m", true);
         let items = drain(
             &mut decoder,
             &[
@@ -2051,7 +2051,7 @@ mod bedrock_stream_tests {
     /// `messageStop` — the `finish()` flush must apply the same index sort.
     #[test]
     fn finish_flush_also_sorts_reversed_stop_order() {
-        let mut decoder = BedrockStreamDecoder::new("m");
+        let mut decoder = BedrockStreamDecoder::with_batching("m", true);
         let during = drain(
             &mut decoder,
             &[
@@ -2124,7 +2124,7 @@ mod bedrock_stream_tests {
     /// silently vanish.
     #[test]
     fn stream_ending_without_message_stop_still_flushes_batched_tools() {
-        let mut decoder = BedrockStreamDecoder::new("m");
+        let mut decoder = BedrockStreamDecoder::with_batching("m", true);
         let during = drain(
             &mut decoder,
             &[

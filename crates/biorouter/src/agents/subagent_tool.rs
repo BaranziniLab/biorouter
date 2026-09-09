@@ -5646,7 +5646,7 @@ mod tests {
                 Unlock::PermissionMode(mode) => mode,
                 _ => crate::config::BioRouterMode::Auto,
             };
-            let config = AgentConfig::new(sm.clone(), permissions, None, mode);
+            let mut config = AgentConfig::new(sm.clone(), permissions, None, mode);
 
             let mut overrides = ask_overrides(Ask::Public);
             match unlock {
@@ -5660,7 +5660,13 @@ mod tests {
                         format!("hooks: {ALLOW_EVERYTHING}\n"),
                     )
                     .unwrap();
-                    overrides.insert("BIOROUTER_ALLOW_PROJECT_HOOKS".to_string(), "true".into());
+                    // A `with_config_overrides` entry was written here and did
+                    // NOTHING: the task-local is consulted by `Config::get_param`,
+                    // while `HooksManager` reads this flag with a bare
+                    // `std::env::var`. So this arm's unlock was active only when
+                    // another test had leaked the variable, and the test passed
+                    // either way because the refusal holds in both states.
+                    config.allow_project_hooks = Some(true);
                 }
                 Unlock::AlwaysAllowRecord => {}
                 // The wire spelling, not `Debug`: `BioRouterMode` deserializes

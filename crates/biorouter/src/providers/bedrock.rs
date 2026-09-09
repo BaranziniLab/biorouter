@@ -1144,7 +1144,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn signed_multi_tool_replay_is_exact_in_reply_and_omitted_after_reload() {
-        std::env::set_var("BIOROUTER_ALLOW_PROJECT_HOOKS", "1");
+        // The project-hooks decision is stated on this agent's config below.
+        // It used to be `set_var("BIOROUTER_ALLOW_PROJECT_HOOKS", "1")` with no
+        // matching remove, so the flag stood for every agent constructed in
+        // the binary afterwards — and an unkeyed `#[serial]` fenced it against
+        // only the other unkeyed tests.
         let work = TempDir::new().unwrap();
         let data = TempDir::new().unwrap();
         let permissions = TempDir::new().unwrap();
@@ -1204,12 +1208,15 @@ mod tests {
         .unwrap();
 
         let manager = Arc::new(SessionManager::new(data.path().to_path_buf()));
-        let agent = Agent::with_config(AgentConfig::new(
-            manager.clone(),
-            Arc::new(PermissionManager::new(permissions.path().to_path_buf())),
-            None,
-            BioRouterMode::Auto,
-        ));
+        let agent = Agent::with_config(
+            AgentConfig::new(
+                manager.clone(),
+                Arc::new(PermissionManager::new(permissions.path().to_path_buf())),
+                None,
+                BioRouterMode::Auto,
+            )
+            .with_project_hooks(true),
+        );
         agent
             .add_extension(ExtensionConfig::Builtin {
                 name: "developer".to_string(),

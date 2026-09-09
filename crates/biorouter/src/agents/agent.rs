@@ -3057,6 +3057,20 @@ pub struct AgentConfig {
     pub permission_manager: Arc<PermissionManager>,
     pub scheduler_service: Option<Arc<dyn SchedulerTrait>>,
     pub biorouter_mode: BioRouterMode,
+    /// Whether this agent honours a project's own `.biorouter/hooks.yaml`,
+    /// decided by whoever built the config.
+    ///
+    /// `None` — the production default — resolves it the way it has always been
+    /// resolved: the global config, or `BIOROUTER_ALLOW_PROJECT_HOOKS` in the
+    /// process environment. `Some(_)` states the answer instead.
+    ///
+    /// The field exists because that environment read is a bare
+    /// `std::env::var` in `HooksManager::new_with_managed`, live and unlocked,
+    /// taken by every one of the ~69 places an `Agent` is constructed. A test
+    /// that wanted project hooks on had no way to say so and wrote the variable
+    /// — process-wide, for every other agent in the binary, and in one case
+    /// without ever removing it. See `docs/testing/process-global-state.md`.
+    pub allow_project_hooks: Option<bool>,
 }
 
 impl AgentConfig {
@@ -3071,7 +3085,16 @@ impl AgentConfig {
             permission_manager,
             scheduler_service,
             biorouter_mode,
+            allow_project_hooks: None,
         }
+    }
+
+    /// State the project-hooks decision instead of leaving it to the global
+    /// config and the process environment.
+    #[must_use]
+    pub fn with_project_hooks(mut self, allow: bool) -> Self {
+        self.allow_project_hooks = Some(allow);
+        self
     }
 }
 
@@ -4135,10 +4158,18 @@ impl Agent {
         // Load the managed/enterprise policy once at startup and share it across
         // the hooks manager and the tool inspectors (BR-65).
         let managed = ManagedPolicy::load();
-        let hooks_manager = Arc::new(crate::hooks::HooksManager::new_with_managed(
-            provider.clone(),
-            Arc::clone(&managed),
-        ));
+        let hooks_manager = Arc::new(match config.allow_project_hooks {
+            // Stated by the caller: no environment read at all.
+            Some(allow) => crate::hooks::HooksManager::with_config_and_managed(
+                crate::hooks::config::load_global_config(),
+                allow,
+                provider.clone(),
+                Arc::clone(&managed),
+            ),
+            None => {
+                crate::hooks::HooksManager::new_with_managed(provider.clone(), Arc::clone(&managed))
+            }
+        });
         // BR-43: build the checkpoint manager only when enabled, so the disabled
         // default path never touches disk. Reads `BIOROUTER_CHECKPOINTS` / caps.
         let checkpoint_cfg = CheckpointConfig::from_env();

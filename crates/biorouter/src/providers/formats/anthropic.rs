@@ -667,9 +667,30 @@ fn take_ready_tool_contents(
     ready
 }
 
-#[allow(clippy::too_many_lines)]
+/// Decode an Anthropic SSE stream, sampling the tool-call batching kill switch
+/// once, here, at stream construction.
+///
+/// The sample is taken by this wrapper rather than inside the decoder because
+/// the decoder is what tests drive. `tool_call_batching_enabled()` is a bare
+/// `std::env::var` (`providers/base.rs`), so a test that exercised the decoder
+/// read whatever another test had parked in the process environment — and
+/// `env_lock` could not help, because this reader never asked for it. See
+/// `docs/testing/process-global-state.md`.
 pub fn response_to_streaming_message<S>(
+    stream: S,
+) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
+where
+    S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
+{
+    response_to_streaming_message_batching(stream, tool_call_batching_enabled())
+}
+
+/// [`response_to_streaming_message`] with the batching decision supplied by the
+/// caller instead of resolved from the environment.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn response_to_streaming_message_batching<S>(
     mut stream: S,
+    batch_tool_calls: bool,
 ) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
@@ -718,7 +739,6 @@ where
         // text, whichever comes first.
         let mut last_pending_emit: Option<std::time::Instant> = None;
         let mut last_pending_len: usize = 0;
-        let batch_tool_calls = tool_call_batching_enabled();
 
         while let Some(line_result) = stream.next().await {
             let line = line_result?;
@@ -1526,7 +1546,7 @@ mod tests {
             r#"data: {"type":"message_stop"}"#,
         ];
         let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, true);
         pin!(messages);
 
         let mut thinking_blocks = Vec::new();
@@ -1575,12 +1595,12 @@ mod tests {
     /// arrived in, from a decoded stream. `[2]` means one message carried two
     /// requests (batched); `[1, 1]` means two separate one-request messages
     /// (the pre-§6.2b serial shape).
-    async fn tool_request_message_shape(lines: Vec<&'static str>) -> Vec<usize> {
+    async fn tool_request_message_shape(lines: Vec<&'static str>, batch: bool) -> Vec<usize> {
         use tokio::pin;
         use tokio_stream::StreamExt;
 
         let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, batch);
         pin!(messages);
 
         let mut shape = Vec::new();
@@ -1620,21 +1640,21 @@ mod tests {
     /// forced serial execution; that shape is what the kill switch restores
     /// (`test_streaming_kill_switch_restores_serial_tool_messages`).
     ///
-    /// ⚠ Same `serial_test` group as the kill-switch test, and this is not
-    /// hygiene: that test sets `BIOROUTER_TOOL_CALL_BATCHING=0` process-wide,
-    /// `serial` only excludes tests carrying the SAME key, and every decoder
-    /// reads the flag at construction. Unannotated, this test read the kill
-    /// switch's env var and asserted `[1, 1] == [2]` — `test (ubuntu-latest)`
-    /// red on a diff nowhere near it, and 7 failures in 8 local runs.
+    /// ⚠ This test states its batching input rather than inheriting it, and the
+    /// argument is what makes that possible. It used to carry
+    /// `#[serial(tool_call_batching_env)]`, which excluded only the two other
+    /// tests holding that key while the flag was read live, unlocked, by every
+    /// decoder in the binary — so it asserted `[1, 1] == [2]` whenever anything
+    /// else wrote the variable. `test (ubuntu-latest)` went red on a diff
+    /// nowhere near it, and 7 of 8 local runs failed.
     #[tokio::test]
-    #[serial_test::serial(tool_call_batching_env)]
     async fn test_streaming_batches_multiple_tool_uses_into_one_message() -> Result<()> {
         use tokio::pin;
         use tokio_stream::StreamExt;
 
         let response_stream =
             tokio_stream::iter(TWO_TOOL_USE_LINES.iter().map(|l| Ok(l.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, true);
         pin!(messages);
 
         let mut items = Vec::new();
@@ -1710,19 +1730,17 @@ mod tests {
     /// batched tools via the after-loop flush — otherwise a whole multi-tool turn
     /// would silently vanish.
     ///
-    /// ⚠ In the kill switch's `serial_test` group for the reason spelled out on
-    /// `test_streaming_batches_multiple_tool_uses_into_one_message`: it decodes
-    /// two `tool_use` blocks, so it reads `BIOROUTER_TOOL_CALL_BATCHING` and
-    /// raced the test that sets it. Any future test that decodes more than one
-    /// tool block belongs here too.
+    /// ⚠ It decodes two `tool_use` blocks, so it is batching-sensitive and states
+    /// its input, for the reason spelled out on
+    /// `test_streaming_batches_multiple_tool_uses_into_one_message`. Any future
+    /// test that decodes more than one tool block must do the same.
     #[tokio::test]
-    #[serial_test::serial(tool_call_batching_env)]
     async fn test_streaming_batches_tools_without_message_delta() -> Result<()> {
         // Drop the trailing message_delta; end with [DONE] instead.
         let mut lines: Vec<&'static str> = TWO_TOOL_USE_LINES[..7].to_vec();
         lines.push(r#"data: [DONE]"#);
 
-        let shape = tool_request_message_shape(lines).await;
+        let shape = tool_request_message_shape(lines, true).await;
         assert_eq!(
             shape,
             vec![2],
@@ -1736,15 +1754,14 @@ mod tests {
     /// serial shape — one assistant message per `tool_use` block (`[1, 1]`). This
     /// is the full rollback lever documented alongside `BIOROUTER_TOOL_WRITE_ORDERING`.
     ///
-    /// Uses `serial_test` because it mutates a process-global env var.
+    /// Injects the decision rather than writing `BIOROUTER_TOOL_CALL_BATCHING`.
+    /// The env write this used to make was read by every OTHER decoder in the
+    /// binary — a live, unlocked `std::env::var` — so `serial_test` could not
+    /// contain it. The env *parsing* is covered separately by
+    /// `providers::base`'s own tests.
     #[tokio::test]
-    #[serial_test::serial(tool_call_batching_env)]
     async fn test_streaming_kill_switch_restores_serial_tool_messages() -> Result<()> {
-        // SAFETY: single-threaded tokio test, serialized against any other test
-        // touching this env var; restored before returning.
-        std::env::set_var("BIOROUTER_TOOL_CALL_BATCHING", "0");
-        let shape = tool_request_message_shape(TWO_TOOL_USE_LINES.to_vec()).await;
-        std::env::remove_var("BIOROUTER_TOOL_CALL_BATCHING");
+        let shape = tool_request_message_shape(TWO_TOOL_USE_LINES.to_vec(), false).await;
 
         assert_eq!(
             shape,
@@ -1772,7 +1789,7 @@ mod tests {
             r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}"#,
         ];
         let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, true);
         pin!(messages);
 
         let mut items = Vec::new();
@@ -1874,7 +1891,7 @@ mod tests {
             r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}"#,
         ];
         let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, true);
         pin!(messages);
 
         // Mirror the agent loop: a chunk with no tool requests is pushed
@@ -2113,7 +2130,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 data: [DONE]
 "#;
         let response_stream = tokio_stream::iter(lines.lines().map(|line| Ok(line.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, true);
         pin!(messages);
 
         let mut final_usage = None;
@@ -2293,7 +2310,7 @@ data: [DONE]
             r#"data: {"type":"message_stop"}"#,
         ];
         let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, true);
         pin!(messages);
 
         let mut seen_length = false;
@@ -2326,7 +2343,7 @@ data: [DONE]
             r#"data: {"type":"message_stop"}"#,
         ];
         let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
-        let messages = response_to_streaming_message(response_stream);
+        let messages = response_to_streaming_message_batching(response_stream, true);
         pin!(messages);
 
         let mut saw_stop = false;
