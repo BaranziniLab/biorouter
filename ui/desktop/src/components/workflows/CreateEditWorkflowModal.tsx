@@ -12,6 +12,7 @@ import { toastSuccess, toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
+import { useTransientFlag } from '../../hooks/useTransientFlag';
 
 interface CreateEditWorkflowModalProps {
   isOpen: boolean;
@@ -89,7 +90,7 @@ export default function CreateEditWorkflowModal({
     });
     return storeSubscriptionCleanup(subscription);
   }, [form]);
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useTransientFlag(2000);
   const [isSaving, setIsSaving] = useState(false);
 
   // Extensions for the workflow (editable)
@@ -271,8 +272,7 @@ export default function CreateEditWorkflowModal({
     navigator.clipboard
       .writeText(deeplink)
       .then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        markCopied();
       })
       .catch((err) => {
         console.error('Failed to copy the text:', err);

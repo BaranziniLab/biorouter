@@ -91,6 +91,9 @@ const CHAT_MEASURE_VIEWS = [
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
   'applications/ApplicationsView.tsx',
+  // The catch-all's page. It is a route view like the rest and shares the
+  // hairline with whatever the user came from, so it takes the same column.
+  'NotFoundView.tsx',
 ].map((rel) => ({
   rel,
   source: readFileSync(join(__dirname, '../components', rel), 'utf8'),
@@ -118,6 +121,7 @@ const PAGE_HEADER_VIEWS = [
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
   'applications/ApplicationsView.tsx',
+  'NotFoundView.tsx',
 ].map((rel) => ({
   rel,
   source: readFileSync(join(__dirname, '../components', rel), 'utf8'),

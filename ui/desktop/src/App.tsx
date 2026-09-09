@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState, useRef } from 'react';
 import { IpcRendererEvent } from 'electron';
 import {
   HashRouter,
+  Navigate,
   Routes,
   Route,
   useNavigate,
@@ -52,6 +53,7 @@ import SkillsView from './components/skills/SkillsView';
 import KnowledgeView from './components/knowledge/KnowledgeView';
 import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
 import ApplicationsView from './components/applications/ApplicationsView';
+import NotFoundView from './components/NotFoundView';
 import { View, ViewOptions } from './utils/navigationUtils';
 
 import { useNavigation } from './hooks/useNavigation';
@@ -684,6 +686,23 @@ export function AppInner() {
                 element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
               />
               <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
+              {/* RETIRED ROUTES. `/apps` was the MCP-apps browser and
+                  `/standalone-app` its single-app surface; PR #184 removed the
+                  feature and both routes with it, which left every existing
+                  bookmark and every `biorouter://` share link pointing at a
+                  path nothing matched — i.e. at a blank white window.
+
+                  ⚠ NOT redirected to `/applications`. That is Built apps
+                  (Agent Drafter), a different feature that merely reads
+                  alike — sending an MCP-apps link there would answer a
+                  question nobody asked. Home is the honest destination.
+
+                  Declared OUTSIDE the shell so the redirect resolves without
+                  first mounting ProviderGuard and the whole layout, and
+                  `replace` so Back does not bounce the user off the dead
+                  address again. */}
+              <Route path="apps" element={<Navigate to="/" replace />} />
+              <Route path="standalone-app" element={<Navigate to="/" replace />} />
               <Route
                 path="/"
                 element={
@@ -722,6 +741,14 @@ export function AppInner() {
                   }
                 />
                 <Route path="permission" element={<PermissionRoute />} />
+                {/* THE CATCH-ALL, and it is a CHILD of the shell on purpose.
+                    Without it an unknown hash — a typo like `#/scheduler`, or a
+                    stale link — rendered an empty document: no sidebar, no
+                    header, no error boundary, and a `No routes matched
+                    location` warning in the console as the only evidence. Here
+                    the sidebar and titlebar stay mounted, so the way out is on
+                    screen whether or not the page's own button is used. */}
+                <Route path="*" element={<NotFoundView />} />
               </Route>
             </Routes>
           </KnowledgeProvider>

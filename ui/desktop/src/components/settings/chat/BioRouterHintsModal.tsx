@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
 import { Check } from '../../icons/app-icons';
+import { useTransientFlag } from '../../../hooks/useTransientFlag';
 import {
   Dialog,
   DialogContent,
@@ -55,7 +56,7 @@ export const BioRouterHintsModal = ({
   const [biorouterHintsFileFound, setBioRouterHintsFileFound] = useState<boolean>(false);
   const [biorouterHintsFileReadError, setBioRouterHintsFileReadError] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveSuccess, markSaved, clearSaved] = useTransientFlag(3000);
 
   useEffect(() => {
     const fetchBioRouterHintsFile = async () => {
@@ -74,12 +75,11 @@ export const BioRouterHintsModal = ({
 
   const writeFile = async () => {
     setIsSaving(true);
-    setSaveSuccess(false);
+    clearSaved();
     try {
       await window.electron.writeFile(biorouterHintsFilePath, biorouterHintsFile);
-      setSaveSuccess(true);
+      markSaved();
       setBioRouterHintsFileFound(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (error) {
       console.error('Error writing .biorouterhints file:', error);
       setBioRouterHintsFileReadError('Failed to save .biorouterhints file');

@@ -273,7 +273,8 @@ export function ChatTabStrip({
   }, [activeTabId, tabs.length]);
 
   /**
-   * Rung 3 of the yield ladder (D-32): shrink to the 88px floor, then scroll,
+   * Rung 3 of the yield ladder (D-32): shrink to the TAB_MIN_WIDTH floor (the
+   * `--tab-min-width` token), then scroll,
    * then collapse into a ▾ menu — never wrap.
    *
    * The first two steps are pure CSS (`.br-tabstrip`: flex-wrap: nowrap;

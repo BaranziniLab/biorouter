@@ -174,6 +174,13 @@ vi.mock('react-router-dom', () => ({
   },
   Routes: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   Route: ({ element }: { element: React.ReactNode }) => element,
+  // The two retired routes (`/apps`, `/standalone-app`) redirect to Home. This
+  // mock's `Route` renders EVERY element unconditionally, so a `Navigate` that
+  // actually navigated would fire on every render here and break the
+  // `mockNavigate` assertions below — which are about the app's own startup
+  // redirects, not about the route table. Route MATCHING is exercised for real
+  // in `App.routing.test.tsx`; this stub only has to exist.
+  Navigate: () => null,
   useNavigate: () => mockNavigate,
   useLocation: () => ({ state: null, pathname: '/' }),
   useSearchParams: () => [mockSearchParams, mockSetSearchParams],

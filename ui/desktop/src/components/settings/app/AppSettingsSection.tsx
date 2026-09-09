@@ -20,6 +20,7 @@ import ThemeFamilySelector from '../../BioRouterSidebar/ThemeFamilySelector';
 import BlockLogoBlack from './icons/block-lockup_black.png';
 import BlockLogoWhite from './icons/block-lockup_white.png';
 import { useResolvedTheme } from '../../../contexts/ThemeContext';
+import { useTransientFlag } from '../../../hooks/useTransientFlag';
 
 interface AppSettingsSectionProps {
   scrollToSection?: string;
@@ -30,7 +31,8 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
   const [dockIconEnabled, setDockIconEnabled] = useState(true);
   const [wakelockEnabled, setWakelockEnabled] = useState(true);
   const [isMacOS, setIsMacOS] = useState(false);
-  const [isDockSwitchDisabled, setIsDockSwitchDisabled] = useState(false);
+  // The dock switch is held down for a second while the OS applies the change.
+  const [isDockSwitchDisabled, disableDockSwitch] = useTransientFlag(1000);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
   const [showPricing, setShowPricing] = useState(true);
   // The app already resolves light/dark once, in `ThemeContext`. This file kept
@@ -98,10 +100,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         setMenuBarIconEnabled(true);
       }
     }
-    setIsDockSwitchDisabled(true);
-    setTimeout(() => {
-      setIsDockSwitchDisabled(false);
-    }, 1000);
+    disableDockSwitch();
     const success = await window.electron.setDockIcon(newState);
     if (success) {
       setDockIconEnabled(newState);

@@ -42,6 +42,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { MODAL_SIZE } from '../ModalShell';
 import { EmptyState } from '../ui/empty-state';
+import { useTransientFlag } from '../../hooks/useTransientFlag';
 
 const isUserMessage = (message: Message): boolean => {
   if (message.role === 'assistant') {
@@ -193,7 +194,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [shareLink, setShareLink] = useState<string>('');
   const [isSharing, setIsSharing] = useState(false);
-  const [isCopied, setIsCopied] = useState(false);
+  const [isCopied, markCopied] = useTransientFlag(2000);
   const [canShare, setCanShare] = useState(false);
   // Issue #56 §12.1's second entry point. The session page is where a user goes
   // to answer "what is in this chat?", so it is the other place the answer "no
@@ -268,8 +269,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
     navigator.clipboard
       .writeText(shareLink)
       .then(() => {
-        setIsCopied(true);
-        setTimeout(() => setIsCopied(false), 2000);
+        markCopied();
       })
       .catch((err) => {
         console.error('Failed to copy link:', err);

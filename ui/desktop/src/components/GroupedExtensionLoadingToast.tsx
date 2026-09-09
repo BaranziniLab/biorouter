@@ -8,6 +8,7 @@ import { useNavigation } from '../hooks/useNavigation';
 import { formatExtensionErrorMessage } from '../utils/extensionErrorUtils';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { formatExtensionName } from './settings/extensions/subcomponents/ExtensionList';
+import { useTransientValue } from '../hooks/useTransientFlag';
 
 export interface ExtensionLoadingStatus {
   name: string;
@@ -69,7 +70,9 @@ function ExtensionLoadReport({
   extensions: ExtensionLoadingStatus[];
   onAskBiorouter: ((hints: string) => void) | null;
 }) {
-  const [copiedExtension, setCopiedExtension] = useState<string | null>(null);
+  // The 2s "Copied!" label. `useTransientValue` owns the timer, so dismissing
+  // the report inside the window cannot leave a setter pointed at a dead tree.
+  const [copiedExtension, markCopied] = useTransientValue<string>(2000);
   const errorCount = extensions.filter((ext) => ext.status === 'error').length;
 
   return (
@@ -118,8 +121,7 @@ function ExtensionLoadReport({
                       variant="secondary"
                       onClick={() => {
                         navigator.clipboard.writeText(ext.error!);
-                        setCopiedExtension(ext.name);
-                        setTimeout(() => setCopiedExtension(null), 2000);
+                        markCopied(ext.name);
                       }}
                     >
                       {copiedExtension === ext.name ? 'Copied!' : 'Copy error'}
