@@ -177,6 +177,10 @@ pub struct Config {
     // (which would show authorization prompts on macOS).
     #[cfg(test)]
     test_keyring_store: Option<std::sync::Arc<dyn KeyringBlobStore + Send + Sync>>,
+    // Test-only injection of the Windows failure this file's retries exist for.
+    // See `IoFaults`.
+    #[cfg(test)]
+    io_faults: IoFaults,
 }
 
 enum SecretStorage {
@@ -234,6 +238,8 @@ impl Default for Config {
             secrets_read: Mutex::new(()),
             #[cfg(test)]
             test_keyring_store: None,
+            #[cfg(test)]
+            io_faults: IoFaults::default(),
         }
     }
 }
@@ -317,6 +323,107 @@ fn parse_yaml_content(content: &str) -> Result<Mapping, ConfigError> {
     serde_yaml::from_str(content).map_err(|e| e.into())
 }
 
+/// Attempts a filesystem operation gets before its failure is believed.
+///
+/// Eight, with the 1 ms → 16 ms backoff below, is ~63 ms in the worst case —
+/// three orders of magnitude more than the window it exists to outlast, and
+/// small enough that a config the user really cannot read still reports so
+/// promptly.
+const TRANSIENT_IO_ATTEMPTS: usize = 8;
+const TRANSIENT_IO_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// Whether an I/O failure is Windows saying "this name is mid-replacement",
+/// rather than saying anything about this process's rights to the file.
+///
+/// `std::fs::rename` is a *replace* on Windows. While it supersedes the
+/// destination, the destination's NAME is briefly unopenable: a `CreateFileW`
+/// that lands in that window is answered `STATUS_DELETE_PENDING`, which the
+/// Win32 layer reports as `ERROR_ACCESS_DENIED` (5) — `PermissionDenied`, with
+/// the message "Access is denied.". The neighbouring outcomes are
+/// `ERROR_SHARING_VIOLATION` (32) and `ERROR_LOCK_VIOLATION` (33), and Rust
+/// maps neither to a named [`std::io::ErrorKind`], so those two are matched by
+/// raw code.
+///
+/// Unix has no equivalent — `rename(2)` is atomic and a reader never sees the
+/// seam — so there this only ever matches a real `EACCES`, which costs the
+/// retry budget once and is then reported unchanged.
+fn is_transiently_unavailable(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    cfg!(windows) && matches!(err.raw_os_error(), Some(32 | 33))
+}
+
+/// Run one filesystem operation, retrying while it fails the way a name that a
+/// sibling is replacing fails.
+///
+/// The operation is a closure so the retry rule is checkable on every platform:
+/// the failure it exists for is Windows-only, sub-millisecond and produced by
+/// an interleaving no test can arrange, so injecting it is the only way to
+/// assert anything about the response to it.
+fn retry_while_transiently_unavailable<T>(
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut backoff = std::time::Duration::from_millis(1);
+    for _ in 1..TRANSIENT_IO_ATTEMPTS {
+        match attempt() {
+            Err(err) if is_transiently_unavailable(&err) => {
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(TRANSIENT_IO_MAX_BACKOFF);
+            }
+            settled => return settled,
+        }
+    }
+    attempt()
+}
+
+/// Test-only injection of the failure Windows produces while a sibling replaces
+/// the config file's name.
+///
+/// Every field is a count of *attempts* to fail, applied per call, so an armed
+/// read or rename fails that many times and then behaves normally — exactly the
+/// shape [`retry_while_transiently_unavailable`] exists to absorb. Arming more
+/// than [`TRANSIENT_IO_ATTEMPTS`] exhausts the budget and makes the operation
+/// report the failure, which is how the give-up path stays testable too.
+#[cfg(test)]
+#[derive(Default)]
+struct IoFaults {
+    failing_read_attempts: std::sync::atomic::AtomicUsize,
+    failing_rename_attempts: std::sync::atomic::AtomicUsize,
+    /// Config content a "sibling" installs the instant an injected rename fault
+    /// fires. That is the race the fault stands in for — our rename lost
+    /// because another writer got there first — and it is the only way to reach
+    /// the adopt-after-a-lost-write arm of
+    /// [`Config::create_default_config_if_missing`] deterministically.
+    sibling_lands_on_rename_fault: Mutex<Option<String>>,
+}
+
+#[cfg(test)]
+impl IoFaults {
+    /// The error CI reported, verbatim: `Os { code: 5, kind: PermissionDenied,
+    /// message: "Access is denied." }`.
+    fn access_denied() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access is denied.")
+    }
+
+    fn failing_reads(&self) -> usize {
+        self.failing_read_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn failing_renames(&self) -> usize {
+        self.failing_rename_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Land the sibling's config, once, at the moment a rename fault fires.
+    fn land_sibling_config(&self, at: &Path) {
+        if let Some(content) = self.sibling_lands_on_rename_fault.lock().unwrap().take() {
+            let _ = std::fs::write(at, content);
+        }
+    }
+}
+
 impl Config {
     /// Get the global configuration instance.
     ///
@@ -341,6 +448,8 @@ impl Config {
             secrets_read: Mutex::new(()),
             #[cfg(test)]
             test_keyring_store: None,
+            #[cfg(test)]
+            io_faults: IoFaults::default(),
         })
     }
 
@@ -362,6 +471,8 @@ impl Config {
             secrets_read: Mutex::new(()),
             #[cfg(test)]
             test_keyring_store: None,
+            #[cfg(test)]
+            io_faults: IoFaults::default(),
         })
     }
 
@@ -379,23 +490,151 @@ impl Config {
 
     fn load(&self) -> Result<Mapping, ConfigError> {
         if self.config_path.exists() {
-            self.load_values_with_recovery()
-        } else {
-            // Config file doesn't exist, try to recover from backup first
-            tracing::info!("Config file doesn't exist, attempting recovery from backup");
-
-            if let Ok(backup_values) = self.try_restore_from_backup() {
-                tracing::info!("Successfully restored config from backup");
-                return Ok(backup_values);
+            match self.load_values_with_recovery() {
+                Ok(values) => return Ok(values),
+                // The file was there for the existence check and gone by the
+                // time the read reached it: another writer is installing its
+                // own copy right now. That is the missing-config case below,
+                // not a failure to report to a caller who only asked for a key.
+                Err(ConfigError::FileError(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!(
+                        "config file disappeared between the existence check and the read; \
+                         treating it as missing"
+                    );
+                }
+                Err(other) => return Err(other),
             }
+        }
 
-            // No backup available, create a default config
-            tracing::info!("No backup found, creating default configuration");
+        // Config file doesn't exist, try to recover from backup first
+        tracing::info!("Config file doesn't exist, attempting recovery from backup");
 
-            // Try to load from init-config.yaml if it exists, otherwise use empty config
-            let default_config = self.load_init_config_if_exists().unwrap_or_default();
+        if let Ok(backup_values) = self.try_restore_from_backup() {
+            tracing::info!("Successfully restored config from backup");
+            return Ok(backup_values);
+        }
 
-            self.create_and_save_default_config(default_config)
+        // No backup available, create a default config
+        tracing::info!("No backup found, creating default configuration");
+
+        // Try to load from init-config.yaml if it exists, otherwise use empty config
+        let default_config = self.load_init_config_if_exists().unwrap_or_default();
+
+        self.create_default_config_if_missing(default_config)
+    }
+
+    /// Read the config file, tolerating a name another writer is replacing.
+    ///
+    /// Every read of `config.yaml` on the load path goes through here. See
+    /// [`is_transiently_unavailable`] for what it is tolerating and why an
+    /// unmediated `read_to_string` is not enough on Windows.
+    fn read_config_file(&self) -> std::io::Result<String> {
+        #[cfg(test)]
+        let mut faults = self.io_faults.failing_reads();
+        retry_while_transiently_unavailable(|| {
+            #[cfg(test)]
+            {
+                if faults > 0 {
+                    faults -= 1;
+                    return Err(IoFaults::access_denied());
+                }
+            }
+            std::fs::read_to_string(&self.config_path)
+        })
+    }
+
+    /// The same tolerance for a file that is not `config.yaml` (a backup).
+    fn read_file_tolerantly(path: &Path) -> std::io::Result<String> {
+        retry_while_transiently_unavailable(|| std::fs::read_to_string(path))
+    }
+
+    /// Move a staged write onto the config file, tolerating the failure a
+    /// concurrent replacement of the same name produces.
+    fn install_staged_config(&self, staged: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        let mut faults = self.io_faults.failing_renames();
+        retry_while_transiently_unavailable(|| {
+            #[cfg(test)]
+            {
+                if faults > 0 {
+                    faults -= 1;
+                    self.io_faults.land_sibling_config(&self.config_path);
+                    return Err(IoFaults::access_denied());
+                }
+            }
+            std::fs::rename(staged, &self.config_path)
+        })
+    }
+
+    /// The config file's contents, if it is there and parses.
+    ///
+    /// `None` covers "not there" and "there but unreadable or unparseable"
+    /// alike, because every caller uses it to answer one question — *did
+    /// somebody else already create this file?* — for which those two are the
+    /// same answer.
+    fn adopt_existing_config(&self) -> Option<Mapping> {
+        if !self.config_path.exists() {
+            return None;
+        }
+        parse_yaml_content(&self.read_config_file().ok()?).ok()
+    }
+
+    /// Install `default_config` as the config file **only if nobody else has**.
+    ///
+    /// Every thread that reaches [`Self::load`] while `config.yaml` does not
+    /// exist arrives here, and at start-up that is all of them at once. Each
+    /// one used to stage its own copy of the same default and `rename` it over
+    /// whatever was there — so a directory needing one file created got N
+    /// replacements of it instead.
+    ///
+    /// On unix that is merely wasteful. On Windows a replacement makes the
+    /// destination's NAME briefly unopenable, so the readers racing those
+    /// replacements got `ERROR_ACCESS_DENIED` — which is how
+    /// `test (windows-latest)` came to fail
+    /// `a_startup_storm_on_a_missing_config_never_reports_anything_but_not_found`
+    /// with "Access is denied." on a key nobody had set.
+    ///
+    /// The re-check is not a lock and does not need to be. The window it leaves
+    /// open is closed by the second arm: a write that loses to a sibling is
+    /// answered by reading what the sibling wrote, never by reporting failure.
+    fn create_default_config_if_missing(
+        &self,
+        default_config: Mapping,
+    ) -> Result<Mapping, ConfigError> {
+        if let Some(existing) = self.adopt_existing_config() {
+            tracing::debug!("Config file was created by another writer first; adopting it");
+            return Ok(existing);
+        }
+
+        match self.save_values(default_config.clone()) {
+            Ok(()) => {
+                Self::log_default_config_created(&default_config);
+                Ok(default_config)
+            }
+            Err(write_error) => {
+                if let Some(existing) = self.adopt_existing_config() {
+                    tracing::info!(
+                        "Could not write the default config ({}), but another writer \
+                         installed one; adopting it",
+                        write_error
+                    );
+                    return Ok(existing);
+                }
+                tracing::error!("Failed to write default config file: {}", write_error);
+                // Even if we can't write to disk, return config so app can still run
+                Ok(default_config)
+            }
+        }
+    }
+
+    fn log_default_config_created(default_config: &Mapping) {
+        if default_config.is_empty() {
+            tracing::info!("Created fresh empty config file");
+        } else {
+            tracing::info!(
+                "Created fresh config file from init-config.yaml with {} keys",
+                default_config.len()
+            );
         }
     }
 
@@ -409,22 +648,21 @@ impl Config {
         })
     }
 
-    // Helper method to create and save default config with consistent logging
-    fn create_and_save_default_config(
+    /// Overwrite a config file that could not be used with a fresh default.
+    ///
+    /// ⚠ Unlike [`Self::create_default_config_if_missing`] this **replaces**
+    /// what is on disk, so it belongs only to the recovery path below, where
+    /// the file exists, does not parse, and no backup could be restored. Using
+    /// it for a config that is merely *absent* is what made every thread in a
+    /// start-up storm a writer.
+    fn replace_unusable_config_with_default(
         &self,
         default_config: Mapping,
     ) -> Result<Mapping, ConfigError> {
         // Try to write the default config to disk
         match self.save_values(default_config.clone()) {
             Ok(_) => {
-                if default_config.is_empty() {
-                    tracing::info!("Created fresh empty config file");
-                } else {
-                    tracing::info!(
-                        "Created fresh config file from init-config.yaml with {} keys",
-                        default_config.len()
-                    );
-                }
+                Self::log_default_config_created(&default_config);
                 Ok(default_config)
             }
             Err(write_error) => {
@@ -436,7 +674,7 @@ impl Config {
     }
 
     fn load_values_with_recovery(&self) -> Result<Mapping, ConfigError> {
-        let file_content = std::fs::read_to_string(&self.config_path)?;
+        let file_content = self.read_config_file()?;
 
         match parse_yaml_content(&file_content) {
             Ok(values) => Ok(values),
@@ -457,7 +695,7 @@ impl Config {
 
                 let default_config = self.load_init_config_if_exists().unwrap_or_default();
 
-                self.create_and_save_default_config(default_config)
+                self.replace_unusable_config_with_default(default_config)
             }
         }
     }
@@ -467,7 +705,7 @@ impl Config {
 
         for backup_path in backup_paths {
             if backup_path.exists() {
-                match std::fs::read_to_string(&backup_path) {
+                match Self::read_file_tolerantly(&backup_path) {
                     Ok(backup_content) => {
                         match parse_yaml_content(&backup_content) {
                             Ok(values) => {
@@ -587,11 +825,18 @@ impl Config {
 
         let staged = (|| -> Result<(), ConfigError> {
             {
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&temp_path)?;
+                // Retried for the same reason the rename below is: a virus
+                // scanner or indexer holding a freshly created file open makes
+                // this fail with the same transient "Access is denied." on
+                // Windows, and the staging name is ours alone, so a failure
+                // here is never contention with another Biorouter writer.
+                let mut file = retry_while_transiently_unavailable(|| {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&temp_path)
+                })?;
 
                 // Acquire an exclusive lock
                 file.lock_exclusive()
@@ -604,8 +849,11 @@ impl Config {
                 // Unlock is handled automatically when file is dropped
             }
 
-            // Atomically replace the original file
-            std::fs::rename(&temp_path, &self.config_path)?;
+            // Replace the original file. Atomic on unix; on Windows the
+            // destination NAME is briefly unopenable while it happens, and a
+            // second writer landing in that window is answered "Access is
+            // denied." rather than made to wait — hence the retry.
+            self.install_staged_config(&temp_path)?;
             Ok(())
         })();
 
@@ -635,7 +883,14 @@ impl Config {
         }
 
         // Check if current config is valid before backing it up
-        let current_content = std::fs::read_to_string(&self.config_path)?;
+        let current_content = match Self::read_file_tolerantly(&self.config_path) {
+            Ok(content) => content,
+            // Gone between the existence check above and this read: another
+            // writer is replacing it. There is nothing to back up, and nothing
+            // wrong — failing here would fail the caller's `set_param`.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
         if parse_yaml_content(&current_content).is_err() {
             // Don't back up corrupted files
             return Ok(());
@@ -1864,6 +2119,15 @@ mod tests {
     /// is not the fail-before test — `two_writes_never_share_a_staging_path` is.
     /// It is here because it is the assertion that runs on the platform where
     /// the bug actually happens.
+    ///
+    /// ⚠ It caught a **second** cause on Windows after the first was fixed, and
+    /// that is the argument for keeping an assertion whose failure mode is
+    /// platform-only: with the staging paths made unique, the storm's remaining
+    /// hazard was the *renames themselves*, which make the destination name
+    /// briefly unopenable. See
+    /// [`Config::create_default_config_if_missing`] for that cause and
+    /// `a_startup_storm_survives_the_denials_windows_answers_a_replacement_with`
+    /// for the same assertion with the denial injected, which fails everywhere.
     #[test]
     fn a_startup_storm_on_a_missing_config_never_reports_anything_but_not_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -1895,6 +2159,226 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The three ways Windows says "this name is being replaced right now",
+    /// and the failures that mean something else and must not be retried.
+    #[test]
+    fn a_name_being_replaced_is_transient_and_a_missing_file_is_not() {
+        assert!(
+            is_transiently_unavailable(&IoFaults::access_denied()),
+            "ERROR_ACCESS_DENIED is what a read of a name mid-replacement gets, and it is \
+             the error the Windows CI failure carried"
+        );
+
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::InvalidData,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            assert!(
+                !is_transiently_unavailable(&std::io::Error::new(kind, "settled")),
+                "{kind:?} is an answer about the file, not about contention for its name"
+            );
+        }
+
+        // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION reach Rust with no
+        // named ErrorKind, so they are recognised by raw code — and only on the
+        // platform those codes belong to.
+        for code in [32, 33] {
+            assert_eq!(
+                is_transiently_unavailable(&std::io::Error::from_raw_os_error(code)),
+                cfg!(windows),
+                "raw os error {code} is a Windows sharing/lock violation; on unix the same \
+                 number means something else entirely"
+            );
+        }
+    }
+
+    /// An operation that fails the way a name mid-replacement fails is retried,
+    /// and the caller is told about it only if it never settles.
+    ///
+    /// Injected, because the failure is Windows-only, sub-millisecond, and
+    /// produced by an interleaving of concurrent renames that no test can
+    /// arrange — on unix `rename(2)` is atomic and the seam does not exist.
+    #[test]
+    fn a_read_that_fails_the_way_windows_fails_is_retried_rather_than_reported() {
+        let attempts = std::cell::Cell::new(0usize);
+        let outcome = retry_while_transiently_unavailable(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 4 {
+                return Err(IoFaults::access_denied());
+            }
+            Ok("BIOROUTER_PROVIDER: versa_azure\n")
+        });
+
+        assert_eq!(
+            outcome.unwrap(),
+            "BIOROUTER_PROVIDER: versa_azure\n",
+            "a transient denial must not become the caller's answer"
+        );
+        assert_eq!(attempts.get(), 4, "the operation must be retried in place");
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_replacement_in_progress_is_reported_at_once() {
+        let attempts = std::cell::Cell::new(0usize);
+        let outcome = retry_while_transiently_unavailable(|| -> std::io::Result<()> {
+            attempts.set(attempts.get() + 1);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such file",
+            ))
+        });
+
+        assert_eq!(outcome.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(
+            attempts.get(),
+            1,
+            "retrying a settled answer only delays it; the budget is for contention alone"
+        );
+    }
+
+    #[test]
+    fn a_denial_that_never_lifts_is_reported_once_the_budget_is_spent() {
+        let attempts = std::cell::Cell::new(0usize);
+        let outcome = retry_while_transiently_unavailable(|| -> std::io::Result<()> {
+            attempts.set(attempts.get() + 1);
+            Err(IoFaults::access_denied())
+        });
+
+        assert_eq!(
+            outcome.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "a config the user genuinely cannot read must still say so"
+        );
+        assert_eq!(attempts.get(), TRANSIENT_IO_ATTEMPTS);
+    }
+
+    /// The Windows failure, simulated on every platform: a start-up storm in
+    /// which **every** read of the config file is first answered "Access is
+    /// denied." three times, exactly as a read racing a sibling's rename is.
+    ///
+    /// This is the fail-before test for the tolerance half.
+    /// [`a_startup_storm_on_a_missing_config_never_reports_anything_but_not_found`]
+    /// above is the same assertion against the real filesystem, and it can only
+    /// fail on the platform that produces the failure — which is why it took a
+    /// CI run to catch, and why this one exists beside it.
+    #[test]
+    fn a_startup_storm_survives_the_denials_windows_answers_a_replacement_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        config.io_faults.failing_read_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS / 2);
+        let config = std::sync::Arc::new(config);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let config = std::sync::Arc::clone(&config);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..4)
+                        .map(|_| config.get_param::<i32>("A_KEY_NOBODY_SET"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            for outcome in worker.join().unwrap() {
+                assert!(
+                    matches!(outcome, Err(ConfigError::NotFound(_))),
+                    "an unset key must read as NotFound even while every read of the config \
+                     file is being denied the way Windows denies a name mid-replacement; \
+                     got {outcome:?}"
+                );
+            }
+        }
+    }
+
+    /// Creating a config that is missing must not overwrite a config that is
+    /// not.
+    ///
+    /// This is the fail-before test for the root cause. Every thread in a
+    /// start-up storm reaches the create path, and each one used to stage its
+    /// own copy of the same default and rename it over whatever had landed
+    /// meanwhile — turning one needed file creation into N replacements, each
+    /// of which makes the destination name briefly unopenable on Windows.
+    #[test]
+    fn a_create_that_loses_the_race_adopts_the_winner_instead_of_clobbering_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        // Another writer got there between our existence check and our write.
+        let sibling = "A_KEY_A_SIBLING_WROTE: 7\n";
+        std::fs::write(&config_path, sibling).unwrap();
+
+        let values = config
+            .create_default_config_if_missing(Mapping::new())
+            .unwrap();
+
+        assert_eq!(
+            values.get("A_KEY_A_SIBLING_WROTE"),
+            Some(&serde_yaml::Value::from(7)),
+            "the sibling's config is the answer, not the default we were about to write"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            sibling,
+            "and it must still be on disk: a create-if-missing that replaces is a data loss"
+        );
+    }
+
+    /// The narrow half of the same rule: the file appears *after* the existence
+    /// check, so our write is the one that loses.
+    #[test]
+    fn a_write_that_loses_to_a_sibling_answers_with_the_siblings_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        // Our rename is denied the way Windows denies one against a name being
+        // replaced — because that is exactly what happened: the sibling landed.
+        let sibling = "A_KEY_A_SIBLING_WROTE: 7\n";
+        config.io_faults.failing_rename_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS);
+        *config
+            .io_faults
+            .sibling_lands_on_rename_fault
+            .lock()
+            .unwrap() = Some(sibling.to_string());
+
+        let values = config
+            .create_default_config_if_missing(Mapping::new())
+            .unwrap();
+
+        assert_eq!(
+            values.get("A_KEY_A_SIBLING_WROTE"),
+            Some(&serde_yaml::Value::from(7)),
+            "a write that lost the race is answered by reading the winner, not by \
+             reporting a failure or returning an empty default"
+        );
+        assert!(
+            !config
+                .staging_path()
+                .parent()
+                .unwrap()
+                .read_dir()
+                .unwrap()
+                .any(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")),
+            "a failed write must not leave its staging file behind"
+        );
     }
 
     #[test]
@@ -2290,6 +2774,7 @@ mod tests {
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
             test_keyring_store: Some(std::sync::Arc::new(PanicsOnRead)),
+            io_faults: IoFaults::default(),
         };
         let overrides = HashMap::from([
             (
@@ -2453,6 +2938,7 @@ mod tests {
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
             test_keyring_store: Some(store.clone()),
+            io_faults: IoFaults::default(),
         });
 
         let handles: Vec<_> = (0..24)
@@ -2487,6 +2973,7 @@ mod tests {
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
             test_keyring_store: Some(store.clone()),
+            io_faults: IoFaults::default(),
         };
 
         config.set_secret("cache_test_key", &"v1")?;
