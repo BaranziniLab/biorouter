@@ -208,8 +208,25 @@ pub fn shipped_skills() -> impl Iterator<Item = &'static (&'static str, &'static
     BUILTIN_SKILLS.iter().chain(KNOWLEDGE_SKILLS.iter())
 }
 
-pub(crate) fn install_builtin_skills() {
-    SkillsClient::ensure_builtin_skills(&Paths::config_dir().join("skills"));
+/// Seed the shipped skills into a skills root the caller resolved.
+///
+/// ⚠ **`skills_dir` is a parameter for the same reason `knowledge::soul`'s
+/// seeders take one.** This used to spell `Paths::config_dir().join("skills")`
+/// itself, and one of its two callers is a task `AgentManager::new` *spawns* —
+/// so the read landed at an arbitrary point after the constructor returned,
+/// which in the test binary is whichever unrelated test holds `env_lock` by
+/// then. The owner resolves the root once, when it is constructed, and threads
+/// it here.
+pub(crate) fn install_builtin_skills(skills_dir: &Path) {
+    SkillsClient::ensure_builtin_skills(skills_dir);
+}
+
+/// Where Biorouter's own skills live under a given config root. Must stay the
+/// same join [`skill_catalog::roots`] makes for its `SkillSourceKind::Biorouter`
+/// entry — a seeder that writes somewhere the discoverer does not look installs
+/// nothing, silently.
+pub fn skills_root(config_dir: &Path) -> PathBuf {
+    config_dir.join("skills")
 }
 
 /// Every shipped **Context**, by the identifier its enablement is keyed on.
@@ -783,7 +800,11 @@ impl SkillsClient {
             instructions: Some(String::new()),
         };
 
-        install_builtin_skills();
+        // Resolved HERE, in the constructor, and not inside the seeder: this
+        // call is synchronous, so the root a `SkillsClient` seeds into is the
+        // one that was ambient when the client was built. Nothing defers it to
+        // a later task.
+        install_builtin_skills(&skills_root(&Paths::config_dir()));
 
         // The catalog is refreshed here rather than merely read, because a
         // client is constructed when a conversation starts and the seeding

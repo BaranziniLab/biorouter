@@ -44,6 +44,23 @@ impl AgentManager {
     ) -> Result<Self> {
         let scheduler = Scheduler::new(schedule_file_path, session_manager.clone()).await?;
 
+        // ⚠ **Resolved ONCE, here, and threaded from here on.** Everything this
+        // constructor seeds — the Soul KB, the built-in skills, the update-soul
+        // skill, the Meditation workflow — used to call `Paths::config_dir()`
+        // for itself, at the moment it wrote. The seeding below is *spawned*
+        // (BR-55), so that moment is an arbitrary point after `new` has
+        // returned, and `BIOROUTER_PATH_ROOT` is process-global: in the lib test
+        // binary the root it read belonged to whichever unrelated test held
+        // `env_lock` by then. That is how
+        // `knowledge::conversation_ingest::tests::missing_or_disabled_soul_\
+        // skill_fails_before_raw_staging` — whose entire assertion is that no
+        // `update-soul` skill exists in the temp root it owns — was handed one
+        // by a manager it never built (CI `test (ubuntu-latest)`, PR #191 run
+        // 34304297956). A lock in the reader could not help; the writer never
+        // asked for one. A manager now writes only into the root it was
+        // constructed with.
+        let config_dir = Paths::config_dir();
+
         // Runs to completion before this constructor returns, so on the success
         // path no client ever observes a pre-OKF base or a store without its
         // built-in OKF Soul. It deliberately does NOT gate construction: a
@@ -52,7 +69,12 @@ impl AgentManager {
         // message names — strictly worse than a degraded Knowledge surface, and
         // the reconciliation is retried on every startup and every
         // `biorouter knowledge` command anyway.
-        match tokio::task::spawn_blocking(crate::knowledge::soul::ensure_soul_kb).await {
+        let reconcile_root = config_dir.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::knowledge::soul::ensure_soul_kb(&reconcile_root)
+        })
+        .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 tracing::error!("failed to reconcile the Soul knowledge base: {error:#}");
@@ -78,9 +100,9 @@ impl AgentManager {
         // exists.
         let scheduler = Arc::clone(&manager.scheduler);
         if std::env::var_os("BIOROUTER_BLOCKING_STARTUP").is_some() {
-            Self::run_first_run_init(scheduler).await;
+            Self::run_first_run_init(scheduler, config_dir).await;
         } else {
-            tokio::spawn(Self::run_first_run_init(scheduler));
+            tokio::spawn(Self::run_first_run_init(scheduler, config_dir));
         }
 
         Ok(manager)
@@ -94,14 +116,24 @@ impl AgentManager {
     /// request, so [`AgentManager::new`] runs it in the background (BR-55). The
     /// synchronous skills seeding is blocking file I/O, so it goes through
     /// `spawn_blocking` to keep it off the async runtime.
-    async fn run_first_run_init(scheduler: Arc<dyn SchedulerTrait>) {
-        if let Err(e) =
-            tokio::task::spawn_blocking(crate::agents::skills_extension::install_builtin_skills)
-                .await
+    ///
+    /// ⚠ `config_dir` is **passed in**, never resolved here. This function runs
+    /// detached from the constructor that scheduled it, so a `Paths::config_dir()`
+    /// call in this body reads whatever the process environment says at some
+    /// later, unowned instant — see the note in [`AgentManager::new`].
+    async fn run_first_run_init(
+        scheduler: Arc<dyn SchedulerTrait>,
+        config_dir: std::path::PathBuf,
+    ) {
+        let skills_dir = crate::agents::skills_extension::skills_root(&config_dir);
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            crate::agents::skills_extension::install_builtin_skills(&skills_dir)
+        })
+        .await
         {
             tracing::warn!("Failed to seed built-in skills: {e}");
         }
-        crate::knowledge::soul::install(&scheduler).await;
+        crate::knowledge::soul::install(&config_dir, &scheduler).await;
     }
 
     pub async fn instance() -> Result<Arc<Self>> {
@@ -389,8 +421,9 @@ mod tests {
 
         // Running the deferred init directly must be panic-free and idempotent
         // (best-effort: every step logs a warning on failure rather than erroring).
-        AgentManager::run_first_run_init(manager.scheduler()).await;
-        AgentManager::run_first_run_init(manager.scheduler()).await;
+        let config_dir = temp_dir.path().join("config");
+        AgentManager::run_first_run_init(manager.scheduler(), config_dir.clone()).await;
+        AgentManager::run_first_run_init(manager.scheduler(), config_dir).await;
     }
 
     /// BR-71: `peek_agent` is a LOOKUP. Its whole reason to exist is that
@@ -1059,5 +1092,93 @@ mod tests {
         let result = manager.remove_session(&session).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    /// The first-run seeding must land in the root the manager was BUILT with,
+    /// never in whatever `BIOROUTER_PATH_ROOT` happens to be ambient by the
+    /// time the background task actually runs.
+    ///
+    /// This is the root cause of the `missing_or_disabled_soul_skill_fails_\
+    /// before_raw_staging` flake (CI `test (ubuntu-latest)`, PR #191 run
+    /// 34304297956): `new` **spawns** `run_first_run_init`, which used to
+    /// resolve `Paths::config_dir()` at seed time — inside a detached task,
+    /// long after `new` returned and after the constructing test had let go of
+    /// the environment. Whichever other test held `env_lock` at that moment
+    /// owned the directory the soul skill was written into, so a test whose
+    /// entire assertion is "no `update-soul` skill exists in MY root" was
+    /// handed one by a manager it never built. A lock in the reader cannot
+    /// close that — the writer never asks for it (the family recorded in
+    /// `model.rs`, "only serialises callers that *ask* for it").
+    ///
+    /// The runtime is deliberately `current_thread`: the spawned init can then
+    /// only run when this test yields, so the swap below is ordered rather than
+    /// raced, and the pre-fix tree fails this every time instead of sometimes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn first_run_seeding_lands_in_the_root_the_manager_was_built_with() {
+        fn soul_skill(root: &std::path::Path) -> std::path::PathBuf {
+            root.join("config")
+                .join("skills")
+                .join(crate::agents::skills_extension::KNOWLEDGE_BUNDLE)
+                .join(crate::knowledge::soul::SOUL_SKILL_DIR)
+                .join("SKILL.md")
+        }
+
+        let built_with = TempDir::new().unwrap();
+        let ambient_later = TempDir::new().unwrap();
+        let sessions = TempDir::new().unwrap();
+
+        let manager = {
+            // The manager is constructed while THIS root is the ambient one …
+            let _env = env_lock::lock_env([(
+                "BIOROUTER_PATH_ROOT",
+                Some(built_with.path().to_str().unwrap()),
+            )]);
+            let session_manager = Arc::new(SessionManager::new(sessions.path().to_path_buf()));
+            AgentManager::new(
+                session_manager,
+                sessions.path().join("schedule.json"),
+                Some(4),
+            )
+            .await
+            .unwrap()
+            // … and `new` returns without ever yielding after the spawn, so on
+            // a current-thread runtime the init has provably not run yet.
+        };
+
+        // … and some *other* test now owns the environment. Nothing this
+        // manager does may follow it there.
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(ambient_later.path().to_str().unwrap()),
+        )]);
+
+        // The loop exits as soon as the seed lands in EITHER root — ~50 ms in
+        // practice, in both the passing and the failing direction — so the
+        // generous cap is paid only by a genuinely stuck run, never by a green
+        // one. A fix for a flake must not itself be timing-sensitive on a
+        // loaded runner: the first `ensure_soul_kb` initialises a git repo.
+        for _ in 0..3_000 {
+            if soul_skill(built_with.path()).is_file() || soul_skill(ambient_later.path()).exists()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            !soul_skill(ambient_later.path()).exists(),
+            "the first-run seeding followed the ambient BIOROUTER_PATH_ROOT into \
+             {} — a root this manager was never given. That is the flake: any \
+             test holding the environment when a background init fires is handed \
+             an `update-soul` skill it did not install.",
+            ambient_later.path().display()
+        );
+        assert!(
+            soul_skill(built_with.path()).is_file(),
+            "the first-run seeding never reached the manager's own root at {}",
+            built_with.path().display()
+        );
+
+        drop(manager);
     }
 }

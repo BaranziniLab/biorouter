@@ -837,21 +837,23 @@ mod tests {
             "{missing}\n\n\
              ⚠ If this failed with `Ok(Some(Soul {{ … }}))`, the soul skill was \
              planted in this test's own root by a CONCURRENT test, and the cause \
-             is not in this file. `execution::manager` line ~104 calls \
-             `soul::install`, which seeds `update-soul` into \
-             `Paths::config_dir()` — i.e. whatever `BIOROUTER_PATH_ROOT` is \
-             ambient — and it takes no env lock. While this test holds the lock, \
-             that ambient value is OUR temp dir, so any test in this binary that \
-             starts an execution manager writes the skill here.\n\
-             This is the family recorded at `model.rs` (search \
-             \"only serialises callers that *ask* for it\"): the guard is \
-             present and correct and cannot help, because the writer never asks \
-             for it. Observed once, in a full `cargo test --workspace` on a \
-             machine also running another repository's suite; 8 targeted runs \
-             (alone x5, this binary x2, --test-threads=1) and all three CI \
-             platforms pass. Do NOT add a lock here — it is already here. The \
-             fix, if this recurs, is to stop the assertion depending on the \
-             ABSENCE of a file in a process-global location."
+             is not in this file.\n\
+             That used to be a live bug and is now fixed at the writer: \
+             `soul::install` seeded `update-soul` into `Paths::config_dir()` — \
+             whatever `BIOROUTER_PATH_ROOT` was ambient — from inside the task \
+             `AgentManager::new` *spawns*, so while this test held the env lock \
+             any manager in this binary wrote its skill here. It observed as a \
+             flake once locally and once on CI (`test (ubuntu-latest)`, PR #191 \
+             run 34304297956) before the seeders were changed to take their root \
+             as an argument, captured when the manager is constructed.\n\
+             So do NOT add a lock here — a lock in the READER never could help, \
+             because the writer never asked for one (the family recorded at \
+             `model.rs`, search \"only serialises callers that *ask* for it\"). \
+             A recurrence means a seeder has gone back to resolving its own root: \
+             see `knowledge::soul::tests::\
+             every_seeder_takes_its_root_as_an_argument`, and the behavioural pin \
+             `execution::manager::tests::\
+             first_run_seeding_lands_in_the_root_the_manager_was_built_with`."
         );
         assert_eq!(
             raw_source_count(&svc, crate::knowledge::soul::SOUL_KB_ID),

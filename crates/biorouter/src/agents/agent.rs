@@ -15291,7 +15291,7 @@ mod tests {
             ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
             ("BIOROUTER_KNOWLEDGE_TEST_MODE", Some("true")),
         ]);
-        crate::knowledge::soul::install_assets();
+        crate::knowledge::soul::install_assets(&crate::config::paths::Paths::config_dir());
 
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
         let knowledge_target = resolve_bundled_extension("knowledge").expect("bundled Knowledge");

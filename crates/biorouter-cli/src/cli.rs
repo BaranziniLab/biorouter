@@ -2367,10 +2367,15 @@ async fn handle_knowledge_subcommand(command: KnowledgeCommand) -> Result<()> {
     // deleting part of it is indefensible. They see the legacy bases named and
     // choose. `install_assets` still registers the built-in Soul, which it does
     // without purging.
+    // Resolved once here, at the top of the command, and passed down: the
+    // seeders take their root explicitly so nothing re-reads the process
+    // environment part-way through. For a real CLI invocation this is exactly
+    // the ambient root, as it always was.
+    let config_dir = biorouter::config::paths::Paths::config_dir();
     if !matches!(command, KnowledgeCommand::List { .. }) {
-        biorouter::knowledge::soul::ensure_soul_kb()?;
+        biorouter::knowledge::soul::ensure_soul_kb(&config_dir)?;
     }
-    biorouter::knowledge::soul::install_assets();
+    biorouter::knowledge::soul::install_assets(&config_dir);
     match command {
         KnowledgeCommand::List { format } => knowledge::handle_list(&format).await,
         KnowledgeCommand::Active {
