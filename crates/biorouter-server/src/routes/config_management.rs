@@ -1294,17 +1294,29 @@ pub async fn backup_config() -> Result<Json<String>, StatusCode> {
 pub async fn recover_config() -> Result<Json<String>, StatusCode> {
     let config = Config::global();
 
+    // This endpoint IS a forced re-read, so it has to force one: the config
+    // layer serves a parsed `config.yaml` until the file's stamp moves, and a
+    // caller who reaches for "recover" is asking to go back to the disk
+    // whatever this process currently believes.
+    config.invalidate_values_cache();
+
     // Force a reload which will trigger recovery if needed
     match config.all_values() {
         Ok(values) => {
             let recovered_keys: Vec<String> = values.keys().cloned().collect();
+            // A recovery that could not WRITE what it recovered leaves the app
+            // running on values that vanish at exit. That used to be silent.
+            let unwritable = config.last_write_error().map(|err| {
+                format!(" ⚠ The config file could not be written ({err}); changes made in this session will not persist.")
+            }).unwrap_or_default();
             if recovered_keys.is_empty() {
-                Ok(Json("Config recovery completed, but no data was recoverable. Starting with empty configuration.".to_string()))
+                Ok(Json(format!("Config recovery completed, but no data was recoverable. Starting with empty configuration.{unwritable}")))
             } else {
                 Ok(Json(format!(
-                    "Config recovery completed. Recovered {} keys: {}",
+                    "Config recovery completed. Recovered {} keys: {}{}",
                     recovered_keys.len(),
-                    recovered_keys.join(", ")
+                    recovered_keys.join(", "),
+                    unwritable
                 )))
             }
         }

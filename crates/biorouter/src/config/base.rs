@@ -11,7 +11,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 tokio::task_local! {
@@ -172,6 +172,34 @@ pub struct Config {
     // where one provider says Configured and its neighbour says not, from the
     // same credential blob.
     secrets_read: Mutex<()>,
+    // Parsed contents of `config.yaml`, against the file state that produced
+    // them. Without this, EVERY `get_param` re-read and re-parsed the whole
+    // file: `ModelConfig::new`, the privacy tier resolver, the extension map
+    // and the agent's turn loop all sit on that path, and at start-up — before
+    // the file exists — every one of those reads was also a WRITE, which is how
+    // a config-layer storm came to fail `test (windows-latest)` twice (#188,
+    // #197). A `stat` per lookup keeps a change made by another process (the
+    // CLI, `biorouter configure`) visible; see `FileStamp`.
+    values_cache: Mutex<ValuesCache>,
+    // Single-flight gate for the COLD load above, for the same reason
+    // `secrets_read` exists beside `secrets_cache`: the cache alone lets N
+    // concurrent callers all miss and all read. Here that is not merely
+    // wasteful — on a missing config file every one of those misses takes the
+    // CREATE branch, which is the storm itself.
+    //
+    // ⚠ Lock order is `guard` → `values_read` → `values_cache`, and the cache
+    // locks are innermost by construction: nothing under either of them takes
+    // `guard`, and `save_values` (which runs under `guard`) touches
+    // `values_cache` alone. Filling the cache from inside `load` while holding
+    // a lock that `save_values` also needs would deadlock against `load`'s own
+    // create branch, which writes.
+    values_read: Mutex<()>,
+    // The last failure to write a default config file. Reported out of band —
+    // `load` stays infallible about it on purpose, because making an unwritable
+    // config directory a hard failure would turn the storm path this layer
+    // spent two PRs calming down into a start-up crash. See
+    // `record_default_config_write_error`.
+    last_write_error: Mutex<Option<String>>,
     // Test-only replacement for the OS credential store, so cache and
     // chunking behavior can be exercised without touching a real keyring
     // (which would show authorization prompts on macOS).
@@ -181,6 +209,9 @@ pub struct Config {
     // See `IoFaults`.
     #[cfg(test)]
     io_faults: IoFaults,
+    // Test-only counters. See `IoProbe`.
+    #[cfg(test)]
+    io_probe: IoProbe,
 }
 
 enum SecretStorage {
@@ -236,10 +267,15 @@ impl Default for Config {
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
+            values_cache: Mutex::new(ValuesCache::default()),
+            values_read: Mutex::new(()),
+            last_write_error: Mutex::new(None),
             #[cfg(test)]
             test_keyring_store: None,
             #[cfg(test)]
             io_faults: IoFaults::default(),
+            #[cfg(test)]
+            io_probe: IoProbe::default(),
         }
     }
 }
@@ -323,6 +359,98 @@ fn parse_yaml_content(content: &str) -> Result<Mapping, ConfigError> {
     serde_yaml::from_str(content).map_err(|e| e.into())
 }
 
+/// A cheap identity for the config file's current state, from one `stat`.
+///
+/// `None` (as `Option<FileStamp>`) means the file is not there, which is itself
+/// a state worth caching: on an install whose config directory cannot be
+/// written, "absent" is the steady state and re-deriving it per lookup is the
+/// whole cost this cache exists to remove.
+///
+/// The same shape `crate::catalog::file_stamp` already uses to watch this file
+/// for changes made by another process — deliberately, so there is one answer
+/// to "has `config.yaml` moved?" rather than two that can disagree. (It is
+/// duplicated rather than shared because `catalog` depends on `config` and not
+/// the other way round.)
+///
+/// ⚠ Two states with the same length and mtime are indistinguishable here.
+/// In-process writes never rely on that — every one of them invalidates the
+/// cache explicitly — so the residual is a *different process* rewriting
+/// `config.yaml` to the same length within one mtime tick: sub-microsecond on
+/// APFS, ext4 and NTFS, and one second on the rare filesystem that truncates.
+///
+/// ⚠ Nothing about **readability** is in here, and nothing may come to depend
+/// on it being. An earlier draft added the permission bits so that a cached
+/// read *failure* would be revisited after a `chmod` — which works on unix and
+/// is a fiction on Windows, where a file is made unreadable by an ACL and
+/// `Permissions::readonly()` does not move when one is repaired. A read failure
+/// is not cached at all now; see [`ValuesCache::retry_did_not_help_at`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FileStamp {
+    len: u64,
+    modified: std::time::SystemTime,
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(FileStamp {
+            len: meta.len(),
+            modified: meta.modified().ok()?,
+        })
+    }
+}
+
+/// What this process is holding about `config.yaml`.
+#[derive(Default)]
+struct ValuesCache {
+    /// A successful parse, and nothing else. ⚠ **A failure is never held
+    /// here.** See [`Self::retry_did_not_help_at`] for why, and for what is
+    /// held instead.
+    parsed: Option<CachedConfig>,
+
+    /// The file state at which a read last failed — the *verdict* that
+    /// retrying at this state did not help, never the error itself.
+    ///
+    /// ⚠ This distinction is the whole design, and getting it wrong is worse
+    /// than the cost it removes. #197 left behind ~63 ms per `get_param` for a
+    /// config that cannot be read (8 attempts with backoff), and its follow-up
+    /// asked for the verdict to be cached rather than the predicate narrowed.
+    /// Caching the *error* would do that and much more: `is_transiently_unavailable`
+    /// admits `ERROR_SHARING_VIOLATION`, which a virus scanner or indexer
+    /// holding the file produces for longer than 63 ms, and a read can also
+    /// fail from `EMFILE` on a daemon that spawns MCP subprocesses, or `EIO`,
+    /// or `ESTALE` on a network config directory. None of those moves the
+    /// file's length or mtime, so a cached error would be served for the rest
+    /// of the process's life, to callers that all swallow it —
+    /// `config/extensions.rs` reads a failed load as "no extensions", and every
+    /// `get_biorouter_provider()` caller `.ok()`s it. The process would run on
+    /// defaults and look healthy.
+    ///
+    /// So the read is always re-attempted; what is cached is only that it
+    /// should not be retried EIGHT times. One failed `open` is a syscall, and
+    /// the moment the condition lifts the next lookup succeeds.
+    retry_did_not_help_at: Option<FileStamp>,
+}
+
+/// A successful load, held against the file state that produced it.
+struct CachedConfig {
+    /// The stamp observed **before** the read that produced `values`, and only
+    /// when the load left the file in that same state.
+    ///
+    /// Before, not after, and the asymmetry is the point: a writer landing
+    /// during our read leaves the post-read stamp describing content we never
+    /// saw, so caching against it would serve that content's identity with the
+    /// previous content's values, indefinitely. Against the pre-read stamp the
+    /// same race costs a miss on the next call and nothing else.
+    ///
+    /// The "same state" qualifier is the other half, and it is not a nicety:
+    /// the load path WRITES, so a load that created, restored or replaced the
+    /// file produced a state its own starting stamp does not describe. Those
+    /// store nothing at all — see the tail of [`Config::load_shared`].
+    stamp: Option<FileStamp>,
+    values: Arc<Mapping>,
+}
+
 /// Attempts a filesystem operation gets before its failure is believed.
 ///
 /// Eight, with the 1 ms → 16 ms backoff below, is ~63 ms in the worst case —
@@ -362,10 +490,25 @@ fn is_transiently_unavailable(err: &std::io::Error) -> bool {
 /// an interleaving no test can arrange, so injecting it is the only way to
 /// assert anything about the response to it.
 fn retry_while_transiently_unavailable<T>(
+    attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    retry_up_to(TRANSIENT_IO_ATTEMPTS, attempt)
+}
+
+/// The same rule with the budget chosen by the caller.
+///
+/// Only [`Config::read_config_file`] passes anything but [`TRANSIENT_IO_ATTEMPTS`],
+/// and only to pass **one**: a read that already spent the whole budget at this
+/// exact file state has demonstrated that waiting does not help there, so the
+/// next lookup makes a single attempt instead of sleeping ~63 ms to reach the
+/// same answer. It still attempts, which is what keeps a condition that lifts
+/// from becoming permanent — see [`ValuesCache::retry_did_not_help_at`].
+fn retry_up_to<T>(
+    attempts: usize,
     mut attempt: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     let mut backoff = std::time::Duration::from_millis(1);
-    for _ in 1..TRANSIENT_IO_ATTEMPTS {
+    for _ in 1..attempts {
         match attempt() {
             Err(err) if is_transiently_unavailable(&err) => {
                 std::thread::sleep(backoff);
@@ -424,6 +567,48 @@ impl IoFaults {
     }
 }
 
+/// Test-only counts of what this instance actually did to the filesystem.
+///
+/// Separate from [`IoFaults`], which injects failures: these count successes,
+/// and they exist because the properties worth asserting about the values
+/// cache are all of the form *how many times did the disk get touched?*. A
+/// test that only compares returned values cannot tell a cache hit from a
+/// re-read that happened to agree, which is the assertion that matters here —
+/// including for the retry budget, where the observable difference between
+/// "reported the same error again" and "spent another ~63 ms first" is the
+/// attempt count and nothing else.
+#[cfg(test)]
+#[derive(Default)]
+struct IoProbe {
+    /// Attempts made to read `config.yaml`, retries included.
+    read_attempts: std::sync::atomic::AtomicUsize,
+    /// Completed calls to [`Config::save_values`], successful or not.
+    config_writes: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl IoProbe {
+    fn note_read_attempt(&self) {
+        self.read_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn note_config_write(&self) {
+        self.config_writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn read_attempts(&self) -> usize {
+        self.read_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn config_writes(&self) -> usize {
+        self.config_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 impl Config {
     /// Get the global configuration instance.
     ///
@@ -446,10 +631,15 @@ impl Config {
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
+            values_cache: Mutex::new(ValuesCache::default()),
+            values_read: Mutex::new(()),
+            last_write_error: Mutex::new(None),
             #[cfg(test)]
             test_keyring_store: None,
             #[cfg(test)]
             io_faults: IoFaults::default(),
+            #[cfg(test)]
+            io_probe: IoProbe::default(),
         })
     }
 
@@ -469,10 +659,15 @@ impl Config {
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
+            values_cache: Mutex::new(ValuesCache::default()),
+            values_read: Mutex::new(()),
+            last_write_error: Mutex::new(None),
             #[cfg(test)]
             test_keyring_store: None,
             #[cfg(test)]
             io_faults: IoFaults::default(),
+            #[cfg(test)]
+            io_probe: IoProbe::default(),
         })
     }
 
@@ -481,14 +676,196 @@ impl Config {
     }
 
     pub fn clear(&self) -> Result<(), ConfigError> {
-        Ok(std::fs::remove_file(&self.config_path)?)
+        let removed = std::fs::remove_file(&self.config_path);
+        // The only write path that does not go through `save_values`, so it is
+        // the only one that has to say so itself. Unconditional: a removal that
+        // reports an error may still have happened.
+        self.invalidate_values_cache();
+        Ok(removed?)
     }
 
     pub fn path(&self) -> String {
         self.config_path.to_string_lossy().to_string()
     }
 
+    /// The config file's contents, parsed once and reused until the file moves.
+    ///
+    /// ⚠ **This is the hot path of the whole config layer.** Every
+    /// [`Self::get_param`] lands here, and `get_param` is how
+    /// `ModelConfig::new` resolves `max_tokens`, how the privacy tier resolver
+    /// reads its five capability keys, how the extension map is rebuilt, and
+    /// how the agent's turn loop reads its settings — so before this it was one
+    /// `read_to_string` plus a full YAML parse per setting per lookup.
+    ///
+    /// Freshness is a `stat`, not a re-read: an external write (the CLI,
+    /// `biorouter configure`, a hand edit) moves the file's [`FileStamp`] and
+    /// the next lookup misses. Writes made *through this process* do not depend
+    /// on that at all — [`Self::save_values`] invalidates explicitly.
+    ///
+    /// Shared rather than cloned because the mapping is the whole config file,
+    /// and `get_param` wants one key out of it.
+    fn load_shared(&self) -> Result<Arc<Mapping>, ConfigError> {
+        if let Some(hit) = self.cached_if_fresh(FileStamp::of(&self.config_path)) {
+            return Ok(hit);
+        }
+
+        // Cold. Exactly one caller performs the load; the rest queue here and
+        // take what the winner leaves behind. The re-check inside the gate is
+        // what makes that true, and on a MISSING config file it is what stops
+        // the storm: without it every queued caller would go on to run the
+        // create branch, and one needed file creation becomes N replacements of
+        // it — the shape that failed `test (windows-latest)` in #197.
+        let _single_flight = self.values_read.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Sampled again, now that it is our turn. The caller ahead of us may
+        // have just CREATED the file, and the stamp we took before queueing
+        // describes a state that is already gone — re-checking against it would
+        // miss a cache entry that answers our question exactly.
+        //
+        // ⚠ Before the load and never after it. A writer landing between this
+        // sample and the read leaves the entry filed under a stamp that is
+        // OLDER than its contents, which costs a miss on the next lookup; filed
+        // under a newer one it would serve the previous contents under the new
+        // content's identity, and go on doing so.
+        let stamp = FileStamp::of(&self.config_path);
+        if let Some(hit) = self.cached_if_fresh(stamp) {
+            return Ok(hit);
+        }
+
+        let values = match self.load_uncached() {
+            Ok(values) => Arc::new(values),
+            Err(err) => {
+                // ⚠ The FAILURE IS NOT CACHED — only the verdict that retrying
+                // at this file state did not help, so the next lookup makes one
+                // attempt instead of eight. Holding the error itself would
+                // outlive the conditions that produce it (a scanner with the
+                // file open, `EMFILE`, `EIO`) and hand every caller a refusal
+                // they all swallow.
+                self.note_that_retrying_did_not_help(stamp);
+                return Err(err);
+            }
+        };
+        self.forget_that_retrying_did_not_help();
+
+        // ⚠ A load that CHANGED the file files nothing. `load_uncached` writes
+        // — it creates a missing config, restores a backup over one, and
+        // replaces one that will not parse — so its result describes the state
+        // it produced, not the state it was handed, and storing it under the
+        // latter would answer for a file that no longer looks like that. The
+        // commonest instance is also the most obviously wrong one: the create
+        // branch would otherwise cache "the file is absent, the values are the
+        // default" *after* making the file exist.
+        if FileStamp::of(&self.config_path) == stamp {
+            self.values_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .parsed = Some(CachedConfig {
+                stamp,
+                values: Arc::clone(&values),
+            });
+        }
+        Ok(values)
+    }
+
+    /// Attempts the next read of `config.yaml` should get.
+    ///
+    /// [`TRANSIENT_IO_ATTEMPTS`] normally; **one** when a read already spent
+    /// the whole budget at this exact file state and still failed. That is the
+    /// cached verdict #197's follow-up asked for, and the reason it is a budget
+    /// rather than a stored error is in [`ValuesCache::retry_did_not_help_at`].
+    fn read_attempt_budget(&self) -> usize {
+        let cache = self.values_cache.lock().unwrap_or_else(|e| e.into_inner());
+        match cache.retry_did_not_help_at {
+            Some(known) if FileStamp::of(&self.config_path) == Some(known) => 1,
+            _ => TRANSIENT_IO_ATTEMPTS,
+        }
+    }
+
+    fn note_that_retrying_did_not_help(&self, stamp: Option<FileStamp>) {
+        self.values_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retry_did_not_help_at = stamp;
+    }
+
+    fn forget_that_retrying_did_not_help(&self) {
+        self.values_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retry_did_not_help_at = None;
+    }
+
+    /// The parsed config, if it was produced by the file state in `stamp`.
+    fn cached_if_fresh(&self, stamp: Option<FileStamp>) -> Option<Arc<Mapping>> {
+        let cache = self.values_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = cache.parsed.as_ref()?;
+        (cached.stamp == stamp).then(|| Arc::clone(&cached.values))
+    }
+
+    /// Drop the parsed-config cache so the next read consults the disk.
+    ///
+    /// Every write this process makes goes through [`Self::save_values`], which
+    /// calls this — so the only callers that need it are the ones that change
+    /// the file some other way ([`Self::clear`]) and the ones that deliberately
+    /// want to re-derive from disk (`POST /config/recover`).
+    pub fn invalidate_values_cache(&self) {
+        // Including the retry verdict: it is a claim about a file state, and
+        // the caller is telling us that state is no longer what we think.
+        *self.values_cache.lock().unwrap_or_else(|e| e.into_inner()) = ValuesCache::default();
+    }
+
+    /// An **outstanding** failure to write a default config file, if any.
+    ///
+    /// Outstanding, not historical: [`Self::save_values`] clears it the moment
+    /// a write succeeds. A record that only ever accumulated would go on
+    /// claiming that changes will not persist long after they had started
+    /// persisting again — a config directory can be unwritable at start-up (an
+    /// unmounted volume, a full disk) and fine a minute later, and a false
+    /// version of this message is worse than none.
+    ///
+    /// Reported here rather than returned, because [`Self::load`] must keep
+    /// answering: a config directory that cannot be written is an environment
+    /// problem, and turning it into a hard failure would break start-up on the
+    /// exact path #188 and #197 spent two PRs making survivable. What was wrong
+    /// was that it was *silent* — the write error was logged per attempt at
+    /// best and otherwise discarded, so an install running entirely on
+    /// in-memory defaults looked identical to a healthy one.
+    pub fn last_write_error(&self) -> Option<String> {
+        self.last_write_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Record a failed default-config write, logging the first one loudly.
+    ///
+    /// Loud once, not per call: before the cache above this was reached on
+    /// every `get_param`, and an error line per settings lookup is noise that
+    /// buries itself.
+    fn record_default_config_write_error(&self, error: &ConfigError) {
+        let message = error.to_string();
+        let mut slot = self
+            .last_write_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            tracing::error!(
+                "Failed to write default config file to {}: {}. Biorouter will run on \
+                 in-memory defaults; settings changed in this session will not persist.",
+                self.config_path.display(),
+                message
+            );
+        } else {
+            tracing::debug!("Failed to write default config file again: {}", message);
+        }
+        *slot = Some(message);
+    }
+
     fn load(&self) -> Result<Mapping, ConfigError> {
+        Ok((*self.load_shared()?).clone())
+    }
+
+    fn load_uncached(&self) -> Result<Mapping, ConfigError> {
         if self.config_path.exists() {
             match self.load_values_with_recovery() {
                 Ok(values) => return Ok(values),
@@ -531,9 +908,10 @@ impl Config {
     fn read_config_file(&self) -> std::io::Result<String> {
         #[cfg(test)]
         let mut faults = self.io_faults.failing_reads();
-        retry_while_transiently_unavailable(|| {
+        retry_up_to(self.read_attempt_budget(), || {
             #[cfg(test)]
             {
+                self.io_probe.note_read_attempt();
                 if faults > 0 {
                     faults -= 1;
                     return Err(IoFaults::access_denied());
@@ -620,7 +998,11 @@ impl Config {
                     );
                     return Ok(existing);
                 }
-                tracing::error!("Failed to write default config file: {}", write_error);
+                // Nobody else installed one either, so this is a real failure to
+                // write — not a lost race — and it is the only arm of this
+                // function that should say so. Recorded rather than returned:
+                // see `last_write_error`.
+                self.record_default_config_write_error(&write_error);
                 // Even if we can't write to disk, return config so app can still run
                 Ok(default_config)
             }
@@ -639,8 +1021,8 @@ impl Config {
     }
 
     pub fn all_values(&self) -> Result<HashMap<String, Value>, ConfigError> {
-        self.load().map(|m| {
-            HashMap::from_iter(m.into_iter().filter_map(|(k, v)| {
+        self.load_shared().map(|m| {
+            HashMap::from_iter(m.iter().filter_map(|(k, v)| {
                 k.as_str()
                     .map(|k| k.to_string())
                     .zip(serde_json::to_value(v).ok())
@@ -666,7 +1048,11 @@ impl Config {
                 Ok(default_config)
             }
             Err(write_error) => {
-                tracing::error!("Failed to write default config file: {}", write_error);
+                // Unconditional here, unlike the create path above: this is
+                // reached only when the file EXISTS, does not parse, and no
+                // backup could be restored, so there is no sibling whose write
+                // we could be losing to — a failure here is always a failure.
+                self.record_default_config_write_error(&write_error);
                 // Even if we can't write to disk, return config so app can still run
                 Ok(default_config)
             }
@@ -809,6 +1195,9 @@ impl Config {
     }
 
     fn save_values(&self, values: Mapping) -> Result<(), ConfigError> {
+        #[cfg(test)]
+        self.io_probe.note_config_write();
+
         // Create backup before writing new config
         self.create_backup_if_needed()?;
 
@@ -864,6 +1253,35 @@ impl Config {
         if staged.is_err() {
             let _ = std::fs::remove_file(&temp_path);
         }
+
+        // Every write this process makes passes through here, which is what
+        // lets the read path treat its cache as fresh until the file's stamp
+        // moves — an mtime has a resolution, and two writes inside one tick
+        // would otherwise be one write as far as a reader could tell.
+        //
+        // Unconditional, including on failure: the point of invalidating is to
+        // stop asserting what is on disk, and a write that reports an error is
+        // precisely the case where this process is least sure.
+        //
+        // ⚠ Invalidation belongs HERE and not in `set_param`. Three of this
+        // function's seven callers do not hold `guard`, and all three of those
+        // are inside `load`'s own write paths.
+        self.invalidate_values_cache();
+
+        if staged.is_ok() {
+            // A write just succeeded, so "the config file could not be written"
+            // has stopped being true. Without this the record is permanent, and
+            // a config directory that was briefly unwritable at start-up — an
+            // unmounted volume, a full disk, a first-run permissions problem —
+            // would make `/config/recover` warn that changes will not persist
+            // for the rest of the process's life, after they had started
+            // persisting again.
+            *self
+                .last_write_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+        }
+
         staged
     }
 
@@ -1104,7 +1522,9 @@ impl Config {
             return Ok(serde_json::from_value(value)?);
         }
 
-        let values = self.load()?;
+        // Shared, not cloned: this reads ONE key, and the mapping is the whole
+        // config file.
+        let values = self.load_shared()?;
         let raw = values
             .get(key)
             .ok_or_else(|| ConfigError::NotFound(key.to_string()))?;
@@ -2381,6 +2801,673 @@ mod tests {
         );
     }
 
+    /// A config file that has not moved is read from disk once.
+    ///
+    /// The assertion is the ATTEMPT COUNT, not the returned value: two reads
+    /// that agree are indistinguishable from one read and a cache hit, and it
+    /// is the second read that this exists to remove. `get_param` is on the
+    /// path of `ModelConfig::new`, the privacy tier resolver, the extension map
+    /// and the agent's turn loop, and before this every one of those lookups
+    /// re-read and re-parsed the whole file.
+    #[test]
+    fn a_second_lookup_of_an_unchanged_config_reads_the_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "A_KEY_THAT_IS_SET: 7\n").unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        assert_eq!(config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(), 7);
+        let after_first = config.io_probe.read_attempts();
+        assert_eq!(after_first, 1, "the first lookup must read the file");
+
+        for _ in 0..32 {
+            assert_eq!(config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(), 7);
+            // A key that is absent still resolves through the same load.
+            assert!(matches!(
+                config.get_param::<i32>("A_KEY_NOBODY_SET"),
+                Err(ConfigError::NotFound(_))
+            ));
+        }
+
+        assert_eq!(
+            config.io_probe.read_attempts(),
+            after_first,
+            "an unchanged config file must be read once, not once per lookup"
+        );
+    }
+
+    /// A start-up storm on a missing config file creates it **once**.
+    ///
+    /// The width of that storm is the whole reason #188 and #197 exist: every
+    /// thread reaching `load` while `config.yaml` is absent takes the create
+    /// branch, so one needed file creation became N replacements of it, and on
+    /// Windows each replacement makes the destination name briefly unopenable.
+    /// Both PRs made the storm SURVIVABLE. This is the half that makes it stop
+    /// happening: the single-flight gate means exactly one caller runs the
+    /// create branch and the rest take its result.
+    ///
+    /// Deterministic despite the threads, because the count is bounded by the
+    /// gate rather than by scheduling: a thread that arrives after the file
+    /// exists reads it, and a thread that queued behind the winner finds the
+    /// winner's answer under the same stamp it sampled.
+    #[test]
+    fn a_startup_storm_creates_the_config_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config = std::sync::Arc::new(
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap(),
+        );
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                let config = std::sync::Arc::clone(&config);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..8)
+                        .map(|_| config.get_param::<i32>("A_KEY_NOBODY_SET"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            for outcome in worker.join().unwrap() {
+                assert!(
+                    matches!(outcome, Err(ConfigError::NotFound(_))),
+                    "an unset key must still read as NotFound; got {outcome:?}"
+                );
+            }
+        }
+
+        assert!(config_path.exists(), "the storm must still create the file");
+        assert_eq!(
+            config.io_probe.config_writes(),
+            1,
+            "128 lookups against a missing config file must produce ONE write, not one \
+             per thread that saw it missing"
+        );
+    }
+
+    /// A write made through this process is visible to the very next lookup —
+    /// on every path that writes, not just the one that is easiest to test.
+    ///
+    /// ⚠ This is why invalidation lives in `save_values` and not in
+    /// `set_param`. Four of that function's callers do not hold `guard`, and
+    /// one of them is the create branch of `load` itself.
+    #[test]
+    fn every_write_path_is_visible_to_the_next_lookup() -> Result<(), ConfigError> {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config = Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml"))?;
+
+        // Warm the cache on a file that does not exist yet.
+        assert!(config.all_values()?.is_empty());
+
+        config.set_param("k_set", "one")?;
+        assert_eq!(config.get_param::<String>("k_set")?, "one");
+
+        config.update_param::<String, _, _>("k_set", |v| *v = "two".to_string())?;
+        assert_eq!(config.get_param::<String>("k_set")?, "two");
+
+        config.delete("k_set")?;
+        assert!(matches!(
+            config.get_param::<String>("k_set"),
+            Err(ConfigError::NotFound(_))
+        ));
+
+        config.save_values(Mapping::from_iter([(
+            serde_yaml::to_value("k_saved")?,
+            serde_yaml::to_value("direct")?,
+        )]))?;
+        assert_eq!(config.get_param::<String>("k_saved")?, "direct");
+
+        config.clear()?;
+        assert!(
+            config.all_values()?.is_empty(),
+            "a cleared config must not be served out of the cache"
+        );
+
+        Ok(())
+    }
+
+    /// A change another process made is picked up without a restart.
+    ///
+    /// The desktop app and the CLI share one `config.yaml`, so this is a
+    /// correctness requirement rather than a nicety: `BIOROUTER_PROVIDER` is a
+    /// capability key the privacy tier resolver reads through `get_param`, and
+    /// a stale answer there is a stale tier.
+    #[test]
+    fn a_change_made_outside_this_process_is_picked_up_by_the_next_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "A_SHARED_KEY: before\n").unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        assert_eq!(
+            config.get_param::<String>("A_SHARED_KEY").unwrap(),
+            "before"
+        );
+
+        // Another process rewrites the file. Nothing tells us it happened.
+        std::fs::write(&config_path, "A_SHARED_KEY: after-an-external-write\n").unwrap();
+
+        assert_eq!(
+            config.get_param::<String>("A_SHARED_KEY").unwrap(),
+            "after-an-external-write",
+            "a config file rewritten by another process must not be served from cache"
+        );
+
+        // And a file that is removed underneath us is not served either.
+        std::fs::remove_file(&config_path).unwrap();
+        assert!(matches!(
+            config.get_param::<String>("A_SHARED_KEY"),
+            Err(ConfigError::NotFound(_))
+        ));
+        assert!(
+            config_path.exists(),
+            "reading a missing config still re-creates it"
+        );
+    }
+
+    /// A load that CREATED the config file must not be filed under the absence
+    /// it replaced.
+    ///
+    /// The load path writes — it creates a missing config, restores a backup
+    /// over one, replaces one that will not parse — so its result describes the
+    /// state it produced and not the state it started from. The create branch
+    /// is the instance where getting this wrong is most obviously wrong: the
+    /// entry would read "the file is absent, the values are the default" and
+    /// be stored *after* making the file exist, so a later deletion would find
+    /// a cache entry that matches, answer from it, and neither notice nor
+    /// re-create the file.
+    #[test]
+    fn a_load_that_created_the_file_is_not_cached_as_the_absence_it_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        assert!(config.all_values().unwrap().is_empty());
+        assert!(config_path.exists(), "the first read creates the file");
+
+        std::fs::remove_file(&config_path).unwrap();
+
+        assert!(config.all_values().unwrap().is_empty());
+        assert!(
+            config_path.exists(),
+            "the file is absent again and this read must act on that, not answer from an \
+             entry describing the absence the previous read already ended"
+        );
+    }
+
+    /// `POST /config/recover` is implemented as a forced re-read, so there has
+    /// to be a way to force one.
+    #[test]
+    fn an_explicit_invalidation_forces_a_re_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "A_KEY_THAT_IS_SET: 1\n").unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        assert_eq!(config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(), 1);
+        let after_first = config.io_probe.read_attempts();
+
+        config.invalidate_values_cache();
+        assert_eq!(config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(), 1);
+
+        assert!(
+            config.io_probe.read_attempts() > after_first,
+            "invalidating must actually send the next lookup to the disk"
+        );
+    }
+
+    /// Nothing on the uncached load path may reach back through the cache.
+    ///
+    /// `load_shared` holds `values_read` across the whole of `load_uncached`,
+    /// and a `std::sync::Mutex` is not reentrant — so a `get_param` or
+    /// `all_values` added anywhere underneath it (a settings lookup inside a
+    /// backup routine, an extension read while recovering) deadlocks the
+    /// process against itself.
+    ///
+    /// ⚠ Asserted from the source rather than by running anything, because the
+    /// failure mode is a **hung** `cargo test` and not a failing assertion —
+    /// the most expensive shape a defect in this file can take, and one no
+    /// green run can rule out. `load_uncached` writes (it creates a missing
+    /// config), so the reachable set is much larger than it looks.
+    #[test]
+    fn nothing_on_the_uncached_load_path_reaches_back_through_the_cache() {
+        /// The body of `fn <name>`, by brace matching from its declaration.
+        ///
+        /// `get` rather than `[..]` throughout: this file is full of non-ASCII
+        /// prose, `clippy::string_slice` is denied, and a matcher that returns
+        /// `None` where it would have panicked is caught by the non-vacuity
+        /// floor below rather than taking the test run down.
+        fn body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+            let decl = ["(", "<"]
+                .iter()
+                .filter_map(|suffix| src.find(&format!("fn {name}{suffix}")))
+                .min()?;
+            let open = decl + src.get(decl..)?.find('{')?;
+            let mut depth = 0usize;
+            for (offset, ch) in src.get(open..)?.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return src.get(open..open + offset + 1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+
+        let source = include_str!("base.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .expect("this file ends with its test module")
+            .0;
+        // ⚠ Slicing at the FIRST `#[cfg(test)]` would cut the file off at
+        // `IoFaults`, half way up the production half, and the scan would go
+        // quietly vacuous. The floor below is what catches that if this
+        // marker ever stops being the last one.
+
+        // Two patterns, because one of them alone was measured to be blind to
+        // the shape a future edit is MOST likely to take.
+        //
+        // `calls` walks the graph: `self.foo(` / `Self::foo(` for methods, and
+        // a bare `foo(` for free functions — `load_init_config_if_exists` is a
+        // one-line wrapper around one, and a config read added inside it would
+        // otherwise be invisible. Bare calls match a great deal that is not a
+        // function in this file (`format(`, `push(`, `min(`); `body` returns
+        // `None` for every one of those, so they cost nothing.
+        let method_calls = regex::Regex::new(r"(?:self\.|Self::)([a-z_][a-z0-9_]*)\s*\(")
+            .expect("a compile-time-constant pattern");
+        // ⚠ The leading `[^.\w:]` is consumed, not looked behind — the `regex`
+        // crate has no lookbehind — and it is what stops `.load(` on an
+        // `AtomicUsize` being read as a call to `Config::load`. That false
+        // positive is not hypothetical: it fired on `IoFaults::failing_reads`
+        // the first time this pattern was written without it.
+        let free_calls = regex::Regex::new(r"(?:^|[^.\w:])([a-z_][a-z0-9_]*)\s*\(")
+            .expect("a compile-time-constant pattern");
+        // `reaching_back` is receiver-agnostic and is the assertion itself.
+        // ⚠ `Config::global().get_param(...)` is the workspace's dominant idiom
+        // for reading a setting — `model.rs`, `config/extensions.rs` and every
+        // `get_biorouter_*` accessor use it — and it matches NEITHER arm of the
+        // graph walk above, because the receiver is a call rather than `self`.
+        // In production `Config::global()` and `self` are the same instance, so
+        // it deadlocks exactly the same way. `Config::global()` is therefore
+        // refused on this path outright, whatever is called on it.
+        //
+        // Plain `.load(` is deliberately NOT in here: `Config::load` is private
+        // and every call to it is `self.load(`, which the graph walk above
+        // catches, whereas `AtomicUsize::load` is all over this file.
+        let reaching_back = regex::Regex::new(
+            r"(?:Config::global\s*\(\s*\)|\.(?:get_param|all_values|load_shared)\s*(?:::<[^>]*>)?\s*\()",
+        )
+        .expect("a compile-time-constant pattern");
+
+        let mut reachable = std::collections::BTreeSet::new();
+        let mut frontier = vec!["load_uncached".to_string()];
+        let mut scanned_bytes = 0usize;
+        while let Some(name) = frontier.pop() {
+            if !reachable.insert(name.clone()) {
+                continue;
+            }
+            let Some(fn_body) = body(production, &name) else {
+                continue;
+            };
+            scanned_bytes += fn_body.len();
+            assert!(
+                !reaching_back.is_match(fn_body),
+                "{name} reads config through the cached path, and it runs while `values_read` \
+                 is held — that is a self-deadlock, and it will show up as a HUNG test run \
+                 rather than a failing one"
+            );
+            for found in method_calls
+                .captures_iter(fn_body)
+                .chain(free_calls.captures_iter(fn_body))
+            {
+                let callee = found[1].to_string();
+                if !reachable.contains(&callee) && body(production, &callee).is_some() {
+                    frontier.push(callee);
+                }
+            }
+        }
+
+        // Non-vacuity floor: a scan that walks nothing proves nothing, and the
+        // shape it would take here is a body matcher that failed and returned
+        // an empty set — `body` brace-matches without knowing about strings or
+        // comments, so one unbalanced brace inside either would truncate a body
+        // silently.
+        for expected in [
+            "save_values",
+            "create_backup_if_needed",
+            "create_default_config_if_missing",
+            "try_restore_from_backup",
+            "read_config_file",
+            "install_staged_config",
+            "load_init_config_from_workspace",
+        ] {
+            assert!(
+                reachable.contains(expected),
+                "the scan did not reach {expected}, so it is not measuring the load path: \
+                 {reachable:?}"
+            );
+        }
+        assert!(
+            scanned_bytes > 4_000,
+            "only {scanned_bytes} bytes of function bodies were scanned; the body matcher \
+             is truncating and the assertions above are running on fragments"
+        );
+
+        for forbidden in ["load", "load_shared", "get_param", "all_values"] {
+            assert!(
+                !reachable.contains(forbidden),
+                "{forbidden} is reachable from load_uncached, which runs while `values_read` \
+                 is held — that is a self-deadlock, and it will show up as a HUNG test run \
+                 rather than a failing one. Reached via: {reachable:?}"
+            );
+        }
+    }
+
+    /// A config the user genuinely cannot read spends the retry BUDGET once,
+    /// while still attempting once per lookup.
+    ///
+    /// #197's retry admits `PermissionDenied` on every platform, because that
+    /// is what Windows answers a read of a name mid-replacement with and the
+    /// rule has to be testable where it can be tested. The cost it left behind
+    /// is a config that genuinely cannot be read paying ~63 ms (8 attempts with
+    /// backoff) per `get_param` to reach the same refusal. Narrowing the
+    /// predicate to `cfg!(windows)` would make the retry rule untestable
+    /// everywhere it matters, so its own follow-up asked for the verdict to be
+    /// cached instead — and the predicate is untouched here.
+    ///
+    /// ⚠ The verdict, and not the error. See
+    /// `a_read_failure_that_lifts_is_noticed_on_the_very_next_lookup` for what
+    /// caching the error itself would have cost, and
+    /// [`ValuesCache::retry_did_not_help_at`] for why that is the worse trade.
+    #[test]
+    fn an_unreadable_config_spends_the_retry_budget_once_not_once_per_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "A_KEY_THAT_IS_SET: 1\n").unwrap();
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        // Denied more times than the budget allows, on every call: the failure
+        // never lifts, which is the case retrying cannot help with.
+        config.io_faults.failing_read_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS + 1);
+
+        let first = config.get_param::<i32>("A_KEY_THAT_IS_SET");
+        assert!(
+            matches!(first, Err(ConfigError::FileError(_))),
+            "a denial that never lifts is still reported; got {first:?}"
+        );
+        assert_eq!(
+            config.io_probe.read_attempts(),
+            TRANSIENT_IO_ATTEMPTS,
+            "the first lookup spends the whole budget, exactly as before"
+        );
+
+        const FURTHER: usize = 16;
+        for _ in 0..FURTHER {
+            let repeated = config.get_param::<i32>("A_KEY_THAT_IS_SET");
+            assert!(
+                matches!(repeated, Err(ConfigError::FileError(_))),
+                "the answer must not change; got {repeated:?}"
+            );
+        }
+
+        assert_eq!(
+            config.io_probe.read_attempts(),
+            TRANSIENT_IO_ATTEMPTS + FURTHER,
+            "each further lookup must make ONE attempt — not another whole {TRANSIENT_IO_ATTEMPTS}-attempt \
+             budget ({} of them), and not zero, which would mean the refusal had been cached",
+            TRANSIENT_IO_ATTEMPTS * (FURTHER + 1)
+        );
+    }
+
+    /// A read failure that lifts is noticed on the very next lookup.
+    ///
+    /// ⚠ **This is the test that decides the shape of the whole cache.** The
+    /// obvious way to stop re-spending the retry budget is to cache the error,
+    /// and it is wrong: `is_transiently_unavailable` admits
+    /// `ERROR_SHARING_VIOLATION`, which a virus scanner or indexer holding the
+    /// file produces for longer than the ~63 ms budget, and a read can also
+    /// fail from `EMFILE` on a daemon that spawns MCP subprocesses, or `EIO`,
+    /// or `ESTALE` on a network config directory. **None of those moves the
+    /// file's length or mtime**, so a cached error would be served for the rest
+    /// of the process's life.
+    ///
+    /// And served to callers that all swallow it: `config/extensions.rs` reads
+    /// a failed load as "no extensions", and every `get_biorouter_provider()`
+    /// caller `.ok()`s it — so the privacy tier resolver's capability keys
+    /// would read as unset. The process would run on defaults and look healthy.
+    /// That is strictly worse than the ~63 ms this cache exists to remove.
+    ///
+    /// Nothing about the file changes here, deliberately: a fix that leaned on
+    /// noticing a repair (permission bits in the [`FileStamp`], say) would pass
+    /// a `chmod`-shaped test and still fail this one — and would be a fiction
+    /// on Windows anyway, where a file is made unreadable by an ACL and
+    /// `Permissions::readonly()` does not move when one is repaired.
+    #[test]
+    fn a_read_failure_that_lifts_is_noticed_on_the_very_next_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "A_KEY_THAT_IS_SET: 7\n").unwrap();
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        config.io_faults.failing_read_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS + 1);
+
+        let denied = config.get_param::<i32>("A_KEY_THAT_IS_SET");
+        assert!(
+            matches!(denied, Err(ConfigError::FileError(_))),
+            "the read must fail first, or this test is asserting nothing; got {denied:?}"
+        );
+        let before = FileStamp::of(&config_path);
+
+        // The scanner closes the file / the fd pressure passes. Nothing about
+        // the FILE changed.
+        config
+            .io_faults
+            .failing_read_attempts
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            FileStamp::of(&config_path),
+            before,
+            "the premise: nothing observable about the file moved, so a cached refusal \
+             would never be revisited"
+        );
+
+        assert_eq!(
+            config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(),
+            7,
+            "a transient read failure must not outlive the condition that caused it"
+        );
+    }
+
+    /// A default config that could not be written is REPORTED, not swallowed.
+    ///
+    /// Both write paths returned `Ok` regardless, so an install running
+    /// entirely on in-memory defaults — a config directory that cannot be
+    /// written, a full disk — looked exactly like a healthy one, and every
+    /// setting the user changed vanished at exit with nothing said.
+    ///
+    /// Reported out of band rather than returned: `load` staying answerable is
+    /// what makes the start-up storm survivable, and
+    /// `a_startup_storm_on_a_missing_config_never_reports_anything_but_not_found`
+    /// asserts it directly.
+    #[test]
+    fn a_default_config_that_cannot_be_written_is_recorded_rather_than_swallowed() {
+        let dir = tempfile::tempdir().unwrap();
+        // The parent of the config file is a FILE, so creating the directory
+        // fails. Portable, unlike a mode-0 directory: `chmod` does not mean the
+        // same thing on Windows, and CI runs there.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let config_path = blocked.join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        assert_eq!(config.last_write_error(), None, "nothing has failed yet");
+
+        // The lookup still answers — that is deliberate and load-bearing.
+        assert!(matches!(
+            config.get_param::<i32>("A_KEY_NOBODY_SET"),
+            Err(ConfigError::NotFound(_))
+        ));
+
+        let reported = config
+            .last_write_error()
+            .expect("a default config that could not be written must be reported somewhere");
+        assert!(
+            reported.contains("config directory"),
+            "the report must name what actually failed; got {reported:?}"
+        );
+
+        // And it is not re-derived on every lookup either.
+        for _ in 0..8 {
+            let _ = config.get_param::<i32>("A_KEY_NOBODY_SET");
+        }
+        assert_eq!(
+            config.io_probe.config_writes(),
+            1,
+            "an unwritable config directory must be hammered once, not once per lookup"
+        );
+    }
+
+    /// A recorded write failure is cleared the moment a write succeeds.
+    ///
+    /// ⚠ Without this the record is permanent, and it is read by a **user-facing**
+    /// surface: `POST /config/recover` warns "changes made in this session will
+    /// not persist". A config directory can be unwritable at start-up — an
+    /// unmounted volume, a full disk, a first-run permissions problem — and
+    /// fine a minute later, and a warning that outlives its cause tells the
+    /// user their settings are being lost while they are being saved. A false
+    /// version of that message is worse than not having one.
+    #[test]
+    fn a_write_that_succeeds_clears_an_earlier_recorded_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // The config file's parent is a FILE, so the directory cannot be made.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let config_path = blocked.join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let _ = config.get_param::<i32>("A_KEY_NOBODY_SET");
+        assert!(
+            config.last_write_error().is_some(),
+            "the premise: a write failure has been recorded"
+        );
+
+        // The volume mounts / the disk is emptied / the permission is fixed.
+        std::fs::remove_file(&blocked).unwrap();
+        config.set_param("A_KEY_THAT_IS_SET", 7).unwrap();
+
+        assert_eq!(
+            config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(),
+            7,
+            "the write really did land"
+        );
+        assert_eq!(
+            config.last_write_error(),
+            None,
+            "settings are persisting again, so nothing may still be claiming they are not"
+        );
+    }
+
+    /// A write that merely LOST A RACE is not a write failure.
+    ///
+    /// The two default-config paths need different answers here, which is why
+    /// they are two functions: creating a missing config adopts whatever a
+    /// sibling installed instead, and only a failure with no sibling to adopt
+    /// is worth reporting. Recording the lost race as well would make every
+    /// start-up storm report a write error.
+    #[test]
+    fn a_create_that_lost_a_race_is_not_recorded_as_a_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let sibling = "A_KEY_A_SIBLING_WROTE: 7\n";
+        config.io_faults.failing_rename_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS);
+        *config
+            .io_faults
+            .sibling_lands_on_rename_fault
+            .lock()
+            .unwrap() = Some(sibling.to_string());
+
+        let values = config
+            .create_default_config_if_missing(Mapping::new())
+            .unwrap();
+
+        assert_eq!(
+            values.get("A_KEY_A_SIBLING_WROTE"),
+            Some(&serde_yaml::Value::from(7))
+        );
+        assert_eq!(
+            config.last_write_error(),
+            None,
+            "losing a race to a sibling is the expected outcome of a storm, not a fault \
+             to report to the user"
+        );
+    }
+
+    /// 1,000 `get_param` lookups against a warm config file on disk.
+    ///
+    /// Ignored because it measures rather than asserts. Run it with
+    /// `cargo test -p biorouter --lib -- config::base::tests::measure --ignored --nocapture`.
+    ///
+    /// ⚠ It must use a config file that EXISTS. `new_test_config()` drops its
+    /// `NamedTempFile`, so its path does not — a benchmark built on that
+    /// measures the create branch and reports a number about a case that
+    /// happens once per install.
+    #[test]
+    #[ignore = "a measurement, not an assertion"]
+    fn measure_a_thousand_get_param_lookups() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let mut body = String::from("BIOROUTER_MODEL: gpt-5.5\nextensions:\n");
+        for i in 0..40 {
+            body.push_str(&format!(
+                "  ext_{i}:\n    enabled: true\n    type: stdio\n    cmd: biorouter\n    \
+                 args: [mcp, developer]\n    envs: {{}}\n    timeout: 300\n"
+            ));
+        }
+        body.push_str("A_KEY_THAT_IS_SET: 7\n");
+        std::fs::write(&config_path, &body).unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        // Warm, so the number is about steady-state lookups.
+        assert_eq!(config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(), 7);
+
+        let started = std::time::Instant::now();
+        for _ in 0..1000 {
+            assert_eq!(config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(), 7);
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "1000 get_param lookups over a {} byte config: {elapsed:?} ({:?} each), \
+             {} file reads",
+            body.len(),
+            elapsed / 1000,
+            config.io_probe.read_attempts()
+        );
+    }
+
     #[test]
     fn test_backup_rotation() -> Result<(), ConfigError> {
         let config = new_test_config();
@@ -2773,8 +3860,12 @@ mod tests {
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
+            values_cache: Mutex::new(ValuesCache::default()),
+            values_read: Mutex::new(()),
+            last_write_error: Mutex::new(None),
             test_keyring_store: Some(std::sync::Arc::new(PanicsOnRead)),
             io_faults: IoFaults::default(),
+            io_probe: IoProbe::default(),
         };
         let overrides = HashMap::from([
             (
@@ -2937,8 +4028,12 @@ mod tests {
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
+            values_cache: Mutex::new(ValuesCache::default()),
+            values_read: Mutex::new(()),
+            last_write_error: Mutex::new(None),
             test_keyring_store: Some(store.clone()),
             io_faults: IoFaults::default(),
+            io_probe: IoProbe::default(),
         });
 
         let handles: Vec<_> = (0..24)
@@ -2972,8 +4067,12 @@ mod tests {
             guard: Mutex::new(()),
             secrets_cache: Mutex::new(None),
             secrets_read: Mutex::new(()),
+            values_cache: Mutex::new(ValuesCache::default()),
+            values_read: Mutex::new(()),
+            last_write_error: Mutex::new(None),
             test_keyring_store: Some(store.clone()),
             io_faults: IoFaults::default(),
+            io_probe: IoProbe::default(),
         };
 
         config.set_secret("cache_test_key", &"v1")?;
