@@ -42,6 +42,7 @@ import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { PinnedModelNote } from './privacy/PinnedModelNote';
+import { chatBinding } from './privacy/pinnedModel';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
@@ -2030,6 +2031,18 @@ function BaseChatContent({
     return () => animation.cancel();
   }, [isCleanConversation]);
 
+  /**
+   * Issue #56 / F2 — what THIS chat runs on, which is not what the app-wide
+   * selection says. `restore_provider_from_session` binds the session row's own
+   * provider, so the composer's model chip and context gauge were naming a
+   * model that never served the turn and sizing the gauge to its window.
+   *
+   * Free: both facts already ride the `/agent/resume` payload the chat stream
+   * holds. A turn that repaired its own binding outranks the row — see
+   * `privacy/pinnedModel.ts`.
+   */
+  const effectiveModel = chatBinding(session, pinnedModel);
+
   const renderChatInput = () => (
     <div
       ref={composerMotionRef}
@@ -2100,10 +2113,14 @@ function BaseChatContent({
         Mounted unconditionally — it renders nothing when there is nothing to
         say, which is almost always.
       */}
-      <PinnedModelNote pinnedModel={pinnedModel} className="mx-3 mb-2" />
+      <PinnedModelNote
+        binding={effectiveModel}
+        chatTier={session?.privacy_tier}
+        className="mx-3 mb-2"
+      />
       <ChatInput
         sessionId={sessionId}
-        pinnedModel={pinnedModel}
+        effectiveModel={effectiveModel}
         handleSubmit={handleFormSubmit}
         chatState={chatState}
         setChatState={setChatState}

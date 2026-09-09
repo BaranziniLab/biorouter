@@ -269,17 +269,18 @@ interface ModelLimit {
 interface ChatInputProps {
   sessionId: string | null;
   /**
-   * Issue #56 Gate B — the binding the privacy barrier pinned THIS chat to,
-   * when a turn had to fall back to it.
+   * Issue #56 / F2 — what THIS chat actually runs on (`BaseChat.chatBinding`):
+   * the session row's own provider and model, or the one a turn reported when
+   * the privacy barrier had to repair the binding mid-turn.
    *
-   * ⚠ It is the composer's model chip and context gauge that this fixes, and
-   * they are the reason it is a prop rather than something the note alone
-   * carries: both used to state the app's GLOBAL selection, so a private chat
-   * running on Versa showed `claude-opus-5` and measured its usage against
-   * Claude's 1M window. Preferring this binding is a no-op whenever it names
-   * what was already selected, which is the common case.
+   * ⚠ It is the composer's model chip and context gauge that this fixes. Both
+   * stated the app's GLOBAL selection, while `restore_provider_from_session`
+   * binds the row's — so a private chat running on Versa showed
+   * `claude-opus-5` and measured its usage against Claude's 1M window instead
+   * of the 400k one really in play. Preferring this binding is a no-op whenever
+   * it names what was already selected, which is the common case.
    */
-  pinnedModel?: PinnedModelView;
+  effectiveModel?: PinnedModelView;
   /**
    * Send the composed message. Resolving FALSE means the submit was REFUSED
    * silently and the composer still owns the text (see
@@ -349,7 +350,7 @@ interface ChatInputProps {
 
 export default function ChatInput({
   sessionId,
-  pinnedModel,
+  effectiveModel,
   handleSubmit,
   chatState = ChatState.Idle,
   setChatState,
@@ -1096,8 +1097,8 @@ export default function ChatInput({
       // entirely. When nothing is pinned, or the pin names what is already
       // selected, this resolves to exactly what it always did.
       const selected = await getCurrentModelAndProvider();
-      const model = pinnedModel?.model ?? selected.model;
-      const provider = pinnedModel?.provider ?? selected.provider;
+      const model = effectiveModel?.model ?? selected.model;
+      const provider = effectiveModel?.provider ?? selected.provider;
       if (!model || !provider) {
         // No model is bound, so there is no context window to report. Leaving
         // the 128k default in place while announcing it as LOADED is what made
@@ -1177,7 +1178,7 @@ export default function ChatInput({
   useEffect(() => {
     loadProviderDetails();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentModel, currentProvider, pinnedModel?.provider, pinnedModel?.model]);
+  }, [currentModel, currentProvider, effectiveModel?.provider, effectiveModel?.model]);
 
   // Handle tool count alerts and token usage
   useEffect(() => {
@@ -2322,7 +2323,7 @@ export default function ChatInput({
     <div className="min-w-0">
       <ModelsBottomBar
         sessionId={sessionId}
-        pinnedModel={pinnedModel}
+        effectiveModel={effectiveModel}
         privacyTier={sessionPrivacyTier}
         dropdownRef={dropdownRef}
         setView={setView}

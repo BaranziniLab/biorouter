@@ -1,23 +1,27 @@
 import { useEffect, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { useModelAndProvider } from '../ModelAndProviderContext';
+import { readResolvedProviderTier } from './useBoundProviderTier';
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
-import { bindingLabel, pinContradictsSelection, pinnedModelNotice } from './pinnedModel';
+import type { ProviderTier, SessionClassification } from '../../api/types.gen';
+import {
+  bindingDiffersFromSelection,
+  bindingLabel,
+  pinnedModelNotice,
+  selectionBarredByPrivacy,
+} from './pinnedModel';
 
 export interface PinnedModelPresentation {
-  /** The binding the chat is pinned to, or `undefined` when nothing is. */
-  pinned?: PinnedModelView;
   /**
    * The one line to show the user, or `null` when there is nothing to say —
-   * either nothing is pinned, or the pin names exactly what is already on
-   * screen, or the selection has not resolved yet.
+   * nothing differs, the difference is not the barrier's doing, or the facts
+   * have not resolved yet.
    */
   notice: string | null;
 }
 
 /**
- * Resolve the pin (issue #56 Gate B) into the sentence the composer shows, or
- * into `null`.
+ * Resolve a chat's binding into the sentence the composer shows, or into `null`.
  *
  * ⚠ The provider's **display name** is resolved through `getProviders`, which
  * `ConfigContext` caches, rather than being derived from the id. `versa_azure`
@@ -25,32 +29,43 @@ export interface PinnedModelPresentation {
  * named it that way would read as an internal leak in the one place the user is
  * being told something they did not already know.
  *
+ * ⚠ The SELECTED provider's tier comes off the same fetch, and off the ROW
+ * rather than `row.metadata` — `metadata.tier` is the type-level claim, and
+ * `resolved_tier` is the instance-resolved one (DR-26). Reading the type-level
+ * field would mis-classify an `ollama` re-pointed off this machine, which is the
+ * exact demotion the tier exists to catch.
+ *
  * ⚠ A provider the catalog cannot name falls back to the model alone. The
  * sentence stays true and complete; inventing a display name from the id would
- * not.
+ * not. A catalog that cannot be read at all yields no tier, so no note — saying
+ * *why* a choice is not in effect requires knowing that it is not.
  */
-export function usePinnedModel(pinned: PinnedModelView | undefined): PinnedModelPresentation {
+export function usePinnedModel(
+  binding: PinnedModelView | undefined,
+  chatTier: SessionClassification | undefined
+): PinnedModelPresentation {
   const { getProviders } = useConfig();
   const { currentModel, currentProvider } = useModelAndProvider();
   const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
+  const [selectedTier, setSelectedTier] = useState<ProviderTier | undefined>(undefined);
 
-  const contradicts = pinContradictsSelection(pinned, {
+  const differs = bindingDiffersFromSelection(binding, {
     provider: currentProvider,
     model: currentModel,
   });
-  const pinnedProvider = pinned?.provider;
+  const bindingProvider = binding?.provider;
   const selectedProvider = currentProvider ?? undefined;
 
   useEffect(() => {
-    // ⚠ Nothing is fetched unless there is a sentence to build. This hook runs
+    // ⚠ Nothing is fetched unless a difference exists to explain. This hook runs
     // in every chat, on every render of the composer, and the overwhelmingly
     // common answer is "no note" — a catalog read there would be pure cost, and
     // a state update behind it would churn the composer for no visible change.
-    if (!contradicts) return;
-    // Both halves of the sentence name a provider, and both are ids until this
-    // lands. Resolved in ONE pass over ONE fetch so the two names can never
-    // come from different reads of the catalog.
-    const wanted = [pinnedProvider, selectedProvider].filter((id): id is string => !!id);
+    if (!differs) return;
+    // Both halves of the sentence name a provider, and the tier decides whether
+    // there is a sentence at all. Resolved in ONE pass over ONE fetch so the
+    // three facts cannot come from different reads of the catalog.
+    const wanted = [bindingProvider, selectedProvider].filter((id): id is string => !!id);
     if (wanted.length === 0) return;
     let cancelled = false;
     (async () => {
@@ -66,23 +81,29 @@ export function usePinnedModel(pinned: PinnedModelView | undefined): PinnedModel
           const unchanged = wanted.every((id) => prev[id] === resolved[id]);
           return unchanged ? prev : { ...prev, ...resolved };
         });
+        const selectedRow = selectedProvider
+          ? rows.find((row) => row.name === selectedProvider)
+          : undefined;
+        setSelectedTier(selectedRow ? readResolvedProviderTier(selectedRow) : undefined);
       } catch {
-        // A catalog we cannot read costs the display names and nothing else:
-        // the ids below are still true, and staying silent about the pin would
-        // be the one outcome that reintroduces the defect.
+        // A catalog we cannot read leaves the tier unresolved, and an
+        // unresolved tier means no note: the sentence claims to know WHY the
+        // user's choice is not in effect, and here we do not.
+        if (!cancelled) setSelectedTier(undefined);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [contradicts, getProviders, pinnedProvider, selectedProvider]);
+  }, [differs, getProviders, bindingProvider, selectedProvider]);
 
-  if (!contradicts) return { pinned, notice: null };
+  if (!differs || !selectionBarredByPrivacy(chatTier, selectedTier)) {
+    return { notice: null };
+  }
 
   return {
-    pinned,
     notice: pinnedModelNotice(
-      bindingLabel(displayNames[pinned!.provider], pinned!.model),
+      bindingLabel(displayNames[binding!.provider], binding!.model),
       bindingLabel(selectedProvider ? displayNames[selectedProvider] : undefined, currentModel!)
     ),
   };

@@ -57,9 +57,10 @@ interface ModelsBottomBarProps {
    */
   privacyTier?: SessionClassification;
   /**
-   * Issue #56 Gate B — the binding the privacy barrier pinned THIS chat to,
-   * when a turn had to fall back to it because the chat's classification does
-   * not admit the globally selected model.
+   * Issue #56 / F2 — what THIS chat actually runs on: the session row's own
+   * provider and model (`restore_provider_from_session` binds exactly those),
+   * or the one a turn reported when the privacy barrier repaired the binding
+   * mid-turn.
    *
    * ⚠ This chip states the app's global selection, and that is exactly what
    * made the defect invisible: a user switched to a public model, watched this
@@ -69,12 +70,12 @@ interface ModelsBottomBarProps {
    * is about the binding that actually runs here.
    *
    * ⚠ It is NOT a signal that anything is wrong, and this component must not
-   * editorialise. The daemon sends it on every repaired bind, including the
-   * ordinary ones where it names exactly what is already selected. The sentence
-   * explaining a genuine contradiction is `privacy/PinnedModelNote`, which
-   * decides for itself whether there is one.
+   * editorialise. Most chats are bound to exactly what is selected, and a chat
+   * bound to something else may simply have been switched by hand. The sentence
+   * explaining a difference the privacy barrier caused is
+   * `privacy/PinnedModelNote`, which decides for itself whether there is one.
    */
-  pinnedModel?: PinnedModelView;
+  effectiveModel?: PinnedModelView;
 }
 
 const MAX_INLINE_MODEL_LABEL_CHARS = 24;
@@ -86,7 +87,7 @@ export default function ModelsBottomBar({
   alerts,
   hideAlertPopover = false,
   privacyTier,
-  pinnedModel,
+  effectiveModel,
 }: ModelsBottomBarProps) {
   const {
     currentModel,
@@ -168,12 +169,12 @@ export default function ModelsBottomBar({
    * Issue #56 Gate B. What actually runs in THIS chat: the pin when there is
    * one, the app's global selection otherwise.
    *
-   * ⚠ The pin outranks lead/worker below. A pinned chat runs the single
-   * provider its session row names, so a lead/worker pair configured globally
-   * is not what answers here, and labelling the chip `(lead)` would name a
-   * mechanism that is not in play.
+   * ⚠ The chat's own binding outranks lead/worker below. Such a chat runs the
+   * single provider its session row names, so a lead/worker pair configured
+   * globally is not what answers here, and labelling the chip `(lead)` would
+   * name a mechanism that is not in play.
    */
-  const effectiveProvider = pinnedModel?.provider ?? currentProvider;
+  const effectiveProvider = effectiveModel?.provider ?? currentProvider;
 
   // Check if lead/worker mode is active
   useEffect(() => {
@@ -237,12 +238,12 @@ export default function ModelsBottomBar({
 
   // Determine which model to display - activeModel takes priority when lead/worker is active
   const displayModel =
-    pinnedModel?.model ??
+    effectiveModel?.model ??
     (isLeadWorkerActive && currentModelInfo?.model
       ? currentModelInfo.model
       : currentModel || providerDefaultModel || displayModelName);
   const fullModelLabel =
-    !pinnedModel && isLeadWorkerActive && modelMode
+    !effectiveModel && isLeadWorkerActive && modelMode
       ? `${displayModel} (${modelMode})`
       : displayModel;
   const inlineModelLabel =
@@ -384,9 +385,9 @@ export default function ModelsBottomBar({
    * effects race to own one state was how the earlier drafts of this went
    * wrong.
    */
-  const shownModelName = pinnedModel?.model ?? displayModelName;
-  const shownProviderName = pinnedModel
-    ? (pinnedProviderName ?? pinnedModel.provider)
+  const shownModelName = effectiveModel?.model ?? displayModelName;
+  const shownProviderName = effectiveModel
+    ? (pinnedProviderName ?? effectiveModel.provider)
     : displayProvider;
 
   // What is true of the MODEL, as one clause: its tier, then who covers it.

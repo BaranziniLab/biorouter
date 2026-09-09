@@ -1,35 +1,67 @@
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
+import type { ProviderTier, Session, SessionClassification } from '../../api/types.gen';
 
 /**
- * Issue #56 Gate B, repair arm — what the user is told when a private chat runs
- * on a model other than the one they selected.
+ * Issue #56 / F2 — what the user is told when a chat runs on a model other than
+ * the one they selected.
  *
- * # The defect this answers
+ * # The defect
  *
- * A private chat may never reach a public model. When the app's globally
- * selected model is public and the user sends into such a chat, the agent
- * re-binds to the provider the SESSION ROW names and answers from there. That
- * repair is right: refusing the turn would strand the user, and asking them to
- * downgrade the chat would trade the guarantee away to fix a display problem.
+ * The composer's model chip and context gauge state the app's GLOBAL selection.
+ * A resumed chat does not run on the global selection: `restore_provider_from_session`
+ * binds the provider the SESSION ROW names (`routes/agent.rs`), and for a chat
+ * marked private that is the only binding the barrier will admit — Gate A
+ * refuses to attach a public provider to a private row at all.
  *
- * What was wrong is that nothing said so. The user had switched models in
- * Settings, watched a toast confirm it, watched the composer's chip change —
- * and then got an answer from a different model, with the context gauge sized
- * to the wrong window (measured: chip `claude-opus-5`, gauge "969.9k of 1M",
- * while the row still read `provider_name = versa_azure` and its token counts
- * matched Versa).
+ * So: switch the app to Claude Code / claude-opus-5, watch the toast and the
+ * chip change, open a private chat and send. The answer comes from Versa. The
+ * chip still names claude-opus-5, and the gauge measures the usage against
+ * Claude's 1M window instead of the 400k one that was really in play. Nothing on
+ * screen said any of this. Measured on 2026-09-08: chip `claude-opus-5`, gauge
+ * "998.6k of 1M", row `provider_name = versa_azure`, `privacy_tier = private`,
+ * and after the turn `input_tokens = 27833` — a Versa turn.
  *
- * # Why the daemon does not decide this
+ * # Two statements, deliberately separated
  *
- * The frame the daemon sends says only "this turn ran on `provider`/`model`",
- * because the agent's own view of what it displaced is incomplete — an
- * LRU-rehydrated agent was holding nothing at all, and a repair from "nothing"
- * to the row's own binding is not news to anybody. The client knows exactly
- * what it is showing the user, so the client is the only side that can tell a
- * silent correction from a contradiction. That comparison is
- * {@link pinContradictsSelection}, and it is a pure function so it can be
- * tested without a daemon, a socket or a render.
+ * 1. **What runs here** — the chat's own binding, which the chip and gauge must
+ *    state for EVERY chat, private or not. It says nothing about privacy and
+ *    needs no permission to be true.
+ * 2. **Why your choice is not in effect** — a sentence only the privacy barrier
+ *    earns. {@link selectionBarredByPrivacy} is the whole test, and it is the
+ *    same statement the chip's own tooltip already makes ("Private chat.
+ *    Biorouter only lets a private model open it").
+ *
+ * Folding the two together is how an earlier draft came to say "this chat is
+ * marked private, so it stays on X" about a chat that had simply been switched
+ * to a different *private* provider by hand — true about the binding, wrong
+ * about the reason.
  */
+
+/**
+ * What this chat actually runs on.
+ *
+ * The session row is the standing answer, and it needs no extra request: the
+ * `/agent/resume` payload the chat stream already holds carries `provider_name`
+ * and `model_config`, and `restore_provider_from_session` binds exactly those.
+ *
+ * A turn that reported its own binding (`PrivacyProviderPinned`) OUTRANKS the
+ * row, and the case where they disagree is the one the frame exists for: the
+ * live agent was holding something the row's classification refuses, the
+ * barrier repaired it mid-turn, and the row is not what ran.
+ *
+ * `undefined` when the row names no provider — a chat that has never run, which
+ * genuinely has no binding of its own and correctly falls back to the app's
+ * selection.
+ */
+export function chatBinding(
+  session: Session | undefined,
+  reportedByTurn: PinnedModelView | undefined
+): PinnedModelView | undefined {
+  if (reportedByTurn) return reportedByTurn;
+  const provider = session?.provider_name;
+  const model = session?.model_config?.model_name;
+  return provider && model ? { provider, model } : undefined;
+}
 
 /** The globally selected binding, as the composer knows it. */
 export interface SelectedModel {
@@ -38,22 +70,42 @@ export interface SelectedModel {
 }
 
 /**
- * Does the pin contradict what the user picked?
+ * Does this chat run on something other than the app-wide selection?
  *
  * `false` — say nothing — for every uncertain case, and the uncertainty is not
- * hypothetical: `currentProvider`/`currentModel` are `null` for the first
- * render of every chat while the config loads. A note that flashed on and off
- * there would be worse than no note, and it would be claiming something the
+ * hypothetical: `currentProvider`/`currentModel` are `null` for the first render
+ * of every chat while the config loads, and the session row lands a moment
+ * later. Anything that flashed on and off there would be claiming something the
  * component cannot yet know.
  */
-export function pinContradictsSelection(
-  pinned: PinnedModelView | undefined,
+export function bindingDiffersFromSelection(
+  binding: PinnedModelView | undefined,
   selected: SelectedModel
 ): boolean {
-  if (!pinned) return false;
+  if (!binding) return false;
   const { provider, model } = selected;
   if (!provider || !model) return false;
-  return pinned.provider !== provider || pinned.model !== model;
+  return binding.provider !== provider || binding.model !== model;
+}
+
+/**
+ * Is the app-wide selection barred from this chat by the privacy barrier?
+ *
+ * Exactly `bind_allowed(public, private) == false` — a public model may not open
+ * a private chat. It is not a second implementation of the gate: the gate
+ * decides what may RUN and lives in the daemon, and this decides only whether a
+ * sentence is warranted. Both inputs are the daemon's own answers — the row's
+ * ratcheted classification and the provider catalog's instance-resolved tier.
+ *
+ * `false` whenever either is unresolved, and `false` when both are private:
+ * a private chat on a different *private* provider is a per-chat choice, not a
+ * barrier, and telling the user otherwise would name the wrong cause.
+ */
+export function selectionBarredByPrivacy(
+  chatTier: SessionClassification | undefined,
+  selectedTier: ProviderTier | undefined
+): boolean {
+  return chatTier === 'private' && selectedTier === 'public';
 }
 
 /**
@@ -62,9 +114,8 @@ export function pinContradictsSelection(
  * Written for a person, not for an agent: it names what is true of the chat,
  * what follows from it, and which choice is not in effect here — and it stops.
  * It does not tell anyone to change a setting, because the setting is not
- * wrong; it does not apologise; and it does not describe a barrier, a gate or a
- * tier, none of which is a thing the reader has to know about to understand the
- * sentence.
+ * wrong; it does not apologise; and it does not mention a barrier, a gate or a
+ * tier, none of which the reader has to know about to understand the sentence.
  *
  * ⚠ The daemon's own refusal text (`crates/biorouter/src/privacy/refusal.rs`,
  * `routes/session_reach.rs`) is addressed to an AI agent and is pinned by

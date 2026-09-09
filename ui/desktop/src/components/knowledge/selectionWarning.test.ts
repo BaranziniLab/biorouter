@@ -49,10 +49,29 @@ describe('briefSelectionFailure', () => {
     expect(brief.endsWith('…')).toBe(true);
   });
 
+  /**
+   * ⚠ Measured in the running app: this route's body is `text/plain`, so the
+   * generated client throws a bare STRING. Routing that through
+   * `conversionUtils.errorMessage(err, 'unknown error')` returns the DEFAULT
+   * for a string, which printed `Knowledge selection not hydrated: unknown
+   * error` and threw away the only fact the line carries.
+   */
+  it('reads a bare string body, which is what this route actually throws', () => {
+    expect(briefSelectionFailure(AGENT_REFUSAL)).toBe(
+      'That chat is private, or there is no chat with that id.'
+    );
+  });
+
+  it('reads the JSON shapes the other routes throw', () => {
+    expect(briefSelectionFailure({ error: 'no such base' })).toBe('no such base');
+    expect(briefSelectionFailure({ error: { message: 'no such base' } })).toBe('no such base');
+    expect(briefSelectionFailure({ detail: 'no such base' })).toBe('no such base');
+  });
+
   it('never returns an empty line, whatever it is handed', () => {
     expect(briefSelectionFailure(undefined)).toBe('unknown error');
     expect(briefSelectionFailure(new Error(''))).toBe('unknown error');
-    // An object with no `message` is not a shape this can improve on either.
+    // An object with no text anywhere is not a shape this can improve on.
     expect(briefSelectionFailure({})).toBe('unknown error');
     expect(briefSelectionFailure('   ')).toBe('unknown error');
   });

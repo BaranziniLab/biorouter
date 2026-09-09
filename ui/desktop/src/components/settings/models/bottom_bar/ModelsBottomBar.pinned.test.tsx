@@ -4,12 +4,12 @@ import ModelsBottomBar from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 
 /**
- * Issue #56 Gate B / F2 — the chip states what runs in THIS chat.
+ * Issue #56 / F2 — the chip states what runs in THIS chat.
  *
  * The measured defect: Settings → Models → Claude Code / claude-opus-5, then
  * send into a chat whose `privacy_tier` is `private`. The turn was served by
- * Versa (the session row was unchanged, and its token counts matched Versa),
- * while this chip read `claude-opus-5` — the model that was not used — and the
+ * Versa — `restore_provider_from_session` binds the session row's own provider
+ * — while this chip read `claude-opus-5`, the model that was not used, and the
  * gauge beside it sized itself to Claude's 1M window.
  */
 const mocks = vi.hoisted(() => ({
@@ -64,12 +64,12 @@ const providerEntry = (name: string, display: string, tier: 'private' | 'public'
   resolved_tier: tier,
 });
 
-function renderBar(pinnedModel?: { provider: string; model: string }) {
+function renderBar(effectiveModel?: { provider: string; model: string }) {
   return render(
     <ModelsBottomBar
       sessionId="s1"
       privacyTier="private"
-      pinnedModel={pinnedModel}
+      effectiveModel={effectiveModel}
       dropdownRef={dropdownRef}
       setView={vi.fn()}
       alerts={[]}
@@ -94,7 +94,7 @@ beforeEach(() => {
   });
 });
 
-describe('a chat pinned by the privacy barrier', () => {
+describe('a chat bound to something other than the app-wide selection', () => {
   it('names the model that actually runs here, not the app-wide selection', async () => {
     renderBar(PINNED);
     await waitFor(() =>
@@ -106,19 +106,19 @@ describe('a chat pinned by the privacy barrier', () => {
   });
 
   /**
-   * Not just the name. The padlock and the tier word are read off the bound
-   * provider's catalog row, and reading the GLOBAL provider's row would put a
+   * Not just the name. The padlock and the tier word are read off the BOUND
+   * provider's catalog row; reading the global provider's row would put a
    * "Public model" label under a private model's name — the precise
    * misattribution the chip's own comments were written against.
    */
-  it('states the pinned provider’s tier, not the selected one’s', async () => {
+  it('states the bound provider’s tier, not the selected one’s', async () => {
     renderBar(PINNED);
     const trigger = await screen.findByRole('button', { name: /Current model:/ });
     await waitFor(() => expect(trigger).toHaveAccessibleName(/Private model/));
     expect(trigger).not.toHaveAccessibleName(/Public model/);
   });
 
-  it('names the pinned binding in the dropdown header, by display name', async () => {
+  it('names the chat’s own binding in the dropdown header, by display name', async () => {
     renderBar(PINNED);
     await screen.findByRole('button', { name: /Current model:/ });
     // `pointerDown`, not `click`: Radix's dropdown trigger opens on the pointer
@@ -130,7 +130,7 @@ describe('a chat pinned by the privacy barrier', () => {
     );
   });
 
-  it('leaves an unpinned chat showing the app-wide selection', async () => {
+  it('leaves a chat with no binding of its own showing the app-wide selection', async () => {
     renderBar(undefined);
     await waitFor(() =>
       expect(

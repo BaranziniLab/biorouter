@@ -1,5 +1,3 @@
-import { errorMessage } from '../../utils/conversionUtils';
-
 /**
  * How long a console warning is allowed to be before it stops being a warning.
  *
@@ -35,11 +33,43 @@ const MAX_REASON_CHARS = 160;
  * a 500 both survive intact.
  */
 export function briefSelectionFailure(err: unknown): string {
-  const raw = errorMessage(err, 'unknown error').trim().replace(/\s+/g, ' ');
+  const raw = rawText(err).trim().replace(/\s+/g, ' ');
   if (!raw) return 'unknown error';
   // The first sentence, keeping its full stop. `. ` rather than `.` so a
   // version number or a file name is not mistaken for the end of one.
   const stop = raw.indexOf('. ');
   const first = stop === -1 ? raw : raw.slice(0, stop + 1);
   return first.length > MAX_REASON_CHARS ? `${first.slice(0, MAX_REASON_CHARS - 1)}…` : first;
+}
+
+/**
+ * Whatever text the thrown value carries.
+ *
+ * ⚠ **Not `utils/conversionUtils.errorMessage`, and the difference was measured
+ * in the running app.** The generated API client with `throwOnError` throws the
+ * *response body*, and this route's body is `text/plain` — so the thrown value
+ * is a bare STRING. `errorMessage(err, 'unknown error')` reaches its last arm
+ * for a string and returns the DEFAULT rather than the string, so routing
+ * through it printed `Knowledge selection not hydrated: unknown error` and
+ * threw away the one fact the line existed to carry. Quieting a warning is not
+ * the same as emptying it.
+ *
+ * The object arms cover the JSON routes and a thrown `Error`; anything with no
+ * text at all falls through to the caller's placeholder.
+ */
+function rawText(err: unknown): string {
+  if (typeof err === 'string') return err;
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && err !== null) {
+    const record = err as Record<string, unknown>;
+    for (const key of ['message', 'error', 'detail']) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value;
+      if (typeof value === 'object' && value !== null) {
+        const nested = (value as Record<string, unknown>).message;
+        if (typeof nested === 'string' && nested.trim()) return nested;
+      }
+    }
+  }
+  return '';
 }

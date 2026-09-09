@@ -1,17 +1,19 @@
 import { Note } from '../ui/note';
 import { usePinnedModel } from './usePinnedModel';
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
+import type { SessionClassification } from '../../api/types.gen';
 
 /**
- * Issue #56 Gate B — the one line telling the user that this chat is running on
- * a model other than the one they selected, and why.
+ * Issue #56 / F2 — the one line telling the user that this chat is running on a
+ * model other than the one they selected, and why.
  *
  * ⚠ **Renders nothing unless there is something to say**, so a call site can
  * mount it unconditionally — the same shape (and the same reason)
- * {@link ../privacy/HostManagedModelNote.HostManagedModelNote} uses. The pin
- * frame arrives on every repaired turn, including the ordinary ones where it
- * names exactly what is already on screen; `usePinnedModel` is what tells those
- * apart.
+ * {@link ../privacy/HostManagedModelNote.HostManagedModelNote} uses. Most chats
+ * run on exactly what is selected, and of the ones that do not, only a chat the
+ * privacy barrier is holding has earned this sentence. `usePinnedModel` is what
+ * tells those apart; see `pinnedModel.ts` for why the two questions are
+ * separate.
  *
  * ⚠ **`neutral`, not `warning`.** Nothing has gone wrong. The chat is doing
  * precisely what being private means, the answer the user got is a real answer,
@@ -24,14 +26,19 @@ import type { PinnedModelView } from '../../hooks/chatStreamStore';
  * this chat can use.
  */
 export function PinnedModelNote({
-  pinnedModel,
+  binding,
+  chatTier,
   className,
 }: {
-  pinnedModel?: PinnedModelView;
+  /** What this chat actually runs on: the session row's binding, or the
+   *  authoritative one a turn reported. */
+  binding?: PinnedModelView;
+  /** The chat's ratcheted classification. */
+  chatTier?: SessionClassification;
   /** Layout only — `mx-*`, `mb-*`. */
   className?: string;
 }) {
-  const { notice } = usePinnedModel(pinnedModel);
+  const { notice } = usePinnedModel(binding, chatTier);
   if (!notice) return null;
   return (
     <Note tone="neutral" role="status" testId="pinned-model-note" className={className}>
