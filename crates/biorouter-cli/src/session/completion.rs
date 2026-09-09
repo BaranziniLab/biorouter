@@ -83,7 +83,9 @@ fn configured_skill_dirs() -> Vec<PathBuf> {
         dirs.insert(home.join(".claude/skills"));
         dirs.insert(home.join(".config/agents/skills"));
     }
-    dirs.insert(Paths::config_dir().join("skills"));
+    dirs.insert(biorouter::agents::skills_extension::skills_root(
+        &Paths::config_dir(),
+    ));
 
     dirs.into_iter().collect()
 }

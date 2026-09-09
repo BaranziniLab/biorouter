@@ -28,14 +28,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use biorouter::agents::skills_extension::{Skill, SkillsClient};
+use biorouter::agents::skills_extension::{
+    skills_root as biorouter_skills_root, Skill, SkillsClient,
+};
 use biorouter::config::paths::Paths;
 use console::{style, Color};
 
 const ACCENT: Color = Color::Color256(137);
 
+/// The skills root this CLI installs into and removes from.
+///
+/// A thin wrapper over the library's `skills_root` rather than a second
+/// spelling of the same join: a CLI that removed from a directory the daemon
+/// does not discover would report success and change nothing.
 fn skills_root() -> PathBuf {
-    Paths::config_dir().join("skills")
+    biorouter_skills_root(&Paths::config_dir())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
