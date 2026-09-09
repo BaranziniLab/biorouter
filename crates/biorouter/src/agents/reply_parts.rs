@@ -1318,8 +1318,8 @@ mod tests {
         // `callable_count_is_pure_while_turn_prep_grades_sorted_frontend_tools`
         // below failed on CI with `left: 4, right: 5`, the missing tool being
         // this one, because the flag flipped between its two reads.
-        // `no_test_parks_the_session_blob_flag_in_the_process_environment` in
-        // `platform_tools.rs` is the standing guard.
+        // `model::tests::no_test_parks_a_shared_setting_in_the_process_environment`
+        // is the standing guard.
         let overrides = std::collections::HashMap::from([(
             "BIOROUTER_SESSION_BLOB_LAZY_LOAD".to_string(),
             "true".to_string(),

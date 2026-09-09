@@ -911,7 +911,7 @@ mod tests {
     // already there and cannot help an unguarded reader. Drive the pure
     // `validate_*` half instead and leave the environment alone.
     //
-    // `no_test_poisons_a_shared_setting` below is the standing guard: it fails
+    // `no_test_parks_a_shared_setting_in_the_process_environment` below is the standing guard: it fails
     // if any test in this crate puts an invalid value in one of these five
     // variables. That check cannot flake, which is the point — the race it
     // replaces needed an interleaving CI produced and this machine rarely does.
@@ -1055,7 +1055,7 @@ mod tests {
 
     /// The guard that actually covers the failure, on every route into it.
     ///
-    /// [`no_test_poisons_a_shared_setting`] below watches the four settings
+    /// [`no_test_parks_a_shared_setting_in_the_process_environment`] below watches the four settings
     /// `ModelConfig::new` reads out of the **environment**. It cannot watch the
     /// fifth, because max tokens is not an environment variable — it comes from
     /// `Config::global().get_param`, and so it can fail for reasons no source
@@ -1153,146 +1153,382 @@ mod tests {
         ));
     }
 
-    /// The standing guard against the race the split above fixed.
+    /// How a literal write of a watched key is judged.
+    enum Verdict {
+        /// **Any** write is an offence, whatever the value. The reader is live
+        /// and unguarded, so even a "correct" value changes what a concurrent
+        /// test observes.
+        Presence,
+        /// Only a value production's own validator rejects is an offence. A
+        /// valid value changes what a concurrent config *resolves to*, not
+        /// whether it resolves at all.
+        ///
+        /// The validator rides in the row, so the key is spelled ONCE. The
+        /// `match key { … }` this replaced was a second spelling of the whole
+        /// list, and its `unreachable!` arm was a third.
+        InvalidValue(fn(&str, &str) -> Result<(), ConfigError>),
+    }
+
+    struct Watched {
+        key: &'static str,
+        verdict: Verdict,
+        /// How many files under `crates/*/src` must still name this key **in
+        /// code**.
+        ///
+        /// ⚠ A **mention** count, not a match count, and deliberately so: a
+        /// `Presence` row is healthy at zero matches, so a floor on matches
+        /// would be unsatisfiable for exactly the rows that most need one.
+        /// Mentions catch the failure a floor exists for — the key was renamed
+        /// and this row now watches nothing — for both verdicts.
+        ///
+        /// ⚠ Two exclusions make the count mean something, and without the
+        /// second the floor is **self-satisfying**. Comments do not count, so a
+        /// key surviving only in prose does not hold a row up. And the `key:`
+        /// lines of this table do not count, because otherwise every row is
+        /// mentioned once by its own definition — measured: renaming a key to
+        /// `OSV_ENDPOINT_RENAMED_PROBE` left the floor of 1 satisfied by the
+        /// renamed row itself, and the guard stayed green.
+        floor_mentions: usize,
+        /// What the offender should do instead. Per key, because the two
+        /// remedies are NOT interchangeable: `with_config_overrides` is a
+        /// task-local that `Config::get_param` consults, and a **silent no-op**
+        /// for a reader that calls `std::env::var` directly. There is already
+        /// one dead override in this repository's history because of that.
+        remedy: &'static str,
+    }
+
+    const OVERRIDE_REMEDY: &str =
+        "use `config::with_config_overrides`, a task-local `Config::get_param` consults before \
+         the environment";
+    const ARGUMENT_REMEDY: &str =
+        "pass the value as an argument — this reader calls `std::env::var`, which no task-local \
+         override can reach";
+
+    static WATCHED: &[Watched] = &[
+        Watched {
+            key: "BIOROUTER_MAX_TOKENS",
+            verdict: Verdict::InvalidValue(|key, value| match value.parse::<i32>() {
+                Ok(n) => ModelConfig::validate_max_tokens(Ok(n)).map(|_| ()),
+                Err(_) => Err(ConfigError::InvalidValue(
+                    key.to_string(),
+                    value.to_string(),
+                    "must be a valid integer".to_string(),
+                )),
+            }),
+            floor_mentions: 1,
+            remedy: "assert the rejection against `ModelConfig::validate_max_tokens`",
+        },
+        Watched {
+            key: "BIOROUTER_TEMPERATURE",
+            verdict: Verdict::InvalidValue(|_, value| {
+                ModelConfig::validate_temperature(Some(value)).map(|_| ())
+            }),
+            floor_mentions: 1,
+            remedy: "assert the rejection against `ModelConfig::validate_temperature`",
+        },
+        Watched {
+            // The only validator that needs the key as well as the value, which
+            // is why every row's closure takes both rather than shaping the
+            // signature around the majority.
+            key: "BIOROUTER_CONTEXT_LIMIT",
+            verdict: Verdict::InvalidValue(|key, value| {
+                ModelConfig::validate_context_limit(value, key).map(|_| ())
+            }),
+            floor_mentions: 4,
+            remedy: "assert the rejection against `ModelConfig::validate_context_limit`",
+        },
+        Watched {
+            key: "BIOROUTER_TOOLSHIM",
+            verdict: Verdict::InvalidValue(|_, value| {
+                ModelConfig::validate_toolshim(Some(value)).map(|_| ())
+            }),
+            floor_mentions: 4,
+            remedy: "assert the rejection against `ModelConfig::validate_toolshim`",
+        },
+        Watched {
+            key: "BIOROUTER_TOOLSHIM_OLLAMA_MODEL",
+            verdict: Verdict::InvalidValue(|_, value| {
+                ModelConfig::validate_toolshim_model(Some(value)).map(|_| ())
+            }),
+            floor_mentions: 4,
+            remedy: "assert the rejection against `ModelConfig::validate_toolshim_model`",
+        },
+        Watched {
+            // `Agent::platform_tool_gates` samples this on every tool listing,
+            // through `Config::get_param`. A valid value is as damaging as an
+            // invalid one: it adds `platform__read_session_blob` to a concurrent
+            // test's model-facing roster. That is the PR #195 failure, where a
+            // CSS-and-copy diff turned a tool count from 4 into 5.
+            key: "BIOROUTER_SESSION_BLOB_LAZY_LOAD",
+            verdict: Verdict::Presence,
+            floor_mentions: 3,
+            remedy: OVERRIDE_REMEDY,
+        },
+        Watched {
+            // `providers::base::tool_call_batching_enabled`, once per streamed
+            // turn, bare `env::var`. Five batching-sensitive tests held no
+            // serial key while one writer held one.
+            key: "BIOROUTER_TOOL_CALL_BATCHING",
+            verdict: Verdict::Presence,
+            floor_mentions: 1,
+            remedy: ARGUMENT_REMEDY,
+        },
+        Watched {
+            // `OsvChecker::new`, reached from `ExtensionManager` on every stdio
+            // extension launch. The checker fails open, so a stale endpoint is a
+            // silently skipped malware check rather than a visible failure.
+            key: "OSV_ENDPOINT",
+            verdict: Verdict::Presence,
+            floor_mentions: 1,
+            remedy: ARGUMENT_REMEDY,
+        },
+        Watched {
+            // `HooksManager::new_with_managed`, bare `env::var`. One writer set
+            // it and never removed it, so it stood for every agent built
+            // afterwards. State it on `AgentConfig::allow_project_hooks`.
+            key: "BIOROUTER_ALLOW_PROJECT_HOOKS",
+            verdict: Verdict::Presence,
+            floor_mentions: 1,
+            remedy: ARGUMENT_REMEDY,
+        },
+    ];
+
+    /// `line` up to the first `//` that starts a comment, ignoring one inside a
+    /// string literal.
     ///
-    /// These five variables are read process-wide by `ModelConfig::new`, which
-    /// takes no lock. So a test that parks an **invalid** value in one of them —
-    /// however correctly it holds `env_lock` — makes every concurrent
-    /// `ModelConfig::new` in the same binary return `Err`, and every
-    /// `new_or_fail` panic. A *valid* value is harmless: it changes what a
-    /// concurrent config resolves to, not whether it resolves.
+    /// ⚠ A plain `line.split("//").next()` is wrong here and the failure is
+    /// silent. It truncates `set_var("OSV_ENDPOINT", "http://host/v1/query")`
+    /// at the URL's own `//`, leaving an unterminated literal that no pattern
+    /// matches — so the offence this guard exists to catch reads as clean. That
+    /// was measured against a planted probe, not reasoned about: eight of the
+    /// nine keys fired and the one whose values are URLs did not.
     ///
-    /// This is deliberately a source scan rather than a runtime assertion: the
-    /// race needs an interleaving CI produces and a fast laptop rarely does, so
-    /// "we ran the suite twenty times and it was green" is weak evidence. This
-    /// check cannot flake.
-    ///
-    /// It reads literal values in the two shapes these are actually written in
-    /// — `env_lock::lock_env([("KEY", Some("value"))])` and
-    /// `set_var("KEY", "value")`. The first also covers `temp_env::with_vars`
-    /// (the same tuple) and `temp_env::with_var("KEY", Some("value"), …)`,
-    /// where the call's own paren plays the part of the tuple's. A value passed
-    /// through a variable (`("KEY", worker_limit)`) is invisible to it; if you
-    /// need one of those, make sure it can only ever hold values these
-    /// validators accept.
-    ///
-    /// ⚠ **Being green here does not mean `ModelConfig::new` is safe.** It
-    /// watches four of the five settings, and the fifth — max tokens — is read
-    /// from the config layer, which no source scan can cover. That is where the
-    /// flake this guard was written for actually came back from;
-    /// [`a_config_layer_outage_is_never_read_as_a_malformed_value`] above is
-    /// the half that covers it.
-    #[test]
-    fn no_test_poisons_a_shared_setting() {
-        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if path.is_dir() {
-                    if name != "target" && name != "node_modules" && name != ".git" {
-                        rs_files(&path, out);
-                    }
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    out.push(path);
+    /// Raw strings and char literals are not modelled. A mis-tracked quote can
+    /// only truncate earlier than it should, i.e. cause a miss — never a false
+    /// accusation.
+    fn code_before_comment(line: &str) -> &str {
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut slash_at: Option<usize> = None;
+        for (index, character) in line.char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    in_string = false;
                 }
+                slash_at = None;
+            } else if character == '"' {
+                in_string = true;
+                slash_at = None;
+            } else if character == '/' {
+                if let Some(start) = slash_at {
+                    // `get`, not `[..start]`: clippy denies string indexing, and
+                    // a fallback beats a panic in a guard nobody is watching.
+                    return line.get(..start).unwrap_or(line);
+                }
+                slash_at = Some(index);
+            } else {
+                slash_at = None;
             }
         }
+        line
+    }
 
-        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    /// **No test parks a shared setting in the process environment.**
+    ///
+    /// One table, one walk. Each row names a key, says whether a write is judged
+    /// by PRESENCE or by VALUE, carries its own non-vacuity floor, and supplies
+    /// the remedy its offender should be handed.
+    ///
+    /// Every key here is read by production code that takes no lock, so a lock
+    /// held by a WRITER cannot protect it: `env_lock` and `serial_test`
+    /// serialise the callers that ASK, and these readers never do. The audit
+    /// behind the table is `docs/testing/process-global-state.md`.
+    ///
+    /// Deliberately a source scan rather than a runtime assertion. The race
+    /// needs an interleaving CI produces and a loaded laptop may never show, so
+    /// twenty green runs are weak evidence — and this check cannot flake.
+    ///
+    /// ⚠ **Three things it cannot see. None is a gap it can grow to cover.**
+    ///
+    /// 1. **A key that is not a string literal.** The patterns read a literal in
+    ///    the tuple position — `("KEY", Some("v"))` and `set_var("KEY", "v")`.
+    ///    `(SOME_CONST, Some(v))` is invisible. If you must write one, make sure
+    ///    the variable can only hold values these validators accept.
+    /// 2. **A key reached through `Config::get_param`.** That function
+    ///    upper-cases its argument and reads `env::var` before it consults the
+    ///    file, so **every config key is also an environment key** and the
+    ///    watchable set is the whole config surface, not this table. This table
+    ///    is a list of measured hazards, not a closed set. Green here is not a
+    ///    proof of hermeticity.
+    /// 3. **`crates/*/tests/`, which is skipped on purpose.** Each file there
+    ///    compiles to its own binary, so a write cannot reach the lib test
+    ///    binary these readers live in. It can still reach the other tests in
+    ///    its own file; that is a smaller, separate hazard the audit records.
+    #[test]
+    fn no_test_parks_a_shared_setting_in_the_process_environment() {
+        // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter; go up twice.
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
             .parent()
             .unwrap()
             .to_path_buf();
-        let mut files = Vec::new();
-        rs_files(&crates_dir, &mut files);
+        let crates = workspace.join("crates");
         assert!(
-            files.len() > 100,
-            "the scan reads {} and found only {} .rs files; if that path is wrong this test \
-             proves nothing",
-            crates_dir.display(),
-            files.len()
+            crates.is_dir(),
+            "the audit walks {}; if that path is wrong it passes for the wrong reason",
+            crates.display()
         );
 
-        // Longest-first is not needed: each alternative is followed by a closing
-        // quote in the patterns, so `BIOROUTER_TOOLSHIM` cannot swallow
-        // `BIOROUTER_TOOLSHIM_OLLAMA_MODEL`.
-        let keys = "BIOROUTER_MAX_TOKENS|BIOROUTER_TEMPERATURE|BIOROUTER_CONTEXT_LIMIT\
-                    |BIOROUTER_TOOLSHIM|BIOROUTER_TOOLSHIM_OLLAMA_MODEL";
-        // `("KEY", Some("value"))` — the `env_lock::lock_env` / `temp_env::
-        // with_vars` shape.
-        //
-        // ⚠ This also covers `temp_env::with_var("KEY", Some("value"), …)`,
-        // which reads like a different shape and is not one: the CALL's own
-        // opening paren plays the part of the tuple's. That was measured, not
-        // assumed — a dedicated `with_var\(…` pattern was written, and the only
-        // thing it achieved was reporting every offender twice. Do not add it
-        // back without first checking that this one really misses the shape.
-        let tuple = regex::Regex::new(&format!(r#"\(\s*"({keys})"\s*,\s*Some\(\s*"([^"]*)"\s*\)"#))
-            .unwrap();
-        // `set_var("KEY", "value")`.
-        let set_var =
-            regex::Regex::new(&format!(r#"set_var\(\s*"({keys})"\s*,\s*"([^"]*)""#)).unwrap();
+        struct Compiled {
+            row: &'static Watched,
+            tuple: regex::Regex,
+            set_var: regex::Regex,
+        }
+        let compiled: Vec<Compiled> = WATCHED
+            .iter()
+            .map(|row| {
+                let key = regex::escape(row.key);
+                Compiled {
+                    row,
+                    // The closing quote after the key is what stops
+                    // BIOROUTER_TOOLSHIM swallowing
+                    // BIOROUTER_TOOLSHIM_OLLAMA_MODEL, so no longest-first
+                    // ordering is needed. A `None::<&str>` entry is NOT matched
+                    // and must not be: clearing a flag is the safe direction.
+                    tuple: regex::Regex::new(&format!(
+                        r#"\(\s*"{key}"\s*,\s*Some\(\s*"([^"]*)"\s*\)"#
+                    ))
+                    .unwrap(),
+                    set_var: regex::Regex::new(&format!(r#"set_var\(\s*"{key}"\s*,\s*"([^"]*)""#))
+                        .unwrap(),
+                }
+            })
+            .collect();
 
-        let mut seen = 0usize;
-        let mut offenders = Vec::new();
-        for file in &files {
-            let Ok(src) = std::fs::read_to_string(file) else {
+        let mut scanned = 0usize;
+        let mut mentions = vec![0usize; WATCHED.len()];
+        let mut offenders: Vec<String> = Vec::new();
+
+        for entry in walkdir::WalkDir::new(&crates)
+            .into_iter()
+            .filter_entry(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                !e.file_type().is_dir()
+                    || (name != "target" && name != "node_modules" && name != ".git")
+            })
+        {
+            let entry = entry.expect("the audit must not silently skip an unreadable directory");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            // In scope: `crates/<crate>/src/**`. A `tests/` directory nested
+            // INSIDE `src` is an ordinary module of that crate's lib and stays
+            // in scope; only a crate's top-level `tests/` is its own binary.
+            let Ok(relative) = path.strip_prefix(&crates) else {
                 continue;
             };
-            for caps in tuple.captures_iter(&src).chain(set_var.captures_iter(&src)) {
-                seen += 1;
-                let key = caps.get(1).unwrap().as_str();
-                let value = caps.get(2).unwrap().as_str();
-                let verdict = match key {
-                    "BIOROUTER_MAX_TOKENS" => match value.parse::<i32>() {
-                        Ok(n) => ModelConfig::validate_max_tokens(Ok(n)).map(|_| ()),
-                        Err(_) => Err(ConfigError::InvalidValue(
-                            key.to_string(),
-                            value.to_string(),
-                            "must be a valid integer".to_string(),
-                        )),
-                    },
-                    "BIOROUTER_TEMPERATURE" => {
-                        ModelConfig::validate_temperature(Some(value)).map(|_| ())
+            let mut parts = relative.components();
+            let _crate_name = parts.next();
+            if parts.next().map(|c| c.as_os_str()) != Some(std::ffi::OsStr::new("src")) {
+                continue;
+            }
+            scanned += 1;
+            let Ok(source) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            // Mentions are counted on CODE, with this table's own rows left
+            // out. Both exclusions are load-bearing — see `floor_mentions`.
+            let code_only: String = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("key: \""))
+                .map(code_before_comment)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for (index, item) in compiled.iter().enumerate() {
+                if code_only.contains(item.row.key) {
+                    mentions[index] += 1;
+                }
+            }
+
+            for (number, line) in source.lines().enumerate() {
+                // Strip the comment rather than skipping the line: a trailing
+                // `// ("KEY", Some("bad"))` is a comment too. Load-bearing, not
+                // tidiness — this guard's own table names every key it watches
+                // and spells both offending shapes, so a scan that read comments
+                // would report itself as its own first offender.
+                let code = code_before_comment(line);
+                for item in &compiled {
+                    let Some(caps) = item
+                        .tuple
+                        .captures(code)
+                        .or_else(|| item.set_var.captures(code))
+                    else {
+                        continue;
+                    };
+                    let value = caps.get(1).unwrap().as_str();
+                    let problem = match item.row.verdict {
+                        Verdict::Presence => Some(
+                            "the reader is live and unguarded, so any value changes what a \
+                             concurrent test observes"
+                                .to_string(),
+                        ),
+                        Verdict::InvalidValue(check) => {
+                            check(item.row.key, value).err().map(|e| e.to_string())
+                        }
+                    };
+                    if let Some(problem) = problem {
+                        offenders.push(format!(
+                            "{}:{} — {}={value:?}: {problem}. Instead, {}",
+                            relative.to_string_lossy().replace('\\', "/"),
+                            number + 1,
+                            item.row.key,
+                            item.row.remedy,
+                        ));
                     }
-                    "BIOROUTER_CONTEXT_LIMIT" => {
-                        ModelConfig::validate_context_limit(value, key).map(|_| ())
-                    }
-                    "BIOROUTER_TOOLSHIM" => ModelConfig::validate_toolshim(Some(value)).map(|_| ()),
-                    "BIOROUTER_TOOLSHIM_OLLAMA_MODEL" => {
-                        ModelConfig::validate_toolshim_model(Some(value)).map(|_| ())
-                    }
-                    other => unreachable!("unhandled key {other}"),
-                };
-                if let Err(err) = verdict {
-                    offenders.push(format!(
-                        "{}: {key}={value:?} — {err}",
-                        file.strip_prefix(&crates_dir).unwrap_or(file).display()
-                    ));
                 }
             }
         }
 
-        // Non-vacuity: this file alone sets BIOROUTER_MAX_TOKENS=8192 and pins
-        // four more to None, so a scan that matches nothing means the patterns
-        // rotted, not that the tree is clean.
+        // A walk that reads nothing agrees with a walk that finds nothing.
         assert!(
-            seen >= 2,
-            "the scan matched {seen} literal assignments across {} files. Either the patterns \
-             no longer recognise how these variables are written — in which case a clean \
-             result means nothing and the patterns need updating — or the last env-driven \
-             tests were removed, in which case lower this floor deliberately",
-            files.len()
+            scanned > 400,
+            "the audit only scanned {scanned} files under crates/*/src, which is too few to \
+             have walked the workspace"
         );
+
+        // PER-KEY non-vacuity. One global floor lets most rows rot silently
+        // behind the single key that is still written.
+        let vacuous: Vec<String> = WATCHED
+            .iter()
+            .zip(&mentions)
+            .filter(|(row, seen)| **seen < row.floor_mentions)
+            .map(|(row, seen)| {
+                format!(
+                    "{} named in {seen} files, floor {}",
+                    row.key, row.floor_mentions
+                )
+            })
+            .collect();
+        assert!(
+            vacuous.is_empty(),
+            "these rows watch nothing. Either the key was renamed — in which case a clean \
+             result means nothing — or its readers were removed and the row can go with \
+             them. Do not lower a floor to make this pass:\n  {}",
+            vacuous.join("\n  ")
+        );
+
         assert!(
             offenders.is_empty(),
-            "these tests park an invalid value in a setting `ModelConfig::new` reads without a \
-             lock, which makes unrelated tests in the same binary panic in \
-             `new_or_fail`. Assert the rejection against the pure `validate_*` function \
-             instead of the environment:\n  {}",
+            "these tests park a shared setting in the PROCESS environment, where production \
+             code reads it live. `env_lock` does not help: it serialises the callers that ASK \
+             for it, and these readers never do.\n  {}",
             offenders.join("\n  ")
         );
     }
