@@ -496,10 +496,11 @@ type ElectronAPI = {
   disposeTerminalSession: (sessionId: string) => Promise<TerminalActionResult>;
   onTerminalData: (callback: (event: TerminalDataEvent) => void) => () => void;
   onTerminalExit: (callback: (event: TerminalExitEvent) => void) => () => void;
-  // Extension updater (events pushed via 'extension-update-event' channel)
+  // Extension updater (events pushed via 'extension-update-event' channel).
+  // Returns a disposer, like every other `on*` above — see the implementation.
   onExtensionUpdateEvent: (
     callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void
-  ) => void;
+  ) => () => void;
 
   // ── Tab tear-off and merge (docs/design/astryx-adoption/tab-tear-off-and-merge.md)
   //
@@ -816,7 +817,15 @@ const electronAPI: ElectronAPI = {
     return () => ipcRenderer.removeListener('terminal:exit', listener);
   },
   onExtensionUpdateEvent: (callback) => {
-    ipcRenderer.on('extension-update-event', (_event, data) => callback(data));
+    // Named, preload-scope wrapper for the same reason the generic `on` above
+    // has one: `removeListener` matches by identity, and an inline arrow passed
+    // straight to `ipcRenderer.on` can never be handed back to remove it.
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      data: import('./utils/extensionUpdater').ExtensionUpdateEvent
+    ) => callback(data);
+    ipcRenderer.on('extension-update-event', listener);
+    return () => ipcRenderer.removeListener('extension-update-event', listener);
   },
 
   // Tab tear-off and merge. Append-only, and deliberately thin: every one of

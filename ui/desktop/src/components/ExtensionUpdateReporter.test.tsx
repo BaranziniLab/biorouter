@@ -20,6 +20,12 @@ beforeEach(() => {
   window.electron = {
     onExtensionUpdateEvent: (cb: (e: ExtensionUpdateEvent) => void) => {
       emit = cb;
+      // Matches the bridge's disposer shape. These tests never unmount, so the
+      // disposer is unused here; the leak it exists to prevent is counted in
+      // ExtensionUpdateReporter.listeners.test.tsx.
+      return () => {
+        emit = () => {};
+      };
     },
   };
 });

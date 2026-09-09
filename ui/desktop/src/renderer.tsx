@@ -530,8 +530,11 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       // the honest answer for a server the browser cannot probe.
       checkDependencies: async () => [],
       // No background extension updater in browser mode; the app shell listens
-      // for this unconditionally, so the channel must at least exist.
-      onExtensionUpdateEvent: () => {},
+      // for this unconditionally, so the channel must at least exist. It hands
+      // back a no-op disposer rather than nothing: the reporter calls what it
+      // gets on unmount, so a stub returning `undefined` would work only for as
+      // long as that call stays optional-chained.
+      onExtensionUpdateEvent: () => () => {},
       dependencyEnvironment: async () => ({ platform: 'linux' }),
     };
   }

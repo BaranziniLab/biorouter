@@ -21,7 +21,7 @@ export default function ExtensionUpdateReporter() {
     // does not provide the channel — headless/browser mode, a partially stubbed
     // `window.electron` in a test — would otherwise take the whole app down over
     // a notification nobody asked for.
-    window.electron?.onExtensionUpdateEvent?.((event) => {
+    const dispose = window.electron?.onExtensionUpdateEvent?.((event) => {
       if (event.type === 'update-error') {
         toastError({
           title: `Could not update ${event.displayName || event.ext || 'an extension'}`,
@@ -48,8 +48,21 @@ export default function ExtensionUpdateReporter() {
         });
       }
     });
-    // `onExtensionUpdateEvent` returns no disposer, so there is nothing to clean
-    // up. Mounted once, at the app shell, for the life of the window.
+
+    // Unsubscribe on unmount. This is NOT belt-and-braces: the comment that
+    // used to sit here claimed the reporter was "mounted once, at the app
+    // shell, for the life of the window", and that was false twice over. It
+    // renders inside `AppLayout`, which sits under `ProviderGuard >
+    // ChatProvider`, so the subtree remounts; and React.StrictMode is on in
+    // dev, so even a single mount runs this effect twice (effect → cleanup →
+    // effect). Every one of those mounts used to add an IPC listener that was
+    // never removed, which is the `MaxListenersExceededWarning: 11
+    // extension-update-event listeners` measured in #189 — every surviving
+    // listener also fires its own duplicate toast.
+    //
+    // `dispose` is optional-chained for the same reason the subscribe call is:
+    // a host without the channel returns nothing to call.
+    return () => dispose?.();
   }, []);
 
   return null;
