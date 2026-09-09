@@ -380,6 +380,9 @@ mod tests {
     use super::*;
     // The sibling rule moved to `exe_path` when `apps` needed it too; the test
     // that pins it stayed here, with the rest of the `serve` resolution suite.
+    // `cfg(unix)` for the same reason that test is: it needs a symlink, and an
+    // import only one platform uses is a warning on the other one.
+    #[cfg(unix)]
     use crate::commands::exe_path::biorouterd_beside;
 
     #[test]
