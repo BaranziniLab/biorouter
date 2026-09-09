@@ -54,6 +54,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [troubleshooting](troubleshooting/README.md) | Known problems and their fixes, the diagnostics bundle, and how to file a useful bug report. |
 | [design](design/README.md) | Visual design specifications and their rendered companions: brand marks, theme families, chat-group design spikes, the desktop UI overhaul, the proposed Astryx interface revision, and the browser-only design-system and boot-splash studios. |
 | [research](research/README.md) | External research — studies of other agentic coding tools, written to inform BioRouter's own design. |
+| [testing](testing/README.md) | The properties this repository's tests must hold: the audit of process-global state the crates read and write, the ledger of unlocked readers behind a family of CI flakes, and the standing guards that keep fixed hazards fixed. |
 | [contributing](contributing/README.md) | How this documentation tree itself is written and maintained: the house style every file follows, and the live register of unresolved problems found in it. |
 
 ## Historical records

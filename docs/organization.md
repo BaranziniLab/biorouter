@@ -97,6 +97,7 @@ Current top-level areas:
 | `troubleshooting/` | when something is broken |
 | `design/` | visual and interaction design, including HTML studios |
 | `research/` | studies of systems **outside** this repo |
+| `testing/` | the properties tests must hold, and the shared state they must not inherit |
 | `contributing/` | how to work on the documentation itself |
 | `history/` | records of completed work (see [§3](#3-history-records-of-work-that-was-done)) |
 
