@@ -5400,7 +5400,27 @@ async function appMain() {
         "img-src 'self' data: blob: https:;" +
         `connect-src ${buildConnectSrc()};` +
         "object-src 'none';" +
-        "frame-src 'self' blob: https: http:;" +
+        // Every frame this document creates is `srcdoc`: the artifact preview
+        // (`components/artifacts/ArtifactViewer.tsx`), a workbook sheet
+        // (`DocumentPreview.tsx`) and a notebook's HTML output
+        // (`NotebookPreview.tsx`). `permissionPolicy.ts`'s
+        // `isAllowedArtifactFrameNavigation` then admits nothing but
+        // `about:srcdoc` and `about:blank` on `will-frame-navigate`.
+        //
+        // So `blob: https: http:` were all dead. Nothing frames a remote page;
+        // the blob URLs in this renderer are `<img>` sources, downloads and
+        // `window.open`, none of which `frame-src` governs; a PDF renders onto a
+        // canvas through pdf.js rather than in a frame; and the live browser is a
+        // `WebContentsView` (`utils/embeddedBrowser.ts`), a top-level context
+        // outside this policy entirely. `http:` was recorded as load-bearing for
+        // the MCP-apps proxy iframe, which ran at the daemon's origin and was
+        // removed in September 2026 (`docs/history/mcp-apps-removal/`); the other
+        // two were never traced to a frame at all.
+        //
+        // ⚠ Both policies apply to this window and the stricter wins, so this
+        // and the `<meta>` in index.html move together or not at all —
+        // `src/frameSrcCsp.test.ts` pins the pair.
+        "frame-src 'self';" +
         "font-src 'self' data: https:;" +
         "media-src 'self' mediastream:;" +
         "form-action 'none';" +

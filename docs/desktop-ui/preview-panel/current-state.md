@@ -146,6 +146,25 @@ Enforced on `will-frame-navigate` at main.ts:1387. `permissionPolicy.test.ts:48`
 asserts `https://example.test/exfiltrate` is `false`. **This is the ruling the live-website
 feature must not reverse.**
 
+`frame-src` now says the same thing from the other end. Both policies that govern this document —
+the `<meta>` in index.html:23 and the header `main.ts` attaches in `onHeadersReceived` — carry
+**`frame-src 'self'`** and nothing else, since 2026-09-09. They read `'self' blob: https: http:`
+until then; every one of those three was dead. Every frame the renderer creates is `srcdoc`
+(`ArtifactViewer.tsx`, `DocumentPreview.tsx`, `NotebookPreview.tsx`), the blob URLs in this
+renderer are `<img>` sources, downloads and `window.open` — none of which `frame-src` governs — a
+PDF renders onto a canvas through pdf.js, and the live browser is a `WebContentsView`, a top-level
+context outside this policy entirely. `http:` had been recorded here as load-bearing for the MCP
+apps proxy iframe, which ran at the daemon's origin and was removed in September 2026
+(`docs/history/mcp-apps-removal/`); `blob:` and `https:` were never traced to a frame at all.
+
+`src/frameSrcCsp.test.ts` pins both policies **and** scans every `<iframe>` the renderer writes,
+because a policy assertion alone is satisfied by a policy nobody can use: the day a component
+frames a URL instead of `srcdoc`, the failure belongs at the frame rather than in a bug report
+about a preview that renders blank. The narrowing itself was measured in the running dev app — an
+Auto Visualiser figure, an Agent Drafter preview card, a PDF, a notebook and a workbook all
+rendered with zero `securitypolicyviolation` reports — because jsdom has no CSP engine and can
+prove nothing about a policy.
+
 ### What is *not* guarded
 
 - **`.biorouterignore` is never consulted on the desktop panel path.** It is enforced only in the
@@ -153,14 +172,14 @@ feature must not reverse.**
   `isAllowedFilePath` (main.ts:230) → `allowedFileRoots()` + `isSensitivePreviewPath`. In
   **Completely Autonomous** mode the containment check is skipped for anything not on the
   sensitive-prefix list. If the panel's reach widens, `.biorouterignore` will not narrow it.
-- **`frame-src 'self' blob: https: http:`** in *both* CSP sources (index.html:18 and
-  main.ts:4825). Remote framing is CSP-permitted today; what prevents it is that nothing does
-  it. `http:` was recorded here as load-bearing for the MCP apps proxy iframe, which ran at the
-  daemon's origin; that feature was removed in September 2026 (see the record under
-  `docs/history/`), so **whether `http:` can now be dropped is an open question** — it was not
-  traced to the live policy when this was written, and it is not answered by the removal.
-- No `webviewTag`, no `<webview>`, no `BrowserView`, no `WebContentsView` anywhere in the
-  desktop source.
+- ~~**`frame-src 'self' blob: https: http:`** in both CSP sources.~~ **Closed 2026-09-09** —
+  narrowed to `'self'` in both, with the reasoning and the guard recorded under *Frame navigation
+  is a closed set of two literals* above. The line reference this bullet carried (`main.ts:4825`)
+  was already stale when it was written; grep the directive rather than trusting a line number.
+- ~~No `webviewTag`, no `<webview>`, no `BrowserView`, no `WebContentsView` anywhere in the
+  desktop source.~~ **Stale as of the live-browser work**: `utils/embeddedBrowser.ts` hosts a
+  `WebContentsView`. That is what makes the `frame-src` narrowing above safe rather than lucky —
+  the live browser is a top-level browsing context, so it never needed a frame source.
 - No `capturePage` and no `desktopCapturer` anywhere. Screenshotting is entirely new surface.
 
 ### Pre-existing asymmetries found while surveying
