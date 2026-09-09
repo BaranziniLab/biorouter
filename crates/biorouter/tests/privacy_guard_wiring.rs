@@ -628,10 +628,13 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter/src/agents/agent.rs",
-                counts: c(0, 4, 0),
+                counts: c(0, 5, 0),
                 kind: SiteKind::Unrelated,
                 what: "a LOCAL VARIABLE named `privacy_refusal` in the turn barrier. The second \
-                       standing proof that a name match is not a call site",
+                       standing proof that a name match is not a call site. The count went 4 -> 5 \
+                       when Gate B began stating what every turn runs on: the frame is built only \
+                       for a turn that is not being refused, so the local is read once more. Still \
+                       ZERO calls — the guard function itself gained no caller here",
             },
             Site {
                 file: "crates/biorouter/src/agents/extension_manager.rs",

@@ -626,14 +626,24 @@ async fn process_message_streaming(
                     Ok(AgentEvent::ModelChange { model, mode }) => {
                         tracing::info!("Model changed to {} in {} mode", model, mode);
                     }
-                    // Issue #56 Gate B's repair arm: this turn ran on the
-                    // provider the session row names. Logged rather than sent:
-                    // the web bridge's frame vocabulary is the transcript, and a
-                    // browser session cannot change its model anyway (SD-1), so
-                    // there is no wrong choice on screen for it to correct.
-                    Ok(AgentEvent::PrivacyProviderPinned { provider, model }) => {
-                        tracing::info!(
-                            "Private chat pinned to its own binding: {provider} / {model}"
+                    // Issue #56 Gate B: what this turn ran on, and how the chat
+                    // is classified. Logged rather than sent: the web bridge's
+                    // frame vocabulary is the transcript, and a browser session
+                    // cannot change its model anyway (SD-1), so there is no wrong
+                    // choice on screen for it to correct.
+                    //
+                    // ⚠ `debug!`, not `info!`. The frame arrives on every turn
+                    // now, so an `info!` line naming a binding nothing can change
+                    // would be one log line per turn, forever, saying what the
+                    // start-up banner already said.
+                    Ok(AgentEvent::PrivacyProviderPinned {
+                        provider,
+                        model,
+                        privacy_tier,
+                        ..
+                    }) => {
+                        tracing::debug!(
+                            "Turn ran on {provider} / {model} (chat classified {privacy_tier:?})"
                         );
                     }
                     // BR-52: the web bridge reads token counts from the session

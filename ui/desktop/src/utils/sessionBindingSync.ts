@@ -32,6 +32,13 @@
  * and the bound provider in ways only the daemon knows, so those cannot be
  * announced from here.
  *
+ * ⚠ **A receiver must move the turn-reported PIN as well as the row.** The
+ * daemon reports each turn's own binding (`PrivacyProviderPinned`), and
+ * `privacy/pinnedModel.ts` prefers that pin over the row — so a receiver that
+ * patched only the row would be overruled by the previous turn's pin and would
+ * keep naming the model the user just switched away from. An accepted bind is
+ * the later, equally authoritative statement of the same fact.
+ *
  * ⚠ **Announce only what the daemon accepted.** `updateAgentProvider` can be
  * refused — Gate A returns 409 for a public model on a private chat — and a
  * refused switch leaves the row exactly as it was. The announcement therefore

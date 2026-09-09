@@ -1038,11 +1038,11 @@ fn get_agent_messages(
                         AgentEvent::McpNotification(_)
                         | AgentEvent::ModelChange { .. }
                         | AgentEvent::ToolCallPending(_)
-                        // Issue #56 Gate B's repair, addressed to a HUMAN
-                        // reading a composer. A subagent has no composer and its
-                        // parent is not the user, so the parent accumulates
-                        // nothing from it; the tee above still publishes it for
-                        // an observer tab watching the child.
+                        // Issue #56 Gate B, addressed to a HUMAN reading a
+                        // composer. A subagent has no composer and its parent is
+                        // not the user, so the parent accumulates nothing from
+                        // it; the tee above still publishes it for an observer
+                        // tab watching the child.
                         | AgentEvent::PrivacyProviderPinned { .. }
                         // #59: the subagent's own rows are already carried by
                         // the `Message` events above (which now name

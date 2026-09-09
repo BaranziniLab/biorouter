@@ -13,6 +13,7 @@ import {
   reply,
   resumeAgent,
   Session,
+  SessionClassification,
   TokenState,
   updateFromSession,
   updateSessionUserWorkflowValues,
@@ -803,6 +804,18 @@ class ChatStreamController {
     // the announcement already carries.
     subscribeSessionBindingChanges((change) => {
       if (change.sessionId !== sessionId) return;
+      // ⚠ The PIN moves too, and it has to. `chatBinding` prefers the
+      // turn-reported pin over the row, so a switch that patched only the row
+      // would be overruled by the previous turn's pin and the chip would go on
+      // naming the model the user just switched away from — the exact
+      // regression #192 narrowed its rule to avoid. It did not bite while the
+      // frame was rare (only a repaired bind produced one); it bites on every
+      // switch-after-a-turn now that the frame arrives on every turn.
+      //
+      // Replacing rather than clearing is the honest write: an accepted bind is
+      // as authoritative a statement of "what this chat runs on" as a turn's
+      // own report, and it is the LATER one.
+      this.setPinnedModel({ provider: change.provider, model: change.model });
       this.updateSnapshot((prev) => {
         if (!prev.session) return prev;
         if (
@@ -1393,6 +1406,51 @@ class ChatStreamController {
         ? prev
         : { ...prev, pinnedModel: pinned }
     );
+  };
+
+  /**
+   * What the daemon says this turn is running on, applied at turn START.
+   *
+   * `PrivacyProviderPinned` now arrives on every turn and carries four fields.
+   * Two of them are the binding, which becomes {@link ChatSnapshot.pinnedModel}
+   * exactly as before. The other two are the chat's classification AFTER the
+   * privacy ratchet, and they are patched onto the cached session row because
+   * that row is where every reader of the classification looks
+   * (`usePinnedModel` reads `session.privacy_tier`, the chat-tab dot reads the
+   * cached session list).
+   *
+   * ⚠ **The tier is why this frame had to widen.** #196 instrumented which
+   * cached field lagged and measured exactly one: `privacy_tier`, with its
+   * `privacy_reason`. A chat that a turn had just made private kept a `public`
+   * tier in this cache until the turn ENDED and `refreshSessionBinding` re-read
+   * the row — and a stale `public` suppresses the chip override and the
+   * private-chat note together, which is why they used to appear only after a
+   * reload.
+   *
+   * ⚠ **The row is patched, never adopted.** The frame is not a session
+   * payload: it names four fields and this store is the transcript's source of
+   * truth for everything else on that row.
+   */
+  private applyTurnBinding = (event: {
+    provider: string;
+    model: string;
+    privacy_tier?: SessionClassification;
+    privacy_reason?: string | null;
+  }): void => {
+    this.setPinnedModel({ provider: event.provider, model: event.model });
+    if (event.privacy_tier === undefined) return;
+    const tier = event.privacy_tier;
+    const reason = event.privacy_reason ?? null;
+    this.updateSnapshot((prev) => {
+      if (!prev.session) return prev;
+      if (prev.session.privacy_tier === tier && (prev.session.privacy_reason ?? null) === reason) {
+        return prev;
+      }
+      return {
+        ...prev,
+        session: { ...prev.session, privacy_tier: tier, privacy_reason: reason },
+      };
+    });
   };
 
   private clearPendingToolCalls = (): void => {
@@ -2130,7 +2188,7 @@ class ChatStreamController {
           case 'MessagesPersisted':
             break;
           case 'PrivacyProviderPinned':
-            this.setPinnedModel({ provider: event.provider, model: event.model });
+            this.applyTurnBinding(event);
             break;
           case 'ModelChange':
           case 'Ping':

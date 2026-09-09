@@ -1546,19 +1546,27 @@ impl CliSession {
                                 eprintln!("Model changed to {} in {} mode", model, mode);
                             }
                         }
-                        // Issue #56 Gate B's repair arm: the turn ran on the
-                        // provider the session row names rather than on the
-                        // configured one. Its audience is the desktop composer,
-                        // whose model chip is the thing that was saying something
-                        // false; a terminal prints its binding at start-up and
-                        // `builder.rs` refuses, before creating any provider, the
-                        // chats this arm would have had to repair. Reported under
-                        // `--debug` rather than added to `StreamEvent`, whose shape
-                        // is a public contract.
-                        Some(Ok(AgentEvent::PrivacyProviderPinned { provider, model })) => {
+                        // Issue #56 Gate B: what the turn ran on, and how the
+                        // chat is classified. Its audience is the desktop
+                        // composer, whose model chip is the thing that was saying
+                        // something false; a terminal prints its binding at
+                        // start-up and `builder.rs` refuses, before creating any
+                        // provider, the chats Gate B would have had to repair.
+                        // Reported under `--debug` rather than added to
+                        // `StreamEvent`, whose shape is a public contract.
+                        //
+                        // ⚠ The wording no longer claims privacy is the reason.
+                        // The frame arrives on every turn now, so "this chat is
+                        // private, so …" would be false on most of them.
+                        Some(Ok(AgentEvent::PrivacyProviderPinned {
+                            provider,
+                            model,
+                            privacy_tier,
+                            ..
+                        })) => {
                             if self.debug {
                                 eprintln!(
-                                    "This chat is private, so the turn ran on {provider} / {model}"
+                                    "Turn ran on {provider} / {model} (chat classified {privacy_tier:?})"
                                 );
                             }
                         }

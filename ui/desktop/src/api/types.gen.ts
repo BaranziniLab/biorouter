@@ -2146,6 +2146,12 @@ export type MessageEvent = {
     type: 'MessagesPersisted';
 } | {
     model: string;
+    /**
+     * That classification's provenance on the row (`turn:versa_azure`,
+     * `mcp:…`, `backfill:…`), or `None` for a row never raised.
+     */
+    privacy_reason?: string | null;
+    privacy_tier: SessionClassification;
     provider: string;
     type: 'PrivacyProviderPinned';
 } | {

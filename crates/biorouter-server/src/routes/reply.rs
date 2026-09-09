@@ -13,6 +13,7 @@ use axum::{
 use biorouter::agents::{InterruptRefused, PersistedMessage, ReasoningEffort};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
+use biorouter::privacy::SessionClassification;
 use biorouter::session::session_manager::ReplaceOutcome;
 use biorouter::session::SessionManager;
 use bytes::Bytes;
@@ -385,27 +386,38 @@ pub enum MessageEvent {
     MessagesPersisted {
         messages: Vec<PersistedMessage>,
     },
-    /// Issue #56 Gate B, repair arm: the provider and model that actually
-    /// served this turn, sent when the agent had to fall back to the one the
-    /// SESSION ROW names because the chat's classification does not admit the
-    /// bound one.
+    /// Issue #56 Gate B: what this turn is running on — the provider and model
+    /// the agent holds at the seam, plus the chat's classification after the
+    /// turn ratchet has committed.
     ///
     /// Advisory display state, exactly like `ToolCallPending`: never persisted,
     /// never replayed, never shown to the model, and it changes nothing about
-    /// what the privacy gates permit or refuse. Its whole job is that a user who
-    /// switched the app to a public model and then sent into a private chat can
-    /// see that the turn went elsewhere — and that the composer's model chip and
-    /// context gauge can be sized to the window that was really used.
+    /// what the privacy gates permit or refuse. `privacy_tier` here is a REPORT
+    /// of a classification the daemon has already written; reading it is not a
+    /// second write and no gate consults this frame.
     ///
-    /// ⚠ It does NOT carry the selection it displaced, so a client must not
-    /// treat receiving it as "the user's choice was overridden". The frame
-    /// arrives on every repaired bind, including the ordinary ones (a
-    /// rehydrated agent, a legacy row) where it names exactly what the client is
-    /// already showing. Compare it against what you display, and say nothing
-    /// when they agree.
+    /// ⚠ **Sent on every turn that reaches a provider**, not only on a repaired
+    /// bind. It carries the two fields a client cannot compute and that change
+    /// underneath it: the ratcheted `privacy_tier` (measured by #196 as the one
+    /// field that lagged, which is why a chat a turn had just made private
+    /// showed neither the note nor the chip override until a reload) and the
+    /// binding `restore_provider_from_session` took from a row another window,
+    /// the CLI or a schedule may have rewritten.
+    ///
+    /// ⚠ It does NOT carry the selection it may have displaced, so a client must
+    /// not treat receiving it as "the user's choice was overridden" — on the
+    /// overwhelmingly common turn it names exactly what the client is already
+    /// showing. Compare it against what you display, and say nothing when they
+    /// agree. Widening it from the repair arm is safe precisely because that
+    /// comparison, not the frame's arrival, is what earns a word on screen.
     PrivacyProviderPinned {
         provider: String,
         model: String,
+        /// The chat's classification at this turn's seam, after the ratchet.
+        privacy_tier: SessionClassification,
+        /// That classification's provenance on the row (`turn:versa_azure`,
+        /// `mcp:…`, `backfill:…`), or `None` for a row never raised.
+        privacy_reason: Option<String>,
     },
     Ping,
 }
