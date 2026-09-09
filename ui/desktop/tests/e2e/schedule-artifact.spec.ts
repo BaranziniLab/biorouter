@@ -101,16 +101,19 @@ for (const variant of VARIANTS) {
     let page: Page;
     let root: string;
     let workflowPath: string;
+    /** True when this describe made the sandbox, so teardown may remove it. */
+    let sandboxIsOurs = false;
+    /** Set on the last line of the test body; gates sandbox removal. */
+    let scenarioPassed = false;
     const scheduleId = `e2e-bar-chart-${Date.now()}`;
 
     test.beforeAll(async () => {
       // `BIOROUTER_E2E_PATH_ROOT` is honoured only when the packaged variant is
       // off: the two variants run two Electron instances, and pointing both at
       // one root would have them share a sessions database and a schedule file.
-      root =
-        !packagedApp && process.env.BIOROUTER_E2E_PATH_ROOT
-          ? process.env.BIOROUTER_E2E_PATH_ROOT
-          : createSandbox('biorouter-e2e-schedule-artifact-');
+      const supplied = !packagedApp ? process.env.BIOROUTER_E2E_PATH_ROOT : undefined;
+      sandboxIsOurs = !supplied;
+      root = supplied ?? createSandbox('biorouter-e2e-schedule-artifact-');
       workflowPath = writeBarChartWorkflow(root);
       app = await variant.launch(root);
       page = app.page;
@@ -119,6 +122,17 @@ for (const variant of VARIANTS) {
 
     test.afterAll(async () => {
       if (app) await app.close();
+      // A sandbox is a full copy of the seed — half a gigabyte with a real
+      // session database in it — so leaving one behind per run adds up fast
+      // (six runs measured at 3.0 GB of temp). Removed on a pass; KEPT on a
+      // failure, because its config, session database and schedule file are the
+      // post-mortem, and the path is printed so it can be found.
+      if (!sandboxIsOurs || !root) return;
+      if (scenarioPassed) {
+        fs.rmSync(root, { recursive: true, force: true });
+      } else {
+        console.log(`[schedule-artifact] sandbox kept for post-mortem: ${root}`);
+      }
     });
 
     test('a scheduled figure opens in the artifact panel, and only on click', async () => {
@@ -162,6 +176,7 @@ for (const variant of VARIANTS) {
       await expect(canvas.first()).toBeVisible({ timeout: 60_000 });
 
       await captureEvidence(page, testInfo, variant.name);
+      scenarioPassed = true;
     });
   });
 }
