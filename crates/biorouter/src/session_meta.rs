@@ -58,10 +58,11 @@
 //! believes a change's fields and never refetches drifts the first time two
 //! changes race. Every consumer here re-reads the row it was told about.
 
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -74,6 +75,19 @@ use tracing::debug;
 /// client watches the handful it has open, and anything past a few is already a
 /// client that has been away long enough to want a fresh read anyway.
 const BUFFER: usize = 32;
+
+/// How long a chat's row survives in [`SessionMetaEvents::last`] after the last
+/// watcher holding its id has gone away.
+///
+/// ⚠ **A grace period, and it is what makes pruning SAFE rather than tidy.** A
+/// client's claim lives for exactly one parked GET, so between two consecutive
+/// polls of the only open window there is an instant with no live watcher at
+/// all. Pruning strictly to the live union at that instant would evict the very
+/// ids that window is about to ask about again — and [`SessionMetaEvents::observe`]
+/// adopts a first-seen id SILENTLY, so a row rewritten in that gap would be
+/// swallowed for good. Five minutes is far longer than any request boundary and
+/// far shorter than a daemon's life.
+const RETENTION: Duration = Duration::from_secs(300);
 
 /// What changed about one chat's row.
 ///
@@ -121,6 +135,15 @@ pub struct SessionMetaRow {
     pub privacy_reason: Option<String>,
 }
 
+/// One watched chat's row, and when this process last read it.
+///
+/// The timestamp is the second half of the retention rule: an id survives while
+/// a live watcher holds it, and for [`RETENTION`] after the last one lets go.
+struct Tracked {
+    row: SessionMetaRow,
+    seen: Instant,
+}
+
 #[derive(Default)]
 struct Buffer {
     changes: Vec<SessionMetaChanged>,
@@ -140,17 +163,31 @@ pub struct SessionMetaEvents {
     /// does at startup: a client that has just opened a chat has not changed it,
     /// and reporting the whole row as new would make every client refetch on
     /// connect for nothing.
-    last: Mutex<HashMap<String, SessionMetaRow>>,
+    last: Mutex<HashMap<String, Tracked>>,
+    /// The open-chat ids of every LIVE watcher, keyed by its token.
+    ///
+    /// ⚠ **This map is process-global; one caller's id list is not.** Two
+    /// Biorouter windows (tab tear-off is a shipped feature) each mount one
+    /// subscription and poll with DIFFERENT open-chat sets, so pruning
+    /// [`Self::last`] against the ids of whichever poll happened to arrive last
+    /// makes the two windows evict each other in turn: B's prune drops A's
+    /// chats, A's next `observe` re-adopts them SILENTLY and publishes nothing,
+    /// then A's prune drops B's. Neither window ever learns that a row moved.
+    /// The union of every live watcher is the only list that is safe to prune
+    /// against, which is why the registry exists at all.
+    watchers: Mutex<HashMap<u64, Vec<String>>>,
+    /// Hands out the tokens above. Monotonic and never reused, so a guard can
+    /// only ever retire its own claim.
+    next_watcher: AtomicU64,
+    /// How long an id survives after its last watcher goes away — [`RETENTION`]
+    /// in production, and settable so a test can observe an eviction without
+    /// sleeping through it.
+    retention: Duration,
 }
 
 impl Default for SessionMetaEvents {
     fn default() -> Self {
-        Self {
-            revision: AtomicU64::new(0),
-            buffer: Mutex::new(Buffer::default()),
-            notify: Notify::new(),
-            last: Mutex::new(HashMap::new()),
-        }
+        Self::with_retention(RETENTION)
     }
 }
 
@@ -159,6 +196,22 @@ impl SessionMetaEvents {
         static INSTANCE: once_cell::sync::Lazy<Arc<SessionMetaEvents>> =
             once_cell::sync::Lazy::new(|| Arc::new(SessionMetaEvents::default()));
         &INSTANCE
+    }
+
+    /// A feed whose unwatched ids survive `retention` rather than [`RETENTION`].
+    ///
+    /// `Duration::ZERO` prunes strictly to the live union, which is how a test
+    /// asserts that dropping a watcher really does release its ids.
+    pub fn with_retention(retention: Duration) -> Self {
+        Self {
+            revision: AtomicU64::new(0),
+            buffer: Mutex::new(Buffer::default()),
+            notify: Notify::new(),
+            last: Mutex::new(HashMap::new()),
+            watchers: Mutex::new(HashMap::new()),
+            next_watcher: AtomicU64::new(0),
+            retention,
+        }
     }
 
     fn buffer(&self) -> std::sync::MutexGuard<'_, Buffer> {
@@ -243,16 +296,26 @@ impl SessionMetaEvents {
     pub fn observe(&self, rows: Vec<SessionMetaRow>) -> usize {
         let mut moved = Vec::new();
         {
+            let now = Instant::now();
             let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
             for row in rows {
-                match last.get(&row.session_id) {
-                    Some(before) if before == &row => {}
-                    Some(_) => {
-                        last.insert(row.session_id.clone(), row.clone());
-                        moved.push(row);
+                // `entry` rather than `get` + `insert`: the vacant arm writes
+                // through the same borrow, which a `match last.get(..)` cannot
+                // do on stable.
+                match last.entry(row.session_id.clone()) {
+                    Entry::Occupied(mut slot) => {
+                        let tracked = slot.get_mut();
+                        // The stamp is refreshed whether or not the row moved:
+                        // it records that somebody READ this chat, which is what
+                        // `retain_union` prunes on.
+                        tracked.seen = now;
+                        if tracked.row != row {
+                            tracked.row = row.clone();
+                            moved.push(row);
+                        }
                     }
-                    None => {
-                        last.insert(row.session_id.clone(), row);
+                    Entry::Vacant(slot) => {
+                        slot.insert(Tracked { row, seen: now });
                     }
                 }
             }
@@ -264,14 +327,46 @@ impl SessionMetaEvents {
         count
     }
 
-    /// Stop tracking chats nobody is watching any more, so a long-lived daemon's
-    /// map does not grow with every chat ever opened.
-    pub fn retain_watched(&self, watched: &[String]) {
-        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
-        if last.len() <= watched.len() {
-            return;
+    /// Claim `ids` as watched for as long as the returned guard lives.
+    ///
+    /// One poll, one guard. The claim is what keeps those chats in
+    /// [`Self::last`] while some OTHER caller's poll prunes, and retiring it is
+    /// the only thing that can make them eligible for eviction.
+    ///
+    /// ⚠ **Registering can only ever GROW the union, so it prunes nothing.**
+    /// Pruning belongs on the drop, where a claim disappears.
+    #[must_use = "the ids are watched only for as long as the guard is alive"]
+    pub fn watch(self: &Arc<Self>, ids: &[String]) -> WatchGuard {
+        let token = self.next_watcher.fetch_add(1, Ordering::SeqCst);
+        self.watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(token, ids.to_vec());
+        WatchGuard {
+            events: Arc::clone(self),
+            token,
         }
-        last.retain(|id, _| watched.iter().any(|w| w == id));
+    }
+
+    /// Forget the chats that no live watcher holds and nothing has read within
+    /// [`Self::retention`], so a long-lived daemon's map does not grow with
+    /// every chat ever opened.
+    ///
+    /// ⚠ **The union of every live watcher, never one caller's list.** The
+    /// per-caller form this replaced is the two-window defect recorded on
+    /// [`Self::watchers`]; keeping the ids of every watcher is what makes the
+    /// prune agree with the map it prunes.
+    ///
+    /// The watchers lock is released before the rows lock is taken, so there is
+    /// no ordering between the two to remember.
+    fn retain_union(&self) {
+        let union: HashSet<String> = {
+            let watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
+            watchers.values().flatten().cloned().collect()
+        };
+        let retention = self.retention;
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        last.retain(|id, tracked| union.contains(id) || tracked.seen.elapsed() < retention);
     }
 
     /// Park until the revision moves past `since`, or `timeout` elapses.
@@ -296,6 +391,26 @@ impl SessionMetaEvents {
     }
 }
 
+/// One client's claim on the chats it has open, held for the life of its poll.
+///
+/// Dropping it retires the claim and prunes the row map to what is left — see
+/// [`SessionMetaEvents::watch`].
+pub struct WatchGuard {
+    events: Arc<SessionMetaEvents>,
+    token: u64,
+}
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        self.events
+            .watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.token);
+        self.events.retain_union();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,8 +429,11 @@ mod tests {
         }
     }
 
-    fn events() -> SessionMetaEvents {
-        SessionMetaEvents::default()
+    /// An `Arc`, because a claim is taken through one — see
+    /// [`SessionMetaEvents::watch`]. Every existing test reaches the inner
+    /// methods through `Deref` and is unchanged by it.
+    fn events() -> Arc<SessionMetaEvents> {
+        Arc::new(SessionMetaEvents::default())
     }
 
     #[test]
@@ -422,22 +540,114 @@ mod tests {
 
     #[test]
     fn a_chat_nobody_watches_stops_being_tracked() {
-        let e = events();
+        // `Duration::ZERO` so the release is observable without sleeping through
+        // the grace period; that the grace exists at all is
+        // `a_row_rewritten_between_two_polls_of_one_window_is_still_reported`.
+        let e = Arc::new(SessionMetaEvents::with_retention(Duration::ZERO));
+        let window_a = e.watch(&["s1".to_string()]);
+        let window_b = e.watch(&["s2".to_string()]);
         e.observe(vec![
             row("s1", "versa_azure", "gpt-5.5", "public"),
             row("s2", "codex", "gpt-6-astra", "public"),
         ]);
-        e.retain_watched(&["s1".to_string()]);
-        // s2 is a stranger again, so re-observing it adopts silently rather than
-        // announcing a change nobody asked about.
+
+        drop(window_b);
+        // s2 was nobody's the moment B retired, so it is a stranger again and
+        // re-observing it adopts silently rather than announcing a change
+        // nobody asked about.
         assert_eq!(e.observe(vec![row("s2", "ollama", "qwen3.6", "public")]), 0);
-        // s1 is still tracked.
+        // s1 is still claimed by A, and B retiring must not have touched it.
         assert_eq!(e.observe(vec![row("s1", "ollama", "qwen3.6", "public")]), 1);
+
+        drop(window_a);
+        assert_eq!(
+            e.observe(vec![row("s1", "codex", "gpt-6-astra", "public")]),
+            0,
+            "the last claim on s1 retired, so s1 is a stranger too"
+        );
+    }
+
+    #[test]
+    fn two_windows_with_different_open_chats_do_not_evict_each_other() {
+        // Two Biorouter windows, each with one subscription and its own open
+        // chats. The per-caller prune this replaced made them thrash: B's prune
+        // dropped s1, A's next `observe` re-adopted s1 as first-seen and
+        // published nothing, then A's prune dropped s2 — so neither window ever
+        // learned that a row had moved. Measured before the fix as
+        // "window A must learn that s1 moved; got 0".
+        let e = events();
+        let window_a = e.watch(&["s1".to_string()]);
+        let window_b = e.watch(&["s2".to_string()]);
+
+        // Each window's first sight of its own chat is silent.
+        assert_eq!(
+            e.observe(vec![row("s1", "versa_azure", "gpt-5.5", "public")]),
+            0
+        );
+        assert_eq!(
+            e.observe(vec![row("s2", "codex", "gpt-6-astra", "public")]),
+            0
+        );
+        // Interleaved rounds: the defect needed one poll from each window to
+        // show, and a single round would have passed against it.
+        for _ in 0..3 {
+            assert_eq!(
+                e.observe(vec![row("s1", "versa_azure", "gpt-5.5", "public")]),
+                0
+            );
+            assert_eq!(
+                e.observe(vec![row("s2", "codex", "gpt-6-astra", "public")]),
+                0
+            );
+        }
+
+        // `biorouter session --resume s1 --provider claude_code` from another
+        // process: only window A's chat moved.
+        assert_eq!(
+            e.observe(vec![row("s1", "claude_code", "claude-opus-5", "public")]),
+            1,
+            "window A must learn that s1 moved"
+        );
+        assert_eq!(
+            e.observe(vec![row("s2", "codex", "gpt-6-astra", "public")]),
+            0,
+            "and window B must not be told about a chat that did not move"
+        );
+
+        let delta = e.since(0);
+        assert_eq!(delta.changes.len(), 1);
+        assert_eq!(delta.changes[0].session_id, "s1");
+        drop((window_a, window_b));
+    }
+
+    #[test]
+    fn a_row_rewritten_between_two_polls_of_one_window_is_still_reported() {
+        // A claim lives for exactly one parked GET, so the ONLY window's ids are
+        // unclaimed for an instant at every request boundary. Pruning strictly
+        // to the live union there would evict them, and `observe` re-adopts a
+        // first-seen id SILENTLY — so a row rewritten in that instant would be
+        // swallowed for good. `RETENTION` is what closes it, and the default
+        // feed is the one production uses.
+        let e = events();
+        let poll_one = e.watch(&["s1".to_string()]);
+        assert_eq!(
+            e.observe(vec![row("s1", "versa_azure", "gpt-5.5", "public")]),
+            0
+        );
+        drop(poll_one);
+
+        let poll_two = e.watch(&["s1".to_string()]);
+        assert_eq!(
+            e.observe(vec![row("s1", "claude_code", "claude-opus-5", "public")]),
+            1,
+            "a row rewritten between two polls of one window must still be reported"
+        );
+        drop(poll_two);
     }
 
     #[tokio::test]
     async fn a_parked_poll_wakes_on_the_change_it_was_waiting_for() {
-        let e = Arc::new(events());
+        let e = events();
         e.observe(vec![row("s1", "versa_azure", "gpt-5.5", "public")]);
         let waiter = Arc::clone(&e);
         let parked = tokio::spawn(async move {

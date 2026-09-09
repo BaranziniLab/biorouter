@@ -21,11 +21,18 @@
 //!
 //! # The poll does the reading
 //!
-//! There is no background watcher and no registry of watched ids. The request
-//! carries the ids its client has open, and while parked it re-reads exactly
-//! those rows on a short interval, hands them to
-//! [`SessionMetaEvents::observe`], and returns as soon as the revision moves.
-//! An idle app with no chats open therefore reads nothing at all.
+//! There is no background watcher. The request carries the ids its client has
+//! open, and while parked it re-reads exactly those rows on a short interval,
+//! hands them to [`SessionMetaEvents::observe`], and returns as soon as the
+//! revision moves. An idle app with no chats open therefore reads nothing at
+//! all.
+//!
+//! ⚠ **A poll does register its ids, and that registry is not bookkeeping.**
+//! The row map behind `observe` is process-global while an id list is one
+//! window's, so a poll that pruned that map against its OWN list would evict a
+//! second window's chats — and a re-adopted id is adopted SILENTLY, so the two
+//! windows would thrash and neither would ever be told a row moved. The claim
+//! taken below lives for exactly this request; see [`SessionMetaEvents::watch`].
 //!
 //! ⚠ **`since=0` is a baseline request, not a replay.** A client establishing
 //! itself gets the current revision and no changes; asking for a replay from
@@ -126,6 +133,15 @@ pub async fn session_changes(
             .unwrap_or(MAX_WAIT)
             .min(MAX_WAIT);
 
+    // Claimed for the life of this poll and released when it answers, so the
+    // row map is pruned against the union of every live watcher rather than
+    // against whichever list arrived last.
+    //
+    // ⚠ It must be a NAMED binding. `let _ = events.watch(&ids)` drops the
+    // guard on the spot and reinstates the defect in a shape that reads as a
+    // fix.
+    let _claim = events.watch(&ids);
+
     // Adopt this caller's ids before parking. A chat opened a moment ago has not
     // changed, and reporting its whole row as new would wake every window on
     // connect — the first observation of an id is silent by construction
@@ -142,7 +158,6 @@ pub async fn session_changes(
         {
             events.observe(rows);
         }
-        events.retain_watched(&ids);
 
         let delta = events.since(query.since);
         if !delta.changes.is_empty() || delta.truncated {
