@@ -27,7 +27,7 @@ Two remedies exist and **they are not interchangeable**:
 
 - **No new locks.** `env-lock` is a single global mutex over the whole environment. Adding a holder serialises writers against writers, which was never the failure mode, and does nothing about the unlocked readers that are.
 - **No new `#[serial]`.** An *unkeyed* `#[serial]` is worth even less than it looks: it excludes a test from the 31 other unkeyed ones and leaves it concurrent with the rest.
-- **A source-scan guard beats a stress run.** The race needs an interleaving CI produces and a loaded laptop may never show, so twenty green runs are weak evidence. A source scan cannot flake. Give every scan a non-vacuity floor and prove it against a deliberately poisoned probe before trusting it.
+- **A source-scan guard beats a stress run.** The race needs an interleaving CI produces and a loaded laptop may never show, so twenty green runs are weak evidence. A source scan cannot flake. Give every scan a non-vacuity floor and prove it against a deliberately poisoned probe before trusting it. The standing guard is `model::tests::no_test_parks_a_shared_setting_in_the_process_environment` ([#209](https://github.com/BaranziniLab/biorouter/pull/209)), one table covering nine keys on both principles.
 - **Writing the environment is not banned outright.** A key that is *test-private* — namespaced so no production reader can resolve it — and restored on drop is safe without any lock, because there is no reader to race.
 
 ## Why this document exists rather than a fifth per-key guard
@@ -116,11 +116,11 @@ Verdicts: **fixed**, **live** (a reader can observe another test's write today),
 | `config.yaml` via a shared `config.tmp` | `load_values_with_recovery` | every thread in a start-up storm | **fixed** — PR #197 |
 | `BIOROUTER_PATH_ROOT` at write time | `AgentManager::new`'s spawned seeding | any test holding `env_lock` | **fixed for the spawned seeders** — PR #193 |
 | `BIOROUTER_SESSION_BLOB_LAZY_LOAD` | `Agent::platform_tool_gates` via `get_param` | two `#[serial]` tests | **fixed** — PR #198 |
-| `TEST_KEY`, `API_KEY`, `PROVIDER`, `PORT`, `ENABLED`, `CONFIG`, `TEST_PRECEDENCE` | none in production today; `get_param` upper-cases, so any `get_param("provider")` would resolve one | 11 unguarded bare `set_var` in 3 `config/base.rs` tests; `TEST_KEY` was never removed at all | **fixed** — namespaced to `BIOROUTER_TEST_CONFIG_*` and restored on drop |
-| `OSV_ENDPOINT` | `OsvChecker::new` (`agents/extension_malware_check.rs:18`), reached in production from `extension_manager.rs:972` on every Stdio extension install | 3 tests, RAII-restored but unkeyed `#[serial]` | **live** |
-| `BIOROUTER_TOOL_CALL_BATCHING` | `providers/base.rs:1236`, bare `env::var`, once per streamed turn | `formats/anthropic.rs:1745` under `#[serial(tool_call_batching_env)]`, a key only 3 tests hold | **live** — 5 flag-sensitive tests hold no key |
-| `BIOROUTER_ALLOW_PROJECT_HOOKS` | `hooks/mod.rs:214`, bare `env::var` | `providers/bedrock.rs:1147`, **never removed** | **latent** — no `.biorouter/hooks.yaml` in-tree, so no reader is sensitive today |
-| `BIOROUTER_ALLOW_PROJECT_HOOKS` override | `hooks/mod.rs:214` | `agents/subagent_tool.rs:5663` via `with_config_overrides` | **live defect, not a race** — the override is a no-op, so that arm does not test its own unlock |
+| `TEST_KEY`, `API_KEY`, `PROVIDER`, `PORT`, `ENABLED`, `CONFIG`, `TEST_PRECEDENCE` | none in production today; `get_param` upper-cases, so any `get_param("provider")` would resolve one | 11 unguarded bare `set_var` in 3 `config/base.rs` tests; `TEST_KEY` was never removed at all | **fixed** — [#199](https://github.com/BaranziniLab/biorouter/pull/199): namespaced to `BIOROUTER_TEST_CONFIG_*` and restored on drop |
+| `OSV_ENDPOINT` | `OsvChecker::new` (`agents/extension_malware_check.rs:18`), reached in production from `extension_manager.rs:972` on every Stdio extension install | 3 tests, RAII-restored but unkeyed `#[serial]` | **live** — fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
+| `BIOROUTER_TOOL_CALL_BATCHING` | `providers/base.rs:1236`, bare `env::var`, once per streamed turn | `formats/anthropic.rs:1745` under `#[serial(tool_call_batching_env)]`, a key only 3 tests hold | **live** — 5 flag-sensitive tests hold no key; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
+| `BIOROUTER_ALLOW_PROJECT_HOOKS` | `hooks/mod.rs:214`, bare `env::var` | `providers/bedrock.rs:1147`, **never removed** | **latent** — no `.biorouter/hooks.yaml` in-tree, so no reader is sensitive today; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
+| `BIOROUTER_ALLOW_PROJECT_HOOKS` override | `hooks/mod.rs:214` | `agents/subagent_tool.rs:5663` via `with_config_overrides` | **live defect, not a race** — the override is a no-op, so that arm does not test its own unlock; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
 | `HOME` | `security/policy/command.rs:846`, `policy/target.rs:125` | `knowledge/conversation_ingest.rs:806` | **latent** — `global_memory.rs` is already mitigated by `pinned_store_root()` |
 | `BIOROUTER_PATH_ROOT` (the general case) | ~46 live `Paths::config_dir()` readers | 33 `lock_env` writers | **open** — deferred, see below |
 | `CLAUDE_THINKING_ENABLED`, `CLAUDE_THINKING_BUDGET` | 6 bare `env::var` sites on the request-format path | none in `crates/` | **latent** |
@@ -133,7 +133,7 @@ Verdicts: **fixed**, **live** (a reader can observe another test's write today),
 
 `skills_extension::skills_root(config_dir)` (`:228`) exists and has three callers. Independently, `Paths::config_dir().join("skills")` is spelled eleven more times — nine in production — and only a doc comment ties them together.
 
-Production: `agents/skill_catalog.rs:155`, `agents/skills_extension.rs:379`, `:512`, `:830`, `agents/skill_package/install.rs:75`, `:85`, `:278`, `biorouter-cli/src/commands/skill.rs:38` (a second `fn skills_root`), `biorouter-cli/src/session/completion.rs:86`. Tests: `skills_extension.rs:4291`, `:5700`, `knowledge/conversation_ingest.rs:666`.
+Production: `agents/skill_catalog.rs:155`, `agents/skills_extension.rs:379`, `:512`, `:830`, `agents/skill_package/install.rs:75`, `:85`, `:278`, `biorouter-cli/src/commands/skill.rs:38` (a second `fn skills_root`), `biorouter-cli/src/session/completion.rs:86`. Tests: `skills_extension.rs:4291`, `:5637`, `:5700`, `knowledge/conversation_ingest.rs:666` — twelve, not eleven; `:5637` splits the spelling across two lines and is invisible to a line-wise scan. Routed through the helper and pinned by `the_skills_root_is_spelled_once` in [#212](https://github.com/BaranziniLab/biorouter/pull/212).
 
 ⚠ `skills_extension.rs:830` is **not** a second read inside `SkillsClient::new`, as the follow-up note claimed. It is `add_missing_shipped_skills`, a separate `pub(crate) fn` reached from `SkillCatalog::scan` — so the read lands on a later, unowned code path, which is the hazard `:807` is accepted for *not* being.
 
@@ -170,6 +170,9 @@ grep -rn 'config_dir()' crates/ --include='*.rs' | grep 'join("skills")'
 - **Give every key its own non-vacuity floor.** A single global floor lets most rows rot silently behind the one key that is still written.
 - **Count file mentions, not matches.** A presence-judged key is healthy at zero matches, so a floor on matches is unsatisfiable for exactly the rows that most need one.
 - **Insert a test after the previous test's closing brace**, never anchored on a `fn` line — an insertion between `#[test]` and its function silently unregisters the neighbour, and cargo says nothing.
+- **Strip comments in a way that survives a URL.** `line.split("//")` truncates `set_var("OSV_ENDPOINT", "http://host/v1/query")` at the URL's own slashes, leaving an unterminated literal no pattern matches. Measured: eight of nine planted probes fired, and the one key whose values are URLs did not.
+- **A guard must not be its own witness.** Two separate self-references were measured while writing these. A per-key floor counted the guard's own table row, so renaming a key left it green. A "the definition still exists" check searched the whole file and found its own literal, so renaming the join to `skillz` left it green. Assemble a needle from halves, and scope a definition check to the function body.
+- **Run a new test by name and confirm the count moved.** A filter that matches nothing passes silently; two probes in this work reported success against zero tests before that was noticed.
 
 ## Related documentation
 
