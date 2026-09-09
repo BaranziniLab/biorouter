@@ -35,6 +35,22 @@ import type { ProviderTier, Session, SessionClassification } from '../../api/typ
  * marked private, so it stays on X" about a chat that had simply been switched
  * to a different *private* provider by hand — true about the binding, wrong
  * about the reason.
+ *
+ * # Round 3 / N1 — statement 1 now holds for every chat
+ *
+ * PR #192 shipped statement 1 only where statement 2 also applied, because the
+ * client's copy of the row went stale on a model switch (see
+ * {@link ../privacy/usePinnedModel.usePinnedModel} for the regression that
+ * forced it). Measured consequence: bind Codex / `gpt-6-astra`, run one turn,
+ * switch the app to Claude Code / `claude-fable-5-1`, reopen the chat — the
+ * composer read `claude-fable-5-1` on a 1M gauge while `token_events` recorded
+ * `model_id = gpt-6-astra, provider = codex` for the next turn. Both endpoints
+ * public, so no privacy breach; the chip, the gauge and the cost attribution
+ * were all against the wrong model.
+ *
+ * The staleness is now fixed where it is (`utils/sessionBindingSync` on a
+ * switch, `ChatStreamController.refreshSessionBinding` after a turn), so
+ * statement 1 no longer has to borrow statement 2's proof.
  */
 
 /**

@@ -173,13 +173,19 @@ describe('PinnedModelNote', () => {
 });
 
 /**
- * ⚠ The regression this gate exists to prevent, and it is not hypothetical:
- * `ModelAndProviderContext.changeModel` writes BOTH the session row and the
- * global default, so right after a per-chat model switch the daemon has them in
- * step while the client's cached `/agent/resume` copy of the row is the value
- * from BEFORE the switch. A composer that preferred the row on every
- * disagreement would answer the switch by showing the model the user had just
- * switched away from.
+ * Round 3 / N1 — the chip and gauge state the chat's own binding for EVERY chat
+ * that has one, not only for the chats the privacy barrier is holding.
+ *
+ * ⚠ The regression that kept #192 from shipping this, recorded because it is the
+ * thing to re-check if any of these change: `changeModel` writes BOTH the
+ * session row and the global default, so right after a per-chat switch the
+ * daemon had them in step while the client's cached `/agent/resume` copy of the
+ * row was the value from BEFORE the switch — and a composer preferring the row
+ * answered the switch by showing the model the user had just switched away from.
+ * It is closed at the source now (`utils/sessionBindingSync` on a switch,
+ * `ChatStreamController.refreshSessionBinding` after a turn), which is what this
+ * rule rests on; `hooks/chatStreamStore.binding.test.tsx` is where that half is
+ * pinned.
  */
 describe('what the chip and gauge are told to state', () => {
   it('states the chat’s own binding when the selection is barred from it', async () => {
@@ -187,27 +193,104 @@ describe('what the chip and gauge are told to state', () => {
     await waitFor(() => expect(result.current.effectiveModel).toEqual(BINDING));
   });
 
-  it('leaves the app-wide selection standing when it could run here', async () => {
-    // Both private: Gate A admits the selection, so the row may simply be this
-    // client's stale copy and the selection is the fresher fact.
+  /**
+   * The residual case #192 left open. Both private, so Gate A would admit the
+   * selection — but `restore_provider_from_session` binds the ROW, so the
+   * selection is still not what runs here and the chip must say so. No sentence:
+   * privacy is not the reason.
+   */
+  it('states the binding even when the selection would be admitted here', async () => {
     mocks.currentProvider = 'ollama';
     mocks.currentModel = 'qwen3.6';
     mocks.getProviders.mockResolvedValue([...CATALOG, providerRow('ollama', 'Ollama', 'private')]);
     const { result } = renderHook(() => usePinnedModel(chat('private'), undefined));
-    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
-    expect(result.current.effectiveModel).toBeUndefined();
+    await waitFor(() => expect(result.current.effectiveModel).toEqual(BINDING));
+    expect(result.current.notice).toBeNull();
   });
 
-  it('leaves a public chat entirely alone, and reads no catalog for it', async () => {
+  /**
+   * Round 3 / N1's verbatim repro, at the hook. Bind Codex / `gpt-6-astra`, run
+   * one turn (the row is written), switch the app to Claude Code /
+   * `claude-fable-5-1`, reopen the chat. Measured before the fix: the composer
+   * read `claude-fable-5-1` on a 1M gauge while the next turn's `token_events`
+   * recorded `model_id = gpt-6-astra, provider = codex`.
+   *
+   * Both endpoints are public, so there is no privacy sentence to earn — and no
+   * catalog read either, which is the property #192 established and this rule
+   * keeps: the tier is needed only for the sentence.
+   */
+  it('states a public chat’s own binding, with no sentence and no catalog read', async () => {
+    mocks.currentProvider = 'claude_code';
+    mocks.currentModel = 'claude-fable-5-1';
+    const codexChat = {
+      ...chat('public'),
+      provider_name: 'codex',
+      model_config: { model_name: 'gpt-6-astra' },
+    } as Session;
+
+    const { result } = renderHook(() => usePinnedModel(codexChat, undefined));
+
+    await waitFor(() =>
+      expect(result.current.effectiveModel).toEqual({ provider: 'codex', model: 'gpt-6-astra' })
+    );
+    expect(result.current.notice).toBeNull();
+    expect(mocks.getProviders).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The just-switched case: no stale flash. Once the row has been patched with
+   * the binding the daemon accepted, it AGREES with the selection, and agreement
+   * means there is nothing to override — the chip goes on rendering the
+   * selection exactly as it did before the switch.
+   */
+  it('overrides nothing once the fresh row and the selection agree', async () => {
+    mocks.currentProvider = 'versa_azure';
+    mocks.currentModel = BINDING.model;
     const { result } = renderHook(() => usePinnedModel(chat('public'), undefined));
     await waitFor(() => expect(result.current.effectiveModel).toBeUndefined());
-    expect(mocks.getProviders).not.toHaveBeenCalled();
+    expect(result.current.notice).toBeNull();
+  });
+
+  it('says nothing about a chat that has never named a provider', async () => {
+    const { result } = renderHook(() =>
+      usePinnedModel({ ...chat('public'), provider_name: null } as Session, undefined)
+    );
+    await waitFor(() => expect(result.current.effectiveModel).toBeUndefined());
+  });
+
+  /**
+   * Round 3 / N3 — a chat whose classification was established by a turn in THIS
+   * client session. The store re-reads the row after every turn, so the tier
+   * arriving as `private` is all it takes: the note appears without a reload.
+   */
+  it('picks up a classification a turn raised, without a reload', async () => {
+    const before = renderHook(({ session }) => usePinnedModel(session, undefined), {
+      initialProps: { session: chat('public') },
+    });
+    await waitFor(() => expect(before.result.current.effectiveModel).toEqual(BINDING));
+    expect(before.result.current.notice).toBeNull();
+
+    // …and the same row after `refreshSessionBinding` adopted the ratchet.
+    before.rerender({ session: chat('private') });
+    await waitFor(() =>
+      expect(before.result.current.notice).toBe(
+        'This chat is marked private, so it stays on Versa API Azure / gpt-5.2-2025-12-11. ' +
+          'Claude Code / claude-opus-5 is not used here.'
+      )
+    );
   });
 
   it('prefers what a turn reported over the row', async () => {
     const reported = { provider: 'llamacpp', model: 'gemma4' };
     const { result } = renderHook(() => usePinnedModel(chat('private'), reported));
     await waitFor(() => expect(result.current.effectiveModel).toEqual(reported));
+  });
+
+  it('states nothing while the selection is still unresolved', async () => {
+    mocks.currentProvider = null;
+    mocks.currentModel = null;
+    const { result } = renderHook(() => usePinnedModel(chat('public'), undefined));
+    await waitFor(() => expect(result.current.effectiveModel).toBeUndefined());
   });
 });
 
