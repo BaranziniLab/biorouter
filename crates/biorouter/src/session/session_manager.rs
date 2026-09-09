@@ -3025,6 +3025,68 @@ impl SessionStorage {
         })
     }
 
+    /// The four fields the session-row change feed compares, for a set of ids.
+    ///
+    /// One statement rather than one per id, and deliberately NOT `get_session`:
+    /// that reads the whole row and, without `metadata_only`, the transcript
+    /// with it — this runs on a timer for every chat any client has open.
+    ///
+    /// ⚠ `updated_at` is neither selected nor compared, and that is the
+    /// load-bearing omission. `insert_message` and the token-usage update both
+    /// stamp it, so a diff that included it would fire many times per turn —
+    /// the same defect as watching the database file's mtime, wearing a
+    /// column's clothes. See [`crate::session_meta`].
+    ///
+    /// An id with no row is simply absent from the result: the feed reports
+    /// changes to rows, and a deleted chat is not a changed one.
+    pub async fn session_meta_rows(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<crate::session_meta::SessionMetaRow>> {
+        if session_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pool = self.pool().await?;
+        let placeholders = std::iter::repeat_n("?", session_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, provider_name, \
+                    json_extract(model_config_json, '$.model_name') AS model_name, \
+                    privacy_tier, privacy_reason \
+               FROM sessions WHERE id IN ({placeholders})"
+        );
+        let mut query = sqlx::query_as::<
+            _,
+            (
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(&sql);
+        for id in session_ids {
+            query = query.bind(id);
+        }
+        Ok(query
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(
+                |(session_id, provider_name, model_name, privacy_tier, privacy_reason)| {
+                    crate::session_meta::SessionMetaRow {
+                        session_id,
+                        provider_name,
+                        model_name,
+                        privacy_tier,
+                        privacy_reason,
+                    }
+                },
+            )
+            .collect())
+    }
+
     /// Persist one lead/worker routing snapshot only while the session still
     /// names the exact composite configuration that produced it.
     ///

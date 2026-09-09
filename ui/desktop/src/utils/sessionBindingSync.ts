@@ -44,12 +44,21 @@
  * refused switch leaves the row exactly as it was. The announcement therefore
  * belongs after that call has resolved, never beside the optimistic UI update.
  *
- * ⚠ **In-renderer only, deliberately.** Unlike `sessionNameSync`, this is not
- * carried over a `BroadcastChannel`: a model switch is an act of one window,
- * the row it writes is re-read by any other window on its next turn or resume,
- * and a second window's own `ModelAndProviderContext` is not updated by this
- * event either. Broadcasting the binding alone would make one of the two facts
- * cross windows and not the other.
+ * ⚠ **It DOES cross windows now, and the objection that said it should not is
+ * answered rather than dropped.** That objection was: a second window's own
+ * `ModelAndProviderContext` is not updated by this event, so broadcasting the
+ * binding would make one of the two facts cross and not the other. It is
+ * answered by what the two facts are *for*. The row says what a chat RUNS on;
+ * the selection says what a NEW chat will run on. A window that hears "chat X is
+ * now bound to Y" learns something true about chat X and nothing at all about
+ * its own next new chat — which is exactly right, because a per-chat switch made
+ * over there is not a statement about new chats over here. The global default
+ * does move underneath both windows, and each picks it up from its own config
+ * read; that is unchanged, and unrelated.
+ *
+ * What must NOT cross is a claim the receiver cannot check. So the receiver
+ * treats an announcement about a chat it holds as authoritative (the daemon
+ * accepted the write before it was announced) and ignores everything else.
  */
 
 export interface SessionBindingChange {
@@ -74,8 +83,31 @@ type Listener = (change: SessionBindingChange) => void;
 
 const listeners = new Set<Listener>();
 
+// ── Cross-window broadcast ────────────────────────────────────────────────
+// Same mechanism and same channel shape as `sessionNameSync`: BroadcastChannel
+// reaches every React subtree in this renderer AND every other BrowserWindow of
+// the same origin, which is what a second Biorouter window is.
+
+let channel: BroadcastChannel | null = null;
+function getChannel(): BroadcastChannel | null {
+  if (channel) return channel;
+  if (typeof BroadcastChannel === 'undefined') return null;
+  channel = new BroadcastChannel('biorouter:session-binding');
+  channel.onmessage = (event: MessageEvent) => {
+    const change = event.data as SessionBindingChange | undefined;
+    // Shape-checked, not trusted: this arrives from another window and a
+    // malformed message must not patch a row with `undefined`.
+    if (!change || !change.sessionId || !change.provider || !change.model) return;
+    for (const listener of [...listeners]) listener(change);
+  };
+  return channel;
+}
+
 /** Subscribe to model-switch announcements. Returns the unsubscribe. */
 export function subscribeSessionBindingChanges(listener: Listener): () => void {
+  // Lazy-init so a test environment without `BroadcastChannel` still loads the
+  // module, exactly as `sessionNameSync` does.
+  getChannel();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -85,10 +117,13 @@ export function subscribeSessionBindingChanges(listener: Listener): () => void {
 /**
  * Announce a binding the daemon has already accepted for `sessionId`.
  *
- * Synchronous by design: the caller is mid-switch, and the point of the
- * announcement is that no render happens between the write landing and this
- * renderer knowing about it.
+ * Local listeners are called SYNCHRONOUSLY: the caller is mid-switch, and the
+ * point of the announcement is that no render happens between the write landing
+ * and this renderer knowing about it. The broadcast to other windows follows and
+ * is inherently asynchronous — a second window learning a moment later is the
+ * ordinary case, and it has nothing on screen that the delay could make wrong.
  */
 export function announceSessionBinding(change: SessionBindingChange): void {
   for (const listener of [...listeners]) listener(change);
+  getChannel()?.postMessage(change);
 }

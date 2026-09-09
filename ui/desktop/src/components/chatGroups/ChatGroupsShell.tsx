@@ -102,16 +102,20 @@ function renderLayout(
  * failure mode in which this over-marks. `ChatTabStrip`'s `privacyTiers` prop
  * doc states the same thing, and the two must not drift apart again.
  *
- * ⚠ KNOWN GAP, not covered by this task. The header pill is NOT live either:
- * BaseChat's `session` is the snapshot `chatStreamStore` sets once in
- * `loadSession`, patched afterwards only for `name`/`user_set_name` and
- * `user_workflow_values`. `privacy_tier` is never re-read on the turn path, and
- * the post-load `getSession` polls exist for auto-naming and copy only the
- * name. So a chat that ratchets to Private DURING its life shows no marker on
- * either chat-side surface — tab dot or header pill — until something reloads
- * it. History rows and the sidebar rail, which read freshly-fetched lists, are
- * correct. Closing this needs the escalation to announce itself from the
- * provider-bind path; nothing in the current plan wires that.
+ * ⚠ This USED to record a known gap, and the gap is closed — the note is kept
+ * because the shape of the fix is what a future reader needs. It read: the
+ * header pill is not live either, `privacy_tier` is never re-read on the turn
+ * path, so a chat that ratchets to Private DURING its life shows no marker on
+ * either chat-side surface until something reloads it; "closing this needs the
+ * escalation to announce itself from the provider-bind path".
+ *
+ * It does now, twice over. The reply stream states the post-ratchet
+ * classification in its own first frames, and `ChatStreamController.refresh
+ * SessionBinding` patches the same four fields onto THIS cache as well as onto
+ * its own snapshot — so the tab dot, the header pill and the composer read one
+ * answer. A row rewritten by another process arrives the same way, through
+ * `utils/sessionMetaSubscription`. History rows and the sidebar rail, which read
+ * freshly-fetched lists, were always correct and are unchanged.
  */
 function useSessionPrivacyTiers(): Record<string, SessionClassification> {
   const [tiers, setTiers] = useState<Record<string, SessionClassification>>({});

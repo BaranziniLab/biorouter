@@ -3222,6 +3222,61 @@ export type SessionListResponse = {
 };
 
 /**
+ * What changed about one chat's row.
+ *
+ * ⚠ **Advisory, exactly like the frame in `/reply`.** It is not a session
+ * payload and no gate consults it: `privacy_tier` here is a REPORT of a
+ * classification the daemon has already committed, and a consumer that wants
+ * to act on it re-reads the row.
+ */
+export type SessionMetaChanged = {
+    /**
+     * `model_config_json`'s `model_name`, as the row now holds it.
+     */
+    model_name?: string | null;
+    /**
+     * The row's classification provenance, as stored.
+     */
+    privacy_reason?: string | null;
+    /**
+     * The row's classification, as stored.
+     */
+    privacy_tier?: string | null;
+    /**
+     * `provider_name` as the row now holds it.
+     */
+    provider_name?: string | null;
+    /**
+     * The revision this change was stamped with.
+     */
+    revision: number;
+    /**
+     * The chat whose row moved.
+     */
+    session_id: string;
+};
+
+/**
+ * Everything that happened after a client's `since`.
+ */
+export type SessionMetaDelta = {
+    /**
+     * The changes after `since`, oldest first.
+     */
+    changes: Array<SessionMetaChanged>;
+    /**
+     * The revision the caller should send next time.
+     */
+    revision: number;
+    /**
+     * The caller fell further behind than the ring holds, so `changes` is a
+     * PARTIAL history. Applying it and believing yourself current is the stale
+     * -row bug this feed exists to end, one layer down. Refetch instead.
+     */
+    truncated?: boolean;
+};
+
+/**
  * Per-model token breakdown for one session.
  */
 export type SessionModelUsageResponse = {
@@ -7123,6 +7178,50 @@ export type GetSessionActivityResponses = {
 };
 
 export type GetSessionActivityResponse = GetSessionActivityResponses[keyof GetSessionActivityResponses];
+
+export type SessionChangesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * The last revision this client applied. `0` (or absent) means "tell me
+         * the current revision", which is how a fresh client establishes a
+         * baseline without a refetch.
+         */
+        since?: number;
+        /**
+         * Comma-separated session ids this client has open. Only these rows are
+         * read, so a client watching nothing costs nothing.
+         *
+         * ⚠ It scopes what can be DETECTED, not what is returned: the ring is
+         * process-wide, so a delta may name a chat this caller did not list. The
+         * caller ignores those, exactly as `CatalogChanged.session_id` is ignored
+         * by clients it does not concern.
+         */
+        ids?: string | null;
+        /**
+         * How long to park, in milliseconds. Clamped to [`MAX_WAIT`].
+         */
+        timeout_ms?: number | null;
+    };
+    url: '/sessions/changes';
+};
+
+export type SessionChangesErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+};
+
+export type SessionChangesResponses = {
+    /**
+     * The session-row delta since `since`
+     */
+    200: SessionMetaDelta;
+};
+
+export type SessionChangesResponse = SessionChangesResponses[keyof SessionChangesResponses];
 
 export type ImportSessionData = {
     body: ImportSessionRequest;
