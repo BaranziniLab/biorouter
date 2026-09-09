@@ -269,6 +269,15 @@ interface ModelLimit {
 interface ChatInputProps {
   sessionId: string | null;
   /**
+   * The chat's classification as the chat stream's cached session row holds it.
+   *
+   * Preferred over this component's own read (below) whenever it is present: the
+   * reply stream now states the POST-ratchet classification in its own first
+   * frames, so the row is current from turn START rather than from whenever the
+   * probe happened to fire.
+   */
+  sessionRowPrivacyTier?: SessionClassification;
+  /**
    * Issue #56 / F2 — what THIS chat actually runs on (`BaseChat.chatBinding`):
    * the session row's own provider and model, or the one a turn reported when
    * the privacy barrier had to repair the binding mid-turn.
@@ -350,6 +359,7 @@ interface ChatInputProps {
 
 export default function ChatInput({
   sessionId,
+  sessionRowPrivacyTier,
   effectiveModel,
   handleSubmit,
   chatState = ChatState.Idle,
@@ -485,9 +495,27 @@ export default function ChatInput({
    * an unresolved tier as "judge nothing", because walling a working tool on a
    * failed read is the same defect as hiding it.
    */
-  const [sessionPrivacyTier, setSessionPrivacyTier] = useState<SessionClassification | undefined>(
+  const [ownPrivacyTierRead, setOwnPrivacyTierRead] = useState<SessionClassification | undefined>(
     undefined
   );
+
+  /**
+   * The chat's tier, with the STREAM's answer preferred over this component's
+   * own read.
+   *
+   * ⚠ This is what retires the F-12 probe's premise. That probe exists because
+   * "the composer cannot see the ratchet directly — no event announces it"; the
+   * reply stream now does, in its first frames, so `sessionRowPrivacyTier` is
+   * current from turn START while the probe cannot fire until the transcript
+   * has grown. The probe is KEPT as the fallback: an observer surface, a
+   * transcript view, or any caller that does not thread the row still needs an
+   * answer, and its own read is the only one they have.
+   *
+   * Both sources are the daemon's own answer, so preferring the fresher one
+   * cannot make the composer less restrictive than the truth — the property the
+   * probe's ⚠ turns on.
+   */
+  const sessionPrivacyTier = sessionRowPrivacyTier ?? ownPrivacyTierRead;
   // Which chat `sessionPrivacyTier` is a statement about, and the ordering of the
   // reads that produced it. Refs rather than effect-locals because the reads are
   // now issued from two effects (the bind below and the turn watcher after it)
@@ -509,7 +537,7 @@ export default function ChatInput({
       if (issued !== tierGenerationRef.current) return;
       if (tierSessionRef.current !== sessionId) return;
       if (response.data?.privacy_tier) {
-        setSessionPrivacyTier(response.data.privacy_tier);
+        setOwnPrivacyTierRead(response.data.privacy_tier);
       }
     } catch (error) {
       console.error('[ChatInput] Failed to read the session privacy tier:', error);
@@ -526,7 +554,7 @@ export default function ChatInput({
     // reverse it paints a Private dot on a chat with no such guarantee.
     tierSessionRef.current = sessionId;
     tierGenerationRef.current += 1;
-    setSessionPrivacyTier(undefined);
+    setOwnPrivacyTierRead(undefined);
 
     if (!sessionId) {
       return;

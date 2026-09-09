@@ -21,6 +21,13 @@
  * the tab — chip `claude-opus-5`, gauge "972.5k of 1M", no note; after
  * `location.reload()` all three were right. A turn writes fields no client can
  * compute, so this half is a re-read rather than an announcement.
+ *
+ * **A turn's START.** The re-read above runs when the turn ENDS, so during a
+ * long turn the composer still held the pre-turn classification — the ratchet
+ * fires at the top of `Agent::reply`. The daemon now states the binding and the
+ * post-ratchet tier in the reply stream's own first frames
+ * (`PrivacyProviderPinned`), so the composer is right from the first token
+ * without a request on the submit path.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessageEvent, Session, TokenState } from '../api';
@@ -285,5 +292,164 @@ describe('a turn’s own writes are read back', () => {
     expect(controller.getSnapshot().session?.provider_name).toBe('codex');
     expect(controller.getSnapshot().turnError).toBeUndefined();
     warn.mockRestore();
+  });
+});
+
+describe('a turn states what it runs on, from its first frames', () => {
+  /**
+   * The frame the daemon now sends on every turn. `privacy_tier` is the
+   * POST-ratchet classification, so a chat this turn has just privatised says
+   * `private` here while its row said `public` when the turn began.
+   */
+  function pinFrame(over: Partial<Record<string, unknown>> = {}): MessageEvent {
+    return {
+      type: 'PrivacyProviderPinned',
+      provider: 'versa_azure',
+      model: 'gpt-5.5-2026-04-24',
+      privacy_tier: 'private',
+      privacy_reason: 'turn:versa_azure',
+      ...over,
+    } as MessageEvent;
+  }
+
+  async function runTurn(sid: string, ...frames: MessageEvent[]) {
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    mocks.reply.mockResolvedValue({ stream: streamOf(...frames, finishFrame) });
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.handleSubmit('Reply with the single word ready.');
+    return controller;
+  }
+
+  /**
+   * The whole point, and the one field #196 measured as lagging. The post-turn
+   * re-read is deliberately disarmed here (`getSession` resolves `null`, so
+   * `refreshSessionBinding` returns before it patches anything) — so a `private`
+   * classification on the row can ONLY have come from the turn's own frame.
+   */
+  it('adopts the ratcheted classification from the frame, not from a re-read', async () => {
+    const sid = `turn-start-tier-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: null });
+
+    const controller = await runTurn(sid, pinFrame());
+
+    const row = controller.getSnapshot().session;
+    expect(row?.privacy_tier).toBe('private');
+    expect(row?.privacy_reason).toBe('turn:versa_azure');
+    // And the binding half still lands, exactly as #192 shipped it.
+    expect(controller.getSnapshot().pinnedModel).toEqual({
+      provider: 'versa_azure',
+      model: 'gpt-5.5-2026-04-24',
+    });
+  });
+
+  /**
+   * A public turn's frame must not leave a provenance behind. `privacy_reason`
+   * is `None` on a row that has never been raised, and the row is where the
+   * chat-tab dot and the note both read from.
+   */
+  it('clears a provenance the chat no longer has', async () => {
+    const sid = `turn-start-public-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: null });
+    mocks.resumeAgent.mockResolvedValue({
+      data: {
+        session: boundSession(sid, { privacy_tier: 'private', privacy_reason: 'turn:versa_azure' }),
+      },
+    });
+    mocks.reply.mockResolvedValue({
+      stream: streamOf(
+        pinFrame({
+          provider: 'codex',
+          model: 'gpt-6-astra',
+          privacy_tier: 'public',
+          privacy_reason: null,
+        }),
+        finishFrame
+      ),
+    });
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.handleSubmit('hi');
+
+    expect(controller.getSnapshot().session?.privacy_tier).toBe('public');
+    expect(controller.getSnapshot().session?.privacy_reason).toBeNull();
+  });
+
+  /**
+   * The frame arrives on EVERY turn now. A fresh session object per turn would
+   * re-render the composer — chip, gauge and note included — once per turn for
+   * no change at all.
+   */
+  it('does not churn the row when the same classification is reported again', async () => {
+    const sid = `turn-start-idempotent-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: null });
+
+    const controller = await runTurn(sid, pinFrame(), pinFrame(), pinFrame());
+    const first = controller.getSnapshot().session;
+
+    mocks.reply.mockResolvedValue({ stream: streamOf(pinFrame(), finishFrame) });
+    await controller.handleSubmit('again');
+
+    expect(controller.getSnapshot().session).toBe(first);
+  });
+
+  /**
+   * A frame from a daemon that predates the tier fields still binds the chip.
+   * `privacy_tier` absent means "this frame knows nothing about the tier", which
+   * must not be read as "public" — that would silently declassify the row this
+   * client is showing.
+   */
+  it('leaves the classification alone when the frame carries none', async () => {
+    const sid = `turn-start-legacy-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: null });
+    mocks.resumeAgent.mockResolvedValue({
+      data: { session: boundSession(sid, { privacy_tier: 'private' }) },
+    });
+    mocks.reply.mockResolvedValue({
+      stream: streamOf(
+        {
+          type: 'PrivacyProviderPinned',
+          provider: 'versa_azure',
+          model: 'gpt-5.5',
+        } as MessageEvent,
+        finishFrame
+      ),
+    });
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.handleSubmit('hi');
+
+    expect(controller.getSnapshot().session?.privacy_tier).toBe('private');
+    expect(controller.getSnapshot().pinnedModel?.provider).toBe('versa_azure');
+  });
+
+  /**
+   * ⚠ The regression the widening would otherwise cause, pinned.
+   *
+   * `chatBinding` prefers the turn-reported pin over the row. While the frame
+   * only arrived on a repaired bind that was almost never observable; now that
+   * every turn reports one, a switch made AFTER a turn would be overruled by
+   * that turn's pin and the chip would name the model the user just switched
+   * away from — the exact regression #192 narrowed its rule to avoid.
+   */
+  it('lets a later switch replace the binding a turn reported', async () => {
+    const sid = `turn-start-then-switch-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: null });
+
+    const controller = await runTurn(sid, pinFrame());
+    expect(controller.getSnapshot().pinnedModel?.model).toBe('gpt-5.5-2026-04-24');
+
+    announceSessionBinding({
+      sessionId: sid,
+      provider: 'claude_code',
+      model: 'claude-opus-5',
+      contextLimit: 1_000_000,
+    });
+
+    expect(controller.getSnapshot().pinnedModel).toEqual({
+      provider: 'claude_code',
+      model: 'claude-opus-5',
+    });
+    expect(controller.getSnapshot().session?.provider_name).toBe('claude_code');
   });
 });

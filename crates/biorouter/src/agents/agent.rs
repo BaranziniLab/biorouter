@@ -3545,20 +3545,51 @@ pub enum AgentEvent {
     /// after the rows are durable, so a consumer that stops reading mid-turn
     /// never holds an id for a row that was not written.
     MessagesPersisted(Vec<PersistedMessage>),
-    /// Issue #56 Gate B, repair arm: this turn ran on the provider the SESSION
-    /// ROW names, not on whatever the agent was holding when the turn began,
-    /// because the chat's classification does not admit the bound one.
+    /// Issue #56 Gate B: what this turn is running on — the provider and model
+    /// the agent holds at the seam, and the chat's classification AFTER the
+    /// turn ratchet has committed.
     ///
-    /// The repair itself is old and correct — a private chat must never reach a
-    /// public model, and asking the user to downgrade the chat instead would be
-    /// worse. What was missing is that it happened at all: a user who switches
-    /// the app to a public model, watches the composer's chip change, and then
-    /// sends into a private chat gets an answer from a different model than the
-    /// one on screen, with the context gauge sized to the wrong window.
+    /// # It is sent on every turn, and that is a deliberate widening
+    ///
+    /// It began (#192) as the repair arm's own account of itself: a private
+    /// chat must never reach a public model, so Gate B silently rebinds from the
+    /// row, and a user who had switched the app to a public model, watched the
+    /// composer's chip change, and then sent into a private chat got an answer
+    /// from a different model than the one on screen. The repair was right;
+    /// being invisible was the defect.
+    ///
+    /// It is now emitted on EVERY turn that reaches a provider, because the
+    /// client cannot compute two of these four fields and both of them change
+    /// underneath it:
+    ///
+    /// * `privacy_tier` is raised by the ratchet a few lines below the seam that
+    ///   builds this event. Before this frame carried it, a chat that a turn had
+    ///   just made private kept a `public` classification in the client's cached
+    ///   row for the whole turn, and #196 measured that as the ONE field that
+    ///   lagged — the private-chat note and the chip override are both suppressed
+    ///   by a stale `public`, which is why they used to appear only after a
+    ///   reload.
+    /// * `provider`/`model` are bound from the ROW by
+    ///   `restore_provider_from_session`, so a row rewritten by anything other
+    ///   than this client — a second window, `biorouter session --resume
+    ///   --provider …`, a schedule — makes the turn run somewhere the composer
+    ///   is not naming, with the context gauge sized to the wrong window.
+    ///
+    /// ⚠ **The old restriction to the repair arm was itself a contract, and the
+    /// argument for it has an answer.** It read: the frame must be evidence, not
+    /// decoration, or a client will paint a permanent note. The answer is that
+    /// deciding whether there is anything to SAY was never this event's job and
+    /// still is not (see the ⚠ below): the client compares the frame against
+    /// what it is displaying and says nothing when they agree, which is exactly
+    /// what `bindingDiffersFromSelection` returns on the overwhelmingly common
+    /// turn where they do.
     ///
     /// ⚠ Purely advisory, exactly like [`AgentEvent::ToolCallPending`]. It is
     /// not a `Message`, so it is never persisted, replayed, or shown to the
-    /// model; it changes nothing about what any gate permits or refuses.
+    /// model; it changes nothing about what any gate permits or refuses. In
+    /// particular `privacy_tier` here is a REPORT of the classification the
+    /// ratchet already committed — reading it back is not a second write, and no
+    /// gate consults this frame.
     ///
     /// ⚠ It carries no "requested" binding, and adding one would be a mistake.
     /// The agent's own view of what was displaced is incomplete — an LRU-
@@ -3571,6 +3602,14 @@ pub enum AgentEvent {
         provider: String,
         /// Its model.
         model: String,
+        /// The chat's classification at this turn's seam, AFTER the ratchet —
+        /// the same value stored into `cached_classification` and handed to the
+        /// hooks manager, so the three cannot disagree about one turn.
+        privacy_tier: SessionClassification,
+        /// The provenance string that classification carries on the row
+        /// (`turn:versa_azure`, `mcp:…`, `backfill:…`), or `None` for a row that
+        /// has never been raised.
+        privacy_reason: Option<String>,
     },
 }
 
@@ -6447,25 +6486,39 @@ impl Agent {
         Ok(true)
     }
 
-    /// The binding Gate B's repair arm just installed, as the event that tells
-    /// the turn's readers where it actually went.
+    /// The binding this turn is about to run on, plus the classification the
+    /// ratchet has just committed for it — the event that tells the turn's
+    /// readers where it went and how sensitive the chat now is.
     ///
-    /// ⚠ It states a FACT and judges nothing: "this turn ran on `provider` /
-    /// `model`". It deliberately does not carry the selection it displaced, and
-    /// it is not the place to decide whether the displacement is news. The
-    /// caller that renders it already holds the selection it is showing the
-    /// user, and only that caller can tell "the chip is wrong" from "the chip
-    /// was right all along and a rehydrated agent was quietly repaired to
-    /// match" — the common case (LRU rehydration, a legacy row, any ratchet
-    /// that commits after a legal bind) that must NOT produce a note.
+    /// ⚠ It states FACTS and judges nothing: "this turn ran on `provider` /
+    /// `model`, and the chat is classified `privacy_tier`". It deliberately does
+    /// not carry the selection it may have displaced, and it is not the place to
+    /// decide whether any of that is news. The caller that renders it already
+    /// holds the selection it is showing the user, and only that caller can tell
+    /// "the chip is wrong" from "the chip was right all along" — the common case
+    /// (an ordinary turn, LRU rehydration, a legacy row, any ratchet that
+    /// commits after a legal bind) that must NOT produce a note.
+    ///
+    /// ⚠ `classification` is passed IN rather than re-read, and that is the
+    /// point: it is the same value the caller stored into
+    /// `cached_classification` and handed to the hooks manager, sampled once at
+    /// the seam. A second read here could observe a different row — Gate C's
+    /// dispatch ratchet runs on another task — and this frame would then
+    /// describe a turn that never existed.
     ///
     /// `None` if the binding vanished between the swap and this read, which is
     /// a race no message can usefully describe.
-    async fn pinned_provider_event(&self) -> Option<AgentEvent> {
+    async fn pinned_provider_event(
+        &self,
+        classification: SessionClassification,
+        reason: Option<String>,
+    ) -> Option<AgentEvent> {
         let provider = self.bound_provider_unchecked().await?;
         Some(AgentEvent::PrivacyProviderPinned {
             provider: provider.get_name().to_string(),
             model: provider.get_model_config().model_name,
+            privacy_tier: classification,
+            privacy_reason: reason,
         })
     }
 
@@ -8262,10 +8315,18 @@ impl Agent {
             .await
             .ok();
         let mut privacy_refusal: Option<String> = None;
-        // Set by Gate B's repair arm below, yielded as the turn's own account of
-        // which model actually served it. `None` on every other path, including
-        // the overwhelmingly common one where the bound provider was already
-        // admissible and nothing was repaired.
+        // The turn's own account of what it ran on: the effective binding plus
+        // the POST-ratchet classification, built once below and yielded near the
+        // front of the stream.
+        //
+        // ⚠ It used to be set only by the repair arm. It is now set on every
+        // turn that reaches a provider, because two of the four fields are ones
+        // no client can compute and both change underneath it — the ratchet
+        // raises `privacy_tier` a few lines down, and `restore_provider_from_session`
+        // binds a row this window may not have re-read since another window, the
+        // CLI or a schedule rewrote it. `None` remains for the paths where the
+        // question has no answer: no row, no bound provider, or a refusal (which
+        // returns its own stream before the yield site is ever reached).
         let mut privacy_pinned: Option<AgentEvent> = None;
         // DR-15's master opt-out. ONE read for this seam, used by both halves —
         // the turn barrier below and DR-4's turn ratchet under it — so the two
@@ -8300,9 +8361,12 @@ impl Agent {
                     // then measuring the usage against the wrong model's
                     // window. Nothing about what the gate PERMITS changes here;
                     // the turn is simply made to say where it went.
-                    Ok(true) => {
-                        privacy_pinned = self.pinned_provider_event().await;
-                    }
+                    //
+                    // ⚠ The repair no longer BUILDS the frame here. It is built
+                    // once below, after the ratchet, so the classification it
+                    // reports is the post-ratchet one and a repaired turn and an
+                    // ordinary one cannot report differently shaped facts.
+                    Ok(true) => {}
                     // 3. Otherwise refuse THIS TURN. The row is untouched, so
                     //    the repair card can still offer the one-click fix.
                     _ => privacy_refusal = Some(crate::privacy::refusal::turn_refusal(row)),
@@ -8322,18 +8386,45 @@ impl Agent {
             // "ratchet on the turn" rather than on the bind, which is O5's
             // deliberate trade, and recorded here because it was not.
             let mut classification = row.privacy_tier;
+            // Mirrors the row's `privacy_reason` column so the frame below can
+            // name the provenance the client would otherwise have to refetch.
+            //
+            // ⚠ It is DERIVED, not read back, and the derivation is exact only
+            // because of the `f > row.privacy_tier` guard on the write. The
+            // classification lattice has two values, so a strict increase can
+            // only be `public -> private`; `SessionUpdateBuilder`'s `CASE WHEN`
+            // preserves an existing reason on an already-private row and takes
+            // the new one otherwise, so on a public row it is the `ELSE` arm and
+            // the stored reason is exactly the string passed here. Widen the
+            // lattice or relax that guard and this must become a read-back.
+            let mut classification_reason = row.privacy_reason.clone();
             if privacy_enforced && privacy_refusal.is_none() {
                 if let Some(provider) = self.bound_provider_unchecked().await {
                     let f = crate::privacy::floor(provider.tier());
                     if f > row.privacy_tier {
+                        let reason = format!("turn:{}", provider.get_name());
                         session_manager
                             .update(&session_config.id)
-                            .raise_privacy(f, &format!("turn:{}", provider.get_name()))
+                            .raise_privacy(f, &reason)
                             .apply()
                             .await?;
                         classification = f;
+                        classification_reason = Some(reason);
                     }
                 }
+            }
+            // What this turn runs on, said out loud — after the ratchet, so the
+            // tier it reports is the one the turn actually carries.
+            //
+            // ⚠ Skipped for a refusal. Arm 3 leaves the row alone and returns a
+            // message instead of a turn, and a frame here would claim a turn ran
+            // on a provider when none ran at all. (The refusal returns its own
+            // stream well before the yield site, so this guard is belt and
+            // braces — it is written down because the guard is the statement.)
+            if privacy_refusal.is_none() {
+                privacy_pinned = self
+                    .pinned_provider_event(classification, classification_reason)
+                    .await;
             }
             // ⚠ The POST-ratchet classification, not the row's. A turn that
             // has just raised the session to Private must not leave the cache
@@ -8659,16 +8750,21 @@ impl Agent {
             if let Some(published) = prestream_published {
                 yield published;
             }
-            // Gate B's repair, said out loud. Its position is unconstrained by
-            // #59/#66: the frame names no stored row and carries no message
-            // body, so it can neither arrive ahead of its own content nor claim
-            // an id whose body is still buffered. It goes near the front so a
-            // client that loses the stream mid-turn still learns which model
-            // the turn it half-watched was running on.
+            // What this turn runs on, said out loud. Its position is
+            // unconstrained by #59/#66: the frame names no stored row and
+            // carries no message body, so it can neither arrive ahead of its own
+            // content nor claim an id whose body is still buffered.
+            //
+            // ⚠ Near the front is now load-bearing rather than merely nice. The
+            // composer sizes its context gauge and decides its privacy note from
+            // these fields, so a frame that arrived at the END of the turn would
+            // leave both wrong for exactly as long as the turn takes — which is
+            // the window #196 left open and this closes. A client that loses the
+            // stream mid-turn still learns which model it half-watched.
             //
             // ⚠ Only the ordinary turn path carries it. The slash-command
-            // early-returns above never reach a provider, so "which model
-            // served this turn" has no answer there to report.
+            // early-returns above never reach a provider, so "which model served
+            // this turn" has no answer there to report.
             if let Some(pinned) = privacy_pinned {
                 yield pinned;
             }
@@ -20041,9 +20137,28 @@ mod gate_b_turn_tests {
         events
             .iter()
             .filter_map(|event| match event {
-                Ok(AgentEvent::PrivacyProviderPinned { provider, model }) => {
-                    Some((provider.clone(), model.clone()))
-                }
+                Ok(AgentEvent::PrivacyProviderPinned {
+                    provider, model, ..
+                }) => Some((provider.clone(), model.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every `PrivacyProviderPinned` the turn reported, as the classification
+    /// and provenance it carried. Separate from [`pinned`] so a test that cares
+    /// about the binding is not rewritten when the tier's shape changes.
+    fn pinned_classification(
+        events: &[Result<AgentEvent>],
+    ) -> Vec<(SessionClassification, Option<String>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(AgentEvent::PrivacyProviderPinned {
+                    privacy_tier,
+                    privacy_reason,
+                    ..
+                }) => Some((*privacy_tier, privacy_reason.clone())),
                 _ => None,
             })
             .collect()
@@ -20137,11 +20252,25 @@ mod gate_b_turn_tests {
     }
 
     #[tokio::test]
-    async fn a_turn_that_needed_no_repair_reports_nothing() {
-        // The frame must be evidence, not decoration. A private chat already on
-        // its own private provider is the overwhelmingly common turn, and a
-        // client that saw this frame on every one of them would either paint a
-        // permanent note or learn to ignore the frame.
+    async fn a_turn_that_needed_no_repair_still_reports_what_it_ran_on() {
+        // ⚠ This assertion is INVERTED from the one that shipped with #192, and
+        // the argument it replaces deserves to be written down rather than
+        // deleted: "the frame must be evidence, not decoration — a private chat
+        // already on its own private provider is the overwhelmingly common turn,
+        // and a client that saw this frame on every one of them would either
+        // paint a permanent note or learn to ignore the frame."
+        //
+        // The answer is that deciding whether there is anything to SAY was never
+        // this frame's job. The contract has always been "compare it against
+        // what you display, and say nothing when they agree", and the client's
+        // `bindingDiffersFromSelection` returns exactly that on this turn — so
+        // no note is painted here whether the frame arrives or not.
+        //
+        // What changed is that the frame now carries the two facts a client
+        // cannot compute: the post-ratchet classification, and the binding
+        // `restore_provider_from_session` took from a row this client may not
+        // have re-read. Withholding those on the common turn is what left the
+        // composer stating a stale tier for the whole of it.
         let (_dir, agent, s) = agent_on(private_provider()).await;
         let sm = manager(&agent);
         let row_provider = private_provider();
@@ -20155,9 +20284,87 @@ mod gate_b_turn_tests {
                 .unwrap(),
         )
         .await;
-        assert!(
-            pinned(&events).is_empty(),
-            "nothing was repaired, so there is nothing to report:\n{}",
+        assert_eq!(
+            pinned(&events),
+            vec![("versa_azure".to_string(), "gpt-5.5".to_string())],
+            "an ordinary turn still states what it ran on, exactly once:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            pinned_classification(&events),
+            vec![(
+                SessionClassification::Private,
+                Some("turn:versa_azure".to_string())
+            )],
+            "and the classification it carries is the row's own:\n{}",
+            rendered(&events)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_ratchets_reports_the_classification_it_just_wrote() {
+        // The lag #196 measured, closed at its source. The row is PUBLIC when
+        // the turn starts; the ratchet raises it a few lines below the seam that
+        // builds this frame. A frame carrying the PRE-ratchet tier would leave
+        // the composer suppressing the private-chat note for the whole turn,
+        // which is the reload-to-see-it defect.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = private_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        // Deliberately NOT ratcheted here: the row is public and the turn is the
+        // thing that privatises it.
+        assert_eq!(
+            sm.get_session(&s.id, false).await.unwrap().privacy_tier,
+            SessionClassification::Public
+        );
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            pinned_classification(&events),
+            vec![(
+                SessionClassification::Private,
+                Some("turn:versa_azure".to_string())
+            )],
+            "the frame must report the POST-ratchet classification and the \
+             provenance the ratchet wrote, not the row's pre-turn `public`:\n{}",
+            rendered(&events)
+        );
+        // And it agrees with what actually landed on the row — the derivation in
+        // Gate B is exact only under the `f > row.privacy_tier` guard, so this
+        // is the assertion that would fail if that guard were relaxed.
+        let row = sm.get_session(&s.id, false).await.unwrap();
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.privacy_reason.as_deref(), Some("turn:versa_azure"));
+    }
+
+    #[tokio::test]
+    async fn a_public_turn_on_a_public_chat_reports_public_with_no_reason() {
+        // The negative control for the two above: nothing is repaired, nothing
+        // ratchets, and the frame still states the binding — with the tier the
+        // row genuinely holds and no provenance invented for it.
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = public_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            pinned_classification(&events),
+            vec![(SessionClassification::Public, None)],
+            "a public chat's frame must not invent a provenance:\n{}",
             rendered(&events)
         );
     }
