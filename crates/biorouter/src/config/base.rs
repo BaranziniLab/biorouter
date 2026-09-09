@@ -533,6 +533,43 @@ impl Config {
         load_init_config_from_workspace()
     }
 
+    /// A staging path for one write, unique to this call.
+    ///
+    /// ⚠ **Never a fixed name.** It was `config.tmp` — one path shared by every
+    /// writer in every process — and that is a correctness bug, not untidiness,
+    /// because `save_values` holds an **exclusive lock** on whatever it opens
+    /// there. Two concurrent writers interleave like this:
+    ///
+    /// 1. A and B both open the shared `config.tmp`; A wins the lock.
+    /// 2. A writes, closes, and renames `config.tmp` onto `config.yaml`.
+    /// 3. B's handle is still open on that same file object — which is now
+    ///    `config.yaml` — and B's `lock_exclusive` succeeds on it.
+    ///
+    /// So a writer ends up holding an exclusive lock on the live config file.
+    /// On unix `fs2` uses `flock`, which is advisory, and readers never notice.
+    /// On Windows it is `LockFileEx`, which is **mandatory**: a concurrent
+    /// `read_to_string` of that file fails with `ERROR_LOCK_VIOLATION`. That is
+    /// how a `ModelConfig::new` in an unrelated test came back `Err` and
+    /// panicked `test (windows-latest)` twice in one day — always in the first
+    /// ~100 ms of the job's first test binary, the one window in which
+    /// `config.yaml` does not exist yet and every thread races to create it.
+    /// See the long note above `validate_max_tokens` in `model.rs`.
+    ///
+    /// Per process AND per call: the pid separates the daemon, the CLI and the
+    /// Electron host (which `privacy::master_switch` already had to reason
+    /// about), and the counter separates threads inside one of them.
+    fn staging_path(&self) -> PathBuf {
+        static NEXT_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nth = NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut name = self
+            .config_path
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("config.yaml"))
+            .to_os_string();
+        name.push(format!(".{}.{nth}.tmp", std::process::id()));
+        self.config_path.with_file_name(name)
+    }
+
     fn save_values(&self, values: Mapping) -> Result<(), ConfigError> {
         // Create backup before writing new config
         self.create_backup_if_needed()?;
@@ -546,30 +583,40 @@ impl Config {
         }
 
         // Write to a temporary file first for atomic operation
-        let temp_path = self.config_path.with_extension("tmp");
+        let temp_path = self.staging_path();
 
-        {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&temp_path)?;
+        let staged = (|| -> Result<(), ConfigError> {
+            {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&temp_path)?;
 
-            // Acquire an exclusive lock
-            file.lock_exclusive()
-                .map_err(|e| ConfigError::LockError(e.to_string()))?;
+                // Acquire an exclusive lock
+                file.lock_exclusive()
+                    .map_err(|e| ConfigError::LockError(e.to_string()))?;
 
-            // Write the contents using the same file handle
-            file.write_all(yaml_value.as_bytes())?;
-            file.sync_all()?;
+                // Write the contents using the same file handle
+                file.write_all(yaml_value.as_bytes())?;
+                file.sync_all()?;
 
-            // Unlock is handled automatically when file is dropped
+                // Unlock is handled automatically when file is dropped
+            }
+
+            // Atomically replace the original file
+            std::fs::rename(&temp_path, &self.config_path)?;
+            Ok(())
+        })();
+
+        // A per-call staging path cannot be reused by the next attempt, so a
+        // failure that leaves it behind leaves litter in the user's config
+        // directory forever. Removing it is best-effort: the write already
+        // failed and that is the error worth reporting.
+        if staged.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
         }
-
-        // Atomically replace the original file
-        std::fs::rename(&temp_path, &self.config_path)?;
-
-        Ok(())
+        staged
     }
 
     pub fn initialize_if_empty(&self, values: Mapping) -> Result<(), ConfigError> {
@@ -1722,11 +1769,132 @@ mod tests {
         let content = std::fs::read_to_string(config_file.path())?;
         assert!(serde_yaml::from_str::<serde_yaml::Value>(&content).is_ok());
 
-        // The temp file should not exist after successful write
-        let temp_path = config_file.path().with_extension("tmp");
-        assert!(!temp_path.exists(), "Temporary file should be cleaned up");
+        // No staging file should survive a successful write. Asserting on one
+        // fixed name would go vacuous the moment the staging path stopped being
+        // a fixed name — which is exactly what it had to stop being — so look
+        // for any `.tmp` sibling instead.
+        let dir = config_file.path().parent().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                name.ends_with(".tmp")
+                    && name.starts_with(
+                        &config_file
+                            .path()
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging files should be cleaned up, found {leftovers:?}"
+        );
 
         Ok(())
+    }
+
+    /// Two writers must never stage through the same path.
+    ///
+    /// It was `config_path.with_extension("tmp")` — one name for every writer
+    /// in every process — and `save_values` holds an **exclusive lock** on
+    /// whatever it opens there. Once one writer renames that shared file onto
+    /// `config.yaml`, a second writer that already had it open is holding an
+    /// exclusive lock on the live config file. Under `flock` (unix) that is
+    /// advisory and invisible; under `LockFileEx` (Windows) it is mandatory,
+    /// and a concurrent reader gets `ERROR_LOCK_VIOLATION` instead of the file.
+    /// That read is how `ModelConfig::new` came back `Err` and panicked
+    /// `test (windows-latest)` in tests that never touch the config layer.
+    ///
+    /// Asserted on the path rather than by racing threads, deliberately: the
+    /// race needs an interleaving CI produces and a laptop rarely does, and on
+    /// unix it cannot be observed at all. Uniqueness is the property, and it is
+    /// checkable everywhere.
+    #[test]
+    fn two_writes_never_share_a_staging_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let staged = config.staging_path();
+            assert_eq!(
+                staged.parent(),
+                config_path.parent(),
+                "staging must be a sibling of the config file or the rename is not atomic"
+            );
+            assert_ne!(staged, config_path, "staging must not BE the config file");
+            assert!(
+                staged.to_string_lossy().ends_with(".tmp"),
+                "staging paths stay recognisable as staging: {}",
+                staged.display()
+            );
+            assert!(
+                seen.insert(staged.clone()),
+                "two writes staged through {} — the second one can end up holding an \
+                 exclusive lock on config.yaml after the first renames it into place",
+                staged.display()
+            );
+        }
+        assert!(
+            seen.iter().all(|p| p
+                .to_string_lossy()
+                .contains(&std::process::id().to_string())),
+            "the staging name must also separate PROCESSES: the daemon, the CLI and the \
+             Electron host all write this directory"
+        );
+    }
+
+    /// A reader must never see a config-layer failure that the config layer
+    /// itself caused.
+    ///
+    /// This is the shape the flake took: many threads reach `Config::load` at
+    /// once at start-up, `config.yaml` does not exist yet, and every one of
+    /// them takes the create-and-save branch. The only answer any of them may
+    /// give for a key that is not set is `NotFound` — never an I/O or lock
+    /// error, which callers are entitled to read as "the value is broken".
+    ///
+    /// On unix this passes with or without the fix (`flock` is advisory), so it
+    /// is not the fail-before test — `two_writes_never_share_a_staging_path` is.
+    /// It is here because it is the assertion that runs on the platform where
+    /// the bug actually happens.
+    #[test]
+    fn a_startup_storm_on_a_missing_config_never_reports_anything_but_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config = std::sync::Arc::new(
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap(),
+        );
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                let config = std::sync::Arc::clone(&config);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..8)
+                        .map(|_| config.get_param::<i32>("A_KEY_NOBODY_SET"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            for outcome in worker.join().unwrap() {
+                assert!(
+                    matches!(outcome, Err(ConfigError::NotFound(_))),
+                    "an unset key must read as NotFound even while other threads are creating \
+                     the config file; got {outcome:?}"
+                );
+            }
+        }
     }
 
     #[test]
