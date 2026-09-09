@@ -928,13 +928,17 @@ mod install_origin_tests {
         )
         .unwrap();
 
-        // Only Windows recognises that string as an absolute path at all; the
-        // point on every other platform is that it does not panic and does not
-        // resolve to something relative to the working directory.
-        match install_origin(tmp.path()) {
-            Some(p) => assert_eq!(p, Path::new(r"C:\Program Files\Biorouter\resources\bin")),
-            None => assert!(!cfg!(windows), "Windows must read its own absolute paths"),
-        }
+        let read_back = install_origin(tmp.path());
+        // Only Windows recognises that string as an absolute path at all. There
+        // it must come back simplified; on every other platform the point is
+        // that it is refused rather than resolved against the working directory.
+        #[cfg(windows)]
+        assert_eq!(
+            read_back,
+            Some(PathBuf::from(r"C:\Program Files\Biorouter\resources\bin"))
+        );
+        #[cfg(not(windows))]
+        assert_eq!(read_back, None);
     }
 }
 
