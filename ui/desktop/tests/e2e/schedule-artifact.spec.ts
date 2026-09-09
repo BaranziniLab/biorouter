@@ -32,7 +32,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   createSandbox,
-  dismissDependencyModal,
+  dismissStartupModals,
   EVIDENCE_DIR,
   launchDevBundle,
   launchPackagedApp,
@@ -114,7 +114,7 @@ for (const variant of VARIANTS) {
       workflowPath = writeBarChartWorkflow(root);
       app = await variant.launch(root);
       page = app.page;
-      await dismissDependencyModal(page);
+      await dismissStartupModals(page);
     });
 
     test.afterAll(async () => {
@@ -145,17 +145,64 @@ for (const variant of VARIANTS) {
       const viewer = page.getByTestId('artifact-viewer');
       await expect(viewer).toBeVisible({ timeout: 30_000 });
 
+      // Not decoration: the panel renders a `loading` placeholder until the
+      // artifact resolves to HTML, so asserting only that the panel exists would
+      // pass for a figure that never arrives. The named iframe is the branch
+      // that means "resolved to renderable HTML" (`ArtifactViewer.tsx:1400`).
+      const frame = page.locator('iframe[name="biorouter-artifact-preview"]');
+      await expect(frame).toBeAttached({ timeout: 60_000 });
+
+      // And the figure itself: Chart.js draws into a canvas inside the sandboxed
+      // frame. This is what separates "the panel opened" from "the figure drew",
+      // which is a real failure mode — a report whose libraries did not load
+      // renders an empty card.
+      const canvas = page
+        .frameLocator('iframe[name="biorouter-artifact-preview"]')
+        .locator('canvas');
+      await expect(canvas.first()).toBeVisible({ timeout: 60_000 });
+
       await captureEvidence(page, testInfo, variant.name);
     });
   });
 }
 
-/** Reach the Scheduler by hash — the sidebar entry is inside a collapsed disclosure. */
+/**
+ * Reach the Scheduler by hash — the sidebar entry is inside a disclosure that is
+ * collapsed by default, so navigating by hash avoids having to open it.
+ *
+ * Two things in this loop are the fix for a measured failure, not caution:
+ *
+ *  - **Modals are re-dismissed on every pass.** A dialog open anywhere makes the
+ *    background `aria-hidden`, and Playwright's role queries skip aria-hidden
+ *    subtrees — so a late-arriving notice does not hide the Scheduler, it makes
+ *    the Scheduler *unfindable*. See `dismissStartupModals`.
+ *  - **The hash is set repeatedly.** A single set races the renderer's boot:
+ *    `waitForRenderer` returns as soon as `#root` has any child, which is true
+ *    while the shell is still mounting, and a `hashchange` delivered before the
+ *    router is listening is simply lost.
+ *
+ * The page is identified by its "New schedule" button rather than by the
+ * `Scheduler` heading. Both are unique to this page; the button is the next
+ * thing the test clicks, so waiting on it proves the page is actually usable.
+ */
 async function gotoScheduler(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    window.location.hash = '#/schedules';
-  });
-  await expect(page.getByRole('heading', { name: 'Scheduler' })).toBeVisible({ timeout: 30_000 });
+  const newSchedule = page.getByRole('button', { name: 'New schedule' });
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    await dismissStartupModals(page);
+    await page.evaluate(() => {
+      window.location.hash = '#/schedules';
+    });
+    try {
+      await newSchedule.waitFor({ state: 'visible', timeout: 5_000 });
+      await expect(page.getByRole('heading', { name: 'Scheduler' })).toBeVisible();
+      return;
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error('Scheduler never rendered after repeated #/schedules navigation');
+      }
+    }
+  }
 }
 
 async function createSchedule(page: Page, id: string, workflowPath: string): Promise<void> {

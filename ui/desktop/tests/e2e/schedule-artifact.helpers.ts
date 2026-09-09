@@ -164,20 +164,58 @@ export async function waitForRenderer(page: Page): Promise<void> {
 }
 
 /**
- * Dismiss the "Install missing dependencies" modal if it appeared.
+ * Close every dialog the app puts up on launch, and report what was closed.
  *
- * Never install anything: the button is the outline `Dismiss`
- * (`src/components/DependencySetupModal.tsx:437`), which reads `Done` once
- * every dependency is already present.
+ * ⚠ This is not politeness — a startup dialog makes the WHOLE app invisible to
+ * Playwright. Radix marks the background `aria-hidden` while a modal is open,
+ * and `getByRole` skips aria-hidden subtrees, so every role query returns
+ * "element(s) not found" for a page that is plainly rendered behind the dialog.
+ * That was measured twice on this spec: `getByRole('heading', { name:
+ * 'Scheduler' })` timed out for the full budget while the failure snapshot taken
+ * immediately afterwards listed `heading [level=1]: Scheduler`. The blocker was
+ * `FirstRunPrivacyNotice` ("Some of your chats are now marked private"), which
+ * a seeded sandbox raises because the seed's session database has chats that
+ * ratchet private — and whose button reads "Got it", so a helper looking only
+ * for "Dismiss" walked straight past it.
+ *
+ * Dialogs are therefore detected with a CSS locator rather than a role query,
+ * and closed in a loop because they stack.
+ *
+ * Nothing here ever installs anything: `DependencySetupModal`'s control is the
+ * outline `Dismiss` (`src/components/DependencySetupModal.tsx:437`), which reads
+ * `Done` once every dependency is present.
  */
-export async function dismissDependencyModal(page: Page): Promise<void> {
-  const dismiss = page.getByRole('button', { name: /^(Dismiss|Done)$/ });
-  try {
-    await dismiss.first().waitFor({ state: 'visible', timeout: 8000 });
-    await dismiss.first().click();
-  } catch {
-    // No modal: the common case on a seeded sandbox.
+export async function dismissStartupModals(page: Page): Promise<string[]> {
+  const closed: string[] = [];
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const dialog = page.locator('[role="dialog"]').first();
+    try {
+      await dialog.waitFor({ state: 'visible', timeout: attempt === 0 ? 15_000 : 2_000 });
+    } catch {
+      return closed;
+    }
+    const title =
+      (await dialog
+        .locator('h1, h2')
+        .first()
+        .textContent()
+        .catch(() => null)) ?? '(untitled dialog)';
+    const control = dialog
+      .locator(
+        '[data-testid="notice-acknowledge"], button:has-text("Got it"), button:has-text("Dismiss"), button:has-text("Done")'
+      )
+      .first();
+    if ((await control.count()) === 0) {
+      throw new Error(
+        `A startup dialog titled "${title.trim()}" is open and has no known dismiss control. ` +
+          'Add its control to dismissStartupModals — while it is open every getByRole query fails.'
+      );
+    }
+    await control.click();
+    closed.push(title.trim());
+    await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
   }
+  return closed;
 }
 
 /** Launch the dev bundle in `.vite/build/` via Playwright's Electron driver. */
@@ -203,7 +241,19 @@ export async function launchDevBundle(root: string): Promise<LaunchedApp> {
   });
   const page = await app.firstWindow();
   await waitForRenderer(page);
-  return { page, close: async () => void (await app.close().catch(() => {})) };
+  return {
+    page,
+    close: async () => {
+      // ⚠ `ElectronApplication.close()` can hang here — measured once, taking the
+      // 60s `afterAll` budget with it and reporting a hook timeout on top of
+      // whatever the real failure was. The app owns a spawned `biorouterd`, so a
+      // graceful quit is worth attempting but must never be the only exit: fall
+      // back to killing the process this helper started, by pid.
+      const pid = app.process().pid;
+      await Promise.race([app.close().catch(() => {}), new Promise((r) => setTimeout(r, 20_000))]);
+      if (pid) killTree(pid);
+    },
+  };
 }
 
 /** One CDP target as reported by `/json/list`. */
@@ -230,6 +280,23 @@ function fetchJson(url: string, timeoutMs: number): Promise<CdpTarget[]> {
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', reject);
   });
+}
+
+/**
+ * Terminate a process and everything it started, by pid.
+ *
+ * Never `pkill -f`: the obvious pattern (`target/debug/biorouterd agent`) also
+ * matches every OTHER worktree's daemon and the developer's own running app.
+ */
+function killTree(pid: number): void {
+  const tree = descendantPids(pid);
+  for (const target of [...tree, pid]) {
+    try {
+      process.kill(target, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 /** Every descendant pid of `pid`, deepest last. Used so teardown kills by pid. */
