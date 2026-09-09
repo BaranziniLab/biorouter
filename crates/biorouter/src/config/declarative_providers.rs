@@ -454,4 +454,64 @@ mod tests {
             );
         }
     }
+
+    /// `display_name` is what the provider catalog PRINTS, so a note-to-self
+    /// left in one ships to every user. `groq.json` carried
+    /// `"display_name": "Groq (d)"` — a leftover marker (the other four
+    /// bundled providers are clean), and the Public tab of the catalog listed
+    /// **"Groq (d)"** through at least v1.90.2.
+    ///
+    /// The shape is what is banned, not the one string: a trailing
+    /// parenthesised **single letter** is a marker, never a name. Real
+    /// parentheses in a display name are words and stay legal — `Moonshot AI
+    /// (Kimi)` is the bundled proof, and it is asserted here so a future
+    /// tightening of this rule has to notice it.
+    #[test]
+    fn no_bundled_display_name_carries_a_single_letter_marker() {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+        assert!(
+            providers.len() >= 5,
+            "expected the bundled set to load; got {}",
+            providers.len()
+        );
+
+        for provider in &providers {
+            let name = provider.display_name.trim();
+            assert!(
+                !name.is_empty(),
+                "{}: display_name must not be empty",
+                provider.name
+            );
+            // `rsplit_once`, not an index: slicing a `&str` by a byte offset can
+            // split a multi-byte character, which is what `clippy::string_slice`
+            // is there to stop. A display name is user-visible text and can hold
+            // any character at all.
+            if let Some(inner) = name
+                .strip_suffix(')')
+                .and_then(|rest| rest.rsplit_once('(').map(|(_, inner)| inner))
+            {
+                assert!(
+                    inner.chars().count() != 1,
+                    "{}: display_name {name:?} ends in a parenthesised single letter — that is a \
+                     leftover marker, not a name (groq.json shipped \"Groq (d)\")",
+                    provider.name
+                );
+            }
+        }
+
+        // The two ends of the rule, pinned by name so neither can drift.
+        let groq = providers
+            .iter()
+            .find(|p| p.name == "groq")
+            .expect("groq.json is bundled");
+        assert_eq!(groq.display_name, "Groq");
+        let moonshot = providers
+            .iter()
+            .find(|p| p.name == "moonshot")
+            .expect("moonshot.json is bundled");
+        assert_eq!(
+            moonshot.display_name, "Moonshot AI (Kimi)",
+            "a multi-letter parenthetical is a name, not a marker, and stays legal"
+        );
+    }
 }
