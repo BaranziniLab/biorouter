@@ -215,6 +215,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         }
     }
 

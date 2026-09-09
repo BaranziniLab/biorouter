@@ -134,6 +134,15 @@ pub async fn handle_term_init(
     let session = match named_session {
         Some(s) => s,
         None => {
+            // Same precondition every other row-creating path checks, and for the
+            // same reason (PR #183): `build_session` is where a missing provider
+            // is discovered, it runs long after this, and by then the row is in
+            // the store. `term init` was the one command that skipped it, so a
+            // fresh install collected an orphan "Biorouter Term Session" for
+            // every shell that sourced the script. The guard resolves the
+            // configured default itself, which is why no flags are passed —
+            // `term init` accepts none.
+            crate::cli::refuse_unconfigured_before_creating_a_row(None, None)?;
             let session = session_manager
                 .create_session(
                     working_dir,
@@ -559,6 +568,52 @@ mod tests {
             stored_texts(&sm, &id).await,
             vec!["second incarnation".to_string()],
             "a refused cut must not delete anything"
+        );
+    }
+
+    /// `term init` creates a session row, and was the one command that did so
+    /// without the provider precondition.
+    ///
+    /// PR #183 put `refuse_unconfigured_before_creating_a_row` above all four
+    /// row-creating paths in `cli.rs` and pinned them with a source guard scoped
+    /// to `get_or_create_session_id` — which cannot see this module. So on a
+    /// fresh install every shell that sourced the `term init` script left an
+    /// orphan "Biorouter Term Session" behind, discovered only when
+    /// `build_session` ran much later and found no provider.
+    ///
+    /// Structural, in the style of that guard, and it has to be: the refusal arm
+    /// is `std::process::exit(1)`, which no unit test survives, and the success
+    /// arm reads the process-global `Config`. What can be asserted is the thing
+    /// that was wrong — the ORDER. The check is above the write.
+    #[test]
+    fn term_init_refuses_an_unconfigured_run_before_it_creates_a_row() {
+        let src = include_str!("term.rs");
+        let (production, _) = src
+            .split_once("\n#[cfg(test)]")
+            .expect("term.rs has no test module");
+        let (_, after) = production
+            .split_once("pub async fn handle_term_init(")
+            .expect("handle_term_init is gone");
+        let (body, _) = after
+            .split_once("\npub async fn ")
+            .expect("could not find the end of handle_term_init");
+
+        let guard = body
+            .find("refuse_unconfigured_before_creating_a_row(")
+            .expect("term init creates a session row without the provider precondition");
+        let create = body
+            .find(".create_session(")
+            .expect("handle_term_init no longer creates a row");
+        assert!(
+            guard < create,
+            "the precondition must be checked BEFORE the row is written, or a fresh \
+             install leaves an orphan session behind for every shell that sourced the script"
+        );
+        assert_eq!(
+            production.matches(".create_session(").count(),
+            1,
+            "another row-creating path appeared in term.rs; give it its own precondition \
+             check, then update this count"
         );
     }
 }

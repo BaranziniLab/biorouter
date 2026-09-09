@@ -793,6 +793,7 @@ pub async fn ensure_meditation_schedule(
         // A machine-wide meditation schedule belongs to no chat.
         creator_session_id: None,
         last_error: None,
+        owns_source: None,
     };
     scheduler
         .add_scheduled_job(job, true)
@@ -1182,6 +1183,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: Some("preserved diagnostic".to_string()),
+            owns_source: None,
         }];
         let metadata_before = serde_json::to_value(&jobs[0]).unwrap();
 

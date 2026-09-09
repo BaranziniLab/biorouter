@@ -192,6 +192,7 @@ impl Agent {
             // `dispatch_tool_call` holds the real `Session`; it is passed down.
             creator_session_id: Some(creator_session_id.to_string()),
             last_error: None,
+            owns_source: None,
         };
 
         match scheduler.add_scheduled_job(job, true).await {

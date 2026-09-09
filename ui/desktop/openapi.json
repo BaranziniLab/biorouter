@@ -3481,13 +3481,34 @@
             }
           },
           "400": {
-            "description": "Invalid cron expression or workflow file"
+            "description": "Invalid schedule name, cron expression or workflow file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "409": {
-            "description": "Job ID already exists"
+            "description": "Job ID already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
-            "description": "Internal server error"
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -11537,6 +11558,11 @@
             "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` — the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
             "nullable": true,
             "minimum": 0
+          },
+          "owns_source": {
+            "type": "boolean",
+            "description": "Did the scheduler write [`Self::source`] itself, and may it therefore\ndelete that file when the job goes?\n\n⚠ Written by [`Scheduler::add_scheduled_job`] from its `make_copy`\nargument and by nothing else — a value supplied at a construction site is\noverwritten, so callers pass `None` and let the scheduler answer.\n\n⚠ `Option`, not `bool`, and the third state is the whole point. A job\npersisted before this field existed deserialises as `None`, and the two\ncreation paths that produced those rows are indistinguishable from the\nrow alone: `POST /schedule/create` and `biorouter schedule add` copied the\nworkflow and own the copy, while a schedule added from a workflow row\npoints straight at the user's own file. `false` for both would strand\nevery legacy copy; `true` for both would delete a user's workflow. `None`\nsays \"unrecorded\", and [`scheduler_owns_source`] answers it from where the\nfile actually lives.",
+            "nullable": true
           },
           "paused": {
             "type": "boolean"

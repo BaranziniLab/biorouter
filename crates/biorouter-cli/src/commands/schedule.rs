@@ -88,6 +88,7 @@ pub async fn handle_schedule_add(
         // `biorouter schedule add` schedules a workflow file, not a chat.
         creator_session_id: None,
         last_error: None,
+        owns_source: None,
     };
 
     let scheduler_storage_path =
@@ -414,6 +415,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         }
     }
 
