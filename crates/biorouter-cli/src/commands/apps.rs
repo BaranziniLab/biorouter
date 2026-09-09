@@ -239,28 +239,18 @@ pub(crate) async fn daemon_ok(host: &str, port: u16) -> bool {
 }
 
 /// Locate the `biorouterd` binary: prefer the sibling of the running `biorouter`
-/// executable (dev tree and installed app both colocate them), else fall back to
-/// the bare name so the OS resolves it on `PATH`.
+/// executable (dev tree and installed app both colocate them), then the sibling
+/// of the installation this copy came from (a Windows install has nothing else
+/// to go on), else fall back to the bare name so the OS resolves it on `PATH`.
 ///
-/// The path is resolved through symlinks first
-/// ([`crate::commands::exe_path::current_exe_resolved`]): on macOS
-/// `current_exe()` reports the link the user typed, and the CLI is installed as
-/// a symlink, so "the sibling" would otherwise be a sibling of
-/// `~/.local/bin/biorouter`.
+/// The whole rule lives in [`crate::commands::exe_path::biorouterd_for`], which
+/// `serve` also calls — the two commands start the same daemon, and two copies
+/// of "where is it" are two chances to fix only one of them.
 fn biorouterd_path() -> PathBuf {
-    let bin = if cfg!(windows) {
-        "biorouterd.exe"
-    } else {
-        "biorouterd"
-    };
-    if let Some(exe) = crate::commands::exe_path::current_exe_resolved() {
-        if let Some(sibling) = exe.parent().map(|d| d.join(bin)) {
-            if sibling.exists() {
-                return sibling;
-            }
-        }
-    }
-    PathBuf::from(bin)
+    use crate::commands::exe_path;
+    exe_path::current_exe_resolved()
+        .and_then(|exe| exe_path::biorouterd_for(&exe))
+        .unwrap_or_else(|| PathBuf::from(exe_path::daemon_file_name()))
 }
 
 /// The command string we tell users to run when we can't (or won't) start the

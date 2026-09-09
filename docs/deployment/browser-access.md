@@ -204,6 +204,12 @@ child process and watched while it comes up; if it dies, `serve` reports that ra
 the port is healthy. Run `biorouterd agent` by hand to see its own output, and check that the
 configuration it reads is valid.
 
+**`could not start biorouterd`, on Windows.** `serve` starts the daemon that belongs with the CLI
+you ran, and finds it either next to that CLI or next to the application the CLI was installed from
+(see [When the interface cannot be found](#when-the-interface-cannot-be-found) below for how that is
+recorded). If the application has moved or been reinstalled since, run `biorouter setup-path` again
+from inside it — `<application folder>\resources\bin\biorouter.exe setup-path`.
+
 **The tab says the link needs its access token.** The `?t=` part was dropped — from a copy-paste, a
 chat client shortening the link, or a bookmark saved after the redirect. Use the full address as
 printed. If the launch has since restarted, the token has changed; read the new one from the
@@ -225,12 +231,25 @@ finds none:
 1. `BIOROUTER_SERVE_UI`, or `--web-dir`, if either is set.
 2. `web/` beside the installed binaries (a packaged application).
 3. `ui/desktop/src/web/` in a development tree.
-4. `/usr/share/biorouter/web` (where the Linux packages put it).
+4. `web/` beside the application a Windows install was made from.
+5. `/usr/share/biorouter/web` (where the Linux packages put it).
 
-"Beside" means beside the **real** binary. The CLI is installed on `PATH` as a symlink
-(`~/.local/bin/biorouter` → the application bundle), and steps 2 and 3 follow that link before
-deriving anything from it — otherwise they would name directories in your home folder, which is
-what they did in v1.89.5 through v1.90.2.
+"Beside" means beside the **real** binary. On macOS and Linux the CLI is installed on `PATH` as a
+symlink (`~/.local/bin/biorouter` → the application bundle), and steps 2 and 3 follow that link
+before deriving anything from it — otherwise they would name directories in your home folder, which
+is what they did in v1.89.5 through v1.90.2.
+
+Windows has no symlink to follow. `biorouter setup-path` — and the in-app "Biorouter CLI Update"
+card, which runs it — *copies* `biorouter.exe` into `%LOCALAPPDATA%\Biorouter\bin`, leaving
+`biorouterd.exe` and the interface behind inside the application. So the copy also records the
+folder it came from, in a small file named `.biorouter-origin` beside itself, and step 4 reads that
+back. The same record is how `serve` and `biorouter apps` find `biorouterd.exe`. It is rewritten
+every time you install, so updating the application and running `biorouter setup-path` again is what
+points the CLI at the new one.
+
+If you move, rename or uninstall the Biorouter application, the recorded folder is stale — it will
+be named in the list of places `serve` looked. Run `biorouter setup-path` from the application's own
+copy of the CLI to record the new location.
 
 In a development tree, build it first:
 
