@@ -8,6 +8,9 @@ Show persisted To Do state as an ordered stepper with explicit status text and a
 completion count. Connections indicate list order, not inferred dependencies.
 Hide the section when there are no tasks. Task updates, reopening, renaming,
 replacement and chat switching must not show another chat's or an obsolete list.
+The task list is a scroll region with a tab stop so a keyboard user can scroll
+it; it takes no focus fill (D-15's third amendment, `.biorouter-focus-region`),
+and the next Tab lands on the panel's own buttons, which do.
 
 Generated figures prioritize the data: meaningful titles, units, source or
 assumption notes when relevant, restrained theme-aware colors, and large legible

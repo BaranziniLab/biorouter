@@ -1501,7 +1501,23 @@
      roving-focus group gives the LIST `tabindex="0"` while focus is outside
      it), but focusing it was measured to redirect to the active trigger inside
      the same event, so it never holds `:focus-visible` and the rule never
-     paints it. An exemption there would be unfalsifiable. */
+     paints it. An exemption there would be unfalsifiable.
+
+     ⚠ **A region with NO role opts out with `.biorouter-focus-region`
+     (2026-09-08, third).** Both exemptions above key on a role, and a scroll
+     container given a tab stop so a keyboard user can scroll it has none to
+     key on: the chat summary's To Do list (`components/ChatSummary.tsx`) is
+     an `<ol tabIndex={0}>`, and its implicit `list` role is what makes its
+     rows list items, so it cannot take `role="region"` without orphaning
+     them. Measured on the real popover (Parchment light, opened with the
+     keyboard): `rgb(224, 224, 220)` over the whole 334 × 240 px list, with
+     this rule named by CDP's `CSS.getMatchedStylesForNode`; after the change
+     `rgba(0, 0, 0, 0)`, and the same element with the class stripped live
+     went straight back to the grey. The class is a selector hook
+     only — nothing has to be generated for it, which is why it is not a
+     `focus-visible:bg-*` utility at the call site (`.biorouter-focus-surface`
+     below records the scanner trap) — and it sits in the same `:not()`, so
+     the rule never matches the region rather than being out-ranked on it. */
   :where(
     :is(
         a,
@@ -1513,7 +1529,7 @@
         input[type='checkbox'],
         input[type='radio'],
         [tabindex]:not([tabindex='-1'])
-      ):not([role='tab'], [role='tabpanel'], [role='application'])
+      ):not([role='tab'], [role='tabpanel'], [role='application'], .biorouter-focus-region)
   ):focus-visible {
     outline: none;
     background-color: var(--background-focus);
@@ -1529,16 +1545,19 @@
      gets NO focus treatment: the next Tab lands on the first control inside,
      which has its own indicator.
 
-     Only the tabpanel needs this. `role="application"` keeps whatever it draws
-     for itself — the graph canvas writes `outline-none` plus a ring as
-     utilities, and for any future region that draws nothing the UA ring is the
-     better fallback than silence.
+     The tabpanel and every `.biorouter-focus-region` need this — the class is
+     the one way a region with no role can join the exemption, so it joins the
+     restoration in the same breath. `role="application"` keeps whatever it
+     draws for itself — the graph canvas writes `outline-none` plus a ring as
+     utilities — and for any future region that draws nothing and carries
+     neither the role nor the class, the UA ring is the better fallback than
+     silence.
 
      The `prefers-contrast: more` / `forced-colors` block below is deliberately
-     NOT narrowed by any of this: it still reaches the panel through the same
-     `[tabindex]` arm, so a user who asked their OS for a stronger signal keeps
-     the ring here as everywhere else. */
-  :where([role='tabpanel']):focus-visible {
+     NOT narrowed by any of this: it still reaches the panel and the region
+     through the same `[tabindex]` arm, so a user who asked their OS for a
+     stronger signal keeps the ring here as everywhere else. */
+  :where([role='tabpanel'], .biorouter-focus-region):focus-visible {
     outline: none;
   }
 

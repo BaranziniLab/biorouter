@@ -102,6 +102,17 @@ describe('compact chat summary', () => {
     rerender(<ChatSummary {...props} />);
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
+  it('keeps the To Do list a list with a tab stop, marked as a focus region not a control', () => {
+    render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
+    const list = screen.getByRole('list', { name: 'To Do tasks' });
+    // The tab stop is what lets a keyboard user scroll it; the class is what
+    // keeps D-15's focus fill off it (asserted at the source in
+    // `styles/tabFocus.test.ts`, since jsdom never evaluates `:focus-visible`).
+    expect(list).toHaveAttribute('tabindex', '0');
+    expect(list).toHaveClass('biorouter-focus-region');
+    // No `role`: `role="region"` would orphan the rows' list semantics.
+    expect(list).not.toHaveAttribute('role');
+  });
   it('contains long lists, wraps labels and never executes task markup', () => {
     const text = '検証 🧬 <img src=x onerror=alert(1)> '.repeat(20);
     render(

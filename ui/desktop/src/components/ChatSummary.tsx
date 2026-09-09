@@ -98,10 +98,14 @@ export function ChatSummary({
               style={{ width: `${(completed / todos.items.length) * 100}%` }}
             />
           </div>
+          {/* A scroll container with a tab stop so a keyboard user can scroll
+              it — a region, not a control, so it opts out of D-15's focus fill
+              with `.biorouter-focus-region` (authored in main.css). It keeps
+              its implicit `list` role: `role="region"` would orphan the rows. */}
           <ol
             aria-label="To Do tasks"
             tabIndex={0}
-            className="max-h-60 overflow-y-auto overscroll-contain pr-1"
+            className="biorouter-focus-region max-h-60 overflow-y-auto overscroll-contain pr-1"
           >
             {todos.items.map((item, index) => {
               const label = TODO_STATUS_LABELS[item.status];
