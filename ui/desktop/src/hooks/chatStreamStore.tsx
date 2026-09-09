@@ -1888,6 +1888,25 @@ class ChatStreamController {
       // put a row into a list whose membership is owned elsewhere
       // (`sessionListCache`'s list channel), from a read that knows nothing
       // about ordering or filters.
+      // ⚠ The PIN yields to the freshly-read row, and this is not optional.
+      // `chatBinding` prefers the turn-reported pin OVER the row, so a row
+      // re-read after that turn — because it ended, or because another process
+      // rewrote it — would be overruled by the pin and the chip would go on
+      // naming the older model. Measured exactly that way at runtime: the CLI
+      // rebound a chat to `gpt-5.2-2025-12-11`, this method adopted it, and the
+      // composer kept reading `gpt-5.5-2026-04-24` off the pin.
+      //
+      // Replacing rather than clearing keeps the field meaning what it says, and
+      // the row is the LATER fact: a pin is what a turn reported when it began,
+      // and this row was read now. The two can only disagree when the row moved
+      // afterwards — Gate B's repair binds FROM the row, so a repaired turn's
+      // pin and its row agree by construction.
+      if (row.provider_name && row.model_config?.model_name) {
+        this.setPinnedModel({
+          provider: row.provider_name,
+          model: row.model_config.model_name,
+        });
+      }
       //
       // ⚠ Checked BEFORE the call, not inside the updater.
       // `updateCachedSessionList` emits to every list subscriber

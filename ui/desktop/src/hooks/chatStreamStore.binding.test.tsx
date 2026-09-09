@@ -503,6 +503,60 @@ describe('a row changed elsewhere reaches this window', () => {
   });
 
   /**
+   * ⚠ Measured at runtime before it was a test, and it is the whole point of the
+   * feed. A row refreshed from elsewhere is worthless if the composer still
+   * reads the previous turn's pin: `chatBinding` prefers the pin over the row,
+   * so the CLI rebound a chat to `gpt-5.2-2025-12-11`, the snapshot adopted it,
+   * and the chip kept saying `gpt-5.5-2026-04-24`.
+   */
+  it('moves the turn-reported pin onto the row it just re-read', async () => {
+    const sid = `bind-pin-follows-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    mocks.reply.mockResolvedValue({
+      stream: streamOf(
+        {
+          type: 'PrivacyProviderPinned',
+          provider: 'versa_azure',
+          model: 'gpt-5.5-2026-04-24',
+          privacy_tier: 'private',
+        } as MessageEvent,
+        finishFrame
+      ),
+    });
+    // The row the daemon hands back names a DIFFERENT model — what another
+    // process wrote while this window was idle. Held on a promise this test
+    // resolves, so the two states can be told apart: the pin BEFORE the row is
+    // read, and the pin after. Without that the refresh lands inside
+    // `handleSubmit` and there is no observable "before".
+    let releaseRow!: () => void;
+    const rowRead = new Promise<void>((resolve) => {
+      releaseRow = resolve;
+    });
+    mocks.getSession.mockImplementation(async () => {
+      await rowRead;
+      return {
+        data: boundSession(sid, {
+          privacy_tier: 'private',
+          provider_name: 'versa_azure',
+          model_config: { model_name: 'gpt-5.2-2025-12-11', toolshim: false },
+        }),
+      };
+    });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.handleSubmit('hi');
+    // The turn's own report, before anything re-read the row.
+    expect(controller.getSnapshot().pinnedModel?.model).toBe('gpt-5.5-2026-04-24');
+
+    releaseRow();
+    await vi.waitFor(() =>
+      expect(controller.getSnapshot().pinnedModel?.model).toBe('gpt-5.2-2025-12-11')
+    );
+    expect(controller.getSnapshot().session?.model_config?.model_name).toBe('gpt-5.2-2025-12-11');
+  });
+
+  /**
    * ⚠ The list emit is unconditional in `sessionListCache`, and this runs after
    * EVERY turn. A refresh that found nothing new must therefore not call it at
    * all, or the sidebar, the See-all view and every tab strip wake once per turn
