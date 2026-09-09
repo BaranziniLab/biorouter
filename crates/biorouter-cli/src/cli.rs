@@ -393,7 +393,7 @@ fn refusal_for_a_new_row(provider: Option<&str>, model: Option<&str>) -> Option<
 /// created, so that slot is empty by construction. The paths here that return
 /// an EXISTING id do not call this, because such a row can legitimately carry
 /// the only provider a resumed chat has.
-fn refuse_unconfigured_before_creating_a_row(
+pub(crate) fn refuse_unconfigured_before_creating_a_row(
     provider: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
