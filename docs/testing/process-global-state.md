@@ -122,6 +122,7 @@ Verdicts: **fixed**, **live** (a reader can observe another test's write today),
 | `BIOROUTER_ALLOW_PROJECT_HOOKS` | `hooks/mod.rs:214`, bare `env::var` | `providers/bedrock.rs:1147`, **never removed** | **latent** — no `.biorouter/hooks.yaml` in-tree, so no reader is sensitive today; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
 | `BIOROUTER_ALLOW_PROJECT_HOOKS` override | `hooks/mod.rs:214` | `agents/subagent_tool.rs:5663` via `with_config_overrides` | **live defect, not a race** — the override is a no-op, so that arm does not test its own unlock; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
 | `HOME` | `security/policy/command.rs:846`, `policy/target.rs:125` | `knowledge/conversation_ingest.rs:806` | **latent** — `global_memory.rs` is already mitigated by `pinned_store_root()` |
+| `HOME` via `dirs::home_dir()` | `config/search_path.rs:72` and `:109`, both production, inside `SearchPaths::builder()` | the same `conversation_ingest.rs:806` `env_lock` writer | **live** — `a_coding_agent_path_offers_the_node_version_managers` reads `HOME` itself at `:214` to build its expected paths, then the builder reads it again; two instants, and the test holds no lock |
 | `BIOROUTER_PATH_ROOT` (the general case) | ~46 live `Paths::config_dir()` readers | 33 `lock_env` writers | **open** — deferred, see below |
 | `CLAUDE_THINKING_ENABLED`, `CLAUDE_THINKING_BUDGET` | 6 bare `env::var` sites on the request-format path | none in `crates/` | **latent** |
 | `BEDROCK_OPERATION_TIMEOUT_SECS` | `get_param` first, then env | none | **accepted** — the mitigated shape, and the model the two live rows should follow |
@@ -136,6 +137,23 @@ Verdicts: **fixed**, **live** (a reader can observe another test's write today),
 Production: `agents/skill_catalog.rs:155`, `agents/skills_extension.rs:379`, `:512`, `:830`, `agents/skill_package/install.rs:75`, `:85`, `:278`, `biorouter-cli/src/commands/skill.rs:38` (a second `fn skills_root`), `biorouter-cli/src/session/completion.rs:86`. Tests: `skills_extension.rs:4291`, `:5637`, `:5700`, `knowledge/conversation_ingest.rs:666` — twelve, not eleven; `:5637` splits the spelling across two lines and is invisible to a line-wise scan. Routed through the helper and pinned by `the_skills_root_is_spelled_once` in [#212](https://github.com/BaranziniLab/biorouter/pull/212).
 
 ⚠ `skills_extension.rs:830` is **not** a second read inside `SkillsClient::new`, as the follow-up note claimed. It is `add_missing_shipped_skills`, a separate `pub(crate) fn` reached from `SkillCatalog::scan` — so the read lands on a later, unowned code path, which is the hazard `:807` is accepted for *not* being.
+
+### Flakes measured while writing this, and what they mean
+
+Run the whole `biorouter` lib suite at `--test-threads=32` and it is **not** reliably green on
+`main`. Six runs of each, measured 2026-09-09:
+
+| tree | pass | fail | which |
+|---|---|---|---|
+| `main` at `f350cdfc` | 3 | 3 | `scheduler::…a_duplicate_id_does_not_overwrite_the_workflow_the_id_already_owns` (×2), `agents::subagent_handler::…cancel_turn_on_the_child_stops_the_run_and_spares_the_parent` |
+| a branch fixing three of the rows above | 4 | 2 | `scheduler::…a_duplicate_id…`, `config::search_path::…a_coding_agent_path_offers_the_node_version_managers` |
+
+Two things follow. **A red run at 32 threads is not evidence about your diff** — the base is
+redder. And the `search_path` failure is not noise: it is the `HOME` row above, which is how
+that row was found. Chasing it produced a real entry; chasing the scheduler one would not have.
+
+`agents::skill_package::pending::…a_parked_plan_comes_back_once_and_only_once` also fails about
+1 run in 60 on `main` when its module group runs at 32 threads.
 
 ### Deferred: the `Paths::config_dir()` readers
 
