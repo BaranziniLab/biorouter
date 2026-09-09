@@ -42,6 +42,7 @@ const GRAPH = readFileSync(
   join(__dirname, '../components/knowledge/graph/ForceGraphCanvas.tsx'),
   'utf8'
 );
+const CHAT_SUMMARY = readFileSync(join(__dirname, '../components/ChatSummary.tsx'), 'utf8');
 
 /**
  * Every rule in the file that sets a background on a `:focus-visible` selector,
@@ -71,16 +72,18 @@ const d15 = focusVisibleBackgroundRules().find(
 );
 
 /**
- * The roles the D-15 rule excludes, read out of the `:not()` that closes the
- * alternation — `…):not([role='tab'], [role='tabpanel'], …)):focus-visible`.
+ * The selectors the D-15 rule excludes, read out of the `:not()` that closes
+ * the alternation — `…):not([role='tab'], [role='tabpanel'], …)):focus-visible`.
+ * Two roles and a class hook today; a role is what a Radix primitive already
+ * carries, the class is what a region with no role opts out with.
  *
  * Read as a SET rather than matched as a literal string, so the assertions do
- * not care what order the roles are written in, but still care that the
+ * not care what order the entries are written in, but still care that the
  * `:not()` sits around the whole list inside the outer `:where()` (an anchored
  * match on `):not(…)):focus-visible`) rather than inside one alternative — the
  * distinction #182 turned on, and the one a later edit is most likely to lose.
  */
-function exemptedRoles(): string[] {
+function exemptions(): string[] {
   const match = d15![0].replace(/\s+/g, '').match(/\):not\(([^)]*)\)\):focus-visible$/);
   expect(match, `the D-15 rule's trailing :not() is unrecognisable: ${d15![0]}`).toBeTruthy();
   return match![1].split(',');
@@ -90,7 +93,7 @@ describe('a tab trigger takes no focus fill', () => {
   it('still exists, and still fills everything that is not a tab', () => {
     expect(d15, 'the D-15 focus-visible fill rule is no longer recognisable').toBeTruthy();
     expect(d15![1]).toContain('var(--background-focus)');
-    expect(exemptedRoles()).toContain("[role='tab']");
+    expect(exemptions()).toContain("[role='tab']");
   });
 
   /**
@@ -105,7 +108,7 @@ describe('a tab trigger takes no focus fill', () => {
     expect(selector).toContain("[tabindex]:not([tabindex='-1'])");
     // The `:not()` closes the alternation and sits inside the outer `:where()`,
     // so it applies to every arm rather than to one alternative within it.
-    expect(exemptedRoles()).toContain("[role='tab']");
+    expect(exemptions()).toContain("[role='tab']");
   });
 
   /** Specificity 0 is D-15's contract: any component can still opt out. */
@@ -247,7 +250,7 @@ describe('a focused tab shows its underline firming instead', () => {
  */
 describe('a tab panel takes no focus fill either', () => {
   it('excludes the panel in the same :not(), around the whole list', () => {
-    expect(exemptedRoles()).toContain("[role='tabpanel']");
+    expect(exemptions()).toContain("[role='tabpanel']");
   });
 
   /**
@@ -273,7 +276,7 @@ describe('a tab panel takes no focus fill either', () => {
    */
   it('still suppresses the UA focus ring on the panel', () => {
     const match = CSS.replace(/\/\*[\s\S]*?\*\//g, '').match(
-      /:where\(\[role='tabpanel'\]\):focus-visible\s*\{([^}]*)\}/
+      /:where\(\[role='tabpanel'\][^)]*\):focus-visible\s*\{([^}]*)\}/
     );
     expect(match, 'nothing restores `outline: none` on a focused tabpanel').toBeTruthy();
     expect(match![1]).toMatch(/outline:\s*none/);
@@ -285,7 +288,7 @@ describe('a tab panel takes no focus fill either', () => {
 
   /** Specificity 0 is D-15's contract; the restoration must not out-rank a component. */
   it('keeps the restoration at specificity 0', () => {
-    expect(CSS).toContain(":where([role='tabpanel']):focus-visible");
+    expect(CSS).toMatch(/:where\(\[role='tabpanel'\][^)]*\):focus-visible/);
   });
 
   /**
@@ -314,7 +317,7 @@ describe('a tab panel takes no focus fill either', () => {
    * stays visible there without a rule here.
    */
   it('exempts the one other region role, and leaves its own ring in place', () => {
-    expect(exemptedRoles()).toContain("[role='application']");
+    expect(exemptions()).toContain("[role='application']");
     expect(GRAPH).toContain('role="application"');
     expect(GRAPH).toContain('focus-visible:ring-2');
     expect(GRAPH).toContain('focus-visible:ring-border-accent');
@@ -329,7 +332,7 @@ describe('a tab panel takes no focus fill either', () => {
    * can falsify, which is how a selector list rots.
    */
   it('does not exempt the tablist, which never holds focus', () => {
-    expect(exemptedRoles()).not.toContain("[role='tablist']");
+    expect(exemptions()).not.toContain("[role='tablist']");
   });
 
   /** The rule matches nothing without its hook, so the two are asserted together. */
@@ -348,5 +351,103 @@ describe('a tab panel takes no focus fill either', () => {
       return !/:not\([^)]*\[role='tabpanel'\][^)]*\)/.test(selector.replace(/\s+/g, ''));
     });
     expect(offenders, `these rules fill a focused panel: ${JSON.stringify(offenders)}`).toEqual([]);
+  });
+});
+
+/**
+ * The same fill, on a region that has NO role to exempt — the third instance,
+ * measured but deliberately left by #185 because its `:not()` keys on roles.
+ *
+ * The chat summary's To Do list (`components/ChatSummary.tsx`) is an `<ol>`
+ * given `tabIndex={0}` so a keyboard user can scroll it. That makes it a
+ * REGION by #185's argument — entered, not operated — and the `[tabindex]`
+ * arm reaches it exactly as it reached the panel. Measured on the real popover
+ * (Parchment light, a 15-row list opened with the keyboard so `:focus-visible`
+ * was Chrome's own verdict): `backgroundColor: rgb(224, 224, 220)` =
+ * `--background-focus` (`#e0e0dc`) over the whole 334 × 240 px list, with the
+ * D-15 rule named by CDP's `CSS.getMatchedStylesForNode`. After the change,
+ * `rgba(0, 0, 0, 0)` with outline and box-shadow `none`; stripping the class
+ * from the live element brought the grey straight back.
+ *
+ * ⚠ **It cannot take a role, and that is why the hook is a class.** An `<ol>`
+ * is a list, and its implicit `list` role is what makes its `<li>` rows list
+ * items to a screen reader; `role="region"` would orphan them, and an explicit
+ * `role="list"` would be a redundant attribute carried only so a stylesheet
+ * could see it. So the region opts out with `.biorouter-focus-region` — an
+ * authored selector hook in the same `:not()`, NOT a `focus-visible:bg-*`
+ * utility at the call site, for the reason `focusSurface.test.ts` gives: a
+ * newly written Tailwind class can silently fail to generate, and a hook that
+ * needs nothing generated cannot.
+ *
+ * ⚠ **Asserted at the SOURCE, like the two blocks above** — jsdom never
+ * evaluates `:focus-visible`.
+ */
+describe('a scroll region with no role opts out of the focus fill by class', () => {
+  const HOOK = '.biorouter-focus-region';
+
+  it('excludes the class in the same :not(), around the whole list', () => {
+    expect(exemptions()).toContain(HOOK);
+    // Still beside the roles, not in place of them.
+    expect(exemptions()).toContain("[role='tabpanel']");
+  });
+
+  /**
+   * The rule matches nothing without its hook, so the two are asserted
+   * together. The list keeps its tab stop (the whole reason it is reached), and
+   * keeps NO role — the plausible wrong fix is `role="region"`, which would
+   * silence the fill and take the rows' list semantics with it.
+   */
+  it('is carried by the To Do list, which stays a list', () => {
+    const tag = CHAT_SUMMARY.match(/<ol\s[^>]*aria-label="To Do tasks"[^>]*>/);
+    expect(tag, 'the To Do list is no longer recognisable').toBeTruthy();
+    expect(tag![0]).toContain('tabIndex={0}');
+    expect(tag![0]).toMatch(/className="[^"]*\bbiorouter-focus-region\b/);
+    expect(tag![0]).not.toMatch(/\brole=/);
+    // A selector hook, never a utility that has to be generated.
+    expect(tag![0]).not.toContain('focus-visible:');
+  });
+
+  /**
+   * ⚠ The trap #185 hit, again: leaving the D-15 block drops its
+   * `outline: none`, and Chrome's UA `:focus-visible { outline: auto }` is
+   * underneath. The restoration that covers the panel has to cover the class,
+   * or the grey list becomes a ringed list.
+   */
+  it('still suppresses the UA focus ring on the region', () => {
+    const match = CSS.replace(/\/\*[\s\S]*?\*\//g, '').match(
+      /:where\(([^)]*)\):focus-visible\s*\{([^}]*)\}/g
+    );
+    const restoring = (match ?? []).filter(
+      (rule) => rule.includes(HOOK) && /outline:\s*none/.test(rule)
+    );
+    expect(restoring, `nothing restores \`outline: none\` on ${HOOK}`).toHaveLength(1);
+    // A region gets NO treatment: no fill under another selector, no ring.
+    expect(restoring[0]).not.toContain('--background-focus');
+    expect(restoring[0]).not.toMatch(/box-shadow|background/);
+  });
+
+  /**
+   * The safety valve is not narrowed: a user who asked their OS for a stronger
+   * signal still gets the ring on the list, through the same `[tabindex]` arm.
+   */
+  it('leaves the prefers-contrast ring reaching the region', () => {
+    const block = CSS.replace(/\/\*[\s\S]*?\*\//g, '').match(
+      /@media \(prefers-contrast: more\), \(forced-colors: active\) \{([\s\S]*?)\n {2}\}/
+    );
+    expect(block, 'the prefers-contrast block is unrecognisable').toBeTruthy();
+    expect(block![1]).toContain("[tabindex]:not([tabindex='-1'])");
+    expect(block![1]).not.toContain(HOOK);
+  });
+
+  /** Stated as a property of the whole stylesheet: nothing paints a fill on the hook. */
+  it('has no rule anywhere that paints a background on the region', () => {
+    const offenders = focusVisibleBackgroundRules().filter(([selector]) => {
+      if (!selector.includes(HOOK)) return false;
+      // Mentioning the hook only in order to exclude it is fine.
+      return !new RegExp(`:not\\([^)]*\\${HOOK}[^)]*\\)`).test(selector.replace(/\s+/g, ''));
+    });
+    expect(offenders, `these rules fill a focused region: ${JSON.stringify(offenders)}`).toEqual(
+      []
+    );
   });
 });
