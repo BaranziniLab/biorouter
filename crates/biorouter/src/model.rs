@@ -554,6 +554,21 @@ impl ModelConfig {
     // lock on `config.yaml` itself. And `validate_max_tokens` below no longer
     // reads an unreadable config layer as a bad value — which is the half that
     // holds no matter what else learns to make that read fail.
+    //
+    // ── The third route, and why the second half above is load-bearing ──────
+    //
+    // The storm guard that shipped with those fixes then failed on Windows
+    // itself, with `ERROR_ACCESS_DENIED` rather than a lock violation: the
+    // shared staging path was gone, but every thread in the storm was still a
+    // WRITER, and a `rename` that replaces a file makes the destination's name
+    // briefly unopenable on Windows. So the mechanism moved and the symptom did
+    // not. `validate_max_tokens` was already immune — which is exactly the
+    // property claimed for it above, now measured rather than asserted. The
+    // config layer's own fix is in `config::base`: creating a missing config is
+    // idempotent (a thread that loses the race reads the winner's file instead
+    // of replacing it), and the read and the rename each tolerate the transient
+    // denial. Every OTHER `get_param` caller depended on that fix — only
+    // `max_tokens` had a reader that could already absorb the failure.
 
     fn parse_temperature() -> Result<Option<f32>, ConfigError> {
         let raw = std::env::var("BIOROUTER_TEMPERATURE").ok();
