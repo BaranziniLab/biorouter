@@ -7803,6 +7803,11 @@ impl Agent {
     /// lists is issue #141. `code_execution`'s catalogue is not such a reader —
     /// it consumes no gates at all, since the platform tools are never in it.
     pub(crate) async fn platform_tool_gates(&self) -> platform_tools::PlatformToolGates {
+        // ONE read of the proof-of-user flag, feeding the two decisions that
+        // ask it. `PlatformToolGates::tools` used to re-read it for
+        // `manage_workflow_tool` while `bug_report` carried the first read —
+        // two instants, one value, and the struct's own doc already forbade it.
+        let user_proof_available = crate::pending_user_action::user_proof_available();
         platform_tools::PlatformToolGates {
             scheduler: self.config.scheduler_service.is_some(),
             // Ingestion belongs to the Knowledge capability. If the user
@@ -7825,7 +7830,10 @@ impl Agent {
             // no proof-of-user key can never grant. Sampled here, once, for the
             // reason every other gate is: a process-global read inside the gate
             // itself is a second read the value could change between.
-            bug_report: crate::pending_user_action::user_proof_available(),
+            bug_report: user_proof_available,
+            // The same sample, for the other decision it governs — which
+            // actions `platform__manage_workflow` advertises.
+            can_ask_a_person: user_proof_available,
         }
     }
 
@@ -12426,6 +12434,7 @@ mod tests {
             session_blobs: true,
             workflows: true,
             bug_report: true,
+            can_ask_a_person: true,
         };
         let none = PlatformToolGates {
             scheduler: false,
@@ -12433,6 +12442,7 @@ mod tests {
             session_blobs: false,
             workflows: false,
             bug_report: false,
+            can_ask_a_person: false,
         };
 
         assert_eq!(
@@ -12518,6 +12528,7 @@ mod tests {
                 session_blobs: true,
                 workflows: false,
                 bug_report,
+                can_ask_a_person: bug_report,
             }
             .tools(None)
             .into_iter()
@@ -16301,33 +16312,53 @@ mod tests {
     async fn code_execution_mode_keeps_the_agent_dispatched_platform_tools_callable() {
         let path_root = tempfile::TempDir::new().expect("an isolated capability root");
         let path_root_value = path_root.path().to_string_lossy().into_owned();
-        let _env = env_lock::lock_env([
-            ("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str())),
-            ("BIOROUTER_SESSION_BLOB_LAZY_LOAD", Some("true")),
-        ]);
+        let _env = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(path_root_value.as_str()))]);
 
-        let (agent, session_id) = agent_with_one_extension_for_tests().await;
-        for name in ["knowledge", "code_execution"] {
-            let target = resolve_bundled_extension(name)
-                .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
-            agent
-                .add_extension(target.into_config(format!("{name} for issue #141")))
+        // ⚠ `BIOROUTER_SESSION_BLOB_LAZY_LOAD` is set as a TASK-LOCAL config
+        // override, never in the process environment. It decides whether
+        // `platform__read_session_blob` is on the model-facing roster
+        // (`PlatformToolGates::session_blobs`), and every agent in this binary
+        // reads it live through `Config::get_param` without asking for
+        // `env_lock` — so parking it in the environment silently changed the
+        // callable-tool count of every concurrently running test. It did:
+        // `reply_parts::tests::callable_count_is_pure_while_turn_prep_grades_
+        // sorted_frontend_tools` failed on CI with `left: 4, right: 5`, the
+        // missing tool being this one, because the flag flipped between its two
+        // reads. `no_test_parks_the_session_blob_flag_in_the_process_environment`
+        // in `platform_tools.rs` is the standing guard.
+        let overrides = std::collections::HashMap::from([(
+            "BIOROUTER_SESSION_BLOB_LAZY_LOAD".to_string(),
+            "true".to_string(),
+        )]);
+        let names_owned = crate::config::with_config_overrides(overrides, async {
+            let (agent, session_id) = agent_with_one_extension_for_tests().await;
+            for name in ["knowledge", "code_execution"] {
+                let target = resolve_bundled_extension(name)
+                    .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
+                agent
+                    .add_extension(target.into_config(format!("{name} for issue #141")))
+                    .await
+                    .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+            }
+
+            let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "anthropic" });
+            let session = agent
+                .config
+                .session_manager
+                .get_session(&session_id, false)
                 .await
-                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
-        }
-
-        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "anthropic" });
-        let session = agent
-            .config
-            .session_manager
-            .get_session(&session_id, false)
-            .await
-            .expect("read the session under test");
-        let (tools, _, _, _) = agent
-            .prepare_tools_and_prompt_for_provider(&session_id, &session.working_dir, &provider)
-            .await
-            .expect("prepare an ordinary Code Execution turn");
-        let names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+                .expect("read the session under test");
+            let (tools, _, _, _) = agent
+                .prepare_tools_and_prompt_for_provider(&session_id, &session.working_dir, &provider)
+                .await
+                .expect("prepare an ordinary Code Execution turn");
+            tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect::<Vec<_>>()
+        })
+        .await;
+        let names: Vec<&str> = names_owned.iter().map(String::as_str).collect();
 
         assert!(
             names.contains(&"code_execution__execute_code"),

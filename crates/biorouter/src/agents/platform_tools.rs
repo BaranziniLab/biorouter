@@ -127,6 +127,19 @@ pub struct PlatformToolGates {
     /// than one that is absent: the model reaches it, produces a report, and
     /// the turn ends with nowhere to put it.
     pub bug_report: bool,
+    /// `pending_user_action::user_proof_available()` again — the SAME
+    /// process-global, sampled in the same breath as [`Self::bug_report`], for
+    /// a different decision: it narrows `platform__manage_workflow`'s action
+    /// list rather than deciding whether a tool is offered at all.
+    ///
+    /// It is a field rather than a read inside [`Self::tools`] because this
+    /// struct's whole contract is that a gate is sampled ONCE by
+    /// `Agent::platform_tool_gates` and passed in — the doc above says so, and
+    /// `manage_workflow_tool`'s own doc already claimed the value was "sampled
+    /// by the caller" while the assembly quietly re-read it. A second read is a
+    /// second instant: two tools built from one `PlatformToolGates` could
+    /// disagree about whether a person is reachable.
+    pub can_ask_a_person: bool,
 }
 
 impl PlatformToolGates {
@@ -139,6 +152,12 @@ impl PlatformToolGates {
     /// `Agent::list_tools_for`, which is how the model's roster and
     /// `code_execution`'s view of the world came to disagree about the same
     /// tools (issue #141).
+    ///
+    /// A pure function of `self`. Nothing here reads the environment, the
+    /// config layer or a process-global — every such value is a field, sampled
+    /// once by `Agent::platform_tool_gates`. That is what lets a test state the
+    /// platform roster as an input instead of inheriting whatever the binary's
+    /// other tests last left behind.
     pub fn tools(self, extension_name: Option<&str>) -> Vec<Tool> {
         if !matches!(extension_name, None | Some(PLATFORM_EXTENSION_NAME)) {
             return Vec::new();
@@ -155,9 +174,7 @@ impl PlatformToolGates {
             tools.push(read_session_blob_tool());
         }
         if self.workflows {
-            tools.push(manage_workflow_tool(
-                crate::pending_user_action::user_proof_available(),
-            ));
+            tools.push(manage_workflow_tool(self.can_ask_a_person));
         }
         if self.bug_report {
             tools.push(report_bug_tool());
@@ -695,6 +712,122 @@ mod tests {
             description.contains("kb_write_page"),
             "the description must name the primitive it is replacing, or the model \
              reaches for it anyway"
+        );
+    }
+    /// The standing guard against the race that `session_blobs` opened.
+    ///
+    /// `PlatformToolGates::session_blobs` is `message_blobs::lazy_load_enabled()`,
+    /// which resolves `BIOROUTER_SESSION_BLOB_LAZY_LOAD` through
+    /// `Config::get_param` — a LIVE read of the process environment, made by
+    /// every agent in the binary, on every tool listing, without asking for
+    /// `env_lock`. So a test that parks the flag in the environment — however
+    /// correctly it holds the lock, and both offenders did — silently adds
+    /// `platform__read_session_blob` to the model-facing roster of every
+    /// CONCURRENT test. `env_lock` cannot help: it serialises the callers that
+    /// ask for it, and these readers never do.
+    ///
+    /// It is not hypothetical. On `test (ubuntu-latest)` for PR #195 — a
+    /// CSS-and-copy change — `agents::reply_parts::tests::callable_count_is_
+    /// pure_while_turn_prep_grades_sorted_frontend_tools` failed with
+    /// `left: 4, right: 5`: the flag was set between its two reads of the
+    /// surface, and the fifth tool was this one.
+    ///
+    /// Use `config::with_config_overrides` instead. It is a task-local that
+    /// `Config::get_param` consults BEFORE the environment, so it wins for the
+    /// test that sets it and is invisible to every other one.
+    ///
+    /// Deliberately a source scan rather than a runtime assertion, for the same
+    /// reason as `model::tests::no_test_poisons_a_shared_setting`, of which this
+    /// is a sibling: the race needs an interleaving CI produces and a laptop
+    /// rarely does, so a green stress run is weak evidence. This check cannot
+    /// flake.
+    #[test]
+    fn no_test_parks_the_session_blob_flag_in_the_process_environment() {
+        // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter; go up twice.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let crates = root.join("crates");
+        assert!(
+            crates.is_dir(),
+            "the audit walks {}; if that path is wrong it passes for the wrong reason",
+            crates.display()
+        );
+
+        // The two shapes the flag is actually written in:
+        //   `("BIOROUTER_SESSION_BLOB_LAZY_LOAD", Some("true"))` — the
+        //   `env_lock::lock_env` / `temp_env::with_vars` tuple, which also
+        //   covers `temp_env::with_var(KEY, Some(v), …)` because the call's own
+        //   paren plays the part of the tuple's; and
+        //   `set_var("BIOROUTER_SESSION_BLOB_LAZY_LOAD", "true")`.
+        // A `None::<&str>` entry is NOT matched and must not be: clearing the
+        // flag for the duration of a test is the safe direction — it restores
+        // the default every other reader already assumes.
+        //
+        // Comment lines are skipped before matching, and that is load-bearing
+        // rather than tidiness: the two shapes are spelled out literally in the
+        // comment directly above, so a scan that read comments would report
+        // this guard as its own first offender.
+        let key = "BIOROUTER_SESSION_BLOB_LAZY_LOAD";
+        let tuple = regex::Regex::new(&format!(r#"\(\s*"{key}"\s*,\s*Some\(\s*""#)).unwrap();
+        let set_var = regex::Regex::new(&format!(r#"set_var\(\s*"{key}"\s*,"#)).unwrap();
+
+        let mut scanned = 0usize;
+        let mut mentions = 0usize;
+        let mut offenders: Vec<String> = Vec::new();
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("the audit must not silently skip an unreadable directory");
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            scanned += 1;
+            let Ok(source) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            if source.contains(key) {
+                mentions += 1;
+            }
+            for (number, line) in source.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if tuple.is_match(line) || set_var.is_match(line) {
+                    offenders.push(format!(
+                        "{}:{}",
+                        path.strip_prefix(&root)
+                            .unwrap_or(path)
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                        number + 1
+                    ));
+                }
+            }
+        }
+
+        // A walk that reads nothing agrees with a walk that finds nothing.
+        assert!(
+            scanned > 500,
+            "the audit only scanned {scanned} files, which is too few to have walked the \
+             workspace"
+        );
+        assert!(
+            mentions >= 2,
+            "the audit found {key} named in only {mentions} files. Either the flag was \
+             renamed — in which case this guard now watches nothing — or its readers were \
+             removed and this guard can go with them"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these tests park `{key}` in the PROCESS environment, which changes the \
+             model-facing tool roster of every concurrently running test in the same \
+             binary — `env_lock` does not help, because the readers never ask for it. \
+             Use `config::with_config_overrides`, a task-local that wins over the \
+             environment for the setting task alone:\n  {}",
+            offenders.join("\n  ")
         );
     }
 }
