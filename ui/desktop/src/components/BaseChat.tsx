@@ -2116,6 +2116,10 @@ function BaseChatContent({
       <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
       <ChatInput
         sessionId={sessionId}
+        // The chat stream's own copy of the row, which the reply stream keeps
+        // current from turn START. `ChatInput` still reads the tier itself for
+        // the callers that thread nothing; this is the fresher of the two.
+        sessionRowPrivacyTier={session?.id === sessionId ? session?.privacy_tier : undefined}
         effectiveModel={effectiveModel}
         handleSubmit={handleFormSubmit}
         chatState={chatState}

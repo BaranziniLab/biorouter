@@ -21,6 +21,10 @@ import { render, screen, waitFor, act } from '@testing-library/react';
  *   3. v1.89.0 F-12 — the daemon RAISES the tier when it starts a turn, after
  *      the bind read and before the turn ends, so a chat that becomes private on
  *      its first message reads `public` for the whole of that turn.
+ *   4. The chat stream now carries the POST-ratchet tier in the reply stream's
+ *      own first frames, so the composer has a fresher answer than any of its
+ *      reads. It must prefer that one — and must still work for the callers
+ *      that thread nothing, which is why the reads above are kept.
  */
 
 // Heavy children that are irrelevant here. The two tier consumers are replaced
@@ -102,11 +106,13 @@ beforeEach(() => {
 function chatInput(
   sessionId: string | null,
   chatState: ChatState = ChatState.Idle,
-  messagesLength = 0
+  messagesLength = 0,
+  sessionRowPrivacyTier?: 'public' | 'private'
 ) {
   return (
     <ChatInput
       sessionId={sessionId}
+      sessionRowPrivacyTier={sessionRowPrivacyTier}
       handleSubmit={vi.fn()}
       chatState={chatState}
       onStop={vi.fn()}
@@ -128,9 +134,10 @@ function chatInput(
 function renderChatInput(
   sessionId: string | null,
   chatState: ChatState = ChatState.Idle,
-  messagesLength = 0
+  messagesLength = 0,
+  sessionRowPrivacyTier?: 'public' | 'private'
 ) {
-  return render(chatInput(sessionId, chatState, messagesLength));
+  return render(chatInput(sessionId, chatState, messagesLength, sessionRowPrivacyTier));
 }
 
 // A promise whose resolution this test controls, so the order responses LAND
@@ -301,5 +308,54 @@ describe('ChatInput session privacy tier (#56)', () => {
     });
 
     expect(screen.getByTestId('tier-probe')).toHaveTextContent('unresolved');
+  });
+});
+
+describe('ChatInput prefers the chat stream`s tier over its own read', () => {
+  /**
+   * F-12's own premise was that "the composer cannot see the ratchet directly —
+   * no event announces it". One does now: the reply stream states the
+   * post-ratchet classification in its first frames and the chat stream patches
+   * its cached row from it. That answer is strictly fresher than this
+   * component's read, which cannot fire until the transcript has grown.
+   */
+  it('takes the row`s tier even while its own read still says public', async () => {
+    getSessionMock.mockResolvedValue({ data: { privacy_tier: 'public' } } as never);
+
+    renderChatInput('chat-stream-wins', ChatState.Idle, 0, 'private');
+
+    // Let the component's own read land, so this is a genuine disagreement
+    // rather than a race the row happened to win.
+    await waitFor(() => expect(getSessionMock).toHaveBeenCalled());
+    expect(screen.getByTestId('tier-probe')).toHaveTextContent('private');
+  });
+
+  /**
+   * The fallback is not decoration. A transcript surface, an observer tab, or
+   * any caller that does not thread the row has only this component's own read
+   * — and `undefined` from the row must mean "I know nothing", never "public".
+   */
+  it('falls back to its own read when the row carries nothing', async () => {
+    getSessionMock.mockResolvedValue({ data: { privacy_tier: 'private' } } as never);
+
+    renderChatInput('chat-no-row', ChatState.Idle, 0, undefined);
+
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('private'));
+  });
+
+  /**
+   * A rebind must not leave the previous chat's row tier asserting about this
+   * one — the same failure mode as the first test in the suite above, on the
+   * new input. `BaseChat` guards it by only passing the row when its id matches
+   * the session, and the composer must honour whatever it is handed.
+   */
+  it('follows the row it is given when the chat rebinds', async () => {
+    getSessionMock.mockResolvedValue({ data: { privacy_tier: 'public' } } as never);
+
+    const { rerender } = renderChatInput('chat-x', ChatState.Idle, 0, 'private');
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('private'));
+
+    rerender(chatInput('chat-y', ChatState.Idle, 0, undefined));
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('public'));
   });
 });
