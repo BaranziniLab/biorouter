@@ -32,15 +32,26 @@ import ExtensionUpdateReporter from './ExtensionUpdateReporter';
  * the renderer-side proxy for "how many listeners are on the IPC channel".
  */
 let live: Set<(event: ExtensionUpdateEvent) => void>;
+/**
+ * Totals, not just the live set. `live.size` alone cannot tell "subscribed
+ * twice and cleaned up once" apart from "only ever subscribed once", and those
+ * are exactly the two worlds the StrictMode test below has to separate.
+ */
+let subscribes: number;
+let disposes: number;
 
 beforeEach(() => {
   live = new Set();
+  subscribes = 0;
+  disposes = 0;
   // @ts-expect-error — partial stub, only what the reporter touches.
   window.electron = {
     onExtensionUpdateEvent: (cb: (event: ExtensionUpdateEvent) => void) => {
       live.add(cb);
+      subscribes++;
       return () => {
         live.delete(cb);
+        disposes++;
       };
     },
   };
@@ -71,5 +82,9 @@ describe('ExtensionUpdateReporter listener lifecycle', () => {
     );
 
     expect(live.size).toBe(1);
+    // Assert the mechanism, not just the total. A harness where StrictMode had
+    // stopped double-invoking would also leave one live listener, and would
+    // then pass this test while proving nothing about the cleanup.
+    expect({ subscribes, disposes }).toEqual({ subscribes: 2, disposes: 1 });
   });
 });

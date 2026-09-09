@@ -62,6 +62,16 @@ export default function ExtensionUpdateReporter() {
     //
     // `dispose` is optional-chained for the same reason the subscribe call is:
     // a host without the channel returns nothing to call.
+    //
+    // One deliberate consequence: while the shell is unmounted — the user is on
+    // `/welcome`, `/launcher` or `/configure-providers` — nothing is listening,
+    // and an update event broadcast in that window is dropped rather than
+    // queued. The leak used to paper over this, because a listener left behind
+    // by an earlier mount kept firing into the `ToastContainer`, which lives
+    // outside the shell. That is not a behaviour worth keeping a leak for: the
+    // updater's own log still has the failure, and a toast for an extension the
+    // user cannot see from the onboarding wall is not worth a duplicate for
+    // every remount.
     return () => dispose?.();
   }, []);
 
