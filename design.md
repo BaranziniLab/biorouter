@@ -596,18 +596,19 @@ is added around it.
 
 ```css
 /* Controls: the fill steps past hover, and the label firms up.
-   A TAB TRIGGER and a REGION are exempt — see the two amendments below. */
+   A TAB TRIGGER and a REGION are exempt — see the three amendments below. */
 :where(:is(a, button, summary, [role='button'], [role='menuitem'],
            [role='option'], input[type='checkbox'], input[type='radio'],
            [tabindex]:not([tabindex='-1'])):not([role='tab'], [role='tabpanel'],
-           [role='application'])):focus-visible {
+           [role='application'], .biorouter-focus-region)):focus-visible {
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
 }
 
-/* A region draws nothing, so the UA ring has to be put back down by hand. */
-:where([role='tabpanel']):focus-visible {
+/* A region draws nothing, so the UA ring has to be put back down by hand.
+   `.biorouter-focus-region` is how a region with no role to key on opts out. */
+:where([role='tabpanel'], .biorouter-focus-region):focus-visible {
   outline: none;
 }
 
@@ -663,6 +664,23 @@ it writes `outline-none` plus a 2px inset `--border-accent` ring as utilities. A
 user who asked their OS for a stronger signal still gets the ring on the panel. `[role='tablist']` is
 not exempt: it matches, but focusing it redirects into the active trigger within the same event, so
 the rule never paints it.
+
+**Amendment, 2026-09-08 (third) — a region with NO role opts out with `.biorouter-focus-region`.**
+Both exemptions above key on a role, and a scroll container given a tab stop so a keyboard user can
+scroll it has none to key on. The chat summary's To Do list (`components/ChatSummary.tsx`) is an
+`<ol tabIndex={0}>`; measured in Parchment light on the real popover, opened with the keyboard, it
+read `rgb(224, 224, 220)` over the whole **334 × 240 px** list, with the D-15 rule named by CDP's
+`CSS.getMatchedStylesForNode`. It cannot take a role: an `<ol>`'s implicit `list` role is what makes
+its rows list items to a screen reader, so `role="region"` would silence the fill and take the rows'
+semantics with it, and an explicit `role="list"` would be a redundant attribute carried only so a
+stylesheet could see it. So the hook is a class — an authored selector in the same `:not()`, never a
+`focus-visible:bg-*` utility at the call site, for the reason `.biorouter-focus-surface` gives (a newly
+written Tailwind class can silently fail to generate; a hook that needs nothing generated cannot) — and
+the UA-ring restoration names the class beside the panel, or the grey list would have become a ringed
+one. After the change the focused list reads `rgba(0, 0, 0, 0)` with outline and box-shadow `none` in
+all three families in both modes; the next Tab lands on the summary's own "Make workflow" button, which
+shows its focus surface; and under `prefers-contrast: more` the list takes the `2px solid --ring`
+outline through the same `[tabindex]` arm. Guarded in `styles/tabFocus.test.ts` beside the other two.
 
 All three tokens are **shared** — the focus treatment was always explicitly neutral rather than accented
 (D-15), so unifying it changed its values without changing its intent.
