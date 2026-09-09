@@ -828,22 +828,34 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       });
     }, []);
 
-    // Timing logic to prevent flicker between skeleton and content on initial load
+    // Timing logic to prevent flicker between skeleton and content on initial
+    // load. `showContent` — not `showSkeleton` — is the "already revealed"
+    // guard, and that is load-bearing: this effect WRITES `showSkeleton`, so
+    // keeping it in the deps re-runs the effect on the very next render and the
+    // cleanup below would cancel the reveal it had just armed. The two guards
+    // admit the same states, because the only writer that re-arms a cold load
+    // (`loadSessions`, on a cache miss) sets `showSkeleton` and `showContent`
+    // together; this one just leaves the deps stable across the 10ms window.
     useEffect(() => {
-      if (!isLoading && showSkeleton) {
-        setShowSkeleton(false);
-        // Use startTransition for non-blocking content show
-        startTransition(() => {
-          setTimeout(() => {
-            setShowContent(true);
-            if (isInitialLoad) {
-              setIsInitialLoad(false);
-            }
-          }, 10);
-        });
-      }
-      return () => void 0;
-    }, [isLoading, showSkeleton, isInitialLoad]);
+      if (isLoading || showContent) return undefined;
+      setShowSkeleton(false);
+      // No `startTransition`: it used to wrap the `setTimeout` call, which
+      // marked nothing (the callback returns before either setState runs), and
+      // the reveal is one opacity class on a layer that is already mounted —
+      // `renderActualContent()` renders under the skeleton too. Deferring the
+      // frame the delay exists to schedule is the opposite of what it is for.
+      const revealTimer = setTimeout(() => {
+        setShowContent(true);
+        if (isInitialLoad) {
+          setIsInitialLoad(false);
+        }
+      }, 10);
+      // Unmounting inside that 10ms window (navigating away, or a test file
+      // finishing) must disarm it: the callback would otherwise setState on an
+      // unmounted tree, and on CI it fired after jsdom was gone and took the
+      // whole run down with `window is not defined`.
+      return () => clearTimeout(revealTimer);
+    }, [isLoading, showContent, isInitialLoad]);
 
     // Memoize date groups calculation to prevent unnecessary recalculations
     const memoizedDateGroups = useMemo(() => {
