@@ -1,14 +1,15 @@
 // Helper function to show test name overlay
 async function showTestName(mainWindow: any, testName: string, providerName?: string) {
-  await mainWindow.evaluate(({ name, provider }: { name: string, provider?: string }) => {
-    // Remove any existing overlay
-    const existing = document.getElementById('test-overlay');
-    if (existing) existing.remove();
+  await mainWindow.evaluate(
+    ({ name, provider }: { name: string; provider?: string }) => {
+      // Remove any existing overlay
+      const existing = document.getElementById('test-overlay');
+      if (existing) existing.remove();
 
-    // Create new overlay
-    const overlay = document.createElement('div');
-    overlay.id = 'test-overlay';
-    overlay.style.cssText = `
+      // Create new overlay
+      const overlay = document.createElement('div');
+      overlay.id = 'test-overlay';
+      overlay.style.cssText = `
       position: fixed;
       top: 50%;
       left: 50%;
@@ -28,17 +29,19 @@ async function showTestName(mainWindow: any, testName: string, providerName?: st
       user-select: none;
       -webkit-user-select: none;
     `;
-    
-    const testText = `Running: ${name}`;
-    const providerText = provider ? `\nProvider: ${provider}` : '';
-    overlay.textContent = testText + providerText;
 
-    // Insert at the beginning of <html> to ensure it's above everything
-    document.documentElement.insertBefore(overlay, document.documentElement.firstChild);
+      const testText = `Running: ${name}`;
+      const providerText = provider ? `\nProvider: ${provider}` : '';
+      overlay.textContent = testText + providerText;
 
-    // Force a repaint to ensure the overlay is visible
-    overlay.getBoundingClientRect();
-  }, { name: testName, provider: providerName });
+      // Insert at the beginning of <html> to ensure it's above everything
+      document.documentElement.insertBefore(overlay, document.documentElement.firstChild);
+
+      // Force a repaint to ensure the overlay is visible
+      overlay.getBoundingClientRect();
+    },
+    { name: testName, provider: providerName }
+  );
 }
 
 // Helper function to clear test name overlay

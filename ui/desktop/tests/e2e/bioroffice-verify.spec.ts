@@ -118,7 +118,11 @@ test.describe('BiorOffice — dynamic skills + live agent usage', () => {
     if (await home.isVisible({ timeout: 3000 }).catch(() => false)) {
       await home.click();
     } else {
-      await mainWindow.locator('nav a:has-text("Home"), text=Home').first().click().catch(() => {});
+      await mainWindow
+        .locator('nav a:has-text("Home"), text=Home')
+        .first()
+        .click()
+        .catch(() => {});
     }
     await mainWindow.waitForTimeout(1500);
 

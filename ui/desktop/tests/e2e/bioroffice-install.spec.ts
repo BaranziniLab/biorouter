@@ -42,7 +42,9 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
 
   test.beforeAll(async () => {
     if (!fs.existsSync(BRXT_PATH)) {
-      throw new Error(`bioroffice.brxt not found at ${BRXT_PATH} — run scripts/build_brxt.sh first`);
+      throw new Error(
+        `bioroffice.brxt not found at ${BRXT_PATH} — run scripts/build_brxt.sh first`
+      );
     }
     fs.rmSync(AGENT_OUT_DIR, { recursive: true, force: true });
     fs.mkdirSync(AGENT_OUT_DIR, { recursive: true });
@@ -153,9 +155,15 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
     await Promise.race([closed, errBanner]);
     await mainWindow.screenshot({ path: 'test-results/bioroffice-5-post-install.png' });
 
-    const hasError = await mainWindow.locator('.bg-red-50').isVisible().catch(() => false);
+    const hasError = await mainWindow
+      .locator('.bg-red-50')
+      .isVisible()
+      .catch(() => false);
     if (hasError) {
-      const msg = await mainWindow.locator('.bg-red-50').innerText().catch(() => '?');
+      const msg = await mainWindow
+        .locator('.bg-red-50')
+        .innerText()
+        .catch(() => '?');
       throw new Error('Install failed: ' + msg);
     }
   });
@@ -164,9 +172,9 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
     expect(fs.existsSync(join(EXT_DIR, 'manifest.json'))).toBe(true);
     expect(fs.existsSync(join(EXT_DIR, 'bin', 'officecli-mac-arm64'))).toBe(true);
     expect(fs.existsSync(join(EXT_DIR, '.venv'))).toBe(true); // uv sync ran
-    expect(
-      fs.existsSync(join(EXT_DIR, 'skills', 'bioroffice-office-suite', 'SKILL.md'))
-    ).toBe(true);
+    expect(fs.existsSync(join(EXT_DIR, 'skills', 'bioroffice-office-suite', 'SKILL.md'))).toBe(
+      true
+    );
     const config = fs.readFileSync(CONFIG_YAML, 'utf8');
     expect(config).toContain('bioroffice');
   });

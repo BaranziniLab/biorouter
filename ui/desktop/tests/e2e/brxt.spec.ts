@@ -92,9 +92,7 @@ function createValidBrxtWithSkills(
   for (const skill of skills) {
     zip.addFile(
       `skills/${skill.slug}/SKILL.md`,
-      Buffer.from(
-        `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\nSkill body.`
-      )
+      Buffer.from(`---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\nSkill body.`)
     );
   }
   zip.writeZip(outPath);
@@ -190,7 +188,9 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     const dialog = await page.$('[role="dialog"]');
     if (dialog) {
       await page.keyboard.press('Escape');
-      await page.waitForSelector('[role="dialog"]', { state: 'hidden', timeout: 3000 }).catch(() => {});
+      await page
+        .waitForSelector('[role="dialog"]', { state: 'hidden', timeout: 3000 })
+        .catch(() => {});
     }
   }
 
@@ -340,9 +340,9 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     await expect(installBtn).toBeDisabled({ timeout: 3000 });
 
     // The optional var (OPTIONAL_KEY) should have a "Show N optional variables" toggle
-    const showOptionalToggle = page.locator('button:has-text("Show")').or(
-      page.locator('button:has-text("optional variable")')
-    );
+    const showOptionalToggle = page
+      .locator('button:has-text("Show")')
+      .or(page.locator('button:has-text("optional variable")'));
     await expect(showOptionalToggle).toBeVisible();
 
     await page.screenshot({ path: 'test-results/brxt-configure-step.png' });

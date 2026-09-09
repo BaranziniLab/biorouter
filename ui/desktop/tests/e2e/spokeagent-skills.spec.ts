@@ -34,9 +34,7 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
 
   test.beforeAll(async () => {
     if (!fs.existsSync(SPOKE_BRXT_PATH)) {
-      throw new Error(
-        `SPOKEAgent .brxt not found at ${SPOKE_BRXT_PATH}. Build the .brxt first.`
-      );
+      throw new Error(`SPOKEAgent .brxt not found at ${SPOKE_BRXT_PATH}. Build the .brxt first.`);
     }
 
     electronApp = await electron.launch({
@@ -141,9 +139,9 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
     await expect(dialog.locator('text=spoke-knowledge-graph')).toBeVisible({ timeout: 5000 });
 
     // The skill description excerpt
-    await expect(
-      dialog.locator('text=Traverse the SPOKE biomedical knowledge graph')
-    ).toBeVisible({ timeout: 5000 });
+    await expect(dialog.locator('text=Traverse the SPOKE biomedical knowledge graph')).toBeVisible({
+      timeout: 5000,
+    });
 
     await page.screenshot({ path: 'test-results/spoke-02-skills-preview.png' });
     await closeModalIfOpen();
@@ -280,7 +278,7 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
     // Skills page should render without showing an error state
     // (If skills parsing failed, we'd see an error or empty state with error message)
     const emptyError = page.locator('text=Failed, text=Error loading, text=Could not load');
-    const hasError = await emptyError.count() > 0;
+    const hasError = (await emptyError.count()) > 0;
     console.log(`Skills page shows load error: ${hasError}`);
     expect(hasError).toBe(false);
 

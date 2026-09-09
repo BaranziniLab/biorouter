@@ -75,9 +75,7 @@ test.describe('SPOKEAgent .brxt install flow', () => {
     // Find the main renderer page (the React app window)
     const pages = browser.contexts().flatMap((ctx) => ctx.pages());
     mainWindow =
-      pages.find(
-        (p) => p.url().includes('localhost') || p.url().startsWith('file://')
-      ) ?? pages[0];
+      pages.find((p) => p.url().includes('localhost') || p.url().startsWith('file://')) ?? pages[0];
 
     await mainWindow.waitForLoadState('domcontentloaded');
 
@@ -122,10 +120,7 @@ test.describe('SPOKEAgent .brxt install flow', () => {
   });
 
   test('2. Click "Add extension" — modal opens', async () => {
-    await mainWindow.click(
-      'button:has-text("Add extension")',
-      { timeout: 5000 }
-    );
+    await mainWindow.click('button:has-text("Add extension")', { timeout: 5000 });
     // Verify the modal dialog is open (avoid strict-mode by targeting the dialog role)
     await expect(mainWindow.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-2-modal-open.png' });
@@ -173,7 +168,9 @@ test.describe('SPOKEAgent .brxt install flow', () => {
 
   test('7. Install SPOKEAgent (uv sync runs)', async () => {
     await mainWindow.click('button:has-text("Install Extension")');
-    await expect(mainWindow.locator('button:has-text("Installing")')).toBeVisible({ timeout: 5000 });
+    await expect(mainWindow.locator('button:has-text("Installing")')).toBeVisible({
+      timeout: 5000,
+    });
     console.log('Installing… (uv sync may take ~60s)');
 
     // Wait for modal to close (success) or error banner
@@ -187,9 +184,15 @@ test.describe('SPOKEAgent .brxt install flow', () => {
 
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-7-post-install.png' });
 
-    const hasError = await mainWindow.locator('.bg-red-50').isVisible().catch(() => false);
+    const hasError = await mainWindow
+      .locator('.bg-red-50')
+      .isVisible()
+      .catch(() => false);
     if (hasError) {
-      const msg = await mainWindow.locator('.bg-red-50').innerText().catch(() => '?');
+      const msg = await mainWindow
+        .locator('.bg-red-50')
+        .innerText()
+        .catch(() => '?');
       throw new Error('Install failed: ' + msg);
     }
     console.log('✓ Install succeeded');
