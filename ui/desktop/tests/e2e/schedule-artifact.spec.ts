@@ -236,10 +236,13 @@ async function runNow(page: Page): Promise<void> {
 /**
  * Open the run's transcript, and keep re-opening it until the figure is there.
  *
- * ⚠ `ScheduleDetailView` does NOT poll. `fetchSessions` / `fetchSchedule` run
- * once on mount and once after "Run now", so a transcript opened while the job
- * is still working shows a partial conversation and never updates itself. What
- * *does* refresh is leaving and re-entering: the effect keyed on
+ * ⚠ "Run now" returns BEFORE the job finishes — `Scheduler::run_now` spawns the
+ * run and hands back the new session id — and nothing polls afterwards.
+ * `ScheduleDetailView`'s `fetchSessions` / `fetchSchedule` run once on mount and
+ * once after "Run now", and the detail view has no Refresh control, so a
+ * transcript opened at that moment shows a partial conversation and never
+ * updates itself. What *does* refresh is leaving and re-entering: the effect
+ * keyed on
  * `[scheduleId, selectedSession]` refetches when `selectedSession` returns to
  * null, which is exactly what the Back button does. So the wait is a
  * Back/re-open loop rather than a `waitFor` on a card that would never arrive.

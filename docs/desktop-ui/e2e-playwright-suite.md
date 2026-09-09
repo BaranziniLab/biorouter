@@ -126,13 +126,17 @@ contract in [Where a generated artifact is displayed](artifact-display-surfaces.
 
 Two behaviours of the app shape the spec and are worth knowing independently:
 
-- **`ScheduleDetailView` does not poll.** `fetchSessions` and `fetchSchedule` run once on
-  mount and once after "Run now", and there is no Refresh control on the detail view (the
-  Scheduler *list* has one). A transcript opened while the job is still working shows a
-  partial conversation and never updates itself. What does refresh is leaving and
-  re-entering: the effect keyed on `[scheduleId, selectedSession]` refetches when
-  `selectedSession` returns to null, which is what Back does. The spec waits with a
-  Back/re-open loop for that reason, not out of caution.
+- **"Run now" returns before the job finishes, and nothing polls afterwards.**
+  `Scheduler::run_now` `tokio::spawn`s the run and returns the new session id
+  immediately, so the run row appears while the job is still working. On the client side
+  `fetchSessions` and `fetchSchedule` run once on mount and once after "Run now", and
+  there is **no Refresh control on the detail view** (the Scheduler *list* has one). A
+  transcript opened at that moment shows a partial conversation and never updates itself.
+  What does refresh is leaving and re-entering: the effect keyed on
+  `[scheduleId, selectedSession]` refetches when `selectedSession` returns to null, which
+  is what Back does. The spec waits with a Back/re-open loop for that reason, not out of
+  caution — a `waitFor` on the artifact card inside a stale transcript would never
+  resolve.
 - **The packaged app cannot be launched by `electron.launch`.** Playwright drives Electron
   with `--inspect=0` and blocks until the child prints `Debugger listening on ws://`; the
   packaged build disables `EnableNodeCliInspectArguments` (`forge.config.ts`), so that line
@@ -147,16 +151,34 @@ daemon and the developer's own running app.
 
 ## What a run costs
 
-Measured on an M4 Max, 2026-09-09, one variant per invocation:
+Measured on an M4 Max, 2026-09-09, across five runs of the scheduled-artifact scenario:
 
 | Phase | Wall clock |
 |-------|-----------|
-| `npm run generate-api && npm run build:e2e` | ~60 s |
-| Dev-bundle variant, end to end | ~4 min |
-| Packaged-app variant, end to end | ~4 min |
+| `npm run generate-api && npm run build:e2e` | 16 s warm, ~2 min cold |
+| Dev-bundle variant alone (launch → assertions → teardown) | 69–76 s; test body 29.8–40.8 s |
+| Both variants in one invocation | 80 s; dev 29.8 s + packaged 22.3 s |
 
 The model turn dominates and is the part that varies: the scenario budgets 300 s for it
-inside a 420 s test timeout.
+inside a 420 s test timeout, and the observed turns finished in well under a minute. A CI
+job running this one scenario on both variants would fit inside `preview-panel`'s 20-minute
+budget with room to spare — the cost concern is the provider call, not the clock.
+
+### Evidence, and why it is not where you expect
+
+Two configuration facts, both verified by running the suite and then looking:
+
+- **A passing test's trace is deleted.** `playwright.config.ts` sets `preserveOutput:
+  'failures-only'`, which removes the output directory of every test that passed —
+  including its `trace.zip`, even with `trace: 'on'`. After a green run `test-results/` is
+  empty. Setting `preserveOutput: 'always'` is the one-line change that would keep them.
+- **`--reporter=list` suppresses the HTML report.** Passing it overrides the config's
+  `[['html'], ['list']]` pair, so no `playwright-report/` is regenerated and attachments go
+  nowhere. Drop the flag when you want the report.
+
+The scheduled-artifact scenario therefore writes its screenshot to `ui/desktop/e2e-evidence/`
+(gitignored, overridable with `BIOROUTER_E2E_EVIDENCE_DIR`) — deliberately outside
+`outputDir`, so it survives a pass — and *also* attaches it for the report.
 
 ## What CI would need
 
