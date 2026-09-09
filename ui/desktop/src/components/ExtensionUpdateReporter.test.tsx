@@ -20,6 +20,15 @@ beforeEach(() => {
   window.electron = {
     onExtensionUpdateEvent: (cb: (e: ExtensionUpdateEvent) => void) => {
       emit = cb;
+      // Matches the bridge's disposer shape, and it really is called: the
+      // shared setup installs an `afterEach(cleanup)` (src/test/setup.ts), so
+      // React unmounts the reporter after every test here. Clearing `emit` on
+      // dispose keeps a stale callback from a previous test out of the next
+      // one. Counting listeners across mounts is the other file's job,
+      // ExtensionUpdateReporter.listeners.test.tsx.
+      return () => {
+        emit = () => {};
+      };
     },
   };
 });

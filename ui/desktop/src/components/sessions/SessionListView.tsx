@@ -239,7 +239,6 @@ interface SearchContainerElement extends HTMLDivElement {
 
 interface SessionListViewProps {
   onSelectSession: (sessionId: string) => void;
-  selectedSessionId?: string | null;
 }
 
 const HISTORY_LOADING_GROUPS = [5, 4];
@@ -315,14 +314,12 @@ function HistoryLoading() {
  * never reaches that comparison.
  *
  * Everything it used to close over — `onSelectSession`, the diverged-from name
- * lookup, the ref registry — is a prop now, so the type is stable for the life
- * of the module.
+ * lookup — is a prop now, so the type is stable for the life of the module.
  */
 const SessionItem = React.memo(function SessionItem({
   session,
   onSelectSession,
   sessionNameById,
-  setSessionRef,
   onEditClick,
   onDeleteClick,
   onExportClick,
@@ -332,7 +329,6 @@ const SessionItem = React.memo(function SessionItem({
   onSelectSession: (sessionId: string) => void;
   /** id → name, so a diverged row can name its lineage parent. */
   sessionNameById: Map<string, string>;
-  setSessionRef: (itemId: string, element: HTMLDivElement | null) => void;
   onEditClick: (session: Session) => void;
   onDeleteClick: (session: Session) => void;
   onExportClick: (session: Session, e: React.MouseEvent) => void;
@@ -407,10 +403,7 @@ const SessionItem = React.memo(function SessionItem({
        Shift+F10, which dispatch `contextmenu` on the focused element; the `⋯`
        button is the other keyboard path and shows the identical list. */
     <ChatRowContextMenu target={rowActions}>
-      <div
-        className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
-        ref={(el) => setSessionRef(session.id, el)}
-      >
+      <div className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group">
         {/* BR-71: the badge lives INSIDE the row, and is derived from the row
           itself rather than from where it was rendered — so a subagent run
           whose parent is missing from the list is still labelled instead of
@@ -641,580 +634,540 @@ const SessionItem = React.memo(function SessionItem({
   );
 });
 
-const SessionListView: React.FC<SessionListViewProps> = React.memo(
-  ({ onSelectSession, selectedSessionId }) => {
-    const initialSessions = useRef(getCachedSessionList()).current;
-    const navigate = useNavigate();
-    const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
-    // The toggle below starts off, so the warm cache — which a sibling pane may
-    // have filled with subagent rows — is filtered before it reaches the first
-    // paint.
-    const [filteredSessions, setFilteredSessions] = useState<Session[]>(() =>
-      withoutSubagents(initialSessions ?? [])
-    );
-    const [dateGroups, setDateGroups] = useState<DateGroup[]>(() =>
-      groupSessionsByDate(withoutSubagents(initialSessions ?? []))
-    );
-    const [isLoading, setIsLoading] = useState(initialSessions === null);
-    const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
-    const [showContent, setShowContent] = useState(initialSessions !== null);
-    const [error, setError] = useState<string | null>(null);
-    const [searchResults, setSearchResults] = useState<{
-      count: number;
-      currentIndex: number;
-    } | null>(null);
+const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSession }) => {
+  const initialSessions = useRef(getCachedSessionList()).current;
+  const navigate = useNavigate();
+  const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
+  // The toggle below starts off, so the warm cache — which a sibling pane may
+  // have filled with subagent rows — is filtered before it reaches the first
+  // paint.
+  const [filteredSessions, setFilteredSessions] = useState<Session[]>(() =>
+    withoutSubagents(initialSessions ?? [])
+  );
+  const [dateGroups, setDateGroups] = useState<DateGroup[]>(() =>
+    groupSessionsByDate(withoutSubagents(initialSessions ?? []))
+  );
+  const [isLoading, setIsLoading] = useState(initialSessions === null);
+  const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
+  const [showContent, setShowContent] = useState(initialSessions !== null);
+  const [error, setError] = useState<string | null>(null);
+  const [searchResults, setSearchResults] = useState<{
+    count: number;
+    currentIndex: number;
+  } | null>(null);
 
-    const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_VISIBLE_SESSIONS);
+  const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_VISIBLE_SESSIONS);
 
-    // BR-71: subagent transcripts are hidden by default — they are machinery,
-    // not conversations the user started. Turning this on refetches with
-    // `include_subagents` and nests each run under the session that spawned it.
-    const [showSubagents, setShowSubagents] = useState(false);
+  // BR-71: subagent transcripts are hidden by default — they are machinery,
+  // not conversations the user started. Turning this on refetches with
+  // `include_subagents` and nests each run under the session that spawned it.
+  const [showSubagents, setShowSubagents] = useState(false);
 
-    // `showSubagents` is this pane's state, but the session cache behind it is
-    // module-global — a second History pane, or Home, can publish subagent rows
-    // into this one at any time (and an orphaned request can leave the cache
-    // holding the other identity for a moment). The toggle decides what is
-    // FETCHED; this decides what this pane will SHOW, so the two can never
-    // disagree on screen.
-    const visibleSessions = useMemo(
-      () => (showSubagents ? sessions : withoutSubagents(sessions)),
-      [sessions, showSubagents]
-    );
+  // `showSubagents` is this pane's state, but the session cache behind it is
+  // module-global — a second History pane, or Home, can publish subagent rows
+  // into this one at any time (and an orphaned request can leave the cache
+  // holding the other identity for a moment). The toggle decides what is
+  // FETCHED; this decides what this pane will SHOW, so the two can never
+  // disagree on screen.
+  const visibleSessions = useMemo(
+    () => (showSubagents ? sessions : withoutSubagents(sessions)),
+    [sessions, showSubagents]
+  );
 
-    // Parent grouping runs BEFORE date bucketing. `groupSessionsByDate` buckets
-    // on `updated_at` and a parent's advances every time the conversation is
-    // resumed, so a subagent that ran on an earlier day sits in a different
-    // bucket — grouping within each bucket would drop it back to top level,
-    // which is exactly the orphaned, unexplained row this feature removes.
-    const parentGroups = useMemo(() => groupSessionsByParent(filteredSessions), [filteredSessions]);
-    // Only top-level rows are dated and paginated; children ride with their
-    // parent, so `visibleSessionCount` counts rendered parents, not raw rows.
-    const topLevelSessions = useMemo(() => parentGroups.map((g) => g.session), [parentGroups]);
-    const childrenByParentId = useMemo(() => {
-      const map = new Map<string, Session[]>();
-      for (const { session, children } of parentGroups) {
-        if (children.length > 0) map.set(session.id, children);
+  // Parent grouping runs BEFORE date bucketing. `groupSessionsByDate` buckets
+  // on `updated_at` and a parent's advances every time the conversation is
+  // resumed, so a subagent that ran on an earlier day sits in a different
+  // bucket — grouping within each bucket would drop it back to top level,
+  // which is exactly the orphaned, unexplained row this feature removes.
+  const parentGroups = useMemo(() => groupSessionsByParent(filteredSessions), [filteredSessions]);
+  // Only top-level rows are dated and paginated; children ride with their
+  // parent, so `visibleSessionCount` counts rendered parents, not raw rows.
+  const topLevelSessions = useMemo(() => parentGroups.map((g) => g.session), [parentGroups]);
+  const childrenByParentId = useMemo(() => {
+    const map = new Map<string, Session[]>();
+    for (const { session, children } of parentGroups) {
+      if (children.length > 0) map.set(session.id, children);
+    }
+    return map;
+  }, [parentGroups]);
+
+  // Edit modal state
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingSession, setEditingSession] = useState<Session | null>(null);
+
+  // Delete confirmation modal state
+  const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+  const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
+
+  // Import modal state
+  const [showImportModal, setShowImportModal] = useState(false);
+
+  // Issue #56 §12.1: declassification is attached to the History ROW, not to
+  // the chat title menu. The dialog is mounted from here (rather than inside
+  // `SessionItem`) because `SessionItem` is declared in this component's body,
+  // so every re-render is a fresh component type and a dialog owned by a row
+  // would be torn down and remounted mid-interaction.
+  const [declassifyTarget, setDeclassifyTarget] = useState<Session | null>(null);
+
+  // Search state for debouncing
+  const [searchTerm, setSearchTerm] = useState('');
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const debouncedSearchTerm = useDebounce(searchTerm, 300); // 300ms debounce
+
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const visibleDateGroups = useMemo(() => {
+    let remainingSessions = visibleSessionCount;
+
+    return dateGroups.flatMap((group) => {
+      if (remainingSessions <= 0) return [];
+      const sessions = group.sessions.slice(0, remainingSessions);
+      remainingSessions -= sessions.length;
+      return [{ ...group, sessions }];
+    });
+  }, [dateGroups, visibleSessionCount]);
+
+  // id → name lookup so a diverged session can show its lineage parent's name.
+  const sessionNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of sessions) map.set(s.id, s.name);
+    return map;
+  }, [sessions]);
+
+  const handleScroll = useCallback(
+    (target: HTMLDivElement) => {
+      const { scrollTop, scrollHeight, clientHeight } = target;
+      const threshold = 200;
+
+      if (
+        scrollHeight - scrollTop - clientHeight < threshold &&
+        visibleSessionCount < topLevelSessions.length
+      ) {
+        setVisibleSessionCount((previousCount) =>
+          Math.min(previousCount + VISIBLE_SESSION_BATCH, topLevelSessions.length)
+        );
       }
-      return map;
-    }, [parentGroups]);
+    },
+    [visibleSessionCount, topLevelSessions.length]
+  );
 
-    // Edit modal state
-    const [showEditModal, setShowEditModal] = useState(false);
-    const [editingSession, setEditingSession] = useState<Session | null>(null);
+  useEffect(() => {
+    if (debouncedSearchTerm) {
+      setVisibleSessionCount(topLevelSessions.length);
+    } else {
+      setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
+    }
+  }, [debouncedSearchTerm, topLevelSessions.length]);
 
-    // Delete confirmation modal state
-    const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
-    const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
-
-    // Import modal state
-    const [showImportModal, setShowImportModal] = useState(false);
-
-    // Issue #56 §12.1: declassification is attached to the History ROW, not to
-    // the chat title menu. The dialog is mounted from here (rather than inside
-    // `SessionItem`) because `SessionItem` is declared in this component's body,
-    // so every re-render is a fresh component type and a dialog owned by a row
-    // would be torn down and remounted mid-interaction.
-    const [declassifyTarget, setDeclassifyTarget] = useState<Session | null>(null);
-
-    // Search state for debouncing
-    const [searchTerm, setSearchTerm] = useState('');
-    const [caseSensitive, setCaseSensitive] = useState(false);
-    const debouncedSearchTerm = useDebounce(searchTerm, 300); // 300ms debounce
-
-    const containerRef = useRef<HTMLDivElement>(null);
-
-    // Track session to element ref
-    const sessionRefs = useRef<Record<string, HTMLElement>>({});
-    // Stable across renders: it is a prop of every row now, and a new function
-    // each render would defeat `SessionItem`'s `React.memo` on every row at
-    // once. It only ever writes to a ref, so it has nothing to close over.
-    const setSessionRefs = useCallback((itemId: string, element: HTMLDivElement | null) => {
-      if (element) {
-        sessionRefs.current[itemId] = element;
-      } else {
-        delete sessionRefs.current[itemId];
-      }
-    }, []);
-
-    const visibleDateGroups = useMemo(() => {
-      let remainingSessions = visibleSessionCount;
-
-      return dateGroups.flatMap((group) => {
-        if (remainingSessions <= 0) return [];
-        const sessions = group.sessions.slice(0, remainingSessions);
-        remainingSessions -= sessions.length;
-        return [{ ...group, sessions }];
-      });
-    }, [dateGroups, visibleSessionCount]);
-
-    // id → name lookup so a diverged session can show its lineage parent's name.
-    const sessionNameById = useMemo(() => {
-      const map = new Map<string, string>();
-      for (const s of sessions) map.set(s.id, s.name);
-      return map;
-    }, [sessions]);
-
-    const handleScroll = useCallback(
-      (target: HTMLDivElement) => {
-        const { scrollTop, scrollHeight, clientHeight } = target;
-        const threshold = 200;
-
-        if (
-          scrollHeight - scrollTop - clientHeight < threshold &&
-          visibleSessionCount < topLevelSessions.length
-        ) {
-          setVisibleSessionCount((previousCount) =>
-            Math.min(previousCount + VISIBLE_SESSION_BATCH, topLevelSessions.length)
-          );
-        }
-      },
-      [visibleSessionCount, topLevelSessions.length]
-    );
-
-    useEffect(() => {
-      if (debouncedSearchTerm) {
-        setVisibleSessionCount(topLevelSessions.length);
-      } else {
-        setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
-      }
-    }, [debouncedSearchTerm, topLevelSessions.length]);
-
-    const loadSessions = useCallback(async () => {
-      const hasCachedSessions = getCachedSessionList() !== null;
-      if (!hasCachedSessions) {
-        setIsLoading(true);
-        setShowSkeleton(true);
-        setShowContent(false);
+  const loadSessions = useCallback(async () => {
+    const hasCachedSessions = getCachedSessionList() !== null;
+    if (!hasCachedSessions) {
+      setIsLoading(true);
+      setShowSkeleton(true);
+      setShowContent(false);
+      setError(null);
+    }
+    try {
+      const refreshedSessions = await refreshSessionList(showSubagents);
+      // Use startTransition to make state updates non-blocking
+      startTransition(() => {
+        setSessions(refreshedSessions);
+        setFilteredSessions(
+          showSubagents ? refreshedSessions : withoutSubagents(refreshedSessions)
+        );
         setError(null);
+      });
+    } catch (err) {
+      console.error('Failed to load sessions:', err);
+      if (!hasCachedSessions) {
+        setError('Could not load your chats. Try again in a moment.');
+        setSessions([]);
+        setFilteredSessions([]);
       }
-      try {
-        const refreshedSessions = await refreshSessionList(showSubagents);
-        // Use startTransition to make state updates non-blocking
-        startTransition(() => {
-          setSessions(refreshedSessions);
-          setFilteredSessions(
-            showSubagents ? refreshedSessions : withoutSubagents(refreshedSessions)
+    } finally {
+      if (!hasCachedSessions) setIsLoading(false);
+    }
+  }, [showSubagents]);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
+  // Stay live while open. The shared cache is mutated (and emits here) by a
+  // rename on the name channel and by any create / diverge / delete on the
+  // list channel, in this window or a sibling — so See-all reflects a branch
+  // or a rename without a remount. The search effect re-derives
+  // `filteredSessions` from `sessions`, so refreshing the source keeps any
+  // active filter consistent.
+  useEffect(() => {
+    return subscribeSessionList(() => {
+      const cached = getCachedSessionList();
+      if (cached) startTransition(() => setSessions(cached));
+    });
+  }, []);
+
+  // Timing logic to prevent flicker between skeleton and content on initial
+  // load. `showContent` — not `showSkeleton` — is the "already revealed"
+  // guard, and that is load-bearing: this effect WRITES `showSkeleton`, so
+  // keeping it in the deps re-runs the effect on the very next render and the
+  // cleanup below would cancel the reveal it had just armed. The two guards
+  // admit the same states, because the only writer that re-arms a cold load
+  // (`loadSessions`, on a cache miss) sets `showSkeleton` and `showContent`
+  // together; this one just leaves the deps stable across the 10ms window.
+  useEffect(() => {
+    if (isLoading || showContent) return undefined;
+    setShowSkeleton(false);
+    // No `startTransition`: it used to wrap the `setTimeout` call, which
+    // marked nothing (the callback returns before either setState runs), and
+    // the reveal is one opacity class on a layer that is already mounted —
+    // `renderActualContent()` renders under the skeleton too. Deferring the
+    // frame the delay exists to schedule is the opposite of what it is for.
+    const revealTimer = setTimeout(() => setShowContent(true), 10);
+    // Unmounting inside that 10ms window (navigating away, or a test file
+    // finishing) must disarm it: the callback would otherwise setState on an
+    // unmounted tree, and on CI it fired after jsdom was gone and took the
+    // whole run down with `window is not defined`.
+    return () => clearTimeout(revealTimer);
+    // `isInitialLoad` used to sit here and in the callback above. It was
+    // write-only: the only thing that ever READ it was the guard around its
+    // own setter, so the whole cycle — the `useState`, the branch, the
+    // dependency — decided nothing. As a dependency it also re-ran this
+    // effect one extra time on the very tick the reveal landed, which is the
+    // opposite of the stable deps the comment above depends on.
+  }, [isLoading, showContent]);
+
+  // Memoize date groups calculation to prevent unnecessary recalculations
+  const memoizedDateGroups = useMemo(() => {
+    if (topLevelSessions.length > 0) {
+      return groupSessionsByDate(topLevelSessions);
+    }
+    return [];
+  }, [topLevelSessions]);
+
+  // Update date groups when filtered sessions change
+  useEffect(() => {
+    startTransition(() => {
+      setDateGroups(memoizedDateGroups);
+    });
+  }, [memoizedDateGroups]);
+
+  // Debounced search effect - performs actual filtering
+  useEffect(() => {
+    if (!debouncedSearchTerm) {
+      startTransition(() => {
+        setFilteredSessions(visibleSessions);
+        setSearchResults(null);
+      });
+      return;
+    }
+
+    // Use startTransition to make search non-blocking
+    startTransition(() => {
+      const searchTerm = caseSensitive ? debouncedSearchTerm : debouncedSearchTerm.toLowerCase();
+      const filtered = visibleSessions.filter((session) => {
+        const description = session.name;
+        const workingDir = session.working_dir;
+        const sessionId = session.id;
+
+        if (caseSensitive) {
+          return (
+            description.includes(searchTerm) ||
+            sessionId.includes(searchTerm) ||
+            workingDir.includes(searchTerm)
           );
-          setError(null);
-        });
-      } catch (err) {
-        console.error('Failed to load sessions:', err);
-        if (!hasCachedSessions) {
-          setError('Could not load your chats. Try again in a moment.');
-          setSessions([]);
-          setFilteredSessions([]);
+        } else {
+          return (
+            description.toLowerCase().includes(searchTerm) ||
+            sessionId.toLowerCase().includes(searchTerm) ||
+            workingDir.toLowerCase().includes(searchTerm)
+          );
         }
-      } finally {
-        if (!hasCachedSessions) setIsLoading(false);
-      }
-    }, [showSubagents]);
-
-    useEffect(() => {
-      loadSessions();
-    }, [loadSessions]);
-
-    // Stay live while open. The shared cache is mutated (and emits here) by a
-    // rename on the name channel and by any create / diverge / delete on the
-    // list channel, in this window or a sibling — so See-all reflects a branch
-    // or a rename without a remount. The search effect re-derives
-    // `filteredSessions` from `sessions`, so refreshing the source keeps any
-    // active filter consistent.
-    useEffect(() => {
-      return subscribeSessionList(() => {
-        const cached = getCachedSessionList();
-        if (cached) startTransition(() => setSessions(cached));
       });
-    }, []);
 
-    // Timing logic to prevent flicker between skeleton and content on initial
-    // load. `showContent` — not `showSkeleton` — is the "already revealed"
-    // guard, and that is load-bearing: this effect WRITES `showSkeleton`, so
-    // keeping it in the deps re-runs the effect on the very next render and the
-    // cleanup below would cancel the reveal it had just armed. The two guards
-    // admit the same states, because the only writer that re-arms a cold load
-    // (`loadSessions`, on a cache miss) sets `showSkeleton` and `showContent`
-    // together; this one just leaves the deps stable across the 10ms window.
-    useEffect(() => {
-      if (isLoading || showContent) return undefined;
-      setShowSkeleton(false);
-      // No `startTransition`: it used to wrap the `setTimeout` call, which
-      // marked nothing (the callback returns before either setState runs), and
-      // the reveal is one opacity class on a layer that is already mounted —
-      // `renderActualContent()` renders under the skeleton too. Deferring the
-      // frame the delay exists to schedule is the opposite of what it is for.
-      const revealTimer = setTimeout(() => setShowContent(true), 10);
-      // Unmounting inside that 10ms window (navigating away, or a test file
-      // finishing) must disarm it: the callback would otherwise setState on an
-      // unmounted tree, and on CI it fired after jsdom was gone and took the
-      // whole run down with `window is not defined`.
-      return () => clearTimeout(revealTimer);
-      // `isInitialLoad` used to sit here and in the callback above. It was
-      // write-only: the only thing that ever READ it was the guard around its
-      // own setter, so the whole cycle — the `useState`, the branch, the
-      // dependency — decided nothing. As a dependency it also re-ran this
-      // effect one extra time on the very tick the reveal landed, which is the
-      // opposite of the stable deps the comment above depends on.
-    }, [isLoading, showContent]);
+      setFilteredSessions(filtered);
+      setSearchResults(filtered.length > 0 ? { count: filtered.length, currentIndex: 1 } : null);
+    });
+  }, [debouncedSearchTerm, caseSensitive, visibleSessions]);
 
-    // Memoize date groups calculation to prevent unnecessary recalculations
-    const memoizedDateGroups = useMemo(() => {
-      if (topLevelSessions.length > 0) {
-        return groupSessionsByDate(topLevelSessions);
-      }
-      return [];
-    }, [topLevelSessions]);
+  // Handle immediate search input (updates search term for debouncing)
+  const handleSearch = useCallback((term: string, caseSensitive: boolean) => {
+    setSearchTerm(term);
+    setCaseSensitive(caseSensitive);
+  }, []);
 
-    // Update date groups when filtered sessions change
-    useEffect(() => {
-      startTransition(() => {
-        setDateGroups(memoizedDateGroups);
-      });
-    }, [memoizedDateGroups]);
+  // Handle search result navigation
+  const handleSearchNavigation = (direction: 'next' | 'prev') => {
+    if (!searchResults || filteredSessions.length === 0) return;
 
-    // Scroll to the selected session when returning from session history view
-    useEffect(() => {
-      if (selectedSessionId) {
-        // Indexes into the paginated top-level list; a nested child is not in
-        // it, so the count bump is skipped and the scroll falls through to the
-        // row's own ref, which children register too.
-        const selectedIndex = topLevelSessions.findIndex(
-          (session) => session.id === selectedSessionId
-        );
-        if (selectedIndex >= visibleSessionCount) {
-          setVisibleSessionCount(selectedIndex + 1);
-          return;
-        }
-        const element = sessionRefs.current[selectedSessionId];
-        if (element) {
-          element.scrollIntoView({
-            block: 'center',
-          });
-        }
-      }
-    }, [topLevelSessions, selectedSessionId, sessions, visibleSessionCount]);
+    let newIndex: number;
+    if (direction === 'next') {
+      newIndex = (searchResults.currentIndex % filteredSessions.length) + 1;
+    } else {
+      newIndex =
+        searchResults.currentIndex === 1 ? filteredSessions.length : searchResults.currentIndex - 1;
+    }
 
-    // Debounced search effect - performs actual filtering
-    useEffect(() => {
-      if (!debouncedSearchTerm) {
-        startTransition(() => {
-          setFilteredSessions(visibleSessions);
-          setSearchResults(null);
-        });
-        return;
-      }
+    setSearchResults({ ...searchResults, currentIndex: newIndex });
 
-      // Use startTransition to make search non-blocking
-      startTransition(() => {
-        const searchTerm = caseSensitive ? debouncedSearchTerm : debouncedSearchTerm.toLowerCase();
-        const filtered = visibleSessions.filter((session) => {
-          const description = session.name;
-          const workingDir = session.working_dir;
-          const sessionId = session.id;
+    // Find the SearchView's container element
+    const searchContainer =
+      containerRef.current?.querySelector<SearchContainerElement>('.search-container');
+    if (searchContainer?._searchHighlighter) {
+      // Update the current match in the highlighter
+      searchContainer._searchHighlighter.setCurrentMatch(newIndex - 1, true);
+    }
+  };
 
-          if (caseSensitive) {
-            return (
-              description.includes(searchTerm) ||
-              sessionId.includes(searchTerm) ||
-              workingDir.includes(searchTerm)
-            );
-          } else {
-            return (
-              description.toLowerCase().includes(searchTerm) ||
-              sessionId.toLowerCase().includes(searchTerm) ||
-              workingDir.toLowerCase().includes(searchTerm)
-            );
-          }
-        });
+  // Handle modal close
+  const handleModalClose = useCallback(() => {
+    setShowEditModal(false);
+    setEditingSession(null);
+  }, []);
 
-        setFilteredSessions(filtered);
-        setSearchResults(filtered.length > 0 ? { count: filtered.length, currentIndex: 1 } : null);
-      });
-    }, [debouncedSearchTerm, caseSensitive, visibleSessions]);
+  const handleModalSave = useCallback(async (sessionId: string, newDescription: string) => {
+    // Update state immediately for optimistic UI
+    const updateName = (currentSessions: Session[]) =>
+      currentSessions.map((session) =>
+        session.id === sessionId ? { ...session, name: newDescription } : session
+      );
+    updateCachedSessionList(updateName);
+    setSessions(updateName);
+  }, []);
 
-    // Handle immediate search input (updates search term for debouncing)
-    const handleSearch = useCallback((term: string, caseSensitive: boolean) => {
-      setSearchTerm(term);
-      setCaseSensitive(caseSensitive);
-    }, []);
+  const handleEditSession = useCallback((session: Session) => {
+    setEditingSession(session);
+    setShowEditModal(true);
+  }, []);
 
-    // Handle search result navigation
-    const handleSearchNavigation = (direction: 'next' | 'prev') => {
-      if (!searchResults || filteredSessions.length === 0) return;
+  const handleDeleteSession = useCallback((session: Session) => {
+    setSessionToDelete(session);
+    setShowDeleteConfirmation(true);
+  }, []);
 
-      let newIndex: number;
-      if (direction === 'next') {
-        newIndex = (searchResults.currentIndex % filteredSessions.length) + 1;
-      } else {
-        newIndex =
-          searchResults.currentIndex === 1
-            ? filteredSessions.length
-            : searchResults.currentIndex - 1;
-      }
+  const handleConfirmDelete = useCallback(async () => {
+    if (!sessionToDelete) return;
 
-      setSearchResults({ ...searchResults, currentIndex: newIndex });
+    setShowDeleteConfirmation(false);
+    const sessionToDeleteId = sessionToDelete.id;
+    const sessionName = sessionToDelete.name;
+    setSessionToDelete(null);
 
-      // Find the SearchView's container element
-      const searchContainer =
-        containerRef.current?.querySelector<SearchContainerElement>('.search-container');
-      if (searchContainer?._searchHighlighter) {
-        // Update the current match in the highlighter
-        searchContainer._searchHighlighter.setCurrentMatch(newIndex - 1, true);
-      }
-    };
-
-    // Handle modal close
-    const handleModalClose = useCallback(() => {
-      setShowEditModal(false);
-      setEditingSession(null);
-    }, []);
-
-    const handleModalSave = useCallback(async (sessionId: string, newDescription: string) => {
-      // Update state immediately for optimistic UI
-      const updateName = (currentSessions: Session[]) =>
-        currentSessions.map((session) =>
-          session.id === sessionId ? { ...session, name: newDescription } : session
-        );
-      updateCachedSessionList(updateName);
-      setSessions(updateName);
-    }, []);
-
-    const handleEditSession = useCallback((session: Session) => {
-      setEditingSession(session);
-      setShowEditModal(true);
-    }, []);
-
-    const handleDeleteSession = useCallback((session: Session) => {
-      setSessionToDelete(session);
-      setShowDeleteConfirmation(true);
-    }, []);
-
-    const handleConfirmDelete = useCallback(async () => {
-      if (!sessionToDelete) return;
-
-      setShowDeleteConfirmation(false);
-      const sessionToDeleteId = sessionToDelete.id;
-      const sessionName = sessionToDelete.name;
-      setSessionToDelete(null);
-
-      try {
-        await deleteSession({
-          path: { session_id: sessionToDeleteId },
-          throwOnError: true,
-        });
-        const removeDeletedSession = (currentSessions: Session[]) =>
-          currentSessions.filter((session) => session.id !== sessionToDeleteId);
-        updateCachedSessionList(removeDeletedSession);
-        setSessions(removeDeletedSession);
-        toastSuccess({
-          title: 'Chat deleted',
-          msg: `"${sessionName}" was removed from chat history.`,
-        });
-      } catch (error) {
-        console.error('Error deleting session:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        toastError({
-          title: 'Failed to delete chat',
-          msg: `Could not delete "${sessionName}": ${errorMessage}`,
-        });
-      }
-      await loadSessions();
-    }, [sessionToDelete, loadSessions]);
-
-    const handleCancelDelete = useCallback(() => {
-      setShowDeleteConfirmation(false);
-      setSessionToDelete(null);
-    }, []);
-
-    const handleExportSession = useCallback(async (session: Session, e: React.MouseEvent) => {
-      e.stopPropagation();
-
-      const response = await exportSession({
-        path: { session_id: session.id },
+    try {
+      await deleteSession({
+        path: { session_id: sessionToDeleteId },
         throwOnError: true,
       });
-
-      const json = response.data;
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${session.name}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      const removeDeletedSession = (currentSessions: Session[]) =>
+        currentSessions.filter((session) => session.id !== sessionToDeleteId);
+      updateCachedSessionList(removeDeletedSession);
+      setSessions(removeDeletedSession);
       toastSuccess({
-        title: 'Chat exported',
-        msg: `"${session.name}" was downloaded.`,
+        title: 'Chat deleted',
+        msg: `"${sessionName}" was removed from chat history.`,
       });
-    }, []);
+    } catch (error) {
+      console.error('Error deleting session:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      toastError({
+        title: 'Failed to delete chat',
+        msg: `Could not delete "${sessionName}": ${errorMessage}`,
+      });
+    }
+    await loadSessions();
+  }, [sessionToDelete, loadSessions]);
 
-    const handleImportClick = useCallback(() => {
-      setShowImportModal(true);
-    }, []);
+  const handleCancelDelete = useCallback(() => {
+    setShowDeleteConfirmation(false);
+    setSessionToDelete(null);
+  }, []);
 
-    const handleImportSession = useCallback(
-      async (json: string) => {
-        await importSession({ body: { json }, throwOnError: true });
-        toastSuccess({
-          title: 'Chat imported',
-          msg: 'The imported chat is now available in chat history.',
-        });
-        await loadSessions();
-      },
-      [loadSessions]
-    );
+  const handleExportSession = useCallback(async (session: Session, e: React.MouseEvent) => {
+    e.stopPropagation();
 
-    const handleDeclassifyClick = useCallback((session: Session) => {
-      setDeclassifyTarget(session);
-    }, []);
+    const response = await exportSession({
+      path: { session_id: session.id },
+      throwOnError: true,
+    });
 
-    // The row is stale the moment the daemon answers: its badge and its
-    // overflow menu both key on `privacy_tier`. Patch the shared cache as well
-    // as this pane's list, exactly as the delete path does, so the sidebar's
-    // Recents and any second History pane stop badging it too.
-    const handleDeclassified = useCallback((sessionId: string) => {
-      const markPublic = (currentSessions: Session[]) =>
-        currentSessions.map((session) =>
-          session.id === sessionId
-            ? {
-                ...session,
-                privacy_tier: 'public' as const,
-                privacy_reason: 'declassified_by_user',
-              }
-            : session
-        );
-      updateCachedSessionList(markPublic);
-      setSessions(markPublic);
-      setDeclassifyTarget(null);
-    }, []);
+    const json = response.data;
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${session.name}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toastSuccess({
+      title: 'Chat exported',
+      msg: `"${session.name}" was downloaded.`,
+    });
+  }, []);
 
-    const renderActualContent = () => {
-      if (error) {
-        // The error state is the empty state with a different cause: same icon
-        // plate, same title/description/action stack, same quiet register. It
-        // used to be a hand-rolled column with its own icon size, its own type
-        // ramp and a Title Case sentence — one of the four error dialects §4.5
-        // exists to close.
-        return (
-          <EmptyState
-            icon={AlertCircle}
-            title="Couldn't load your chat history"
-            description={error}
-            actions={
-              <Button onClick={loadSessions} variant="outline">
-                Try again
-              </Button>
+  const handleImportClick = useCallback(() => {
+    setShowImportModal(true);
+  }, []);
+
+  const handleImportSession = useCallback(
+    async (json: string) => {
+      await importSession({ body: { json }, throwOnError: true });
+      toastSuccess({
+        title: 'Chat imported',
+        msg: 'The imported chat is now available in chat history.',
+      });
+      await loadSessions();
+    },
+    [loadSessions]
+  );
+
+  const handleDeclassifyClick = useCallback((session: Session) => {
+    setDeclassifyTarget(session);
+  }, []);
+
+  // The row is stale the moment the daemon answers: its badge and its
+  // overflow menu both key on `privacy_tier`. Patch the shared cache as well
+  // as this pane's list, exactly as the delete path does, so the sidebar's
+  // Recents and any second History pane stop badging it too.
+  const handleDeclassified = useCallback((sessionId: string) => {
+    const markPublic = (currentSessions: Session[]) =>
+      currentSessions.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              privacy_tier: 'public' as const,
+              privacy_reason: 'declassified_by_user',
             }
-          />
-        );
-      }
+          : session
+      );
+    updateCachedSessionList(markPublic);
+    setSessions(markPublic);
+    setDeclassifyTarget(null);
+  }, []);
 
-      if (sessions.length === 0) {
-        return (
-          <EmptyState
-            icon={MessageSquareText}
-            title="No chats yet"
-            description="Past chats will appear here after you start chatting. You can also import an existing chat."
-            actions={
-              <>
-                <Button onClick={() => navigate('/pair')}>Start a chat</Button>
-                <Button onClick={handleImportClick} variant="outline">
-                  <Upload className="h-4 w-4" />
-                  Import chat
-                </Button>
-              </>
-            }
-          />
-        );
-      }
-
-      if (dateGroups.length === 0 && searchResults !== null) {
-        return (
-          <EmptyState
-            icon={MessageSquareText}
-            title="No matching chats"
-            description="Try a different name, folder, or session ID."
-            compact
-          />
-        );
-      }
-
+  const renderActualContent = () => {
+    if (error) {
+      // The error state is the empty state with a different cause: same icon
+      // plate, same title/description/action stack, same quiet register. It
+      // used to be a hand-rolled column with its own icon size, its own type
+      // ramp and a Title Case sentence — one of the four error dialects §4.5
+      // exists to close.
       return (
-        <div className="space-y-8">
-          {visibleDateGroups.map((group) => (
-            <div key={group.label} className="space-y-4">
-              <div className="sticky top-0 z-10 bg-background-canvas pt-2 pb-2">
-                {/* `text-caps` IS the caps style — it carries the transform as
+        <EmptyState
+          icon={AlertCircle}
+          title="Couldn't load your chat history"
+          description={error}
+          actions={
+            <Button onClick={loadSessions} variant="outline">
+              Try again
+            </Button>
+          }
+        />
+      );
+    }
+
+    if (sessions.length === 0) {
+      return (
+        <EmptyState
+          icon={MessageSquareText}
+          title="No chats yet"
+          description="Past chats will appear here after you start chatting. You can also import an existing chat."
+          actions={
+            <>
+              <Button onClick={() => navigate('/pair')}>Start a chat</Button>
+              <Button onClick={handleImportClick} variant="outline">
+                <Upload className="h-4 w-4" />
+                Import chat
+              </Button>
+            </>
+          }
+        />
+      );
+    }
+
+    if (dateGroups.length === 0 && searchResults !== null) {
+      return (
+        <EmptyState
+          icon={MessageSquareText}
+          title="No matching chats"
+          description="Try a different name, folder, or session ID."
+          compact
+        />
+      );
+    }
+
+    return (
+      <div className="space-y-8">
+        {visibleDateGroups.map((group) => (
+          <div key={group.label} className="space-y-4">
+            <div className="sticky top-0 z-10 bg-background-canvas pt-2 pb-2">
+              {/* `text-caps` IS the caps style — it carries the transform as
                     well as the 11/500/+0.08em metrics, so `uppercase` and
                     `tracking-wider` beside it were spelling out what the role
                     already says. */}
-                <h2 className="text-caps text-text-muted">{group.label}</h2>
-              </div>
-              <div className="session-grid biorouter-list-shell">
-                {group.sessions.map((session) => {
-                  const children = childrenByParentId.get(session.id);
-                  return (
-                    <React.Fragment key={session.id}>
-                      <SessionItem
-                        session={session}
-                        onSelectSession={onSelectSession}
-                        sessionNameById={sessionNameById}
-                        setSessionRef={setSessionRefs}
-                        onEditClick={handleEditSession}
-                        onDeleteClick={handleDeleteSession}
-                        onExportClick={handleExportSession}
-                        onDeclassifyClick={handleDeclassifyClick}
-                      />
-                      {/* One indented block for all of a parent's children, not
+              <h2 className="text-caps text-text-muted">{group.label}</h2>
+            </div>
+            <div className="session-grid biorouter-list-shell">
+              {group.sessions.map((session) => {
+                const children = childrenByParentId.get(session.id);
+                return (
+                  <React.Fragment key={session.id}>
+                    <SessionItem
+                      session={session}
+                      onSelectSession={onSelectSession}
+                      sessionNameById={sessionNameById}
+                      onEditClick={handleEditSession}
+                      onDeleteClick={handleDeleteSession}
+                      onExportClick={handleExportSession}
+                      onDeclassifyClick={handleDeclassifyClick}
+                    />
+                    {/* One indented block for all of a parent's children, not
                           one wrapper each: a lone row inside its own wrapper is
                           `:last-child` and loses the separator every other row
                           in the list has. */}
-                      {children && (
-                        <div className="ml-6 flex flex-col border-l border-border-subtle pl-2">
-                          {children.map((child) => (
-                            <SessionItem
-                              key={child.id}
-                              session={child}
-                              onSelectSession={onSelectSession}
-                              sessionNameById={sessionNameById}
-                              setSessionRef={setSessionRefs}
-                              onEditClick={handleEditSession}
-                              onDeleteClick={handleDeleteSession}
-                              onExportClick={handleExportSession}
-                              onDeclassifyClick={handleDeclassifyClick}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </div>
+                    {children && (
+                      <div className="ml-6 flex flex-col border-l border-border-subtle pl-2">
+                        {children.map((child) => (
+                          <SessionItem
+                            key={child.id}
+                            session={child}
+                            onSelectSession={onSelectSession}
+                            sessionNameById={sessionNameById}
+                            onEditClick={handleEditSession}
+                            onDeleteClick={handleDeleteSession}
+                            onExportClick={handleExportSession}
+                            onDeclassifyClick={handleDeclassifyClick}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </div>
-          ))}
+          </div>
+        ))}
 
-          {visibleSessionCount < topLevelSessions.length && (
-            <div className="flex justify-center py-8">
-              {/* V6 — a status line is `text-supporting`, the same role the
+        {visibleSessionCount < topLevelSessions.length && (
+          <div className="flex justify-center py-8">
+            {/* V6 — a status line is `text-supporting`, the same role the
                   metadata under every row above it uses. `text-secondary` is
                   the dense-CONTROL exception, and this is not a control. */}
-              <div className="flex items-center gap-2 text-supporting text-text-muted">
-                <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
-                <span>Loading more chats...</span>
-              </div>
+            <div className="flex items-center gap-2 text-supporting text-text-muted">
+              <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <span>Loading more chats...</span>
             </div>
-          )}
-        </div>
-      );
-    };
+          </div>
+        )}
+      </div>
+    );
+  };
 
-    return (
-      <>
-        <MainPanelLayout>
-          <div className="flex-1 flex flex-col min-h-0">
-            {/* ⚠ The header's column and the body's below it are BOTH
+  return (
+    <>
+      <MainPanelLayout>
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* ⚠ The header's column and the body's below it are BOTH
                 `size="chat"`, and they move together or not at all — the
                 header's hairline is full-bleed (`PageHeader` owns the wrapper),
                 so a size on one box and not the other is a visible step in the
@@ -1242,29 +1195,28 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 longer shares its row with a button, so it no longer needs
                 `min-w-0 truncate` to give way to one, and a page title is no
                 longer a thing that can be clipped by its own controls. */}
-            <PageHeader
-              title="Chat history"
-              description={
-                <>
-                  View and search your past chats with Biorouter. {getSearchShortcutText()} to
-                  search.
-                </>
-              }
-              actions={
-                /* V7 — no `className`. It carried `flex flex-shrink-0
+          <PageHeader
+            title="Chat history"
+            description={
+              <>
+                View and search your past chats with Biorouter. {getSearchShortcutText()} to search.
+              </>
+            }
+            actions={
+              /* V7 — no `className`. It carried `flex flex-shrink-0
                    items-center gap-2`, and every token of that is already in
                    `buttonVariants`' base (`inline-flex items-center
                    justify-center gap-2 … shrink-0`). The bare `flex` was not
                    merely redundant: tailwind-merge lets it FLIP the base's
                    `inline-flex`, which is how a row action elsewhere became a
                    full-width bar. */
-                <Button onClick={handleImportClick} variant="outline">
-                  <Upload className="w-4 h-4" />
-                  Import chat
-                </Button>
-              }
-            >
-              {/* §3.3's checkbox, not the OS one. A bare `<input
+              <Button onClick={handleImportClick} variant="outline">
+                <Upload className="w-4 h-4" />
+                Import chat
+              </Button>
+            }
+          >
+            {/* §3.3's checkbox, not the OS one. A bare `<input
                   type="checkbox">` here rendered as macOS system blue in light
                   mode and a bare white square in dark — the only unstyled
                   control in the app, directly under a page title. `-ml-px`
@@ -1276,88 +1228,87 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   a filter that changes what the list shows is not an action the
                   page offers, and putting it in the strip would give it the
                   same standing as Import chat. */}
-              <label className="mt-3 flex cursor-pointer items-center gap-2 text-supporting text-text-muted">
-                <Checkbox
-                  className="-ml-px"
-                  checked={showSubagents}
-                  onChange={(e) => setShowSubagents(e.target.checked)}
-                />
-                Show subagent runs
-              </label>
-            </PageHeader>
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-supporting text-text-muted">
+              <Checkbox
+                className="-ml-px"
+                checked={showSubagents}
+                onChange={(e) => setShowSubagents(e.target.checked)}
+              />
+              Show subagent runs
+            </label>
+          </PageHeader>
 
-            <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6 pb-8">
-              <ScrollArea
-                handleScroll={handleScroll}
-                className="h-full"
-                paddingX={1}
-                data-search-scroll-area
-              >
-                <div ref={containerRef} className="h-full relative">
-                  <SearchView
-                    onSearch={handleSearch}
-                    onNavigate={handleSearchNavigation}
-                    searchResults={searchResults}
-                    className="relative"
-                    placeholder="Search history..."
+          <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6 pb-8">
+            <ScrollArea
+              handleScroll={handleScroll}
+              className="h-full"
+              paddingX={1}
+              data-search-scroll-area
+            >
+              <div ref={containerRef} className="h-full relative">
+                <SearchView
+                  onSearch={handleSearch}
+                  onNavigate={handleSearchNavigation}
+                  searchResults={searchResults}
+                  className="relative"
+                  placeholder="Search history..."
+                >
+                  {/* Loading layer - shaped like the rows that will replace it. */}
+                  <div
+                    className={`absolute inset-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--ease-in)] ${isLoading || showSkeleton ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
                   >
-                    {/* Loading layer - shaped like the rows that will replace it. */}
-                    <div
-                      className={`absolute inset-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--ease-in)] ${isLoading || showSkeleton ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
-                    >
-                      {(isLoading || showSkeleton) && <HistoryLoading />}
-                    </div>
+                    {(isLoading || showSkeleton) && <HistoryLoading />}
+                  </div>
 
-                    {/* Content layer - always rendered but conditionally visible */}
-                    <div
-                      className={`relative transition-opacity duration-[var(--motion-base)] ease-[var(--ease-out)] ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
-                    >
-                      {renderActualContent()}
-                    </div>
-                  </SearchView>
-                </div>
-              </ScrollArea>
-            </ReadableContent>
-          </div>
-        </MainPanelLayout>
+                  {/* Content layer - always rendered but conditionally visible */}
+                  <div
+                    className={`relative transition-opacity duration-[var(--motion-base)] ease-[var(--ease-out)] ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
+                  >
+                    {renderActualContent()}
+                  </div>
+                </SearchView>
+              </div>
+            </ScrollArea>
+          </ReadableContent>
+        </div>
+      </MainPanelLayout>
 
-        <EditSessionModal
-          session={editingSession}
-          isOpen={showEditModal}
-          onClose={handleModalClose}
-          onSave={handleModalSave}
-        />
+      <EditSessionModal
+        session={editingSession}
+        isOpen={showEditModal}
+        onClose={handleModalClose}
+        onSave={handleModalSave}
+      />
 
-        <ImportSessionModal
-          isOpen={showImportModal}
-          onClose={() => setShowImportModal(false)}
-          onImport={handleImportSession}
-        />
+      <ImportSessionModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImport={handleImportSession}
+      />
 
-        <ConfirmationModal
-          isOpen={showDeleteConfirmation}
-          title="Delete chat?"
-          message={`Are you sure you want to delete the chat "${sessionToDelete?.name}"? This action cannot be undone.`}
-          confirmLabel="Delete"
-          cancelLabel="Cancel"
-          confirmVariant="destructive"
-          onConfirm={handleConfirmDelete}
-          onCancel={handleCancelDelete}
-        />
+      <ConfirmationModal
+        isOpen={showDeleteConfirmation}
+        title="Delete chat?"
+        message={`Are you sure you want to delete the chat "${sessionToDelete?.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+      />
 
-        {/* Mounted only while a row is targeted, so a closed dialog holds no
+      {/* Mounted only while a row is targeted, so a closed dialog holds no
             session and cannot arrive pre-satisfied by a previous row's phrase. */}
-        {declassifyTarget && (
-          <DeclassifySessionDialog
-            session={declassifyTarget}
-            onClose={() => setDeclassifyTarget(null)}
-            onDeclassified={handleDeclassified}
-          />
-        )}
-      </>
-    );
-  }
-);
+      {declassifyTarget && (
+        <DeclassifySessionDialog
+          session={declassifyTarget}
+          onClose={() => setDeclassifyTarget(null)}
+          onDeclassified={handleDeclassified}
+        />
+      )}
+    </>
+  );
+});
 
 SessionListView.displayName = 'SessionListView';
 
