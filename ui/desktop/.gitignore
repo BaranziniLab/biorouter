@@ -16,3 +16,4 @@ src/platform/windows/bin/git/
 src/web/
 # Copied from pdfjs-dist at build time by vite-plugins/pdfjsAssets.mts
 /public/pdfjs/
+/e2e-evidence/
