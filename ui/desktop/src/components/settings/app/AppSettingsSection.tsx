@@ -164,7 +164,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               }}
             >
               <Settings />
-              Open Settings
+              Open settings
             </Button>
           </div>
 
@@ -282,7 +282,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             }}
             variant="secondary"
           >
-            Report a Bug
+            Report a bug
           </Button>
           <Button
             onClick={() => {
@@ -293,7 +293,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             }}
             variant="secondary"
           >
-            Request a Feature
+            Request a feature
           </Button>
         </div>
       </div>

@@ -379,7 +379,7 @@ export function WorkflowFormFields({
               Initial prompt
             </label>
             <p className="text-supporting text-text-muted mt-2 mb-2">
-              (Optional - Instructions or Prompt are required)
+              (optional — instructions or a prompt are required)
             </p>
             <textarea
               id="workflow-prompt"
