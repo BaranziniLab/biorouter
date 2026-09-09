@@ -1546,6 +1546,22 @@ impl CliSession {
                                 eprintln!("Model changed to {} in {} mode", model, mode);
                             }
                         }
+                        // Issue #56 Gate B's repair arm: the turn ran on the
+                        // provider the session row names rather than on the
+                        // configured one. Its audience is the desktop composer,
+                        // whose model chip is the thing that was saying something
+                        // false; a terminal prints its binding at start-up and
+                        // `builder.rs` refuses, before creating any provider, the
+                        // chats this arm would have had to repair. Reported under
+                        // `--debug` rather than added to `StreamEvent`, whose shape
+                        // is a public contract.
+                        Some(Ok(AgentEvent::PrivacyProviderPinned { provider, model })) => {
+                            if self.debug {
+                                eprintln!(
+                                    "This chat is private, so the turn ran on {provider} / {model}"
+                                );
+                            }
+                        }
                         // BR-52: token accounting is rendered from the session row
                         // in the CLI; the carried snapshot is informational here.
                         Some(Ok(AgentEvent::TokenUsage(_))) => {}

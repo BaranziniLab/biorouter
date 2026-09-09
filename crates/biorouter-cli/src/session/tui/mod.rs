@@ -633,6 +633,11 @@ async fn drive_response(
                     Some(Ok(AgentEvent::McpNotification(_))) => {}
                     Some(Ok(AgentEvent::HistoryReplaced(c))) => { session.messages = c; }
                     Some(Ok(AgentEvent::ModelChange { .. })) => {}
+                    // Issue #56 Gate B's repair arm. The TUI shows its binding in
+                    // the status line and reads it from the same session the
+                    // agent does, so it is already displaying the pinned model;
+                    // the arm this frame exists for is the desktop composer's.
+                    Some(Ok(AgentEvent::PrivacyProviderPinned { .. })) => {}
                     // BR-52: the TUI reads token counts from the session row.
                     Some(Ok(AgentEvent::TokenUsage(_))) => {}
                     // Advisory pending tool-call hint; TUI renders authoritative

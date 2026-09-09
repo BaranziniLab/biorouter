@@ -2145,6 +2145,10 @@ export type MessageEvent = {
     messages: Array<PersistedMessage>;
     type: 'MessagesPersisted';
 } | {
+    model: string;
+    provider: string;
+    type: 'PrivacyProviderPinned';
+} | {
     type: 'Ping';
 };
 

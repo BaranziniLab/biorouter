@@ -120,3 +120,71 @@ describe('ContextWindowGauge compaction control', () => {
     expect(usageLine).toHaveTextContent('100% remaining, 0% used');
   });
 });
+
+/**
+ * F10. A context window is a property of a bound model; with no model there is
+ * no window, and every figure this component could print would be about a model
+ * that does not exist. Measured in onboarding: the composer's chip correctly
+ * read "No model yet — choose a provider" while the gauge beside it read
+ * "Context window usage. 128k of 128k tokens remaining".
+ */
+describe('with no model bound', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue(undefined);
+  });
+
+  it('renders nothing rather than a window for a model that does not exist', () => {
+    const { container } = render(
+      <ContextWindowIndicator
+        totalTokens={0}
+        tokenLimit={0}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+      />
+    );
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText(/tokens remaining/)).toBeNull();
+  });
+
+  it('renders nothing in the popover-body gauge either', () => {
+    const { container } = render(
+      <ContextWindowGauge totalTokens={0} tokenLimit={0} isTokenLimitLoaded onCompact={vi.fn()} />
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  /**
+   * The guard is on the LIMIT, not only on the loaded flag: a lookup that
+   * finished and found nothing is exactly the case, and usage without a window
+   * is a pair nothing can render honestly either.
+   */
+  it('stays hidden even when tokens have been counted', () => {
+    const { container } = render(
+      <ContextWindowIndicator
+        totalTokens={1766}
+        tokenLimit={0}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+      />
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('still renders once a real window is known', () => {
+    render(
+      <ContextWindowIndicator
+        totalTokens={0}
+        tokenLimit={128_000}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+      />
+    );
+    expect(
+      screen.getByRole('button', {
+        name: 'Context window usage. 128k of 128k tokens remaining. 100% remaining, 0% used',
+      })
+    ).toBeInTheDocument();
+  });
+});

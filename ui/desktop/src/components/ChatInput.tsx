@@ -43,7 +43,7 @@ import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUt
 import { getNavigationShortcutText, getSteerShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
-import { isRunningState } from '../hooks/chatStreamStore';
+import { isRunningState, type PinnedModelView } from '../hooks/chatStreamStore';
 import { toastWarning } from '../toasts';
 import { cn } from '../utils';
 import {
@@ -269,6 +269,18 @@ interface ModelLimit {
 interface ChatInputProps {
   sessionId: string | null;
   /**
+   * Issue #56 Gate B — the binding the privacy barrier pinned THIS chat to,
+   * when a turn had to fall back to it.
+   *
+   * ⚠ It is the composer's model chip and context gauge that this fixes, and
+   * they are the reason it is a prop rather than something the note alone
+   * carries: both used to state the app's GLOBAL selection, so a private chat
+   * running on Versa showed `claude-opus-5` and measured its usage against
+   * Claude's 1M window. Preferring this binding is a no-op whenever it names
+   * what was already selected, which is the common case.
+   */
+  pinnedModel?: PinnedModelView;
+  /**
    * Send the composed message. Resolving FALSE means the submit was REFUSED
    * silently and the composer still owns the text (see
    * `ChatStreamController.handleSubmit`); the composer must then put the text
@@ -337,6 +349,7 @@ interface ChatInputProps {
 
 export default function ChatInput({
   sessionId,
+  pinnedModel,
   handleSubmit,
   chatState = ChatState.Idle,
   setChatState,
@@ -1075,10 +1088,25 @@ export default function ChatInput({
       setIsTokenLimitLoaded(false);
 
       // Get current model and provider first to avoid unnecessary provider fetches
-      const { model, provider } = await getCurrentModelAndProvider();
+      //
+      // Issue #56 Gate B: THIS CHAT's binding wins over the app's global
+      // selection. A private chat pinned to Versa was measuring its usage
+      // against whatever public model the app happened to be pointed at —
+      // measured at "969.9k of 1M" for a turn that ran on a different model
+      // entirely. When nothing is pinned, or the pin names what is already
+      // selected, this resolves to exactly what it always did.
+      const selected = await getCurrentModelAndProvider();
+      const model = pinnedModel?.model ?? selected.model;
+      const provider = pinnedModel?.provider ?? selected.provider;
       if (!model || !provider) {
-        console.log('No model or provider found');
-        setIsTokenLimitLoaded(true);
+        // No model is bound, so there is no context window to report. Leaving
+        // the 128k default in place while announcing it as LOADED is what made
+        // the onboarding gauge read "128k of 128k tokens remaining" beside a
+        // chip correctly saying no model was chosen — a precise figure for a
+        // model that does not exist. Zero is what the gauge renders its empty
+        // state from.
+        setTokenLimit(0);
+        setIsTokenLimitLoaded(false);
         return;
       }
 
@@ -1144,11 +1172,12 @@ export default function ChatInput({
     }
   };
 
-  // Initial load and refresh when model changes
+  // Initial load and refresh when model changes — including when a turn reports
+  // that this chat is pinned to a different one (issue #56 Gate B).
   useEffect(() => {
     loadProviderDetails();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentModel, currentProvider]);
+  }, [currentModel, currentProvider, pinnedModel?.provider, pinnedModel?.model]);
 
   // Handle tool count alerts and token usage
   useEffect(() => {
@@ -2293,6 +2322,7 @@ export default function ChatInput({
     <div className="min-w-0">
       <ModelsBottomBar
         sessionId={sessionId}
+        pinnedModel={pinnedModel}
         privacyTier={sessionPrivacyTier}
         dropdownRef={dropdownRef}
         setView={setView}

@@ -30,6 +30,7 @@ import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
 import type { ProviderTier, SessionClassification } from '../../../../api/types.gen';
+import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
 
 interface ModelsBottomBarProps {
   sessionId: string | null;
@@ -55,6 +56,25 @@ interface ModelsBottomBarProps {
    * than asserting Public, matching `SessionNamePill`.
    */
   privacyTier?: SessionClassification;
+  /**
+   * Issue #56 Gate B — the binding the privacy barrier pinned THIS chat to,
+   * when a turn had to fall back to it because the chat's classification does
+   * not admit the globally selected model.
+   *
+   * ⚠ This chip states the app's global selection, and that is exactly what
+   * made the defect invisible: a user switched to a public model, watched this
+   * chip change, sent into a private chat, and got an answer from a different
+   * model — with this chip still naming the one that was not used. When set,
+   * every fact this chip states (the name, the tier padlock, the affiliation)
+   * is about the binding that actually runs here.
+   *
+   * ⚠ It is NOT a signal that anything is wrong, and this component must not
+   * editorialise. The daemon sends it on every repaired bind, including the
+   * ordinary ones where it names exactly what is already selected. The sentence
+   * explaining a genuine contradiction is `privacy/PinnedModelNote`, which
+   * decides for itself whether there is one.
+   */
+  pinnedModel?: PinnedModelView;
 }
 
 const MAX_INLINE_MODEL_LABEL_CHARS = 24;
@@ -66,6 +86,7 @@ export default function ModelsBottomBar({
   alerts,
   hideAlertPopover = false,
   privacyTier,
+  pinnedModel,
 }: ModelsBottomBarProps) {
   const {
     currentModel,
@@ -97,6 +118,13 @@ export default function ModelsBottomBar({
    * re-rendered on every keystroke in the composer.
    */
   const [needsDisclosure, setNeedsDisclosure] = useState<boolean | null>(null);
+  /**
+   * The display name of the provider this chat is PINNED to, read off the same
+   * catalog row as the tier and affiliation below. `null` until it resolves, and
+   * for a provider the catalog cannot name — in both cases the chip falls back
+   * to the provider's id, which is true rather than invented.
+   */
+  const [pinnedProviderName, setPinnedProviderName] = useState<string | null>(null);
   /**
    * Issue #56, DR-26 — *under whose agreements?* for the model bound to this
    * chat. `null` renders nothing, which is both the "not resolved yet" answer
@@ -135,6 +163,17 @@ export default function ModelsBottomBar({
    * the two menu items are still offered.
    */
   const hostManaged = isBrowserSurface();
+
+  /**
+   * Issue #56 Gate B. What actually runs in THIS chat: the pin when there is
+   * one, the app's global selection otherwise.
+   *
+   * ⚠ The pin outranks lead/worker below. A pinned chat runs the single
+   * provider its session row names, so a lead/worker pair configured globally
+   * is not what answers here, and labelling the chip `(lead)` would name a
+   * mechanism that is not in play.
+   */
+  const effectiveProvider = pinnedModel?.provider ?? currentProvider;
 
   // Check if lead/worker mode is active
   useEffect(() => {
@@ -198,11 +237,14 @@ export default function ModelsBottomBar({
 
   // Determine which model to display - activeModel takes priority when lead/worker is active
   const displayModel =
-    isLeadWorkerActive && currentModelInfo?.model
+    pinnedModel?.model ??
+    (isLeadWorkerActive && currentModelInfo?.model
       ? currentModelInfo.model
-      : currentModel || providerDefaultModel || displayModelName;
+      : currentModel || providerDefaultModel || displayModelName);
   const fullModelLabel =
-    isLeadWorkerActive && modelMode ? `${displayModel} (${modelMode})` : displayModel;
+    !pinnedModel && isLeadWorkerActive && modelMode
+      ? `${displayModel} (${modelMode})`
+      : displayModel;
   const inlineModelLabel =
     fullModelLabel.length > MAX_INLINE_MODEL_LABEL_CHARS
       ? `${fullModelLabel.slice(0, MAX_INLINE_MODEL_LABEL_CHARS - 3)}...`
@@ -258,19 +300,24 @@ export default function ModelsBottomBar({
   // both off a single `&dyn Provider`), and two fetches here could pair one
   // provider's tier with another's institution across a model switch.
   useEffect(() => {
-    if (!currentProvider) {
+    if (!effectiveProvider) {
       setNeedsDisclosure(null);
       setAffiliation(null);
       setBoundTier(undefined);
+      setPinnedProviderName(null);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
         const rows = await getProviders(false);
-        const row = rows.find((candidate) => candidate.name === currentProvider);
-        if (!row) throw new Error(`No match for provider: ${currentProvider}`);
+        const row = rows.find((candidate) => candidate.name === effectiveProvider);
+        if (!row) throw new Error(`No match for provider: ${effectiveProvider}`);
         if (cancelled) return;
+        // Off the SAME row as the tier and affiliation below. The sibling
+        // effect that fills `displayProvider` asks the global model context,
+        // which by definition cannot name a provider this chat was pinned to.
+        setPinnedProviderName(row.metadata.display_name ?? null);
         setNeedsDisclosure(disclosureRequiredForTier(row.metadata.tier));
         // Read off the ROW, never `row.metadata`: the metadata's tier is the
         // type-level claim, and affiliation is served beside it precisely
@@ -281,6 +328,7 @@ export default function ModelsBottomBar({
         // A provider Biorouter cannot classify is one it cannot vouch for.
         // Fail-safe here means fail towards telling the user.
         if (!cancelled) {
+          setPinnedProviderName(null);
           setNeedsDisclosure(true);
           // ...but NOT towards claiming an affiliation. Failing safe on the
           // disclosure means saying more; failing safe on the third axis means
@@ -296,7 +344,7 @@ export default function ModelsBottomBar({
     return () => {
       cancelled = true;
     };
-  }, [currentProvider, getProviders]);
+  }, [effectiveProvider, getProviders]);
 
   // ⚠ Unconditional on the master privacy switch — DR-15 turns off enforcement,
   // not the truth. See `privacy/disclosureCopy.ts`.
@@ -326,6 +374,20 @@ export default function ModelsBottomBar({
   // has room for a glyph and nothing more. `null` for a public model, which has
   // no affiliation, so a public chat's chip is byte-for-byte what it was.
   const affiliationWords = affiliationPresentation(affiliation);
+
+  /**
+   * The two names in the dropdown's "Current model" block, pinned binding first.
+   *
+   * Layered here rather than inside the effects that fill `displayModelName` /
+   * `displayProvider`: those two describe the app's GLOBAL selection, which is
+   * still the right answer for every chat that is not pinned, and having two
+   * effects race to own one state was how the earlier drafts of this went
+   * wrong.
+   */
+  const shownModelName = pinnedModel?.model ?? displayModelName;
+  const shownProviderName = pinnedModel
+    ? (pinnedProviderName ?? pinnedModel.provider)
+    : displayProvider;
 
   // What is true of the MODEL, as one clause: its tier, then who covers it.
   // Both axes come off one sample of one endpoint, so they can be said in one
@@ -444,8 +506,8 @@ export default function ModelsBottomBar({
           <div className="border-b border-border-subtle px-3 py-2.5">
             <div className="text-sm font-medium text-text-default">Current model</div>
             <div className="mt-0.5 text-supporting leading-4 text-text-muted">
-              {displayModelName}
-              {displayProvider && ` · ${displayProvider}`}
+              {shownModelName}
+              {shownProviderName && ` · ${shownProviderName}`}
             </div>
             {/* Under the heading "Current model", so it must be about the
                 model. It used to be `privacyLine`. */}

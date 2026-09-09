@@ -385,6 +385,28 @@ pub enum MessageEvent {
     MessagesPersisted {
         messages: Vec<PersistedMessage>,
     },
+    /// Issue #56 Gate B, repair arm: the provider and model that actually
+    /// served this turn, sent when the agent had to fall back to the one the
+    /// SESSION ROW names because the chat's classification does not admit the
+    /// bound one.
+    ///
+    /// Advisory display state, exactly like `ToolCallPending`: never persisted,
+    /// never replayed, never shown to the model, and it changes nothing about
+    /// what the privacy gates permit or refuse. Its whole job is that a user who
+    /// switched the app to a public model and then sent into a private chat can
+    /// see that the turn went elsewhere — and that the composer's model chip and
+    /// context gauge can be sized to the window that was really used.
+    ///
+    /// ⚠ It does NOT carry the selection it displaced, so a client must not
+    /// treat receiving it as "the user's choice was overridden". The frame
+    /// arrives on every repaired bind, including the ordinary ones (a
+    /// rehydrated agent, a legacy row) where it names exactly what the client is
+    /// already showing. Compare it against what you display, and say nothing
+    /// when they agree.
+    PrivacyProviderPinned {
+        provider: String,
+        model: String,
+    },
     Ping,
 }
 

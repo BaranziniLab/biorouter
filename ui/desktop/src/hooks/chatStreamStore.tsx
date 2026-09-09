@@ -484,6 +484,33 @@ export interface ChatStreamSnapshot {
    * JSON equality, so a partial and its completed form would BOTH survive).
    */
   pendingToolCalls: PendingToolCallView[];
+  /**
+   * Issue #56 Gate B, repair arm: the provider and model that actually served
+   * the most recent turn in this chat, when the agent had to fall back to the
+   * one the SESSION ROW names because the chat's classification does not admit
+   * the globally selected one.
+   *
+   * ⚠ **Receiving it is not the same as "the user's choice was overridden".**
+   * The daemon sends this on EVERY repaired bind, including the ordinary ones
+   * (an LRU-rehydrated agent, a legacy row) where it names exactly what the
+   * composer is already showing. Compare it against the selection on screen and
+   * say nothing when they agree — `privacy/pinnedModel.ts` is where that
+   * comparison lives.
+   *
+   * It deliberately OUTLIVES the turn that reported it. The pin is a property
+   * of the chat, not of one turn: clearing it on `Finish` would put the wrong
+   * model back on the chip the moment the answer arrived, which is the defect.
+   */
+  pinnedModel?: PinnedModelView;
+}
+
+/**
+ * The binding a chat was pinned to by the privacy barrier (issue #56 Gate B).
+ * Provider is the registry's own id (`versa_azure`), not a display name.
+ */
+export interface PinnedModelView {
+  provider: string;
+  model: string;
 }
 
 /** A tool call announced before its arguments finished streaming (§6.1b). */
@@ -1316,6 +1343,21 @@ class ChatStreamController {
     });
   };
 
+  /**
+   * Record the binding the privacy barrier pinned this chat to.
+   *
+   * Idempotent by value: the frame arrives on every repaired turn, and a fresh
+   * object each time would re-render the composer — including its model chip
+   * and context gauge — once per turn for no change at all.
+   */
+  private setPinnedModel = (pinned: PinnedModelView): void => {
+    this.updateSnapshot((prev) =>
+      prev.pinnedModel?.provider === pinned.provider && prev.pinnedModel?.model === pinned.model
+        ? prev
+        : { ...prev, pinnedModel: pinned }
+    );
+  };
+
   private clearPendingToolCalls = (): void => {
     this.updateSnapshot((prev) =>
       prev.pendingToolCalls.length === 0 ? prev : { ...prev, pendingToolCalls: [] }
@@ -1979,6 +2021,9 @@ class ChatStreamController {
             await this.finishCurrentStream();
             return;
           case 'MessagesPersisted':
+            break;
+          case 'PrivacyProviderPinned':
+            this.setPinnedModel({ provider: event.provider, model: event.model });
             break;
           case 'ModelChange':
           case 'Ping':

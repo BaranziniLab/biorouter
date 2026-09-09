@@ -186,6 +186,50 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// A vendor payload that arrived as a JSON envelope, reduced to the sentence
+/// inside it.
+///
+/// ⚠ **This is not hypothetical, and it is what the user sees.** Both CLIs relay
+/// the upstream API's response body verbatim, sometimes as a *string* rather
+/// than as prose, and the transcript then reads:
+///
+/// ```text
+/// Ran into this error: Request failed: {"type":"error","status":400,"error":
+/// {"type":"invalid_request_error","message":"The 'gpt-6-astra' model requires a
+/// newer version of Codex. Please upgrade to the latest app or CLI and try
+/// again."}}.
+/// ```
+///
+/// The one actionable sentence there is buried in JSON the reader cannot act on.
+///
+/// ⚠ **Best-effort, and it must stay that way.** A payload that is not JSON, an
+/// object with no message, or an empty message is returned UNCHANGED: printing
+/// an ugly error is a much smaller failure than losing an unrecognised one.
+/// `error.message` is read before a top-level `message` because that is the
+/// shape both vendors send; neither is a guess this function is entitled to
+/// improve on.
+///
+/// Lives here rather than in either decoder because it is about the upstream
+/// API's envelope, which is the one thing the two vendors have in common.
+pub fn unwrap_json_error(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('{') {
+        return raw.to_string();
+    }
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return raw.to_string();
+    };
+    parsed
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| parsed.get("message").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| raw.to_string())
+}
+
 /// Turn a missing-or-unusable CLI into the error the user should act on.
 ///
 /// Separate from the generic error mapper because these are *setup* failures, and
@@ -246,6 +290,58 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    /// The real payload, from a Codex turn on `gpt-6-astra` against codex-cli
+    /// 0.147.0 (PR #180's live verification). Before this, the whole envelope
+    /// was rendered in the chat and the only actionable sentence in it was
+    /// buried in the middle.
+    const CODEX_400: &str = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}}"#;
+
+    #[test]
+    fn a_json_envelope_is_reduced_to_the_sentence_inside_it() {
+        assert_eq!(
+            unwrap_json_error(CODEX_400),
+            "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the \
+             latest app or CLI and try again."
+        );
+    }
+
+    #[test]
+    fn a_top_level_message_is_read_when_there_is_no_error_object() {
+        assert_eq!(
+            unwrap_json_error(r#"{"message":"You've hit your usage limit."}"#),
+            "You've hit your usage limit."
+        );
+    }
+
+    /// The other vendor's text is already a sentence, so unwrapping it must be a
+    /// no-op. Verbatim from the same PR's Claude Code run on claude 2.1.235.
+    #[test]
+    fn prose_is_returned_unchanged() {
+        const CLAUDE_400: &str = "API Error: 400 Claude Code 2.1.235 does not support this model; \
+                                  version 2.1.251 or newer is required. Run 'claude update', or \
+                                  update the Claude desktop app, then try again.";
+        assert_eq!(unwrap_json_error(CLAUDE_400), CLAUDE_400);
+    }
+
+    /// Losing an unrecognised failure would be far worse than printing an ugly
+    /// one, so every shape this function cannot improve on is passed through.
+    #[test]
+    fn anything_it_cannot_improve_on_survives_verbatim() {
+        for raw in [
+            // Not JSON at all, but starts with a brace.
+            "{not json",
+            // JSON, but nothing to pull out.
+            r#"{"status":500}"#,
+            // A message that is present and empty is not an improvement.
+            r#"{"error":{"message":"   "}}"#,
+            // A JSON array is not an envelope.
+            r#"["a"]"#,
+            "",
+        ] {
+            assert_eq!(unwrap_json_error(raw), raw, "mangled: {raw}");
+        }
+    }
 
     fn availability(kind: CodingAgentKind, auth: AuthState) -> AgentAvailability {
         AgentAvailability {

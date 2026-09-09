@@ -837,17 +837,38 @@ fn i64_at(value: &Value, path: &[&str]) -> Option<i64> {
     cursor.as_i64()
 }
 
-/// Pull a human-readable message out of an error object, accepting both the
-/// `{message}` object the schema defines and a bare string.
-fn error_message(error: Option<&Value>) -> Option<String> {
+/// Pull a human-readable message out of an error object, accepting the
+/// `{message}` object the schema defines, a bare string, and a string that is
+/// itself a JSON error envelope.
+///
+/// ⚠ **The third shape is not hypothetical and it is the one users see.** Codex
+/// relays the upstream API's body verbatim as a *string*, so `params.error` came
+/// through here as `as_str()` and the whole envelope was rendered in the
+/// transcript:
+///
+/// ```text
+/// Ran into this error: Request failed: {"type":"error","status":400,"error":
+/// {"type":"invalid_request_error","message":"The 'gpt-6-astra' model requires a
+/// newer version of Codex. Please upgrade to the latest app or CLI and try
+/// again."}}.
+/// ```
+///
+/// The only actionable sentence in that is buried in the middle of JSON the
+/// reader cannot act on. [`unwrap_json_error`] takes it out.
+///
+/// ⚠ **Unwrapping is best-effort and must stay that way** — see
+/// [`super::unwrap_json_error`], which both vendors' decoders share so no two
+/// surfaces can disagree about what a failure says. `providers/codex.rs` reads
+/// its non-streaming failures through THIS function for the same reason.
+pub(crate) fn error_message(error: Option<&Value>) -> Option<String> {
     let error = error?;
     if let Some(s) = error.as_str() {
-        return (!s.is_empty()).then(|| explain_disabled_native_tool(s));
+        return (!s.is_empty()).then(|| explain_disabled_native_tool(&super::unwrap_json_error(s)));
     }
     error
         .get("message")
         .and_then(Value::as_str)
-        .map(explain_disabled_native_tool)
+        .map(|s| explain_disabled_native_tool(&super::unwrap_json_error(s)))
 }
 
 /// Turn the vendor's internal failure for a tool Biorouter disabled into
@@ -1402,6 +1423,39 @@ mod tests {
                 message: "something broke".to_string(),
                 will_retry: false,
             }]
+        );
+    }
+
+    /// The vendor relays the upstream API's body verbatim, as a STRING, so
+    /// `error.as_str()` used to yield the whole envelope and the transcript read
+    /// `Ran into this error: Request failed: {"type":"error","status":400,…}.`
+    /// This is the real 0.147.0 payload for an unsupported model.
+    #[test]
+    fn a_json_envelope_relayed_as_a_string_is_unwrapped_to_its_sentence() {
+        const ENVELOPE: &str = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}}"#;
+        let expected = "The 'gpt-6-astra' model requires a newer version of Codex. Please \
+                        upgrade to the latest app or CLI and try again.";
+
+        let mut d = CodexDecoder::new();
+        assert_eq!(
+            d.push("error", &json!({ "error": ENVELOPE })),
+            vec![CodexEvent::Notice {
+                message: expected.to_string(),
+                will_retry: false,
+            }]
+        );
+        assert_eq!(d.pending_failure(), Some(expected));
+
+        // …and on the terminal frame, which is the one the provider turns into
+        // the `ProviderError` the user reads.
+        let mut d = CodexDecoder::new();
+        assert_eq!(
+            d.push("turn/failed", &json!({ "error": { "message": ENVELOPE } })),
+            vec![CodexEvent::Terminal(CodexTerminal {
+                status: CodexTurnStatus::Failed,
+                error: Some(expected.to_string()),
+                turn_id: None,
+            })]
         );
     }
 

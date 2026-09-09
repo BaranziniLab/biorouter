@@ -431,9 +431,34 @@ fn stop_notice(error: &ProviderError, retried: u32) -> String {
         n => format!(" Biorouter already retried it {n} times."),
     };
     format!(
-        "Ran into this error: {error}.\n\nPlease retry if you think this is a transient or \
-         recoverable error.{retried_clause}"
+        "Ran into this error: {}\n\nPlease retry if you think this is a transient or \
+         recoverable error.{retried_clause}",
+        end_sentence(&error.to_string())
     )
+}
+
+/// One full stop, not two.
+///
+/// Vendor error text usually ends in punctuation of its own, and appending a
+/// period to it produced `…then try again..` in the chat — the sort of detail
+/// that makes a real message look machine-assembled. The frame still supplies
+/// the stop when the text has none, which is the common case for a bare
+/// `Server error: 502`.
+///
+/// Deliberately conservative: only `.`, `!`, `?` and a closing quote or bracket
+/// after one of them count as an ending. Anything else gets the period it needs.
+fn end_sentence(text: &str) -> String {
+    let trimmed = text.trim_end();
+    let ends = trimmed
+        .chars()
+        .rev()
+        .find(|c| !matches!(c, '"' | '\'' | ')' | ']' | '}' | '\u{201d}' | '\u{2019}'))
+        .is_some_and(|c| matches!(c, '.' | '!' | '?'));
+    if trimmed.is_empty() || ends {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.")
+    }
 }
 
 #[cfg(test)]
@@ -734,6 +759,49 @@ mod tests {
              transient or recoverable error.",
             "the pre-BR-66 text, byte for byte"
         );
+    }
+
+    /// Vendor text already ends in a full stop, so the frame must not add a
+    /// second one. Measured in the desktop app on a Claude Code turn against an
+    /// unsupported model: `…then try again..`.
+    #[test]
+    fn vendor_text_that_already_ends_in_a_stop_does_not_get_a_second_one() {
+        let config = MistakeConfig {
+            provider_error_retries: 0,
+            ..MistakeConfig::default()
+        };
+        let mut tracker = MistakeTracker::default();
+        let error = ProviderError::RequestFailed(
+            "API Error: 400 Claude Code 2.1.235 does not support this model; version 2.1.251 or \
+             newer is required. Run 'claude update', or update the Claude desktop app, then try \
+             again."
+                .to_string(),
+        );
+
+        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(&config, &error)
+        else {
+            panic!("retries are off");
+        };
+        assert!(
+            notice.contains("then try again.\n\n"),
+            "one stop, not two: {notice}"
+        );
+        assert!(!notice.contains(".."), "{notice}");
+    }
+
+    #[test]
+    fn end_sentence_only_supplies_a_stop_that_is_missing() {
+        assert_eq!(end_sentence("Server error: 502"), "Server error: 502.");
+        assert_eq!(end_sentence("try again."), "try again.");
+        assert_eq!(end_sentence("what now?"), "what now?");
+        assert_eq!(end_sentence("stop!"), "stop!");
+        // Trailing whitespace is not an ending, and a stop inside a closing
+        // quote or bracket still counts as one.
+        assert_eq!(end_sentence("done.  "), "done.");
+        assert_eq!(end_sentence("(see the log.)"), "(see the log.)");
+        assert_eq!(end_sentence("he said \"no.\""), "he said \"no.\"");
+        assert_eq!(end_sentence("a bare clause"), "a bare clause.");
+        assert_eq!(end_sentence(""), "");
     }
 
     // ── BR-51: the streak now knows what kind of failures it is counting ──

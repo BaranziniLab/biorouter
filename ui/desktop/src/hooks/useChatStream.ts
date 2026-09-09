@@ -6,6 +6,7 @@ import {
   useChatStreamController,
   type PendingContinuationView,
   type PendingToolCallView,
+  type PinnedModelView,
 } from './chatStreamStore';
 import type { ContinuationRecoveryAction } from '../utils/continuationLease';
 import type { ChatTurnErrorData } from '../types/turnError';
@@ -72,6 +73,12 @@ interface UseChatStreamReturn {
    * removed the instant its authoritative `ToolRequest` lands.
    */
   pendingToolCalls: PendingToolCallView[];
+  /**
+   * Issue #56 Gate B: the binding the privacy barrier pinned this chat to, or
+   * `undefined` when no turn has been repaired. Not by itself a statement that
+   * anything is wrong — see `privacy/pinnedModel.ts`.
+   */
+  pinnedModel?: PinnedModelView;
   onMessageUpdate: (
     messageId: string,
     newContent: string,
@@ -134,6 +141,7 @@ export function useChatStream({
     agentReady: snapshot.agentReady,
     notifications: notificationsMap,
     pendingToolCalls: snapshot.pendingToolCalls,
+    pinnedModel: snapshot.pinnedModel,
     onMessageUpdate: controller.onMessageUpdate,
   };
 }

@@ -3522,6 +3522,33 @@ pub enum AgentEvent {
     /// after the rows are durable, so a consumer that stops reading mid-turn
     /// never holds an id for a row that was not written.
     MessagesPersisted(Vec<PersistedMessage>),
+    /// Issue #56 Gate B, repair arm: this turn ran on the provider the SESSION
+    /// ROW names, not on whatever the agent was holding when the turn began,
+    /// because the chat's classification does not admit the bound one.
+    ///
+    /// The repair itself is old and correct — a private chat must never reach a
+    /// public model, and asking the user to downgrade the chat instead would be
+    /// worse. What was missing is that it happened at all: a user who switches
+    /// the app to a public model, watches the composer's chip change, and then
+    /// sends into a private chat gets an answer from a different model than the
+    /// one on screen, with the context gauge sized to the wrong window.
+    ///
+    /// ⚠ Purely advisory, exactly like [`AgentEvent::ToolCallPending`]. It is
+    /// not a `Message`, so it is never persisted, replayed, or shown to the
+    /// model; it changes nothing about what any gate permits or refuses.
+    ///
+    /// ⚠ It carries no "requested" binding, and adding one would be a mistake.
+    /// The agent's own view of what was displaced is incomplete — an LRU-
+    /// rehydrated agent holds nothing at all — while the client rendering this
+    /// already knows exactly what it is showing the user. See
+    /// [`Agent::pinned_provider_event`].
+    PrivacyProviderPinned {
+        /// The provider that served the turn (`versa_azure`, …), as the
+        /// registry names it.
+        provider: String,
+        /// Its model.
+        model: String,
+    },
 }
 
 impl Default for Agent {
@@ -6389,6 +6416,28 @@ impl Agent {
         Ok(true)
     }
 
+    /// The binding Gate B's repair arm just installed, as the event that tells
+    /// the turn's readers where it actually went.
+    ///
+    /// ⚠ It states a FACT and judges nothing: "this turn ran on `provider` /
+    /// `model`". It deliberately does not carry the selection it displaced, and
+    /// it is not the place to decide whether the displacement is news. The
+    /// caller that renders it already holds the selection it is showing the
+    /// user, and only that caller can tell "the chip is wrong" from "the chip
+    /// was right all along and a rehydrated agent was quietly repaired to
+    /// match" — the common case (LRU rehydration, a legacy row, any ratchet
+    /// that commits after a legal bind) that must NOT produce a note.
+    ///
+    /// `None` if the binding vanished between the swap and this read, which is
+    /// a race no message can usefully describe.
+    async fn pinned_provider_event(&self) -> Option<AgentEvent> {
+        let provider = self.bound_provider_unchecked().await?;
+        Some(AgentEvent::PrivacyProviderPinned {
+            provider: provider.get_name().to_string(),
+            model: provider.get_model_config().model_name,
+        })
+    }
+
     /// BR-63: set the session's sticky reasoning effort (`/effort <level>`).
     pub async fn set_reasoning_effort(&self, session_id: &str, effort: ReasoningEffort) {
         self.efforts.set(session_id, effort).await;
@@ -8174,6 +8223,11 @@ impl Agent {
             .await
             .ok();
         let mut privacy_refusal: Option<String> = None;
+        // Set by Gate B's repair arm below, yielded as the turn's own account of
+        // which model actually served it. `None` on every other path, including
+        // the overwhelmingly common one where the bound provider was already
+        // admissible and nothing was repaired.
+        let mut privacy_pinned: Option<AgentEvent> = None;
         // DR-15's master opt-out. ONE read for this seam, used by both halves —
         // the turn barrier below and DR-4's turn ratchet under it — so the two
         // cannot be observed at different instants and a turn cannot be refused
@@ -8198,8 +8252,18 @@ impl Agent {
             if privacy_enforced && !crate::privacy::bind_allowed(bound_tier, row.privacy_tier) {
                 match self.rebind_from_row(row).await {
                     // 2. The row still names a provider whose tier satisfies
-                    //    the classification: rebind and continue silently.
-                    Ok(true) => {}
+                    //    the classification: rebind and continue.
+                    //
+                    // ⚠ Silent REPAIR is right; silent and INVISIBLE was the
+                    // defect. The user had deliberately switched the app to a
+                    // public model, watched the composer's chip change, and
+                    // their turn ran somewhere else — with the context gauge
+                    // then measuring the usage against the wrong model's
+                    // window. Nothing about what the gate PERMITS changes here;
+                    // the turn is simply made to say where it went.
+                    Ok(true) => {
+                        privacy_pinned = self.pinned_provider_event().await;
+                    }
                     // 3. Otherwise refuse THIS TURN. The row is untouched, so
                     //    the repair card can still offer the one-click fix.
                     _ => privacy_refusal = Some(crate::privacy::refusal::turn_refusal(row)),
@@ -8555,6 +8619,19 @@ impl Agent {
         Ok(Box::pin(async_stream::try_stream! {
             if let Some(published) = prestream_published {
                 yield published;
+            }
+            // Gate B's repair, said out loud. Its position is unconstrained by
+            // #59/#66: the frame names no stored row and carries no message
+            // body, so it can neither arrive ahead of its own content nor claim
+            // an id whose body is still buffered. It goes near the front so a
+            // client that loses the stream mid-turn still learns which model
+            // the turn it half-watched was running on.
+            //
+            // ⚠ Only the ordinary turn path carries it. The slash-command
+            // early-returns above never reach a provider, so "which model
+            // served this turn" has no answer there to report.
+            if let Some(pinned) = privacy_pinned {
+                yield pinned;
             }
             let final_conversation = if !needs_auto_compact {
                 stored_conversation
@@ -19897,6 +19974,19 @@ mod gate_b_turn_tests {
         }
     }
 
+    /// Every `PrivacyProviderPinned` the turn reported, as `(provider, model)`.
+    fn pinned(events: &[Result<AgentEvent>]) -> Vec<(String, String)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(AgentEvent::PrivacyProviderPinned { provider, model }) => {
+                    Some((provider.clone(), model.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     fn rendered(events: &[Result<AgentEvent>]) -> String {
         events
             .iter()
@@ -19942,6 +20032,102 @@ mod gate_b_turn_tests {
             rendered(&events)
         );
         assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+    }
+
+    #[tokio::test]
+    async fn a_repaired_bind_reports_the_provider_that_actually_served_the_turn() {
+        // Silent REPAIR is right — a private chat must never reach a public
+        // model, and asking the user to downgrade the chat instead would be
+        // worse. Silent and INVISIBLE was the defect: the user had switched the
+        // app to a public model, watched the composer's chip change, and their
+        // turn ran somewhere else, with the context gauge then sized to the
+        // wrong model's window.
+        //
+        // The turn now says where it went. Note what this does NOT assert:
+        // nothing about refusing, permitting, or the row — the frame is
+        // advisory, and a test that made it look like part of the barrier would
+        // invite someone to gate on it.
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = private_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(
+            sm.as_ref(),
+            &s.id,
+            "versa_azure",
+            Arc::clone(&row_provider),
+        );
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            pinned(&events),
+            vec![("versa_azure".to_string(), "gpt-5.5".to_string())],
+            "a repaired bind must report the binding it repaired TO, exactly once:\n{}",
+            rendered(&events)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_needed_no_repair_reports_nothing() {
+        // The frame must be evidence, not decoration. A private chat already on
+        // its own private provider is the overwhelmingly common turn, and a
+        // client that saw this frame on every one of them would either paint a
+        // permanent note or learn to ignore the frame.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = private_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            pinned(&events).is_empty(),
+            "nothing was repaired, so there is nothing to report:\n{}",
+            rendered(&events)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_turn_reports_no_pinned_provider() {
+        // Arm 3, not arm 2. The refusal is the message; a pin frame here would
+        // claim a turn ran on a provider when no turn ran at all.
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = public_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "anthropic", Arc::clone(&row_provider));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            events.iter().any(is_refusal),
+            "fixture check: this turn must be refused:\n{}",
+            rendered(&events)
+        );
+        assert!(
+            pinned(&events).is_empty(),
+            "a refused turn ran on nothing, so it must name nothing:\n{}",
+            rendered(&events)
+        );
     }
 
     #[tokio::test]

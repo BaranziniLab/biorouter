@@ -128,6 +128,12 @@ fn map_bus_event_for_turn(
             AgentEvent::MessagesPersisted(messages) => {
                 Some(MessageEvent::MessagesPersisted { messages })
             }
+            // Issue #56 Gate B's repair arm, said out loud. A pass-through: the
+            // frame is advisory display state and the wire enum carries the
+            // identically-shaped variant.
+            AgentEvent::PrivacyProviderPinned { provider, model } => {
+                Some(MessageEvent::PrivacyProviderPinned { provider, model })
+            }
             // FALLBACK ONLY. The turn runner never publishes a raw
             // `TurnAborted` — it classifies it and publishes `TurnError`
             // instead, precisely so no consumer renders two terminal Error

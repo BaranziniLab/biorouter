@@ -805,11 +805,8 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         Ok(provider) => provider,
         Err(e) => {
             output::render_error(&format!(
-                "Error {}.\n\
-                Please check your system keychain and run 'biorouter configure' again.\n\
-                If your system is unable to use the keyring, please try setting secret key(s) via environment variables.\n\
-                For more info, see: https://BaranziniLab.github.io/biorouter/docs/troubleshooting/#keychainkeyring-errors",
-                e
+                "Error {e}.{}",
+                keyring_advice(&provider_name).await
             ));
             close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
             process::exit(1);
@@ -1112,9 +1109,71 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     session
 }
 
+/// The keychain paragraph, or nothing.
+///
+/// Provider construction fails for a credential reason often enough that the
+/// advice earned its place — but it is advice about SECRETS, and not every
+/// provider has any. `claude_code` and `codex` drive a CLI the user signed in
+/// to; Biorouter never sees a credential for either and stores nothing for
+/// them, so telling a user whose `claude` binary is simply not on PATH to
+/// "check your system keychain and run 'biorouter configure' again" sends them
+/// to a place with nothing in it, and buries the error that named the real
+/// problem underneath three lines of it.
+///
+/// The question is asked of the provider's own declared config keys rather than
+/// of a list of names kept here, so a provider added later is classified by
+/// what it declares. A provider the registry cannot describe — including one it
+/// has never heard of, which is one of the ways `create` fails — keeps the
+/// advice: it may well have secrets, and an unnecessary paragraph is a much
+/// smaller failure than withholding the one that would have helped.
+async fn keyring_advice(provider_name: &str) -> &'static str {
+    const ADVICE: &str = "\n\
+        Please check your system keychain and run 'biorouter configure' again.\n\
+        If your system is unable to use the keyring, please try setting secret key(s) via environment variables.\n\
+        For more info, see: https://BaranziniLab.github.io/biorouter/docs/troubleshooting/#keychainkeyring-errors";
+    let has_secrets = biorouter::providers::providers()
+        .await
+        .into_iter()
+        .find(|(metadata, _)| metadata.name == provider_name)
+        .map(|(metadata, _)| metadata.config_keys.iter().any(|key| key.secret));
+    match has_secrets {
+        Some(false) => "",
+        _ => ADVICE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two coding-agent providers declare no config keys at all: they drive
+    /// a CLI the user signed in to, and Biorouter holds no credential for
+    /// either. A `could not find the 'claude' command` failure followed by
+    /// three lines about the system keychain sends the reader somewhere with
+    /// nothing in it.
+    #[tokio::test]
+    async fn a_provider_with_no_secrets_is_not_told_to_check_its_keychain() {
+        for provider in ["claude_code", "codex"] {
+            assert_eq!(
+                keyring_advice(provider).await,
+                "",
+                "{provider} stores no secret"
+            );
+        }
+    }
+
+    /// …and the advice is kept for everything that does hold one, including a
+    /// provider the registry cannot describe: an unnecessary paragraph is a far
+    /// smaller failure than withholding the one that would have helped.
+    #[tokio::test]
+    async fn a_provider_with_secrets_still_gets_the_keychain_advice() {
+        for provider in ["anthropic", "openai", "no_such_provider_exists"] {
+            assert!(
+                keyring_advice(provider).await.contains("system keychain"),
+                "{provider} must keep the advice"
+            );
+        }
+    }
 
     /// #31: the `--no-session` store must be a private per-run directory —
     /// never the shared `<data_dir>/sessions/sessions.db` — and it must be a

@@ -748,13 +748,18 @@ fn classify_result(frame: &Value, retry_category: Option<&str>) -> Option<Termin
         .or(retry_category)
         .map(str::to_string);
 
+    // Through `unwrap_json_error`: `result` carries the vendor's own text, which
+    // is usually a sentence (`API Error: 400 Claude Code 2.1.235 does not
+    // support this model…`) but is sometimes the upstream API's JSON body
+    // verbatim. Unwrapping is a no-op on the sentence and is what keeps the
+    // envelope out of the transcript.
     let detail = frame
         .get("result")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("`claude` reported an error")
-        .to_string();
+        .map(super::unwrap_json_error)
+        .unwrap_or_else(|| "`claude` reported an error".to_string());
 
     Some(TerminalError { category, detail })
 }
