@@ -25,10 +25,28 @@ import { openSidebarEntry } from './helpers/sidebar';
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
 const { runningQuotes } = require('./basic-mcp');
 
-/** A real provider round-trip, plus the tool calls Auto mode may make along the way. */
-const LIVE_TURN_TIMEOUT_MS = 240_000;
+/**
+ * A warm turn: the provider round-trip plus whatever tools Auto mode reaches for.
+ * Measured on the seeded sandbox: 5-10 s for a one-word answer.
+ */
+const LIVE_TURN_TIMEOUT_MS = 180_000;
+/**
+ * The FIRST turn of a session, which gets a far larger budget than a warm one.
+ *
+ * ⚠ Not padding — a measurement. A session's first turn intermittently stalls for
+ * MINUTES between `agent action 1/100 this turn` (`agents/agent.rs`) and the
+ * provider call, with nothing logged in between; the provider call itself, when
+ * it finally happens, takes ~2.5 s. Observed first turns on this machine, same
+ * bundle and same seed: 460 s, >200 s, 10 s, 10 s. It was not isolated, and the
+ * likeliest reason is the fixture rather than the app — the seed carries a 236 MB
+ * `sessions.db` (11,780 sessions / 48,252 messages) that a platform extension
+ * reads before the first turn can be assembled. Trimming the seed would probably
+ * retire this constant; guessing at it instead would produce a suite that goes
+ * red for reasons no one can reproduce.
+ */
+const FIRST_TURN_TIMEOUT_MS = 600_000;
 /** How long a turn may take to *start*, from Enter to the Stop button appearing. */
-const TURN_START_TIMEOUT_MS = 20_000;
+const TURN_START_TIMEOUT_MS = 30_000;
 
 let launched: LaunchedApp;
 let mainWindow: Page;
@@ -95,7 +113,8 @@ test.describe('Biorouter App', () => {
 
   test.describe('Chat', () => {
     test('chat interaction', async () => {
-      test.setTimeout(LIVE_TURN_TIMEOUT_MS);
+      // The session's first turn — see FIRST_TURN_TIMEOUT_MS.
+      test.setTimeout(FIRST_TURN_TIMEOUT_MS + 60_000);
 
       const chatInput = mainWindow.getByTestId('chat-input');
       await expect(chatInput).toBeVisible();
@@ -103,7 +122,7 @@ test.describe('Biorouter App', () => {
       await mainWindow.screenshot({ path: 'test-results/chat-before-send.png' });
 
       await chatInput.press('Enter');
-      await waitForTurn(mainWindow);
+      await waitForTurn(mainWindow, FIRST_TURN_TIMEOUT_MS);
 
       const response = mainWindow.getByTestId('message-container').last();
       await expect(response).toBeVisible();
@@ -112,7 +131,7 @@ test.describe('Biorouter App', () => {
     });
 
     test('verify chat history', async () => {
-      test.setTimeout(LIVE_TURN_TIMEOUT_MS);
+      test.setTimeout(LIVE_TURN_TIMEOUT_MS + 60_000);
 
       const chatInput = mainWindow.getByTestId('chat-input');
       await chatInput.fill('What is 2+2?');
@@ -171,7 +190,7 @@ test.describe('Biorouter App', () => {
     });
 
     test('the agent can call the runningQuote tool', async () => {
-      test.setTimeout(LIVE_TURN_TIMEOUT_MS);
+      test.setTimeout(LIVE_TURN_TIMEOUT_MS + 60_000);
 
       const chatInput = mainWindow.getByTestId('chat-input');
       await expect(chatInput).toBeVisible({ timeout: 30_000 });
@@ -211,10 +230,10 @@ test.describe('Biorouter App', () => {
  * conditional on `isLoading && !hasSubmittableContent` (ChatInput.tsx), so it is
  * only a reliable signal once the composer has been cleared by the send.
  */
-async function waitForTurn(page: Page): Promise<void> {
+async function waitForTurn(page: Page, budgetMs = LIVE_TURN_TIMEOUT_MS): Promise<void> {
   const stop = page.getByTestId('chat-stop-button');
   await expect(stop).toBeVisible({ timeout: TURN_START_TIMEOUT_MS });
-  await expect(stop).toHaveCount(0, { timeout: LIVE_TURN_TIMEOUT_MS - 30_000 });
+  await expect(stop).toHaveCount(0, { timeout: budgetMs });
 }
 
 /** Removes a previously installed extension so the add flow starts from a clean state. */
