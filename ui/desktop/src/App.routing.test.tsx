@@ -31,6 +31,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Outlet } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppInner } from './App';
+import { echoPath } from './components/NotFoundView';
 
 Object.defineProperty(window, 'history', {
   value: { replaceState: vi.fn(), state: null },
@@ -291,5 +292,28 @@ describe('the routes PR #184 retired', () => {
 
     expect(await screen.findByTestId('home-view')).toBeInTheDocument();
     expect(screen.queryByText('There is nothing at this address')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The address is echoed back so a stale bookmark tells the user WHICH link
+ * died. It is also attacker-influenced text of unbounded length — a
+ * `biorouter://` deep link carries a whole payload in its path — and it lands
+ * in a `max-w-sm` paragraph, so it has to be trimmed before it is shown.
+ * (React escapes it; the hazard here is layout, not injection.)
+ */
+describe('the address the not-found page echoes', () => {
+  it('shows a short path exactly as it arrived', () => {
+    expect(echoPath('/zzz-nonexistent')).toBe('/zzz-nonexistent');
+  });
+
+  it('always reads as a path, even if the router hands it one without a slash', () => {
+    expect(echoPath('scheduler')).toBe('/scheduler');
+  });
+
+  it('trims a long one to something a sentence can hold', () => {
+    const echoed = echoPath(`/${'a'.repeat(500)}`);
+    expect(echoed.length).toBeLessThanOrEqual(72);
+    expect(echoed.endsWith('…')).toBe(true);
   });
 });
