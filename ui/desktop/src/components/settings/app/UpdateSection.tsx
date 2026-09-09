@@ -116,7 +116,7 @@ export default function UpdateSection() {
             ) : (
               <ExternalLink className="w-4 h-4" />
             )}
-            Check for Updates
+            Check for updates
           </Button>
         )}
         <p className="text-supporting text-text-muted">

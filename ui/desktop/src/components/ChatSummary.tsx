@@ -101,7 +101,11 @@ export function ChatSummary({
           {/* A scroll container with a tab stop so a keyboard user can scroll
               it — a region, not a control, so it opts out of D-15's focus fill
               with `.biorouter-focus-region` (authored in main.css). It keeps
-              its implicit `list` role: `role="region"` would orphan the rows. */}
+              its implicit `list` role: `role="region"` would orphan the rows.
+              The class is not "no focus treatment": it also carries the 1px
+              inset `--border-accent` edge that is this list's only focus
+              indicator (D-15's fourth amendment) — it has no focusable child to
+              hand the signal to. */}
           <ol
             aria-label="To Do tasks"
             tabIndex={0}

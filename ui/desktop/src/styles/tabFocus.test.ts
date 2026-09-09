@@ -412,6 +412,10 @@ describe('a scroll region with no role opts out of the focus fill by class', () 
    * `outline: none`, and Chrome's UA `:focus-visible { outline: auto }` is
    * underneath. The restoration that covers the panel has to cover the class,
    * or the grey list becomes a ringed list.
+   *
+   * The suppression stays a suppression: it paints no fill of its own, and it
+   * does not carry the edge either. The edge is the unlayered rule asserted
+   * below, for the reason the tab underline is unlayered.
    */
   it('still suppresses the UA focus ring on the region', () => {
     const match = CSS.replace(/\/\*[\s\S]*?\*\//g, '').match(
@@ -421,9 +425,73 @@ describe('a scroll region with no role opts out of the focus fill by class', () 
       (rule) => rule.includes(HOOK) && /outline:\s*none/.test(rule)
     );
     expect(restoring, `nothing restores \`outline: none\` on ${HOOK}`).toHaveLength(1);
-    // A region gets NO treatment: no fill under another selector, no ring.
     expect(restoring[0]).not.toContain('--background-focus');
-    expect(restoring[0]).not.toMatch(/box-shadow|background/);
+    expect(restoring[0]).not.toMatch(/background/);
+  });
+
+  /**
+   * ⚠ **The half #187 left out, and the reason this block exists twice.**
+   * #187 put the class into BOTH arms — the fill exemption and the
+   * `outline: none` restoration — so the UA ring was suppressed with nothing in
+   * its place. Measured on the running app afterwards (Parchment dark, the real
+   * popover, a 3-row list, focus reached with a real Tab so `:focus-visible`
+   * was Chrome's own verdict): `backgroundColor`, `outline`, `boxShadow`,
+   * `borderWidth` and every `<li>` were byte-identical focused and unfocused —
+   * `rgba(0, 0, 0, 0)` / `rgb(244, 240, 230) none 0px` / `none` / `0px`. WCAG
+   * 2.4.7 with no indicator at all.
+   *
+   * The argument recorded for the tabpanel — "the next Tab lands on the first
+   * control inside, which has its own indicator" — does not reach here: the list
+   * has ZERO focusable children (asserted on the running app) and is its own
+   * scroll container, so it is genuinely operable and the tab stop is the whole
+   * point. A PANEL is still treated as #185 decided; only the class arm moves.
+   *
+   * D-15's vocabulary gives the shape: focus is a surface shift, never a ring,
+   * and the precedent for a region is the composer's own focus edge
+   * (`.biorouter-composer-card:has(textarea:focus)` → `--border-accent`). So the
+   * region takes a 1px INSET edge in the same token — no fill, no geometry
+   * change, no border to add, and it does not scroll with the list's content.
+   *
+   * ⚠ **Unlayered, for the reason the tab underline is unlayered.** The D-15
+   * block lives in `@layer base`, where a `:where()` rule sits at specificity 0
+   * and every Tailwind utility in the `utilities` layer beats it whatever the
+   * specificity. A copy of this rule inside `@layer base` would lose silently
+   * the first time the `<ol>` gained a `shadow-*` utility, and a focus indicator
+   * is the wrong place to depend on that not happening.
+   */
+  it('gives the region a quiet inset edge instead of nothing', () => {
+    const stripped = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const re = /([^{}]*:focus-visible[^{}]*)\{([^}]*)\}/g;
+    const edges: Array<{ selector: string; body: string; depth: number }> = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(stripped))) {
+      const selector = m[1].trim();
+      if (!selector.includes(HOOK)) continue;
+      // Naming the hook only in order to exclude it is not an indicator.
+      if (new RegExp(`:not\\([^)]*\\${HOOK}[^)]*\\)`).test(selector.replace(/\s+/g, ''))) continue;
+      if (!/box-shadow\s*:/.test(m[2])) continue;
+      const before = stripped.slice(0, m.index);
+      const depth = (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
+      edges.push({ selector, body: m[2].trim(), depth });
+    }
+    expect(
+      edges,
+      `nothing draws a focus indicator on ${HOOK}: a keyboard user sees no change at all (WCAG 2.4.7)`
+    ).toHaveLength(1);
+    // One pixel, inset, in the accent — the composer's edge, not a ring.
+    expect(edges[0].body.replace(/\s+/g, ' ')).toContain(
+      'box-shadow: inset 0 0 0 1px var(--border-accent)'
+    );
+    // Still a surface shift, never a fill: D-15's rule for a region is unchanged.
+    expect(edges[0].body).not.toMatch(/background/);
+    // And never an outline — the suppression above must not be undone here.
+    expect(edges[0].body).not.toMatch(/outline\s*:\s*(?!none)/);
+    // ⚠ Top level, NOT inside `@layer base`: depth 0 counted in braces.
+    expect(
+      edges[0].depth,
+      `the region's focus edge is inside a layer (depth ${edges[0].depth}); every ` +
+        'Tailwind utility would beat it. Author it unlayered, like the tab underline.'
+    ).toBe(0);
   });
 
   /**

@@ -682,6 +682,24 @@ all three families in both modes; the next Tab lands on the summary's own "Make 
 shows its focus surface; and under `prefers-contrast: more` the list takes the `2px solid --ring`
 outline through the same `[tabindex]` arm. Guarded in `styles/tabFocus.test.ts` beside the other two.
 
+**Amendment, 2026-09-08 (fourth) — that region gets a quiet inset edge, because "no treatment" is not
+an indicator.** The third amendment put the class into BOTH arms — the fill exemption and the
+`outline: none` restoration — so the UA ring was suppressed with nothing in its place: measured on the
+running app (Parchment dark, the real popover, focus reached with a real Tab so `:focus-visible` was
+Chrome's own verdict), `background-color`, `outline`, `box-shadow`, `border-width` and every `<li>` were
+byte-identical focused and unfocused. That is WCAG 2.4.7 with nothing on screen. The tabpanel's argument
+— the next Tab lands on a control inside — does not reach a role-less region: the To Do list has **zero**
+focusable children and is its own scroll container, so it is the thing being operated. So
+`.biorouter-focus-region:focus-visible` takes `box-shadow: inset 0 0 0 1px var(--border-accent)` — one
+pixel, inset, in the composer focus edge's own token, needing no border and no geometry change, and
+painted on the element's box so it stays put while the list scrolls. `--border-accent` is the only accent
+that clears the 3:1 non-text floor against the popover's `--background-default` ground in all three
+families in both modes (Parchment 4.62 / 6.71, Alma Mater 4.56 / 9.47, Roche Limit 3.09 / 5.58);
+`--accent-bar` falls to 2.66:1 in Alma Mater light. The rule is **unlayered**, for the same reason the
+tab underline is: inside `@layer base` a `:where()` rule sits at specificity 0 and every Tailwind
+utility beats it. The panel keeps the third amendment's treatment unchanged, the `outline: none` stays
+in the layered rule so there is exactly one indicator, and `prefers-contrast: more` is still untouched.
+
 All three tokens are **shared** — the focus treatment was always explicitly neutral rather than accented
 (D-15), so unifying it changed its values without changing its intent.
 
@@ -1326,7 +1344,7 @@ ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--te
 >
 > | ID | Decision | Resolved value |
 > |---|---|---|
-> | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill — as decided `#e4dcc9` / `#4d4430`, **now the shared `#e0e0dc` / `#35342f`**; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* **Amended 2026-09-08: a `[role='tab']` trigger takes no fill** — it activates on focus, so the fill sat permanently on the active tab as a grey box; its underline firming (2px → 3px, label at `--text-default`) is its focus indicator instead. |
+> | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill — as decided `#e4dcc9` / `#4d4430`, **now the shared `#e0e0dc` / `#35342f`**; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* **Amended 2026-09-08: a `[role='tab']` trigger takes no fill** — it activates on focus, so the fill sat permanently on the active tab as a grey box; its underline firming (2px → 3px, label at `--text-default`) is its focus indicator instead. **Amended 2026-09-08 (fourth): a keyboard-scrollable region with no role (`.biorouter-focus-region`) takes a 1px inset `--border-accent` edge** — it was exempted from the fill *and* from the UA ring, leaving no indicator at all. |
 > | D-16 | The user's turn | **Tinted, not accent.** `--background-medium` + hairline + `--text-default`. A solid coral block shouted. |
 > | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = colour + a 5% wash. A persistent rectangle reads as a stuck focus ring. |
 > | D-18 | Hairlines | **One value.** `border-border-subtle` at full strength. Eight alpha-diluted variants (`/35`…`/70`) made adjacent panels' edges read at different weights, so they never visually aligned. |
