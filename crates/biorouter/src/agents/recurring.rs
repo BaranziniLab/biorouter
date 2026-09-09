@@ -229,6 +229,7 @@ impl Agent {
             // running on that chat's model instead of the user's commercial one.
             creator_session_id: Some(session_id.to_string()),
             last_error: None,
+            owns_source: None,
         };
         if let Err(e) = scheduler.add_scheduled_job(job, false).await {
             let _ = tokio::fs::remove_file(&path).await;
@@ -552,6 +553,7 @@ mod tests {
             max_runs: Some(100),
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         };
         assert!(format_job_line(&job).contains("3/100 runs"));
 

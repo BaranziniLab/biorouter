@@ -45,6 +45,24 @@ import { Note } from '../ui/note';
 import { Skeleton } from '../ui/skeleton';
 import { ScheduleStatus, readableCronOf } from './scheduleStatus';
 
+/**
+ * What deleting a schedule actually does, said in the confirmation.
+ *
+ * ⚠ It no longer removes the workflow, so it must no longer imply that it
+ * might. The previous sentence — "This permanently removes the schedule and its
+ * run configuration" — was written when a delete unlinked `job.source`
+ * unconditionally, and for a schedule added from a workflow row that source was
+ * the user's own workflow file. `scheduler::scheduler_owns_source` now confines
+ * the unlink to the private copy the scheduler made for itself, so the
+ * confirmation names the file that survives instead of leaving the reader to
+ * work out what "run configuration" covered.
+ *
+ * Exported so `SchedulesView.test.tsx` asserts the promise the dialog makes
+ * against the behaviour the scheduler tests pin.
+ */
+export const DELETE_SCHEDULE_MESSAGE =
+  'This removes the schedule and stops its future runs. The workflow it runs is left in place. This action cannot be undone.';
+
 interface SchedulesViewProps {
   onClose?: () => void;
 }
@@ -583,7 +601,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       <ConfirmationModal
         isOpen={scheduleToDeleteId !== null}
         title={`Delete "${scheduleToDeleteId ?? ''}"?`}
-        message="This permanently removes the schedule and its run configuration. This action cannot be undone."
+        message={DELETE_SCHEDULE_MESSAGE}
         confirmLabel="Delete"
         cancelLabel="Cancel"
         confirmVariant="destructive"

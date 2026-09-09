@@ -14,7 +14,6 @@ use biorouter::knowledge::soul::{
     MEDITATION_SCHEDULE_ID, MEDITATION_WORKFLOW_FILE, MEDITATION_WORKFLOW_YAML, SOUL_COLOR,
     SOUL_KB_ID, SOUL_KB_NAME,
 };
-use biorouter::scheduler::get_default_scheduled_workflows_dir;
 use biorouter::workflow::local_workflows::get_workflow_library_dir;
 use biorouter::workflow::WORKFLOW_FILE_EXTENSIONS;
 use biorouter_mcp::agent_drafter::{default_root, store::ArtifactStore};
@@ -227,16 +226,19 @@ pub async fn preview_reset(
 async fn reset_schedules(state: &AppState) -> Result<u64> {
     let scheduler = state.scheduler();
     let jobs = scheduler.list_scheduled_jobs().await;
-    let scheduled_workflows =
-        get_default_scheduled_workflows_dir().map_err(|error| anyhow::anyhow!(error))?;
     let count = jobs
         .iter()
         .filter(|job| job.id != MEDITATION_SCHEDULE_ID)
         .count() as u64;
     for job in jobs {
-        let remove_workflow_copy = Path::new(&job.source).starts_with(&scheduled_workflows);
+        // `true` asks for the workflow copy; the scheduler decides whether there
+        // is one. This used to compute `source.starts_with(scheduled_workflows)`
+        // here — the right rule, in the wrong place: it was the ONLY caller that
+        // knew it, so `delete_schedule` next door passed a literal `true` and
+        // deleted the user's own workflow. The rule now lives once, beside the
+        // ownership record, in `scheduler::scheduler_owns_source`.
         scheduler
-            .remove_scheduled_job(&job.id, remove_workflow_copy)
+            .remove_scheduled_job(&job.id, true)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
     }

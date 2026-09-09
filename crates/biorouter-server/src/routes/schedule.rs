@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::routes::errors::ErrorResponse;
 use crate::state::AppState;
 use biorouter::scheduler::{ScheduledJob, RUN_CANCELLED_MARKER};
 
@@ -77,9 +78,9 @@ pub struct SessionDisplayInfo {
     request_body = CreateScheduleRequest,
     responses(
         (status = 200, description = "Scheduled job created successfully", body = ScheduledJob),
-        (status = 400, description = "Invalid cron expression or workflow file"),
-        (status = 409, description = "Job ID already exists"),
-        (status = 500, description = "Internal server error")
+        (status = 400, description = "Invalid schedule name, cron expression or workflow file", body = ErrorResponse),
+        (status = 409, description = "Job ID already exists", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     tag = "schedule"
 )]
@@ -87,7 +88,7 @@ pub struct SessionDisplayInfo {
 async fn create_schedule(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateScheduleRequest>,
-) -> Result<Json<ScheduledJob>, StatusCode> {
+) -> Result<Json<ScheduledJob>, ErrorResponse> {
     let scheduler = state.scheduler();
 
     // ⚠ The id names a FILE. `Path::join` throws its base away when the argument
@@ -100,9 +101,15 @@ async fn create_schedule(
     // Refused here as well as inside `add_scheduled_job` — the same function in
     // both places, so the two cannot drift — because a request this malformed
     // should not reach the scheduler at all.
+    //
+    // ⚠ The refusal carries the REASON. It used to answer a bare
+    // `StatusCode::BAD_REQUEST` — a 400 with no body — and log the sentence
+    // where only a developer would find it, so the client's JSON parse failed
+    // and the dialog reported "Unexpected response format": a transport-shaped
+    // error for a validation problem the user could have fixed in one keystroke.
     if let Err(error) = biorouter::scheduler::validate_schedule_id(&req.id) {
         tracing::warn!("Refusing schedule create with an invalid id: {error}");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(create_schedule_error(StatusCode::BAD_REQUEST, error));
     }
     tracing::info!(
         "Server: Calling scheduler.add_scheduled_job() for job '{}'",
@@ -122,27 +129,53 @@ async fn create_schedule(
         // `POST /schedule/create` schedules a workflow file, not a chat.
         creator_session_id: None,
         last_error: None,
+        owns_source: None,
     };
     scheduler
         .add_scheduled_job(job.clone(), true)
         .await
         .map_err(|e| {
             eprintln!("Error creating schedule: {:?}", e); // Log error
-            match e {
-                biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-                biorouter::scheduler::SchedulerError::CronParseError(_) => StatusCode::BAD_REQUEST,
-                biorouter::scheduler::SchedulerError::WorkflowLoadError(_) => {
-                    StatusCode::BAD_REQUEST
-                }
-                biorouter::scheduler::SchedulerError::JobIdExists(_) => StatusCode::CONFLICT,
-                // Unreachable from this handler (the guard above answers first),
-                // and mapped anyway so a future caller that skips the guard
-                // still gets "you sent something bad", not "the server broke".
-                biorouter::scheduler::SchedulerError::InvalidJobId(_) => StatusCode::BAD_REQUEST,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            }
+            create_schedule_error(create_schedule_status(&e), e)
         })?;
     Ok(Json(job))
+}
+
+/// The status a failed create answers with.
+///
+/// Split out from the handler so the mapping can be asserted on its own — the
+/// handler needs a live `AppState` and a real scheduler, which is exactly the
+/// reason the old inline `match` had no test at all.
+fn create_schedule_status(error: &biorouter::scheduler::SchedulerError) -> StatusCode {
+    use biorouter::scheduler::SchedulerError;
+    match error {
+        SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
+        SchedulerError::CronParseError(_) => StatusCode::BAD_REQUEST,
+        SchedulerError::WorkflowLoadError(_) => StatusCode::BAD_REQUEST,
+        SchedulerError::JobIdExists(_) => StatusCode::CONFLICT,
+        // Reached only when a future caller skips the guard at the top of the
+        // handler, and mapped anyway so such a caller still gets "you sent
+        // something bad", not "the server broke".
+        SchedulerError::InvalidJobId(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// A failed create, as the dialog will read it.
+///
+/// `ErrorResponse` is the shape the rest of `routes/` answers errors in
+/// (`{"message": …}`, see `routes::errors`), so the client parses one body for
+/// every route rather than one per handler. `SchedulerError`'s `Display` is
+/// already written for a person — *"schedule id '…' may only contain letters,
+/// digits, '-' and '_'"* — which is the whole sentence that used to be dropped.
+fn create_schedule_error(
+    status: StatusCode,
+    error: biorouter::scheduler::SchedulerError,
+) -> ErrorResponse {
+    ErrorResponse {
+        message: error.to_string(),
+        status,
+    }
 }
 
 #[utoipa::path(
@@ -184,6 +217,11 @@ async fn delete_schedule(
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     let scheduler = state.scheduler();
+    // ⚠ `true` asks for the workflow file; it no longer grants it. This route
+    // never reads the job, so it cannot tell the private copy the scheduler made
+    // for itself from a pointer at the user's own workflow — and while the flag
+    // WAS the permission, deleting a schedule added from a workflow row deleted
+    // that workflow. `scheduler::scheduler_owns_source` now has the last word.
     scheduler
         .remove_scheduled_job(&id, true)
         .await
@@ -713,5 +751,126 @@ mod tests {
         let (status, message) = classify_kill_error(&missing);
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(message.contains("nightly"), "{message}");
+    }
+
+    /// The reported defect: **New schedule** with the name
+    /// `<img src=x onerror=alert(1)>` answered *"Failed to create schedule:
+    /// Unexpected response format"* — a transport-shaped report for a
+    /// validation problem the user could fix in one keystroke.
+    ///
+    /// The cause was a bare `StatusCode::BAD_REQUEST`: axum sends that with **no
+    /// body**, so the client's JSON parse was the thing that actually failed and
+    /// the real reason only ever reached a `tracing::warn!`.
+    ///
+    /// Asserted through `IntoResponse`, because the shape of the body is the
+    /// finding — a test that only read `ErrorResponse.message` would pass on an
+    /// implementation that never serialises it.
+    #[tokio::test]
+    async fn an_invalid_schedule_name_is_refused_with_the_reason_in_the_body() {
+        use axum::body::to_bytes;
+        use axum::response::IntoResponse;
+
+        let hostile = "<img src=x onerror=alert(1)>";
+        let error = biorouter::scheduler::validate_schedule_id(hostile)
+            .expect_err("a name that names a file must still be refused");
+        let response = create_schedule_error(create_schedule_status(&error), error).into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body)
+            .expect("the client parses this as JSON; an empty body is the bug");
+        let message = parsed["message"].as_str().expect("no message field");
+        assert!(
+            message.contains("may only contain letters, digits"),
+            "the refusal must state the rule: {message}"
+        );
+        assert!(
+            message.contains(hostile),
+            "and name the value it refused: {message}"
+        );
+    }
+
+    /// The id validation is a security boundary — it closes an arbitrary-file
+    /// write — so reporting it better must not move it. The refusal still
+    /// happens in the handler, *before* anything is handed to the scheduler.
+    ///
+    /// Structural, because the regression is a deletion: rewriting the error
+    /// arm is exactly the edit that would drop the guard, and the route would
+    /// then still answer a readable 400 from inside `add_scheduled_job` — after
+    /// the request had already reached it.
+    #[test]
+    fn the_name_is_still_refused_in_the_handler_before_the_scheduler_sees_it() {
+        let src = include_str!("schedule.rs");
+        let (_, after) = src
+            .split_once("async fn create_schedule(")
+            .expect("create_schedule is gone");
+        let (body, _) = after
+            .split_once("\n/// The status a failed create")
+            .expect("could not find the end of create_schedule");
+        let guard = body
+            .find("validate_schedule_id(&req.id)")
+            .expect("the handler no longer refuses an invalid name itself");
+        let handoff = body
+            .find(".add_scheduled_job(")
+            .expect("the handler no longer schedules anything");
+        assert!(
+            guard < handoff,
+            "the name must be refused before the scheduler is handed the request"
+        );
+
+        // And the rule itself is unchanged: what was refused is still refused.
+        for name in [
+            "<img src=x onerror=alert(1)>",
+            "{{ 7*7 }}",
+            "/tmp/pwned",
+            "",
+        ] {
+            assert!(
+                biorouter::scheduler::validate_schedule_id(name).is_err(),
+                "{name:?} must still be refused"
+            );
+        }
+        assert!(biorouter::scheduler::validate_schedule_id("daily-summary_job").is_ok());
+    }
+
+    /// A create that fails for a reason other than the name keeps its own
+    /// status, and now carries its own sentence rather than an anonymous number.
+    #[test]
+    fn each_create_failure_keeps_its_status_and_gains_its_words() {
+        for (error, expected) in [
+            (
+                SchedulerError::JobIdExists("nightly".to_string()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                SchedulerError::CronParseError("not a cron".to_string()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SchedulerError::WorkflowLoadError("no such file".to_string()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SchedulerError::InvalidJobId("not a slug".to_string()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SchedulerError::JobNotFound("nightly".to_string()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                SchedulerError::PersistError("disk full".to_string()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            let text = error.to_string();
+            let status = create_schedule_status(&error);
+            assert_eq!(status, expected, "wrong status for {text}");
+            assert_eq!(
+                create_schedule_error(status, error).message,
+                text,
+                "the scheduler's own sentence is what the dialog shows"
+            );
+        }
     }
 }

@@ -18,10 +18,14 @@ pub trait SchedulerTrait: Send + Sync {
         cron_schedule: Option<String>,
     ) -> anyhow::Result<(), SchedulerError>;
     async fn list_scheduled_jobs(&self) -> Vec<ScheduledJob>;
+    /// ⚠ `remove_owned_workflow` asks for the job's workflow file to go with it;
+    /// it does not grant that. `scheduler::scheduler_owns_source` decides, so a
+    /// caller that cannot tell the scheduler's own copy from a pointer at the
+    /// user's workflow can pass `true` without destroying the latter.
     async fn remove_scheduled_job(
         &self,
         id: &str,
-        remove_workflow: bool,
+        remove_owned_workflow: bool,
     ) -> Result<(), SchedulerError>;
     async fn pause_schedule(&self, id: &str) -> Result<(), SchedulerError>;
     async fn unpause_schedule(&self, id: &str) -> Result<(), SchedulerError>;

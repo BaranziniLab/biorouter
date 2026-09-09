@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
-import SchedulesView from './SchedulesView';
+import SchedulesView, { DELETE_SCHEDULE_MESSAGE } from './SchedulesView';
 
 const mocks = vi.hoisted(() => ({
   listSchedules: vi.fn(),
@@ -107,6 +107,29 @@ describe('SchedulesView interactions', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(mocks.deleteSchedule).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Deleting a schedule used to delete the workflow it was created from
+   * (finding F1), and the confirmation's "removes the schedule and its run
+   * configuration" was the only warning the user got — which described the bug
+   * accurately enough that it read as intended behaviour.
+   *
+   * `scheduler::scheduler_owns_source` now confines the unlink to the copy the
+   * scheduler made for itself, so the dialog must promise what actually happens.
+   * Fails the old wording, and fails a future one that stops saying which file
+   * survives.
+   */
+  it('promises the workflow survives the deletion', async () => {
+    const user = userEvent.setup();
+    renderSchedules();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete nightly-cohort' }));
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent(DELETE_SCHEDULE_MESSAGE);
+    expect(DELETE_SCHEDULE_MESSAGE).toMatch(/workflow it runs is left in place/i);
+    expect(DELETE_SCHEDULE_MESSAGE).not.toMatch(/run configuration/i);
   });
 
   it('suppresses duplicate rapid actions while the first request is pending', async () => {

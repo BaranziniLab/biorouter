@@ -8,6 +8,7 @@ import { getStorageDirectory } from '../../workflow/workflow_management';
 import { Folder } from '../icons/app-icons';
 import { ModalShell } from '../ModalShell';
 import { scheduleDisplayName } from '../../utils/builtins';
+import { scheduleNameProblem } from './scheduleName';
 
 export interface NewSchedulePayload {
   id: string;
@@ -99,8 +100,14 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       return;
     }
 
-    if (!scheduleId.trim()) {
-      setInternalValidationError('Schedule ID is required.');
+    // The rule is stated here so the user reads it at the field, not after a
+    // round trip. The daemon's `validate_schedule_id` remains the authority —
+    // it closes an arbitrary-file write — and its refusal now reaches this same
+    // Note through `createSchedule`, so a drift between the two costs a
+    // round trip rather than an unreadable error. See `scheduleName.ts`.
+    const nameProblem = scheduleNameProblem(scheduleId.trim());
+    if (nameProblem) {
+      setInternalValidationError(nameProblem);
       return;
     }
 
@@ -176,6 +183,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                 placeholder="e.g., daily-summary-job"
                 required
               />
+              <p className="mt-1.5 text-supporting text-text-muted">
+                Letters, digits, hyphens and underscores only
+              </p>
             </div>
 
             <div>

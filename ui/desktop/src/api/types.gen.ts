@@ -3032,6 +3032,25 @@ export type ScheduledJob = {
      * forever. `None` = unbounded (durable `/schedule` jobs).
      */
     max_runs?: number | null;
+    /**
+     * Did the scheduler write [`Self::source`] itself, and may it therefore
+     * delete that file when the job goes?
+     *
+     * ⚠ Written by [`Scheduler::add_scheduled_job`] from its `make_copy`
+     * argument and by nothing else — a value supplied at a construction site is
+     * overwritten, so callers pass `None` and let the scheduler answer.
+     *
+     * ⚠ `Option`, not `bool`, and the third state is the whole point. A job
+     * persisted before this field existed deserialises as `None`, and the two
+     * creation paths that produced those rows are indistinguishable from the
+     * row alone: `POST /schedule/create` and `biorouter schedule add` copied the
+     * workflow and own the copy, while a schedule added from a workflow row
+     * points straight at the user's own file. `false` for both would strand
+     * every legacy copy; `true` for both would delete a user's workflow. `None`
+     * says "unrecorded", and [`scheduler_owns_source`] answers it from where the
+     * file actually lives.
+     */
+    owns_source?: boolean | null;
     paused?: boolean;
     process_start_time?: string | null;
     /**
@@ -6738,18 +6757,20 @@ export type CreateScheduleData = {
 
 export type CreateScheduleErrors = {
     /**
-     * Invalid cron expression or workflow file
+     * Invalid schedule name, cron expression or workflow file
      */
-    400: unknown;
+    400: ErrorResponse;
     /**
      * Job ID already exists
      */
-    409: unknown;
+    409: ErrorResponse;
     /**
      * Internal server error
      */
-    500: unknown;
+    500: ErrorResponse;
 };
+
+export type CreateScheduleError = CreateScheduleErrors[keyof CreateScheduleErrors];
 
 export type CreateScheduleResponses = {
     /**

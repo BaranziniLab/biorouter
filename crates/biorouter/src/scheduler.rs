@@ -275,6 +275,57 @@ pub struct ScheduledJob {
     /// it was created. Cleared by the next successful run.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Did the scheduler write [`Self::source`] itself, and may it therefore
+    /// delete that file when the job goes?
+    ///
+    /// ⚠ Written by [`Scheduler::add_scheduled_job`] from its `make_copy`
+    /// argument and by nothing else — a value supplied at a construction site is
+    /// overwritten, so callers pass `None` and let the scheduler answer.
+    ///
+    /// ⚠ `Option`, not `bool`, and the third state is the whole point. A job
+    /// persisted before this field existed deserialises as `None`, and the two
+    /// creation paths that produced those rows are indistinguishable from the
+    /// row alone: `POST /schedule/create` and `biorouter schedule add` copied the
+    /// workflow and own the copy, while a schedule added from a workflow row
+    /// points straight at the user's own file. `false` for both would strand
+    /// every legacy copy; `true` for both would delete a user's workflow. `None`
+    /// says "unrecorded", and [`scheduler_owns_source`] answers it from where the
+    /// file actually lives.
+    #[serde(default)]
+    pub owns_source: Option<bool>,
+}
+
+/// May the scheduler delete `job.source` when the job is removed?
+///
+/// Deleting a schedule used to delete the workflow it was created from. The
+/// "Add schedule" button on a workflow row schedules the user's file **in
+/// place** ([`Scheduler::schedule_workflow`] passes `make_copy: false`), while
+/// `DELETE /schedule/delete/{id}` asked for the workflow to be removed
+/// unconditionally — so one click on Delete took the workflow with it, and the
+/// row vanished from the workflows page too.
+///
+/// Two signals, asked in this order:
+///
+/// 1. **Containment is a floor, not a heuristic.** `make_copy` writes into
+///    [`get_default_scheduled_workflows_dir`] and nowhere else, and the
+///    destination is *derived* from that directory ([`planned_workflow_copy`]),
+///    so a file the scheduler owns is always inside it. Asking first means no
+///    answer this function can give ever deletes a file outside the scheduler's
+///    own store — the property that has to hold when the record below is absent.
+///    A path that fails this test costs at most an orphaned copy; the other
+///    direction costs the user their workflow.
+/// 2. **Inside the store, the record decides.** `None` — a row written before
+///    the record existed — reads as owned, because `make_copy` is the only
+///    writer of that directory. An explicit `Some(false)` is still honoured, so
+///    a user who schedules a file that happens to live there keeps it.
+fn scheduler_owns_source(job: &ScheduledJob) -> bool {
+    let Ok(store) = get_default_scheduled_workflows_dir() else {
+        return false;
+    };
+    if !Path::new(&job.source).starts_with(&store) {
+        return false;
+    }
+    job.owns_source.unwrap_or(true)
 }
 
 /// Decide, under one lock, whether a fired cron job should actually run, and
@@ -1002,6 +1053,11 @@ impl Scheduler {
         } else {
             None
         };
+        // The scheduler is the authority on ownership, not the caller: whether
+        // `source` is a file we wrote is decided right here, by `make_copy`, and
+        // whatever the construction site put in the field is overwritten. See
+        // [`scheduler_owns_source`] for what the answer is then used for.
+        stored_job.owns_source = Some(planned_copy.is_some());
         if let Some(destination) = planned_copy.as_ref() {
             stored_job.source = destination.to_string_lossy().into_owned();
             stored_job.current_session_id = None;
@@ -1107,6 +1163,7 @@ impl Scheduler {
                         // A workflow scheduled by path has no creating chat.
                         creator_session_id: None,
                         last_error: None,
+                        owns_source: None,
                     };
                     self.add_scheduled_job(job, false).await
                 }
@@ -1249,15 +1306,30 @@ impl Scheduler {
             .collect()
     }
 
+    /// Remove a job, and its workflow file **only if the scheduler wrote that
+    /// file**.
+    ///
+    /// ⚠ `remove_owned_workflow` is a request, not a permission.
+    /// [`scheduler_owns_source`] has the last word, so a `true` from a caller
+    /// that cannot tell a copy from a pointer — which is every HTTP and CLI
+    /// delete, none of which reads the job first — can no longer take the user's
+    /// own workflow with it.
     pub async fn remove_scheduled_job(
         &self,
         id: &str,
-        remove_workflow: bool,
+        remove_owned_workflow: bool,
     ) -> Result<(), SchedulerError> {
-        let (job_uuid, workflow_path) = {
+        let (job_uuid, workflow_to_delete) = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.remove(id) {
-                Some((uuid, job)) => (uuid, job.source.clone()),
+                // Decided from the row while we still hold it, so the two halves
+                // of the answer — the path and the right to delete it — can
+                // never come from different jobs.
+                Some((uuid, job)) => {
+                    let path = (remove_owned_workflow && scheduler_owns_source(&job))
+                        .then(|| job.source.clone());
+                    (uuid, path)
+                }
                 None => return Err(SchedulerError::JobNotFound(id.to_string())),
             }
         };
@@ -1267,7 +1339,7 @@ impl Scheduler {
             .await
             .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
-        if remove_workflow {
+        if let Some(workflow_path) = workflow_to_delete {
             let path = Path::new(&workflow_path);
             if path.exists() {
                 fs::remove_file(path)?;
@@ -2046,9 +2118,9 @@ impl SchedulerTrait for Scheduler {
     async fn remove_scheduled_job(
         &self,
         id: &str,
-        remove_workflow: bool,
+        remove_owned_workflow: bool,
     ) -> Result<(), SchedulerError> {
-        self.remove_scheduled_job(id, remove_workflow).await
+        self.remove_scheduled_job(id, remove_owned_workflow).await
     }
 
     async fn pause_schedule(&self, id: &str) -> Result<(), SchedulerError> {
@@ -2119,6 +2191,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         }
     }
 
@@ -2275,6 +2348,203 @@ mod tests {
         assert_eq!(
             after, before,
             "a refused duplicate must not have rewritten the existing job's workflow"
+        );
+    }
+
+    /// The reported defect, driven at the scheduler. The "Add schedule" button
+    /// on a workflow row schedules the user's file **in place**, and
+    /// `DELETE /schedule/delete/{id}` asked for the workflow to be removed —
+    /// so deleting the schedule deleted the workflow, and its row vanished from
+    /// the workflows page too.
+    ///
+    /// ⚠ The assertion is the FILE, not the flag. An implementation that records
+    /// ownership faithfully and then ignores it at the delete passes every
+    /// assertion about `owns_source` and still destroys the user's workflow.
+    #[tokio::test]
+    async fn deleting_a_schedule_made_from_a_workflow_row_leaves_the_workflow_on_disk() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = create_test_workflow(temp_dir.path(), "probe-del-test");
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+
+        // `make_copy: false` — exactly what `schedule_workflow` passes, so
+        // `source` IS the user's file.
+        scheduler
+            .add_scheduled_job(dormant_job("probe-del-test", &workflow), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            scheduler.list_scheduled_jobs().await[0].owns_source,
+            Some(false),
+            "a workflow scheduled in place is not the scheduler's to delete"
+        );
+
+        // `true` is what the delete route asks for, and asking is all it may do.
+        scheduler
+            .remove_scheduled_job("probe-del-test", true)
+            .await
+            .unwrap();
+
+        assert!(
+            workflow.exists(),
+            "deleting the schedule deleted the workflow it was created from: {}",
+            workflow.display()
+        );
+        assert_eq!(
+            fs::read_to_string(&workflow).unwrap(),
+            "prompt: test\n",
+            "the workflow survived as a file but not as its contents"
+        );
+        assert!(
+            ids_on_disk(&storage_path).is_empty(),
+            "the schedule must go"
+        );
+    }
+
+    /// The other half, and what stops the fix degenerating into "never delete
+    /// anything": a schedule created through `POST /schedule/create` copies the
+    /// workflow into the scheduler's own store, and *that* copy is the
+    /// scheduler's to remove.
+    ///
+    /// Both files are asserted. Deleting neither is a leak; deleting both is the
+    /// bug above wearing this test's clothes.
+    #[tokio::test]
+    async fn deleting_a_schedule_that_copied_its_workflow_removes_the_copy_and_only_the_copy() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let original = create_test_workflow(temp_dir.path(), "original");
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+
+        // Unique per run: `make_copy` writes into the real managed directory,
+        // which is shared with whatever else is on this machine.
+        let id = format!("owned-copy-{}", uuid::Uuid::new_v4().simple());
+        scheduler
+            .add_scheduled_job(dormant_job(&id, &original), true)
+            .await
+            .unwrap();
+
+        let copy = get_default_scheduled_workflows_dir()
+            .unwrap()
+            .join(format!("{id}.yaml"));
+        assert!(copy.exists(), "make_copy did not copy");
+        assert_eq!(
+            scheduler.list_scheduled_jobs().await[0].owns_source,
+            Some(true),
+            "the scheduler wrote this file, so it must record that it owns it"
+        );
+
+        scheduler.remove_scheduled_job(&id, true).await.unwrap();
+
+        let copy_survived = copy.exists();
+        let _ = fs::remove_file(&copy);
+        assert!(
+            !copy_survived,
+            "the scheduler's own copy was left behind at {}",
+            copy.display()
+        );
+        assert!(
+            original.exists(),
+            "the workflow the copy was made FROM must never be touched"
+        );
+    }
+
+    /// A row persisted before `owns_source` existed carries no answer, and the
+    /// two creation paths that produced such rows are indistinguishable from the
+    /// row alone. Where the file lives is the only signal left, and it is a
+    /// sound one: `make_copy` is the only writer of that directory.
+    ///
+    /// Also pins the floor. An explicit `Some(true)` on a path OUTSIDE the store
+    /// must still answer `false` — nothing this function says may ever delete a
+    /// file the scheduler could not have written.
+    #[test]
+    fn ownership_of_an_unrecorded_job_is_decided_by_where_its_source_lives() {
+        let store = get_default_scheduled_workflows_dir().unwrap();
+        let inside = store.join("legacy-copy.yaml");
+        let outside = Path::new("/Users/someone/.config/biorouter/workflows/mine.yaml");
+
+        let job = |source: &Path, owns: Option<bool>| ScheduledJob {
+            owns_source: owns,
+            ..dormant_job("probe", source)
+        };
+
+        assert!(
+            scheduler_owns_source(&job(&inside, None)),
+            "a legacy row inside the scheduler's own store is a copy it made"
+        );
+        assert!(
+            !scheduler_owns_source(&job(outside, None)),
+            "a legacy row pointing outside the store is the user's own workflow"
+        );
+        assert!(
+            !scheduler_owns_source(&job(&inside, Some(false))),
+            "a recorded `false` must survive being inside the store"
+        );
+        assert!(
+            !scheduler_owns_source(&job(outside, Some(true))),
+            "no record may authorise deleting a file outside the scheduler's store"
+        );
+    }
+
+    /// The `#[serde(default)]` that makes the paragraph above true: a schedule
+    /// file written by an older build has no `owns_source` key at all, and must
+    /// load as *unrecorded* rather than failing the whole document — which would
+    /// take every other job on the machine with it.
+    #[test]
+    fn a_row_written_before_the_ownership_record_loads_as_unrecorded() {
+        let legacy = r#"[{
+            "id": "daily-meditation",
+            "source": "/Users/wgu/.local/share/biorouter/scheduled_workflows/daily-meditation.yaml",
+            "cron": "0 0 3 * * *",
+            "last_run": null,
+            "currently_running": false,
+            "paused": true,
+            "current_session_id": null,
+            "process_start_time": null,
+            "run_count": 3,
+            "max_runs": null,
+            "creator_session_id": null,
+            "last_error": null
+        }]"#;
+        let jobs: Vec<ScheduledJob> = serde_json::from_str(legacy).unwrap();
+        assert_eq!(jobs[0].owns_source, None);
+    }
+
+    /// The delete path may not grow a second route to `fs::remove_file`.
+    ///
+    /// Structural because the failure it guards is an *omission*: the route
+    /// asks for the workflow to be removed and always has, so a rewrite that
+    /// drops the ownership question restores the original bug while every
+    /// caller still reads correctly.
+    #[test]
+    fn the_delete_path_asks_who_owns_the_source_before_unlinking_it() {
+        let src = include_str!("scheduler.rs");
+        let (production, _) = src
+            .split_once("\n#[cfg(test)]")
+            .expect("scheduler.rs has no test module");
+        let (_, after) = production
+            .split_once("pub async fn remove_scheduled_job(")
+            .expect("remove_scheduled_job is gone");
+        let (body, _) = after
+            .split_once("\n    pub async fn ")
+            .expect("could not find the end of remove_scheduled_job");
+        assert!(
+            body.contains("scheduler_owns_source(&job)"),
+            "remove_scheduled_job unlinks a file without asking whether the scheduler wrote it"
+        );
+        assert_eq!(
+            production.matches("fs::remove_file(").count(),
+            1,
+            "a second unlink appeared in the scheduler; it needs the same ownership question"
         );
     }
 
@@ -2436,6 +2706,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -2478,6 +2749,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -2511,6 +2783,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         }];
         fs::write(&storage_path, serde_json::to_string(&stored).unwrap()).unwrap();
 
@@ -3617,6 +3890,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         };
         let prompt = scheduled_prompt(&job, &workflow);
         assert!(prompt.contains("2026-08-28T10:11:12+00:00"), "{prompt}");
@@ -3723,6 +3997,7 @@ mod privacy_c2_tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            owns_source: None,
         }
     }
 
