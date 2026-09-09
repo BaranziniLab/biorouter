@@ -26,7 +26,7 @@
 //! session talks to is less capable than the one the desktop application
 //! starts, and anything assuming otherwise is wrong.
 
-use crate::commands::exe_path::current_exe_resolved;
+use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
 use anyhow::{bail, Context, Result};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -270,26 +270,15 @@ fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> R
 ///
 /// Beside our own executable first, so a packaged application and a development
 /// tree both pair the two binaries that were built together, rather than
-/// whichever one is earliest on `PATH`.
+/// whichever one is earliest on `PATH`; then beside the installation this copy
+/// came from, which is the only thing a Windows install has to go on. See
+/// [`crate::commands::exe_path::biorouterd_for`].
 fn resolve_biorouterd() -> Result<PathBuf> {
-    if let Some(found) = current_exe_resolved().and_then(|exe| biorouterd_beside(&exe)) {
+    if let Some(found) = current_exe_resolved().and_then(|exe| biorouterd_for(&exe)) {
         return Ok(found);
     }
     // Fall back to PATH, and let the spawn report a missing binary.
-    Ok(PathBuf::from(format!(
-        "biorouterd{}",
-        std::env::consts::EXE_SUFFIX
-    )))
-}
-
-/// The daemon installed alongside `exe`, if it is there.
-///
-/// Split out from [`resolve_biorouterd`] so a test can hand it a path instead
-/// of being at the mercy of wherever the test binary itself happens to live.
-fn biorouterd_beside(exe: &Path) -> Option<PathBuf> {
-    let name = format!("biorouterd{}", std::env::consts::EXE_SUFFIX);
-    let beside = exe.parent()?.join(name);
-    beside.is_file().then_some(beside)
+    Ok(PathBuf::from(daemon_file_name()))
 }
 
 /// Candidate locations for the built interface, in order.
@@ -304,11 +293,18 @@ fn web_dir_candidates() -> Vec<PathBuf> {
 /// The candidate list for a given executable path.
 ///
 /// ⚠ `exe` must be the **resolved** path, not `current_exe()` — see
-/// [`crate::commands::exe_path`]. Everything below is a sibling of the binary,
-/// so a symlink one directory up from the installation moves every candidate
-/// with it: through `~/.local/bin/biorouter` the two exe-relative entries
-/// became `~/.local/web` and `~/ui/desktop/src/web`, and `serve` reported that
-/// the interface was missing on an installation that ships it.
+/// [`crate::commands::exe_path`]. The exe-relative entries below are siblings of
+/// the binary, so a symlink one directory up from the installation moves every
+/// candidate with it: through `~/.local/bin/biorouter` the two became
+/// `~/.local/web` and `~/ui/desktop/src/web`, and `serve` reported that the
+/// interface was missing on an installation that ships it.
+///
+/// Resolution is not enough on Windows, where the install is a *copy* and the
+/// bundle stays behind in the application. The breadcrumb entry is that case:
+/// the copy records the directory it came from, and the bundle is `../web` of
+/// **that**. It is consulted after the exe-relative entries — a bundle actually
+/// next to the binary is the one to use — and before the Linux package
+/// location, which is a fixed path that has nothing to do with this install.
 fn web_dir_candidates_for(exe: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(dir) = std::env::var("BIOROUTER_SERVE_UI") {
@@ -328,6 +324,13 @@ fn web_dir_candidates_for(exe: Option<&Path>) -> Vec<PathBuf> {
                 .join("src")
                 .join("web"),
         );
+        // A Windows install: `Resources/web` of the application this copy was
+        // taken from. Pushed even when the recorded directory has since been
+        // deleted, so a stale breadcrumb is named in the failure rather than
+        // leaving the reader to guess why nothing was found.
+        if let Some(origin) = biorouter::system::install_origin(dir) {
+            out.push(origin.join("..").join("web"));
+        }
     }
     // The Linux packages, where the exe-relative rule does not survive: from
     // /usr/bin, `../web` is /usr/web.
@@ -375,6 +378,9 @@ fn normalise(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The sibling rule moved to `exe_path` when `apps` needed it too; the test
+    // that pins it stayed here, with the rest of the `serve` resolution suite.
+    use crate::commands::exe_path::biorouterd_beside;
 
     #[test]
     fn the_default_port_does_not_collide_with_the_daemon_it_starts() {
@@ -557,6 +563,11 @@ mod tests {
     /// A candidate list derived from a verbatim Windows path would be printed
     /// at the user and handed to the daemon in `BIOROUTER_SERVE_UI`. Runs
     /// everywhere; only Windows can fail it.
+    ///
+    /// The breadcrumb is written the way `install_cli` writes it — from the
+    /// parent of a **canonicalised** source path, which on Windows is
+    /// `\\?\C:\…` — so the candidate derived from it is covered by the same
+    /// rule.
     #[test]
     fn the_resolved_candidates_are_never_windows_verbatim_paths() {
         let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
@@ -566,8 +577,26 @@ mod tests {
             .join(format!("biorouter{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&exe, b"x").unwrap();
 
+        let source_bin = application(&tmp.path().join("Application"));
+        let canonical_source = std::fs::canonicalize(
+            source_bin.join(format!("biorouter{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .unwrap();
+        biorouter::system::record_install_origin(
+            canonical_source.parent().unwrap(),
+            exe.parent().unwrap(),
+        )
+        .unwrap();
+
         let resolved = crate::commands::exe_path::resolve_exe_path(&exe);
-        for candidate in web_dir_candidates_for(Some(&resolved)) {
+        let candidates = web_dir_candidates_for(Some(&resolved));
+        assert_eq!(
+            candidates.len(),
+            4,
+            "the breadcrumb-derived candidate must be present, or this test \
+             covers less than it claims: {candidates:?}"
+        );
+        for candidate in candidates {
             assert!(
                 !normalise(&candidate).to_string_lossy().starts_with(r"\\?\"),
                 "verbatim path in a candidate: {}",
@@ -583,5 +612,172 @@ mod tests {
             normalise(Path::new("/a/b/c/../../ui/desktop/src/web")),
             PathBuf::from("/a/ui/desktop/src/web")
         );
+    }
+
+    /// A fixture shaped like the shipped Windows application: both binaries in
+    /// `resources/bin`, the interface bundle beside them in `resources/web`.
+    /// Returns the `bin` directory.
+    fn application(root: &Path) -> PathBuf {
+        let bin = root.join("resources").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let name = format!("biorouter{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(bin.join(name), b"x").unwrap();
+        let web = root.join("resources").join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), b"<!doctype html>").unwrap();
+        bin
+    }
+
+    /// A Windows install: `biorouter.exe` copied onto `PATH` on its own, with
+    /// nothing beside it. Returns the installed executable.
+    fn windows_style_install(root: &Path) -> PathBuf {
+        let install = root.join("Local").join("Biorouter").join("bin");
+        std::fs::create_dir_all(&install).unwrap();
+        let exe = install.join(format!("biorouter{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&exe, b"x").unwrap();
+        exe
+    }
+
+    /// The Windows half of the defect PR #183 fixed for macOS. `install_cli`
+    /// copies `biorouter.exe` into `%LOCALAPPDATA%\Biorouter\bin` and nothing
+    /// else, so there is no link to resolve and no bundle beside the copy — the
+    /// two exe-relative candidates become `%LOCALAPPDATA%\Biorouter\web` and
+    /// `%LOCALAPPDATA%\ui\desktop\src\web`, neither of which can ever exist.
+    #[test]
+    fn a_windows_style_install_finds_the_bundle_through_its_breadcrumb() {
+        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let source_bin = application(&tmp.path().join("Application"));
+        let exe = windows_style_install(tmp.path());
+
+        // Without the breadcrumb the bundle is unreachable — otherwise this
+        // test would pass against the code that shipped the bug.
+        assert!(
+            !web_dir_candidates_for(Some(&exe))
+                .iter()
+                .any(|c| c.join("index.html").is_file()),
+            "fixture is wrong: the bundle must be unreachable before the breadcrumb is written"
+        );
+
+        biorouter::system::record_install_origin(&source_bin, exe.parent().unwrap()).unwrap();
+
+        let candidates = web_dir_candidates_for(Some(&exe));
+        let found = candidates
+            .iter()
+            .find(|c| c.join("index.html").is_file())
+            .unwrap_or_else(|| {
+                panic!("no candidate held the bundle that is on disk: {candidates:?}")
+            });
+        assert_eq!(
+            std::fs::canonicalize(normalise(found)).unwrap(),
+            std::fs::canonicalize(tmp.path().join("Application").join("resources").join("web"))
+                .unwrap(),
+            "the packaged bundle must be found through the breadcrumb"
+        );
+    }
+
+    /// The breadcrumb is a fallback, not an override: a bundle sitting beside
+    /// the binary is this installation's own and must win.
+    #[test]
+    fn the_breadcrumb_is_consulted_after_the_locations_beside_the_binary() {
+        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let source_bin = application(&tmp.path().join("Application"));
+        let exe = windows_style_install(tmp.path());
+        biorouter::system::record_install_origin(&source_bin, exe.parent().unwrap()).unwrap();
+
+        let candidates = web_dir_candidates_for(Some(&exe));
+        // `real_path`, not the fixture's own spelling: on macOS a temp directory
+        // is reached through `/var -> /private/var`, so the recorded origin is
+        // spelled differently while naming the same directory.
+        let derived = normalise(
+            &biorouter::system::real_path(&source_bin)
+                .join("..")
+                .join("web"),
+        );
+        let at = candidates
+            .iter()
+            .position(|c| normalise(c) == derived)
+            .unwrap_or_else(|| {
+                panic!("the breadcrumb-derived candidate {derived:?} must be in {candidates:?}")
+            });
+        assert_eq!(
+            at, 2,
+            "expected the breadcrumb after the two exe-relative entries and before the \
+             Linux package location: {candidates:?}"
+        );
+        assert_eq!(
+            candidates.last(),
+            Some(&PathBuf::from("/usr/share/biorouter/web")),
+            "the fixed package location stays last: {candidates:?}"
+        );
+    }
+
+    /// The application was uninstalled or moved. The stale location has to reach
+    /// the error text — it is the only thing that tells the reader why an
+    /// install that used to work no longer does.
+    #[test]
+    fn a_stale_breadcrumb_is_named_among_the_paths_that_were_tried() {
+        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let application_root = tmp.path().join("Application");
+        let source_bin = application(&application_root);
+        let exe = windows_style_install(tmp.path());
+        biorouter::system::record_install_origin(&source_bin, exe.parent().unwrap()).unwrap();
+        // Read while the directory still exists: once it is gone nothing can
+        // canonicalise it, and on macOS the fixture's own spelling (`/var/…`)
+        // is not the one that was recorded (`/private/var/…`).
+        let recorded = biorouter::system::real_path(&source_bin);
+        std::fs::remove_dir_all(&application_root).unwrap();
+
+        let candidates = web_dir_candidates_for(Some(&exe));
+        assert!(
+            !candidates.iter().any(|c| c.join("index.html").is_file()),
+            "nothing should resolve: the application is gone"
+        );
+        // `resolve_web_dir` prints `normalise(p)` for every candidate, so this
+        // is the string the reader would see.
+        let tried: Vec<String> = candidates
+            .iter()
+            .map(|p| normalise(p).display().to_string())
+            .collect();
+        let expected = normalise(&recorded.join("..").join("web"))
+            .display()
+            .to_string();
+        assert!(
+            tried.contains(&expected),
+            "the stale location must be named in the failure. Tried: {tried:?}"
+        );
+    }
+
+    /// Every state a machine really reaches: a Unix install with no breadcrumb
+    /// at all, and a file that is empty or is not a path.
+    #[test]
+    fn a_missing_or_unusable_breadcrumb_falls_back_without_panicking() {
+        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = windows_style_install(tmp.path());
+        let install = exe.parent().unwrap().to_path_buf();
+
+        let without = web_dir_candidates_for(Some(&exe));
+        assert_eq!(
+            without.len(),
+            3,
+            "no breadcrumb means the two exe-relative entries plus the package \
+             location: {without:?}"
+        );
+
+        for content in ["", "  \n", "not a path", "./relative/bin"] {
+            std::fs::write(
+                install.join(biorouter::system::INSTALL_ORIGIN_FILE),
+                content,
+            )
+            .unwrap();
+            assert_eq!(
+                web_dir_candidates_for(Some(&exe)),
+                without,
+                "an unusable breadcrumb ({content:?}) must add no candidate"
+            );
+        }
     }
 }

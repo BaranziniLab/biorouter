@@ -27,7 +27,10 @@ uuid = { version = "1.11", features = ["v4"] }
 dotenvy = "0.15.7"
 # `serve` derives the interface bundle and the daemon from the real path of the
 # running executable, and on Windows `canonicalize` hands back a verbatim
-# `\\?\C:\…` path that must not reach a message or a child's environment.
+# `\\?\C:\…` path that must not reach a message or a child's environment. The
+# stripping itself now lives in `biorouter::system::real_path`, beside the
+# installer that has to spell those paths the same way; what is left here is the
+# Windows-only test that pins the behaviour at the string level.
 dunce = "1"
 bat = "0.25.0"
 pulldown-cmark = { version = "0.13", default-features = false }

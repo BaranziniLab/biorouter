@@ -13,7 +13,10 @@
 //!   inside the application bundle.
 //! - **Linux** reads `/proc/self/exe`, which the kernel has already resolved.
 //! - **Windows** returns the real module path from `GetModuleFileNameW`, and the
-//!   installer copies rather than symlinks, so there is no link to follow.
+//!   installer copies rather than symlinks, so there is no link to follow — and
+//!   nothing to find beside the copy either. Resolution alone does not help
+//!   there; the copy has to be told where it came from, which is what
+//!   [`biorouter::system::install_origin`] reads back.
 //!
 //! So the resolution is a no-op on two of the three platforms — which is
 //! precisely why it is unconditional rather than `#[cfg(target_os = "macos")]`.
@@ -38,9 +41,9 @@ use std::path::{Path, PathBuf};
 /// because every caller here treats the result as a *hint* and checks the file
 /// it derives before using it.
 pub fn resolve_exe_path(exe: &Path) -> PathBuf {
-    std::fs::canonicalize(exe)
-        .map(|p| dunce::simplified(&p).to_path_buf())
-        .unwrap_or_else(|_| exe.to_path_buf())
+    // One implementation, in the crate the installer also lives in: the
+    // installer has to spell a path the same way this reads one back.
+    biorouter::system::real_path(exe)
 }
 
 /// [`resolve_exe_path`] applied to the running executable.
@@ -49,6 +52,50 @@ pub fn resolve_exe_path(exe: &Path) -> PathBuf {
 /// a `PATH` lookup or to a packaged location rather than failing.
 pub fn current_exe_resolved() -> Option<PathBuf> {
     std::env::current_exe().ok().map(|e| resolve_exe_path(&e))
+}
+
+/// The daemon's file name on this platform.
+pub fn daemon_file_name() -> String {
+    format!("biorouterd{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The `biorouterd` that belongs with the `biorouter` at `exe`.
+///
+/// Two layouts, in order:
+///
+/// 1. **Beside it.** A development tree and a packaged application both put the
+///    two binaries in one directory, so a sibling is the daemon that was built
+///    with this CLI rather than whichever one is earliest on `PATH`.
+/// 2. **Beside the installation it was copied from.** Windows has no symlink to
+///    follow: `biorouter setup-path` copies `biorouter.exe` onto `PATH` and
+///    leaves the rest of the application behind, so the sibling check finds
+///    nothing. The copy records where it came from
+///    ([`biorouter::system::install_origin`]) and the daemon is a sibling
+///    *there*.
+///
+/// `None` when neither holds, so the caller can fall back to a bare name and let
+/// the operating system search `PATH`.
+///
+/// ⚠ `exe` must be the **resolved** path — see [`resolve_exe_path`].
+pub fn biorouterd_for(exe: &Path) -> Option<PathBuf> {
+    biorouterd_beside(exe).or_else(|| biorouterd_at_origin(exe))
+}
+
+/// The daemon sitting in the same directory as `exe`, if it is there.
+///
+/// Split out from [`biorouterd_for`] so a test can hand it a path instead of
+/// being at the mercy of wherever the test binary itself happens to live.
+pub fn biorouterd_beside(exe: &Path) -> Option<PathBuf> {
+    let beside = exe.parent()?.join(daemon_file_name());
+    beside.is_file().then_some(beside)
+}
+
+/// The daemon beside the installation `exe` was copied from, if the copy left a
+/// breadcrumb naming it and the daemon is still there.
+pub fn biorouterd_at_origin(exe: &Path) -> Option<PathBuf> {
+    let origin = biorouter::system::install_origin(exe.parent()?)?;
+    let candidate = origin.join(daemon_file_name());
+    candidate.is_file().then_some(candidate)
 }
 
 #[cfg(test)]
@@ -119,5 +166,102 @@ mod tests {
     fn an_unresolvable_path_is_returned_unchanged() {
         let missing = Path::new("/definitely/not/here/biorouter");
         assert_eq!(resolve_exe_path(missing), missing.to_path_buf());
+    }
+
+    /// A fixture shaped like the shipped Windows application: both binaries in
+    /// `resources/bin`, the interface bundle beside them in `resources/web`.
+    /// Returns the `bin` directory.
+    fn application(root: &Path) -> PathBuf {
+        let bin = root.join("resources").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(exe_name("biorouter")), b"x").unwrap();
+        std::fs::write(bin.join(daemon_file_name()), b"x").unwrap();
+        let web = root.join("resources").join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), b"<!doctype html>").unwrap();
+        bin
+    }
+
+    fn exe_name(stem: &str) -> String {
+        format!("{stem}{}", std::env::consts::EXE_SUFFIX)
+    }
+
+    /// A Windows install: `biorouter.exe` copied onto `PATH` on its own, with
+    /// nothing beside it but the breadcrumb naming the application it came from.
+    /// Returns the installed executable.
+    fn windows_style_install(root: &Path, source_bin: &Path) -> PathBuf {
+        let install = root.join("Local").join("Biorouter").join("bin");
+        std::fs::create_dir_all(&install).unwrap();
+        let exe = install.join(exe_name("biorouter"));
+        std::fs::write(&exe, b"x").unwrap();
+        biorouter::system::record_install_origin(source_bin, &install).unwrap();
+        exe
+    }
+
+    /// The Windows half of the defect PR #183 fixed for macOS: there is no
+    /// symlink to resolve, because the install is a copy, so the daemon is not
+    /// anywhere near the executable that has to start it.
+    #[test]
+    fn the_daemon_is_found_through_the_breadcrumb_when_nothing_is_beside_the_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_bin = application(&tmp.path().join("Application"));
+        let exe = windows_style_install(tmp.path(), &source_bin);
+
+        assert!(
+            biorouterd_beside(&exe).is_none(),
+            "fixture is wrong: the daemon must not be beside the installed copy, \
+             or this test cannot fail"
+        );
+        assert_eq!(
+            biorouterd_for(&exe).map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(source_bin.join(daemon_file_name())).unwrap()),
+            "the daemon must be found beside the application the copy came from"
+        );
+    }
+
+    /// A daemon actually next to the executable is the one that was built with
+    /// it, so it wins over anything a breadcrumb names.
+    #[test]
+    fn a_daemon_beside_the_executable_beats_the_breadcrumb() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_bin = application(&tmp.path().join("Application"));
+        let exe = windows_style_install(tmp.path(), &source_bin);
+        let beside = exe.parent().unwrap().join(daemon_file_name());
+        std::fs::write(&beside, b"x").unwrap();
+
+        assert_eq!(
+            biorouterd_for(&exe).map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&beside).unwrap()),
+            "the sibling must be preferred to the recorded installation"
+        );
+    }
+
+    #[test]
+    fn no_daemon_and_no_breadcrumb_resolves_to_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join(exe_name("biorouter"));
+        std::fs::write(&exe, b"x").unwrap();
+
+        assert_eq!(
+            biorouterd_for(&exe),
+            None,
+            "with nothing to go on the caller must be allowed to fall back to PATH"
+        );
+    }
+
+    /// The application was uninstalled, or moved, since the CLI was installed.
+    #[test]
+    fn a_breadcrumb_naming_a_deleted_installation_resolves_to_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let application_root = tmp.path().join("Application");
+        let source_bin = application(&application_root);
+        let exe = windows_style_install(tmp.path(), &source_bin);
+        std::fs::remove_dir_all(&application_root).unwrap();
+
+        assert_eq!(
+            biorouterd_for(&exe),
+            None,
+            "a stale breadcrumb must not produce a path to a daemon that is gone"
+        );
     }
 }
