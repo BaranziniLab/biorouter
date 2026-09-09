@@ -49,7 +49,9 @@ Linux builds are published with each release. Install the desktop app with the `
 
 ### Windows
 
-Windows builds are published with each release. Download `Biorouter-win32-x64-*.zip` from the [releases page](https://github.com/BaranziniLab/biorouter/releases) or the [download page](http://biorouter.ucsf.edu/download), unzip it, and run `Biorouter.exe`. The `biorouter` CLI is bundled inside the app — run `biorouter setup-path` to add it to your `PATH`.
+Windows builds are published with each release. Download `Biorouter-win32-x64-*.zip` from the [releases page](https://github.com/BaranziniLab/biorouter/releases) or the [download page](http://biorouter.ucsf.edu/download), unzip it, and run `Biorouter.exe`. The `biorouter` CLI is bundled inside the app — accept the in-app **Install Biorouter CLI** prompt, or run `biorouter setup-path`, to add it to your `PATH`.
+
+Windows has no symlinks, so this *copies* the CLI into `%LOCALAPPDATA%\Biorouter\bin` and records the folder it came from beside the copy. To upgrade, unzip the new release and run `biorouter setup-path` again from inside it (`<application folder>\resources\bin\biorouter.exe setup-path`) — that refreshes both the copy and the record, so `biorouter serve` keeps finding the daemon and the interface.
 
 ## Configure an LLM provider
 
