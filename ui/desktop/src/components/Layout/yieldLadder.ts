@@ -9,8 +9,9 @@ import { GroupLayout } from '../chatGroups/chatGroupsTypes';
  *   1. the sidebar collapses to an overlay (< 1120px) — AppLayout.sidebarAutoCollapseAction
  *   2. the preview panel narrows to its 360px floor, then yields its column
  *      entirely rather than starve the transcript — previewPanelMode
- *   3. tab labels shrink to their 88px floor, then scroll, then collapse into a
- *      ▾ overflow menu, and NEVER wrap — shouldShowTabOverflowMenu
+ *   3. tab labels shrink to their TAB_MIN_WIDTH floor, then scroll, then
+ *      collapse into a ▾ overflow menu, and NEVER wrap —
+ *      shouldShowTabOverflowMenu
  *   4. a split merges back to one group rather than render two useless slivers —
  *      splitYieldAction
  *
@@ -67,8 +68,18 @@ export const PREVIEW_MIN_WIDTH = 360;
  */
 export const PREVIEW_YIELD_WIDTH = CHAT_MIN_WIDTH + PREVIEW_MIN_WIDTH;
 
-/** The tab shrink floor — a glyph, a few characters and the close control. Mirrors `.br-tab`'s min-width in main.css. */
-export const TAB_MIN_WIDTH = 88;
+/**
+ * The tab shrink floor. Mirrors `--tab-min-width` in main.css, and
+ * `styles/tabStripFloor.test.ts` asserts the two are the same number.
+ *
+ * ⚠ It was 88, described as "a glyph, a few characters and the close control",
+ * and that description was never measured: a tab spends 73px on its padding,
+ * its leading glyph and the close control before the title gets a pixel, so 88
+ * left the label 15px — one character and a clipped ellipsis. With six chats
+ * open at 1440 the strip read `R.` `R.` `R.` `R.` `B..`. The arithmetic and the
+ * trade are written out beside the token in main.css.
+ */
+export const TAB_MIN_WIDTH = 136;
 
 /** `.br-group-splitter`'s flex-basis in main.css. */
 export const GROUP_SPLITTER_WIDTH = 1;

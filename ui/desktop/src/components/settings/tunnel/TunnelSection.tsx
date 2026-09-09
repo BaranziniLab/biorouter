@@ -24,6 +24,7 @@ import { errorMessage } from '../../../utils/conversionUtils';
 import { startTunnel, stopTunnel, getTunnelStatus } from '../../../api/sdk.gen';
 import type { TunnelInfo } from '../../../api/types.gen';
 import { useConfig } from '../../ConfigContext';
+import { useTransientFlag } from '../../../hooks/useTransientFlag';
 
 const STATUS_MESSAGES = {
   idle: 'Tunnel is not running',
@@ -46,8 +47,8 @@ export default function TunnelSection() {
   const [showQRModal, setShowQRModal] = useState(false);
   const [showAppStoreQRModal, setShowAppStoreQRModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copiedUrl, setCopiedUrl] = useState(false);
-  const [copiedSecret, setCopiedSecret] = useState(false);
+  const [copiedUrl, markUrlCopied] = useTransientFlag(2000);
+  const [copiedSecret, markSecretCopied] = useTransientFlag(2000);
   const [showDetails, setShowDetails] = useState(false);
 
   const refreshConfigAfterTunnelWrite = async () => {
@@ -116,11 +117,9 @@ export default function TunnelSection() {
     try {
       await navigator.clipboard.writeText(text);
       if (type === 'url') {
-        setCopiedUrl(true);
-        setTimeout(() => setCopiedUrl(false), 2000);
+        markUrlCopied();
       } else {
-        setCopiedSecret(true);
-        setTimeout(() => setCopiedSecret(false), 2000);
+        markSecretCopied();
       }
     } catch (err) {
       console.error('Failed to copy to clipboard:', err);

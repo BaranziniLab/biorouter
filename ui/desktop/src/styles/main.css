@@ -405,6 +405,30 @@
      The VALUE does not move.) */
   --dock-height: 36px;
   --tab-height: 32px; /* chat, artifact and dock tabs; pulled from 34 */
+  /* THE TAB SHRINK FLOOR — rung 3 of the yield ladder (D-32): tabs shrink to
+     this, then the strip scrolls, then it collapses into a ▾ menu. Never wrap.
+
+     ⚠ **136px is a MEASUREMENT, not a preference, and the 88px it replaces was
+     the preference.** That number shipped with the claim "a glyph + a few
+     characters + the close control still read"; it does not, and here is the
+     arithmetic it was never checked against. A tab spends 22px on its own
+     padding, 24px on the leading kind/privacy glyph and its 8px gap, and 27px
+     on the close control and the 7px gap before it — 73px before a single
+     letter of the title. At 88px the label box is 15px wide, which at 13px sans
+     renders one glyph and a clipped ellipsis. Measured in the running app at
+     1440 with six chats and the artifact panel open, the strip read
+     `R.` `R.` `R.` `R.` `B..` — four different conversations, indistinguishable.
+
+     136 leaves the label ~63px, which is nine or ten characters plus the
+     ellipsis: `Research…` rather than `R.`. Fewer tabs fit before the strip
+     starts scrolling, and that is the trade being made deliberately — three
+     tabs you can tell apart plus the ▾ menu beat five you cannot.
+
+     `yieldLadder.ts` carries the same number for the ladder's own reasoning and
+     `styles/tabStripFloor.test.ts` pins the two together, because a floor that
+     disagreed with the constant would leave rung 3 measuring a strip it no
+     longer describes. */
+  --tab-min-width: 136px;
 
   /* The height of a scroller's top scroll-edge fade (`.biorouter-scroll-fade-top`,
      authored below). 10px is the middle of the 8-12px band: tall enough that a
@@ -2292,11 +2316,13 @@
      places rather than infer one from the parent. */
   height: var(--tab-height);
   align-self: center;
-  /* Shrink to a floor, then the strip scrolls. `min-width: 0` let a tab shrink
-     to nothing; 88px is the floor at which a glyph + a few characters + the
-     close control still read. */
+  /* Shrink to a floor, then the strip scrolls (`.br-tabstrip` is
+     `flex-wrap: nowrap; overflow-x: auto`). `min-width: 0` let a tab shrink to
+     nothing; the floor is `--tab-min-width`, whose own comment carries the
+     measurement behind the number. It is a token and not a literal because
+     `yieldLadder.ts` has to agree with it. */
   flex: 0 1 auto;
-  min-width: 88px;
+  min-width: var(--tab-min-width);
   max-width: 190px;
   padding: 0 11px;
   border: 0;

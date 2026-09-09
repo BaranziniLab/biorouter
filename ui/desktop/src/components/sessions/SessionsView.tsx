@@ -1,43 +1,31 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import SessionListView from './SessionListView';
-import SessionHistoryView from './SessionHistoryView';
 import { useLocation } from 'react-router-dom';
-import { getSession, Session } from '../../api';
 import { useNavigation } from '../../hooks/useNavigation';
-import { userActionHeaders } from '../../utils/userAction';
 
+/**
+ * Chat history: the list, and one thing you can do with a row — open it.
+ *
+ * ⚠ **This view never renders `SessionHistoryView`, and it never could.** It
+ * used to carry a second branch that showed the read-only transcript in place,
+ * gated on a `showSessionHistory` flag — and that flag was set in exactly one
+ * function, `loadSessionDetails`, which was called from exactly one place,
+ * `handleRetryLoadSession`, which returned early unless `selectedSession` was
+ * set, which only `loadSessionDetails` ever set. A closed cycle with no way in:
+ * the fetch, its loading and error states, the retry, the back button and the
+ * placeholder session object were all unreachable from every path through the
+ * app. The effect below, which looks like the way in, calls
+ * `handleSelectSession` — which navigates to `/pair`.
+ *
+ * Resuming the chat is the SHIPPED behaviour and the intended one (a row in
+ * Chat history opens the conversation, it does not show a frozen copy of it),
+ * so the branch is gone rather than being wired up. `SessionHistoryView` itself
+ * stays: it is the read-only transcript the schedule run detail and the shared
+ * session both mount, and both reach it directly.
+ */
 const SessionsView: React.FC = () => {
-  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
-  const [showSessionHistory, setShowSessionHistory] = useState(false);
-  const [isLoadingSession, setIsLoadingSession] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [initialSessionId, setInitialSessionId] = useState<string | null>(null);
   const location = useLocation();
   const setView = useNavigation();
-
-  const loadSessionDetails = async (sessionId: string) => {
-    setIsLoadingSession(true);
-    setError(null);
-    setShowSessionHistory(true);
-    try {
-      const response = await getSession<true>({
-        path: { session_id: sessionId },
-        // Issue #56 Task 58: reading a private chat needs the proof-of-user.
-        headers: await userActionHeaders(),
-        throwOnError: true,
-      });
-      setSelectedSession(response.data);
-    } catch (err) {
-      console.error(`Failed to load session details for ${sessionId}:`, err);
-      setError('Could not load this chat. Try again.');
-      // Keep the selected session null if there's an error
-      setSelectedSession(null);
-      setShowSessionHistory(false);
-    } finally {
-      setIsLoadingSession(false);
-      setInitialSessionId(null);
-    }
-  };
 
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
@@ -49,59 +37,24 @@ const SessionsView: React.FC = () => {
     [setView]
   );
 
-  // Check if a session ID was passed in the location state (from SessionsInsights)
+  // A session id handed over in the location state (from SessionsInsights on
+  // Home) opens that chat directly rather than leaving the user on the list.
   useEffect(() => {
     const state = location.state as { selectedSessionId?: string } | null;
     if (state?.selectedSessionId) {
-      // Set immediate loading state to prevent flash of session list
-      setIsLoadingSession(true);
-      setInitialSessionId(state.selectedSessionId);
       handleSelectSession(state.selectedSessionId);
       // Clear the state to prevent reloading on navigation
       window.history.replaceState({}, document.title);
     }
   }, [location.state, handleSelectSession]);
 
-  const handleBackToSessions = () => {
-    setShowSessionHistory(false);
-    setError(null);
-  };
-
-  const handleRetryLoadSession = () => {
-    if (selectedSession) {
-      loadSessionDetails(selectedSession.id);
-    }
-  };
-
-  // If we're loading an initial session or have a selected showSessionHistory, show the session history view
-  // Otherwise, show the sessions list view
-  return (showSessionHistory && selectedSession) || (isLoadingSession && initialSessionId) ? (
-    <SessionHistoryView
-      session={
-        selectedSession || {
-          id: initialSessionId || '',
-          conversation: [],
-          name: 'Loading...',
-          working_dir: '',
-          message_count: 0,
-          total_tokens: null,
-          created_at: '',
-          updated_at: '',
-          extension_data: {},
-          user_set_name: false,
-        }
-      }
-      isLoading={isLoadingSession}
-      error={error}
-      onBack={handleBackToSessions}
-      onRetry={handleRetryLoadSession}
-    />
-  ) : (
-    <SessionListView
-      onSelectSession={handleSelectSession}
-      selectedSessionId={selectedSession?.id ?? null}
-    />
-  );
+  // `selectedSessionId` is left unset rather than passed as `null`. It scrolls a
+  // named row into view "when returning from session history view" — the
+  // journey that no longer exists — and this view was already passing a value
+  // that could only ever be null. The prop stays on `SessionListView` because
+  // it is optional and describes something a caller may legitimately want; what
+  // is removed here is the pretence that this caller supplies it.
+  return <SessionListView onSelectSession={handleSelectSession} />;
 };
 
 export default SessionsView;

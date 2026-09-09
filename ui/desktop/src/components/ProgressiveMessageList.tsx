@@ -94,6 +94,15 @@ export default function ProgressiveMessageList({
   });
   const [isLoading, setIsLoading] = useState(() => messages.length > showLoadingThreshold);
   const timeoutRef = useRef<number | null>(null);
+  // The 50ms "the DOM has settled" timer that fires `onRenderingComplete`.
+  // A SECOND ref, not `timeoutRef`: that one holds the NEXT batch's timer, and
+  // the completion timer is armed from inside the batch loop at the moment the
+  // last batch lands — so a single ref would have each one clobbering the
+  // other's handle and neither would be cancellable. Uncleared, this timer
+  // outlived the component: unmounting a long transcript inside its 50ms window
+  // (switching tab, closing a pane, a test file ending) left it holding a
+  // callback into a tree that no longer exists.
+  const completionTimeoutRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   // Held in a ref so the batching effect below can CALL the latest callback
   // without taking its identity as a dependency. BaseChat memoises
@@ -119,8 +128,15 @@ export default function ProgressiveMessageList({
       setRenderedCount(messages.length);
       setIsLoading(false);
       // For small lists, call completion callback immediately
-      const completionTimer = window.setTimeout(() => onRenderingCompleteRef.current?.(), 50);
-      return () => window.clearTimeout(completionTimer);
+      window.clearTimeout(completionTimeoutRef.current ?? undefined);
+      completionTimeoutRef.current = window.setTimeout(() => {
+        completionTimeoutRef.current = null;
+        onRenderingCompleteRef.current?.();
+      }, 50);
+      return () => {
+        window.clearTimeout(completionTimeoutRef.current ?? undefined);
+        completionTimeoutRef.current = null;
+      };
     }
 
     // Large list - start progressive loading
@@ -130,8 +146,16 @@ export default function ProgressiveMessageList({
 
         if (nextCount >= messages.length) {
           setIsLoading(false);
-          // Call the completion callback after a brief delay to ensure DOM is updated
-          setTimeout(() => onRenderingCompleteRef.current?.(), 50);
+          // Call the completion callback after a brief delay to ensure DOM is
+          // updated. Recorded so the cleanup below can cancel it — see
+          // `completionTimeoutRef`. Cleared first because React may invoke this
+          // updater more than once for a single dispatch (StrictMode does), and
+          // an unrecorded handle is an uncancellable timer.
+          window.clearTimeout(completionTimeoutRef.current ?? undefined);
+          completionTimeoutRef.current = window.setTimeout(() => {
+            completionTimeoutRef.current = null;
+            onRenderingCompleteRef.current?.();
+          }, 50);
         } else {
           // Schedule next batch
           timeoutRef.current = window.setTimeout(loadNextBatch, batchDelay);
@@ -144,6 +168,13 @@ export default function ProgressiveMessageList({
     // Start loading after a short delay
     timeoutRef.current = window.setTimeout(loadNextBatch, batchDelay);
 
+    // ⚠ The COMPLETION timer is deliberately not cancelled here, only on
+    // unmount. This effect re-arms on every `messages.length` change, so during
+    // a stream it re-runs constantly; cancelling the completion callback on
+    // each re-run would swallow the "the transcript has settled" signal for the
+    // batch that had just finished. The batch timer below is a different
+    // object — it schedules FUTURE work this effect is about to redo, so
+    // cancelling it on a re-run is exactly right.
     return () => {
       if (timeoutRef.current) {
         window.clearTimeout(timeoutRef.current);
@@ -164,6 +195,10 @@ export default function ProgressiveMessageList({
       mountedRef.current = false;
       if (timeoutRef.current) {
         window.clearTimeout(timeoutRef.current);
+      }
+      if (completionTimeoutRef.current) {
+        window.clearTimeout(completionTimeoutRef.current);
+        completionTimeoutRef.current = null;
       }
     };
   }, []);

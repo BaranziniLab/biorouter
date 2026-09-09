@@ -658,7 +658,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     const [isLoading, setIsLoading] = useState(initialSessions === null);
     const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
     const [showContent, setShowContent] = useState(initialSessions !== null);
-    const [isInitialLoad, setIsInitialLoad] = useState(initialSessions === null);
     const [error, setError] = useState<string | null>(null);
     const [searchResults, setSearchResults] = useState<{
       count: number;
@@ -844,18 +843,19 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       // the reveal is one opacity class on a layer that is already mounted —
       // `renderActualContent()` renders under the skeleton too. Deferring the
       // frame the delay exists to schedule is the opposite of what it is for.
-      const revealTimer = setTimeout(() => {
-        setShowContent(true);
-        if (isInitialLoad) {
-          setIsInitialLoad(false);
-        }
-      }, 10);
+      const revealTimer = setTimeout(() => setShowContent(true), 10);
       // Unmounting inside that 10ms window (navigating away, or a test file
       // finishing) must disarm it: the callback would otherwise setState on an
       // unmounted tree, and on CI it fired after jsdom was gone and took the
       // whole run down with `window is not defined`.
       return () => clearTimeout(revealTimer);
-    }, [isLoading, showContent, isInitialLoad]);
+      // `isInitialLoad` used to sit here and in the callback above. It was
+      // write-only: the only thing that ever READ it was the guard around its
+      // own setter, so the whole cycle — the `useState`, the branch, the
+      // dependency — decided nothing. As a dependency it also re-ran this
+      // effect one extra time on the very tick the reveal landed, which is the
+      // opposite of the stable deps the comment above depends on.
+    }, [isLoading, showContent]);
 
     // Memoize date groups calculation to prevent unnecessary recalculations
     const memoizedDateGroups = useMemo(() => {

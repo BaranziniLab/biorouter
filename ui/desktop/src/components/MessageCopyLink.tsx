@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Copy } from './icons/app-icons';
 import { MessageMetaAction } from './MessageMeta';
+import { useTransientFlag } from '../hooks/useTransientFlag';
 
 interface MessageCopyLinkProps {
   text: string;
@@ -8,7 +9,7 @@ interface MessageCopyLinkProps {
 }
 
 export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkProps) {
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useTransientFlag(2000);
 
   const handleCopy = async () => {
     try {
@@ -31,15 +32,13 @@ export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkPro
         await navigator.clipboard.writeText(text);
       }
 
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000); // Reset after 2 seconds
+      markCopied();
     } catch (err) {
       console.error('Failed to copy text: ', err);
       // Fallback to plain text if HTML copy fails
       try {
         await navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        markCopied();
       } catch (fallbackErr) {
         console.error('Failed to copy text (fallback): ', fallbackErr);
       }
