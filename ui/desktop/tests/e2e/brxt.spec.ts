@@ -11,11 +11,12 @@
  *   the Electron main-process IPC handler (brxt:validate-and-read) can read them.
  */
 
-import { test, expect, ElectronApplication, Page } from '@playwright/test';
-import { _electron as electron } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { closeApp, launchApp, type LaunchedApp } from './helpers/app';
+import { openSidebarEntry } from './helpers/sidebar';
 
 // AdmZip is a production dependency in ui/desktop/package.json
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -92,9 +93,7 @@ function createValidBrxtWithSkills(
   for (const skill of skills) {
     zip.addFile(
       `skills/${skill.slug}/SKILL.md`,
-      Buffer.from(
-        `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\nSkill body.`
-      )
+      Buffer.from(`---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\nSkill body.`)
     );
   }
   zip.writeZip(outPath);
@@ -104,7 +103,7 @@ function createValidBrxtWithSkills(
 // Test suite
 // ---------------------------------------------------------------------------
 
-let electronApp: ElectronApplication;
+let launched: LaunchedApp;
 let page: Page;
 
 /** Temporary directory for fixture files — cleaned up in afterAll. */
@@ -115,37 +114,18 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     // Create temp directory for .brxt fixture files
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'brxt-e2e-'));
 
-    // Launch Electron app
-    electronApp = await electron.launch({
-      args: [path.join(__dirname, '../../.vite/build/main.js')],
-      cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        ELECTRON_IS_DEV: '1',
-        NODE_ENV: 'development',
-        BIOROUTER_ALLOWLIST_BYPASS: 'true',
-        BIOROUTER_DISABLE_KEYRING: '1',
-        ELECTRON_RUN_AS_NODE: '',
-      },
-    });
-
-    page = await electronApp.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
-
-    // Wait for the React tree to mount
-    await page.waitForFunction(() => {
-      const root = document.getElementById('root');
-      return root && root.children.length > 0;
-    });
+    // Launch against an isolated config root. This spec used to launch with no
+    // BIOROUTER_PATH_ROOT of its own, so on a developer's machine it drove — and
+    // wrote to — the real ~/.config/biorouter.
+    launched = await launchApp();
+    page = launched.page;
 
     // Allow the app to settle (animations, IPC handshakes, etc.)
     await page.waitForTimeout(3000);
   });
 
   test.afterAll(async () => {
-    if (electronApp) {
-      await electronApp.close().catch(() => {});
-    }
+    await closeApp(launched);
     // Clean up temp fixture files
     if (tmpDir && fs.existsSync(tmpDir)) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -156,11 +136,10 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
   // Helper: navigate to the Extensions tab
   // -------------------------------------------------------------------------
   async function goToExtensions(): Promise<void> {
-    const extensionsButton = await page.waitForSelector(
-      '[data-testid="sidebar-extensions-button"]',
-      { timeout: 10000, state: 'visible' }
-    );
-    await extensionsButton.click();
+    // Extensions lives behind the sidebar's `Components` disclosure, which a
+    // fresh profile renders collapsed — so the nav button is absent from the
+    // DOM, not merely hidden. See helpers/sidebar.ts.
+    await openSidebarEntry(page, 'Extensions');
     // Wait for the Extensions heading to confirm navigation
     await page.waitForSelector('h1:has-text("Extensions")', {
       timeout: 10000,
@@ -190,7 +169,9 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     const dialog = await page.$('[role="dialog"]');
     if (dialog) {
       await page.keyboard.press('Escape');
-      await page.waitForSelector('[role="dialog"]', { state: 'hidden', timeout: 3000 }).catch(() => {});
+      await page
+        .waitForSelector('[role="dialog"]', { state: 'hidden', timeout: 3000 })
+        .catch(() => {});
     }
   }
 
@@ -340,9 +321,9 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     await expect(installBtn).toBeDisabled({ timeout: 3000 });
 
     // The optional var (OPTIONAL_KEY) should have a "Show N optional variables" toggle
-    const showOptionalToggle = page.locator('button:has-text("Show")').or(
-      page.locator('button:has-text("optional variable")')
-    );
+    const showOptionalToggle = page
+      .locator('button:has-text("Show")')
+      .or(page.locator('button:has-text("optional variable")'));
     await expect(showOptionalToggle).toBeVisible();
 
     await page.screenshot({ path: 'test-results/brxt-configure-step.png' });

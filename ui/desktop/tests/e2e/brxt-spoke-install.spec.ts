@@ -14,24 +14,35 @@ import { test, expect, chromium } from '@playwright/test';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import type { Page, Browser } from '@playwright/test';
+import { createSandbox, type Sandbox } from './helpers/sandbox';
+import { openSidebarEntry } from './helpers/sidebar';
 
 const BRXT_PATH = '/tmp/bundle-work/spokeagent.brxt';
-const SPOKE_PASSCODE = 'spoke4ucsf';
+// ⚠ Read from the environment, never committed. This was a literal in the
+// repository — SPOKEAgent's real passcode, in a public tree — and a credential
+// checked into a test is still a published credential.
+const SPOKE_PASSCODE = process.env.SPOKEAGENT_PASSCODE ?? '';
 const CDP_PORT = 9223; // use non-standard port to avoid colliding with existing apps
 
 let browser: Browser;
 let mainWindow: Page;
 let forgeProcess: ReturnType<typeof spawn>;
+let sandbox: Sandbox;
 
 test.describe('SPOKEAgent .brxt install flow', () => {
   test.skip(
-    process.env.BIOROUTER_E2E_EXTERNAL !== '1',
-    'Set BIOROUTER_E2E_EXTERNAL=1 with its backend and bundle prerequisites.'
+    process.env.BIOROUTER_E2E_EXTERNAL !== '1' || SPOKE_PASSCODE === '',
+    'Set BIOROUTER_E2E_EXTERNAL=1 and SPOKEAGENT_PASSCODE, with the backend and bundle in place.'
   );
 
   test.setTimeout(300_000); // 5 min — uv sync downloads deps
 
   test.beforeAll(async () => {
+    // The install this drives is real, so it needs somewhere real to install to
+    // that is not the operator's own config.
+    sandbox = createSandbox();
+    process.env.BIOROUTER_PATH_ROOT = sandbox.root;
+
     console.log('Starting electron-forge dev server…');
 
     forgeProcess = spawn('npm', ['run', 'start-gui'], {
@@ -43,6 +54,8 @@ test.describe('SPOKEAgent .brxt install flow', () => {
         ELECTRON_IS_DEV: '1',
         NODE_ENV: 'development',
         BIOROUTER_ALLOWLIST_BYPASS: 'true',
+        BIOROUTER_DISABLE_KEYRING: 'true',
+        BIOROUTER_PATH_ROOT: sandbox.root,
         BIOROUTER_EXTERNAL_BACKEND: 'true',
         BIOROUTER_EXTERNAL_PORT: '3000',
         // Enables app.commandLine.appendSwitch('remote-debugging-port', CDP_PORT)
@@ -75,9 +88,7 @@ test.describe('SPOKEAgent .brxt install flow', () => {
     // Find the main renderer page (the React app window)
     const pages = browser.contexts().flatMap((ctx) => ctx.pages());
     mainWindow =
-      pages.find(
-        (p) => p.url().includes('localhost') || p.url().startsWith('file://')
-      ) ?? pages[0];
+      pages.find((p) => p.url().includes('localhost') || p.url().startsWith('file://')) ?? pages[0];
 
     await mainWindow.waitForLoadState('domcontentloaded');
 
@@ -107,25 +118,19 @@ test.describe('SPOKEAgent .brxt install flow', () => {
   });
 
   test('1. Navigate to Extensions tab', async () => {
-    const sidebarBtn = mainWindow.locator('[data-testid="sidebar-extensions-button"]');
-    if (await sidebarBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await sidebarBtn.click();
-    } else {
-      await mainWindow.click('button:has-text("Extensions")', { timeout: 10000 });
-    }
+    // Behind the `Components` disclosure; `extensions-heading` has never existed
+    // in this tree, so the `h1` was the only half of that pair that matched.
+    await openSidebarEntry(mainWindow, 'Extensions');
     await mainWindow.waitForTimeout(1000);
-    await expect(
-      mainWindow.locator('h1:has-text("Extensions"), [data-testid="extensions-heading"]').first()
-    ).toBeVisible({ timeout: 10000 });
+    await expect(mainWindow.locator('h1:has-text("Extensions")').first()).toBeVisible({
+      timeout: 10000,
+    });
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-1-extensions-tab.png' });
     console.log('✓ Extensions tab');
   });
 
   test('2. Click "Add extension" — modal opens', async () => {
-    await mainWindow.click(
-      'button:has-text("Add extension")',
-      { timeout: 5000 }
-    );
+    await mainWindow.click('button:has-text("Add extension")', { timeout: 5000 });
     // Verify the modal dialog is open (avoid strict-mode by targeting the dialog role)
     await expect(mainWindow.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-2-modal-open.png' });
@@ -173,7 +178,9 @@ test.describe('SPOKEAgent .brxt install flow', () => {
 
   test('7. Install SPOKEAgent (uv sync runs)', async () => {
     await mainWindow.click('button:has-text("Install Extension")');
-    await expect(mainWindow.locator('button:has-text("Installing")')).toBeVisible({ timeout: 5000 });
+    await expect(mainWindow.locator('button:has-text("Installing")')).toBeVisible({
+      timeout: 5000,
+    });
     console.log('Installing… (uv sync may take ~60s)');
 
     // Wait for modal to close (success) or error banner
@@ -187,9 +194,15 @@ test.describe('SPOKEAgent .brxt install flow', () => {
 
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-7-post-install.png' });
 
-    const hasError = await mainWindow.locator('.bg-red-50').isVisible().catch(() => false);
+    const hasError = await mainWindow
+      .locator('.bg-red-50')
+      .isVisible()
+      .catch(() => false);
     if (hasError) {
-      const msg = await mainWindow.locator('.bg-red-50').innerText().catch(() => '?');
+      const msg = await mainWindow
+        .locator('.bg-red-50')
+        .innerText()
+        .catch(() => '?');
       throw new Error('Install failed: ' + msg);
     }
     console.log('✓ Install succeeded');

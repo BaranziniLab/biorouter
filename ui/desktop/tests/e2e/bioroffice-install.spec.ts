@@ -18,19 +18,27 @@ import { test, expect, chromium } from '@playwright/test';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import type { Page, Browser } from '@playwright/test';
+import { configRoot, createSandbox, type Sandbox } from './helpers/sandbox';
+import { openSidebarEntry } from './helpers/sidebar';
 
 const BRXT_PATH = '/Users/wgu/Desktop/BiorOffice/dist/bioroffice.brxt';
 const CDP_PORT = 9224;
-const EXT_DIR = join(os.homedir(), '.config', 'biorouter', 'extensions', 'bioroffice');
-const CONFIG_YAML = join(os.homedir(), '.config', 'biorouter', 'config.yaml');
+// ⚠ The install target follows BIOROUTER_PATH_ROOT, it is not ~/.config/biorouter.
+// These used to be `os.homedir()` constants next to a launch that inherited the
+// operator's real config — so a "destructive live suite" really did unpack an
+// extension into, and rewrite the config.yaml of, the machine it ran on. The
+// launch below now carries a sandbox root and these follow it, so the assertions
+// and the app under test look at the same tree.
+const EXT_DIR = () => join(configRoot(), 'extensions', 'bioroffice');
+const CONFIG_YAML = () => join(configRoot(), 'config.yaml');
 const AGENT_OUT_DIR = '/tmp/bioroffice-e2e';
 const AGENT_PPTX = join(AGENT_OUT_DIR, 'demo.pptx');
 
 let browser: Browser;
 let mainWindow: Page;
 let forgeProcess: ReturnType<typeof spawn>;
+let sandbox: Sandbox;
 
 test.describe('BiorOffice .brxt — real install + agent usage', () => {
   test.skip(
@@ -42,10 +50,17 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
 
   test.beforeAll(async () => {
     if (!fs.existsSync(BRXT_PATH)) {
-      throw new Error(`bioroffice.brxt not found at ${BRXT_PATH} — run scripts/build_brxt.sh first`);
+      throw new Error(
+        `bioroffice.brxt not found at ${BRXT_PATH} — run scripts/build_brxt.sh first`
+      );
     }
     fs.rmSync(AGENT_OUT_DIR, { recursive: true, force: true });
     fs.mkdirSync(AGENT_OUT_DIR, { recursive: true });
+
+    // Created BEFORE the spawn and exported onto this process, so both the app
+    // (through the inherited env) and `configRoot()` above resolve to it.
+    sandbox = createSandbox();
+    process.env.BIOROUTER_PATH_ROOT = sandbox.root;
 
     console.log('Starting electron-forge dev server (embedded backend)…');
     forgeProcess = spawn('npm', ['run', 'start-gui'], {
@@ -57,6 +72,8 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
         ELECTRON_IS_DEV: '1',
         NODE_ENV: 'development',
         BIOROUTER_ALLOWLIST_BYPASS: 'true',
+        BIOROUTER_DISABLE_KEYRING: 'true',
+        BIOROUTER_PATH_ROOT: sandbox.root,
         ENABLE_PLAYWRIGHT: 'true',
         PLAYWRIGHT_CDP_PORT: String(CDP_PORT),
         PLAYWRIGHT_BRXT_FILE: BRXT_PATH,
@@ -98,18 +115,16 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
     } catch {
       /* ignore */
     }
+    sandbox?.cleanup();
   });
 
   test('1. Navigate to Extensions tab', async () => {
-    const sidebarBtn = mainWindow.locator('[data-testid="sidebar-extensions-button"]');
-    if (await sidebarBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await sidebarBtn.click();
-    } else {
-      await mainWindow.click('button:has-text("Extensions")', { timeout: 10000 });
-    }
-    await expect(
-      mainWindow.locator('h1:has-text("Extensions"), [data-testid="extensions-heading"]').first()
-    ).toBeVisible({ timeout: 10000 });
+    // Behind the `Components` disclosure; `extensions-heading` has never existed
+    // in this tree, so the `h1` is the only half of that pair that matched.
+    await openSidebarEntry(mainWindow, 'Extensions');
+    await expect(mainWindow.locator('h1:has-text("Extensions")').first()).toBeVisible({
+      timeout: 10000,
+    });
     await mainWindow.screenshot({ path: 'test-results/bioroffice-1-extensions.png' });
   });
 
@@ -153,21 +168,27 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
     await Promise.race([closed, errBanner]);
     await mainWindow.screenshot({ path: 'test-results/bioroffice-5-post-install.png' });
 
-    const hasError = await mainWindow.locator('.bg-red-50').isVisible().catch(() => false);
+    const hasError = await mainWindow
+      .locator('.bg-red-50')
+      .isVisible()
+      .catch(() => false);
     if (hasError) {
-      const msg = await mainWindow.locator('.bg-red-50').innerText().catch(() => '?');
+      const msg = await mainWindow
+        .locator('.bg-red-50')
+        .innerText()
+        .catch(() => '?');
       throw new Error('Install failed: ' + msg);
     }
   });
 
   test('6. Extension files installed on disk and registered in config.yaml', async () => {
-    expect(fs.existsSync(join(EXT_DIR, 'manifest.json'))).toBe(true);
-    expect(fs.existsSync(join(EXT_DIR, 'bin', 'officecli-mac-arm64'))).toBe(true);
-    expect(fs.existsSync(join(EXT_DIR, '.venv'))).toBe(true); // uv sync ran
-    expect(
-      fs.existsSync(join(EXT_DIR, 'skills', 'bioroffice-office-suite', 'SKILL.md'))
-    ).toBe(true);
-    const config = fs.readFileSync(CONFIG_YAML, 'utf8');
+    expect(fs.existsSync(join(EXT_DIR(), 'manifest.json'))).toBe(true);
+    expect(fs.existsSync(join(EXT_DIR(), 'bin', 'officecli-mac-arm64'))).toBe(true);
+    expect(fs.existsSync(join(EXT_DIR(), '.venv'))).toBe(true); // uv sync ran
+    expect(fs.existsSync(join(EXT_DIR(), 'skills', 'bioroffice-office-suite', 'SKILL.md'))).toBe(
+      true
+    );
+    const config = fs.readFileSync(CONFIG_YAML(), 'utf8');
     expect(config).toContain('bioroffice');
   });
 
@@ -177,12 +198,7 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
   });
 
   test('8. Bundled skills appear in the Skills tab', async () => {
-    const btn = mainWindow.locator('[data-testid="sidebar-skills-button"]');
-    if (await btn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await btn.click();
-    } else {
-      await mainWindow.locator('text=Skills').first().click();
-    }
+    await openSidebarEntry(mainWindow, 'Skills');
     await mainWindow.waitForSelector('h1:has-text("Skills")', { timeout: 10000 });
     await mainWindow.waitForTimeout(1500);
     await expect(mainWindow.locator('text=bioroffice-office-suite').first()).toBeVisible({
@@ -196,13 +212,10 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
 
   test('9. Agent creates a PowerPoint via the officecli tool in a real chat', async () => {
     // Navigate home / new chat
-    const homeBtn = mainWindow.locator('[data-testid="sidebar-home-button"]');
-    if (await homeBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await homeBtn.click();
-    } else {
-      const chatBtn = mainWindow.locator('[data-testid="sidebar-chat-button"]');
-      if (await chatBtn.isVisible({ timeout: 3000 }).catch(() => false)) await chatBtn.click();
-    }
+    // `sidebar-chat-button` was never a test id: AppSidebar derives them from the
+    // label, and the label is "New chat" -> `sidebar-new-chat-button`. Home is a
+    // primary rail entry, so it needs no fallback anyway.
+    await openSidebarEntry(mainWindow, 'Home');
     await mainWindow.waitForTimeout(2000);
 
     const input = mainWindow.locator('[data-testid="chat-input"]');

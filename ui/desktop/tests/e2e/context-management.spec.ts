@@ -13,6 +13,28 @@ let electronApp: ElectronApplication;
 let page: Page;
 
 test.describe('Context Management E2E Tests', () => {
+  // ⚠ SKIPPED, NOT BROKEN — and not a candidate for re-enabling as written.
+  //
+  // Every assertion below drives a context-management UI that no longer exists.
+  // Measured against v1.90.3 (`grep` over `ui/desktop/src`, tests excluded):
+  // `data-testid="alert-indicator"` (used 43 times across this file and its
+  // `enhanced-` sibling), `data-testid="message"`, `data-testid="chat-container"`,
+  // `data-testid="submit-button"`, the transcript marker "Conversation compacted
+  // and summarized" and the copy "Compaction failed. Please try again or start a
+  // new session." all have ZERO hits. The indicator is now
+  // `button[aria-label="Show notifications"]` and its panel is
+  // `role="dialog" aria-label="Notifications"`; message rows are
+  // `data-testid="message-container"`; there is no compaction marker at all.
+  //
+  // Unmodified, the two files spend ~7.3 minutes of a 14.5-minute suite and
+  // ~60 real provider turns to produce 21 failures and ONE vacuous pass —
+  // `should not show compaction UI when no tokens are used`, which asserts that
+  // a deleted element has count 0. Skipping is a HOLDING ACTION taken by
+  // the e2e repair branch so that a LIVE run is honest; the operator decision
+  // -- delete, or rewrite as one test with a purpose-built high-occupancy
+  // fixture -- is written up in that PR's description. Do not simply un-skip.
+  test.skip(true, 'Drives context-management UI removed before v1.90.3; see the e2e repair PR.');
+
   const liveRoot = process.env.BIOROUTER_E2E_PATH_ROOT;
   test.skip(
     process.env.BIOROUTER_E2E_LIVE !== '1' || !liveRoot,
