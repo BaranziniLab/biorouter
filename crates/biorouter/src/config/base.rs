@@ -1582,15 +1582,17 @@ mod tests {
         let config = new_test_config();
 
         // Set a simple string value
-        config.set_param("test_key", "test_value")?;
+        config.set_param("biorouter_test_config_basic_key", "test_value")?;
 
         // Test simple string retrieval
-        let value: String = config.get_param("test_key")?;
+        let value: String = config.get_param("biorouter_test_config_basic_key")?;
         assert_eq!(value, "test_value");
 
-        // Test with environment variable override
-        std::env::set_var("TEST_KEY", "env_value");
-        let value: String = config.get_param("test_key")?;
+        // Test with environment variable override. The key is test-private and
+        // the write is undone on drop; before that this parked `TEST_KEY` in the
+        // process environment and never removed it.
+        let _env = TestEnvVar::set("BIOROUTER_TEST_CONFIG_BASIC_KEY", "env_value");
+        let value: String = config.get_param("biorouter_test_config_basic_key")?;
         assert_eq!(value, "env_value");
 
         Ok(())
@@ -1742,19 +1744,25 @@ mod tests {
         let config = new_test_config();
 
         // Test setting and getting a simple secret
-        config.set_secret("api_key", &Value::String("secret123".to_string()))?;
-        let value: String = config.get_secret("api_key")?;
+        config.set_secret(
+            "biorouter_test_config_api_key",
+            &Value::String("secret123".to_string()),
+        )?;
+        let value: String = config.get_secret("biorouter_test_config_api_key")?;
         assert_eq!(value, "secret123");
 
-        // Test environment variable override
-        std::env::set_var("API_KEY", "env_secret");
-        let value: String = config.get_secret("api_key")?;
-        assert_eq!(value, "env_secret");
-        std::env::remove_var("API_KEY");
+        // Test environment variable override. `API_KEY` is a name a provider
+        // could plausibly resolve, so the key is namespaced to this test.
+        {
+            let _env = TestEnvVar::set("BIOROUTER_TEST_CONFIG_API_KEY", "env_secret");
+            let value: String = config.get_secret("biorouter_test_config_api_key")?;
+            assert_eq!(value, "env_secret");
+        }
 
         // Test deleting a secret
-        config.delete_secret("api_key")?;
-        let result: Result<String, ConfigError> = config.get_secret("api_key");
+        config.delete_secret("biorouter_test_config_api_key")?;
+        let result: Result<String, ConfigError> =
+            config.get_secret("biorouter_test_config_api_key");
         assert!(matches!(result, Err(ConfigError::NotFound(_))));
 
         Ok(())
@@ -2580,37 +2588,40 @@ mod tests {
     fn test_env_var_with_config_integration() -> Result<(), ConfigError> {
         let config = new_test_config();
 
+        // `PROVIDER`, `PORT`, `ENABLED` and `CONFIG` were the names this test
+        // used to park in the process environment. `get_param` upper-cases the
+        // key it is handed, so any production `get_param("provider")` would have
+        // resolved this test's value; each key is now test-private and restored
+        // on drop.
+
         // Test string environment variable (the original issue case)
-        std::env::set_var("PROVIDER", "ANTHROPIC");
-        let value: String = config.get_param("provider")?;
+        let _provider = TestEnvVar::set("BIOROUTER_TEST_CONFIG_PROVIDER", "ANTHROPIC");
+        let value: String = config.get_param("biorouter_test_config_provider")?;
         assert_eq!(value, "ANTHROPIC");
 
         // Test number environment variable
-        std::env::set_var("PORT", "8080");
-        let value: i32 = config.get_param("port")?;
+        let _port = TestEnvVar::set("BIOROUTER_TEST_CONFIG_PORT", "8080");
+        let value: i32 = config.get_param("biorouter_test_config_port")?;
         assert_eq!(value, 8080);
 
         // Test boolean environment variable
-        std::env::set_var("ENABLED", "true");
-        let value: bool = config.get_param("enabled")?;
+        let _enabled = TestEnvVar::set("BIOROUTER_TEST_CONFIG_ENABLED", "true");
+        let value: bool = config.get_param("biorouter_test_config_enabled")?;
         assert!(value);
 
         // Test JSON object environment variable
-        std::env::set_var("CONFIG", "{\"debug\": true, \"level\": 5}");
+        let _json = TestEnvVar::set(
+            "BIOROUTER_TEST_CONFIG_JSON",
+            "{\"debug\": true, \"level\": 5}",
+        );
         #[derive(Deserialize, Debug, PartialEq)]
         struct TestConfig {
             debug: bool,
             level: i32,
         }
-        let value: TestConfig = config.get_param("config")?;
+        let value: TestConfig = config.get_param("biorouter_test_config_json")?;
         assert!(value.debug);
         assert_eq!(value.level, 5);
-
-        // Clean up
-        std::env::remove_var("PROVIDER");
-        std::env::remove_var("PORT");
-        std::env::remove_var("ENABLED");
-        std::env::remove_var("CONFIG");
 
         Ok(())
     }
@@ -2620,21 +2631,21 @@ mod tests {
         let config = new_test_config();
 
         // Set value in config file
-        config.set_param("test_precedence", "file_value")?;
+        config.set_param("biorouter_test_config_precedence", "file_value")?;
 
         // Verify file value is returned when no env var
-        let value: String = config.get_param("test_precedence")?;
+        let value: String = config.get_param("biorouter_test_config_precedence")?;
         assert_eq!(value, "file_value");
 
-        // Set environment variable
-        std::env::set_var("TEST_PRECEDENCE", "env_value");
+        // Set environment variable. This rung of the precedence ladder can only
+        // be proved with a real environment write, so the key is test-private
+        // rather than converted to a task-local override — a task-local would
+        // exercise a different rung.
+        let _env = TestEnvVar::set("BIOROUTER_TEST_CONFIG_PRECEDENCE", "env_value");
 
         // Environment variable should take precedence
-        let value: String = config.get_param("test_precedence")?;
+        let value: String = config.get_param("biorouter_test_config_precedence")?;
         assert_eq!(value, "env_value");
-
-        // Clean up
-        std::env::remove_var("TEST_PRECEDENCE");
 
         Ok(())
     }
@@ -2698,13 +2709,66 @@ mod tests {
         Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
     }
 
+    /// Sets one process environment variable for the lifetime of the guard and
+    /// puts the previous value back on drop.
+    ///
+    /// Two rules make a write here safe, and both matter:
+    ///
+    /// 1. **The key is test-private.** `get_param`/`get_secret` upper-case the
+    ///    key they are handed, so a test that parks `PROVIDER` or `PORT` owns
+    ///    that name for every concurrent reader in the binary — and those
+    ///    readers resolve it live, through `env::var`, without asking for any
+    ///    lock. A `BIOROUTER_TEST_…` name cannot collide with a production
+    ///    lookup, so no lock is needed to make the write safe. The namespace
+    ///    is `BIOROUTER_TEST_CONFIG_`, not the shorter `BIOROUTER_TEST_`,
+    ///    because the shorter one is already taken: `BIOROUTER_TEST_PROVIDER`
+    ///    is read by `biorouter-cli`'s scenario runner
+    ///    (`scenario_tests/scenario_runner.rs`). A different binary, so not a
+    ///    race today — but picking a name someone already reads is the exact
+    ///    mistake this guard exists to stop.
+    /// 2. **The write is undone.** An unrestored write outlives its test and
+    ///    poisons the rest of the process; `test_basic_config` leaked `TEST_KEY`
+    ///    for exactly that reason.
+    ///
+    /// This is deliberately not `env_lock`: `env-lock` is one global mutex over
+    /// the whole environment, so taking it here would serialise this test
+    /// against every other environment writer while doing nothing about the
+    /// unlocked readers that are the actual hazard.
+    struct TestEnvVar {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl TestEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            assert!(
+                key.starts_with("BIOROUTER_TEST_CONFIG_"),
+                "test env keys must be namespaced so no production reader resolves them, got {key}"
+            );
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for TestEnvVar {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     #[tokio::test]
     #[serial]
     async fn task_local_override_is_used_and_scoped() {
         let config = new_test_config();
-        let key = "auto_detect_test_key";
-        let env_key = "AUTO_DETECT_TEST_KEY";
-        std::env::remove_var(env_key);
+        let key = "biorouter_test_config_task_local_only";
+        let env_key = "BIOROUTER_TEST_CONFIG_TASK_LOCAL_ONLY";
+        // No defensive `remove_var` here: the key is private to this test, so
+        // nothing in the binary can have set it, and clearing it would itself be
+        // an unguarded write to the process environment.
 
         // Outside any override scope the secret is simply absent.
         assert!(config.get_secret::<String>(key).is_err());
@@ -2729,9 +2793,12 @@ mod tests {
     #[serial]
     async fn task_local_override_wins_over_env() {
         let config = new_test_config();
-        let key = "auto_detect_test_key2";
-        let env_key = "AUTO_DETECT_TEST_KEY2";
-        std::env::set_var(env_key, "real-env-value");
+        let key = "biorouter_test_config_task_local_env";
+        let env_key = "BIOROUTER_TEST_CONFIG_TASK_LOCAL_ENV";
+        // A real environment write is the point of this test — it proves the
+        // override beats env, not just that the override resolves — so the key
+        // is namespaced and restored on drop rather than converted away.
+        let _env = TestEnvVar::set(env_key, "real-env-value");
 
         let mut overrides = HashMap::new();
         overrides.insert(env_key.to_string(), "candidate-override".to_string());
@@ -2743,7 +2810,6 @@ mod tests {
 
         // Outside the scope the real env value resolves again.
         assert_eq!(config.get_secret::<String>(key).unwrap(), "real-env-value");
-        std::env::remove_var(env_key);
     }
 
     #[tokio::test]
