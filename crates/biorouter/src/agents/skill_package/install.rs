@@ -72,7 +72,7 @@ struct RecordComponent {
 
 /// The skills root packages are installed into.
 pub fn install_root() -> PathBuf {
-    Paths::config_dir().join("skills")
+    crate::agents::skills_extension::skills_root(&Paths::config_dir())
 }
 
 /// Write `plan` into `root`, atomically, and refresh the catalog.
@@ -82,7 +82,7 @@ pub fn install_root() -> PathBuf {
 /// installer that quietly picked one of the answers would be the flattening
 /// this module exists to remove.
 pub fn install(plan: &ImportPlan, root: &Path) -> Result<InstalledPackage> {
-    install_in(&Paths::config_dir().join("skills"), plan, root)
+    install_in(&install_root(), plan, root)
 }
 
 /// [`install`] against an explicit seeded root.
@@ -275,7 +275,7 @@ fn common_component_root(components: &[super::PlannedSkill]) -> Option<String> {
 /// Renamed aside first and then deleted, so the directory disappears from the
 /// catalog's view in one step rather than emptying out under a scan in flight.
 pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
-    remove_in(&Paths::config_dir().join("skills"), id, root)
+    remove_in(&install_root(), id, root)
 }
 
 /// [`remove`] against an explicit seeded root. See [`install_in`].

@@ -663,10 +663,11 @@ mod tests {
     }
 
     fn install_edited_soul_skill(body: &str) {
-        let skill_dir = crate::config::paths::Paths::config_dir()
-            .join("skills")
-            .join(crate::agents::skills_extension::KNOWLEDGE_BUNDLE)
-            .join(crate::knowledge::soul::SOUL_SKILL_DIR);
+        let skill_dir = crate::agents::skills_extension::skills_root(
+            &crate::config::paths::Paths::config_dir(),
+        )
+        .join(crate::agents::skills_extension::KNOWLEDGE_BUNDLE)
+        .join(crate::knowledge::soul::SOUL_SKILL_DIR);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),

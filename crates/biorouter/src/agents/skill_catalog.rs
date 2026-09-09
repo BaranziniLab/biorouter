@@ -152,7 +152,7 @@ pub fn roots() -> Vec<SkillRoot> {
     }
 
     roots.push(SkillRoot {
-        path: Paths::config_dir().join("skills"),
+        path: crate::agents::skills_extension::skills_root(&Paths::config_dir()),
         source: SkillSource::new(SkillSourceKind::Biorouter, None),
     });
 

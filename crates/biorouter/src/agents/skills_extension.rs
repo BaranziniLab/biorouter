@@ -376,7 +376,7 @@ pub(crate) fn add_missing_shipped_skills(skills: &mut HashMap<String, Skill>) {
 }
 
 pub fn count_user_skills() -> usize {
-    let skills_dir = Paths::config_dir().join("skills");
+    let skills_dir = skills_root(&Paths::config_dir());
     std::fs::read_dir(skills_dir)
         .into_iter()
         .flatten()
@@ -509,7 +509,7 @@ pub async fn session_skill_inventory_instructions(
 
 pub fn reset_to_builtin_skills() -> Result<usize> {
     let config_dir = Paths::config_dir();
-    let skills_dir = config_dir.join("skills");
+    let skills_dir = skills_root(&config_dir);
     let removed = count_user_skills();
 
     if skills_dir.exists() {
@@ -827,7 +827,7 @@ impl SkillsClient {
     /// by [`skill_catalog::SkillCatalog::scan`] so that *every* view of the
     /// catalog has them — not only the one a client happened to build.
     pub(crate) fn add_missing_shipped_skills(skills: &mut HashMap<String, Skill>) {
-        let root = Paths::config_dir().join("skills");
+        let root = skills_root(&Paths::config_dir());
         // ⚠ The fallback must place each skill where the SEEDER would have, or
         // the two views disagree about the one field the picker keys on: a
         // knowledge skill reconstructed here with `bundle_name: None` would be
@@ -4288,7 +4288,7 @@ Working dir biorouter content
         let temp = TempDir::new().unwrap();
         let _env =
             env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
-        let installed = Paths::config_dir().join("skills");
+        let installed = skills_root(&Paths::config_dir());
         let from_extension = Paths::config_dir().join("extensions/UCSFOMOPAgent/skills");
         fs::create_dir_all(installed.join("my-package")).unwrap();
         fs::create_dir_all(installed.join("about-biorouter")).unwrap();
@@ -5634,9 +5634,7 @@ Working dir biorouter content
         let temp = TempDir::new().unwrap();
         let _env =
             env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
-        let skill_dir = Paths::config_dir()
-            .join("skills")
-            .join("required-procedure");
+        let skill_dir = skills_root(&Paths::config_dir()).join("required-procedure");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -5697,7 +5695,7 @@ Working dir biorouter content
         let temp = TempDir::new().unwrap();
         let _env =
             env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(temp.path().to_str().unwrap()))]);
-        let bundle = Paths::config_dir().join("skills").join("office-pack");
+        let bundle = skills_root(&Paths::config_dir()).join("office-pack");
         for (name, body) in [("write-docx", "DOCX-BODY"), ("write-xlsx", "XLSX-BODY")] {
             let dir = bundle.join(name);
             fs::create_dir_all(&dir).unwrap();
@@ -5758,6 +5756,141 @@ Working dir biorouter content
         assert!(error.to_string().contains("disabled"), "{error:#}");
 
         skill_catalog::invalidate();
+    }
+    /// **`<config>/skills` is spelled once.**
+    ///
+    /// Three helpers claim to resolve the same path — `skill_catalog::roots()`'s
+    /// `SkillSourceKind::Biorouter` entry, this module's [`skills_root`], and
+    /// `skill_package::install::install_root` — and until this guard only prose
+    /// said so (the doc comments at the top of `skills_root` and inside
+    /// `catalog_item`). Eleven more sites spelled the join themselves, nine of
+    /// them in production. A seeder that writes where the discoverer does not
+    /// look installs nothing, silently, and a CLI that removes from a directory
+    /// the daemon does not discover reports success and changes nothing.
+    ///
+    /// ⚠ **Asserted about SOURCE, not about values, and that is deliberate.**
+    /// `Paths::config_dir` re-reads `BIOROUTER_PATH_ROOT` on every call
+    /// (`config/paths.rs`), so `roots()`, `skills_root(..)` and `install_root()`
+    /// evaluated in a row are three different instants. Pinning them at runtime
+    /// would mean holding `env_lock` — one global mutex over the whole
+    /// environment — to assert a fact the compiler can be shown instead. That
+    /// trade is backwards, and this repository has the flakes to prove it.
+    ///
+    /// ⚠ Whole comment lines are skipped, but a *trailing* comment spelling the
+    /// pattern would be reported. That direction is chosen on purpose: a guard
+    /// that accuses too much gets a line moved, and one that misses too much
+    /// gets believed.
+    #[test]
+    fn the_skills_root_is_spelled_once() {
+        fn rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path.is_dir() {
+                    if name != "target" && name != "node_modules" && name != ".git" {
+                        rs_files(&path, out);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert!(
+            crates.is_dir(),
+            "the audit walks {}; if that path is wrong it passes for the wrong reason",
+            crates.display()
+        );
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(crates).unwrap().flatten() {
+            let src = entry.path().join("src");
+            if src.is_dir() {
+                rs_files(&src, &mut files);
+            }
+        }
+        assert!(
+            files.len() > 400,
+            "the audit found only {} .rs files under crates/*/src, too few to have walked \
+             the workspace",
+            files.len()
+        );
+
+        // Comments removed line-wise FIRST, then whitespace squeezed — the other
+        // order would glue a comment's tail onto the next line of code. Squeezing
+        // is what catches the spelling broken across two lines, which one of the
+        // eleven was.
+        // Assembled from two halves on purpose. Spelled whole, this literal is
+        // itself a match once whitespace is squeezed, and the guard reports its
+        // own source as the first offender — the same self-reference that makes
+        // a naive non-vacuity floor pass.
+        let bypass = format!("{}{}", r#"Paths::config_dir()"#, r#".join("skills")"#);
+        let bypass = bypass.as_str();
+        let mut offenders = Vec::new();
+        let mut callers = 0usize;
+        for file in &files {
+            let Ok(source) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            if source.contains("skills_root(") {
+                callers += 1;
+            }
+            let code: String = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let squeezed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+            let hits = squeezed.matches(bypass).count();
+            if hits > 0 {
+                offenders.push(format!(
+                    "{} ({hits})",
+                    file.strip_prefix(crates)
+                        .unwrap_or(file)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                ));
+            }
+        }
+
+        // Non-vacuity, both halves: the one permitted definition still makes the
+        // join, and the helper is actually reached. Without these, deleting
+        // `skills_root` outright would leave this guard green.
+        // Scoped to `skills_root`'s own BODY, not to the file. Searching the
+        // whole file for the join finds this assertion's own literal and passes
+        // whatever the function does — measured: renaming the join to `skillz`
+        // left the guard green.
+        let body = include_str!("skills_extension.rs")
+            .split("pub fn skills_root(config_dir: &Path) -> PathBuf {")
+            .nth(1)
+            .expect("`skills_root` must exist with this signature")
+            .split("\n}")
+            .next()
+            .expect("`skills_root` must have a block body");
+        assert!(
+            body.contains(".join(\"skills\")"),
+            "`skills_root` no longer makes the join this guard exists to keep unique; \
+             its body is now:{body}"
+        );
+        assert!(
+            callers >= 8,
+            "only {callers} files call `skills_root(`; the helper was expected to be the \
+             single spelling, so a drop here means the sites went back to spelling it \
+             themselves"
+        );
+
+        assert!(
+            offenders.is_empty(),
+            "these files resolve the skills root themselves instead of calling \
+             `skills_extension::skills_root(&Paths::config_dir())`. Two spellings of one \
+             path drift, and the drift is silent — a seeder writes where the discoverer \
+             does not look:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 }
 
