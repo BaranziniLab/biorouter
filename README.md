@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"></a>
-  <img src="https://img.shields.io/badge/version-1.90.2-tan.svg" alt="Version 1.90.2">
+  <img src="https://img.shields.io/badge/version-1.90.3-tan.svg" alt="Version 1.90.3">
 </p>
 
 <a href="https://biorouter.ucsf.edu/">Website</a> ·

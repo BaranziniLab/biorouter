@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "1.90.2"
+version = "1.90.3"
 authors = ["Wanjun Gu <wanjun.gu@ucsf.edu>"]
 license = "Apache-2.0"
 repository = "https://github.com/BaranziniLab/biorouter"
