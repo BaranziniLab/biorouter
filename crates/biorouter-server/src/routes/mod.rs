@@ -159,6 +159,7 @@ pub mod reset;
 pub mod schedule;
 pub mod session;
 pub mod session_events;
+pub mod session_meta;
 pub mod session_reach;
 pub mod setup;
 pub mod shell;
@@ -186,6 +187,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(reset::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
         .merge(catalog::routes(state.clone()))
+        .merge(session_meta::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(apps::routes(state.clone()))
         .merge(audio::routes(state.clone()))

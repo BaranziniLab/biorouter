@@ -3915,6 +3915,66 @@
         ]
       }
     },
+    "/sessions/changes": {
+      "get": {
+        "tags": [
+          "super::routes::session_meta"
+        ],
+        "summary": "Wait for one of `ids`' rows to change, then say what changed.",
+        "description": "Returns immediately when the caller is already behind. A timeout is not an\nerror: the body carries the current revision and the caller polls again,\nwhich is also how it survives a daemon restart — the revision resets to 0,\nthe client sees a LOWER number than it holds, and refetches.\n\n⚠ **`truncated` is not advisory.** It means the caller fell further behind\nthan the ring holds, so `changes` is a partial history. Applying it and\nbelieving yourself current is the stale-row bug this endpoint exists to end.",
+        "operationId": "session_changes",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "The last revision this client applied. `0` (or absent) means \"tell me\nthe current revision\", which is how a fresh client establishes a\nbaseline without a refetch.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "Comma-separated session ids this client has open. Only these rows are\nread, so a client watching nothing costs nothing.\n\n⚠ It scopes what can be DETECTED, not what is returned: the ring is\nprocess-wide, so a delta may name a chat this caller did not list. The\ncaller ignores those, exactly as `CatalogChanged.session_id` is ignored\nby clients it does not concern.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "timeout_ms",
+            "in": "query",
+            "description": "How long to park, in milliseconds. Clamped to [`MAX_WAIT`].",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session-row delta since `since`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionMetaDelta"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          }
+        }
+      }
+    },
     "/sessions/import": {
       "post": {
         "tags": [
@@ -11960,6 +12020,73 @@
               "$ref": "#/components/schemas/Session"
             },
             "description": "List of available session information objects"
+          }
+        }
+      },
+      "SessionMetaChanged": {
+        "type": "object",
+        "description": "What changed about one chat's row.\n\n⚠ **Advisory, exactly like the frame in `/reply`.** It is not a session\npayload and no gate consults it: `privacy_tier` here is a REPORT of a\nclassification the daemon has already committed, and a consumer that wants\nto act on it re-reads the row.",
+        "required": [
+          "revision",
+          "session_id"
+        ],
+        "properties": {
+          "model_name": {
+            "type": "string",
+            "description": "`model_config_json`'s `model_name`, as the row now holds it.",
+            "nullable": true
+          },
+          "privacy_reason": {
+            "type": "string",
+            "description": "The row's classification provenance, as stored.",
+            "nullable": true
+          },
+          "privacy_tier": {
+            "type": "string",
+            "description": "The row's classification, as stored.",
+            "nullable": true
+          },
+          "provider_name": {
+            "type": "string",
+            "description": "`provider_name` as the row now holds it.",
+            "nullable": true
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision this change was stamped with.",
+            "minimum": 0
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The chat whose row moved."
+          }
+        }
+      },
+      "SessionMetaDelta": {
+        "type": "object",
+        "description": "Everything that happened after a client's `since`.",
+        "required": [
+          "revision",
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionMetaChanged"
+            },
+            "description": "The changes after `since`, oldest first."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the caller should send next time.",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The caller fell further behind than the ring holds, so `changes` is a\nPARTIAL history. Applying it and believing yourself current is the stale\n-row bug this feed exists to end, one layer down. Refetch instead."
           }
         }
       },

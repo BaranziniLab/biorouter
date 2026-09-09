@@ -27,6 +27,8 @@ import {
   subscribeSessionNameChanges,
 } from '../utils/sessionNameSync';
 import { subscribeSessionBindingChanges } from '../utils/sessionBindingSync';
+import { getCachedSessionList, updateCachedSessionList } from '../utils/sessionListCache';
+import { subscribeToSessionMeta } from '../utils/sessionMetaSubscription';
 import {
   createElicitationResponseMessage,
   createUserMessage,
@@ -1840,7 +1842,7 @@ class ChatStreamController {
    * delivered; a refresh that could not complete leaves the composer exactly as
    * stale as it was before this method existed, which is not worth a toast.
    */
-  private async refreshSessionBinding(): Promise<void> {
+  async refreshSessionBinding(): Promise<void> {
     if (!this.sessionId || !this.snapshot.session) return;
     try {
       const response = await getSession({
@@ -1875,9 +1877,74 @@ class ChatStreamController {
           },
         };
       });
+      // ⚠ The tab dot and the sidebar read a DIFFERENT cache, and until now
+      // nothing on the chat path touched it — `ChatGroupsShell`'s own comment
+      // recorded that as a known gap and said closing it "needs the escalation
+      // to announce itself from the provider-bind path". This is that
+      // announcement's landing place: patch the same four fields on the list
+      // entry, so the chat's dot and its header pill cannot disagree.
+      //
+      // Only an entry the cache already holds is touched. Inserting one would
+      // put a row into a list whose membership is owned elsewhere
+      // (`sessionListCache`'s list channel), from a read that knows nothing
+      // about ordering or filters.
+      // ⚠ The PIN yields to the freshly-read row, and this is not optional.
+      // `chatBinding` prefers the turn-reported pin OVER the row, so a row
+      // re-read after that turn — because it ended, or because another process
+      // rewrote it — would be overruled by the pin and the chip would go on
+      // naming the older model. Measured exactly that way at runtime: the CLI
+      // rebound a chat to `gpt-5.2-2025-12-11`, this method adopted it, and the
+      // composer kept reading `gpt-5.5-2026-04-24` off the pin.
+      //
+      // Replacing rather than clearing keeps the field meaning what it says, and
+      // the row is the LATER fact: a pin is what a turn reported when it began,
+      // and this row was read now. The two can only disagree when the row moved
+      // afterwards — Gate B's repair binds FROM the row, so a repaired turn's
+      // pin and its row agree by construction.
+      if (row.provider_name && row.model_config?.model_name) {
+        this.setPinnedModel({
+          provider: row.provider_name,
+          model: row.model_config.model_name,
+        });
+      }
+      //
+      // ⚠ Checked BEFORE the call, not inside the updater.
+      // `updateCachedSessionList` emits to every list subscriber
+      // unconditionally, and this runs after every turn — so an updater that
+      // returned the array unchanged would still wake the sidebar, the See-all
+      // view and every tab strip once per turn to discover that nothing moved.
+      const cached = getCachedSessionList();
+      const index = cached?.findIndex((entry) => entry.id === this.sessionId) ?? -1;
+      const entry = index === -1 ? undefined : cached![index];
+      const listDiffers =
+        entry != null &&
+        (entry.provider_name !== row.provider_name ||
+          entry.model_config?.model_name !== row.model_config?.model_name ||
+          entry.privacy_tier !== row.privacy_tier ||
+          entry.privacy_reason !== row.privacy_reason);
+      if (listDiffers) {
+        updateCachedSessionList((sessions) => {
+          const at = sessions.findIndex((candidate) => candidate.id === this.sessionId);
+          if (at === -1) return sessions;
+          const next = sessions.slice();
+          next[at] = {
+            ...sessions[at],
+            provider_name: row.provider_name,
+            model_config: row.model_config,
+            privacy_tier: row.privacy_tier,
+            privacy_reason: row.privacy_reason,
+          };
+          return next;
+        });
+      }
     } catch (error) {
       console.warn('Failed to refresh the chat’s model binding after a turn:', error);
     }
+  }
+
+  /** Whether this controller holds a session row at all. */
+  hasLoadedSession(): boolean {
+    return this.snapshot.session != null;
   }
 
   private finishCurrentStream = async (error?: ChatTurnErrorData): Promise<void> => {
@@ -3778,6 +3845,52 @@ export class ChatStreamRegistry {
   private runningListeners = new Set<() => void>();
   private running = new Map<string, RunningChatEntry>();
   private lastRunningSnapshot: RunningChatEntry[] = [];
+  private stopSessionMeta: (() => void) | null = null;
+
+  /**
+   * Follow session rows this renderer holds, for changes made by ANOTHER
+   * PROCESS — `biorouter session --resume <id> --provider …`, a schedule run in
+   * a different daemon. A second window is covered by the broadcast in
+   * `sessionBindingSync`, and this window's own writes by the announcement and
+   * the reply stream; none of those can see another process.
+   *
+   * ⚠ **Started here, once, and never per chat.** The registry is a module-level
+   * singleton, so this is the one place in the renderer where "once" is
+   * structural rather than a discipline a caller has to keep. A subscription
+   * restarted per chat would poll at a revision it is already behind, be
+   * answered immediately instead of parked, and starve the renderer's six
+   * sockets — the measured failure `catalogSubscription.ts` records.
+   *
+   * ⚠ The delta is a NUDGE, never applied: each named chat re-reads its own row
+   * through the same `refreshSessionBinding` a turn uses, so there is one code
+   * path that decides what a fresh row means and one place the list cache is
+   * patched from.
+   *
+   * ⚠ **Started by {@link ChatStreamProvider}'s effect, NOT by `getController`.**
+   * Hanging it off `getController` was the obvious place and it is wrong:
+   * everything that touches a chat goes through there, including every unit test
+   * that builds a registry, and each of those would open a real long poll at a
+   * daemon that is not running. A subscription is a side effect on the network
+   * and belongs to a mount, not to a lookup.
+   */
+  followSessionRows(): () => void {
+    if (this.stopSessionMeta) return () => {};
+    this.stopSessionMeta = subscribeToSessionMeta({
+      // Only chats this renderer holds a row for can go stale, and only those
+      // are worth a read on the daemon's side.
+      openSessionIds: () =>
+        [...this.controllers.entries()]
+          .filter(([, controller]) => controller.hasLoadedSession())
+          .map(([id]) => id),
+      onSessionChanged: (sessionId) => {
+        void this.controllers.get(sessionId)?.refreshSessionBinding();
+      },
+    });
+    return () => {
+      this.stopSessionMeta?.();
+      this.stopSessionMeta = null;
+    };
+  }
 
   getController(sessionId: string): ChatStreamController {
     let controller = this.controllers.get(sessionId);
@@ -3815,6 +3928,8 @@ export class ChatStreamRegistry {
     this.controllers.clear();
     this.running.clear();
     this.lastRunningSnapshot = [];
+    this.stopSessionMeta?.();
+    this.stopSessionMeta = null;
   }
 
   private handleControllerActivity = (controller: ChatStreamController): void => {
@@ -3868,6 +3983,12 @@ export const defaultChatStreamRegistry = new ChatStreamRegistry();
 const ChatStreamRegistryContext = createContext<ChatStreamRegistry>(defaultChatStreamRegistry);
 
 export function ChatStreamProvider({ children }: { children: React.ReactNode }) {
+  // ⚠ Mount-once, and the empty dependency list is the whole point: this opens
+  // ONE long poll for the renderer. A subscription that restarted would ask at a
+  // revision it is already behind, be answered immediately rather than parked,
+  // and claim all six of Chromium's sockets to the daemon — a measured failure,
+  // written up in `utils/catalogSubscription.ts`.
+  React.useEffect(() => defaultChatStreamRegistry.followSessionRows(), []);
   return (
     <ChatStreamRegistryContext.Provider value={defaultChatStreamRegistry}>
       {children}

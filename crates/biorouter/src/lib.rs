@@ -47,6 +47,7 @@ pub mod security;
 pub mod session;
 pub mod session_context;
 pub mod session_events;
+pub mod session_meta;
 pub mod slash_commands;
 pub mod subprocess;
 pub mod system;
