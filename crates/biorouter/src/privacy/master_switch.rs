@@ -267,8 +267,16 @@ pub fn write_for(config: &Config, enabled: bool) -> std::io::Result<()> {
 /// Called unconditionally it would rewrite every user's hand-maintained
 /// `config.yaml` on the first start after the upgrade, stripping comments and
 /// formatting to remove a key that was never there, and would make both hosts
-/// write that file at startup on that one launch through a staging path
-/// (`config.tmp`) that is not per process.
+/// write that file at startup on that one launch.
+///
+/// ⚠ This used to add "through a staging path (`config.tmp`) that is not per
+/// process". That is **no longer true** — `Config::staging_path` has been per
+/// process *and* per call since #188, so two hosts can no longer collide on one
+/// staging file. What survives is the plainer hazard, and it is the reason to
+/// keep the delete conditional: two hosts each `rename`ing onto `config.yaml`
+/// at startup is exactly the storm that made Windows readers of that name fail
+/// with "Access is denied.". The config layer tolerates it now; the cheapest
+/// place to not need the tolerance is still here.
 ///
 /// ⚠ **The residual, recorded here rather than left to be discovered.** The
 /// migration is closed by the STORE's existence, so deleting the store *and*
@@ -457,8 +465,10 @@ mod tests {
     /// user's hand-maintained `config.yaml` on the first start after the upgrade
     /// — stripping their comments and formatting to remove a key that was never
     /// there — and it makes BOTH hosts, `biorouterd` and the CLI, write that
-    /// file at startup on that one launch, through a staging path
-    /// (`config.tmp`) that is not per process.
+    /// file at startup on that one launch. (This used to add "through a staging
+    /// path (`config.tmp`) that is not per process"; staging has been per
+    /// process and per call since #188. Two hosts renaming onto `config.yaml`
+    /// at once is the hazard that remains — see the doc on `claim_in`.)
     #[test]
     fn an_install_that_never_had_the_key_keeps_its_config_file_byte_for_byte() {
         let dir = tempfile::tempdir().unwrap();
