@@ -2333,7 +2333,7 @@ async fn read_resource(
             CancellationToken::default(),
         )
         .await
-        .map_err(read_resource_failure)?;
+        .map_err(|error| read_resource_failure(error, &payload.extension_name))?;
 
     let content = read_result
         .contents
@@ -2404,22 +2404,37 @@ async fn read_resource(
 /// (`extension_manager.rs`, the `get_server_client` miss); `INTERNAL_ERROR` is
 /// the extension answering badly, which is a bad gateway rather than a fault of
 /// this daemon.
-fn read_resource_failure(error: rmcp::model::ErrorData) -> ErrorResponse {
+///
+/// ⚠ **The not-found message is REPLACED rather than forwarded, and that is the
+/// whole reason this takes `requested`.** The manager's own text reads
+/// *"Extension 'x' not found. Here are the available extensions: …"* — a list of
+/// every extension loaded in that chat, private ones included. It is written for
+/// a model that has already passed Gate E and may therefore be told what it can
+/// reach; this route is `public_enforced`, so forwarding it would hand a caller
+/// evaluated as public exactly the private-extension names Gate E exists to
+/// withhold. The other two messages ARE forwarded: a refusal names only the
+/// extension the caller itself asked for and is written to be read, and the read
+/// failure names only the caller's own URI.
+fn read_resource_failure(error: rmcp::model::ErrorData, requested: &str) -> ErrorResponse {
     use rmcp::model::ErrorCode;
 
     // `if`/`else` rather than `match`: `ErrorCode` is a newtype over `i32` whose
     // variants are associated consts, which are not patterns.
-    let status = if error.code == ErrorCode::INVALID_REQUEST {
-        StatusCode::FORBIDDEN
-    } else if error.code == ErrorCode::INVALID_PARAMS {
-        StatusCode::NOT_FOUND
-    } else {
-        StatusCode::BAD_GATEWAY
-    };
-
+    if error.code == ErrorCode::INVALID_REQUEST {
+        return ErrorResponse {
+            message: error.message.to_string(),
+            status: StatusCode::FORBIDDEN,
+        };
+    }
+    if error.code == ErrorCode::INVALID_PARAMS {
+        return ErrorResponse {
+            message: format!("no extension named `{requested}` is loaded in that chat"),
+            status: StatusCode::NOT_FOUND,
+        };
+    }
     ErrorResponse {
         message: error.message.to_string(),
-        status,
+        status: StatusCode::BAD_GATEWAY,
     }
 }
 
@@ -2459,7 +2474,7 @@ mod read_resource_route_tests {
         let refusal = privacy_refusal("ucsfomopagent", ProviderTier::Private, ProviderTier::Public)
             .expect("a public caller reaching a private extension is refused");
 
-        let response = read_resource_failure(refusal);
+        let response = read_resource_failure(refusal, "ucsfomopagent");
 
         assert_eq!(response.status, StatusCode::FORBIDDEN);
         assert!(
@@ -2471,15 +2486,33 @@ mod read_resource_route_tests {
 
     /// Both real neighbours, because a classifier that answered 403 for
     /// everything would pass the test above.
+    ///
+    /// The not-found case also pins what the answer may NOT say. The manager's
+    /// text is copied verbatim from `extension_manager.rs`'s `get_server_client`
+    /// miss, list and all, so this fails the day the route starts forwarding it.
     #[test]
     fn the_two_neighbours_are_told_apart_from_a_refusal() {
         // `ExtensionManager::read_resource`'s `get_server_client` miss.
         let unknown = ErrorData::new(
             ErrorCode::INVALID_PARAMS,
-            "Extension 'nope' not found. Here are the available extensions: developer".to_string(),
+            "Extension 'nope' not found. Here are the available extensions: developer, \
+             ucsfomopagent"
+                .to_string(),
             None,
         );
-        assert_eq!(read_resource_failure(unknown).status, StatusCode::NOT_FOUND);
+        let response = read_resource_failure(unknown, "nope");
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert!(
+            response.message.contains("nope"),
+            "the caller must learn which name failed: {}",
+            response.message
+        );
+        assert!(
+            !response.message.contains("ucsfomopagent"),
+            "a caller evaluated as public was handed the chat's extension roster, which is \
+             exactly what Gate E withholds: {}",
+            response.message
+        );
 
         // The extension itself failing the read.
         let unreadable = ErrorData::new(
@@ -2488,7 +2521,7 @@ mod read_resource_route_tests {
             None,
         );
         assert_eq!(
-            read_resource_failure(unreadable).status,
+            read_resource_failure(unreadable, "developer").status,
             StatusCode::BAD_GATEWAY
         );
     }
@@ -2504,8 +2537,10 @@ mod read_resource_route_tests {
         let handler = crate::routes::body_of(SOURCE, "async fn read_resource");
 
         assert!(
-            handler.contains("map_err(read_resource_failure)"),
-            "the route no longer classifies the extension manager's answer"
+            handler.contains("read_resource_failure(error, &payload.extension_name)"),
+            "the route no longer classifies the extension manager's answer, or no longer \
+             hands the classifier the name the CALLER asked for — which is what keeps the \
+             404 from echoing the chat's whole extension roster"
         );
         assert!(
             !handler.contains("map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)"),
