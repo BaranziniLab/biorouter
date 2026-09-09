@@ -430,15 +430,19 @@ impl CachedFileError {
 
 /// The outcome of one full load, held against the file state that produced it.
 struct CachedConfig {
-    /// The stamp observed **before** the read that produced `outcome`.
+    /// The stamp observed **before** the read that produced `outcome`, and
+    /// only when the load left the file in that same state.
     ///
     /// Before, not after, and the asymmetry is the point: a writer landing
     /// during our read leaves the post-read stamp describing content we never
     /// saw, so caching against it would serve that content's identity with the
-    /// previous content's values. Against the pre-read stamp the same race is
-    /// simply a miss on the next call. The one cost is that a load which
-    /// CREATES the file caches "absent" and is re-read once; after that the
-    /// stamp is stable forever.
+    /// previous content's values, indefinitely. Against the pre-read stamp the
+    /// same race costs a miss on the next call and nothing else.
+    ///
+    /// The "same state" qualifier is the other half, and it is not a nicety:
+    /// the load path WRITES, so a load that created, restored or replaced the
+    /// file produced a state its own starting stamp does not describe. Those
+    /// store nothing at all — see the tail of [`Config::load_shared`].
     stamp: Option<FileStamp>,
     outcome: Result<Arc<Mapping>, CachedFileError>,
 }
@@ -682,13 +686,7 @@ impl Config {
     /// Shared rather than cloned because the mapping is the whole config file,
     /// and `get_param` wants one key out of it.
     fn load_shared(&self) -> Result<Arc<Mapping>, ConfigError> {
-        // Sampled ONCE and reused for the re-check inside the gate below. A
-        // second sample there could be newer than the one whose load we are
-        // about to perform, which would file the result under a state we never
-        // observed.
-        let stamp = FileStamp::of(&self.config_path);
-
-        if let Some(hit) = self.cached_if_fresh(stamp) {
+        if let Some(hit) = self.cached_if_fresh(FileStamp::of(&self.config_path)) {
             return hit;
         }
 
@@ -699,6 +697,18 @@ impl Config {
         // create branch, and one needed file creation becomes N replacements of
         // it — the shape that failed `test (windows-latest)` in #197.
         let _single_flight = self.values_read.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Sampled again, now that it is our turn. The caller ahead of us may
+        // have just CREATED the file, and the stamp we took before queueing
+        // describes a state that is already gone — re-checking against it would
+        // miss a cache entry that answers our question exactly.
+        //
+        // ⚠ Before the load and never after it. A writer landing between this
+        // sample and the read leaves the entry filed under a stamp that is
+        // OLDER than its contents, which costs a miss on the next lookup; filed
+        // under a newer one it would serve the previous contents under the new
+        // content's identity, and go on doing so.
+        let stamp = FileStamp::of(&self.config_path);
         if let Some(hit) = self.cached_if_fresh(stamp) {
             return hit;
         }
@@ -720,8 +730,19 @@ impl Config {
             Ok(values) => Ok(Arc::clone(values)),
             Err(cached) => Err(cached.rebuild()),
         };
-        *self.values_cache.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(CachedConfig { stamp, outcome });
+
+        // ⚠ A load that CHANGED the file files nothing. `load_uncached` writes
+        // — it creates a missing config, restores a backup over one, and
+        // replaces one that will not parse — so its result describes the state
+        // it produced, not the state it was handed, and storing it under the
+        // latter would answer for a file that no longer looks like that. The
+        // commonest instance is also the most obviously wrong one: the create
+        // branch would otherwise cache "the file is absent, the values are the
+        // default" *after* making the file exist.
+        if FileStamp::of(&self.config_path) == stamp {
+            *self.values_cache.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(CachedConfig { stamp, outcome });
+        }
         shared
     }
 
@@ -2889,6 +2910,37 @@ mod tests {
         );
     }
 
+    /// A load that CREATED the config file must not be filed under the absence
+    /// it replaced.
+    ///
+    /// The load path writes — it creates a missing config, restores a backup
+    /// over one, replaces one that will not parse — so its result describes the
+    /// state it produced and not the state it started from. The create branch
+    /// is the instance where getting this wrong is most obviously wrong: the
+    /// entry would read "the file is absent, the values are the default" and
+    /// be stored *after* making the file exist, so a later deletion would find
+    /// a cache entry that matches, answer from it, and neither notice nor
+    /// re-create the file.
+    #[test]
+    fn a_load_that_created_the_file_is_not_cached_as_the_absence_it_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        assert!(config.all_values().unwrap().is_empty());
+        assert!(config_path.exists(), "the first read creates the file");
+
+        std::fs::remove_file(&config_path).unwrap();
+
+        assert!(config.all_values().unwrap().is_empty());
+        assert!(
+            config_path.exists(),
+            "the file is absent again and this read must act on that, not answer from an \
+             entry describing the absence the previous read already ended"
+        );
+    }
+
     /// `POST /config/recover` is implemented as a forced re-read, so there has
     /// to be a way to force one.
     #[test]
@@ -2927,20 +2979,25 @@ mod tests {
     #[test]
     fn nothing_on_the_uncached_load_path_reaches_back_through_the_cache() {
         /// The body of `fn <name>`, by brace matching from its declaration.
+        ///
+        /// `get` rather than `[..]` throughout: this file is full of non-ASCII
+        /// prose, `clippy::string_slice` is denied, and a matcher that returns
+        /// `None` where it would have panicked is caught by the non-vacuity
+        /// floor below rather than taking the test run down.
         fn body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
             let decl = ["(", "<"]
                 .iter()
                 .filter_map(|suffix| src.find(&format!("fn {name}{suffix}")))
                 .min()?;
-            let open = decl + src[decl..].find('{')?;
+            let open = decl + src.get(decl..)?.find('{')?;
             let mut depth = 0usize;
-            for (offset, ch) in src[open..].char_indices() {
+            for (offset, ch) in src.get(open..)?.char_indices() {
                 match ch {
                     '{' => depth += 1,
                     '}' => {
                         depth -= 1;
                         if depth == 0 {
-                            return Some(&src[open..open + offset + 1]);
+                            return src.get(open..open + offset + 1);
                         }
                     }
                     _ => {}
