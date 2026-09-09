@@ -371,8 +371,180 @@ pub enum ChartDataValues {
     Points(Vec<ChartPoint>),
 }
 
+/// Move the first present alias onto `to`, if `to` is not already there.
+fn adopt_alias(map: &mut serde_json::Map<String, Value>, aliases: &[&str], to: &str) {
+    if map.contains_key(to) {
+        return;
+    }
+    if let Some(value) = aliases.iter().find_map(|key| map.remove(*key)) {
+        map.insert(to.to_string(), value);
+    }
+}
+
+/// Read a long-form row: `{"label": "a", "value": 1}` and its spellings.
+fn long_form_row(row: &Value) -> Option<(Value, Value)> {
+    let row = row.as_object()?;
+    let label = ["label", "name", "category", "x"]
+        .iter()
+        .find_map(|key| row.get(*key))?;
+    let value = ["value", "y", "count"]
+        .iter()
+        .find_map(|key| row.get(*key))?;
+    Some((label.clone(), value.clone()))
+}
+
+/// Reshape one dataset, lifting anything that belongs to the chart out of it.
+///
+/// Returns the labels the dataset's own points carried, if it turned out to be
+/// holding the category axis (`[{"x": "a", "y": 1}]` with a NON-numeric `x` is
+/// a labelled series written as points, not a scatter).
+fn normalize_chart_dataset(entry: &mut Value, lifted_type: &mut Option<Value>) -> Option<Value> {
+    let map = entry.as_object_mut()?;
+    adopt_alias(map, &["name", "title", "series"], "label");
+    adopt_alias(map, &["values", "y", "points"], "data");
+    // A per-dataset `type` is Chart.js's per-series override, but a model that
+    // wrote it INSTEAD of the chart's own `type` meant the chart's.
+    if let Some(kind) = map.remove("type").or_else(|| map.remove("chart_type")) {
+        lifted_type.get_or_insert(kind);
+    }
+    map.entry("label")
+        .or_insert_with(|| Value::String("Value".to_string()));
+
+    let points = map.get("data")?.as_array()?.clone();
+    if points.is_empty() || !points.iter().all(|p| long_form_row(p).is_some()) {
+        return None;
+    }
+    // Numeric `x` really is a scatter; leave `ChartDataValues::Points` to it.
+    if points
+        .iter()
+        .all(|p| p.get("x").is_some_and(Value::is_number))
+    {
+        return None;
+    }
+    let (labels, values): (Vec<Value>, Vec<Value>) =
+        points.iter().filter_map(long_form_row).unzip();
+    map.insert("data".to_string(), Value::Array(values));
+    Some(Value::Array(labels))
+}
+
+/// Reshape the chart payload a model actually sends into the documented one.
+///
+/// ⚠ Every rule below is a payload MEASURED coming out of Versa GPT-5.5 on the
+/// prompt "render a bar chart of three values a=1, b=2, c=3" — ten rejected
+/// calls over six runs, not a guess at what a model might do. The shapes, by
+/// frequency: the whole series written long-form as `data: [{label, value}]`
+/// with no `datasets` at all (5); `chart_type` for `type` (4); `{x, y}` points
+/// whose `x` is a CATEGORY string rather than a number (3); `name` for a
+/// dataset's `label` and `values` for its `data` (1 each); and `x_label` /
+/// `xLabel` for `xAxisLabel`. That last one was not one of the ten rejections
+/// and could not be: `ChartData` sets no `deny_unknown_fields`, so serde drops
+/// the key and leaves `x_axis_label` at `None`. It is a silent QUALITY loss on a
+/// payload that is otherwise valid — the axis titles the model wrote simply do
+/// not reach the figure — which is why it is fixed here but carries no count.
+///
+/// ⚠ It never GUESSES the chart type. Every measured payload stated it —
+/// under `chart_type`, or inside a dataset — so this moves it rather than
+/// choosing one. A payload that names no type anywhere is still refused, with
+/// the message that names the kind and `describe_figure`: drawing the wrong
+/// chart is worse than one more round trip.
+fn normalize_chart_data(value: Value) -> Value {
+    let mut value = match de_stringified(value) {
+        Value::Object(map) => map,
+        other => return other,
+    };
+
+    adopt_alias(&mut value, &["chart_type", "chartType"], "type");
+    adopt_alias(&mut value, &["series", "dataSets"], "datasets");
+    adopt_alias(
+        &mut value,
+        &["x_axis_label", "xLabel", "x_label", "xaxis_label"],
+        "xAxisLabel",
+    );
+    adopt_alias(
+        &mut value,
+        &["y_axis_label", "yLabel", "y_label", "yaxis_label"],
+        "yAxisLabel",
+    );
+
+    // Long form: one series written as rows, with `data` where `datasets` goes.
+    if !value.contains_key("datasets") {
+        if let Some(rows) = value.get("data").and_then(Value::as_array) {
+            if !rows.is_empty() && rows.iter().all(|row| long_form_row(row).is_some()) {
+                let (labels, values): (Vec<Value>, Vec<Value>) =
+                    rows.iter().filter_map(long_form_row).unzip();
+                let label = value
+                    .get("yAxisLabel")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Value")
+                    .to_string();
+                value.remove("data");
+                value
+                    .entry("labels")
+                    .or_insert_with(|| Value::Array(labels));
+                value.insert(
+                    "datasets".to_string(),
+                    json!([{ "label": label, "data": Value::Array(values) }]),
+                );
+            }
+        }
+    }
+
+    let mut lifted_type = None;
+    let mut lifted_labels = None;
+    if let Some(Value::Array(datasets)) = value.get_mut("datasets") {
+        for entry in datasets.iter_mut() {
+            if let Some(labels) = normalize_chart_dataset(entry, &mut lifted_type) {
+                lifted_labels.get_or_insert(labels);
+            }
+        }
+    }
+    if let Some(kind) = lifted_type {
+        value.entry("type").or_insert(kind);
+    }
+    if let Some(labels) = lifted_labels {
+        value.entry("labels").or_insert(labels);
+    }
+    Value::Object(value)
+}
+
+/// The derived half of [`ChartData`]'s hand-written `Deserialize`.
+#[derive(Deserialize)]
+struct ChartDataRaw {
+    #[serde(rename = "type")]
+    chart_type: ChartType,
+    datasets: Vec<ChartDataset>,
+    #[serde(default)]
+    labels: Option<Vec<String>>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    subtitle: Option<String>,
+    #[serde(default, rename = "xAxisLabel")]
+    x_axis_label: Option<String>,
+    #[serde(default, rename = "yAxisLabel")]
+    y_axis_label: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ChartData {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as DeError;
+        let raw: ChartDataRaw =
+            serde_json::from_value(normalize_chart_data(Value::deserialize(d)?))
+                .map_err(DeError::custom)?;
+        Ok(ChartData {
+            chart_type: raw.chart_type,
+            datasets: raw.datasets,
+            labels: raw.labels,
+            title: raw.title,
+            subtitle: raw.subtitle,
+            x_axis_label: raw.x_axis_label,
+            y_axis_label: raw.y_axis_label,
+        })
+    }
+}
+
 /// Chart data structure
-#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 pub struct ChartData {
     /// Chart type
     #[serde(rename = "type")]
