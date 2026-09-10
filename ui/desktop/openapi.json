@@ -1585,9 +1585,9 @@
           "200": {
             "description": "Config recovery attempted",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ConfigRecoveryReport"
                 }
               }
             }
@@ -6886,6 +6886,37 @@
           },
           "key": {
             "type": "string"
+          }
+        }
+      },
+      "ConfigRecoveryReport": {
+        "type": "object",
+        "description": "What `POST /config/recover` actually did, in a form a caller can act on.\n\n⚠ `message` is the sentence to show a person and `persisted` is the answer to\ndecide on; the two must never be collapsed. A caller that substring-matches\nthe warning back out of `message` is one rewording away from silently\nconcluding the opposite — which is what the route invited, because it used to\nreturn that sentence and nothing else.",
+        "required": [
+          "message",
+          "recovered_keys",
+          "persisted"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "One sentence, ready to show, covering everything the fields below say."
+          },
+          "persisted": {
+            "type": "boolean",
+            "description": "Whether `config.yaml` on disk holds what this report describes.\n\n`false` means the recovery could not write what it recovered: the keys\nabove live only in this process, the file on disk is unchanged — still\nabsent, or still the contents that would not load — nothing changed in\nthis session survives exit, and the next start runs the same recovery\nagain."
+          },
+          "recovered_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The config keys this process is now running on."
+          },
+          "write_error": {
+            "type": "string",
+            "description": "The write error, verbatim, whenever `persisted` is false.",
+            "nullable": true
           }
         }
       },

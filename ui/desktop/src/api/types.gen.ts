@@ -630,6 +630,40 @@ export type ConfigKeyQuery = {
     key: string;
 };
 
+/**
+ * What `POST /config/recover` actually did, in a form a caller can act on.
+ *
+ * ⚠ `message` is the sentence to show a person and `persisted` is the answer to
+ * decide on; the two must never be collapsed. A caller that substring-matches
+ * the warning back out of `message` is one rewording away from silently
+ * concluding the opposite — which is what the route invited, because it used to
+ * return that sentence and nothing else.
+ */
+export type ConfigRecoveryReport = {
+    /**
+     * One sentence, ready to show, covering everything the fields below say.
+     */
+    message: string;
+    /**
+     * Whether `config.yaml` on disk holds what this report describes.
+     *
+     * `false` means the recovery could not write what it recovered: the keys
+     * above live only in this process, the file on disk is unchanged — still
+     * absent, or still the contents that would not load — nothing changed in
+     * this session survives exit, and the next start runs the same recovery
+     * again.
+     */
+    persisted: boolean;
+    /**
+     * The config keys this process is now running on.
+     */
+    recovered_keys: Array<string>;
+    /**
+     * The write error, verbatim, whenever `persisted` is false.
+     */
+    write_error?: string | null;
+};
+
 export type ConfigResponse = {
     config: {
         [key: string]: unknown;
@@ -5404,7 +5438,7 @@ export type RecoverConfigResponses = {
     /**
      * Config recovery attempted
      */
-    200: string;
+    200: ConfigRecoveryReport;
 };
 
 export type RecoverConfigResponse = RecoverConfigResponses[keyof RecoverConfigResponses];
