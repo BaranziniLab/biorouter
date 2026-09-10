@@ -74,7 +74,14 @@ pub enum ConfigError {
     NotFound(String),
     #[error("Failed to deserialize value: {0}")]
     DeserializeError(String),
-    #[error("Failed to read config file: {0}")]
+    // ⚠ Direction-neutral on purpose. Every `?` on a `std::io::Error` in this
+    // file lands here, and roughly half of those are WRITES — staging a config,
+    // renaming it into place, restoring a backup over one that will not parse.
+    // While this said "Failed to read", a failed write reached the user as
+    // "the config file could not be written (Failed to read config file:
+    // Permission denied)", which contradicts itself in the one sentence that
+    // has to be believed.
+    #[error("Config file I/O failed: {0}")]
     FileError(#[from] std::io::Error),
     #[error("Failed to create config directory: {0}")]
     DirectoryError(String),
@@ -198,7 +205,7 @@ pub struct Config {
     // `load` stays infallible about it on purpose, because making an unwritable
     // config directory a hard failure would turn the storm path this layer
     // spent two PRs calming down into a start-up crash. See
-    // `record_default_config_write_error`.
+    // `record_config_write_error`.
     last_write_error: Mutex<Option<String>>,
     // Test-only replacement for the OS credential store, so cache and
     // chunking behavior can be exercised without touching a real keyring
@@ -814,7 +821,15 @@ impl Config {
         *self.values_cache.lock().unwrap_or_else(|e| e.into_inner()) = ValuesCache::default();
     }
 
-    /// An **outstanding** failure to write a default config file, if any.
+    /// An **outstanding** failure to write the config file, if any.
+    ///
+    /// Every arm of the recovery in [`Self::load_uncached`] that writes reports
+    /// through here — creating a config that is missing, replacing one that
+    /// will not parse, and **restoring a backup over one that will not parse**.
+    /// The last of those is the arm a corrupted `config.yaml` with a usable
+    /// `.bak` beside it actually takes, and it was the one that said nothing:
+    /// `POST /config/recover` answered "Recovered 23 keys" for a file it had
+    /// just failed to write, while the corrupt bytes were still on disk.
     ///
     /// Outstanding, not historical: [`Self::save_values`] clears it the moment
     /// a write succeeds. A record that only ever accumulated would go on
@@ -837,12 +852,18 @@ impl Config {
             .clone()
     }
 
-    /// Record a failed default-config write, logging the first one loudly.
+    /// Record a failed config write, logging the first one loudly.
+    ///
+    /// `what` names the values the failed write was carrying — a default
+    /// config, or a backup being restored — so the one log line keeps the arm's
+    /// context. It is not in the recorded message: that is read by
+    /// `POST /config/recover`, whose reader wants to know their settings are
+    /// not persisting and why, not which internal branch noticed.
     ///
     /// Loud once, not per call: before the cache above this was reached on
     /// every `get_param`, and an error line per settings lookup is noise that
     /// buries itself.
-    fn record_default_config_write_error(&self, error: &ConfigError) {
+    fn record_config_write_error(&self, error: &ConfigError, what: &str) {
         let message = error.to_string();
         let mut slot = self
             .last_write_error
@@ -850,13 +871,14 @@ impl Config {
             .unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             tracing::error!(
-                "Failed to write default config file to {}: {}. Biorouter will run on \
-                 in-memory defaults; settings changed in this session will not persist.",
+                "Failed to write {} to {}: {}. Biorouter will run on in-memory values; \
+                 settings changed in this session will not persist.",
+                what,
                 self.config_path.display(),
                 message
             );
         } else {
-            tracing::debug!("Failed to write default config file again: {}", message);
+            tracing::debug!("Failed to write {} again: {}", what, message);
         }
         *slot = Some(message);
     }
@@ -887,7 +909,9 @@ impl Config {
         tracing::info!("Config file doesn't exist, attempting recovery from backup");
 
         if let Ok(backup_values) = self.try_restore_from_backup() {
-            tracing::info!("Successfully restored config from backup");
+            // See the note on the same line in `load_values_with_recovery`: the
+            // values are recovered, which is not the same as written back.
+            tracing::info!("Recovered config values from a backup");
             return Ok(backup_values);
         }
 
@@ -1002,7 +1026,7 @@ impl Config {
                 // write — not a lost race — and it is the only arm of this
                 // function that should say so. Recorded rather than returned:
                 // see `last_write_error`.
-                self.record_default_config_write_error(&write_error);
+                self.record_config_write_error(&write_error, "the default config");
                 // Even if we can't write to disk, return config so app can still run
                 Ok(default_config)
             }
@@ -1052,7 +1076,10 @@ impl Config {
                 // reached only when the file EXISTS, does not parse, and no
                 // backup could be restored, so there is no sibling whose write
                 // we could be losing to — a failure here is always a failure.
-                self.record_default_config_write_error(&write_error);
+                self.record_config_write_error(
+                    &write_error,
+                    "a fresh default config over one that would not parse",
+                );
                 // Even if we can't write to disk, return config so app can still run
                 Ok(default_config)
             }
@@ -1072,7 +1099,13 @@ impl Config {
 
                 // Try to recover from backup
                 if let Ok(backup_values) = self.try_restore_from_backup() {
-                    tracing::info!("Successfully restored config from backup");
+                    // "Recovered", not "restored": `try_restore_from_backup`
+                    // answers `Ok` when the backup PARSED, which is a different
+                    // claim from having written it over the corrupt file. It
+                    // logs which of those happened itself, and this line used to
+                    // say "Successfully restored config from backup"
+                    // immediately after its error saying the opposite.
+                    tracing::info!("Recovered config values from a backup");
                     return Ok(backup_values);
                 }
 
@@ -1096,16 +1129,48 @@ impl Config {
                         match parse_yaml_content(&backup_content) {
                             Ok(values) => {
                                 // Successfully parsed backup, restore it as the main config
-                                if let Err(e) = self.save_values(values.clone()) {
-                                    tracing::warn!(
-                                        "Failed to restore backup as main config: {}",
-                                        e
-                                    );
-                                } else {
-                                    tracing::info!(
-                                        "Restored config from backup: {:?}",
-                                        backup_path
-                                    );
+                                match self.save_values(values.clone()) {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            "Restored config from backup: {:?}",
+                                            backup_path
+                                        );
+                                    }
+                                    Err(write_error) => {
+                                        // A sibling may have installed a usable
+                                        // config while our write was failing —
+                                        // the same lost race
+                                        // `create_default_config_if_missing`
+                                        // answers by adopting, and reachable
+                                        // here only from the MISSING-file arm of
+                                        // `load_uncached`. When the file is
+                                        // there and corrupt this parses nothing
+                                        // and answers `None`, which is the case
+                                        // below and must still be recorded.
+                                        if let Some(existing) = self.adopt_existing_config() {
+                                            tracing::info!(
+                                                "Could not restore the backup ({}), but another \
+                                                 writer installed a usable config; adopting it",
+                                                write_error
+                                            );
+                                            return Ok(existing);
+                                        }
+                                        // ⚠ RECORDED, not merely logged. This
+                                        // arm is the one a corrupted
+                                        // `config.yaml` with a usable `.bak`
+                                        // beside it actually takes, and it was
+                                        // the only recovery arm that reported
+                                        // nothing — so a `POST /config/recover`
+                                        // against a config directory it could
+                                        // not write answered "Recovered 23
+                                        // keys" and stopped, while the corrupt
+                                        // bytes were still on disk and every
+                                        // recovered key lived only in memory.
+                                        self.record_config_write_error(
+                                            &write_error,
+                                            "the restored backup",
+                                        );
+                                    }
                                 }
                                 return Ok(values);
                             }
@@ -3430,6 +3495,222 @@ mod tests {
             None,
             "losing a race to a sibling is the expected outcome of a storm, not a fault \
              to report to the user"
+        );
+    }
+
+    /// The M9 arm: a corrupted config with a usable backup, in a place the
+    /// restore cannot be written.
+    ///
+    /// `try_restore_from_backup` logged its failed write and returned `Ok`, so
+    /// the three recovery arms disagreed about the same condition: creating and
+    /// replacing recorded it, restoring — the arm a corrupted `config.yaml`
+    /// with a `.bak` beside it actually takes — did not. Measured on
+    /// `332fdb2a`: `POST /config/recover` answered HTTP 200 `"Config recovery
+    /// completed. Recovered 23 keys: …"` with no note, while `stat` still
+    /// showed the 27 corrupt bytes.
+    ///
+    /// The write is failed by injection rather than by `chmod` so this runs on
+    /// Windows too, where the retry machinery it passes through exists;
+    /// `a_read_only_config_directory_is_the_condition_that_was_measured` below
+    /// reproduces the literal permissions case on unix.
+    #[test]
+    fn a_backup_restored_over_a_config_that_could_not_be_written_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        // The exact 27 bytes of the measurement.
+        std::fs::write(&config_path, "BIOROUTER_MODEL: [unclosed\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml.bak"),
+            "BIOROUTER_MODEL: gpt-5.5\nA_KEY_THE_BACKUP_HAS: 7\n",
+        )
+        .unwrap();
+
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        // Arming the whole budget spends it without a sibling landing, which is
+        // how the write REPORTS rather than absorbs — see `IoFaults`.
+        config.io_faults.failing_rename_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS);
+
+        let values = config.all_values().expect("the backup is usable");
+        assert_eq!(
+            values.get("A_KEY_THE_BACKUP_HAS"),
+            Some(&serde_json::json!(7)),
+            "the recovery itself still has to work: the backup's values are what the \
+             process runs on"
+        );
+
+        let reported = config.last_write_error().expect(
+            "a backup that could not be written over the corrupt config must be reported \
+             somewhere — this is the silence M9 measured",
+        );
+        assert!(
+            !reported.is_empty(),
+            "the record must carry the write error, not an empty marker"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "BIOROUTER_MODEL: [unclosed\n",
+            "and the claim the record makes must be true: the file on disk is still the \
+             corrupt one, so every recovered key lives only in this process"
+        );
+    }
+
+    /// A restore failure clears like any other, so the note cannot outlive it.
+    ///
+    /// The same requirement `a_write_that_succeeds_clears_an_earlier_recorded_failure`
+    /// pins for the create path, asserted for the arm that now also records:
+    /// `POST /config/recover` reads this, and a permanent "changes made in this
+    /// session will not persist" tells the user their settings are being lost
+    /// while they are being saved.
+    #[test]
+    fn a_write_that_succeeds_clears_a_failure_the_restore_path_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "BIOROUTER_MODEL: [unclosed\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml.bak"),
+            "A_KEY_THE_BACKUP_HAS: 7\n",
+        )
+        .unwrap();
+
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        config.io_faults.failing_rename_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS);
+
+        let _ = config.all_values();
+        assert!(
+            config.last_write_error().is_some(),
+            "the premise: the restore path recorded a write failure"
+        );
+
+        // ⚠ The fault is a count of attempts to fail applied PER CALL — the
+        // atomic is never decremented — so it re-arms every write until it is
+        // cleared here. The condition lifting is what this test is about.
+        config.io_faults.failing_rename_attempts = std::sync::atomic::AtomicUsize::new(0);
+        config.set_param("A_KEY_THAT_IS_SET", 9).unwrap();
+
+        assert_eq!(
+            config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(),
+            9,
+            "the write really did land"
+        );
+        assert_eq!(
+            config.last_write_error(),
+            None,
+            "settings are persisting again, so nothing may still be claiming they are not"
+        );
+    }
+
+    /// A restore that merely LOST A RACE is not a write failure.
+    ///
+    /// Reachable only from the missing-file arm of `load_uncached`: with the
+    /// file present and corrupt there is nothing usable to adopt, which is why
+    /// the M9 case above still records. Without this arm a start-up storm over
+    /// a config directory holding a `.bak` would report a write error to a user
+    /// whose settings are persisting perfectly well — the same false positive
+    /// `a_create_that_lost_a_race_is_not_recorded_as_a_write_failure` exists to
+    /// prevent one branch over.
+    #[test]
+    fn a_restore_that_lost_a_race_is_not_recorded_as_a_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        // No config.yaml at all, so the restore runs from the missing-file arm.
+        std::fs::write(
+            dir.path().join("config.yaml.bak"),
+            "A_KEY_THE_BACKUP_HAS: 7\n",
+        )
+        .unwrap();
+
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        config.io_faults.failing_rename_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS);
+        *config
+            .io_faults
+            .sibling_lands_on_rename_fault
+            .lock()
+            .unwrap() = Some("A_KEY_A_SIBLING_WROTE: 11\n".to_string());
+
+        let values = config.all_values().unwrap();
+
+        assert_eq!(
+            values.get("A_KEY_A_SIBLING_WROTE"),
+            Some(&serde_json::json!(11)),
+            "what is on disk is the sibling's config, and that is what this process must run on"
+        );
+        assert_eq!(
+            config.last_write_error(),
+            None,
+            "losing a race to a sibling is the expected outcome of a storm, not a fault \
+             to report to the user"
+        );
+    }
+
+    /// The literal condition M9 was measured under: `chmod 555` on the config
+    /// directory, with a corrupt `config.yaml` and a usable `.bak` inside it.
+    ///
+    /// unix-only on purpose — a mode is not how Windows makes a directory
+    /// unwritable, and the portable version of this assertion is
+    /// `a_backup_restored_over_a_config_that_could_not_be_written_is_recorded`
+    /// above. This one exists because that test injects the failure, and an
+    /// injected failure is a statement about what the real one is believed to
+    /// look like.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_config_directory_is_the_condition_that_was_measured() {
+        use std::os::unix::fs::PermissionsExt;
+
+        /// Restore the mode whatever happens: a `TempDir` whose directory is
+        /// still 0o555 cannot delete its own contents, so a panic here would
+        /// leak the directory rather than fail cleanly.
+        struct RestoreMode(std::path::PathBuf);
+        impl Drop for RestoreMode {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "BIOROUTER_MODEL: [unclosed\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml.bak"),
+            "A_KEY_THE_BACKUP_HAS: 7\n",
+        )
+        .unwrap();
+
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let _restore = RestoreMode(dir.path().to_path_buf());
+
+        // Root ignores the mode, so the premise would be false and the test
+        // would report a defect that is not there. Verify it instead.
+        let probe = dir.path().join("writability-probe");
+        if std::fs::write(&probe, "x").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            eprintln!("skipped: this process can write a 0o555 directory (running as root?)");
+            return;
+        }
+
+        let values = config.all_values().expect("the backup is usable");
+        assert_eq!(
+            values.get("A_KEY_THE_BACKUP_HAS"),
+            Some(&serde_json::json!(7)),
+            "the recovery works; it is the reporting that did not"
+        );
+        assert!(
+            config.last_write_error().is_some(),
+            "an unwritable config directory must be reported, whatever made it unwritable"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "BIOROUTER_MODEL: [unclosed\n",
+            "the corrupt bytes are still there — `stat` said so in the measurement too"
         );
     }
 

@@ -1283,15 +1283,86 @@ pub async fn backup_config() -> Result<Json<String>, StatusCode> {
     }
 }
 
+/// What `POST /config/recover` actually did, in a form a caller can act on.
+///
+/// ⚠ `message` is the sentence to show a person and `persisted` is the answer to
+/// decide on; the two must never be collapsed. A caller that substring-matches
+/// the warning back out of `message` is one rewording away from silently
+/// concluding the opposite — which is what the route invited, because it used to
+/// return that sentence and nothing else.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConfigRecoveryReport {
+    /// One sentence, ready to show, covering everything the fields below say.
+    pub message: String,
+    /// The config keys this process is now running on.
+    pub recovered_keys: Vec<String>,
+    /// Whether `config.yaml` on disk holds what this report describes.
+    ///
+    /// `false` means the recovery could not write what it recovered: the keys
+    /// above live only in this process, the file on disk is unchanged — still
+    /// absent, or still the contents that would not load — nothing changed in
+    /// this session survives exit, and the next start runs the same recovery
+    /// again.
+    pub persisted: bool,
+    /// The write error, verbatim, whenever `persisted` is false.
+    pub write_error: Option<String>,
+}
+
+/// Build the report from the two things a completed recovery knows.
+///
+/// Pure, and deliberately separate from the route: the route reads
+/// `Config::global()`, a process-wide singleton pointed at the real
+/// `~/.config/biorouter`. Every property worth asserting here is of the form
+/// *what does the answer say for this outcome?*, and a test that had to arrange
+/// the outcome inside the global config could only do it by writing to the
+/// user's own config directory.
+fn recovery_report(
+    recovered_keys: Vec<String>,
+    write_error: Option<String>,
+) -> ConfigRecoveryReport {
+    let recovered = if recovered_keys.is_empty() {
+        "Config recovery completed, but no data was recoverable. Starting with empty \
+         configuration."
+            .to_string()
+    } else {
+        format!(
+            "Config recovery completed. Recovered {} keys: {}",
+            recovered_keys.len(),
+            recovered_keys.join(", ")
+        )
+    };
+
+    // A recovery that could not WRITE what it recovered leaves the app running
+    // on values that vanish at exit. That was silent on the arm a corrupted
+    // config with a usable backup actually takes, so this route answered
+    // "Recovered 23 keys" for a file it had just failed to write, while the
+    // corrupt bytes were still on disk.
+    let message = match write_error.as_deref() {
+        None => recovered,
+        Some(err) => format!(
+            "{recovered} ⚠ These values are in memory only — the config file could not be \
+             written ({err}). config.yaml on disk is unchanged, so nothing changed in this \
+             session will persist and the next start will recover again."
+        ),
+    };
+
+    ConfigRecoveryReport {
+        message,
+        recovered_keys,
+        persisted: write_error.is_none(),
+        write_error,
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/config/recover",
     responses(
-        (status = 200, description = "Config recovery attempted", body = String),
+        (status = 200, description = "Config recovery attempted", body = ConfigRecoveryReport),
         (status = 500, description = "Internal server error")
     )
 )]
-pub async fn recover_config() -> Result<Json<String>, StatusCode> {
+pub async fn recover_config() -> Result<Json<ConfigRecoveryReport>, StatusCode> {
     let config = Config::global();
 
     // This endpoint IS a forced re-read, so it has to force one: the config
@@ -1303,22 +1374,12 @@ pub async fn recover_config() -> Result<Json<String>, StatusCode> {
     // Force a reload which will trigger recovery if needed
     match config.all_values() {
         Ok(values) => {
-            let recovered_keys: Vec<String> = values.keys().cloned().collect();
-            // A recovery that could not WRITE what it recovered leaves the app
-            // running on values that vanish at exit. That used to be silent.
-            let unwritable = config.last_write_error().map(|err| {
-                format!(" ⚠ The config file could not be written ({err}); changes made in this session will not persist.")
-            }).unwrap_or_default();
-            if recovered_keys.is_empty() {
-                Ok(Json(format!("Config recovery completed, but no data was recoverable. Starting with empty configuration.{unwritable}")))
-            } else {
-                Ok(Json(format!(
-                    "Config recovery completed. Recovered {} keys: {}{}",
-                    recovered_keys.len(),
-                    recovered_keys.join(", "),
-                    unwritable
-                )))
-            }
+            // Read AFTER the reload, never before: the write this reports on is
+            // one the reload itself has just attempted.
+            Ok(Json(recovery_report(
+                values.keys().cloned().collect(),
+                config.last_write_error(),
+            )))
         }
         Err(e) => {
             tracing::error!("Config recovery failed: {}", e);
@@ -1643,6 +1704,116 @@ mod tests {
     use http::HeaderMap;
 
     use super::*;
+
+    /// A recovery that could not write says so in BOTH halves of its answer.
+    ///
+    /// The route reported plain success for a config it had just failed to
+    /// write (finding M9): `POST /config/recover` answered HTTP 200 `"Config
+    /// recovery completed. Recovered 23 keys: …"` while the corrupt bytes were
+    /// still on disk, because the backup-restore arm of the recovery recorded
+    /// nothing. With the record in place the sentence carries the warning, and
+    /// `persisted` carries it in a form no caller has to parse prose for.
+    #[test]
+    fn a_recovery_that_could_not_write_says_so_in_the_sentence_and_in_the_flag() {
+        let report = recovery_report(
+            vec![
+                "BIOROUTER_MODEL".to_string(),
+                "BIOROUTER_PROVIDER".to_string(),
+            ],
+            Some("Config file I/O failed: Permission denied (os error 13)".to_string()),
+        );
+
+        assert!(
+            !report.persisted,
+            "the values reached memory and nothing else"
+        );
+        assert_eq!(
+            report.write_error.as_deref(),
+            Some("Config file I/O failed: Permission denied (os error 13)"),
+            "the cause travels verbatim, so a caller need not re-derive it from the prose"
+        );
+        assert!(
+            report.message.contains("in memory only"),
+            "the person reading this has to be told the recovery did not land; got {:?}",
+            report.message
+        );
+        assert!(
+            report.message.contains("config.yaml on disk is unchanged"),
+            "and told what is still on disk, which is the half M9 measured as absent; got {:?}",
+            report.message
+        );
+        assert!(
+            report.message.contains("Permission denied (os error 13)"),
+            "with the reason, so the message is actionable; got {:?}",
+            report.message
+        );
+        assert!(
+            report
+                .message
+                .starts_with("Config recovery completed. Recovered 2 keys:"),
+            "without losing what it did recover; got {:?}",
+            report.message
+        );
+    }
+
+    /// A recovery that landed carries no warning at all.
+    ///
+    /// The other half of the requirement, and the one that is easy to lose: a
+    /// note that outlives its cause tells the user their settings are being
+    /// lost while they are being saved, which is worse than saying nothing.
+    /// `Config::save_values` clears the record on success; this pins that the
+    /// route says nothing once it is clear.
+    #[test]
+    fn a_recovery_that_persisted_carries_no_warning() {
+        let report = recovery_report(vec!["BIOROUTER_MODEL".to_string()], None);
+
+        assert!(report.persisted);
+        assert_eq!(report.write_error, None);
+        assert_eq!(
+            report.message, "Config recovery completed. Recovered 1 keys: BIOROUTER_MODEL",
+            "no warning, no hedging, and byte-identical to what this route has always said \
+             in the case that is fine"
+        );
+    }
+
+    /// Nothing recoverable AND nothing writable is still two facts, not one.
+    ///
+    /// The empty-keys arm had its own sentence and its own copy of the suffix,
+    /// which is exactly how one of two branches comes to lose a later edit.
+    #[test]
+    fn a_recovery_with_nothing_to_recover_still_reports_that_it_could_not_write() {
+        let report = recovery_report(vec![], Some("No space left on device".to_string()));
+
+        assert!(!report.persisted);
+        assert!(report.recovered_keys.is_empty());
+        assert!(
+            report
+                .message
+                .starts_with("Config recovery completed, but no data was recoverable."),
+            "got {:?}",
+            report.message
+        );
+        assert!(
+            report.message.contains("in memory only")
+                && report.message.contains("No space left on device"),
+            "got {:?}",
+            report.message
+        );
+    }
+
+    /// The flag and the error are one fact, and cannot disagree.
+    #[test]
+    fn persisted_is_exactly_the_absence_of_a_write_error() {
+        for write_error in [None, Some("any failure at all".to_string())] {
+            let expected = write_error.is_none();
+            let report = recovery_report(vec!["K".to_string()], write_error);
+            assert_eq!(
+                report.persisted, expected,
+                "a report may never claim to have persisted while carrying the error that \
+                 says it did not, nor the reverse"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_read_model_limits() {

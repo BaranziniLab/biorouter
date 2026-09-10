@@ -522,6 +522,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::config_management::DetectableProvidersResponse,
         super::routes::config_management::PrivacyDisclosureResponse,
         super::routes::config_management::ConfigResponse,
+        super::routes::config_management::ConfigRecoveryReport,
         super::routes::config_management::ProvidersResponse,
         super::routes::config_management::ProviderDetails,
         // `ProviderDetails.affiliation` is `Option<ProviderAffiliation>`, and
