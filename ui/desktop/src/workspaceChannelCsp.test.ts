@@ -32,6 +32,15 @@ import { join } from 'node:path';
  * still blocks the socket. These assertions read the real shipped sources
  * rather than a copy.
  *
+ * ⚠ "both apply to the window" was ASPIRATIONAL when this was written. Both
+ * windows render in a `persist:` partition and the header was installed on
+ * `session.defaultSession` — a different `Session` object — so until September
+ * 2026 the meta tag was the only policy enforcing, and the header's
+ * `buildConnectSrc()` reached no window at all. That is now true rather than
+ * merely asserted, and what makes it true is `installSessionHooks` running on
+ * the renderer's partition; `src/rendererSessionHooks.test.ts` pins it. Keep the
+ * three files together — a string pin cannot tell you which policy is live.
+ *
  * "Both policies" is the half that was first got wrong twice: the original fix
  * added the loopback `ws:` source to each, but gave only the header policy the
  * `wss:` an EXTERNAL backend's socket needs (`https:` does not cover `wss:` by

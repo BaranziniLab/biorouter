@@ -27,6 +27,13 @@ import { join } from 'node:path';
  * by a policy nobody can use: the day a component frames a URL instead of
  * `srcdoc`, the correct failure is here, at the frame, and not in a bug report
  * about a preview that renders blank.
+ *
+ * ⚠ AND A THIRD THING A STRING PIN CANNOT SEE: which of the two policies is
+ * actually live. These assertions were written believing both applied to the
+ * renderer. Only the `<meta>` did — both windows render in a `persist:`
+ * partition and the header was installed on `session.defaultSession`, a
+ * different `Session` object. The mechanism that makes "the pair" real is
+ * asserted in `src/rendererSessionHooks.test.ts`; keep the two files together.
  */
 
 function resolveFromPackage(relative: string): string {
@@ -44,6 +51,26 @@ function frameSrcOf(policy: string): string {
   const match = policy.match(/frame-src([^;]*)/);
   if (!match) throw new Error(`no frame-src directive in policy: ${policy.slice(0, 200)}`);
   return match[1].trim();
+}
+
+/** A named directive's source run out of a full CSP string, without its `;`. */
+function directiveOf(policy: string, directive: string): string {
+  const match = policy.match(new RegExp(`${directive}([^;]*)`));
+  if (!match) throw new Error(`no ${directive} directive in policy: ${policy.slice(0, 200)}`);
+  return match[1].trim();
+}
+
+/** The sole `<directive> …` literal `main.ts` concatenates into the header. */
+function mainProcessDirective(directive: string): string {
+  const source = readFileSync(resolveFromPackage('src/main.ts'), 'utf-8');
+  const code = source.replace(/^[ \t]*\/\/.*$/gm, '');
+  const literals = [...code.matchAll(new RegExp(`"(${directive}[^"]*)"`, 'g'))].map((m) => m[1]);
+  if (literals.length !== 1) {
+    throw new Error(
+      `expected exactly one ${directive} literal in main.ts, found ${literals.length}`
+    );
+  }
+  return directiveOf(literals[0], directive);
 }
 
 function metaCsp(): string {
@@ -146,5 +173,48 @@ describe('frame-src', () => {
     // Four in components plus the one `artifactSecurity` writes as HTML.
     expect(framesSeen).toBeGreaterThanOrEqual(5);
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * `script-src`, and the reason the two policies have to agree on it.
+ *
+ * `index.html` opens with an inline `<script>` — the pre-hydration theme-family
+ * boot that sets `data-theme` before first paint. The `<meta>` policy has always
+ * granted `'unsafe-inline'` for it. The header policy did not, and for as long as
+ * the header reached no window that cost nothing. The moment it reached the
+ * renderer, the two policies INTERSECT and the missing token becomes the binding
+ * one: measured on Electron 39.8.10 with this header on the renderer's own
+ * session, the boot script does not run in either the packaged `file://`
+ * renderer or the dev `http://localhost:517x` one, and vite's react-refresh
+ * preamble is inline too.
+ *
+ * ⚠ This is not permission to widen the effective policy. The meta already
+ * permits inline script and already enforces, so nothing about what the renderer
+ * may execute changed. Tightening it for real means removing the token from BOTH
+ * files and giving the boot script a hash — a separate change, with its own
+ * measurement.
+ */
+describe('script-src', () => {
+  it('grants `unsafe-inline` in both policies, for the index.html boot script', () => {
+    for (const scriptSrc of [
+      directiveOf(metaCsp(), 'script-src'),
+      mainProcessDirective('script-src'),
+    ]) {
+      expect(scriptSrc.split(/\s+/)).toContain("'unsafe-inline'");
+    }
+  });
+
+  it('is not contradicted by index.html, which really does open with an inline script', () => {
+    const html = readFileSync(resolveFromPackage('index.html'), 'utf-8');
+    // Non-vacuous: the assertion above is only justified while this is true.
+    // An inline `<script>` with no `src`, before the module bundle.
+    expect(html).toMatch(/<script>[\s\S]*initializeTheme[\s\S]*<\/script>/);
+  });
+
+  it('grants the two policies the same script sources', () => {
+    const meta = directiveOf(metaCsp(), 'script-src').split(/\s+/).filter(Boolean).sort();
+    const header = mainProcessDirective('script-src').split(/\s+/).filter(Boolean).sort();
+    expect(header).toEqual(meta);
   });
 });

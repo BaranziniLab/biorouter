@@ -518,6 +518,48 @@ function rendererEntryUrl(): URL {
     : pathToFileURL(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
 }
 
+/**
+ * The partition every Biorouter window renders in — the main window and the
+ * launcher both name it in `webPreferences`.
+ *
+ * ⚠ **A `persist:` partition is a different `Session` object, and a hook on
+ * `session.defaultSession` does not reach it.** That is not a subtlety, it is
+ * the whole reason this constant exists. Until September 2026 the app's
+ * permission handlers, its CSP response header, its proxy configuration and its
+ * `Origin` rewrite were all installed on `defaultSession` while both windows
+ * rendered here, so **none of them governed the app's own renderer**. The only
+ * window left on `defaultSession` is the drag ghost (`createGhostWindow`), which
+ * loads a `data:` URL with no preload and no node — a session whose sole content
+ * is a transparent drag chip was carrying four security hooks.
+ *
+ * `utils/embeddedBrowser.ts` had already measured and written down the same
+ * fact for its own partition; the app's own windows were the ones that had not.
+ *
+ * The value is a literal in two `webPreferences` objects and in
+ * `appSessions()`, and `src/rendererSessionHooks.test.ts` asserts those three
+ * can never drift apart.
+ */
+const RENDERER_PARTITION = 'persist:biorouter';
+
+/**
+ * Every session the app's own hooks belong on.
+ *
+ * ⚠ **Deliberately NOT `app.on('session-created')`.** That fires for every
+ * session this process creates, which includes the live browser's
+ * `persist:biorouter-embedded-browser` and each ephemeral
+ * `biorouter-managed-app-<uuid>` — both of which install their own, different
+ * rules on purpose. Handing them `default-src 'self'` would break every page the
+ * embedded browser exists to show. The app's policy belongs on the app's own
+ * sessions, named.
+ *
+ * `session.fromPartition` creates the session if it does not exist yet, so
+ * calling this before the first window is what guarantees the hooks are in place
+ * before that window's first request.
+ */
+function appSessions(): Electron.Session[] {
+  return [session.defaultSession, session.fromPartition(RENDERER_PARTITION)];
+}
+
 // Image entries are spread in from `utils/imageFormats` rather than written out
 // here. This map is the one that decides `kind: 'image'` (via the
 // `startsWith('image/')` test in the artifact read handler), so a format missing
@@ -662,10 +704,18 @@ async function configureProxy() {
 
   if (proxyUrl) {
     console.log('[Main] Configuring proxy');
-    await session.defaultSession.setProxy({
-      proxyRules: proxyUrl,
-      proxyBypassRules: noProxy,
-    });
+    // Both app sessions, for the reason `appSessions()` documents: a proxy set
+    // on `defaultSession` alone never reached the window the user is looking at.
+    // Chromium keeps its implicit loopback bypass unless the bypass list names
+    // `<-loopback>`, so the renderer's own daemon traffic stays direct.
+    await Promise.all(
+      appSessions().map((ses) =>
+        ses.setProxy({
+          proxyRules: proxyUrl,
+          proxyBypassRules: noProxy,
+        })
+      )
+    );
     console.log('[Main] Proxy configured successfully');
   }
 }
@@ -1441,7 +1491,7 @@ const createChat = async (
           scheduledJobId: scheduledJobId,
         }),
       ],
-      partition: 'persist:biorouter',
+      partition: RENDERER_PARTITION,
     },
   });
 
@@ -2178,7 +2228,7 @@ const createLauncher = () => {
       nodeIntegration: false,
       contextIsolation: true,
       additionalArguments: [JSON.stringify(appConfig)],
-      partition: 'persist:biorouter',
+      partition: RENDERER_PARTITION,
     },
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -5314,36 +5364,35 @@ function ensureDeepLinkHandler() {
   }
 }
 
-async function appMain() {
-  await configureProxy();
-
-  ensureDeepLinkHandler();
-
-  // Ensure Windows shims are available before any MCP processes are spawned
-  await ensureWinShims();
-
-  registerUpdateIpcHandlers();
-  registerDependencyIpcHandlers();
-  registerCliInstallHandlers();
-
-  const appEntryUrl = rendererEntryUrl();
-  session.defaultSession.setPermissionCheckHandler(
-    (_webContents, permission, requestingOrigin, details) =>
-      isAllowedRendererPermission(
-        permission,
-        details.requestingUrl || requestingOrigin,
-        appEntryUrl,
-        [details.mediaType ?? 'unknown']
-      )
+/**
+ * Install the app's own hooks on one session.
+ *
+ * Called for every session in `appSessions()` — `defaultSession` AND the
+ * renderer's `persist:` partition — before the first window exists, because
+ * these are what decide whether a permission is granted and which CSP the
+ * document runs under.
+ *
+ * ⚠ **Both permission handlers, or neither.** An unhandled session GRANTS by
+ * default: a partitioned view with no handler returns `granted` for
+ * notifications and allows geolocation while the app's own handler is never
+ * consulted. That was measured for `utils/embeddedBrowser.ts`'s partition and
+ * is the same fact that left the app's own windows unguarded here.
+ */
+function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
+  ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) =>
+    isAllowedRendererPermission(
+      permission,
+      details.requestingUrl || requestingOrigin,
+      appEntryUrl,
+      [details.mediaType ?? 'unknown']
+    )
   );
-  session.defaultSession.setPermissionRequestHandler(
-    (_webContents, permission, callback, details) => {
-      const mediaTypes = 'mediaTypes' in details ? (details.mediaTypes ?? []) : [];
-      callback(
-        isAllowedRendererPermission(permission, details.requestingUrl, appEntryUrl, mediaTypes)
-      );
-    }
-  );
+  ses.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    const mediaTypes = 'mediaTypes' in details ? (details.mediaTypes ?? []) : [];
+    callback(
+      isAllowedRendererPermission(permission, details.requestingUrl, appEntryUrl, mediaTypes)
+    );
+  });
 
   const buildConnectSrc = (): string => {
     const sources = [
@@ -5379,7 +5428,7 @@ async function appMain() {
   };
 
   // Add CSP headers to all sessions
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+  ses.webRequest.onHeadersReceived((details, callback) => {
     // Standalone artifact files contain a sandboxed srcdoc preview. Its inline
     // chart runtime must execute, but the artifact must not fetch remote code,
     // beacon data, or connect to local services.
@@ -5396,7 +5445,23 @@ async function appMain() {
         // `eval` or `new Function`; pdf.js dropped its need for those in
         // 5.7.284, so the older advice to add `unsafe-eval` is stale and would
         // widen this policy for nothing.
-        "script-src 'self' 'wasm-unsafe-eval';" +
+        // `'unsafe-inline'` is here because `index.html` opens with an inline
+        // script — the pre-hydration theme-family boot, which sets
+        // `data-theme` before first paint so a non-default family does not
+        // flash Parchment. The `<meta>` policy grants it; this one did not,
+        // and the two policies INTERSECT. Measured on Electron 39.8.10 with
+        // this header on the renderer's own session: without the token the
+        // boot script is blocked in both the packaged `file://` renderer and
+        // the dev `http://localhost:517x` one, and vite's react-refresh
+        // preamble is inline too.
+        //
+        // ⚠ This does NOT widen the effective policy. The meta has always
+        // permitted inline script and has always been enforced, so the
+        // intersection is unchanged; what changes is that the header now
+        // agrees with it. Tightening this for real means removing the token
+        // from BOTH files and giving the boot script a hash — a separate
+        // change with its own measurement.
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';" +
         "img-src 'self' data: blob: https:;" +
         `connect-src ${buildConnectSrc()};` +
         "object-src 'none';" +
@@ -5420,6 +5485,16 @@ async function appMain() {
         // ⚠ Both policies apply to this window and the stricter wins, so this
         // and the `<meta>` in index.html move together or not at all —
         // `src/frameSrcCsp.test.ts` pins the pair.
+        //
+        // That sentence was ASPIRATIONAL until September 2026 and is now true
+        // only because `installSessionHooks` runs on the renderer's partition
+        // as well as on `defaultSession`. While it ran on `defaultSession`
+        // alone this header reached no window the user could see, the `<meta>`
+        // was the only policy enforcing, and a `securitypolicyviolation` in
+        // the running app reported an `originalPolicy` byte-for-byte equal to
+        // the meta — one event where two enforcing policies produce two.
+        // `src/rendererSessionHooks.test.ts` pins the mechanism; a pin on the
+        // policy strings alone cannot notice which of them is live.
         "frame-src 'self';" +
         "font-src 'self' data: https:;" +
         "media-src 'self' mediastream:;" +
@@ -5427,6 +5502,12 @@ async function appMain() {
         "base-uri 'self';" +
         "manifest-src 'self';" +
         "worker-src 'self';" +
+        // Measured, because this directive reaches the renderer for the first
+        // time and an upgrade of the daemon's `http://127.0.0.1:<port>` would
+        // take the whole app down: Chromium does NOT upgrade a loopback URL
+        // (it is already potentially trustworthy). Under this exact policy a
+        // `fetch('http://127.0.0.1:…')` returned 200 and a
+        // `new WebSocket('ws://127.0.0.1:…')` reached the server unupgraded.
         'upgrade-insecure-requests;';
 
     callback({
@@ -5436,6 +5517,64 @@ async function appMain() {
       },
     });
   });
+}
+
+/**
+ * The one hook that stays on `defaultSession` alone, deliberately.
+ *
+ * It rewrites the `Origin` of every request in the session to the vite dev
+ * origin. It has been here since the initial commit, inherited from upstream,
+ * and it is **not** extended to the renderer's partition:
+ *
+ * - The renderer does not need it. A packaged `file://` document sends NO
+ *   `Origin` on `fetch` and Electron does not CORS-check a `file://` initiator
+ *   (measured: a fetch to loopback returns 200 with no
+ *   `Access-Control-Allow-Origin` in the response at all). Its WebSocket sends
+ *   `Origin: file://`, which `routes/workspace.rs` admits by name; the dev
+ *   renderer sends `http://localhost:517x`, which `routes::is_local_origin`
+ *   admits. Every gate already passes on the renderer's real origin.
+ * - Extending it would be strictly worse. The daemon's socket gates are
+ *   same-origin tests (`origin_matches_host`) against the browser-set `Origin`;
+ *   replacing that with a value this process invented means the check is
+ *   validating our own constant instead of the renderer's identity.
+ *
+ * So it keeps the reach it has always had. `src/rendererSessionHooks.test.ts`
+ * carries this as the one documented exception to hook twinning — a new
+ * `defaultSession` hook fails that test rather than silently joining it.
+ */
+function installDefaultSessionOnlyHooks(): void {
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    details.requestHeaders['Origin'] = 'http://localhost:5173';
+    callback({ cancel: false, requestHeaders: details.requestHeaders });
+  });
+}
+
+async function appMain() {
+  // FIRST, and synchronously, before this function's first `await`.
+  //
+  // A permission handler or a CSP header installed after a window exists has
+  // already missed that window's first document load, and window creation does
+  // NOT wait for us: `open-url` and the `.brxt` file handlers each do their own
+  // `await app.whenReady()` and then call `createNewWindow`. Their continuations
+  // are queued after this one (this module registers `whenReady` at load time),
+  // so everything before the first `await` here is guaranteed to run before any
+  // of them — and nothing after it is.
+  const appEntryUrl = rendererEntryUrl();
+  for (const ses of appSessions()) {
+    installSessionHooks(ses, appEntryUrl);
+  }
+  installDefaultSessionOnlyHooks();
+
+  await configureProxy();
+
+  ensureDeepLinkHandler();
+
+  // Ensure Windows shims are available before any MCP processes are spawned
+  await ensureWinShims();
+
+  registerUpdateIpcHandlers();
+  registerDependencyIpcHandlers();
+  registerCliInstallHandlers();
 
   try {
     globalShortcut.register('CommandOrControl+Alt+Shift+G', () => {
@@ -5452,11 +5591,6 @@ async function appMain() {
   } catch (e) {
     console.error('Error registering focus window hotkey:', e);
   }
-
-  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    details.requestHeaders['Origin'] = 'http://localhost:5173';
-    callback({ cancel: false, requestHeaders: details.requestHeaders });
-  });
 
   // Create tray if enabled in settings
   const settings = loadSettings();

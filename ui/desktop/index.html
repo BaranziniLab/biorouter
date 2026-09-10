@@ -12,6 +12,11 @@
       `gui_attached: false` with the app on screen — the whole GUI half silently inert.
       This policy and `buildConnectSrc()` in src/main.ts BOTH apply to the window and the
       stricter wins, so they must stay in step; `src/workspaceChannelCsp.test.ts` pins it.
+      ⚠ "BOTH apply" became true only in September 2026. Until then this window rendered in
+      a `persist:` partition while every hook — the header included — sat on
+      `session.defaultSession`, a different Session object, so this meta tag was the ONLY
+      policy enforcing. `src/rendererSessionHooks.test.ts` pins the mechanism that makes the
+      sentence true; a pin on the policy strings cannot see which of them is live.
       `wss:` is blanket where `ws:` is loopback-only, mirroring this policy's own
       cleartext-vs-TLS asymmetry for http (`http://127.0.0.1:*` vs blanket `https:`).
 
