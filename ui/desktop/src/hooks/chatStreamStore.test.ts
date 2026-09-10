@@ -1920,6 +1920,201 @@ describe('ChatStreamRegistry', () => {
 });
 
 /**
+ * M2 — a Stop the daemon never confirms.
+ *
+ * The #166 battery above pushes its terminal frame AFTER the cancel has
+ * resolved, which is the easy ordering: the Stop gate is already down, so
+ * `finishCurrentStream` lands the turn itself. The wedged-daemon ordering is the
+ * reverse and was never covered — the daemon's synthesized terminal frame
+ * arrives WHILE the cancel is still on the wire, `finishCurrentStream` defers
+ * the Idle transition to the cancel response because `stopGateHolds()`, and the
+ * cancel then comes back a failure and declines to make it. Nothing else ever
+ * does, so the composer keeps its Stop button and never gets Send back.
+ *
+ * `/agent/cancel`'s own failures make this the DEFAULT wedged shape rather than
+ * an exotic one: `CancelTurnFailure::SettlementTimeout` is a bare 504 with no
+ * body, so the generated client throws a literal `{}` (`finalError = finalError
+ * || {}`) and the console warning printed nothing a person could act on.
+ */
+describe('ChatStreamRegistry — a Stop the daemon never confirms (M2)', () => {
+  /** The daemon's synthesized "this turn produced no ending" frame. */
+  function endedWithoutTerminal(): MessageEvent {
+    return {
+      type: 'Error',
+      error: 'The stream for this turn ended without a result. Please retry.',
+      code: 'stream_ended_without_terminal',
+      scope: 'internal',
+      retryable: true,
+    } as MessageEvent;
+  }
+
+  /**
+   * Drive a Stop whose cancel is still on the wire when the daemon's terminal
+   * frame lands, then settle the cancel however the caller asks.
+   */
+  async function stopAgainstAWedgedTurn(
+    sessionId: string,
+    settleCancel: (cancellation: ReturnType<typeof deferred<unknown>>) => void
+  ) {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    const cancellation = deferred<unknown>();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(cancelTurn).mockReturnValueOnce(cancellation.promise as never);
+
+    const controller = registry.getController(sessionId);
+    const submit = controller.handleSubmit('a turn that wedges');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+
+    const stopped = controller.stopStreaming();
+    await flush();
+    expect(cancelTurn).toHaveBeenCalledTimes(1);
+
+    // The terminal frame beats the cancel response — the whole of M2.
+    controlled.push(endedWithoutTerminal());
+    controlled.close();
+    await submit;
+
+    settleCancel(cancellation);
+    await expect(stopped).resolves.toBe(false);
+    await flush();
+
+    return { controller, registry };
+  }
+
+  it('returns the composer to Idle when the cancel fails after the turn already ended', async () => {
+    const { controller } = await stopAgainstAWedgedTurn('wedged-idle', (cancellation) =>
+      // A bare 504 with no body: exactly what the generated client throws.
+      cancellation.reject({})
+    );
+
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+    expect(isRunningState(controller.getSnapshot().chatState)).toBe(false);
+  });
+
+  it('lets the user send again rather than stranding the chat with no Send control', async () => {
+    const { controller } = await stopAgainstAWedgedTurn('wedged-resend', (cancellation) =>
+      cancellation.reject({})
+    );
+
+    // The composer draws Send or Stop from `isRunningState(chatState)` — so the
+    // store accepting a submit is NOT the same as the user having a control to
+    // click. Measured in the running app: `textarea.disabled === false` with no
+    // `Send message` button anywhere on screen.
+    expect(isRunningState(controller.getSnapshot().chatState)).toBe(false);
+
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+    await expect(controller.handleSubmit('the chat still works')).resolves.toBe(true);
+    expect(reply).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs the HTTP status of a bodyless cancel rejection instead of an empty object', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The fields form the generated client returns for an HTTP failure when
+      // it is not asked to throw: the body is `{}` and the status is the only
+      // thing that says WHICH failure this was.
+      await stopAgainstAWedgedTurn('wedged-log', (cancellation) =>
+        cancellation.resolve({ error: {}, response: { status: 504 } })
+      );
+
+      const logged = warn.mock.calls.map((call) => call.map((part) => String(part)).join(' '));
+      const stopLine = logged.find((line) => line.includes('cancel'));
+      expect(stopLine).toBeDefined();
+      expect(stopLine).toContain('504');
+      expect(stopLine).toContain('wedged-log');
+      // `String({})` is `[object Object]`; a raw object argument is exactly what
+      // printed `{}` in the running app.
+      expect(stopLine).not.toContain('[object Object]');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs the real error text when the cancel rejects with an Error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await stopAgainstAWedgedTurn('wedged-log-error', (cancellation) =>
+        cancellation.reject(new Error('network died mid-cancel'))
+      );
+
+      const logged = warn.mock.calls.map((call) => call.map((part) => String(part)).join(' '));
+      expect(logged.some((line) => line.includes('network died mid-cancel'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('tells the user in the chat that the stop was not confirmed', async () => {
+    const { controller } = await stopAgainstAWedgedTurn('wedged-notice', (cancellation) =>
+      cancellation.reject({})
+    );
+
+    const turnError = controller.getSnapshot().turnError;
+    expect(turnError?.code).toBe('stop_not_confirmed');
+    expect(turnError?.message).toMatch(/could not/i);
+    expect(turnError?.message).toMatch(/still be running/i);
+    // Retrying the TURN is not what a user who asked to stop it wants.
+    expect(turnError?.retryable).toBe(false);
+  });
+
+  it('does not blame the model for an ending the user asked for', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    const cancellation = deferred<unknown>();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('wedged-blame') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(cancelTurn).mockReturnValueOnce(cancellation.promise as never);
+
+    const controller = registry.getController('wedged-blame');
+    const submit = controller.handleSubmit('a turn that wedges');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    const stopped = controller.stopStreaming();
+    await flush();
+
+    controlled.push(endedWithoutTerminal());
+    controlled.close();
+    await submit;
+
+    // Sampled BEFORE the cancel answers: this is the card the user actually
+    // stares at while the daemon is wedged.
+    expect(controller.getSnapshot().turnError?.code).toBe('turn_stopped_by_user');
+    expect(controller.getSnapshot().turnError?.retryable).toBe(false);
+
+    cancellation.reject({});
+    await expect(stopped).resolves.toBe(false);
+  });
+
+  it('still reports an ordinary internal failure as a model failure when no Stop is pending', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('unstopped-internal') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('unstopped-internal');
+    const submit = controller.handleSubmit('an ordinary turn');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+
+    controlled.push(endedWithoutTerminal());
+    controlled.close();
+    await submit;
+
+    expect(controller.getSnapshot().turnError?.code).toBe('stream_ended_without_terminal');
+    expect(controller.getSnapshot().turnError?.scope).toBe('internal');
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+});
+
+/**
  * Progressive conversation loading.
  *
  * A resume used to take ~5.1s on a real 355-message session, of which ~4.6s was

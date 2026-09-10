@@ -145,6 +145,57 @@ describe('ChatTurnError', () => {
     });
   });
 
+  /**
+   * M2 — the daemon synthesizes `stream_ended_without_terminal` for any turn
+   * whose writers produced no ending, INCLUDING one the user stopped. Read as
+   * an ordinary internal failure it says "Model turn ended unexpectedly", which
+   * blames the model for an ending the user asked for. The store re-codes the
+   * two stop-shaped endings; the presentation has to name them.
+   */
+  it('names a user-requested ending instead of blaming the model', () => {
+    const presentation = presentChatTurnError(
+      error({
+        message: 'You stopped this turn, so it ended without a result.',
+        code: 'turn_stopped_by_user',
+        scope: 'internal',
+        retryable: false,
+        technicalDetails: 'The stream for this turn ended without a result. Please retry.',
+      })
+    );
+
+    expect(presentation.title).toBe('Turn stopped');
+    expect(presentation.title).not.toBe('Model turn ended unexpectedly');
+    expect(presentation.message).toContain('You stopped this turn');
+  });
+
+  it('names a stop the backend never confirmed', () => {
+    const presentation = presentChatTurnError(
+      error({
+        message:
+          'Biorouter could not stop this turn. It may still be running on the backend. HTTP 504',
+        code: 'stop_not_confirmed',
+        scope: 'internal',
+        retryable: false,
+      })
+    );
+
+    expect(presentation.title).toBe('Stop not confirmed');
+    expect(presentation.message).toContain('may still be running');
+  });
+
+  it('still blames nothing but the model for an ordinary internal failure', () => {
+    expect(
+      presentChatTurnError(
+        error({
+          message: 'The stream for this turn ended without a result. Please retry.',
+          code: 'stream_ended_without_terminal',
+          scope: 'internal',
+          retryable: true,
+        })
+      ).title
+    ).toBe('Model turn ended unexpectedly');
+  });
+
   it('does not duplicate a backend error message that is already in the transcript', () => {
     const turnError = error({ message: 'Authentication failed. Status: 401 Unauthorized' });
     const messages = [
