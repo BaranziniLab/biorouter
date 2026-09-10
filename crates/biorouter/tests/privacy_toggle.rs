@@ -353,6 +353,36 @@ async fn read_private_resource(agent: &Agent) -> String {
     }
 }
 
+/// Row 4b's subject: the same surface's **fan-out** branch, which is a different
+/// leak from row 4's refusal and was live on `main` until the 2026-09-10 test
+/// drive measured it (finding M6).
+///
+/// `read_resource_tool` with no `extension_name` probes every installed
+/// extension in turn, refusing the private ones one at a time — and then
+/// composed its not-found message from `self.extensions.lock().await.keys()`,
+/// handing back in one sentence every name the loop had just withheld. Row 4
+/// cannot see it: that row asks the NAMED branch, which never reaches this
+/// message.
+///
+/// `None` for the admitted capability, exactly as row 4 does, so the guard
+/// samples the toggle live the way the six non-tool-call entries do.
+///
+/// Returns the error text, or the success shape, whichever came back.
+async fn read_unknown_resource_across_extensions(agent: &Agent) -> String {
+    match agent
+        .extension_manager
+        .read_resource_tool(
+            serde_json::json!({ "uri": "nope://x" }),
+            None,
+            tokio_util::sync::CancellationToken::default(),
+        )
+        .await
+    {
+        Ok(ok) => format!("{ok:?}"),
+        Err(e) => e.message.to_string(),
+    }
+}
+
 /// Rows 5's subject: what discovery — and therefore the SYSTEM PROMPT — is
 /// allowed to name. `get_extensions_info` carries a private server's own
 /// instructions, so this covers Gate F2 as well as Gate E.
@@ -548,6 +578,30 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         gate_c_prime_on.contains("private extension"),
         "{gate_c_prime_on}"
     );
+
+    // 4b C'    (2026-09-10 test drive, M6) — the SAME surface's fan-out branch.
+    //          Row 4 asks the named branch and is blind to this one: the leak is
+    //          not the refusal, it is the not-found message the fan-out composes
+    //          after every private extension has already been refused.
+    //
+    //          Asserted against the LIVE map rather than against the constant, so
+    //          the row cannot pass by naming the one extension the fixture
+    //          happens to load. Every name in this fixture's map is private, so
+    //          Gate E's verdict for a public caller is empty and the message may
+    //          carry none of them.
+    let loaded = agent3.extension_manager.list_extensions().await.unwrap();
+    assert!(
+        !loaded.is_empty(),
+        "the fixture loaded nothing, so this row asserts nothing"
+    );
+    let fanout_on = read_unknown_resource_across_extensions(&agent3).await;
+    for name in &loaded {
+        assert!(
+            !fanout_on.contains(name.as_str()),
+            "a public caller was handed `{name}` in a not-found message — the set Gate E \
+             exists to withhold: {fanout_on}"
+        );
+    }
 
     // 5+12 E+F2 (Tasks 16, 18) — discovery, and a private server's instructions
     //          in a public system prompt.
@@ -772,6 +826,17 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(extension_names_and_instructions(&agent3)
         .await
         .contains(PRIVATE_EXTENSION));
+    // 4b: the fan-out's roster stops being filtered too, which is what makes the
+    //   ON column above a privacy filter rather than a message that never names
+    //   anything. `allowed_extension_keys` returns every key with the toggle
+    //   off, so the private fixture is back in the list.
+    let fanout_off = read_unknown_resource_across_extensions(&agent3).await;
+    assert!(
+        fanout_off.contains(PRIVATE_EXTENSION),
+        "the fan-out named nothing with privacy tiers OFF, so the ON column would pass \
+         against an implementation that simply deleted the roster: {fanout_off}"
+    );
+
     assert_eq!(search_as(ProviderTier::Public, &sm6, "cohort").await, 1);
     // 7 + 18: the same public session now reads the private chat, title and all.
     let load_off = chatrecall_load_as(&agent7, &s7, &target7.id).await;

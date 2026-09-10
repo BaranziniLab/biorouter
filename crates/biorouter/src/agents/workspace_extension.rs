@@ -7311,6 +7311,32 @@ pub(crate) mod tests {
         .to_string()
     }
 
+    /// The refusal the UNLOAD door returns, which is a different sentence from
+    /// the enable door's above — issue #56; 2026-09-10 test drive, finding M18.
+    ///
+    /// `workspace_set_tools {remove_extensions}` reaches
+    /// `ExtensionManager::assert_extension_manageable`, which is
+    /// `assert_extension_reachable` verbatim, and that gate reads an **unknown**
+    /// name as Private. It therefore cannot state that the extension is private
+    /// — the name may name nothing — so it states the disjunction instead, and
+    /// states it IDENTICALLY in both cases. The non-oracle property this test
+    /// ends on is what forbids the obvious repair of saying "no such extension"
+    /// for the absent branch.
+    ///
+    /// The enable door keeps `privacy_refusal`'s flat sentence because it
+    /// resolves the extension against the config before its tier arm fires, so
+    /// there the claim is a fact.
+    fn expected_unreachable_extension_refusal(name: &str) -> String {
+        crate::privacy::refusal::private_or_absent_refusal(
+            name,
+            crate::privacy::ProviderTier::Private,
+            crate::privacy::ProviderTier::Public,
+        )
+        .expect("a public caller may reach neither a private extension nor an unknown name")
+        .message
+        .to_string()
+    }
+
     /// A task-local `extensions:` map, so a test can install an extension —
     /// or pin one off — **without writing the developer's `config.yaml`**.
     ///
@@ -7494,7 +7520,7 @@ pub(crate) mod tests {
         );
         assert_eq!(refused.is_error, Some(true), "{loaded_refusal}");
         assert!(
-            loaded_refusal.contains(&expected_private_extension_refusal(private_ext)),
+            loaded_refusal.contains(&expected_unreachable_extension_refusal(private_ext)),
             "not Gate F1's refusal: {loaded_refusal}"
         );
 

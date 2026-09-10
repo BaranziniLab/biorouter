@@ -2247,7 +2247,17 @@ impl ExtensionManager {
             },
             |extension| crate::privacy::resolve_extension(name, Some(&extension.config)),
         );
-        match crate::privacy::refusal::privacy_refusal(name, class.tier, cap.tier()) {
+        // ⚠ **`private_or_absent_refusal`, NOT `privacy_refusal`, and the reason
+        // is the inverted default documented above.** An unknown name arrives
+        // here already read as Private, so `privacy_refusal`'s flat *"`x` is a
+        // private extension"* asserts a fact this gate has not established — it
+        // sent a caller looking for a private model to reach an extension that
+        // does not exist (2026-09-10 test drive, finding M18). The replacement
+        // states the disjunction and answers the two cases IDENTICALLY, which is
+        // what keeps the repair from becoming an existence oracle over exactly
+        // the private names Gate E hides. The predicate underneath is unchanged:
+        // both compose `tier_refuses`.
+        match crate::privacy::refusal::private_or_absent_refusal(name, class.tier, cap.tier()) {
             // DR-15's master opt-out, read through the capability so the tier
             // and the toggle can never be sampled at two different instants —
             // the same predicate Gate C asks, never a second narrower flag.
@@ -2416,19 +2426,43 @@ impl ExtensionManager {
             }
         }
 
-        // None of the extensions had the resource so we raise an error
-        let available_extensions = self
-            .extensions
-            .lock()
-            .await
-            .keys()
-            .map(|s| s.as_str())
-            .collect::<Vec<&str>>()
-            .join(", ");
-        let error_msg = format!(
-            "Resource with uri '{}' not found. Here are the available extensions: {}",
-            uri, available_extensions
-        );
+        // None of the extensions had the resource so we raise an error.
+        //
+        // ⚠ **The roster is Gate E's, never the extension map's** (issue #56;
+        // 2026-09-10 test drive, finding M6). This branch used to build the list
+        // straight from `self.extensions.lock().await.keys()`, so a caller
+        // evaluated as PUBLIC — every `POST /agent/call_tool`, which passes
+        // `CallCapability::public_enforced()` — was handed the names of the
+        // private extensions loaded in that chat, in the one place the loop
+        // above had just finished refusing it each of them one at a time. Gate E
+        // exists to keep those names out of a public model's sight; a
+        // not-found message is not an exemption from it.
+        //
+        // Filtered rather than dropped, because the list is genuinely useful to
+        // a model that has passed Gate E, and `allowed_extension_keys` is the
+        // SAME verdict that built the tool list this model is reading from — so
+        // it can never name an extension the model was not already shown.
+        // `admitted` is threaded, not resampled: this is a tool-call path, and
+        // re-reading the provider here is the read-then-read `CallCapability`
+        // exists to prevent.
+        //
+        // Sorted because `extensions` is a `HashMap` whose iteration order is
+        // randomised per process, exactly as `cross_affiliation_warnings` and
+        // the manager's own enabled listing sort.
+        let mut visible = self.allowed_extension_keys(admitted).await;
+        visible.sort();
+        let error_msg = if visible.is_empty() {
+            format!(
+                "Resource with uri '{}' not found in any extension this chat can reach.",
+                uri
+            )
+        } else {
+            format!(
+                "Resource with uri '{}' not found. Here are the available extensions: {}",
+                uri,
+                visible.join(", ")
+            )
+        };
 
         Err(ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
@@ -2451,23 +2485,37 @@ impl ExtensionManager {
         self.assert_extension_reachable(extension_name, admitted)
             .await?;
 
-        let available_extensions = self
-            .extensions
-            .lock()
-            .await
-            .keys()
-            .map(|s| s.as_str())
-            .collect::<Vec<&str>>()
-            .join(", ");
-        let error_msg = format!(
-            "Extension '{}' not found. Here are the available extensions: {}",
-            extension_name, available_extensions
-        );
-
-        let client = self
-            .get_server_client(extension_name)
-            .await
-            .ok_or(ErrorData::new(ErrorCode::INVALID_PARAMS, error_msg, None))?;
+        let client = match self.get_server_client(extension_name).await {
+            Some(client) => client,
+            None => {
+                // Gate E's roster, for the reason the fan-out branch above
+                // states at length. This one is narrower and was already
+                // covered at the route by #206's `read_resource_failure`, which
+                // REPLACES this message rather than forwarding it — but the
+                // route is not the only caller, and a message that is safe only
+                // because one of its readers throws it away is a leak waiting
+                // for a second reader.
+                //
+                // ⚠ Built on the MISS, not before the lookup. The list used to
+                // be composed unconditionally and handed to `ok_or`, which is
+                // eager: every successful resource read paid for it. Gate E's
+                // verdict costs a `resolve_extension` per installed entry, so
+                // moving it here is not tidying — leaving it above would put
+                // that walk on the hot path.
+                let mut visible = self.allowed_extension_keys(admitted).await;
+                visible.sort();
+                let error_msg = if visible.is_empty() {
+                    format!("Extension '{}' is not loaded in this chat.", extension_name)
+                } else {
+                    format!(
+                        "Extension '{}' not found. Here are the available extensions: {}",
+                        extension_name,
+                        visible.join(", ")
+                    )
+                };
+                return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, error_msg, None));
+            }
+        };
 
         let client_guard = &*client;
         client_guard
@@ -6299,6 +6347,182 @@ mod tests {
             sm.get_session(&id, false).await.unwrap().privacy_tier,
             crate::privacy::SessionClassification::Public,
             "a refused call disclosed nothing"
+        );
+    }
+
+    /// Finding M6: the roster a resource read hands back when it finds nothing
+    /// is Gate E's, never the extension map's.
+    ///
+    /// `read_resource_tool` with no `extension_name` fans out over every
+    /// installed extension, refusing the private ones one at a time — and then
+    /// ended by composing *"Here are the available extensions: …"* from
+    /// `self.extensions.lock().await.keys()`, handing back in one sentence every
+    /// name it had just spent the loop withholding. `POST /agent/call_tool`
+    /// reaches this with `CallCapability::public_enforced()`, so an HTTP client
+    /// holding only the daemon secret could read a chat's private-connector
+    /// names out of a not-found message.
+    ///
+    /// ⚠ **`developer` rides along, and the test is worth nothing without it.**
+    /// An implementation that simply deleted the list passes every "does not
+    /// contain `ucsfomopagent`" assertion. Requiring the public extension to
+    /// still be named is what distinguishes "filtered through Gate E" from
+    /// "silenced".
+    #[tokio::test]
+    async fn a_public_callers_resource_miss_is_answered_with_gate_es_roster_only() {
+        let (_dir, em, _sm, _id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let public =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true);
+        let text = em
+            .read_resource_tool(
+                serde_json::json!({ "uri": "nope://x" }),
+                Some(public),
+                CancellationToken::default(),
+            )
+            .await
+            .expect_err("no extension holds that uri")
+            .message
+            .to_string();
+
+        assert!(
+            !text.contains("ucsfomopagent"),
+            "a caller evaluated as public was handed the name of a private extension in a \
+             not-found message — the set Gate E exists to withhold: {text}"
+        );
+        assert!(
+            text.contains("developer"),
+            "the roster was silenced rather than filtered, so this test would pass against an \
+             implementation that told a legitimate model nothing: {text}"
+        );
+
+        // The same call on a PRIVATE model still sees everything, which is what
+        // makes the assertion above a privacy filter rather than a deletion.
+        let private =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let as_private = em
+            .read_resource_tool(
+                serde_json::json!({ "uri": "nope://x" }),
+                Some(private),
+                CancellationToken::default(),
+            )
+            .await
+            .expect_err("no extension holds that uri")
+            .message
+            .to_string();
+        assert!(as_private.contains("ucsfomopagent"), "{as_private}");
+        assert!(as_private.contains("developer"), "{as_private}");
+    }
+
+    /// The same leak one door further in: `read_resource`'s `get_server_client`
+    /// miss, which composed the identical roster.
+    ///
+    /// `POST /agent/read_resource` never showed it — #206's
+    /// `read_resource_failure` replaces that message rather than forwarding it —
+    /// and that route keeps doing so. This asserts the message is safe at the
+    /// SOURCE, because a string that is only safe while one of its readers
+    /// discards it is one new reader away from being unsafe.
+    ///
+    /// The fixture is a name that IS reachable and yet has no client: a
+    /// capability the manager records without a server behind it. That is the
+    /// only shape that gets past `assert_extension_reachable` and into the miss.
+    #[tokio::test]
+    async fn the_named_branchs_not_found_message_carries_gate_es_roster_only() {
+        let (_dir, em, _sm, _id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let public =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true);
+        let mut visible = em.allowed_extension_keys(Some(public)).await;
+        visible.sort();
+        assert_eq!(
+            visible,
+            vec!["developer".to_string()],
+            "the fixture does not discriminate unless Gate E really hides the private one"
+        );
+
+        // Reached directly, because the only production route into the miss is a
+        // key present in Gate E's verdict whose client has gone. Asserting the
+        // composed message is what this test is for.
+        let text = em
+            .read_resource(
+                "ui://cohort",
+                "developer",
+                Some(public),
+                CancellationToken::default(),
+            )
+            .await
+            .expect_err("MockClient refuses every read")
+            .message
+            .to_string();
+        assert!(
+            !text.contains("ucsfomopagent"),
+            "the named branch leaked the private roster: {text}"
+        );
+    }
+
+    /// Finding M18: a name this gate could not resolve is still refused, and the
+    /// refusal no longer says it is a private extension.
+    ///
+    /// ⚠ **The two answers must stay IDENTICAL, and that is the assertion that
+    /// matters.** `assert_extension_reachable` reads an unknown name as Private
+    /// deliberately: to a public caller "this private connector is installed",
+    /// "this private connector is not installed" and "no such extension" are one
+    /// refusal, which is what stops the gate being an existence oracle over the
+    /// names finding M6 closes next door. So the repair could not be "say `no
+    /// such extension` for the absent case" — it had to be one sentence true of
+    /// both. Comparing the two messages with the name held constant is what
+    /// stops a later edit adding one helpful clause to the branch it can tell
+    /// apart.
+    #[tokio::test]
+    async fn a_private_extension_and_a_name_that_is_not_installed_are_one_refusal() {
+        let (_dir, em, _sm, _id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let public =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true);
+        let refusal_for = |name: &'static str| {
+            let em = &em;
+            async move {
+                em.read_resource(
+                    "ui://cohort",
+                    name,
+                    Some(public),
+                    CancellationToken::default(),
+                )
+                .await
+                .expect_err("a public caller reaches neither")
+                .message
+                .to_string()
+            }
+        };
+
+        let loaded_and_private = refusal_for("ucsfomopagent").await;
+        let never_installed = refusal_for("nonexistent_ext").await;
+
+        assert!(
+            !never_installed.contains("`nonexistent_ext` is a private extension"),
+            "the gate still asserts that a name it could not resolve IS a private extension, \
+             which sends a model looking for a private model to reach something that does not \
+             exist: {never_installed}"
+        );
+        assert_eq!(
+            loaded_and_private.replace("ucsfomopagent", "NAME"),
+            never_installed.replace("nonexistent_ext", "NAME"),
+            "the two cases now read differently, so a public caller can walk names and learn \
+             which private extensions this chat has loaded"
+        );
+        assert!(
+            never_installed.contains("not installed"),
+            "the refusal must state the other case it covers, or it is the same claim in \
+             softer words: {never_installed}"
         );
     }
 
