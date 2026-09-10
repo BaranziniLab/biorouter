@@ -6417,54 +6417,68 @@ mod tests {
         assert!(as_private.contains("developer"), "{as_private}");
     }
 
-    /// The same leak one door further in: `read_resource`'s `get_server_client`
-    /// miss, which composed the identical roster.
+    /// The same roster one door further in: `read_resource`'s `get_server_client`
+    /// miss, which composed the identical list from the raw extension map.
     ///
-    /// `POST /agent/read_resource` never showed it — #206's
-    /// `read_resource_failure` replaces that message rather than forwarding it —
-    /// and that route keeps doing so. This asserts the message is safe at the
-    /// SOURCE, because a string that is only safe while one of its readers
-    /// discards it is one new reader away from being unsafe.
+    /// ⚠ **This one is defence in depth, and the honest reason is worth stating
+    /// rather than dressing up.** No capability can reach that branch with a
+    /// roster that differs from the map. `get_server_client` reads the SAME map
+    /// `assert_extension_reachable` just consulted, so presence implies a
+    /// client: a public caller naming an absent extension is refused above and
+    /// never arrives, and a private caller — who does arrive — is shown
+    /// everything by Gate E anyway. What is left is the race the two locks
+    /// admit, and a message that is safe only because one of its readers (#206's
+    /// `read_resource_failure`, which replaces it) throws it away.
     ///
-    /// The fixture is a name that IS reachable and yet has no client: a
-    /// capability the manager records without a server behind it. That is the
-    /// only shape that gets past `assert_extension_reachable` and into the miss.
+    /// So the composition is pinned at the SOURCE, because behaviour cannot see
+    /// it, and the reachable half is asserted underneath so the branch is known
+    /// to work rather than merely to be spelled correctly. A test that claimed
+    /// to demonstrate a public-caller leak here would be vacuous: the first
+    /// draft of this one passed against the unfixed tree.
     #[tokio::test]
-    async fn the_named_branchs_not_found_message_carries_gate_es_roster_only() {
+    async fn the_named_branchs_not_found_message_is_composed_from_gate_es_roster() {
+        let source = include_str!("extension_manager.rs");
+        let miss = source
+            .split("let client = match self.get_server_client(extension_name).await {")
+            .nth(1)
+            .expect("`read_resource` must still look its client up before reading")
+            .split("\n        };")
+            .next()
+            .expect("the lookup must be a match block");
+        assert!(
+            miss.contains("self.allowed_extension_keys(admitted).await"),
+            "the not-found message is composed from something other than Gate E's verdict \
+             again: {miss}"
+        );
+        assert!(
+            !miss.contains("self.extensions"),
+            "the not-found message reaches back into the raw extension map, which is the \
+             shape finding M6 closed next door: {miss}"
+        );
+
+        // The reachable half. A private caller naming something that is not
+        // installed is the ONE path into this branch, and it must still answer
+        // with a usable list rather than an empty one.
         let (_dir, em, _sm, _id) = manager_with_a_session().await;
         em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
             .await;
         em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
             .await;
-
-        let public =
-            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true);
-        let mut visible = em.allowed_extension_keys(Some(public)).await;
-        visible.sort();
-        assert_eq!(
-            visible,
-            vec!["developer".to_string()],
-            "the fixture does not discriminate unless Gate E really hides the private one"
-        );
-
-        // Reached directly, because the only production route into the miss is a
-        // key present in Gate E's verdict whose client has gone. Asserting the
-        // composed message is what this test is for.
+        let private =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
         let text = em
             .read_resource(
                 "ui://cohort",
-                "developer",
-                Some(public),
+                "nonexistent_ext",
+                Some(private),
                 CancellationToken::default(),
             )
             .await
-            .expect_err("MockClient refuses every read")
+            .expect_err("nothing is loaded under that name")
             .message
             .to_string();
-        assert!(
-            !text.contains("ucsfomopagent"),
-            "the named branch leaked the private roster: {text}"
-        );
+        assert!(text.contains("developer"), "{text}");
+        assert!(text.contains("ucsfomopagent"), "{text}");
     }
 
     /// Finding M18: a name this gate could not resolve is still refused, and the
