@@ -31,6 +31,8 @@ import {
   preloadSessionList,
   subscribeSessionList,
 } from '../../utils/sessionListCache';
+import { useLiveSessionTiers } from '../../hooks/chatStreamStore';
+import { mergeSessionTiers, sessionTiersDiffer } from '../privacy/sessionTier';
 import type { SessionClassification } from '../../api';
 
 interface ChatGroupsShellProps {
@@ -73,8 +75,51 @@ function renderLayout(
 /**
  * Privacy tier per session id, for the tab strips (issue #56, R10).
  *
- * Reads the shared session-list cache and asks it to fill itself. The earlier
- * version of this comment claimed AppSidebar warmed the cache "at module
+ * # Two sources, and the cache is the FALLBACK
+ *
+ * A tab whose chat has been opened in this window has a `ChatStreamController`
+ * holding the row, and that store is the same one the header pill and the
+ * composer read — `applyTurnBinding` patches the post-ratchet classification
+ * onto it from the reply stream's FIRST frames. That is the live source, and it
+ * is read here through `useLiveSessionTiers`.
+ *
+ * Only the ACTIVE tab of each pane mounts a `BaseChat`, so a tab never yet
+ * visited in this window has no store at all. Those get their tier from the
+ * shared session-list cache, exactly as every tab used to.
+ *
+ * # Why the cache alone was wrong (finding M8, measured 2026-09-10)
+ *
+ * A chat CREATED in this window is not in that cache and cannot be put there by
+ * announcing at create time: `GET /sessions` INNER JOINs `messages`
+ * (`SessionStorage::list_sessions_by_types_maybe_empty`), so a row that has
+ * recorded no message is not listable. `refreshSessionBinding` patches only an
+ * entry the cache already holds — deliberately, since list membership belongs
+ * to the list channel. So: new chat, one turn on a private model, sqlite
+ * `privacy_tier=private`, the sidebar row private (it reads a freshly-fetched
+ * list), the model chip private — and the active tab's own dot still
+ * `data-privacy="public"` 52.9 seconds later.
+ *
+ * The comment this replaces claimed the gap was closed "twice over". Both
+ * mechanisms it named are real and neither reaches this map: the reply stream's
+ * classification lands on the STORE, and `refreshSessionBinding`'s list patch is
+ * a no-op for a session the list has never carried.
+ *
+ * # The merge is `max`, not "freshest wins"
+ *
+ * The tier is a permanent ratchet server-side
+ * (`crates/biorouter/src/privacy/mod.rs`) — public → private, never back — so a
+ * `private` from ANY source is a fact that still holds, and a `public` is only
+ * a lower bound. {@link mergeSessionTiers} folds the two with `max` and
+ * `undefined` stays unmarked. The invariant, which
+ * `ChatGroupsShell.privacy.test.tsx` pins: this map may render private-from-
+ * either-source or unmarked, and can never render public over a source that has
+ * seen private. There is no failure mode in which it over-marks — no source
+ * here invents a tier, they only report a row. `ChatTabStrip`'s `privacyTiers`
+ * prop doc states the same thing, and the two must not drift apart again.
+ *
+ * # The cache still has to be warmed here
+ *
+ * An earlier version of this comment claimed AppSidebar warmed it "at module
  * scope"; it does not. `preloadSessionList` lives inside AppSidebar's
  * `preloadHome()`, wired to `onFocus`/`onPointerEnter` on the Home nav entry,
  * so it fires only if the user points at Home. What actually warmed the cache
@@ -85,40 +130,22 @@ function renderLayout(
  * non-null and swallows its own errors, costing one fetch on a cold start.
  *
  * In jsdom, where the module is mocked or the fetch fails, the cache stays null
- * and every tab is simply unmarked — silence, never an assertion of Public.
+ * and a tab with no store is simply unmarked — silence, never an assertion of
+ * Public.
  *
  * ⚠ What re-emits through `subscribeSessionList` is narrower than it looks.
  * Any `emitChange` reaches this hook — a completed `refreshSessionList`, the
  * name-channel patch, `updateCachedSessionList` (SessionListView's rename and
- * delete), `clearSessionListCache`. But `notifySessionListChanged`, the signal
- * whose own doc-comment says "call after create, diverge, delete or import",
- * has exactly ONE production caller: `useDiverge.ts`. Create and import do not
- * announce, so this cache learns of them only when some list surface mounts.
- *
- * ⚠ A stale cache fails in the UNSAFE direction, not the safe one. The tier is
- * a permanent ratchet server-side (`crates/biorouter/src/privacy/mod.rs`) — it
- * only ever rises public → private — so a cached `public`, or a session the
- * cache has never seen, leaves a now-private chat with no dot. There is no
- * failure mode in which this over-marks. `ChatTabStrip`'s `privacyTiers` prop
- * doc states the same thing, and the two must not drift apart again.
- *
- * ⚠ This USED to record a known gap, and the gap is closed — the note is kept
- * because the shape of the fix is what a future reader needs. It read: the
- * header pill is not live either, `privacy_tier` is never re-read on the turn
- * path, so a chat that ratchets to Private DURING its life shows no marker on
- * either chat-side surface until something reloads it; "closing this needs the
- * escalation to announce itself from the provider-bind path".
- *
- * It does now, twice over. The reply stream states the post-ratchet
- * classification in its own first frames, and `ChatStreamController.refresh
- * SessionBinding` patches the same four fields onto THIS cache as well as onto
- * its own snapshot — so the tab dot, the header pill and the composer read one
- * answer. A row rewritten by another process arrives the same way, through
- * `utils/sessionMetaSubscription`. History rows and the sidebar rail, which read
- * freshly-fetched lists, were always correct and are unchanged.
+ * delete), `clearSessionListCache`, `notifySessionListChanged`. That last one
+ * now has three production callers rather than one: `useDiverge`, the import
+ * handler in `SessionListView`, and `refreshSessionBinding` the first time a
+ * chat finds itself missing from a list that has been fetched — which is how a
+ * chat born in this window reaches Home recents and See-all. It is NOT how the
+ * tab dot gets fixed; the live store above is, and it costs no request.
  */
 function useSessionPrivacyTiers(): Record<string, SessionClassification> {
-  const [tiers, setTiers] = useState<Record<string, SessionClassification>>({});
+  const [cachedTiers, setCachedTiers] = useState<Record<string, SessionClassification>>({});
+  const liveTiers = useLiveSessionTiers();
 
   useEffect(() => {
     const read = () => {
@@ -128,13 +155,7 @@ function useSessionPrivacyTiers(): Record<string, SessionClassification> {
       }
       // Identity-stable when nothing changed, so a list refresh that touched
       // no tier does not re-render every strip in every pane.
-      setTiers((prev) => {
-        const prevKeys = Object.keys(prev);
-        const same =
-          prevKeys.length === Object.keys(next).length &&
-          prevKeys.every((id) => prev[id] === next[id]);
-        return same ? prev : next;
-      });
+      setCachedTiers((prev) => (sessionTiersDiffer(prev, next) ? next : prev));
     };
     read();
     // Subscribe BEFORE asking for the fetch. `preloadSessionList` is async but
@@ -146,7 +167,10 @@ function useSessionPrivacyTiers(): Record<string, SessionClassification> {
     return unsubscribe;
   }, []);
 
-  return tiers;
+  // Memoised on the two inputs, both of which are identity-stable while
+  // unchanged: the merged object is a prop on every strip in every pane, so a
+  // fresh one per render would re-render all of them once per streamed token.
+  return useMemo(() => mergeSessionTiers(cachedTiers, liveTiers), [cachedTiers, liveTiers]);
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {

@@ -88,6 +88,11 @@ vi.mock('../ui/sidebar', () => ({
 vi.mock('../../hooks/chatStreamStore', () => ({
   useRunningChats: () => [],
   defaultChatStreamRegistry: { peekController: () => undefined },
+  // The shell reads the live per-chat privacy tiers from the registry (finding
+  // M8). Nothing here is about privacy, so an empty map is the whole stub —
+  // but it has to be PRESENT: this file replaces the module wholesale, and a
+  // missing export is a render-time throw, not an `undefined`.
+  useLiveSessionTiers: () => ({}),
 }));
 vi.mock('../../utils/sessionNameSync', () => ({
   subscribeSessionNameChanges: () => () => undefined,

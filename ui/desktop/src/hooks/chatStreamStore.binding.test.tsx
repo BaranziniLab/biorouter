@@ -57,8 +57,10 @@ vi.mock('../api', async (importOriginal) => {
 import { ChatStreamRegistry } from './chatStreamStore';
 import { announceSessionBinding } from '../utils/sessionBindingSync';
 import {
+  clearSessionListCache,
   getCachedSessionList,
   subscribeSessionList,
+  subscribeSessionListChanges,
   updateCachedSessionList,
 } from '../utils/sessionListCache';
 
@@ -429,6 +431,78 @@ describe('a turn states what it runs on, from its first frames', () => {
   });
 
   /**
+   * ⚠ **The frame can land BEFORE the row does, and the tier used to be lost.**
+   *
+   * Finding M8's second half, and the ordering is the app's own. A chat CREATED
+   * by a submit is ATTACHED to — `ChatGroupsContext` observes the turn that is
+   * already running — while `loadSession` is still fetching the row, and
+   * `loadSession` blanks `session` for the duration of that fetch. The pin
+   * survived the window because it has a home of its own; the classification's
+   * only home is the row, so the updater returned `prev` and the fact was
+   * dropped. Every chat-side surface then said `public` until the post-turn
+   * re-read: measured in the running app on session `20260910_4` — snapshot
+   * `norow` at t+559 ms with the turn already streaming, row lands `public` at
+   * t+590, and does not move until t+4327, 28 ms after the turn ENDED.
+   *
+   * `pinnedModel` is the proof the frame really arrived: it is the half of the
+   * same frame that was never lost.
+   */
+  it('keeps a classification the observer reported before the row loaded', async () => {
+    const sid = `turn-start-norow-${++sessionSeq}`;
+    // Disarm the post-turn re-read, so a `private` row can only be the frame's.
+    mocks.getSession.mockResolvedValue({ data: null });
+    mocks.observeSessionEvents.mockResolvedValue({ stream: streamOf(pinFrame()) });
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    void controller.observeSession();
+    await vi.waitFor(() =>
+      expect(controller.getSnapshot().pinnedModel?.model).toBe('gpt-5.5-2026-04-24')
+    );
+    controller.stopObserving();
+    // The frame has been consumed and there is still no row — nothing invented
+    // in its place.
+    expect(controller.getSnapshot().session).toBeUndefined();
+
+    await controller.loadSession();
+
+    const row = controller.getSnapshot().session;
+    expect(row?.privacy_tier).toBe('private');
+    expect(row?.privacy_reason).toBe('turn:versa_azure');
+  });
+
+  /**
+   * ⚠ One-shot. A stash that outlived the row it was waiting for could
+   * re-assert a turn's statement over a row read later — after a
+   * declassification, the one legitimate private → public move — which is the
+   * unsafe direction wearing the safe one's clothes.
+   */
+  it('applies a pre-row classification once, and lets the next row overrule it', async () => {
+    const sid = `turn-start-norow-once-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: null });
+    mocks.observeSessionEvents.mockResolvedValue({ stream: streamOf(pinFrame()) });
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    void controller.observeSession();
+    await vi.waitFor(() =>
+      expect(controller.getSnapshot().pinnedModel?.model).toBe('gpt-5.5-2026-04-24')
+    );
+    controller.stopObserving();
+    await controller.loadSession();
+    expect(controller.getSnapshot().session?.privacy_tier).toBe('private');
+
+    // A row read AFTERWARDS says public — a declassification — and must stand.
+    mocks.getSession.mockResolvedValue({
+      data: boundSession(sid, { privacy_tier: 'public', privacy_reason: null }),
+    });
+    await controller.refreshSessionBinding();
+
+    expect(controller.getSnapshot().session?.privacy_tier).toBe('public');
+    expect(controller.getSnapshot().session?.privacy_reason).toBeNull();
+  });
+
+  /**
    * ⚠ The regression the widening would otherwise cause, pinned.
    *
    * `chatBinding` prefers the turn-reported pin over the row. While the frame
@@ -688,5 +762,215 @@ describe('a stale row read cannot overwrite a newer fact', () => {
       provider: 'versa_azure',
       model: 'gpt-4.1-2025-04-24',
     });
+  });
+});
+
+/**
+ * Finding M8 — the chat-tab dot never turned private for a chat created in this
+ * window, while the sidebar row for the SAME chat did.
+ *
+ * The dot read the session-list cache and nothing else. That cache cannot hold
+ * a chat born in this window: `GET /sessions` INNER JOINs `messages`, so a row
+ * with none is not listable, and the patch above deliberately touches only an
+ * entry the cache already holds. The store knew all along — `applyTurnBinding`
+ * writes the post-ratchet classification from the reply stream's first frames —
+ * so the fix is to publish what the stores hold rather than to fetch anything.
+ */
+describe('the registry publishes what its stores say a chat is', () => {
+  /**
+   * Notification is batched to one animation frame (#22), and this rides that
+   * same batch on purpose: the header pill, the composer and the tab dot then
+   * move together rather than one of the three arriving a frame early. So the
+   * wait here is a frame, not a network round trip.
+   */
+  const aFrame = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+  it('reports a private chat that no session list has ever carried', async () => {
+    const sid = `tier-live-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({
+      data: { session: boundSession(sid, { privacy_tier: 'private' }) },
+    });
+
+    const registry = new ChatStreamRegistry();
+    expect(registry.getSessionTiersSnapshot()).toEqual({});
+
+    await registry.getController(sid).loadSession();
+    await aFrame();
+
+    expect(registry.getSessionTiersSnapshot()).toEqual({ [sid]: 'private' });
+  });
+
+  it('follows the ratchet a turn reports, without re-reading the row', async () => {
+    const sid = `tier-ratchet-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    mocks.reply.mockResolvedValue({
+      stream: streamOf(
+        {
+          type: 'PrivacyProviderPinned',
+          provider: 'versa_azure',
+          model: 'gpt-5.5-2026-04-24',
+          privacy_tier: 'private',
+          privacy_reason: 'turn:versa_azure',
+        } as unknown as MessageEvent,
+        finishFrame
+      ),
+    });
+
+    const registry = new ChatStreamRegistry();
+    const controller = registry.getController(sid);
+    await controller.loadSession();
+    await aFrame();
+    expect(registry.getSessionTiersSnapshot()).toEqual({ [sid]: 'public' });
+
+    await controller.handleSubmit('hi');
+    await vi.waitFor(async () => {
+      await aFrame();
+      expect(registry.getSessionTiersSnapshot()).toEqual({ [sid]: 'private' });
+    });
+  });
+
+  it('emits to its subscribers only when a tier actually moved', async () => {
+    const sid = `tier-quiet-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({
+      data: { session: boundSession(sid, { privacy_tier: 'private' }) },
+    });
+    mocks.getSession.mockResolvedValue({ data: boundSession(sid, { privacy_tier: 'private' }) });
+    mocks.reply.mockResolvedValue({ stream: streamOf(finishFrame) });
+
+    const registry = new ChatStreamRegistry();
+    const controller = registry.getController(sid);
+    await controller.loadSession();
+    await aFrame();
+
+    let emits = 0;
+    const unsubscribe = registry.subscribeSessionTiers(() => {
+      emits += 1;
+    });
+    const before = registry.getSessionTiersSnapshot();
+
+    // A whole turn, on a chat whose tier does not move.
+    await controller.handleSubmit('hi');
+    await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalled());
+    await aFrame();
+    unsubscribe();
+
+    expect(emits).toBe(0);
+    // Identity-stable, so `useSyncExternalStore` re-renders no strip.
+    expect(registry.getSessionTiersSnapshot()).toBe(before);
+  });
+
+  /**
+   * ⚠ The unsafe direction, and the reason this map is a ratchet of its own.
+   * A controller can momentarily hold no row — a reload, a rebind — and if the
+   * published map followed it down, the strip would fall back to whatever the
+   * list cache last said, which for a chat that just went private is `public`.
+   * Once private, private.
+   */
+  it('never retracts a private it has already reported', async () => {
+    const sid = `tier-noretract-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({
+      data: { session: boundSession(sid, { privacy_tier: 'private' }) },
+    });
+
+    const registry = new ChatStreamRegistry();
+    const controller = registry.getController(sid);
+    await controller.loadSession();
+    await aFrame();
+    expect(registry.getSessionTiersSnapshot()).toEqual({ [sid]: 'private' });
+
+    // A binding announcement is the cheapest real path that writes the snapshot
+    // without carrying a tier of its own.
+    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.6' });
+    await aFrame();
+
+    expect(registry.getSessionTiersSnapshot()).toEqual({ [sid]: 'private' });
+  });
+});
+
+/**
+ * The OTHER half of M8, and deliberately not the one that fixes the dot.
+ *
+ * Home recents and the See-all view read the session-list cache, and a chat
+ * created in this window never enters it: `notifySessionListChanged` had exactly
+ * one production caller (`useDiverge`), so nothing announced a create. Announcing
+ * from `createSession` cannot work either — the row has no message yet and the
+ * list endpoint's INNER JOIN omits it — so the announcement is made at the first
+ * moment the daemon WILL list the chat, which is after its first turn.
+ */
+describe('a chat born in this window tells the list it exists', () => {
+  beforeEach(() => {
+    clearSessionListCache();
+  });
+
+  it('announces once, when a fetched list turns out not to hold it', async () => {
+    const sid = `bind-announce-${++sessionSeq}`;
+    // A cache that has been fetched, and does not hold this chat.
+    updateCachedSessionList([boundSession(`${sid}-neighbour`)]);
+    let announcements = 0;
+    const unsubscribe = subscribeSessionListChanges(() => {
+      announcements += 1;
+    });
+
+    mocks.getSession.mockResolvedValue({ data: boundSession(sid, { privacy_tier: 'private' }) });
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    mocks.reply.mockResolvedValue({ stream: streamOf(finishFrame) });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.handleSubmit('hi');
+    await vi.waitFor(() => expect(announcements).toBe(1));
+
+    // A second turn must not buy another full list fetch.
+    await controller.handleSubmit('again');
+    await vi.waitFor(() => expect(mocks.getSession.mock.calls.length).toBeGreaterThan(1));
+    unsubscribe();
+    expect(announcements).toBe(1);
+  });
+
+  it('stays quiet for a chat the list already holds', async () => {
+    const sid = `bind-noannounce-${++sessionSeq}`;
+    updateCachedSessionList([boundSession(sid)]);
+    let announcements = 0;
+    const unsubscribe = subscribeSessionListChanges(() => {
+      announcements += 1;
+    });
+
+    mocks.getSession.mockResolvedValue({ data: boundSession(sid, { privacy_tier: 'private' }) });
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    mocks.reply.mockResolvedValue({ stream: streamOf(finishFrame) });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.handleSubmit('hi');
+    await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalled());
+    unsubscribe();
+
+    expect(announcements).toBe(0);
+  });
+
+  /**
+   * ⚠ A null cache is "nobody has asked yet", not "the chat is missing".
+   * `ChatGroupsShell` warms it on mount; answering an unfetched cache with a
+   * full list fetch per turn-end would buy a page of session rows to learn one
+   * string, on every chat in the window.
+   */
+  it('stays quiet when no list has been fetched at all', async () => {
+    const sid = `bind-nolist-${++sessionSeq}`;
+    let announcements = 0;
+    const unsubscribe = subscribeSessionListChanges(() => {
+      announcements += 1;
+    });
+
+    mocks.getSession.mockResolvedValue({ data: boundSession(sid, { privacy_tier: 'private' }) });
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    mocks.reply.mockResolvedValue({ stream: streamOf(finishFrame) });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.handleSubmit('hi');
+    await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalled());
+    unsubscribe();
+
+    expect(announcements).toBe(0);
   });
 });
