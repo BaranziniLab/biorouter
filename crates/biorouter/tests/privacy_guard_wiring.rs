@@ -638,9 +638,15 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter/src/agents/extension_manager.rs",
-                counts: c(4, 0, 0),
+                counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
-                what: "Gates E and F: the tool list and tool dispatch",
+                what: "Gates E and F: the tool list and tool dispatch. It was FOUR until the \
+                       2026-09-10 test drive's finding M18: the fourth was \
+                       `assert_extension_reachable`, the one gate that reads an unknown name \
+                       as Private, where this function's flat sentence asserted a privateness \
+                       the gate had not established. That call now goes to \
+                       `private_or_absent_refusal`, tracked in its own row. Moving it back \
+                       would put the false claim back",
             },
             Site {
                 file: "crates/biorouter/src/agents/subagent_tool.rs",
@@ -720,6 +726,24 @@ const REGISTRY: &[Guard] = &[
         }],
     },
     Guard {
+        ident: "private_or_absent_refusal",
+        defined_in: "crates/biorouter/src/privacy/refusal.rs",
+        decides: "the sentence Gate C' returns — the resource and prompt surface, whose \
+                  unknown-name default is Private, so its refusal must cover BOTH a private \
+                  extension and a name that is not installed and must not tell the two apart",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/extension_manager.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`assert_extension_reachable`, the ONE caller and deliberately so. Every \
+                   other tier gate resolves its extension from an installed record before it \
+                   refuses, so `privacy_refusal`'s flat statement is a fact there and the \
+                   better thing to hand a model. A second caller of this one would be a gate \
+                   hedging about an extension it can see",
+        }],
+    },
+    Guard {
         ident: "tier_refuses",
         defined_in: "crates/biorouter/src/privacy/refusal.rs",
         decides: "the boolean under `privacy_refusal`: private extension, non-private caller. \
@@ -739,10 +763,13 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter/src/privacy/refusal.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`privacy_refusal`, which is this predicate plus the sentence the model \
-                       reads",
+                what: "`privacy_refusal` and `private_or_absent_refusal`, which are this \
+                       predicate plus the two sentences the model reads. TWO renderings and \
+                       one rule is the whole point of the split: the gate that resolved the \
+                       extension states it is private, the gate that read an unknown name as \
+                       Private states the disjunction, and neither re-derives WHEN to refuse",
             },
         ],
     },

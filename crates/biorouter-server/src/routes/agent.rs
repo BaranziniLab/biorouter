@@ -2407,14 +2407,19 @@ async fn read_resource(
 ///
 /// ⚠ **The not-found message is REPLACED rather than forwarded, and that is the
 /// whole reason this takes `requested`.** The manager's own text reads
-/// *"Extension 'x' not found. Here are the available extensions: …"* — a list of
-/// every extension loaded in that chat, private ones included. It is written for
-/// a model that has already passed Gate E and may therefore be told what it can
-/// reach; this route is `public_enforced`, so forwarding it would hand a caller
-/// evaluated as public exactly the private-extension names Gate E exists to
-/// withhold. The other two messages ARE forwarded: a refusal names only the
-/// extension the caller itself asked for and is written to be read, and the read
-/// failure names only the caller's own URI.
+/// *"Extension 'x' not found. Here are the available extensions: …"*. That list
+/// is now Gate E's rather than the raw extension map's — the 2026-09-10 test
+/// drive's finding M6 closed it at the source, in `ExtensionManager` — so what
+/// arrives here can no longer name an extension a public caller was not already
+/// shown. This route still replaces it, for two reasons that outlive that fix:
+/// the caller named ONE extension and a roster it did not ask for is not an
+/// answer to its question, and a message that is safe only because its producer
+/// filters it correctly is one edit away from being unsafe again. Defence in
+/// depth on a boundary this cheap to hold is worth keeping.
+///
+/// The other two messages ARE forwarded: a refusal names only the extension the
+/// caller itself asked for and is written to be read, and the read failure names
+/// only the caller's own URI.
 fn read_resource_failure(error: rmcp::model::ErrorData, requested: &str) -> ErrorResponse {
     use rmcp::model::ErrorCode;
 
@@ -2457,7 +2462,10 @@ mod read_resource_route_tests {
     //! hand-made error with the same code.
 
     use super::{read_resource_failure, StatusCode};
-    use biorouter::privacy::{refusal::privacy_refusal, ProviderTier};
+    use biorouter::privacy::{
+        refusal::{privacy_refusal, private_or_absent_refusal},
+        ProviderTier,
+    };
     use rmcp::model::{ErrorCode, ErrorData};
 
     const SOURCE: &str = include_str!("agent.rs");
@@ -2523,6 +2531,59 @@ mod read_resource_route_tests {
         assert_eq!(
             read_resource_failure(unreadable, "developer").status,
             StatusCode::BAD_GATEWAY
+        );
+    }
+
+    /// Finding M18: the 403 must not tell the caller a thing this gate never
+    /// established.
+    ///
+    /// `POST /agent/read_resource` with `extension_name: "nonexistent_ext"`
+    /// answered *"`nonexistent_ext` is a private extension: it reaches data held
+    /// inside the institution …"*. Failing closed there is correct and stays —
+    /// `assert_extension_reachable` reads an unknown name as Private on purpose,
+    /// and answering "no such extension" instead would let a public caller walk
+    /// names until it found the private connectors Gate E hides. What was wrong
+    /// was the *claim*: a name that names nothing was asserted to be a private
+    /// extension, sending a model to the model picker to fix a typo.
+    ///
+    /// The refusal is the REAL one, built by the function
+    /// `assert_extension_reachable` composes, for the same reason the test above
+    /// builds a real `privacy_refusal`: a hand-made `ErrorData` would pass
+    /// against a production gate that had never been rewired.
+    #[test]
+    fn a_refusal_for_a_name_this_gate_cannot_resolve_does_not_call_it_private() {
+        let refusal = private_or_absent_refusal(
+            "nonexistent_ext",
+            ProviderTier::Private,
+            ProviderTier::Public,
+        )
+        .expect("an unknown name reads Private, so a public caller is refused");
+
+        let response = read_resource_failure(refusal, "nonexistent_ext");
+
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "failing closed is the correct behaviour and this finding does not relax it"
+        );
+        assert!(
+            !response
+                .message
+                .contains("`nonexistent_ext` is a private extension"),
+            "the refusal still asserts that a name this gate could not resolve IS a private \
+             extension: {}",
+            response.message
+        );
+        assert!(
+            response.message.contains("nonexistent_ext"),
+            "the caller must still learn which name it was refused: {}",
+            response.message
+        );
+        assert!(
+            response.message.contains("not installed"),
+            "the refusal has to state the OTHER case it covers, or it is the same assertion \
+             in softer words: {}",
+            response.message
         );
     }
 

@@ -18,6 +18,7 @@
 //! | 23 | the two spawn variants and `PrivacyRefusal::spawn_upgrade` / `spawn_downgrade` |
 //! | 41 | [`PrivacyRefusal::AppSessionTierFixed`], DR-21's app-runtime refusal |
 //! | DR-31 | [`PrivacyRefusal::SpawnCrossesAffiliation`] and [`PrivacyRefusal::spawn_affiliation`] — the spawn gate's third axis |
+//! | test drive M18 | [`private_or_absent_refusal`] — [`privacy_refusal`]'s sentence, restated for the ONE gate that reads an unknown name as Private and therefore cannot claim the extension is private |
 //! | findings 4+13's seam | [`extension_enable_refusal`] — the WHOLE enable gate, tier arm above the operator pin, called by both agent enable doors — and [`tier_refuses`], the boolean under [`privacy_refusal`] that the user's HTTP enable door asks instead of re-typing |
 
 use super::{ProviderTier, SessionClassification};
@@ -578,6 +579,70 @@ pub fn privacy_refusal(
              boundary set by the Biorouter marketplace, not something to work around: do not \
              retry with a different tool name, through code execution, or through a resource \
              read."
+        ),
+        None,
+    ))
+}
+
+/// The same boundary, composed by the one gate that **cannot tell a private
+/// extension from a name that is not installed** — issue #56 Gate C', the
+/// resource and prompt surface.
+///
+/// [`ExtensionManager::assert_extension_reachable`] reads an unknown name as
+/// Private. That is the single place in this feature where the unknown-name
+/// default is inverted, deliberately: the alternative is permitting a reach at a
+/// name the manager could not resolve at all. The inversion is also what makes
+/// [`privacy_refusal`]'s sentence WRONG there — it states *"`x` is a private
+/// extension"* about a name that may name nothing, and a model told that goes
+/// looking for a private model to reach an extension that does not exist. The
+/// 2026-09-10 test drive measured it as finding M18: `POST /agent/read_resource`
+/// answered `403` *"`nonexistent_ext` is a private extension …"*.
+///
+/// ⚠ **The two cases must keep ONE answer, and that is the whole difficulty.**
+/// Saying "no such extension" for the absent case would build an existence
+/// oracle out of the repair: a public caller could walk names and learn which
+/// private connectors a chat has loaded — precisely the set Gate E hides, and
+/// precisely the leak finding M6 closes on the roster next door in
+/// `read_resource_tool`. So this states the disjunction rather than resolving
+/// it, and returns the identical string in both cases. Failing closed is
+/// unchanged; only the claim about *why* is.
+///
+/// ⚠ **`privacy_refusal` keeps its sentence, and this does not replace it.**
+/// Gate C proper (`dispatch_tool_call`) resolves the extension from an
+/// installed client before it refuses, so "is a private extension" is a fact
+/// there and the flat statement is the better one to give a model. Two
+/// renderings of [`tier_refuses`], each true where it is used — not one
+/// rendering hedged everywhere.
+///
+/// The actionable half survives, conditionally rather than as an assertion: a
+/// caller that really did meet a private extension still learns what clears it,
+/// and one that merely mistyped a name is no longer sent to the model picker to
+/// fix a typo.
+///
+/// §14.4 as everywhere else: the extension the caller itself named, the two
+/// tiers, and nothing else.
+///
+/// [`ExtensionManager::assert_extension_reachable`]: crate::agents::ExtensionManager
+pub fn private_or_absent_refusal(
+    extension: &str,
+    extension_tier: ProviderTier,
+    caller_tier: ProviderTier,
+) -> Option<ErrorData> {
+    if !tier_refuses(extension_tier, caller_tier) {
+        return None;
+    }
+    Some(ErrorData::new(
+        ErrorCode::INVALID_REQUEST,
+        format!(
+            "`{extension}` cannot be reached from this chat, which is running on a public \
+             model. To a public model a private extension — one that reaches data held inside \
+             the institution — and a name that is not installed here are the same answer, and \
+             Biorouter does not say which `{extension}` is. If it is a private extension, ask \
+             the user to switch this chat to a private model (Settings > Models, or the model \
+             chip in the composer) and try again; if it is not installed, no model will reach \
+             it. This is a data-protection boundary set by the Biorouter marketplace, not \
+             something to work around: do not retry with a different tool name, through code \
+             execution, or through a resource read."
         ),
         None,
     ))
