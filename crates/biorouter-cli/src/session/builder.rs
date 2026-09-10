@@ -675,6 +675,26 @@ pub fn unconfigured_precondition(provider: Option<&str>, model: Option<&str>) ->
     None
 }
 
+/// Whether a `cliclack` prompt failed because there is nobody to ask, as
+/// opposed to because somebody answered by cancelling (M16).
+///
+/// `cliclack` returns [`std::io::ErrorKind::NotConnected`] from its own
+/// `is_term()` check before it draws anything — that is a scripted run
+/// (`</dev/null`, a piped stderr, a daemon), not a fault. `UnexpectedEof` is the
+/// same statement from the read itself.
+///
+/// ⚠ [`std::io::ErrorKind::Interrupted`] is deliberately absent. `cliclack` maps
+/// its `State::Cancel` — a `Ctrl-C` at a real terminal — onto that kind, and a
+/// person pressing `Ctrl-C` HAS answered. Folding it in here would turn an abort
+/// into "carry on with the default", which for this prompt means silently not
+/// changing directory rather than stopping.
+fn is_end_of_input(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotConnected | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
 /// An [`Agent`] whose session manager is the given (private) store, with every
 /// other config knob identical to [`Agent::new`].
 fn agent_with_session_manager(session_manager: Arc<SessionManager>) -> Agent {
@@ -926,11 +946,37 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         let current_workdir =
             std::env::current_dir().expect("Failed to get current working directory");
         if current_workdir != session.working_dir {
-            if session_config.interactive {
-                let change_workdir = cliclack::confirm(format!("{} The original working directory of this chat was set to {}. Your current directory is {}. Do you want to switch back to the original working directory?", style("WARNING:").yellow(), style(session.working_dir.display()).cyan(), style(current_workdir.display()).cyan()))
+            // M16. `--interactive` says a person MAY be at the keyboard, never
+            // that one is: `biorouter session --resume … </dev/null` is the
+            // documented way to script a rebind, and it takes this branch with
+            // no stdin at all. The `.expect` here turned that into
+            // `panicked at 'Failed to get user input: Kind(NotConnected)'` and
+            // **rc=101 — after the rebind had already landed**, so a scripted
+            // caller that checks the exit status reads a completed piece of work
+            // as a failure. Measured on every one of ~20 rebinds in the 2026-09-10
+            // test drive.
+            //
+            // EOF is an answer, and it is the same answer this code already
+            // gives when it knows nobody is there: the `else` arm below warns
+            // and stays put. Anything else would be a guess about a directory
+            // change on behalf of a caller who cannot see the question — and
+            // `initial_value(true)` means the guess would be to MOVE.
+            //
+            // Only the prompt is handled. A `Ctrl-C` at a real terminal comes
+            // back as `Interrupted` and still aborts, because there a person did
+            // answer.
+            let asked_and_answered = if session_config.interactive {
+                match cliclack::confirm(format!("{} The original working directory of this chat was set to {}. Your current directory is {}. Do you want to switch back to the original working directory?", style("WARNING:").yellow(), style(session.working_dir.display()).cyan(), style(current_workdir.display()).cyan()))
                         .initial_value(true)
-                        .interact().expect("Failed to get user input");
-
+                        .interact() {
+                    Ok(change_workdir) => Some(change_workdir),
+                    Err(e) if is_end_of_input(&e) => None,
+                    Err(e) => panic!("Failed to get user input: {e:?}"),
+                }
+            } else {
+                None
+            };
+            if let Some(change_workdir) = asked_and_answered {
                 if change_workdir {
                     if !session.working_dir.exists() {
                         output::render_error(&format!(
@@ -1171,6 +1217,31 @@ async fn keyring_advice(provider_name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M16. `biorouter session --resume --session-id … --provider … </dev/null`
+    /// is the documented way to script a rebind, and it took the interactive
+    /// branch of the working-directory prompt with no terminal attached. That
+    /// `.expect` panicked with `Failed to get user input: Kind(NotConnected)`
+    /// and **rc=101 after the rebind had already been persisted**, so every
+    /// scripted caller that checks an exit status read finished work as a
+    /// failure — ~20 times out of 20 in the 2026-09-10 test drive.
+    ///
+    /// The kinds are what the branch keys on, so they are what is pinned. A test
+    /// that drove the real prompt would need a pty and would assert nothing
+    /// about the classification, which is the only part that was wrong.
+    #[test]
+    fn a_prompt_with_no_terminal_is_end_of_input_and_a_cancelled_one_is_not() {
+        use std::io::{Error, ErrorKind};
+        // What cliclack returns from its own `is_term()` check, before it draws
+        // anything — the scripted case.
+        assert!(is_end_of_input(&Error::from(ErrorKind::NotConnected)));
+        assert!(is_end_of_input(&Error::from(ErrorKind::UnexpectedEof)));
+        // What it returns for `State::Cancel`. A person pressed Ctrl-C, which is
+        // an answer; treating it as "nobody was there" would turn an abort into
+        // the prompt's default.
+        assert!(!is_end_of_input(&Error::from(ErrorKind::Interrupted)));
+        assert!(!is_end_of_input(&Error::from(ErrorKind::PermissionDenied)));
+    }
 
     /// The two coding-agent providers declare no config keys at all: they drive
     /// a CLI the user signed in to, and Biorouter holds no credential for
