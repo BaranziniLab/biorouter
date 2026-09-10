@@ -434,7 +434,9 @@ where
     let mut handle = tokio::task::spawn_blocking(move || {
         let _inflight = InflightGuard(task_key.clone());
         let summary = walk();
-        {
+        // `ttl == 0` disables caching entirely, as it always has: with no entry
+        // written there is nothing for a later turn to serve.
+        if !ttl.is_zero() {
             let mut state = STATE.lock().unwrap();
             state.cache.insert(
                 task_key,
@@ -469,6 +471,11 @@ where
         Wait::Cancelled => None,
         Wait::OverBudget => {
             warn_budget_once(&key, budget);
+            if ttl.is_zero() {
+                // Caching is off, so there is nothing to stamp and nothing to
+                // serve. The walk keeps its single-flight marker regardless.
+                return None;
+            }
             let mut state = STATE.lock().unwrap();
             let landed = state
                 .cache
@@ -627,25 +634,16 @@ pub fn build_summary(
 }
 
 // ---------------------------------------------------------------------------
-// Test-only accessors into the module's process-global state.
+// Test-only accessors into the module's process-global state. There is
+// deliberately no `clear_cache`: every test keys off a root of its own
+// (`unique_key`), because clearing shared state from one test breaks whichever
+// other test is running beside it.
 //
 // Kept together at the bottom, after every production item, because the repo's
 // source guards slice a file at its FIRST `#[cfg(test)]` and treat everything
 // above it as the production half. An accessor placed mid-file silently
 // truncates that view.
 // ---------------------------------------------------------------------------
-
-/// Clear the cache and every marker. Test-only; production relies on TTL
-/// invalidation.
-#[cfg(test)]
-pub fn clear_cache() {
-    let mut state = STATE.lock().unwrap();
-    state.cache.clear();
-    state.inflight.clear();
-    state.walk_starts.clear();
-    state.warned_budget.clear();
-    state.warned_skip.clear();
-}
 
 /// How many walks this process has started for `dir`. Per root, so tests using
 /// different temp directories do not observe each other.
