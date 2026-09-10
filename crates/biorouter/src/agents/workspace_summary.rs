@@ -131,7 +131,15 @@ const OPAQUE_COMPONENTS: &[&str] = &[
 /// Children of the home directory that are opaque. Matched home-relative rather
 /// than by name alone, because `Library/` is an ordinary directory name inside a
 /// project (an R library, a component library) and must stay walkable there.
-const HOME_OPAQUE_CHILDREN: &[&str] = &["Library", "AppData", ".Trash"];
+///
+/// ⚠ `AppData` is deliberately NOT on this list, though it is the obvious
+/// Windows counterpart to `~/Library`. `std::env::temp_dir()` on Windows is
+/// `%USERPROFILE%\AppData\Local\Temp`, so refusing that subtree would refuse
+/// every scratch workspace — and empty the walk in every `build_summary` test
+/// that runs there. Nothing in `AppData` blocks the way a File Provider mount
+/// does; the components above are what capture the measured hazard, and they
+/// are matched wherever they appear, including on Windows.
+const HOME_OPAQUE_CHILDREN: &[&str] = &["Library", ".Trash"];
 
 fn config_bool(key: &str, default: bool) -> bool {
     Config::global().get_param::<bool>(key).unwrap_or(default)
@@ -1069,7 +1077,6 @@ mod tests {
             "/Users/example/Library/Group Containers/group.com.apple.CloudDocs",
             "/Users/example/Library/CloudStorage/Dropbox",
             "/Users/example/Library/Mobile Documents/com~apple~CloudDocs",
-            "/Users/example/AppData/Local",
             "/Users/example/.Trash",
         ] {
             assert_eq!(
@@ -1117,6 +1124,36 @@ mod tests {
             !out.contains("group.com.example"),
             "the opaque tree is not descended into: {out}"
         );
+    }
+
+    /// A scratch directory is an ordinary workspace, and on Windows every one of
+    /// them lives under `%USERPROFILE%\AppData\Local\Temp`. An `AppData` entry
+    /// in the opaque list would therefore refuse a legitimate root on one
+    /// platform and not the other two, and would empty the walk in every
+    /// `build_summary` test above — which is how this was caught.
+    #[test]
+    fn a_temporary_directory_is_a_legitimate_workspace_on_every_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            skip_reason(dir.path()),
+            None,
+            "a temp dir must get a workspace map: {}",
+            dir.path().display()
+        );
+        // The same rule, stated without depending on where this platform puts
+        // its temp directory: a Windows-shaped scratch path under the home
+        // directory is a workspace like any other.
+        let home = Path::new("/Users/example");
+        assert_eq!(
+            skip_reason_with_home(
+                Path::new("/Users/example/AppData/Local/Temp/.tmpABC123"),
+                Some(home)
+            ),
+            None
+        );
+        std::fs::write(dir.path().join("kept.txt"), "x").unwrap();
+        let out = build_summary(dir.path(), &cfg(), None).expect("temp dirs are walked");
+        assert!(out.contains("kept.txt"));
     }
 
     #[test]

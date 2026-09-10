@@ -99,14 +99,19 @@ So `skip_reason` refuses three kinds of root outright, with no walk at all and n
 
 - **The home directory itself.** Not directories inside it: `~/code/thing` is an ordinary workspace.
 - **A filesystem root** (`/`, `C:\`), for the same reason and more so.
-- **Anything at or beneath an opaque tree** — `~/Library`, `~/AppData`, `~/.Trash`, and any path
-  holding a `Group Containers`, `CloudStorage`, `Mobile Documents` or `FileProvider` component.
+- **Anything at or beneath an opaque tree** — `~/Library`, `~/.Trash`, and any path holding a
+  `Group Containers`, `CloudStorage`, `Mobile Documents` or `FileProvider` component.
   These are places where the operating system or a sync client mediates the read, so an `opendir`
   can block on a daemon rather than on a disk.
 
-The `Library` and `AppData` rules are matched **home-relative**, not by name alone. `Library/` is an
-ordinary directory name inside a project — an R library, a component library — and stays walkable
-there.
+The `Library` rule is matched **home-relative**, not by name alone. `Library/` is an ordinary
+directory name inside a project — an R library, a component library — and stays walkable there.
+
+`AppData` is deliberately *not* on the list, though it is the obvious Windows counterpart to
+`~/Library`. `std::env::temp_dir()` on Windows is `%USERPROFILE%\AppData\Local\Temp`, so refusing
+that subtree would refuse every scratch workspace on one platform and not the other two. Nothing in
+`AppData` blocks the way a File Provider mount does, and the components above capture the measured
+hazard wherever they appear, Windows included.
 
 The same opaque trees are pruned *during* a walk that started somewhere legitimate, and the walk does
 not cross a mount point: a network share and a File Provider volume are both mounts, and an
