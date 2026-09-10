@@ -43,6 +43,16 @@ const BACKEND_CODES = new Set(['session_load_unreachable', 'agent_load_failed', 
 // opened. Distinct copy: the request DID start, so "retry to continue".
 const MIDSTREAM_CODES = new Set(['stream_error', 'stream_interrupted']);
 
+// M2 — the two endings the USER caused. Both arrive as `scope: 'internal'`,
+// which is the scope of a turn that died on its own, so without their own
+// titles they read as "Model turn ended unexpectedly" — the app blaming the
+// model for a Stop the user pressed. The store is what distinguishes them (only
+// it knows a Stop was outstanding); this map is what names them.
+const STOP_TITLES: Record<string, string> = {
+  turn_stopped_by_user: 'Turn stopped',
+  stop_not_confirmed: 'Stop not confirmed',
+};
+
 function isBackendUnreachable(error: ChatTurnErrorData): boolean {
   return (
     (error.scope === 'transport' || isConnectionError(error.message)) &&
@@ -80,7 +90,9 @@ function userFacingMessage(error: ChatTurnErrorData): string {
 
 export function presentChatTurnError(error: ChatTurnErrorData): ChatTurnErrorPresentation {
   let title = 'Model request failed';
-  if (error.providerKind && PROVIDER_TITLES[error.providerKind]) {
+  if (STOP_TITLES[error.code]) {
+    title = STOP_TITLES[error.code];
+  } else if (error.providerKind && PROVIDER_TITLES[error.providerKind]) {
     title = PROVIDER_TITLES[error.providerKind];
   } else if (error.message.includes('insufficient_quota')) {
     title = 'Model quota exceeded';
