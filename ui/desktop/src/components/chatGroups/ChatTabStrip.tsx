@@ -99,8 +99,17 @@ export interface ChatTabStripProps {
    * `ChatTab` is persisted by chatGroupsStorage, and a tier persisted with a tab
    * is a tier that can be read back stale. The unsafe direction is the likely
    * one: the tier only ever RISES during a session, so a cached `public` would
-   * leave a now-private chat unmarked. A session-keyed map recomputed from the
-   * live session list has no such state to go stale.
+   * leave a now-private chat unmarked. A session-keyed map recomputed from
+   * sources with no state of their own has no such thing to go stale.
+   *
+   * ⚠ **Recomputed from TWO sources, folded with `max`** — the chat stores this
+   * window holds (live, and where a ratchet during a turn first appears) over
+   * the session-list cache (which covers tabs never opened here, and which
+   * cannot carry a chat created in this window until it has recorded a
+   * message). `ChatGroupsShell.useSessionPrivacyTiers` builds it, its doc gives
+   * the measurement, and the two must not drift apart again: reading the list
+   * cache ALONE is finding M8 — the active tab's dot stuck on public while the
+   * sidebar, the chip and sqlite all read private.
    *
    * Optional with a `{}` default, like `tabAnnotations`, so the four suites that
    * mount this strip bare keep compiling untouched. An unknown session is

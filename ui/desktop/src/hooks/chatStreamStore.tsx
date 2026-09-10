@@ -27,8 +27,13 @@ import {
   subscribeSessionNameChanges,
 } from '../utils/sessionNameSync';
 import { subscribeSessionBindingChanges } from '../utils/sessionBindingSync';
-import { getCachedSessionList, updateCachedSessionList } from '../utils/sessionListCache';
+import {
+  getCachedSessionList,
+  notifySessionListChanged,
+  updateCachedSessionList,
+} from '../utils/sessionListCache';
 import { subscribeToSessionMeta } from '../utils/sessionMetaSubscription';
+import { raiseTier } from '../components/privacy/sessionTier';
 import {
   createElicitationResponseMessage,
   createUserMessage,
@@ -814,6 +819,26 @@ class ChatStreamController {
   private lastInteractionTime = Date.now();
   private loadPromise: Promise<void> | null = null;
   /**
+   * This chat has already told the session-list cache it exists.
+   *
+   * Latched, never cleared: a chat that a fetched list still does not hold
+   * after being announced is one the list endpoint filters out on purpose (a
+   * `sub_agent` row under `include_subagents=false`), and re-announcing it once
+   * per turn forever would buy a full list fetch to be told the same thing.
+   */
+  private announcedListMembership = false;
+  /**
+   * A classification this turn reported while the chat still had no row.
+   *
+   * Applied by {@link updateSnapshot} to the first snapshot that carries one,
+   * and cleared there — a one-shot, so it can never re-assert itself over a
+   * later row. See the note in {@link applyTurnBinding} for the race.
+   */
+  private pendingTurnClassification: {
+    tier: SessionClassification;
+    reason: string | null;
+  } | null = null;
+  /**
    * R3-01 — synchronous re-entrancy latch for the submit prep window. The
    * `abortController` guard in `canSubmitMessage` only trips once a turn has
    * been launched, but `handleSubmit` awaits `loadSession` + `createUserMessage`
@@ -1311,7 +1336,7 @@ class ChatStreamController {
   }
 
   private updateSnapshot(updater: (prev: ChatStreamSnapshot) => ChatStreamSnapshot): void {
-    const next = updater(this.snapshot);
+    const next = this.adoptPendingClassification(updater(this.snapshot));
     // Several updaters return `prev` to mean "nothing changed" — that must not
     // wake every subscriber (#22).
     if (next === this.snapshot) return;
@@ -1330,6 +1355,40 @@ class ChatStreamController {
       });
     }
     this.scheduleNotify();
+  }
+
+  /**
+   * Put a turn's classification onto the first row that appears, if the frame
+   * that carried it arrived before there was one (finding M8).
+   *
+   * ⚠ **Here, at the one write every snapshot goes through**, rather than at
+   * each of the several updaters that can set a row — the cached-transcript
+   * path, the two-phase resume, a diverge. A fix wired to one of them is a fix
+   * for one road into the same defect.
+   *
+   * ⚠ **One-shot.** The stash is cleared the moment a row is seen, whether or
+   * not it needed changing, so a turn's statement can never re-assert itself
+   * over a row loaded later — after a declassification, say. Everything after
+   * that comes from the row itself: the next frame, or the post-turn re-read.
+   */
+  private adoptPendingClassification(candidate: ChatStreamSnapshot): ChatStreamSnapshot {
+    const pending = this.pendingTurnClassification;
+    if (!pending || !candidate.session) return candidate;
+    this.pendingTurnClassification = null;
+    if (
+      candidate.session.privacy_tier === pending.tier &&
+      (candidate.session.privacy_reason ?? null) === pending.reason
+    ) {
+      return candidate;
+    }
+    return {
+      ...candidate,
+      session: {
+        ...candidate.session,
+        privacy_tier: pending.tier,
+        privacy_reason: pending.reason,
+      },
+    };
   }
 
   // `receivedAt` is stamped ONLY by the live stream path. The other callers
@@ -1547,6 +1606,26 @@ class ChatStreamController {
     if (event.privacy_tier === undefined) return;
     const tier = event.privacy_tier;
     const reason = event.privacy_reason ?? null;
+    // ⚠ **A chat created in this window has no row yet when this frame lands,
+    // and the classification used to be thrown away** (finding M8). The frame
+    // is emitted at the top of the turn; for a chat whose session was created
+    // by the submit that started that turn, `loadSession` is still in flight.
+    // The pin survived that race because it has a home of its own; the tier's
+    // only home is the row, so the updater below returned `prev` and the fact
+    // was lost — the chat then showed public on every chat-side surface until
+    // the post-turn re-read, four seconds later. Measured 2026-09-10 on session
+    // `20260910_4`: snapshot `norow` at t+559 ms, row lands `public` at t+590,
+    // and stays public until t+4327 — 28 ms after the turn ENDED.
+    //
+    // So the fact is kept until a row exists to carry it. It is ADOPTED rather
+    // than ratcheted on arrival, for the same reason this method adopts: the
+    // frame is the daemon's post-ratchet statement about this turn, and a
+    // declassified chat (DR-20) is a legitimate private → public move that the
+    // frame is the first to report.
+    if (!this.snapshot.session) {
+      this.pendingTurnClassification = { tier, reason };
+      return;
+    }
     this.updateSnapshot((prev) => {
       if (!prev.session) return prev;
       if (prev.session.privacy_tier === tier && (prev.session.privacy_reason ?? null) === reason) {
@@ -2045,6 +2124,27 @@ class ChatStreamController {
       const cached = getCachedSessionList();
       const index = cached?.findIndex((entry) => entry.id === this.sessionId) ?? -1;
       const entry = index === -1 ? undefined : cached![index];
+      // ⚠ A chat CREATED in this window is absent from that list, and announcing
+      // at `createSession` cannot fix it: `GET /sessions` INNER JOINs `messages`
+      // (`SessionStorage::list_sessions_by_types_maybe_empty`), so a row with no
+      // message yet is not listable and a refresh fired at create time comes
+      // back without it. The first moment the daemon WILL list the chat is after
+      // its first turn — which is here. So the announcement is made from here
+      // instead, and it is a refetch rather than an insert for the reason the
+      // note above gives: membership is the list channel's to own.
+      //
+      // ⚠ Once per chat per renderer, and only against a cache that has
+      // actually been fetched. A null cache means nobody has asked yet
+      // (`ChatGroupsShell` warms it on mount), and answering that with a full
+      // list fetch per turn-end would be a page of session rows bought to learn
+      // one string. The tab dot does not wait for any of this — it reads the
+      // live store tier through `ChatStreamRegistry.subscribeSessionTiers` —
+      // which is why this can afford to be the slow, correct path for the
+      // OTHER list surfaces (Home recents, See-all) rather than the fix for M8.
+      if (cached !== null && index === -1 && !this.announcedListMembership) {
+        this.announcedListMembership = true;
+        notifySessionListChanged();
+      }
       const listDiffers =
         entry != null &&
         (entry.provider_name !== row.provider_name ||
@@ -4144,6 +4244,8 @@ export class ChatStreamRegistry {
   private running = new Map<string, RunningChatEntry>();
   private lastRunningSnapshot: RunningChatEntry[] = [];
   private stopSessionMeta: (() => void) | null = null;
+  private tierListeners = new Set<() => void>();
+  private sessionTiers: Record<string, SessionClassification> = {};
 
   /**
    * Follow session rows this renderer holds, for changes made by ANOTHER
@@ -4222,15 +4324,76 @@ export class ChatStreamRegistry {
 
   getRunningSnapshot = (): RunningChatEntry[] => this.lastRunningSnapshot;
 
+  /**
+   * The classification of every chat this window holds a STORE for — a live
+   * reading, not a cached one (issue #56, R10; finding M8).
+   *
+   * # What this exists to fix
+   *
+   * The chat-tab dot used to read only the session-list cache, and a chat
+   * CREATED in this window is not in that cache: `GET /sessions` INNER JOINs
+   * `messages` (`SessionStorage::list_sessions_by_types_maybe_empty`), so a
+   * brand-new row is not listable until it has recorded one, and
+   * `refreshSessionBinding` deliberately patches only entries the cache already
+   * holds. Measured on 2026-09-10: one turn on a new chat, sqlite
+   * `privacy_tier=private`, the sidebar row and the model chip both private —
+   * and the ACTIVE TAB's own dot still `data-privacy="public"` 52.9 s later.
+   *
+   * The store already knew. `applyTurnBinding` patches the post-ratchet tier
+   * onto the snapshot from the reply stream's FIRST frames, which is where the
+   * header pill and the composer read it. This channel publishes that same
+   * reading to the strip, so the three surfaces cannot disagree — and it needs
+   * no fetch, because the answer was already in the window.
+   *
+   * ⚠ **This map only ever RISES**, mirroring the daemon's own ratchet
+   * (`privacy::raise`). A controller whose session momentarily goes null — a
+   * reload, a rebind — must not retract a `private` it has already reported, or
+   * the strip would fall back to a cached `public` and un-mark a private chat.
+   * {@link raiseTier} is the whole rule.
+   *
+   * ⚠ **O(1) per notification.** `handleControllerActivity` runs on every
+   * snapshot notification, which during a turn is once per animation frame per
+   * chat; this compares ONE id's tier and returns, and allocates a new map only
+   * when a tier actually moved.
+   */
+  subscribeSessionTiers = (listener: () => void): (() => void) => {
+    this.tierListeners.add(listener);
+    return () => {
+      this.tierListeners.delete(listener);
+    };
+  };
+
+  getSessionTiersSnapshot = (): Record<string, SessionClassification> => this.sessionTiers;
+
   resetForTests(): void {
     this.controllers.clear();
     this.running.clear();
     this.lastRunningSnapshot = [];
+    this.sessionTiers = {};
+    this.tierListeners.clear();
     this.stopSessionMeta?.();
     this.stopSessionMeta = null;
   }
 
+  private noteControllerTier(controller: ChatStreamController): void {
+    const reported = controller.getSnapshot().session?.privacy_tier ?? undefined;
+    const current = this.sessionTiers[controller.sessionId];
+    const raised = raiseTier(current, reported);
+    if (raised === current) return;
+    this.sessionTiers = { ...this.sessionTiers };
+    if (raised) this.sessionTiers[controller.sessionId] = raised;
+    else delete this.sessionTiers[controller.sessionId];
+    for (const listener of this.tierListeners) listener();
+  }
+
   private handleControllerActivity = (controller: ChatStreamController): void => {
+    // ⚠ FIRST, and outside every early return below. The running-list
+    // bookkeeping that follows returns without emitting for an idle controller
+    // with no live entry — which is exactly the shape of a session LOAD, and of
+    // the `refreshSessionBinding` that runs after a turn has already ended.
+    // Both carry a tier, and both would be dropped by a tier read placed after
+    // that guard.
+    this.noteControllerTier(controller);
     const current = this.running.get(controller.sessionId);
     if (controller.isRunning()) {
       const entry = controller.getRunningEntry();
@@ -4310,4 +4473,21 @@ export function useRunningChats(): RunningChatEntry[] {
 export function useChatStreamController(sessionId: string): ChatStreamController {
   const registry = useChatStreamRegistry();
   return registry.getController(sessionId);
+}
+
+/**
+ * The classification of every chat this window holds a store for, live.
+ *
+ * See {@link ChatStreamRegistry.subscribeSessionTiers}. A tab whose chat has
+ * never been opened in this window is simply absent — the caller merges this
+ * over the session-list cache with `mergeSessionTiers`, which is where a chat
+ * nobody has opened gets its tier from.
+ */
+export function useLiveSessionTiers(): Record<string, SessionClassification> {
+  const registry = useChatStreamRegistry();
+  return useSyncExternalStore(
+    registry.subscribeSessionTiers,
+    registry.getSessionTiersSnapshot,
+    registry.getSessionTiersSnapshot
+  );
 }

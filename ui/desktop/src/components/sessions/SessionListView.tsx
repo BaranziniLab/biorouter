@@ -59,6 +59,7 @@ import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import {
   getCachedSessionList,
+  notifySessionListChanged,
   refreshSessionList,
   subscribeSessionList,
   updateCachedSessionList,
@@ -1016,6 +1017,20 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
         title: 'Chat imported',
         msg: 'The imported chat is now available in chat history.',
       });
+      // ⚠ Announce BEFORE the local reload, not instead of it and not after.
+      // An import is a membership change, and this pane is not the only surface
+      // that renders one: the sidebar Recents, Home and any second History pane
+      // in ANOTHER window all learn of it here, over the list channel. Doing it
+      // first also means `loadSessions` dedupes onto the request this starts
+      // (`refreshSessionList` returns the in-flight promise) rather than firing
+      // a second full list fetch behind it.
+      //
+      // An imported chat carries its transcript, so unlike a freshly CREATED
+      // one it is listable the moment it lands — `GET /sessions` INNER JOINs
+      // `messages`, which is why create announces from
+      // `ChatStreamController.refreshSessionBinding` after its first turn
+      // instead of from `createSession`.
+      notifySessionListChanged();
       await loadSessions();
     },
     [loadSessions]
