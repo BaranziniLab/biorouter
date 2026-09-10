@@ -80,7 +80,10 @@ export function describeRequestFailure(err: unknown, status?: number): string {
     // else falls through to the whole payload.
     const named = ['error', 'message', 'detail', 'reason', 'code']
       .filter((key) => record[key] != null && record[key] !== '')
-      .map((key) => `${key}=${typeof record[key] === 'string' ? record[key] : JSON.stringify(record[key])}`);
+      .map(
+        (key) =>
+          `${key}=${typeof record[key] === 'string' ? record[key] : JSON.stringify(record[key])}`
+      );
     if (named.length > 0) {
       parts.push(named.join(' '));
       return parts.join(' — ');

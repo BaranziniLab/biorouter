@@ -40,11 +40,7 @@ import {
   NotificationEvent,
   UserAttachment,
 } from '../types/message';
-import {
-  describeRequestFailure,
-  errorMessage,
-  isConnectionError,
-} from '../utils/conversionUtils';
+import { describeRequestFailure, errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import { userActionHeaders } from '../utils/userAction';
@@ -3692,11 +3688,7 @@ class ChatStreamController {
    * `console.warn`; `describeRequestFailure` is the only thing that knows a
    * bodyless 504 from a real payload.
    */
-  private noteCancelRejection(
-    turnId: string,
-    error: unknown,
-    status: number | undefined
-  ): boolean {
+  private noteCancelRejection(turnId: string, error: unknown, status: number | undefined): boolean {
     const mismatch = cancelTurnMismatch(error);
     if (mismatch && mismatch.expected_turn_id === turnId) {
       this.rememberRetiredObservedTurn(turnId);
