@@ -1991,6 +1991,53 @@ pub(crate) fn is_parking_workspace_tool(name: &str) -> bool {
     )
 }
 
+/// Whether the session ROW names a binding other than the one `bound` is.
+///
+/// M4's drift test, and the whole of it: a chat's row is the standing record of
+/// what it runs on, so a row that has moved away from the live binding is a turn
+/// about to run somewhere the user is not being told about.
+///
+/// ⚠ **Provider name and model NAME only — never the whole `ModelConfig`.** That
+/// narrowness is load-bearing in both directions.
+///
+/// Too wide and this fires on turns where nothing moved. A lead/worker
+/// composite's `get_model_config()` is DYNAMIC: it re-serialises the routing
+/// state on every call (`LeadWorkerProvider::get_model_config` →
+/// `PersistedProviderConfig::with_routing_state`), so comparing whole configs
+/// would report drift on any turn that advanced lead→worker and rebuild the
+/// composite from a stale snapshot, every turn, forever. `model_name`, by
+/// contrast, is the LEAD's model name and constant across routing states.
+///
+/// Too narrow — provider name alone — and it misses the case that was actually
+/// measured, which kept `versa_azure` and only changed the model.
+///
+/// The accessors are the ones every write already round-trips through:
+/// `update_provider` persists `provider.get_name()` and
+/// `providers::persisted_model_config(provider)`, and every `restore_binding`
+/// implementation carries `get_model_config()`'s `model_name` through unchanged
+/// (the registry default passes the config itself; the exact-restore bindings
+/// clone `self.model` and add a marker to `request_params`). So a binding that
+/// came from this row compares EQUAL by construction, and a phantom rebind is
+/// not reachable through a normalisation difference.
+///
+/// A row with no `provider_name` names nothing to honour. A row with a
+/// `provider_name` but no `model_config` is a legacy row whose model would have
+/// to be invented from global config — [`Agent::rebind_from_row`] does invent
+/// one, but inventing it here would report drift against a value the row never
+/// stated. Both answer `false`.
+fn row_names_another_binding(row: &Session, bound: &dyn Provider) -> bool {
+    let Some(row_provider) = row.provider_name.as_deref() else {
+        return false;
+    };
+    if row_provider != bound.get_name() {
+        return true;
+    }
+    match row.model_config.as_ref() {
+        Some(model_config) => model_config.model_name != bound.get_model_config().model_name,
+        None => false,
+    }
+}
+
 pub struct ToolCategorizeResult {
     pub frontend_requests: Vec<ToolRequest>,
     pub remaining_requests: Vec<ToolRequest>,
@@ -6448,7 +6495,21 @@ impl Agent {
     /// for byte — and re-entering Gate A to write a row's own value back to
     /// itself would put a database write on the front of every turn of a
     /// rehydrated session.
-    async fn rebind_from_row(&self, row: &Session) -> Result<bool> {
+    ///
+    /// ⚠ `privacy_enforced` is DR-15's master switch, **passed in from the one
+    /// read at the seam** rather than read here. Two reasons, and the second is
+    /// the reason it is a parameter and not a `privacy_tiers_enabled()` call one
+    /// line down. First, the seam samples the switch exactly once so that the
+    /// turn barrier and the ratchet under it cannot observe it at different
+    /// instants; a second read inside this function would reopen precisely that
+    /// window. Second, the tier check below has to answer the switch at all:
+    /// with the switch off, Gate A's own statement admits a public provider onto
+    /// a private row (`bind_provider_if_allowed` folds the toggle into its bound
+    /// parameter), so a row in that state is producible — and a rebind that
+    /// refused it would silently ignore a binding the user had just chosen, in a
+    /// configuration where they have turned the barrier off. The existing caller
+    /// is itself gated on the switch, so for it this changes nothing.
+    async fn rebind_from_row(&self, row: &Session, privacy_enforced: bool) -> Result<bool> {
         let Some(provider_name) = row.provider_name.clone() else {
             return Ok(false);
         };
@@ -6479,7 +6540,7 @@ impl Agent {
         let provider =
             crate::providers::create_from_persisted(&provider_name, model_config).await?;
 
-        if !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
+        if privacy_enforced && !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
             return Ok(false);
         }
         *self.provider.lock().await = Some(provider);
@@ -8341,6 +8402,73 @@ impl Agent {
         // revisits a row.
         let privacy_enforced = crate::privacy::privacy_tiers_enabled();
         if let Some(row) = privacy_row.as_ref() {
+            // M4. The row is the standing record of what this chat runs on, and
+            // until now only the PRIVACY arm below could make a turn honour it —
+            // so a row rewritten by anything outside this agent's process
+            // (`biorouter session --resume … --provider …`, a second daemon, a
+            // schedule) moved the row and the composer while the live agent went
+            // on serving the binding it took at resume. Measured: `token_events`
+            // recorded `gpt-5.5` for a turn whose row said `gpt-4.1`, and the
+            // chip flickered A → B → A across one Send because the turn's own
+            // frame and the post-turn row re-read disagreed.
+            //
+            // ⚠ The client-side flicker is the symptom; the turn running
+            // somewhere the row does not name is the defect. Fixing only the
+            // renderer would have made the composer confidently state a binding
+            // no turn used. Rebinding here makes the pin and the row agree BY
+            // CONSTRUCTION — the frame a few lines down reads the provider this
+            // rebind installed — so there is nothing left for a client to
+            // reconcile.
+            //
+            // ⚠ Conditional on an actual difference, and that is what separates
+            // it from `restore_provider_from_session`, which resume is
+            // deliberately forbidden to call for exactly this reason
+            // (`routes/agent.rs`'s `resume_only_restores_a_provider_when_the_live_agent_is_missing_one`:
+            // "resume unconditionally rebinds a live Codex or Claude child and
+            // discards its provider-local session"). An unconditional rebind
+            // rebuilds the provider even when the row and the binding already
+            // agree, which throws away a live coding-agent child session for
+            // nothing. A rebind only when they DISAGREE cannot: the child
+            // belonged to a binding the row no longer names.
+            //
+            // ⚠ NOT gated on `privacy_enforced`. Honouring the row is a
+            // correctness property, not a privacy control — DR-15's switch turns
+            // off the gates and the ratchet, not the question of which model a
+            // chat runs on. The tier check that DOES belong to the switch lives
+            // inside `rebind_from_row`, which is why the flag is threaded into it
+            // rather than re-read there.
+            if let Some(bound) = self.bound_provider_unchecked().await {
+                if row_names_another_binding(row, bound.as_ref()) {
+                    match self.rebind_from_row(row, privacy_enforced).await {
+                        // Bound to what the row names. The privacy arm below
+                        // re-reads the binding, so it judges the NEW one.
+                        Ok(true) => {}
+                        // The row names nothing usable — a provider whose tier
+                        // its own classification forbids, or one the factory
+                        // could not build (missing credentials, a catalog entry
+                        // that is gone). Keep the binding we have and let the
+                        // privacy arm decide, which is the same answer as today:
+                        // this turn was already going to run on it, and it is
+                        // still the only binding that exists.
+                        //
+                        // ⚠ Deliberately not a refusal. A refusal here would
+                        // stop turns that are running safely, on a chat whose
+                        // row someone else broke — new behaviour for a case that
+                        // is not a disclosure. The privacy arm still refuses the
+                        // one case that is.
+                        Ok(false) => debug!(
+                            session_id = %session_config.id,
+                            "session row names a binding this turn cannot adopt; \
+                             keeping the live provider"
+                        ),
+                        Err(e) => warn!(
+                            session_id = %session_config.id,
+                            "could not rebind to the provider the session row names ({e}); \
+                             keeping the live provider"
+                        ),
+                    }
+                }
+            }
             let bound = self.bound_provider_unchecked().await;
             // No provider bound at all reads as Public — the fail-SAFE side.
             // Public is the less privileged tier, so an agent with nothing
@@ -8350,7 +8478,7 @@ impl Agent {
                 .map(|provider| provider.tier())
                 .unwrap_or(ProviderTier::Public);
             if privacy_enforced && !crate::privacy::bind_allowed(bound_tier, row.privacy_tier) {
-                match self.rebind_from_row(row).await {
+                match self.rebind_from_row(row, privacy_enforced).await {
                     // 2. The row still names a provider whose tier satisfies
                     //    the classification: rebind and continue.
                     //
@@ -20396,6 +20524,268 @@ mod gate_b_turn_tests {
             pinned(&events).is_empty(),
             "a refused turn ran on nothing, so it must name nothing:\n{}",
             rendered(&events)
+        );
+    }
+
+    // ─── M4: the row moved, the live agent did not ────────────────────────
+    //
+    // Everything below is about a row rewritten by something that is not this
+    // agent — `biorouter session --resume … --provider …`, a second daemon, a
+    // schedule. `update_provider` writes the row AND rebinds, so no in-process
+    // sequence produces the state; `point_row_at` does, through Gate A's own
+    // statement, so the fixture cannot build one the bind path would refuse.
+
+    /// A second private provider, distinguishable from [`private_provider`] by
+    /// its model alone — which is the case that was actually measured, and the
+    /// one a provider-name comparison would miss.
+    fn other_private_model() -> (Arc<dyn Provider>, Arc<AtomicUsize>) {
+        counted("versa_azure", "gpt-4.1", ProviderTier::Private)
+    }
+
+    #[tokio::test]
+    async fn a_row_rewritten_to_another_model_moves_the_next_turn_onto_it() {
+        // The measured defect, in one test. `token_events` recorded
+        // `gpt-5.5-2026-04-24` for a turn whose `sessions.model_config_json`
+        // said `gpt-4.1-2025-04-14`: the CLI rewrote the row from another
+        // process, and the live agent — bound once at resume by
+        // `restore_provider_from_session` — never heard about it. Gate B only
+        // looked at the row when the CLASSIFICATION demanded it, and here it
+        // does not: both providers are Private, so the tier check passes and the
+        // turn ran on the stale binding.
+        let (bound, bound_completions) = counted("versa_azure", "gpt-5.5", ProviderTier::Private);
+        let (_dir, agent, s) = agent_on(Arc::clone(&bound)).await;
+        let sm = manager(&agent);
+        let (row_provider, row_completions) = other_private_model();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(
+            sm.as_ref(),
+            &s.id,
+            "versa_azure",
+            Arc::clone(&row_provider),
+        );
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        // The decisive assertion, and the one the runtime measurement made:
+        // WHICH model served the turn. "No error was returned" establishes
+        // nothing here — the stale binding answers perfectly well.
+        assert_eq!(
+            (
+                row_completions.load(Ordering::SeqCst),
+                bound_completions.load(Ordering::SeqCst)
+            ),
+            (1, 0),
+            "the turn must run on the model the ROW names, not on the stale \
+             binding:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            pinned(&events),
+            vec![("versa_azure".to_string(), "gpt-4.1".to_string())],
+            "and its first frame must name that model, so the pin and the row \
+             agree by construction:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            agent
+                .provider()
+                .await
+                .unwrap()
+                .get_model_config()
+                .model_name,
+            "gpt-4.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_rewritten_to_another_provider_moves_a_public_turn_too() {
+        // The same defect with the privacy arm provably out of the way: a public
+        // chat, a public provider on both sides, `bind_allowed` true throughout.
+        // An implementation that hung the drift check off the classification
+        // would pass the test above (it ratchets) and fail this one.
+        let (bound, bound_completions) =
+            counted("anthropic", "claude-opus-4", ProviderTier::Public);
+        let (_dir, agent, s) = agent_on(Arc::clone(&bound)).await;
+        let sm = manager(&agent);
+        let (row_provider, row_completions) = counted("openai", "gpt-4o", ProviderTier::Public);
+        point_row_at(&sm, &s.id, &row_provider).await;
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "openai", Arc::clone(&row_provider));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            (
+                row_completions.load(Ordering::SeqCst),
+                bound_completions.load(Ordering::SeqCst)
+            ),
+            (1, 0),
+            "a public chat's row is just as much the standing answer:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            pinned(&events),
+            vec![("openai".to_string(), "gpt-4o".to_string())],
+            "{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            reread(&sm, &s.id).await.privacy_tier,
+            SessionClassification::Public,
+            "adopting a PUBLIC provider must not ratchet anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_that_already_agrees_leaves_the_live_provider_instance_alone() {
+        // The reason this check is conditional rather than an unconditional
+        // `restore_provider_from_session` at the top of every turn. Resume is
+        // forbidden to do that — `routes/agent.rs`'s
+        // `resume_only_restores_a_provider_when_the_live_agent_is_missing_one`
+        // spells out why: "resume unconditionally rebinds a live Codex or Claude
+        // child and discards its provider-local session". A `claude_code`
+        // provider carries a live child session in the INSTANCE, so rebuilding
+        // an equal-but-fresh one throws the conversation away for nothing.
+        //
+        // The override is registered pointing at a DIFFERENT instance of the
+        // same name and model, so an implementation that rebound whenever it
+        // could — rather than only when the row disagrees — swaps the pointer
+        // and fails here. Asserting on the name would not catch it.
+        let bound = private_provider();
+        let (_dir, agent, s) = agent_on(Arc::clone(&bound)).await;
+        let sm = manager(&agent);
+        let decoy = private_provider();
+        assert!(
+            !Arc::ptr_eq(&bound, &decoy),
+            "the decoy must be a second instance"
+        );
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "versa_azure", Arc::clone(&decoy));
+
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        assert!(
+            Arc::ptr_eq(&agent.provider().await.unwrap(), &bound),
+            "a row that names what is already bound must not rebuild the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_naming_a_forbidden_provider_keeps_the_legal_binding_and_still_runs() {
+        // Drift the tier cannot honour: the row is private and names a PUBLIC
+        // provider (producible only out of band — Gate A refuses that write —
+        // hence the point-then-ratchet order below), while the live binding is
+        // private and perfectly legal for this chat.
+        //
+        // ⚠ Deliberately NOT a refusal. Nothing here is a disclosure: the turn
+        // was already going to run on a private provider and still does. Turning
+        // an un-honourable row into a refused turn would stop safe work on a
+        // chat whose row somebody else broke — a new failure mode invented by
+        // the fix for a different bug.
+        let (bound, bound_completions) = counted("versa_azure", "gpt-5.5", ProviderTier::Private);
+        let (_dir, agent, s) = agent_on(Arc::clone(&bound)).await;
+        let sm = manager(&agent);
+        let row_provider = public_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "anthropic", Arc::clone(&row_provider));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        assert!(
+            !events.iter().any(is_refusal),
+            "a row the tier forbids must not refuse a turn the tier permits:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            bound_completions.load(Ordering::SeqCst),
+            1,
+            "the legal binding still served the turn:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            pinned(&events),
+            vec![("versa_azure".to_string(), "gpt-5.5".to_string())],
+            "and the frame names what actually ran, not what the row asked for:\n{}",
+            rendered(&events)
+        );
+    }
+
+    // ⚠ There is deliberately NO turn-level test for the legacy row (a
+    // `provider_name` with a NULL `model_config`). One was written, and it
+    // passed with the drift predicate hard-wired to `true` — the rebind it was
+    // meant to catch never happened, because `rebind_from_row` invents a model
+    // from `Config::global()` for such a row and that read simply fails in a
+    // test process. It would have stood as evidence for a property it could not
+    // observe. The case is covered decisively one level down, in
+    // `the_drift_test_reads_the_two_fields_a_row_actually_states`, which does
+    // fail when the predicate is widened.
+
+    #[tokio::test]
+    async fn the_drift_test_reads_the_two_fields_a_row_actually_states() {
+        // A unit on the predicate itself, because the turn tests above can only
+        // reach it through a whole `reply`. The composite case is the one worth
+        // pinning: `LeadWorkerProvider::get_model_config` re-serialises its
+        // ROUTING STATE on every call, so a predicate that compared whole
+        // `ModelConfig`s would report drift on any turn that advanced
+        // lead→worker and rebuild the composite from a stale snapshot — every
+        // turn, forever. `model_name` is the lead's and does not move.
+        //
+        // A real row rather than a literal: `Session` has no `Default`, and a
+        // hand-built one is a statement about the shape this test believes the
+        // store writes rather than the shape it writes.
+        let bound = private_provider();
+        let (_dir, agent, session) = agent_on(Arc::clone(&bound)).await;
+        let row = |provider: Option<&str>, model: Option<&str>| {
+            let mut row = session.clone();
+            row.provider_name = provider.map(str::to_string);
+            row.model_config = model.map(ModelConfig::new_or_fail);
+            row
+        };
+        let _ = &agent;
+
+        assert!(!row_names_another_binding(
+            &row(Some("versa_azure"), Some("gpt-5.5")),
+            bound.as_ref()
+        ));
+        assert!(row_names_another_binding(
+            &row(Some("versa_azure"), Some("gpt-4.1")),
+            bound.as_ref()
+        ));
+        assert!(row_names_another_binding(
+            &row(Some("anthropic"), Some("gpt-5.5")),
+            bound.as_ref()
+        ));
+        assert!(
+            !row_names_another_binding(&row(Some("versa_azure"), None), bound.as_ref()),
+            "a legacy row states no model"
+        );
+        assert!(
+            !row_names_another_binding(&row(None, None), bound.as_ref()),
+            "a row that names no provider names nothing to honour"
         );
     }
 
