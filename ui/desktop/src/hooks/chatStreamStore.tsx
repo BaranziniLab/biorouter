@@ -2167,6 +2167,13 @@ class ChatStreamController {
       // microtasks. Keep the composer gated until that response confirms the
       // server-side turn slot has actually been released.
       chatState: stopGateHolds ? prev.chatState : ChatState.Idle,
+      // …and once the turn really has ended, a standing "could not stop, press
+      // Stop again" notice is describing a world that no longer exists. It is
+      // retracted rather than left to age, on the same rule as `pendingSteer`
+      // below: the turn it spoke about is over. Only that one code — a real
+      // turn failure is still the truth about this turn and stays put.
+      turnError:
+        !stopGateHolds && prev.turnError?.code === STOP_NOT_CONFIRMED ? undefined : prev.turnError,
       turnStartedAt: undefined,
       lastMessageAt: undefined,
       // The turn it was aimed at is over; whether or not we saw the echo, there
@@ -3792,6 +3799,8 @@ class ChatStreamController {
       turnStartedAt: undefined,
       lastMessageAt: undefined,
       pendingSteer: undefined,
+      // A retry that succeeded retracts the notice the failed attempt raised.
+      turnError: prev.turnError?.code === STOP_NOT_CONFIRMED ? undefined : prev.turnError,
     }));
     this.flushNotify();
     return true;

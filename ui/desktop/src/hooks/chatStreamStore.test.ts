@@ -2092,6 +2092,42 @@ describe('ChatStreamRegistry — a Stop the daemon never confirms (M2)', () => {
     await expect(stopped).resolves.toBe(false);
   });
 
+  it('retracts the unconfirmed-stop notice once the turn really does end', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    const cancellation = deferred<unknown>();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: session('wedged-retract') },
+    } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(cancelTurn).mockReturnValueOnce(cancellation.promise as never);
+
+    const controller = registry.getController('wedged-retract');
+    const submit = controller.handleSubmit('a turn that outlives its Stop');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+
+    // The reverse of the M2 ordering: the cancel fails while the turn is still
+    // genuinely streaming, so the composer keeps Stop and the notice says so.
+    const stopped = controller.stopStreaming();
+    await flush();
+    cancellation.reject({});
+    await expect(stopped).resolves.toBe(false);
+    await flush();
+
+    expect(controller.getSnapshot().turnError?.code).toBe('stop_not_confirmed');
+    expect(controller.getSnapshot().turnError?.message).toMatch(/Press Stop again/);
+    expect(isRunningState(controller.getSnapshot().chatState)).toBe(true);
+
+    // …and then the turn ends anyway. "Press Stop again to retry" now describes
+    // a world that no longer exists.
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submit;
+
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+
   it('still reports an ordinary internal failure as a model failure when no Stop is pending', async () => {
     const registry = new ChatStreamRegistry();
     const controlled = createControlledStream();
