@@ -4,6 +4,7 @@ use crate::conversation::message::Message;
 use crate::conversation::{Conversation, SharedNormalizer};
 use rmcp::model::Role;
 use std::path::Path;
+use tokio_util::sync::CancellationToken;
 
 // Test-only utility. Do not use in production code. No `test` directive due to call outside crate.
 thread_local! {
@@ -71,13 +72,14 @@ pub async fn inject_moim(
     extension_manager: &ExtensionManager,
     working_dir: &Path,
     normalizer: &SharedNormalizer,
+    cancel: Option<&CancellationToken>,
 ) -> (Conversation, bool) {
     if SKIP.with(|f| f.get()) {
         return (conversation, false);
     }
 
     if let Some(moim) = extension_manager
-        .collect_moim(session_id, working_dir)
+        .collect_moim(session_id, working_dir, cancel)
         .await
     {
         let moim = cap_moim_block(moim, max_moim_tokens());
@@ -142,6 +144,7 @@ mod tests {
             &em,
             &working_dir,
             &SharedNormalizer::new(),
+            None,
         )
         .await;
         let msgs = result.messages();
@@ -180,6 +183,7 @@ mod tests {
             &em,
             &working_dir,
             &SharedNormalizer::new(),
+            None,
         )
         .await;
 
@@ -252,6 +256,7 @@ mod tests {
             &em,
             &working_dir,
             &SharedNormalizer::new(),
+            None,
         )
         .await;
         let msgs = result.messages();
@@ -379,6 +384,7 @@ mod tests {
             &em,
             &working_dir,
             &SharedNormalizer::new(),
+            None,
         )
         .await;
 

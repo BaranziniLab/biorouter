@@ -20,22 +20,77 @@
 //!   / `_MAX_ENTRIES`).
 //! - The rendered text is token-capped and coordinates with the BR-2 injection
 //!   budget by reusing [`truncate_to_tokens`].
-//! - Results are cached per working directory and only recomputed when the
-//!   directory's own mtime changes or a short TTL lapses
+//! - Results are cached per working directory for a short TTL
 //!   (`CONTEXT_WORKSPACE_SUMMARY_TTL_SECS`), so a long multi-tool turn walks the
 //!   tree at most once per TTL rather than on every provider call.
 //!
 //! The whole feature is gated by `CONTEXT_WORKSPACE_SUMMARY` (default on); set it
 //! to `false` to fall back to the old one-line behavior.
+//!
+//! # The walk is never on the turn's critical path
+//!
+//! This module used to walk the tree **synchronously, on the tokio worker
+//! driving the turn**, with no timeout, no cancellation point and no log line.
+//! On 2026-09-10 a test drive of `main` measured what that costs: with the
+//! default working directory (`$HOME` on macOS) every turn blocked in
+//! `std::fs::read_dir` → `__opendir2` under `~/Library/Group Containers` —
+//! Dropbox, iCloud, GlobalProtect and Office app-group containers — and never
+//! reached the provider at all. 100% of `/usr/bin/sample` samples sat in that
+//! one stack, four captures over two sessions; the daemon idled at 0.0% CPU
+//! while the composer said "Thinking" for 8m32s. `Stop` could not end it,
+//! because a blocking `std::fs` call has no cancellation point, and each wedged
+//! turn leaked its worker for the life of the process.
+//!
+//! Four rules keep that from recurring, and each is load-bearing:
+//!
+//! 1. **No filesystem syscall happens on the async path.** Not the walk, not the
+//!    root's `stat`, not `canonicalize`. Every one of them belongs to the
+//!    blocking task, where a wedge costs a pool thread instead of the turn. This
+//!    is why the cache is keyed on the path *as given* rather than on its
+//!    canonical form, and why the fast path is TTL-only.
+//! 2. **The walk runs under [`tokio::task::spawn_blocking`] with a finite
+//!    budget** (`CONTEXT_WORKSPACE_SUMMARY_BUDGET_MS`). When the budget lapses
+//!    the turn proceeds *without* a map, one WARN names the directory and the
+//!    lever, and the negative result is cached for the TTL so the next turn pays
+//!    nothing. The budget cannot be configured to zero: a "disabled" budget
+//!    would be a way to reinstate the hang.
+//! 3. **The wait is tied to the turn's cancellation token**, so `Stop` is
+//!    honoured immediately even though the walk itself cannot be cancelled.
+//! 4. **One walk per root, ever, while one is in flight** (single-flight). A
+//!    blocked `std::fs` call cannot be cancelled, so a thread that wedges is
+//!    lost — the single-flight marker is what bounds the loss to **one thread
+//!    per root** instead of one per turn. A walk that never returns therefore
+//!    never releases its marker, and that is deliberate.
+//!
+//! # A home directory is not a workspace
+//!
+//! Rule 2 bounds the damage; it does not make walking `$HOME` a good idea. A
+//! home directory is the union of every project the user owns *and* the
+//! operating system's own per-user state — on macOS that state includes the
+//! cloud-provider containers that produced the wedge above, and on any platform
+//! it is tens of thousands of entries that say nothing about the task at hand.
+//! So [`skip_reason`] refuses three kinds of root outright, with no walk at all:
+//! the home directory itself, a filesystem root, and anything at or beneath an
+//! *opaque tree* (`~/Library`, `~/AppData`, `~/.Trash`, and any path holding a
+//! `Group Containers`, `CloudStorage`, `Mobile Documents` or `FileProvider`
+//! component).
+//!
+//! The same trees are pruned *during* a walk that starts somewhere legitimate,
+//! and `same_file_system(true)` stops the walk crossing a mount point — a
+//! network share or a File Provider volume is a mount, and an unresponsive one
+//! is the other way this blocks.
+//!
+//! See [`docs/agent-loop/workspace-map.md`](../../../../docs/agent-loop/workspace-map.md).
 
 use crate::config::paths::Paths;
 use crate::config::Config;
 use crate::context_budget::truncate_to_tokens;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 /// Whether the workspace map is injected at all.
 pub const DEFAULT_ENABLED: bool = true;
@@ -45,14 +100,46 @@ pub const DEFAULT_MAX_ENTRIES: usize = 200;
 pub const DEFAULT_MAX_DEPTH: usize = 3;
 /// Token cap for the rendered map (coordinates with the BR-2 MOIM budget).
 pub const DEFAULT_MAX_TOKENS: usize = 2_000;
-/// Cache time-to-live: an upper bound on how stale the served map can be when
-/// the working directory's own mtime hasn't changed (nested edits).
+/// Cache time-to-live: an upper bound on how stale the served map can be.
 pub const DEFAULT_TTL_SECS: u64 = 30;
+/// How long a turn will wait for the walk before giving up on it and proceeding
+/// without a map. Generous enough that an ordinary project never notices, short
+/// enough that a user does.
+pub const DEFAULT_BUDGET_MS: u64 = 1_500;
 
 /// Hard ceiling on filesystem entries visited during a single walk, independent
 /// of `max_entries`, so a pathological directory (100k flat files) can't make
 /// the bounded walk unbounded. If hit, the map is marked truncated.
 const SCAN_CAP: usize = 20_000;
+
+/// Path components whose subtree is never walked, wherever they appear. Each is
+/// a place the operating system or a sync client mediates reads, so an
+/// `opendir` there can block on a daemon rather than on a disk.
+const OPAQUE_COMPONENTS: &[&str] = &[
+    // macOS app-group containers: Dropbox, iCloud, Office, GlobalProtect. The
+    // directory that produced the measured wedge.
+    "Group Containers",
+    // ~/Library/CloudStorage — every File Provider cloud mount.
+    "CloudStorage",
+    // ~/Library/Mobile Documents — iCloud Drive.
+    "Mobile Documents",
+    // File Provider caches and domain state.
+    "FileProvider",
+    ".Trash",
+];
+
+/// Children of the home directory that are opaque. Matched home-relative rather
+/// than by name alone, because `Library/` is an ordinary directory name inside a
+/// project (an R library, a component library) and must stay walkable there.
+///
+/// ⚠ `AppData` is deliberately NOT on this list, though it is the obvious
+/// Windows counterpart to `~/Library`. `std::env::temp_dir()` on Windows is
+/// `%USERPROFILE%\AppData\Local\Temp`, so refusing that subtree would refuse
+/// every scratch workspace — and empty the walk in every `build_summary` test
+/// that runs there. Nothing in `AppData` blocks the way a File Provider mount
+/// does; the components above are what capture the measured hazard, and they
+/// are matched wherever they appear, including on Windows.
+const HOME_OPAQUE_CHILDREN: &[&str] = &["Library", ".Trash"];
 
 fn config_bool(key: &str, default: bool) -> bool {
     Config::global().get_param::<bool>(key).unwrap_or(default)
@@ -68,6 +155,90 @@ fn config_u64(key: &str, default: u64) -> u64 {
 
 fn enabled() -> bool {
     config_bool("CONTEXT_WORKSPACE_SUMMARY", DEFAULT_ENABLED)
+}
+
+fn ttl() -> Duration {
+    Duration::from_secs(config_u64(
+        "CONTEXT_WORKSPACE_SUMMARY_TTL_SECS",
+        DEFAULT_TTL_SECS,
+    ))
+}
+
+/// The per-turn wait budget. **Always finite**: a configured `0` reads as "use
+/// the default", not as "wait forever". `CONTEXT_WORKSPACE_SUMMARY: false` is
+/// how the feature is turned off; there is deliberately no setting that puts an
+/// uncancellable filesystem walk back on the turn's critical path.
+fn budget() -> Duration {
+    let ms = config_u64("CONTEXT_WORKSPACE_SUMMARY_BUDGET_MS", DEFAULT_BUDGET_MS);
+    Duration::from_millis(if ms == 0 { DEFAULT_BUDGET_MS } else { ms })
+}
+
+/// Why a root gets no workspace map at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The working directory *is* the user's home directory.
+    Home,
+    /// The working directory is a filesystem root (`/`, `C:\`).
+    FilesystemRoot,
+    /// The working directory is at or beneath a tree whose reads are mediated
+    /// by the OS or a sync client (see [`OPAQUE_COMPONENTS`]).
+    OpaqueTree,
+}
+
+impl SkipReason {
+    /// A phrase for the log line, written for whoever is wondering why their
+    /// chat has no file map.
+    pub fn describe(self) -> &'static str {
+        match self {
+            SkipReason::Home => {
+                "the working directory is the home directory, which is not a workspace"
+            }
+            SkipReason::FilesystemRoot => "the working directory is a filesystem root",
+            SkipReason::OpaqueTree => {
+                "the working directory is inside a system or cloud-sync tree whose reads can block"
+            }
+        }
+    }
+}
+
+/// True when `dir` is at or beneath a tree this module refuses to read.
+fn is_opaque_tree(dir: &Path, home: Option<&Path>) -> bool {
+    let opaque_component = dir.components().any(|component| match component {
+        Component::Normal(name) => OPAQUE_COMPONENTS
+            .iter()
+            .any(|opaque| name.eq_ignore_ascii_case(opaque)),
+        _ => false,
+    });
+    if opaque_component {
+        return true;
+    }
+    let Some(home) = home else { return false };
+    HOME_OPAQUE_CHILDREN
+        .iter()
+        .any(|child| dir.starts_with(home.join(child)))
+}
+
+/// Whether `dir` gets a workspace map at all, resolved against the real home
+/// directory. See the module doc: a home directory is not a workspace.
+pub fn skip_reason(dir: &Path) -> Option<SkipReason> {
+    skip_reason_with_home(dir, Paths::home_dir().as_deref())
+}
+
+/// [`skip_reason`] with the home directory injected, so the rule is unit
+/// testable without touching the process environment.
+pub fn skip_reason_with_home(dir: &Path, home: Option<&Path>) -> Option<SkipReason> {
+    // `Path`'s equality and `starts_with` both compare *components*, so a
+    // trailing slash or an interior `.` is already normalised away.
+    if dir.parent().is_none() {
+        return Some(SkipReason::FilesystemRoot);
+    }
+    if home.is_some_and(|home| dir == home) {
+        return Some(SkipReason::Home);
+    }
+    if is_opaque_tree(dir, home) {
+        return Some(SkipReason::OpaqueTree);
+    }
+    None
 }
 
 /// Bounds for a single map render, resolved from config with generous defaults.
@@ -100,76 +271,254 @@ impl Default for SummaryConfig {
 
 struct CacheEntry {
     computed_at: Instant,
-    /// The working directory's own mtime when this entry was computed, if
-    /// readable. Used as a cheap early-invalidation signal for top-level
-    /// structural changes (new/removed/renamed direct children).
-    dir_mtime: Option<SystemTime>,
     /// `None` means "walked, nothing to show" — still cached so an empty or
-    /// unreadable directory isn't rewalked every action.
+    /// unreadable directory isn't rewalked every action — or "the walk did not
+    /// finish inside its budget", which is cached for exactly the same reason.
     summary: Option<String>,
 }
 
-static CACHE: Lazy<Mutex<HashMap<PathBuf, CacheEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
-
-/// Clear the cache. Test-only; production relies on TTL/mtime invalidation.
-#[cfg(test)]
-pub fn clear_cache() {
-    CACHE.lock().unwrap().clear();
+/// Cache, single-flight markers and warn-once markers under **one** mutex, so
+/// there is no lock ordering to get wrong between them. Every critical section
+/// here is a few map operations long: the mutex is never held across the walk.
+#[derive(Default)]
+struct WalkState {
+    cache: HashMap<PathBuf, CacheEntry>,
+    /// Roots with a walk in flight. An entry that never clears is a walk that
+    /// never returned — see rule 4 in the module doc.
+    inflight: HashSet<PathBuf>,
+    /// How many walks this process has started per root. Instrumentation: it is
+    /// what lets a test prove single-flight held, per root rather than
+    /// process-wide so tests of different roots can run in parallel.
+    walk_starts: HashMap<PathBuf, usize>,
+    /// Roots that have already produced a budget WARN, so a slow directory
+    /// costs one log line rather than one per turn.
+    warned_budget: HashSet<PathBuf>,
+    /// Roots that have already produced a skip log line, same reason.
+    warned_skip: HashSet<PathBuf>,
 }
 
-fn dir_mtime(dir: &Path) -> Option<SystemTime> {
-    std::fs::metadata(dir).and_then(|m| m.modified()).ok()
+static STATE: Lazy<Mutex<WalkState>> = Lazy::new(|| Mutex::new(WalkState::default()));
+
+/// Releases the single-flight marker on any *return* from the walk task,
+/// including a panic. A thread blocked forever in `opendir` never drops it,
+/// which is what bounds the leak to one thread per root.
+struct InflightGuard(PathBuf);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = STATE.lock() {
+            state.inflight.remove(&self.0);
+        }
+    }
 }
 
 /// Absolute path to the global `.biorouterignore`, mirroring the developer MCP
 /// server so the workspace map honors the same global excludes.
+///
+/// Touches the filesystem (`is_file`), so it is resolved inside the blocking
+/// task rather than on the turn's async path.
 fn global_biorouterignore() -> Option<PathBuf> {
     let path = Paths::config_dir().join(".biorouterignore");
     path.is_file().then_some(path)
 }
 
+fn log_skip_once(dir: &Path, reason: SkipReason) {
+    let first = {
+        let mut state = STATE.lock().unwrap();
+        state.warned_skip.insert(dir.to_path_buf())
+    };
+    if !first {
+        return;
+    }
+    tracing::info!(
+        working_dir = %dir.display(),
+        "workspace map: no file map for this chat because {}. Start the chat in a project \
+         directory to get one.",
+        reason.describe()
+    );
+}
+
+fn warn_budget_once(dir: &Path, budget: Duration) {
+    let first = {
+        let mut state = STATE.lock().unwrap();
+        state.warned_budget.insert(dir.to_path_buf())
+    };
+    if !first {
+        return;
+    }
+    tracing::warn!(
+        working_dir = %dir.display(),
+        budget_ms = budget.as_millis() as u64,
+        "workspace map: reading this directory did not finish within the budget, so turns here \
+         run without a file map. Something under it is slow or unresponsive to read — a network \
+         mount or a cloud-sync folder is the usual cause. Set CONTEXT_WORKSPACE_SUMMARY: false in \
+         config.yaml to switch the map off, or raise CONTEXT_WORKSPACE_SUMMARY_BUDGET_MS to wait \
+         longer."
+    );
+}
+
 /// The public entry point: a cached, config-bounded workspace map for
-/// `working_dir`, or `None` when disabled, empty, or unreadable.
-pub fn workspace_summary(working_dir: &Path) -> Option<String> {
+/// `working_dir`, or `None` when disabled, skipped, empty, unreadable, or not
+/// produced inside this turn's budget.
+///
+/// `cancel` is the **turn's** cancellation token. The walk it starts cannot
+/// itself be cancelled — no blocking `std::fs` call can — but the *wait* can,
+/// so a `Stop` returns from here immediately and leaves the walk to finish (or
+/// not) on the blocking pool.
+pub async fn workspace_summary(
+    working_dir: &Path,
+    cancel: Option<&CancellationToken>,
+) -> Option<String> {
     if !enabled() {
         return None;
     }
-    // Started after the disabled bail so the span covers only real work (this
-    // does synchronous directory walking on the turn path when the cache misses).
+    // Started after the disabled bail so the span covers only real work.
     let _phase = crate::agents::phase_timing::Phase::start("agent.workspace_summary");
 
-    let ttl = Duration::from_secs(config_u64(
-        "CONTEXT_WORKSPACE_SUMMARY_TTL_SECS",
-        DEFAULT_TTL_SECS,
-    ));
-    let key = std::fs::canonicalize(working_dir).unwrap_or_else(|_| working_dir.to_path_buf());
-    let current_mtime = dir_mtime(working_dir);
+    if let Some(reason) = skip_reason(working_dir) {
+        log_skip_once(working_dir, reason);
+        return None;
+    }
 
-    // Fast path: serve a cached map when the directory's mtime is unchanged and
-    // the entry is younger than the TTL. `ttl == 0` disables caching entirely.
-    if !ttl.is_zero() {
-        if let Some(entry) = CACHE.lock().unwrap().get(&key) {
-            let fresh = entry.computed_at.elapsed() < ttl && entry.dir_mtime == current_mtime;
-            if fresh {
+    // Both of these read config, which is cheap and does not touch the
+    // workspace; the walk itself — and every filesystem call it needs, down to
+    // resolving the global ignore file — is deferred into the closure so it can
+    // only ever run on the blocking pool.
+    let cfg = SummaryConfig::from_config();
+    let walk_dir = working_dir.to_path_buf();
+    summary_bounded(
+        working_dir.to_path_buf(),
+        cancel,
+        ttl(),
+        budget(),
+        move || build_summary(&walk_dir, &cfg, global_biorouterignore().as_deref()),
+    )
+    .await
+}
+
+/// The cache, single-flight and budget machinery, with the walk itself injected.
+///
+/// Split out from [`workspace_summary`] so a test can supply a walk that
+/// provably stalls or provably blocks until released — the two behaviours this
+/// exists to survive, and neither of which can be conjured out of a real
+/// directory tree on demand.
+async fn summary_bounded<F>(
+    key: PathBuf,
+    cancel: Option<&CancellationToken>,
+    ttl: Duration,
+    budget: Duration,
+    walk: F,
+) -> Option<String>
+where
+    F: FnOnce() -> Option<String> + Send + 'static,
+{
+    // Fast path, single-flight admission and the stale value in one short
+    // critical section. Deliberately syscall-free — see rule 1 in the module
+    // doc.
+    let stale = {
+        let mut state = STATE.lock().unwrap();
+        if let Some(entry) = state.cache.get(&key) {
+            if !ttl.is_zero() && entry.computed_at.elapsed() < ttl {
                 return entry.summary.clone();
             }
         }
-    }
+        let cached = state
+            .cache
+            .get(&key)
+            .and_then(|entry| entry.summary.clone());
+        if state.inflight.contains(&key) {
+            // A walk of this root is already running. Serving whatever it last
+            // produced is the whole of the second turn's cost: starting a
+            // second walk of a root the first one may be wedged on is how a
+            // single slow directory became one leaked thread per turn.
+            return cached;
+        }
+        state.inflight.insert(key.clone());
+        *state.walk_starts.entry(key.clone()).or_insert(0) += 1;
+        cached
+    };
 
-    let cfg = SummaryConfig::from_config();
-    let summary = build_summary(working_dir, &cfg, global_biorouterignore().as_deref());
+    let task_key = key.clone();
+    let mut handle = tokio::task::spawn_blocking(move || {
+        let _inflight = InflightGuard(task_key.clone());
+        let summary = walk();
+        // `ttl == 0` disables caching entirely, as it always has: with no entry
+        // written there is nothing for a later turn to serve.
+        if !ttl.is_zero() {
+            let mut state = STATE.lock().unwrap();
+            state.cache.insert(
+                task_key,
+                CacheEntry {
+                    computed_at: Instant::now(),
+                    summary: summary.clone(),
+                },
+            );
+        }
+        summary
+    });
 
-    if !ttl.is_zero() {
-        CACHE.lock().unwrap().insert(
-            key,
-            CacheEntry {
-                computed_at: Instant::now(),
-                dir_mtime: current_mtime,
-                summary: summary.clone(),
-            },
-        );
+    // `biased` puts cancellation first: a `Stop` must return from here on the
+    // very next poll, not after whichever branch happens to be ready.
+    let outcome = match cancel {
+        Some(token) => tokio::select! {
+            biased;
+            _ = token.cancelled() => Wait::Cancelled,
+            joined = &mut handle => Wait::Finished(joined.ok().flatten()),
+            _ = tokio::time::sleep(budget) => Wait::OverBudget,
+        },
+        None => tokio::select! {
+            joined = &mut handle => Wait::Finished(joined.ok().flatten()),
+            _ = tokio::time::sleep(budget) => Wait::OverBudget,
+        },
+    };
+
+    match outcome {
+        Wait::Finished(summary) => summary,
+        // The turn is going away. Leave the walk running: it owns the
+        // single-flight marker and will cache its result for the next turn.
+        Wait::Cancelled => None,
+        Wait::OverBudget => {
+            warn_budget_once(&key, budget);
+            if ttl.is_zero() {
+                // Caching is off, so there is nothing to stamp and nothing to
+                // serve. The walk keeps its single-flight marker regardless.
+                return None;
+            }
+            let mut state = STATE.lock().unwrap();
+            let landed = state
+                .cache
+                .get(&key)
+                .and_then(|entry| entry.summary.clone());
+            if !state.inflight.contains(&key) {
+                // The walk finished in the gap between the timeout firing and
+                // this lock. Its result stands; never stamp a negative over it.
+                return landed;
+            }
+            // Cache the negative (or the stale value, if there is one) for the
+            // TTL so the next turn pays nothing at all. The walk, if it ever
+            // finishes, overwrites this.
+            let carry = landed.or(stale);
+            state.cache.insert(
+                key,
+                CacheEntry {
+                    computed_at: Instant::now(),
+                    summary: carry.clone(),
+                },
+            );
+            carry
+        }
     }
-    summary
+}
+
+/// How the wait for a walk ended.
+enum Wait {
+    /// The walk returned inside the budget. `None` covers both "nothing to
+    /// show" and a panicked/aborted task.
+    Finished(Option<String>),
+    /// The turn was cancelled.
+    Cancelled,
+    /// The budget lapsed with the walk still running.
+    OverBudget,
 }
 
 /// Filesystem names can contain almost anything on Unix; scrub the two
@@ -187,11 +536,15 @@ fn sanitize_name(name: &str) -> String {
 /// bounded, indented file tree. Pure over its inputs so it is unit-testable
 /// without the global cache or config. Returns `None` for an empty/unreadable
 /// directory (nothing worth injecting).
+///
+/// **Blocking.** Call it from a blocking context only; [`workspace_summary`] is
+/// the async entry point and puts it on the blocking pool.
 pub fn build_summary(
     working_dir: &Path,
     cfg: &SummaryConfig,
     global_ignore: Option<&Path>,
 ) -> Option<String> {
+    let home = Paths::home_dir();
     let mut builder = ignore::WalkBuilder::new(working_dir);
     builder
         .max_depth(Some(cfg.max_depth.max(1)))
@@ -203,6 +556,16 @@ pub fn build_summary(
         .git_exclude(true)
         .hidden(true)
         .parents(true)
+        // A network share or a File Provider volume is a mount, and reading an
+        // unresponsive one is the other way this walk blocks. Nothing below a
+        // project root that lives on another filesystem is worth that risk.
+        .same_file_system(true)
+        // The same opaque trees `skip_reason` refuses as roots are pruned here,
+        // for a walk that started somewhere legitimate and is about to descend
+        // into one.
+        .filter_entry(move |entry| {
+            entry.depth() == 0 || !is_opaque_tree(entry.path(), home.as_deref())
+        })
         // The agent's own project-ignore file, per-directory during the walk.
         .add_custom_ignore_filename(".biorouterignore");
     if let Some(global) = global_ignore {
@@ -278,13 +641,55 @@ pub fn build_summary(
     Some(truncate_to_tokens(&body, cfg.max_tokens, "workspace map"))
 }
 
+// ---------------------------------------------------------------------------
+// Test-only accessors into the module's process-global state. There is
+// deliberately no `clear_cache`: every test keys off a root of its own
+// (`unique_key`), because clearing shared state from one test breaks whichever
+// other test is running beside it.
+//
+// Kept together at the bottom, after every production item, because the repo's
+// source guards slice a file at its FIRST `#[cfg(test)]` and treat everything
+// above it as the production half. An accessor placed mid-file silently
+// truncates that view.
+// ---------------------------------------------------------------------------
+
+/// How many walks this process has started for `dir`. Per root, so tests using
+/// different temp directories do not observe each other.
+#[cfg(test)]
+fn walk_starts(dir: &Path) -> usize {
+    STATE
+        .lock()
+        .unwrap()
+        .walk_starts
+        .get(dir)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Pretend a walk of `dir` is already running, without starting one.
+#[cfg(test)]
+fn mark_inflight(dir: &Path) {
+    STATE.lock().unwrap().inflight.insert(dir.to_path_buf());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::mpsc;
+    use std::time::Instant as StdInstant;
 
     fn cfg() -> SummaryConfig {
         SummaryConfig::default()
+    }
+
+    /// A root no other test shares, so the process-global cache and
+    /// single-flight markers cannot make these tests observe each other.
+    fn unique_key(tag: &str) -> PathBuf {
+        PathBuf::from(format!(
+            "/nonexistent/workspace-summary-test/{tag}-{}",
+            uuid::Uuid::new_v4()
+        ))
     }
 
     #[test]
@@ -440,24 +845,323 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_cache_serves_and_invalidates_on_mtime() {
-        clear_cache();
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("one.txt"), "x").unwrap();
+    // -----------------------------------------------------------------------
+    // M1: the walk is never on the turn's critical path.
+    // -----------------------------------------------------------------------
 
-        let first = workspace_summary(dir.path()).expect("first summary");
-        assert!(first.contains("one.txt"));
+    /// The finding, in one test: a root whose read never returns must not hold
+    /// the turn. Before the fix this call was `build_summary` inline on the
+    /// turn's worker and this test would hang forever rather than fail.
+    #[tokio::test]
+    async fn a_stalled_walk_returns_within_the_budget_instead_of_holding_the_turn() {
+        let key = unique_key("stall");
+        // Held for the life of the test so the walk closure blocks exactly as a
+        // wedged `opendir` does: forever, with no cancellation point.
+        let (release_tx, release_rx) = mpsc::channel::<()>();
 
-        // Add a top-level file; the directory mtime changes, so the cache must
-        // invalidate and pick up the new entry even within the TTL.
-        fs::write(dir.path().join("two.txt"), "y").unwrap();
-        // mtime resolution can be coarse; nudge the directory to be safe.
-        let refreshed = workspace_summary(dir.path()).expect("second summary");
+        let started = StdInstant::now();
+        let summary = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_secs(30),
+            Duration::from_millis(50),
+            move || {
+                // Blocks until the sender is dropped at the end of the test.
+                let _ = release_rx.recv();
+                Some("a map nobody waited for".to_string())
+            },
+        )
+        .await;
+        let waited = started.elapsed();
+
+        assert_eq!(summary, None, "the turn proceeds without a map");
         assert!(
-            refreshed.contains("two.txt") || first.contains("two.txt"),
-            "new top-level file surfaces after mtime change"
+            waited < Duration::from_secs(5),
+            "returned in {waited:?}; the budget was 50ms, so this waited for the walk"
         );
-        clear_cache();
+        drop(release_tx);
+    }
+
+    /// The negative is cached, so a second turn inside the TTL pays nothing at
+    /// all — not even the budget.
+    #[tokio::test]
+    async fn a_lapsed_budget_is_cached_so_the_next_turn_does_not_pay_again() {
+        let key = unique_key("negative-cache");
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        let first = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_secs(30),
+            Duration::from_millis(50),
+            move || {
+                let _ = release_rx.recv();
+                None
+            },
+        )
+        .await;
+        assert_eq!(first, None);
+
+        let started = StdInstant::now();
+        let second = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_secs(30),
+            Duration::from_millis(50),
+            || panic!("a second walk must not be started"),
+        )
+        .await;
+        let waited = started.elapsed();
+
+        assert_eq!(second, None);
+        assert!(
+            waited < Duration::from_millis(50),
+            "served from the negative cache, so it never reached the budget: {waited:?}"
+        );
+        assert_eq!(walk_starts(&key), 1, "exactly one walk was ever started");
+        drop(release_tx);
+    }
+
+    /// A blocked `std::fs` call cannot be cancelled, so the thread it is on is
+    /// lost. Single-flight is what bounds that loss to one thread per root
+    /// rather than one per turn.
+    #[tokio::test]
+    async fn a_second_turn_never_starts_a_second_walk_of_the_same_root() {
+        let key = unique_key("single-flight");
+        mark_inflight(&key);
+
+        let summary = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            || panic!("single-flight failed: a second walk of this root was started"),
+        )
+        .await;
+
+        assert_eq!(summary, None, "nothing cached yet, so nothing to serve");
+        assert_eq!(walk_starts(&key), 0, "no walk was started");
+    }
+
+    /// While one walk is in flight, a second turn is served whatever the last
+    /// completed walk produced rather than being made to wait or to re-walk.
+    #[tokio::test]
+    async fn an_inflight_root_serves_the_last_good_map_to_the_next_turn() {
+        let key = unique_key("serve-stale");
+
+        let first = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_millis(1),
+            Duration::from_secs(30),
+            || Some("first map".to_string()),
+        )
+        .await;
+        assert_eq!(first.as_deref(), Some("first map"));
+
+        // The TTL above has already lapsed, so the next call would ordinarily
+        // re-walk; the in-flight marker says another one is already running.
+        mark_inflight(&key);
+        let second = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_millis(1),
+            Duration::from_secs(30),
+            || panic!("single-flight failed"),
+        )
+        .await;
+
+        assert_eq!(
+            second.as_deref(),
+            Some("first map"),
+            "the last good map is served rather than nothing"
+        );
+        assert_eq!(walk_starts(&key), 1);
+    }
+
+    /// M2's other half: `Stop` must be honoured immediately. The walk cannot be
+    /// cancelled, but the wait for it can.
+    #[tokio::test]
+    async fn a_cancelled_turn_returns_immediately_and_leaves_the_walk_running() {
+        let key = unique_key("cancel");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        let started = StdInstant::now();
+        let summary = summary_bounded(
+            key.clone(),
+            Some(&cancel),
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            move || {
+                let _ = release_rx.recv();
+                Some("too late".to_string())
+            },
+        )
+        .await;
+        let waited = started.elapsed();
+
+        assert_eq!(summary, None);
+        assert!(
+            waited < Duration::from_secs(1),
+            "cancellation returned in {waited:?}, not after the 30s budget"
+        );
+        drop(release_tx);
+    }
+
+    /// A walk that finishes inside the budget is served, and cached for the TTL.
+    #[tokio::test]
+    async fn a_fast_walk_is_served_and_then_cached_for_the_ttl() {
+        let key = unique_key("happy");
+
+        let first = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            || Some("the map".to_string()),
+        )
+        .await;
+        assert_eq!(first.as_deref(), Some("the map"));
+
+        let second = summary_bounded(
+            key.clone(),
+            None,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            || panic!("a cached map must not be re-walked inside the TTL"),
+        )
+        .await;
+        assert_eq!(second.as_deref(), Some("the map"));
+        assert_eq!(walk_starts(&key), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // M1: a home directory is not a workspace.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_home_directory_itself_gets_no_map() {
+        let home = Path::new("/Users/example");
+        assert_eq!(
+            skip_reason_with_home(home, Some(home)),
+            Some(SkipReason::Home)
+        );
+        // A trailing slash is the same directory.
+        assert_eq!(
+            skip_reason_with_home(Path::new("/Users/example/"), Some(home)),
+            Some(SkipReason::Home)
+        );
+        // A project inside it is fine.
+        assert_eq!(
+            skip_reason_with_home(Path::new("/Users/example/code/thing"), Some(home)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_filesystem_root_gets_no_map() {
+        assert_eq!(
+            skip_reason_with_home(Path::new("/"), Some(Path::new("/Users/example"))),
+            Some(SkipReason::FilesystemRoot)
+        );
+    }
+
+    #[test]
+    fn the_directories_that_produced_the_wedge_get_no_map() {
+        let home = Path::new("/Users/example");
+        for path in [
+            "/Users/example/Library",
+            "/Users/example/Library/Group Containers",
+            "/Users/example/Library/Group Containers/group.com.apple.CloudDocs",
+            "/Users/example/Library/CloudStorage/Dropbox",
+            "/Users/example/Library/Mobile Documents/com~apple~CloudDocs",
+            "/Users/example/.Trash",
+        ] {
+            assert_eq!(
+                skip_reason_with_home(Path::new(path), Some(home)),
+                Some(SkipReason::OpaqueTree),
+                "{path} must get no workspace map"
+            );
+        }
+    }
+
+    #[test]
+    fn a_project_directory_named_library_is_still_walkable() {
+        let home = Path::new("/Users/example");
+        // The `Library` rule is home-relative on purpose: an R project, or a
+        // component library, may hold a directory of that name.
+        assert_eq!(
+            skip_reason_with_home(Path::new("/Users/example/code/app/Library"), Some(home)),
+            None
+        );
+        assert_eq!(
+            skip_reason_with_home(Path::new("/srv/project/library"), Some(home)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_opaque_subtree_is_pruned_from_a_walk_that_started_somewhere_legitimate() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("keep.txt"), "x").unwrap();
+        fs::create_dir_all(dir.path().join("Group Containers/group.com.example")).unwrap();
+        fs::write(
+            dir.path()
+                .join("Group Containers/group.com.example/blocked.txt"),
+            "x",
+        )
+        .unwrap();
+
+        let out = build_summary(dir.path(), &cfg(), None).expect("summary");
+        assert!(out.contains("keep.txt"));
+        assert!(
+            !out.contains("blocked.txt"),
+            "nothing under an opaque component is read: {out}"
+        );
+        assert!(
+            !out.contains("group.com.example"),
+            "the opaque tree is not descended into: {out}"
+        );
+    }
+
+    /// A scratch directory is an ordinary workspace, and on Windows every one of
+    /// them lives under `%USERPROFILE%\AppData\Local\Temp`. An `AppData` entry
+    /// in the opaque list would therefore refuse a legitimate root on one
+    /// platform and not the other two, and would empty the walk in every
+    /// `build_summary` test above — which is how this was caught.
+    #[test]
+    fn a_temporary_directory_is_a_legitimate_workspace_on_every_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            skip_reason(dir.path()),
+            None,
+            "a temp dir must get a workspace map: {}",
+            dir.path().display()
+        );
+        // The same rule, stated without depending on where this platform puts
+        // its temp directory: a Windows-shaped scratch path under the home
+        // directory is a workspace like any other.
+        let home = Path::new("/Users/example");
+        assert_eq!(
+            skip_reason_with_home(
+                Path::new("/Users/example/AppData/Local/Temp/.tmpABC123"),
+                Some(home)
+            ),
+            None
+        );
+        std::fs::write(dir.path().join("kept.txt"), "x").unwrap();
+        let out = build_summary(dir.path(), &cfg(), None).expect("temp dirs are walked");
+        assert!(out.contains("kept.txt"));
+    }
+
+    #[test]
+    fn the_budget_can_never_be_configured_to_zero() {
+        // A zero budget would be a way to put an uncancellable filesystem walk
+        // back on the turn's critical path, which is the whole bug. The only
+        // supported "off" is CONTEXT_WORKSPACE_SUMMARY: false.
+        assert!(!budget().is_zero());
+        assert_eq!(DEFAULT_BUDGET_MS, 1_500);
     }
 }
