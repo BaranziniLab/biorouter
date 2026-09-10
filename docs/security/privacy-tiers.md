@@ -2577,6 +2577,33 @@ workarounds**, following the register established by issue #42's operator-disabl
 **Never leak content in a refusal.** Refusals go into the model's context, so they name the tool and
 the tier only — never a session title (LLM-generated content) and never a working directory.
 
+**Gate C' — the resource and prompt surface — says something different, and must.** The sibling
+entry points that reach a server without being a tool call go through
+`ExtensionManager::assert_extension_reachable`, which reads an **unknown** name as Private. That is
+the one place in this feature where the unknown-name default is inverted, deliberately: the
+alternative is permitting a reach at a name the manager could not resolve at all. It means the gate
+does not know whether the name it is refusing belongs to a private extension or to nothing, so it
+cannot say that it does — and until the 2026-09-10 test drive (finding M18) it said it anyway,
+sending a model looking for a private model to reach an extension that did not exist.
+
+`privacy::refusal::private_or_absent_refusal` is the sentence that surface returns instead. It
+states the disjunction — a private extension, or a name that is not installed — and returns the
+**identical string in both cases**, which is the constraint that rules out the obvious repair:
+
+> `nonexistent_ext` cannot be reached from this chat, which is running on a public model. To a
+> public model a private extension — one that reaches data held inside the institution — and a name
+> that is not installed here are the same answer, and Biorouter does not say which
+> `nonexistent_ext` is. If it is a private extension, ask the user to switch this chat to a private
+> model (Settings > Models, or the model chip in the composer) and try again; if it is not
+> installed, no model will reach it. …
+
+⚠ **Answering "no such extension" for the absent branch would be an existence oracle.** A public
+caller could walk names until one answered differently and learn which private connectors a chat has
+loaded — precisely the set Gate E withholds, and precisely the leak finding M6 closed next door in
+`read_resource_tool`'s not-found roster. Two renderings of one predicate (`tier_refuses`), each true
+where it is used: Gate C proper resolves an installed client before it refuses, so its flat
+statement is a fact; Gate C' has not, so its statement is a disjunction.
+
 ### 14.5 Two low-cost changes that remove whole classes of surprise
 
 **Relabel the provider groups so the two taxonomies are literally the same words in the same
