@@ -40,7 +40,11 @@ import {
   NotificationEvent,
   UserAttachment,
 } from '../types/message';
-import { errorMessage, isConnectionError } from '../utils/conversionUtils';
+import {
+  describeRequestFailure,
+  errorMessage,
+  isConnectionError,
+} from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import { userActionHeaders } from '../utils/userAction';
@@ -525,6 +529,49 @@ export interface PendingToolCallView {
   partialArgs?: string;
 }
 
+/**
+ * The daemon's synthesized ending for a turn whose writers produced no terminal
+ * frame (`TurnStream::close`, `routes/reply.rs`). It is scope `internal`, so
+ * the card reads "Model turn ended unexpectedly" — which is right for a turn
+ * that died on its own and WRONG for one the user asked to stop, because the
+ * daemon has no idea which of the two it just described.
+ */
+const STREAM_ENDED_WITHOUT_TERMINAL = 'stream_ended_without_terminal';
+
+/** A turn that ended without a result because the user stopped it. */
+export const TURN_STOPPED_BY_USER = 'turn_stopped_by_user';
+
+/** A Stop whose cancel never came back confirmed. */
+export const STOP_NOT_CONFIRMED = 'stop_not_confirmed';
+
+/**
+ * The in-chat notice for a Stop the daemon never confirmed (M2).
+ *
+ * Two facts the user needs and neither of which was on screen before: Biorouter
+ * could not stop the turn, and the turn may still be running over there. The
+ * second half depends on what the renderer was able to do about it — a turn
+ * that had already ended locally leaves a usable chat, one still streaming does
+ * not — so the copy says which case this is rather than hedging across both.
+ *
+ * Not retryable: the failure is the STOP, and a Retry action re-runs the TURN,
+ * which is the opposite of what someone who just pressed Stop is asking for.
+ */
+function stopNotConfirmedError(
+  composerRestored: boolean,
+  detail: string | null
+): ChatTurnErrorData {
+  const message = composerRestored
+    ? 'Biorouter could not confirm that the backend stopped this turn, so it may still be running there. This chat is usable again — anything the stopped turn is still doing will land in it.'
+    : 'Biorouter could not confirm that the backend stopped this turn, so it may still be running there. Press Stop again to retry.';
+  return {
+    message,
+    code: STOP_NOT_CONFIRMED,
+    scope: 'internal',
+    retryable: false,
+    ...(detail ? { technicalDetails: detail } : {}),
+  };
+}
+
 function clientTurnError(
   error: unknown,
   code: string,
@@ -718,6 +765,35 @@ class ChatStreamController {
    * before it submits the replacement.
    */
   private lastSettledStopTurnId: string | null = null;
+  /**
+   * The generation whose terminal frame landed while the Stop gate was still
+   * holding, so `finishCurrentStream` handed the Idle transition to the cancel
+   * response instead of making it itself.
+   *
+   * M2. #166 closed the ordering where the terminal frame arrives AFTER the
+   * cancel resolves — the gate is already down, so the frame lands the turn.
+   * The reverse ordering is what a wedged daemon produces (`/agent/cancel`
+   * parks for its 30 s settlement bound while the turn's stream is already
+   * over) and it strands the composer: the frame deferred the transition, the
+   * cancel then failed and returned without making it, and NOTHING else was
+   * ever going to. The user was left with a Stop button, no Send button and a
+   * spinner over a turn that had already ended.
+   *
+   * Held rather than re-derived because it is the one thing that distinguishes
+   * "the stop failed and the turn is over" (restore the composer) from "the
+   * stop failed and the turn is genuinely still streaming" (do not — the daemon
+   * still owns the session lock, and Stop is the right control to offer).
+   */
+  private stopDeferredFinishTurnId: string | null = null;
+  /**
+   * Why the last exact-generation cancel did not settle, for the in-chat notice.
+   *
+   * `null` covers the two cases that must NOT raise one: a cancel that settled,
+   * and a typed turn mismatch — the mismatch arm resolves the whole state
+   * itself (it adopts the successor and picks the matching `chatState`), so a
+   * notice written over the top of it would be both wrong and destructive.
+   */
+  private lastStopFailure: string | null = null;
   /**
    * The turn this controller is currently rendering — the id it POSTed, or the
    * id it attached to. Held so a re-attach can re-POST the SAME turn (rather
@@ -1947,9 +2023,53 @@ class ChatStreamController {
     return this.snapshot.session != null;
   }
 
+  /**
+   * M2 — do not let the daemon's synthesized ending blame the model for an
+   * ending the USER asked for.
+   *
+   * `TurnStream::close` writes `stream_ended_without_terminal` for any turn
+   * whose writers produced no terminal frame, and a cancelled turn is one of
+   * them: the daemon is describing the SHAPE of the ending, not its cause, and
+   * cannot tell the two apart. Read as an ordinary `scope: internal` failure it
+   * comes out as "Model turn ended unexpectedly" over a Stop the user pressed
+   * themselves.
+   *
+   * Deliberately narrow. Only that one code, and only while this chat has a
+   * Stop outstanding for this exact generation — an ordinary mid-turn internal
+   * failure with no Stop pending keeps the wording it has today, which is the
+   * right wording for it.
+   */
+  private reframeStoppedTurnError(
+    error: ChatTurnErrorData,
+    stopGateHolds: boolean,
+    turnId: string | null
+  ): ChatTurnErrorData {
+    if (error.code !== STREAM_ENDED_WITHOUT_TERMINAL) return error;
+    const stopWasRequested =
+      stopGateHolds ||
+      (!!turnId && (this.stopExpectedTurnId === turnId || this.lastSettledStopTurnId === turnId));
+    if (!stopWasRequested) return error;
+    return {
+      ...error,
+      message: 'You stopped this turn, so it ended without a result.',
+      code: TURN_STOPPED_BY_USER,
+      // Retrying the turn is not what someone who just pressed Stop wants; the
+      // composer they get back is.
+      retryable: false,
+      technicalDetails: error.technicalDetails ?? error.message,
+    };
+  }
+
   private finishCurrentStream = async (error?: ChatTurnErrorData): Promise<void> => {
+    // Sampled at the very top, and once. It reads `activeTurnId`, which
+    // `retireActiveTurn()` below clears — so a check made afterwards answers
+    // the opposite of one made before — and the error rewrite a few lines down
+    // needs the same answer the retirement does.
+    const stopGateHolds = this.stopGateHolds();
+    const stoppedTurnId = this.activeTurnId ?? this.stopExpectedTurnId;
     if (error) {
-      this.updateSnapshot((prev) => ({ ...prev, turnError: error }));
+      const framed = this.reframeStoppedTurnError(error, stopGateHolds, stoppedTurnId);
+      this.updateSnapshot((prev) => ({ ...prev, turnError: framed }));
     }
     // The turn is over: any skeleton whose authoritative request never arrived
     // (cancel, provider abort, a dropped block) must not linger.
@@ -1960,10 +2080,15 @@ class ChatStreamController {
     // reopened tab attaching to a turn that is over, and a stale high-water mark
     // makes the NEXT turn's `seq: 0` look like a duplicate and swallows it.
     //
-    // Sampled once, above the retirement, because `stopGateHolds()` reads
-    // `activeTurnId` and `retireActiveTurn()` clears it.
-    const stopGateHolds = this.stopGateHolds();
-    if (!stopGateHolds) this.retireActiveTurn();
+    if (stopGateHolds) {
+      // M2 — remember that this turn's ending was withheld from the Idle
+      // transition below. If the cancel that owns that transition comes back a
+      // failure, `reportUnconfirmedStop` is the only thing left that can make
+      // it, and it has no other way to know the frame already went by.
+      this.stopDeferredFinishTurnId = stoppedTurnId;
+    } else {
+      this.retireActiveTurn();
+    }
 
     const timeSinceLastInteraction = Date.now() - this.lastInteractionTime;
     if (!error && timeSinceLastInteraction > 60000) {
@@ -3079,6 +3204,10 @@ class ChatStreamController {
     // would cancel a generation that has been dead for several turns.
     this.stopExpectedTurnId = null;
     this.stopContinuationPending = false;
+    // …and with it the deferred ending that generation was owed. A new turn
+    // owns `chatState` from here on; completing an older turn's withheld
+    // transition against it would land this live turn at Idle.
+    this.stopDeferredFinishTurnId = null;
 
     try {
       // The transcript paints before the agent's model + extensions are up, so
@@ -3476,10 +3605,16 @@ class ChatStreamController {
     return this.stopExpectedTurnId === this.activeTurnId;
   }
 
+  /** Where a Stop-path log line says which chat and which generation it means. */
+  private stopLogContext(turnId: string): string {
+    return `session ${this.sessionId}, turn ${turnId}`;
+  }
+
   private requestExactTurnSettlement = async (
     turnId: string,
     continuationPending: boolean
   ): Promise<boolean> => {
+    this.lastStopFailure = null;
     try {
       const body = {
         session_id: this.sessionId,
@@ -3488,17 +3623,30 @@ class ChatStreamController {
         continuation_pending: continuationPending,
         ...(continuationPending ? { continuation_owner_id: getContinuationOwnerId() } : {}),
       };
+      // `throwOnError: false` deliberately. Asked to throw, the generated client
+      // throws the response BODY and drops the `Response` — and `/agent/cancel`
+      // answers its most important failure, the 30 s `SettlementTimeout`, with a
+      // bare 504 and no body at all. So the thrown value was a literal `{}` and
+      // the status, the one piece of information that existed, was gone before
+      // the catch could see it. The fields form keeps both. A rejection is still
+      // possible (a fetch that never reaches a response) and still handled below.
       const result = await cancelTurn({
         body,
         headers: await userActionHeaders(),
-        throwOnError: true,
+        throwOnError: false,
       });
-      const data = result.data;
+      if (result?.error !== undefined) {
+        return this.noteCancelRejection(turnId, result.error, result.response?.status);
+      }
+      const data = result?.data;
       if (data?.settled === true) {
         if (!continuationPending) return true;
         const lease = data.continuation_lease;
         if (!lease) {
-          console.warn('Stop-and-Send response did not include a continuation lease');
+          this.lastStopFailure = 'the Stop-and-Send response carried no continuation lease';
+          console.warn(
+            `Stop-and-Send response did not include a continuation lease (${this.stopLogContext(turnId)})`
+          );
           return false;
         }
         if (this.continuationLease && this.continuationLease !== lease) {
@@ -3519,38 +3667,73 @@ class ChatStreamController {
         }
         return true;
       }
-      console.warn('Cancel response did not confirm that the stopped turn settled');
+      this.lastStopFailure = `the daemon answered the cancel without confirming the turn settled (cancelled=${String(
+        data?.cancelled
+      )}, settled=${String(data?.settled)})`;
+      console.warn(
+        `Cancel response did not confirm that the stopped turn settled (${this.stopLogContext(turnId)}): ${this.lastStopFailure}`
+      );
     } catch (error) {
-      const mismatch = cancelTurnMismatch(error);
-      if (mismatch && mismatch.expected_turn_id === turnId) {
-        this.rememberRetiredObservedTurn(turnId);
-        this.activeStreamId += 1;
-        this.abortController?.abort();
-        this.abortController = null;
-        this.endReplayHold();
-        this.activeTurnId = this.retiredObservedTurnIds.has(mismatch.active_turn_id)
-          ? null
-          : mismatch.active_turn_id;
-        this.reattachesThisTurn = 0;
-        this.stopPending = false;
-        this.stopExpectedTurnId = null;
-        this.stopContinuationPending = false;
-        this.lastSettledStopTurnId = null;
-        this.updateSnapshot((prev) => ({
-          ...prev,
-          chatState: this.activeTurnId ? ChatState.Streaming : ChatState.Idle,
-          turnStartedAt: this.activeTurnId ? (prev.turnStartedAt ?? Date.now()) : undefined,
-          lastMessageAt: this.activeTurnId ? prev.lastMessageAt : undefined,
-        }));
-        console.warn(
-          `Stop targeted retired turn ${turnId}; the active turn is ${mismatch.active_turn_id}`
-        );
-        return false;
-      }
-      console.warn('Failed to cancel running turn on stop:', error);
+      // A rejection now means the fetch never produced a response at all (the
+      // backend is down, the request was aborted). An HTTP failure comes back
+      // through `result.error` above, with its status intact.
+      return this.noteCancelRejection(turnId, error, undefined);
     }
     return false;
   };
+
+  /**
+   * Record and report a cancel that failed, and adopt the successor when the
+   * daemon named one.
+   *
+   * Shared by the two ways a failure can arrive — an HTTP error (`result.error`
+   * plus its status) and a rejected fetch — so neither can drift into logging
+   * less than the other. M2: what it must never do again is hand a raw value to
+   * `console.warn`; `describeRequestFailure` is the only thing that knows a
+   * bodyless 504 from a real payload.
+   */
+  private noteCancelRejection(
+    turnId: string,
+    error: unknown,
+    status: number | undefined
+  ): boolean {
+    const mismatch = cancelTurnMismatch(error);
+    if (mismatch && mismatch.expected_turn_id === turnId) {
+      this.rememberRetiredObservedTurn(turnId);
+      this.activeStreamId += 1;
+      this.abortController?.abort();
+      this.abortController = null;
+      this.endReplayHold();
+      this.activeTurnId = this.retiredObservedTurnIds.has(mismatch.active_turn_id)
+        ? null
+        : mismatch.active_turn_id;
+      this.reattachesThisTurn = 0;
+      this.stopPending = false;
+      this.stopExpectedTurnId = null;
+      this.stopContinuationPending = false;
+      this.lastSettledStopTurnId = null;
+      this.updateSnapshot((prev) => ({
+        ...prev,
+        chatState: this.activeTurnId ? ChatState.Streaming : ChatState.Idle,
+        turnStartedAt: this.activeTurnId ? (prev.turnStartedAt ?? Date.now()) : undefined,
+        lastMessageAt: this.activeTurnId ? prev.lastMessageAt : undefined,
+      }));
+      console.warn(
+        `Stop targeted retired turn ${turnId}; the active turn is ${mismatch.active_turn_id}`
+      );
+      // Deliberately leaves `lastStopFailure` null: this arm has already
+      // resolved the whole state (successor adopted, `chatState` chosen), and
+      // an in-chat "could not stop" notice written over it would be untrue as
+      // well as destructive.
+      return false;
+    }
+    const detail = describeRequestFailure(error, status);
+    this.lastStopFailure = detail;
+    console.warn(
+      `Failed to cancel running turn on stop (${this.stopLogContext(turnId)}): ${detail}`
+    );
+    return false;
+  }
 
   private trackStopOperation(
     operation: Promise<boolean>,
@@ -3596,7 +3779,10 @@ class ChatStreamController {
       // `stopStreaming` and `submitPreparedMessage`.
       this.stopPending = false;
     }
-    if (!settled) return false;
+    if (!settled) {
+      this.reportUnconfirmedStop(stoppedTurnId);
+      return false;
+    }
 
     this.activeStreamId += 1;
     this.abortController?.abort();
@@ -3607,6 +3793,7 @@ class ChatStreamController {
     this.stopPending = false;
     this.stopExpectedTurnId = null;
     this.stopContinuationPending = false;
+    this.stopDeferredFinishTurnId = null;
     this.updateSnapshot((prev) => ({
       ...prev,
       chatState: ChatState.Idle,
@@ -3617,6 +3804,59 @@ class ChatStreamController {
     this.flushNotify();
     return true;
   };
+
+  /**
+   * M2 — finish what the Stop gate deferred, and say out loud that the stop did
+   * not take.
+   *
+   * Two things were missing when a cancel came back a failure, and they are
+   * separate bugs that presented as one dead chat:
+   *
+   *  1. If the turn's terminal frame had ALREADY landed, `finishCurrentStream`
+   *     deferred the Idle transition to this response (`stopGateHolds()`), and
+   *     this response then returned without making it. #166's `finally` frees
+   *     the latch — so a LATER terminal frame lands normally — but the frame
+   *     that mattered has already been and gone. Nothing re-runs it. That is
+   *     the composer with a Stop button, no Send button and a spinner over a
+   *     turn that finished a minute ago.
+   *  2. The failure was silent. The only trace was a `console.warn` the user
+   *     cannot see, so a stop that did not work was indistinguishable from one
+   *     that did.
+   *
+   * The restoration is deliberately NOT unconditional. A cancel that failed
+   * while the turn is genuinely still streaming leaves the daemon holding the
+   * session lock: offering Send there would buy a 409, and Stop is the control
+   * the user actually wants (the retained `stopExpectedTurnId` makes a second
+   * press name the same generation). So only the deferred case is completed,
+   * and the notice says which of the two this was.
+   */
+  private reportUnconfirmedStop(stoppedTurnId: string): void {
+    // Null on the typed-mismatch arm, which has already resolved everything.
+    if (!this.lastStopFailure) return;
+    const detail = this.lastStopFailure;
+    this.lastStopFailure = null;
+
+    const completesDeferredFinish = this.stopDeferredFinishTurnId === stoppedTurnId;
+    if (completesDeferredFinish) {
+      this.stopDeferredFinishTurnId = null;
+      this.endReplayHold();
+      this.retireActiveTurn();
+    }
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      ...(completesDeferredFinish
+        ? {
+            chatState: ChatState.Idle,
+            turnStartedAt: undefined,
+            lastMessageAt: undefined,
+            pendingSteer: undefined,
+          }
+        : {}),
+      turnError: stopNotConfirmedError(completesDeferredFinish, detail),
+    }));
+    // A turn boundary the user is waiting on: paint it now, not a frame late.
+    this.flushNotify();
+  }
 
   private stopAfterObservedLookup = (continuationPending: boolean): Promise<boolean> | null => {
     if (!this.observing || this.activeTurnId) return null;
