@@ -1468,18 +1468,50 @@ class ChatStreamController {
   };
 
   /**
+   * Ordering token for {@link refreshSessionBinding}, and the whole of the
+   * renderer's half of M4.
+   *
+   * `refreshSessionBinding` is `async`, has two callers that can overlap (the
+   * end of a turn, and the `/sessions/changes` nudge), and finishes by adopting
+   * the row it read OVER the turn-reported pin. Without a token there is nothing
+   * to stop the answer to an older request from landing last and overwriting a
+   * newer fact — the A → B → A the composer was measured doing across one Send.
+   *
+   * It is bumped by exactly two things, and both are "something newer than a row
+   * read already in flight is now known":
+   *
+   * - a PIN that actually moves ({@link setPinnedModel}), which is a turn saying
+   *   what it is running on or a bind the daemon has just accepted;
+   * - the START of a refresh, so that of two overlapping reads only the later
+   *   one may apply.
+   *
+   * The rule that falls out is the one the store needs: **a row replaces the pin
+   * only if it was read AFTER that pin was reported.** A read that began earlier
+   * is not a disagreement, it is an older photograph.
+   *
+   * ⚠ An unchanged pin does NOT bump it. "The daemon re-reported the same
+   * binding" supersedes nothing, and dropping an in-flight read there would
+   * leave the row stale until the next nudge — a liveness cost paid for no
+   * ordering gain.
+   */
+  private bindingGeneration = 0;
+
+  /**
    * Record the binding the privacy barrier pinned this chat to.
    *
    * Idempotent by value: the frame arrives on every repaired turn, and a fresh
    * object each time would re-render the composer — including its model chip
    * and context gauge — once per turn for no change at all.
+   *
+   * ⚠ The value comparison also decides whether {@link bindingGeneration}
+   * moves, so it is read off `this.snapshot` here rather than inside the
+   * updater. An updater is a pure function of `prev` and must stay one.
    */
   private setPinnedModel = (pinned: PinnedModelView): void => {
-    this.updateSnapshot((prev) =>
-      prev.pinnedModel?.provider === pinned.provider && prev.pinnedModel?.model === pinned.model
-        ? prev
-        : { ...prev, pinnedModel: pinned }
-    );
+    const current = this.snapshot.pinnedModel;
+    if (current?.provider === pinned.provider && current?.model === pinned.model) return;
+    this.bindingGeneration += 1;
+    this.updateSnapshot((prev) => ({ ...prev, pinnedModel: pinned }));
   };
 
   /**
@@ -1916,6 +1948,7 @@ class ChatStreamController {
    */
   async refreshSessionBinding(): Promise<void> {
     if (!this.sessionId || !this.snapshot.session) return;
+    const generation = ++this.bindingGeneration;
     try {
       const response = await getSession({
         path: { session_id: this.sessionId },
@@ -1928,6 +1961,22 @@ class ChatStreamController {
       });
       const row = response.data;
       if (!row) return;
+      // Two ways an answer can be about something other than what is on screen
+      // now, checked in that order because the first is unconditional and the
+      // second is about time.
+      //
+      // ⚠ A row for ANOTHER chat. Nothing downstream re-checks the id — every
+      // patch below writes into THIS controller's snapshot and into its entry in
+      // the shared session list — so a mismatched payload would silently
+      // relabel this chat with another one's binding and tier. Cheap, and the
+      // one check here that does not depend on ordering.
+      if (row.id !== this.sessionId) return;
+      // ⚠ Superseded while in flight. See {@link bindingGeneration}: a pin
+      // reported after this read began, or a second refresh started after it,
+      // is the later fact. Adopting an older row over it is the flicker M4
+      // measured, and it is worse than a flicker — it makes the composer state
+      // a binding no turn used.
+      if (this.bindingGeneration !== generation) return;
       this.updateSnapshot((prev) => {
         if (!prev.session) return prev;
         if (
@@ -1969,10 +2018,18 @@ class ChatStreamController {
       // composer kept reading `gpt-5.5-2026-04-24` off the pin.
       //
       // Replacing rather than clearing keeps the field meaning what it says, and
-      // the row is the LATER fact: a pin is what a turn reported when it began,
-      // and this row was read now. The two can only disagree when the row moved
-      // afterwards — Gate B's repair binds FROM the row, so a repaired turn's
-      // pin and its row agree by construction.
+      // the row is the LATER fact — but only because the two guards above have
+      // established that it is. "This row was read now" was an assumption when
+      // this comment was written and it was wrong: the read is `async` and has
+      // two callers that overlap, so an answer landing here may have been
+      // requested before the pin it is about to overwrite even existed. M4
+      // measured that as a chip going A → B → A inside one Send.
+      // {@link bindingGeneration} is what makes the sentence true again.
+      //
+      // The daemon closes the same gap from the other side: Gate B now rebinds
+      // FROM the row whenever the row names a different provider or model, not
+      // only when the classification forces a repair — so a turn's pin and its
+      // row agree by construction and there is normally nothing here to prefer.
       if (row.provider_name && row.model_config?.model_name) {
         this.setPinnedModel({
           provider: row.provider_name,

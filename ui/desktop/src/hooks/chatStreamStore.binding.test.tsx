@@ -584,3 +584,109 @@ describe('a row changed elsewhere reaches this window', () => {
     expect(getCachedSessionList()).toBe(before);
   });
 });
+
+/**
+ * M4 — a row read that is already out of date must not win.
+ *
+ * `refreshSessionBinding` is `async`, adopts the row it reads OVER the
+ * turn-reported pin, and since #211 has two callers that can overlap: the end of
+ * a turn, and the `/sessions/changes` nudge. Measured in the running app as a
+ * composer chip going `gpt-4.1` → `gpt-5.5` → `gpt-4.1` across a single Send,
+ * ending on a spelling the turn had not used.
+ *
+ * The daemon fixes the underlying fact (Gate B rebinds from the row, so a turn's
+ * pin and its row agree). These two are the renderer's own guard, and they are
+ * about ORDER rather than about which value is right.
+ */
+describe('a stale row read cannot overwrite a newer fact', () => {
+  it('drops an answer that was requested before the pin it would overwrite', async () => {
+    const sid = `bind-stale-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+
+    // Held open, so the read is provably still in flight when the newer fact
+    // lands. Without that there is no interleaving to test.
+    let releaseRow!: () => void;
+    const rowRead = new Promise<void>((resolve) => {
+      releaseRow = resolve;
+    });
+    mocks.getSession.mockImplementation(async () => {
+      await rowRead;
+      // The row as it was BEFORE the switch below — the stale answer.
+      return { data: boundSession(sid) };
+    });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+
+    const refreshed = controller.refreshSessionBinding();
+    // A newer statement of the same fact, made while that read is parked.
+    announceSessionBinding({
+      sessionId: sid,
+      provider: 'versa_azure',
+      model: 'gpt-4.1-2025-04-24',
+      contextLimit: 1_050_000,
+    });
+    releaseRow();
+    await refreshed;
+
+    expect(controller.getSnapshot().pinnedModel).toEqual({
+      provider: 'versa_azure',
+      model: 'gpt-4.1-2025-04-24',
+    });
+    expect(controller.getSnapshot().session?.provider_name).toBe('versa_azure');
+    expect(controller.getSnapshot().session?.model_config?.model_name).toBe('gpt-4.1-2025-04-24');
+  });
+
+  it('drops a row that is about a different chat', async () => {
+    const sid = `bind-wrongid-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    // Nothing downstream re-checks the id: every patch writes into THIS
+    // controller's snapshot and into its entry in the shared session list. A
+    // mismatched payload would silently relabel this chat with another one's
+    // binding and classification.
+    mocks.getSession.mockResolvedValue({
+      data: boundSession(`${sid}-someone-else`, {
+        privacy_tier: 'private',
+        privacy_reason: 'turn:versa_azure',
+        provider_name: 'versa_azure',
+        model_config: { model_name: 'gpt-5.5-2026-04-24', toolshim: false },
+      }),
+    });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.refreshSessionBinding();
+
+    expect(controller.getSnapshot().session?.provider_name).toBe('codex');
+    expect(controller.getSnapshot().session?.privacy_tier).toBe('public');
+    expect(controller.getSnapshot().pinnedModel).toBeUndefined();
+  });
+
+  /**
+   * The guard must not simply disable the feature. A read that STARTS after the
+   * pin is the later fact and still applies — which is #211's whole purpose, and
+   * the case `moves the turn-reported pin onto the row it just re-read` covers
+   * through a turn. This is the same property reached directly, so a change to
+   * the ordering rule cannot pass by breaking only the round-about path.
+   */
+  it('still adopts a row read after the pin was reported', async () => {
+    const sid = `bind-fresh-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });
+    mocks.getSession.mockResolvedValue({
+      data: boundSession(sid, {
+        provider_name: 'versa_azure',
+        model_config: { model_name: 'gpt-4.1-2025-04-24', toolshim: false },
+      }),
+    });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    announceSessionBinding({ sessionId: sid, provider: 'codex', model: 'gpt-6-astra' });
+    await controller.refreshSessionBinding();
+
+    expect(controller.getSnapshot().pinnedModel).toEqual({
+      provider: 'versa_azure',
+      model: 'gpt-4.1-2025-04-24',
+    });
+  });
+});

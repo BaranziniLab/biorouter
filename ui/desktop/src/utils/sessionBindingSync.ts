@@ -8,6 +8,20 @@
  * `session.provider_name` + `session.model_config` whenever either is set, and
  * only falls back to the app-wide selection for a chat that names neither.
  *
+ * ⚠ **That premise was HALF true when it was written, and the missing half was
+ * finding M4.** `restore_provider_from_session` binds the row once, at resume,
+ * and nothing afterwards told a live agent that the row had moved. So while an
+ * agent existed, the row was not what the chat ran on — it was what the chat
+ * ran on the last time one was built. Measured: `biorouter session --resume …
+ * --provider …` rewrote the row from another process, this module's feed carried
+ * the change, the chip adopted it, and `token_events` then recorded the OLD
+ * model for the next turn. Everything here is downstream of the daemon making
+ * the sentence true: Gate B (`Agent::reply`) now rebinds from the row whenever
+ * the row names a different provider or model, so a turn's own frame and the
+ * row it re-reads afterwards state the same thing. Reading a fresh row is
+ * therefore worth doing because it agrees with the turn, not because it
+ * overrules one.
+ *
  * The renderer cannot simply prefer the row, though, because its copy of the
  * row is a cache. `ChatStreamController` reads it once (from `/agent/resume`)
  * and then only ever patches it; nothing refetches it. So a per-chat model
