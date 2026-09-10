@@ -1005,6 +1005,7 @@ dependencies = [
  "dunce",
  "env-lock",
  "etcetera 0.11.0",
+ "filetime",
  "fs2",
  "futures",
  "git2",

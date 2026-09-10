@@ -111,10 +111,26 @@ struct CacheEntry {
 
 static CACHE: Lazy<Mutex<HashMap<PathBuf, CacheEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Clear the cache. Test-only; production relies on TTL/mtime invalidation.
+/// The key `working_dir` is cached under. Canonicalized so two spellings of one
+/// directory share an entry; shared with [`forget_cached`] so a test can never
+/// clear a key production would not have written.
+fn cache_key(working_dir: &Path) -> PathBuf {
+    std::fs::canonicalize(working_dir).unwrap_or_else(|_| working_dir.to_path_buf())
+}
+
+/// Drop one working directory's cached map. Test-only; production relies on
+/// TTL/mtime invalidation.
+///
+/// Scoped to a single key, and deliberately not a whole-map `clear()`: `CACHE`
+/// is process-global, and `cargo test` runs a crate's unit tests in parallel
+/// threads of one process. Emptying it would reach into entries belonging to
+/// whatever else is mid-flight — `collect_moim` caches under its own working
+/// directory on every turn, and has a test of its own that does. Because each
+/// test owns a unique `tempdir` key, keeping the reach this narrow is what lets
+/// the cache tests run unserialized.
 #[cfg(test)]
-pub fn clear_cache() {
-    CACHE.lock().unwrap().clear();
+pub fn forget_cached(working_dir: &Path) {
+    CACHE.lock().unwrap().remove(&cache_key(working_dir));
 }
 
 fn dir_mtime(dir: &Path) -> Option<SystemTime> {
@@ -142,7 +158,7 @@ pub fn workspace_summary(working_dir: &Path) -> Option<String> {
         "CONTEXT_WORKSPACE_SUMMARY_TTL_SECS",
         DEFAULT_TTL_SECS,
     ));
-    let key = std::fs::canonicalize(working_dir).unwrap_or_else(|_| working_dir.to_path_buf());
+    let key = cache_key(working_dir);
     let current_mtime = dir_mtime(working_dir);
 
     // Fast path: serve a cached map when the directory's mtime is unchanged and
@@ -281,6 +297,7 @@ pub fn build_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filetime::FileTime;
     use std::fs;
 
     fn cfg() -> SummaryConfig {
@@ -440,24 +457,81 @@ mod tests {
         );
     }
 
+    /// Pin `dir`'s own mtime, and confirm the filesystem kept the value.
+    ///
+    /// Both halves of the cache test below assert what [`workspace_summary`]
+    /// does with [`dir_mtime`], so the timestamp is each half's precondition
+    /// rather than a detail of it. A filesystem that quietly refuses the value
+    /// must fail here, naming the timestamp, instead of downstream where a
+    /// stale map reads as a cache bug — which is how this test used to fail.
+    fn pin_dir_mtime(dir: &Path, at: FileTime) {
+        filetime::set_file_mtime(dir, at).expect("set the directory's mtime");
+        let read_back = FileTime::from_last_modification_time(
+            &fs::metadata(dir).expect("read the directory's metadata"),
+        );
+        assert_eq!(
+            read_back, at,
+            "filesystem kept the directory mtime this test drives invalidation through"
+        );
+    }
+
     #[test]
     fn test_cache_serves_and_invalidates_on_mtime() {
-        clear_cache();
+        // Both halves are steered by two config keys, each resolved from the
+        // environment or `config.yaml`. Assert them up front: a machine that
+        // has turned the feature off — `CONTEXT_WORKSPACE_SUMMARY: false` is
+        // the documented lever for a slow workspace walk — would otherwise
+        // fail below with a message about the file map rather than about its
+        // own configuration.
+        assert!(
+            enabled(),
+            "CONTEXT_WORKSPACE_SUMMARY is off here, so the cache under test never runs"
+        );
+        assert!(
+            config_u64("CONTEXT_WORKSPACE_SUMMARY_TTL_SECS", DEFAULT_TTL_SECS) > 0,
+            "CONTEXT_WORKSPACE_SUMMARY_TTL_SECS is 0 here, which disables caching entirely"
+        );
+
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("one.txt"), "x").unwrap();
 
+        // Fixed timestamps rather than whatever the writes happen to leave
+        // behind: mtime resolution is coarse (the Windows clock ticks roughly
+        // every 15ms, and NTFS updates a directory's own mtime lazily), so two
+        // writes microseconds apart can leave it byte-identical. Taking the
+        // cache's invalidation signal from wall-clock writes is what made this
+        // test flaky on windows-latest while macOS and Ubuntu passed.
+        let before = FileTime::from_unix_time(1_000_000_000, 0);
+        let after = FileTime::from_unix_time(1_000_000_060, 0);
+        pin_dir_mtime(dir.path(), before);
+
         let first = workspace_summary(dir.path()).expect("first summary");
         assert!(first.contains("one.txt"));
+        assert!(
+            !first.contains("two.txt"),
+            "two.txt does not exist yet, so the map cannot name it"
+        );
 
-        // Add a top-level file; the directory mtime changes, so the cache must
-        // invalidate and pick up the new entry even within the TTL.
+        // Half 1 — the cache SERVES. Add a top-level file, then put the mtime
+        // back where the cached entry recorded it: inside the TTL the stale map
+        // must come back unchanged, which is the whole point of caching.
         fs::write(dir.path().join("two.txt"), "y").unwrap();
-        // mtime resolution can be coarse; nudge the directory to be safe.
+        pin_dir_mtime(dir.path(), before);
+        assert_eq!(
+            workspace_summary(dir.path()).expect("cached summary"),
+            first,
+            "an unchanged directory mtime inside the TTL serves the cached map"
+        );
+
+        // Half 2 — the cache INVALIDATES. Move the mtime clearly forward and
+        // the new top-level file must surface, TTL notwithstanding.
+        pin_dir_mtime(dir.path(), after);
         let refreshed = workspace_summary(dir.path()).expect("second summary");
         assert!(
-            refreshed.contains("two.txt") || first.contains("two.txt"),
-            "new top-level file surfaces after mtime change"
+            refreshed.contains("two.txt"),
+            "a changed directory mtime rewalks and surfaces the new file: {refreshed}"
         );
-        clear_cache();
+
+        forget_cached(dir.path());
     }
 }

@@ -203,6 +203,12 @@ aws-smithy-runtime-api = "=1.9.3"
 # the caller set it is supposed to have. Already resolved at 2.5.0 transitively, so
 # this adds no new package to the lock.
 walkdir = "2.5.0"
+# Test-only: set a directory's own mtime, which is the signal `workspace_summary`
+# caches on. `std::fs` cannot do this portably — a directory can only be opened
+# for write on Windows with `FILE_FLAG_BACKUP_SEMANTICS` — and the timestamp
+# granularity this papers over is exactly what made the cache test flaky there.
+# Already resolved at 0.2.26 transitively, so this adds no new package to the lock.
+filetime = "0.2.26"
 aws-smithy-http-client = { version = "=1.1.5", default-features = false, features = ["test-util"] }
 
 [[example]]
