@@ -21,11 +21,18 @@
 //!
 //! # The poll does the reading
 //!
-//! There is no background watcher and no registry of watched ids. The request
-//! carries the ids its client has open, and while parked it re-reads exactly
-//! those rows on a short interval, hands them to
-//! [`SessionMetaEvents::observe`], and returns as soon as the revision moves.
-//! An idle app with no chats open therefore reads nothing at all.
+//! There is no background watcher. The request carries the ids its client has
+//! open, and while parked it re-reads exactly those rows on a short interval,
+//! hands them to [`SessionMetaEvents::observe`], and returns as soon as the
+//! revision moves. An idle app with no chats open therefore reads nothing at
+//! all.
+//!
+//! ⚠ **A poll does register its ids, and that registry is not bookkeeping.**
+//! The row map behind `observe` is process-global while an id list is one
+//! window's, so a poll that pruned that map against its OWN list would evict a
+//! second window's chats — and a re-adopted id is adopted SILENTLY, so the two
+//! windows would thrash and neither would ever be told a row moved. The claim
+//! taken below lives for exactly this request; see [`SessionMetaEvents::watch`].
 //!
 //! ⚠ **`since=0` is a baseline request, not a replay.** A client establishing
 //! itself gets the current revision and no changes; asking for a replay from
@@ -126,6 +133,15 @@ pub async fn session_changes(
             .unwrap_or(MAX_WAIT)
             .min(MAX_WAIT);
 
+    // Claimed for the life of this poll and released when it answers, so the
+    // row map is pruned against the union of every live watcher rather than
+    // against whichever list arrived last.
+    //
+    // ⚠ It must be a NAMED binding. `let _ = events.watch(&ids)` drops the
+    // guard on the spot and reinstates the defect in a shape that reads as a
+    // fix.
+    let _claim = events.watch(&ids);
+
     // Adopt this caller's ids before parking. A chat opened a moment ago has not
     // changed, and reporting its whole row as new would wake every window on
     // connect — the first observation of an id is silent by construction
@@ -142,7 +158,6 @@ pub async fn session_changes(
         {
             events.observe(rows);
         }
-        events.retain_watched(&ids);
 
         let delta = events.since(query.since);
         if !delta.changes.is_empty() || delta.truncated {
@@ -185,5 +200,54 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         assert_eq!(parse_ids(Some(&many)).len(), MAX_IDS);
+    }
+
+    /// The claim must be BOUND, and nothing that RUNS can see whether it is.
+    ///
+    /// ⚠ This is the one line carrying the two-window fix, and every
+    /// behavioural test in the workspace passes without it: the row map lives
+    /// in `biorouter`, the poll's claim is taken here, and a route test drives
+    /// neither. Deleting `let _claim = …` restores the defect, and so does
+    /// writing `let _ = …`, which drops the guard on the spot while reading as
+    /// a fix. A source scan is the only instrument that can see either.
+    #[test]
+    fn the_poll_binds_its_watch_claim_for_the_life_of_the_request() {
+        // Production only. This module names the shape it forbids, so a scan
+        // that read its own tests would report itself as its first offender.
+        let (production, _) = include_str!("session_meta.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this route's tests sit at the end, behind one `#[cfg(test)]`");
+        assert!(
+            production.len() > 5000,
+            "the production slice is {} bytes, far too short to be this route — the slice is              wrong and a clean result would mean nothing",
+            production.len()
+        );
+
+        // Comments are stripped for the same reason, and it is not theoretical
+        // here: the call site carries a warning that SPELLS the forbidden
+        // `let _ = …` form, so an unstripped scan sees two claims and fails on
+        // a correct tree. Truncating early can only lose a match, and a lost
+        // match fails the count below rather than passing quietly.
+        let claims: Vec<&str> = production
+            .lines()
+            .filter_map(|line| line.split("//").next())
+            .filter(|code| code.contains(".watch("))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            claims.len(),
+            1,
+            "the poll claims its ids exactly once, for the life of the request. Found: {claims:?}"
+        );
+
+        // Whitespace-insensitive, so `let _=` cannot slip past a spelling.
+        let squashed: String = claims[0].chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            squashed.starts_with("let") && !squashed.starts_with("let_="),
+            "the claim must be bound to a NAMED local. `let _ = …` drops the guard \
+             immediately, which prunes the process-global row map against this one caller's \
+             ids again — the defect this endpoint had, wearing a fix. Found: {}",
+            claims[0]
+        );
     }
 }

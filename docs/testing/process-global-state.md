@@ -27,7 +27,7 @@ Two remedies exist and **they are not interchangeable**:
 
 - **No new locks.** `env-lock` is a single global mutex over the whole environment. Adding a holder serialises writers against writers, which was never the failure mode, and does nothing about the unlocked readers that are.
 - **No new `#[serial]`.** An *unkeyed* `#[serial]` is worth even less than it looks: it excludes a test from the 31 other unkeyed ones and leaves it concurrent with the rest.
-- **A source-scan guard beats a stress run.** The race needs an interleaving CI produces and a loaded laptop may never show, so twenty green runs are weak evidence. A source scan cannot flake. Give every scan a non-vacuity floor and prove it against a deliberately poisoned probe before trusting it. The standing guard is `model::tests::no_test_parks_a_shared_setting_in_the_process_environment` ([#209](https://github.com/BaranziniLab/biorouter/pull/209)), one table covering nine keys on both principles.
+- **A source-scan guard beats a stress run.** The race needs an interleaving CI produces and a loaded laptop may never show, so twenty green runs are weak evidence. A source scan cannot flake. Give every scan a non-vacuity floor and prove it against a deliberately poisoned probe before trusting it. The standing guard is `model::tests::no_test_parks_a_shared_setting_in_the_process_environment` ([#209](https://github.com/BaranziniLab/biorouter/pull/209)), one table covering nine keys on both principles. It walks `crates/*/src/**` **and** `crates/*/tests/**`. ⚠ The `tests/` half was added later: the two guards that table replaced had walked all of `crates/**`, so consolidating three instruments into one silently dropped 129 of the workspace's 762 `.rs` files, and a consolidation is exactly the kind of change nobody re-measures the coverage of.
 - **Writing the environment is not banned outright.** A key that is *test-private* — namespaced so no production reader can resolve it — and restored on drop is safe without any lock, because there is no reader to race.
 
 ## Why this document exists rather than a fifth per-key guard
@@ -119,8 +119,9 @@ Verdicts: **fixed**, **live** (a reader can observe another test's write today),
 | `TEST_KEY`, `API_KEY`, `PROVIDER`, `PORT`, `ENABLED`, `CONFIG`, `TEST_PRECEDENCE` | none in production today; `get_param` upper-cases, so any `get_param("provider")` would resolve one | 11 unguarded bare `set_var` in 3 `config/base.rs` tests; `TEST_KEY` was never removed at all | **fixed** — [#199](https://github.com/BaranziniLab/biorouter/pull/199): namespaced to `BIOROUTER_TEST_CONFIG_*` and restored on drop |
 | `OSV_ENDPOINT` | `OsvChecker::new` (`agents/extension_malware_check.rs:18`), reached in production from `extension_manager.rs:972` on every Stdio extension install | 3 tests, RAII-restored but unkeyed `#[serial]` | **live** — fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
 | `BIOROUTER_TOOL_CALL_BATCHING` | `providers/base.rs:1236`, bare `env::var`, once per streamed turn | `formats/anthropic.rs:1745` under `#[serial(tool_call_batching_env)]`, a key only 3 tests hold | **live** — 5 flag-sensitive tests hold no key; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
-| `BIOROUTER_ALLOW_PROJECT_HOOKS` | `hooks/mod.rs:214`, bare `env::var` | `providers/bedrock.rs:1147`, **never removed** | **latent** — no `.biorouter/hooks.yaml` in-tree, so no reader is sensitive today; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
+| `BIOROUTER_ALLOW_PROJECT_HOOKS` | `hooks/mod.rs:214`, bare `env::var` | three writers, **none of them ever removed**: `providers/bedrock.rs:1147` in the lib, and `tests/hooks_agent_loop_tests.rs:132` + `tests/global_memory_consent_agent_loop.rs:141` in two separate test binaries | **fixed** — the lib writer by [#205](https://github.com/BaranziniLab/biorouter/pull/205), the two `tests/` writers by the row below. ⚠ This row said "no `.biorouter/hooks.yaml` in-tree, so no reader is sensitive today", and that was true only of the lib: **both** test files write one into their own working directory, so each binary's reader is sensitive from its first agent onward. Neither file ever removed the variable, so the opt-in stands for every agent that binary builds afterwards — including `agent_with_memory`, which asks for `hooks: {}` and never wanted the unlock. |
 | `BIOROUTER_ALLOW_PROJECT_HOOKS` override | `hooks/mod.rs:214` | `agents/subagent_tool.rs:5663` via `with_config_overrides` | **live defect, not a race** — the override is a no-op, so that arm does not test its own unlock; fixed by [#205](https://github.com/BaranziniLab/biorouter/pull/205) |
+| `BIOROUTER_ALLOW_PROJECT_HOOKS` in `crates/*/tests` | `hooks/mod.rs:214` | `tests/hooks_agent_loop_tests.rs:132`, `tests/global_memory_consent_agent_loop.rs:141` | **fixed** — both now state the decision on `AgentConfig::with_project_hooks`, the seam [#205](https://github.com/BaranziniLab/biorouter/pull/205) added for exactly this. ⚠ **The interesting part is not the defect, it is that three instruments reported it clean.** The standing guard walked `crates/*/src` only, the row above named one writer, and the writer recipe under [Re-measuring](#re-measuring) grepped `crates/biorouter/src` — so the key read as handled from every angle while both writes stood. Measured: restoring one of the two lines leaves the pre-widening guard green. |
 | `HOME` | `security/policy/command.rs:846`, `policy/target.rs:125` | `knowledge/conversation_ingest.rs:806` | **latent** — `global_memory.rs` is already mitigated by `pinned_store_root()` |
 | `HOME` via `dirs::home_dir()` | `config/search_path.rs:72` and `:109`, both production, inside `SearchPaths::builder()` | the same `conversation_ingest.rs:806` `env_lock` writer | **live** — `a_coding_agent_path_offers_the_node_version_managers` reads `HOME` itself at `:214` to build its expected paths, then the builder reads it again; two instants, and the test holds no lock |
 | `BIOROUTER_PATH_ROOT` (the general case) | ~46 live `Paths::config_dir()` readers | 33 `lock_env` writers | **open** — deferred, see below |
@@ -171,8 +172,15 @@ grep -rn 'Paths::[a-z_]*(' crates/biorouter/src --include='*.rs'
 grep -rn 'env::var\(_os\)\?(\s*"' crates/biorouter/src --include='*.rs'
 ```
 
+⚠ **This one scans all of `crates/`, and the scope is the point.** It read
+`crates/biorouter/src` until 2026-09-09, matching the standing guard's walk — which
+is how two unrestored writers of `BIOROUTER_ALLOW_PROJECT_HOOKS` sat in
+`crates/biorouter/tests/` unreported. A writer in a crate's top-level `tests/`
+cannot reach the lib test binary, but it reaches every other test in its own
+binary, and nothing else in this repository looks there.
+
 ```bash
-grep -rn 'std::env::\(set_var\|remove_var\)' crates/biorouter/src --include='*.rs'
+grep -rn 'std::env::\(set_var\|remove_var\)' crates/ --include='*.rs'
 ```
 
 ```bash
