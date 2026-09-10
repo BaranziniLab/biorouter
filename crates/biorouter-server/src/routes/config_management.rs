@@ -1720,7 +1720,7 @@ mod tests {
                 "BIOROUTER_MODEL".to_string(),
                 "BIOROUTER_PROVIDER".to_string(),
             ],
-            Some("Failed to read config file: Permission denied (os error 13)".to_string()),
+            Some("Config file I/O failed: Permission denied (os error 13)".to_string()),
         );
 
         assert!(
@@ -1729,7 +1729,7 @@ mod tests {
         );
         assert_eq!(
             report.write_error.as_deref(),
-            Some("Failed to read config file: Permission denied (os error 13)"),
+            Some("Config file I/O failed: Permission denied (os error 13)"),
             "the cause travels verbatim, so a caller need not re-derive it from the prose"
         );
         assert!(

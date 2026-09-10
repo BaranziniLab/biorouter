@@ -74,7 +74,14 @@ pub enum ConfigError {
     NotFound(String),
     #[error("Failed to deserialize value: {0}")]
     DeserializeError(String),
-    #[error("Failed to read config file: {0}")]
+    // ⚠ Direction-neutral on purpose. Every `?` on a `std::io::Error` in this
+    // file lands here, and roughly half of those are WRITES — staging a config,
+    // renaming it into place, restoring a backup over one that will not parse.
+    // While this said "Failed to read", a failed write reached the user as
+    // "the config file could not be written (Failed to read config file:
+    // Permission denied)", which contradicts itself in the one sentence that
+    // has to be believed.
+    #[error("Config file I/O failed: {0}")]
     FileError(#[from] std::io::Error),
     #[error("Failed to create config directory: {0}")]
     DirectoryError(String),
@@ -902,7 +909,9 @@ impl Config {
         tracing::info!("Config file doesn't exist, attempting recovery from backup");
 
         if let Ok(backup_values) = self.try_restore_from_backup() {
-            tracing::info!("Successfully restored config from backup");
+            // See the note on the same line in `load_values_with_recovery`: the
+            // values are recovered, which is not the same as written back.
+            tracing::info!("Recovered config values from a backup");
             return Ok(backup_values);
         }
 
@@ -1090,7 +1099,13 @@ impl Config {
 
                 // Try to recover from backup
                 if let Ok(backup_values) = self.try_restore_from_backup() {
-                    tracing::info!("Successfully restored config from backup");
+                    // "Recovered", not "restored": `try_restore_from_backup`
+                    // answers `Ok` when the backup PARSED, which is a different
+                    // claim from having written it over the corrupt file. It
+                    // logs which of those happened itself, and this line used to
+                    // say "Successfully restored config from backup"
+                    // immediately after its error saying the opposite.
+                    tracing::info!("Recovered config values from a backup");
                     return Ok(backup_values);
                 }
 
