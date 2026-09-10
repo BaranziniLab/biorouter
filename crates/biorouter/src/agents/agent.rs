@@ -5447,11 +5447,17 @@ impl Agent {
     /// assistant messages). MOIM injection already re-normalized on the way
     /// through; this closes the same hole for sessions with no MOIM provider.
     /// `BIOROUTER_NORMALIZE_EACH_TURN=false` restores the old behaviour.
+    /// `cancel` is the turn's own token. It reaches this far down because the
+    /// workspace map's directory walk is the one piece of per-turn context
+    /// assembly that touches the filesystem, and a `Stop` has to be able to end
+    /// the wait for it — see `agents::workspace_summary` and finding M1 of the
+    /// 2026-09-10 test drive.
     async fn assemble_turn_context(
         &self,
         session_id: &str,
         conversation: &Conversation,
         working_dir: &std::path::Path,
+        cancel: Option<&CancellationToken>,
     ) -> Conversation {
         let _phase = super::phase_timing::Phase::start("agent.assemble_turn_context");
 
@@ -5462,6 +5468,7 @@ impl Agent {
             &self.extension_manager,
             working_dir,
             &self.normalizer,
+            cancel,
         )
         .await;
         drop(moim_phase);
@@ -9578,6 +9585,7 @@ impl Agent {
                             &session_config.id,
                             &conversation,
                             &working_dir,
+                            cancel_token.as_ref(),
                         )
                         .await
                     }

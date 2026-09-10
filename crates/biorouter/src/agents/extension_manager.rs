@@ -3152,10 +3152,14 @@ impl ExtensionManager {
             .map(|ext| ext.get_client())
     }
 
+    /// `cancel` is the turn's cancellation token, threaded down to the
+    /// workspace map so a `Stop` is honoured while its directory walk is still
+    /// outstanding. See `agents::workspace_summary`.
     pub async fn collect_moim(
         &self,
         session_id: &str,
         working_dir: &std::path::Path,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Option<String> {
         // Use minute-level granularity to prevent conversation changes every second
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:00").to_string();
@@ -3168,7 +3172,9 @@ impl ExtensionManager {
         // BR-1: give the model a bounded, gitignore-aware map of the workspace so
         // it doesn't rediscover project structure from scratch every session. The
         // map is cached and token-capped inside `workspace_summary`.
-        if let Some(map) = crate::agents::workspace_summary::workspace_summary(working_dir) {
+        if let Some(map) =
+            crate::agents::workspace_summary::workspace_summary(working_dir, cancel).await
+        {
             content.push('\n');
             content.push_str(&map);
             content.push('\n');
@@ -4280,7 +4286,7 @@ mod tests {
         let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
         let working_dir = std::path::Path::new("/tmp");
 
-        if let Some(moim) = em.collect_moim("test-session-id", working_dir).await {
+        if let Some(moim) = em.collect_moim("test-session-id", working_dir, None).await {
             // Timestamp should end with :00 (seconds fixed to 00)
             assert!(
                 moim.contains(":00\n"),
