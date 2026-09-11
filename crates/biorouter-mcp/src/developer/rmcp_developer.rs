@@ -1667,6 +1667,21 @@ impl DeveloperServer {
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
+    /// [`Self::validate_shell_command`] against an explicit environment and the
+    /// directory the command will run in.
+    ///
+    /// FAIL-BEFORE SHIM (H1): today's check resolves neither, so both are
+    /// ignored and the H1 table runs against it unchanged.
+    #[cfg(test)]
+    fn validate_shell_command_in(
+        &self,
+        command: &str,
+        _working_dir: Option<&Path>,
+        _env: &crate::secret_guard::ShellEnv,
+    ) -> Result<(), ErrorData> {
+        self.validate_shell_command(command)
+    }
+
     /// Validate a shell command before execution.
     ///
     /// Checks for empty commands and ensures the command doesn't attempt to access
@@ -3067,6 +3082,103 @@ mod tests {
             "the session directory's .biorouterignore must be honoured once the server \
              is bound to it"
         );
+    }
+
+    /// H1 (QA-C) through the Developer server's own check — the second layer
+    /// behind the dispatch scan, and the only one when this server is spawned
+    /// on its own. The same rows and the same throwaway HOME as
+    /// `secret_guard`'s table, resolved against the directory the command
+    /// actually runs in. Never the operator's real credentials.
+    #[test]
+    fn h1_developer_shell_refuses_every_spelling_of_a_secret() {
+        use crate::secret_guard::h1_fixtures::{h1_leaking_spellings, FakeHome};
+        let fake = FakeHome::new();
+        let env = fake.env();
+        let server = DeveloperServer::new().with_working_dir(fake.project.clone());
+        let leaked: Vec<String> = h1_leaking_spellings(&fake.home)
+            .into_iter()
+            .filter(|(_, command)| {
+                server
+                    .validate_shell_command_in(command, Some(&fake.project), &env)
+                    .is_ok()
+            })
+            .map(|(name, command)| format!("  {name}: {command}"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "{} spelling(s) reached a secret through developer__shell:\n{}",
+            leaked.len(),
+            leaked.join("\n")
+        );
+    }
+
+    #[test]
+    fn h1_developer_shell_allows_ordinary_commands() {
+        use crate::secret_guard::h1_fixtures::{h1_ordinary_commands, FakeHome};
+        let fake = FakeHome::new();
+        let env = fake.env();
+        let server = DeveloperServer::new().with_working_dir(fake.project.clone());
+        for command in h1_ordinary_commands(&fake.home) {
+            assert!(
+                server
+                    .validate_shell_command_in(&command, Some(&fake.project), &env)
+                    .is_ok(),
+                "refused an ordinary command: {command}"
+            );
+        }
+    }
+
+    /// The per-call `working_directory` is where the command runs, so it is
+    /// where a relative path has to be resolved.
+    #[test]
+    fn h1_developer_shell_resolves_against_the_per_call_working_directory() {
+        use crate::secret_guard::h1_fixtures::FakeHome;
+        let fake = FakeHome::new();
+        let server = DeveloperServer::new().with_working_dir(fake.project.clone());
+        let aws = fake.home.join(".aws");
+        assert!(
+            server
+                .validate_shell_command_in("cat credentials", Some(&aws), &fake.env())
+                .is_err(),
+            "`cat credentials` run inside the fake ~/.aws was allowed"
+        );
+    }
+
+    /// The refusal is wired into `shell` itself, before anything is spawned.
+    /// Absolute paths, so the process's own HOME is never consulted.
+    #[test]
+    fn h1_shell_tool_refuses_a_cd_spelling_before_running_it() {
+        use crate::secret_guard::h1_fixtures::FakeHome;
+        run_shell_test(|| async {
+            let fake = FakeHome::new();
+            let server = DeveloperServer::new().with_working_dir(fake.project.clone());
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: format!("cd {}/.aws && head credentials", fake.home.display()),
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(1),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await;
+            let refused = matches!(&result, Err(e) if e.code == ErrorCode::INTERNAL_ERROR);
+            cleanup_test_service(running_service, peer);
+            assert!(
+                refused,
+                "`cd <home>/.aws && head credentials` ran: {:?}",
+                result.map(|r| r.content)
+            );
+        });
     }
 
     /// #68: pinning the canonical base must not reject a base that is *itself*

@@ -276,6 +276,19 @@ impl SecretGuard {
     ///   * a bare token (no path separator) is only considered under a path-like
     ///     key, so `.env` appearing inside a `content`/`message` field is
     ///     ignored even when such a file happens to exist.
+    /// [`Self::find_denied_path`] against an explicit environment.
+    ///
+    /// FAIL-BEFORE SHIM (H1): the existing matcher never expands anything, so
+    /// the environment is ignored here and the H1 table runs against today's
+    /// behaviour unchanged.
+    pub fn find_denied_path_in(
+        &self,
+        arguments: &Map<String, Value>,
+        _env: &ShellEnv,
+    ) -> Option<String> {
+        self.find_denied_path(arguments)
+    }
+
     pub fn find_denied_path(&self, arguments: &Map<String, Value>) -> Option<String> {
         let mut found = None;
         for (key, value) in arguments {
@@ -358,6 +371,34 @@ fn has_separator(s: &str) -> bool {
     s.contains('/') || s.contains('\\')
 }
 
+/// The environment a scan expands `~` and `$VAR` against.
+///
+/// FAIL-BEFORE SHIM (H1): carried but unused by the matcher above.
+#[derive(Debug, Clone, Default)]
+pub struct ShellEnv {
+    #[allow(dead_code)]
+    vars: HashMap<String, String>,
+}
+
+impl ShellEnv {
+    pub fn from_process() -> Self {
+        Self {
+            vars: std::env::vars().collect(),
+        }
+    }
+
+    pub fn with_vars<I, K, V>(vars: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            vars: vars.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+        }
+    }
+}
+
 /// Ignore files that contribute to a guard rooted at `cwd`, in the order they
 /// are layered: global (`<config>/.biorouterignore`) first, then project-local
 /// (`<cwd>/.biorouterignore`). Only files that exist are returned, so creating
@@ -415,8 +456,205 @@ fn fingerprint_sources(sources: &[PathBuf]) -> Option<Fingerprint> {
     Some(fingerprint)
 }
 
+/// Fixtures for H1's tables, shared by this module's tests and the Developer
+/// server's, which run the same rows through its own check.
+#[cfg(test)]
+pub(crate) mod h1_fixtures {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // ---- H1 (QA-C, 2026-09-10): every spelling of a secret ----------------
+    //
+    // Measured from a public-model chat in Auto mode: `/Users/…/.aws/credentials`
+    // was refused, while `~/…`, `$HOME/…`, a glob and `cd … && head` all handed
+    // the model the AWS key. Every row here runs against a throwaway HOME with
+    // fake credentials — never the operator's real `~/.aws`, `~/.ssh` or
+    // `~/.config/biorouter`, and never the real global `.biorouterignore`
+    // (`SecretGuard::build` with no sources).
+
+    /// Made-up credential material, assembled at run time so no key-shaped
+    /// literal sits in the source for a secret scanner to trip on.
+    pub(crate) fn fake_aws_credentials() -> String {
+        let id = format!("{}{}", "AKIA", "FAKEFAKEFAKE0000");
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+        format!("[default]\naws_access_key_id = {id}\naws_secret_access_key = {secret}\n")
+    }
+
+    pub(crate) fn fake_private_key() -> String {
+        let kind = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+        format!(
+            "-----BEGIN {kind}-----\nZmFrZSBrZXkgbWF0ZXJpYWwgZm9yIHRlc3RzIG9ubHk=\n-----END {kind}-----\n"
+        )
+    }
+
+    /// A throwaway HOME holding fake credentials, and a project beside it.
+    pub(crate) struct FakeHome {
+        _dir: tempfile::TempDir,
+        pub(crate) home: PathBuf,
+        pub(crate) project: PathBuf,
+    }
+
+    impl FakeHome {
+        pub(crate) fn new() -> Self {
+            let dir = tempdir().unwrap();
+            // Canonical, so a macOS `/var` → `/private/var` link cannot make
+            // the same file look like two.
+            let root = fs::canonicalize(dir.path()).unwrap();
+            let home = root.join("home");
+            let project = root.join("project");
+            for sub in [".aws", ".ssh", ".config/biorouter"] {
+                fs::create_dir_all(home.join(sub)).unwrap();
+            }
+            fs::create_dir_all(project.join("src")).unwrap();
+            fs::write(home.join(".aws/credentials"), fake_aws_credentials()).unwrap();
+            fs::write(home.join(".aws/config"), "[default]\nregion = us-west-2\n").unwrap();
+            fs::write(home.join(".ssh/id_ed25519"), fake_private_key()).unwrap();
+            fs::write(home.join(".ssh/deploy.pem"), fake_private_key()).unwrap();
+            fs::write(
+                home.join(".ssh/id_ed25519.pub"),
+                "ssh-ed25519 AAAAC3fake tester@example\n",
+            )
+            .unwrap();
+            fs::write(home.join(".ssh/config"), "Host example\n  User tester\n").unwrap();
+            fs::write(
+                home.join(".config/biorouter/secrets.yaml"),
+                "OPENAI_API_KEY: not-a-real-key-for-tests\n",
+            )
+            .unwrap();
+            fs::write(
+                home.join(".config/biorouter/config.yaml"),
+                "BIOROUTER_PROVIDER: versa_azure\n",
+            )
+            .unwrap();
+            fs::write(home.join("notes.txt"), "hello\n").unwrap();
+            fs::write(project.join("data.csv"), "a,b\n1,2\n").unwrap();
+            fs::write(project.join("src/main.py"), "print('hi')\n").unwrap();
+            Self {
+                _dir: dir,
+                home,
+                project,
+            }
+        }
+
+        /// Links from the project into the fake HOME's credential stores.
+        #[cfg(unix)]
+        pub(crate) fn with_links(self) -> Self {
+            std::os::unix::fs::symlink(self.home.join(".aws"), self.project.join("aws-link"))
+                .unwrap();
+            std::os::unix::fs::symlink(
+                self.home.join(".aws/credentials"),
+                self.project.join("creds-link"),
+            )
+            .unwrap();
+            self
+        }
+
+        pub(crate) fn env(&self) -> ShellEnv {
+            ShellEnv::with_vars([
+                ("HOME", self.home.to_string_lossy().into_owned()),
+                ("USER", "tester".to_string()),
+            ])
+        }
+
+        pub(crate) fn guard(&self) -> SecretGuard {
+            SecretGuard::build(&self.project, &[])
+        }
+    }
+
+    /// The command spellings H1 measured leaking, and the families beside them.
+    /// Shared with the Developer server's own table, which runs the same rows
+    /// through its path.
+    pub(crate) fn h1_leaking_spellings(home: &Path) -> Vec<(&'static str, String)> {
+        let h = home.display();
+        let mut rows: Vec<(&'static str, String)> = vec![
+            ("absolute", format!("cat {h}/.aws/credentials")),
+            ("tilde", "cat ~/.aws/credentials".into()),
+            ("$HOME", "cat $HOME/.aws/credentials".into()),
+            ("${HOME}", "cat ${HOME}/.aws/credentials".into()),
+            ("quoted $HOME", "cat \"$HOME/.aws/credentials\"".into()),
+            ("variable from $HOME", "H=$HOME; cat $H/.aws/credentials".into()),
+            ("absolute glob", format!("cat {h}/.aws/cred*")),
+            ("tilde glob", "cat ~/.aws/cred*".into()),
+            ("cd && head", format!("cd {h}/.aws && head credentials")),
+            ("cd ; cat", "cd ~/.aws; cat credentials".into()),
+            ("pushd", "pushd ~/.aws >/dev/null && cat credentials".into()),
+            ("cd with no argument", "cd; cat .aws/credentials".into()),
+            ("ssh private key", "cat ~/.ssh/id_ed25519".into()),
+            ("pem glob", "cat ~/.ssh/*.pem".into()),
+            ("every ssh file", "head -n 3 ~/.ssh/*".into()),
+            ("provider-key store", "cat ~/.config/biorouter/secrets.yaml".into()),
+            ("case variant", "cat ~/.AWS/Credentials".into()),
+            ("brace expansion", "cat ~/.aws/{credentials,config}".into()),
+            ("quote splice", "cat ~/.aws/cred\"\"entials".into()),
+            ("backslash escape", "cat ~/.aws/cred\\entials".into()),
+            ("ANSI-C quoting", "cat ~/.aws/$'cred\\x65ntials'".into()),
+            ("input redirect", "cat < ~/.aws/credentials".into()),
+            ("cd then redirect", "cd ~/.aws && wc -c < credentials".into()),
+            ("bash -c", "bash -c 'cat ~/.aws/credentials'".into()),
+            ("sh -c with cd", "sh -c \"cd ~/.aws && cat credentials\"".into()),
+            (
+                "here-document to a shell",
+                "bash <<'EOF'\ncd ~/.aws\ncat credentials\nEOF".into(),
+            ),
+            ("for loop", "for f in ~/.aws/*; do cat \"$f\"; done".into()),
+            ("directory variable + glob", "D=~/.aws; cat $D/cred*".into()),
+            ("eval", "eval 'cat ~/.aws/credentials'".into()),
+            ("zsh alternation", "cat ~/.aws/(credentials|config)".into()),
+            (
+                "unknown last component",
+                "cat ~/.aws/cred$(printf e)ntials".into(),
+            ),
+            (
+                "cd into a substitution",
+                "cd \"$(echo ~/.aws)\" && cat credentials".into(),
+            ),
+            (
+                "path in python",
+                format!("python3 -c \"print(open('{h}/.aws/credentials').read())\""),
+            ),
+            (
+                "shell-out in python",
+                "python3 -c \"import os; os.system('cd ~/.aws && cat credentials')\"".into(),
+            ),
+            ("find by name", "find ~ -name credentials -exec cat {} \\;".into()),
+            ("dotglob", "cd ~ && shopt -s dotglob && cat */credentials".into()),
+        ];
+        rows.push(("ssh config by variable", "K=~/.ssh; cat \"$K\"/id_*".into()));
+        rows
+    }
+
+    /// Commands that touch the same directories without naming a secret.
+    pub(crate) fn h1_ordinary_commands(home: &Path) -> Vec<String> {
+        let h = home.display();
+        vec![
+            "cat ~/.ssh/id_ed25519.pub".into(),
+            "cat ~/.ssh/*.pub".into(),
+            "ls ~/.ssh".into(),
+            "ls -la ~/.aws".into(),
+            format!("cat {h}/.aws/config"),
+            "cat ~/.aws/config".into(),
+            "cd ~/.aws && ls".into(),
+            "cd ~/.ssh && cat config".into(),
+            "cat ~/.config/biorouter/config.yaml".into(),
+            "cat data.csv".into(),
+            "cat ~/notes.txt".into(),
+            "echo hello".into(),
+            "git status && git log --oneline -3".into(),
+            "ls *".into(),
+            "grep -rn TODO src".into(),
+            "for f in *.csv; do wc -l \"$f\"; done".into(),
+            "python3 -c 'print(1 + 1)'".into(),
+            "cat $(ls *.csv)".into(),
+            "cd src && python3 main.py".into(),
+            "find . -name '*.py'".into(),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::h1_fixtures::*;
     use super::*;
     use serde_json::json;
     use std::fs;
@@ -792,6 +1030,77 @@ mod tests {
             None,
             "a project pattern blocked an unrelated file outside the project"
         );
+    }
+
+    fn scan_command(g: &SecretGuard, env: &ShellEnv, command: &str) -> Option<String> {
+        g.find_denied_path_in(json!({ "command": command }).as_object().unwrap(), env)
+    }
+
+    #[test]
+    fn h1_every_spelling_of_a_secret_is_refused() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let leaked: Vec<String> = h1_leaking_spellings(&fake.home)
+            .into_iter()
+            .filter(|(_, command)| scan_command(&g, &env, command).is_none())
+            .map(|(name, command)| format!("  {name}: {command}"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "{} spelling(s) reached a secret:\n{}",
+            leaked.len(),
+            leaked.join("\n")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn h1_a_symlink_into_a_secret_store_is_refused() {
+        let fake = FakeHome::new().with_links();
+        let (g, env) = (fake.guard(), fake.env());
+        for command in ["cat aws-link/credentials", "cat creds-link", "cat aws-link/cred*"] {
+            assert!(
+                scan_command(&g, &env, command).is_some(),
+                "a link into the fake ~/.aws reached the secret: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn h1_ordinary_commands_are_not_refused() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        for command in h1_ordinary_commands(&fake.home) {
+            assert_eq!(
+                scan_command(&g, &env, &command),
+                None,
+                "refused an ordinary command: {command}"
+            );
+        }
+    }
+
+    /// The Developer shell's per-call `working_directory` moves the directory
+    /// the command runs in, so the dispatch scan must resolve `command` there
+    /// too. Otherwise `{"command": "cat credentials", "working_directory":
+    /// "<home>/.aws"}` passes both checks.
+    #[test]
+    fn h1_a_working_directory_argument_moves_the_base() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let args = json!({
+            "command": "cat credentials",
+            "working_directory": fake.home.join(".aws").to_string_lossy(),
+        });
+        assert!(g.find_denied_path_in(args.as_object().unwrap(), &env).is_some());
+    }
+
+    /// `computercontroller__automation_script` carries its body under `script`.
+    #[test]
+    fn h1_an_automation_script_is_scanned_like_a_command() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let args = json!({ "language": "shell", "script": "cd ~/.aws\nhead -5 credentials\n" });
+        assert!(g.find_denied_path_in(args.as_object().unwrap(), &env).is_some());
     }
 
     #[test]
