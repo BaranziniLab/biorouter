@@ -75,7 +75,35 @@ The syntax rules are:
 ]
 ```
 
-> **Warning.** `execute_code` is annotated as destructive and non-idempotent, and it can reach every effective tool exposed by enabled capabilities and loaded extensions — including `developer`'s `shell` and `text_editor`. It inherits the same blast radius as those tools, so the permission controls in the [Developer capability guide](developer.md) and [permission modes](../../security/permission-modes.md) apply to it too.
+> **Warning.** `execute_code` is annotated as destructive and non-idempotent, and it can reach every effective tool exposed by enabled capabilities and loaded extensions — including `developer`'s `shell` and `text_editor`. Every one of those calls is still decided on its own, under its own name; see [Permissions: every call a script makes is decided on its own](#permissions-every-call-a-script-makes-is-decided-on-its-own).
+
+## Permissions: every call a script makes is decided on its own
+
+A script is judged twice, and neither judgement covers the other.
+
+1. **The script itself** — `code_execution__execute_code` — is judged like any other tool call. In Manual Approval you are asked before a script runs, unless you have set `execute_code` to **Always allow**. Smart Approval asks too, because `execute_code` is annotated destructive. Completely Autonomous runs it.
+2. **Every tool call the script makes** — `developer__shell`, `developer__analyze`, `todo__todo_write`, and so on — is then decided exactly as the same call made directly would be, **under that tool's own name**: your [permission mode](../../security/permission-modes.md), your **Always allow** and **Never allow** entries for that tool, an administrator's [managed policy](../../security/managed-policy.md), the approvals that apply in every mode (sensitive system writes, global memory), and your PreToolUse and PermissionRequest [hooks](../../agent-loop/hooks/hooks-reference.md).
+
+What that means in practice:
+
+| Situation | What happens |
+|---|---|
+| Manual Approval, `execute_code` always allowed, and the script calls `developer__shell` | A card asks about `developer__shell` and shows the command. The card says the call came from a script. |
+| The same, with `developer__shell` also always allowed | The shell call runs with no card. |
+| `developer__shell` is set to **Never allow** | The call is refused with no card. The script receives a tool error, which it can catch and carry on from. |
+| You click **Deny** on the card | The same as Never allow, for this one call: the command does not run, and the script receives *"The user has declined to run this tool."* |
+| You click **Always allow** on the card | It is recorded for `developer__shell` — the tool the card named — not for `execute_code`. |
+| Smart Approval | Each call is graded by that tool's own risk annotations. Read-only tools such as `chatrecall` run; everything else asks. A tool that carries no annotations asks, as it would directly — `developer`'s tools carry none. |
+| Completely Autonomous | Calls run with no card, apart from the operations that ask in every mode. |
+| A run with nobody to ask, such as a scheduled workflow | A call that would ask is refused at once, and the script is told why. |
+
+Three consequences worth knowing:
+
+- **In Manual Approval a script can ask more than once:** once to run at all, then once for each call it makes that your settings do not already allow. Clicking **Always allow** on a card for a tool the script uses in a loop stops the rest of the loop asking.
+- **Always allow on `code_execution__execute_code` is yours to keep.** The script runs in a sandbox with no file, process or network access of its own; everything it does, it does through tool calls, and each of those is decided on its own. What that entry means is "do not ask me before running a script". It no longer also means "and allow everything the script calls". It is not a shipped default — a new `permission.yaml` is empty — so the entry exists only if you added it, by clicking **Always allow** on a script's card or in **Settings → Permissions**.
+- **A refusal the script cannot see past stays a refusal.** A call that reads or changes the machine-wide memory store, reads the transcript database, or deletes a knowledge base is refused inside a script outright, as it always has been, rather than turned into a card.
+
+A script you run yourself through the `POST /agent/call_tool` API is the one exception: that route is driven by a person rather than the model, bypasses the permission mode for the script too, and runs the script's calls as it always has.
 
 ## Example usage
 
@@ -112,4 +140,5 @@ The file has been saved to the root directory as `LOG.md`.
 - [Developer capability](developer.md) — the `shell` and `text_editor` tools most Code Mode scripts import, and the access controls that constrain them.
 - [Extension Manager capability](extension-manager.md) — the other lever for keeping the active tool count and context usage down.
 - [Context engineering](../../agent-loop/context-engineering.md) — the broader picture of how BioRouter manages its context window.
-- [Permission modes](../../security/permission-modes.md) — how to require approval before a script runs shell commands or edits files.
+- [Permission modes](../../security/permission-modes.md) — how to require approval before a script runs shell commands or edits files, and how a script's calls are decided.
+- [Hooks reference](../../agent-loop/hooks/hooks-reference.md) — PreToolUse and PermissionRequest hooks, which judge a script's calls as they judge direct ones.
