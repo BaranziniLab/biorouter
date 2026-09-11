@@ -58,6 +58,29 @@ describe('TurnActivityIndicator', () => {
     expect(screen.queryByText(/Still working/)).toBeNull();
   });
 
+  it('points at the composer only where there is one to stop from', () => {
+    // A delegated subagent's tab in a browser has no composer (SD-8), so the
+    // half of the nudge that sends the reader there is dropped, not left
+    // pointing at nothing. The reassurance stays.
+    const now = Date.now();
+    vi.setSystemTime(now);
+    render(
+      <TurnActivityIndicator
+        canStopHere={false}
+        activity={{ phase: 'thinking', label: 'Working on the result', since: now - 46_000 }}
+      />
+    );
+    expect(screen.getByText('Still working.')).toBeInTheDocument();
+    expect(screen.queryByText(/stop the turn from the composer/)).toBeNull();
+  });
+
+  it('still names the composer by default', () => {
+    renderAt(46_000);
+    expect(
+      screen.getByText('Still working. You can stop the turn from the composer.')
+    ).toBeInTheDocument();
+  });
+
   it('exposes a polite live region and hides the ticking chip from screen readers', () => {
     renderAt(5000);
     const status = screen.getByRole('status');

@@ -105,6 +105,8 @@ import type {
   ResourceContents,
 } from '../api';
 import { SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH } from './Layout/yieldLadder';
+import { SubagentComposerSlot } from './subagent/SubagentComposerSlot';
+import { subagentTabReadOnlyReason } from './subagent/subagentReadOnly';
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
 import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
 import { useChatGroups } from '../contexts/ChatGroupsContext';
@@ -1416,6 +1418,30 @@ function BaseChatContent({
   // keeps the standalone mounts (which have no tab strip to open a parent into)
   // from crashing.
   const chatGroups = useChatGroups();
+  // Is this a delegated subagent's chat? Any one of three sources settles it,
+  // and the first to know wins:
+  //
+  // - the badge the daemon's workspace frame put on the tab when it opened it
+  //   for a subagent it had just spawned — the same annotation the tab strip
+  //   draws the robot glyph from, and the only one known at MOUNT;
+  // - the chat store's row, which in a browser is the only way a subagent's
+  //   chat loads at all (`loadReadOnlySubagentChat`);
+  // - the header hook's own read.
+  //
+  // ⚠ The badge is not redundant with the other two, and it was added because
+  // of a measurement. The two reads are ordinary requests, and in a browser
+  // they queue behind every open event stream: the page holds one per observed
+  // tab and the browser allows six connections per origin. Measured on
+  // 2026-09-11 with a subagent running, the store's `/agent/resume` took 4.8 s
+  // to be refused and its session read was still pending five seconds later —
+  // all of it the running window, which is exactly when the ordinary composer
+  // offered a Stop that could only be refused.
+  const isSubagentChat =
+    chatGroups?.tabAnnotations?.[sessionId]?.badge === 'subagent' ||
+    session?.session_type === 'sub_agent' ||
+    subagent.isSubagent;
+  // SD-8: in a browser such a chat can only be read (see `subagentReadOnly.ts`).
+  const subagentTabReadOnly = isSubagentChat && subagentTabReadOnlyReason() !== null;
 
   const canDivergeSession = useMemo(
     () => messages.some((message) => message.role === 'assistant'),
@@ -2055,54 +2081,75 @@ function BaseChatContent({
         'biorouter-composer-view-transition'
       )}
     >
-      {pendingContinuation && (
-        <div
-          role="status"
-          className="mx-3 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/70 px-3 py-2 text-sm"
-        >
-          <span>
-            {pendingContinuation.ownership === 'owned'
-              ? 'A previous Stop & send is ready. Re-enter the message you want to send; Biorouter will not guess or resend lost composer text.'
-              : pendingContinuation.ownership === 'settling'
-                ? 'A previous Stop & send is still settling. Recover it explicitly or abandon the stopped-turn continuation.'
-                : 'Another window owns a pending Stop & send. Take it over here or abandon the stopped-turn continuation before sending.'}
-          </span>
-          <div className="flex shrink-0 gap-2">
-            {pendingContinuation.ownership !== 'owned' && (
+      {/*
+        H3 (2026-09-10 security test drive) — privacy tiers are OFF, where the
+        switch is recorded, and whether the app recorded turning it off. Same
+        slot, same rails and the same unconditional mount as the note below,
+        and first of the two: it is about the whole machine, that one about
+        this chat. It renders nothing while the tiers are on.
+
+        ⚠ OUTSIDE the read-only slot below, and that is the point of its own
+        "no dismiss control" rule: the condition is standing, so the statement
+        of it is too. A subagent's tab in a browser loses its composer, not the
+        notice that every gate on this machine is off.
+      */}
+      <PrivacyTiersOffNote className="mx-3 mb-2" />
+      {/*
+        SD-8: in a browser, a delegated subagent's chat gets the reason it has
+        no composer IN PLACE of everything below — the continuation banner's
+        buttons and every write `ChatInput` holds are refused there. Everywhere
+        else this renders its children untouched. The shell div stays so the
+        composer's motion ref and layout slot are the same either way.
+      */}
+      <SubagentComposerSlot isSubagentChat={isSubagentChat}>
+        {pendingContinuation && (
+          <div
+            role="status"
+            className="mx-3 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/70 px-3 py-2 text-sm"
+          >
+            <span>
+              {pendingContinuation.ownership === 'owned'
+                ? 'A previous Stop & send is ready. Re-enter the message you want to send; Biorouter will not guess or resend lost composer text.'
+                : pendingContinuation.ownership === 'settling'
+                  ? 'A previous Stop & send is still settling. Recover it explicitly or abandon the stopped-turn continuation.'
+                  : 'Another window owns a pending Stop & send. Take it over here or abandon the stopped-turn continuation before sending.'}
+            </span>
+            <div className="flex shrink-0 gap-2">
+              {pendingContinuation.ownership !== 'owned' && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    void recoverPendingContinuation('take_over').catch((error) => {
+                      toastError({
+                        title: 'Could not recover Stop & send',
+                        msg: errorMessage(error),
+                      });
+                    });
+                  }}
+                >
+                  Take over
+                </Button>
+              )}
               <Button
                 type="button"
                 size="sm"
+                variant="outline"
                 onClick={() => {
-                  void recoverPendingContinuation('take_over').catch((error) => {
+                  void recoverPendingContinuation('abandon').catch((error) => {
                     toastError({
-                      title: 'Could not recover Stop & send',
+                      title: 'Could not abandon Stop & send',
                       msg: errorMessage(error),
                     });
                   });
                 }}
               >
-                Take over
+                Abandon
               </Button>
-            )}
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                void recoverPendingContinuation('abandon').catch((error) => {
-                  toastError({
-                    title: 'Could not abandon Stop & send',
-                    msg: errorMessage(error),
-                  });
-                });
-              }}
-            >
-              Abandon
-            </Button>
+            </div>
           </div>
-        </div>
-      )}
-      {/*
+        )}
+        {/*
         Issue #56 Gate B. Above the composer, on the composer's own rails, in
         the same slot the Stop-and-send banner already uses — so it sits with
         the control it is about rather than in the transcript, where it would
@@ -2116,61 +2163,54 @@ function BaseChatContent({
         Mounted unconditionally — it renders nothing when there is nothing to
         say, which is almost always.
       */}
-      {/*
-        H3 (2026-09-10 security test drive) — privacy tiers are OFF, where the
-        switch is recorded, and whether the app recorded turning it off. Same
-        slot, same rails and the same unconditional mount as the note below,
-        and first of the two: it is about the whole machine, that one about
-        this chat. It renders nothing while the tiers are on.
-      */}
-      <PrivacyTiersOffNote className="mx-3 mb-2" />
-      <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
-      <ChatInput
-        sessionId={sessionId}
-        // The chat stream's own copy of the row, which the reply stream keeps
-        // current from turn START. `ChatInput` still reads the tier itself for
-        // the callers that thread nothing; this is the fresher of the two.
-        sessionRowPrivacyTier={session?.id === sessionId ? session?.privacy_tier : undefined}
-        effectiveModel={effectiveModel}
-        handleSubmit={handleFormSubmit}
-        chatState={chatState}
-        setChatState={setChatState}
-        onStop={stopStreaming}
-        onAbandonContinuation={abandonContinuation}
-        submissionBlocked={
-          pendingContinuation?.ownership === 'foreign' ||
-          pendingContinuation?.ownership === 'settling'
-        }
-        onSteer={steer}
-        commandHistory={commandHistory}
-        initialValue={initialPrompt}
-        setView={setView}
-        totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
-        accumulatedInputTokens={
-          tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
-        }
-        accumulatedOutputTokens={
-          tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
-        }
-        droppedFiles={droppedFiles}
-        onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
-        messagesLength={messages.length}
-        workingDirLocked={workingDirLocked}
-        disableAnimation={disableAnimation}
-        sessionCosts={sessionCosts}
-        modelCostRows={modelRows}
-        workflow={workflow}
-        workflowAccepted={!hasNotAcceptedWorkflow}
-        initialPrompt={initialPrompt}
-        toolCount={toolCount || 0}
-        supportsVisionOverride={session ? (sessionSupportsVision ?? false) : undefined}
-        supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
-        // #39 — capture a pre-session directory choice so the first message
-        // creates the session in it. Before the customChatInputProps spread,
-        // so callers can still override.
-        onWorkingDirChange={setPendingWorkingDir}
-        {...customChatInputProps}
-      />
+        <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
+        <ChatInput
+          sessionId={sessionId}
+          // The chat stream's own copy of the row, which the reply stream keeps
+          // current from turn START. `ChatInput` still reads the tier itself for
+          // the callers that thread nothing; this is the fresher of the two.
+          sessionRowPrivacyTier={session?.id === sessionId ? session?.privacy_tier : undefined}
+          effectiveModel={effectiveModel}
+          handleSubmit={handleFormSubmit}
+          chatState={chatState}
+          setChatState={setChatState}
+          onStop={stopStreaming}
+          onAbandonContinuation={abandonContinuation}
+          submissionBlocked={
+            pendingContinuation?.ownership === 'foreign' ||
+            pendingContinuation?.ownership === 'settling'
+          }
+          onSteer={steer}
+          commandHistory={commandHistory}
+          initialValue={initialPrompt}
+          setView={setView}
+          totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
+          accumulatedInputTokens={
+            tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
+          }
+          accumulatedOutputTokens={
+            tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
+          }
+          droppedFiles={droppedFiles}
+          onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
+          messagesLength={messages.length}
+          workingDirLocked={workingDirLocked}
+          disableAnimation={disableAnimation}
+          sessionCosts={sessionCosts}
+          modelCostRows={modelRows}
+          workflow={workflow}
+          workflowAccepted={!hasNotAcceptedWorkflow}
+          initialPrompt={initialPrompt}
+          toolCount={toolCount || 0}
+          supportsVisionOverride={session ? (sessionSupportsVision ?? false) : undefined}
+          supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
+          // #39 — capture a pre-session directory choice so the first message
+          // creates the session in it. Before the customChatInputProps spread,
+          // so callers can still override.
+          onWorkingDirChange={setPendingWorkingDir}
+          {...customChatInputProps}
+        />
+      </SubagentComposerSlot>
     </div>
   );
 
@@ -2458,6 +2498,7 @@ function BaseChatContent({
                               turnStartedAt={turnStartedAt}
                               lastMessageAt={lastMessageAt}
                               pendingSteer={pendingSteer}
+                              canStopTurn={!subagentTabReadOnly}
                               onRenderingComplete={handleRenderingComplete}
                               onMessageUpdate={onMessageUpdate}
                               submitElicitationResponse={submitElicitationResponse}
