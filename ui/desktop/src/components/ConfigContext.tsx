@@ -29,7 +29,13 @@ import {
   shouldDefaultEnableWorkspace,
   shouldDefaultEnablePromotedCapability,
 } from './settings/capabilities/capabilities';
-import { PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './settings/privacy/privacyTiers';
+import {
+  PRIVACY_TIERS_KEY,
+  PRIVACY_TIERS_RECORD_KEY,
+  privacyTiersEnabledFromConfig,
+  privacyTiersRecordFromConfig,
+  type PrivacyTiersRecord,
+} from './settings/privacy/privacyTiers';
 import { announceAppModelSelection } from '../utils/sessionBindingSync';
 import type {
   ConfigResponse,
@@ -629,4 +635,21 @@ export function usePrivacyTiersEnabled(): boolean {
   const context = useContext(ConfigContext);
   if (context === undefined) return true;
   return privacyTiersEnabledFromConfig(context.config[PRIVACY_TIERS_KEY]);
+}
+
+/**
+ * The daemon's report on the master switch's record — where it lives and which
+ * door last wrote it (H3). Off the same cache snapshot as
+ * {@link usePrivacyTiersEnabled}, so the two are one read and cannot describe
+ * different moments; a Settings → Privacy flip refreshes both.
+ *
+ * `null` outside a `ConfigProvider` and when the daemon sent no report. It says
+ * HOW the switch got its value and never WHETHER it is off — that is
+ * {@link usePrivacyTiersEnabled}'s alone, so a missing report can only cost the
+ * explanation, never the notice.
+ */
+export function usePrivacyTiersRecord(): PrivacyTiersRecord | null {
+  const context = useContext(ConfigContext);
+  if (context === undefined) return null;
+  return privacyTiersRecordFromConfig(context.config[PRIVACY_TIERS_RECORD_KEY]);
 }

@@ -194,7 +194,11 @@ wants it to have.
 
 `codex app-server` speaks newline-delimited JSON-RPC 2.0 over stdio and routes every approval
 back to the host as a **server-originated request** that blocks the turn until it is answered.
-That is the shape BioRouter needs, because the decision stays here. The transport is therefore
+That is the shape BioRouter needs, because the decision stays here — ⚠ **provided the thread's
+approval policy lets the request out at all.** Under `never`, codex-cli 0.148.0 and newer answer an
+MCP tool-call approval inside the CLI with a refusal, so BioRouter's bridge was unreachable until
+the policy changed; see
+[why the policy is not `never`](child-agent-isolation.md#why-the-policy-is-not-never-qa-e-f1). The transport is therefore
 genuinely bidirectional: a client that only reads responses deadlocks the first time the agent
 wants to do anything. Inbound messages are classified exactly as the protocol defines them — an
 `id` with no `method` is a response, a `method` with an `id` is a request that must be answered,

@@ -163,8 +163,11 @@ staging directory remained. Spoke stayed installed. The chat retained its inert
 is not a zero-residue purge of prior preferences or records.
 
 Codex's standard MCP result object is decoded as a complete `CallToolResult`, not serialized
-into a text block containing another result. This preserves content types, audience annotations,
-structured data, error state and display metadata. To Do update results carry the updated task's
+into a text block containing another result. This preserves content types, structured data, error
+state and display metadata. ⚠ Since QA-E F4 it is the *fallback*: the child is handed only the
+model's view of a result, so where the bridge kept its own full record of the call, that record —
+audience annotations included — is what gets stored; see
+[what the child is handed](#what-the-child-is-handed-and-what-the-transcript-keeps-qa-e-f4). To Do update results carry the updated task's
 id, text and status so the activity row can name the work rather than only its numeric id.
 The subsequent live read-only checklist showed “Starting ‘Confirm the primary knowledge base’”
 and “Marking ‘Examine its page index read-only’ complete”, alongside “Listing pages in Soul”.
@@ -194,7 +197,12 @@ which opens Electron's welcome window rather than BioRouter.
 
 Verified against a 60-tool surface — both CLIs accepted a 73-character prefixed tool name, a schema
 using `$defs`/`$ref`/`oneOf`, an image result, and a `ui://` embedded resource, all passed through
-unchanged.
+unchanged. ⚠ Two things that probe did not exercise have since been measured, and both changed what
+the bridge returns (QA-E F4, 2026-09-11): neither CLI filters a result by audience, and codex-cli
+0.153.4 cannot parse a block carrying `priority`. A block addressed only to the user — a `ui://`
+figure, the shell's reformatted copy — is therefore no longer handed to the child at all, and the
+annotations are stripped from what is; the transcript keeps the full result. See
+[what the child is handed](#what-the-child-is-handed-and-what-the-transcript-keeps-qa-e-f4).
 
 ## What still fires on a bridged call
 
@@ -429,6 +437,51 @@ cosmetic. ⚠ **The GUI does not yet draw a label separating the two** — the m
 persisted metadata, but a card reading `exec` looks like any other card today. Until that label
 lands, read `exec` and `apply_patch` cards on a Codex turn as child-executed.
 
+### What the child is handed, and what the transcript keeps (QA-E F4)
+
+A BioRouter tool can return the same output twice, addressed to two readers: `developer__shell`
+returns one text block with `audience: ["assistant"]` and a second, reformatted one with
+`audience: ["user"]` and `priority: 0.0`; `text_editor view` returns the file to the assistant as an
+embedded resource and a numbered rendering to the user; an Auto Visualiser figure is a `ui://`
+resource for the user beside a one-line label for the assistant. Every provider formatter sends the
+model only the blocks addressed to it (`providers::formats::audience::is_for_model`), and the GUI
+shows only the ones addressed to the user.
+
+The bridge used to hand the child **every** block, and three things followed, all measured on
+2026-09-11 against `claude` 2.1.266 and `codex-cli` 0.153.4:
+
+| What | Consequence |
+| --- | --- |
+| Neither CLI filters by audience | The child's model read every shell result twice, in the live turn. |
+| Claude Code drops every annotation when it echoes a result (`tool_result.content` and `tool_use_result` alike), and rewrites an embedded resource as `[Resource from biorouter at <uri>] <text>` | The mirror stored two unlabelled blocks, so the card read "2 results" and the next turn's transcript repeated the output again. |
+| codex-cli cannot parse a result whose block carries `priority` — `priority: 0.0` alone fails the call with `Unexpected response type`; `audience` alone does not | Once F1 was fixed, every `developer__shell` and `text_editor view` call on Codex still failed. |
+
+So the bridge now answers the child with `bridge::child_view` of the result: the model-facing blocks
+only, with their annotations removed — after the filter they tell a model nothing, and removing them
+is what makes the result parse on Codex. The bridge is, in effect, these two providers' formatter.
+
+The full result is not thrown away. `BridgeGrant::call_for_child` keeps it, keyed by the child's own
+id for the call, which both CLIs put in the `tools/call` request's `_meta` and repeat on the frame that
+reports the result:
+
+| CLI | `_meta` key | Same id as |
+| --- | --- | --- |
+| Claude Code 2.1.266 | `claudecode/toolUseId` | the stream's `tool_use` / `tool_result` id |
+| codex-cli 0.153.4 | `callId` | the `mcpToolCall` item id |
+
+When the provider mirrors the call, it takes that record (`bridge::take_recorded_result`) and stores
+**it** rather than the child's lossy echo — so the transcript holds exactly what the tool returned,
+annotations included, the card counts one user-facing result, and the next turn's prompt carries one
+model-facing copy. The transcript flattener applies the same `is_for_model` filter the formatters do,
+reading text resources as well as text, so an annotated result is flattened once.
+
+⚠ **The record is stored only when the echo shows the child received it**
+(`mirror::recorded_if_received`): the error flag must agree, and every text BioRouter sent must
+appear in what the child echoed. A child whose call timed out (#110), or whose CLI truncated a large
+result, worked from something else, and the transcript records what the child actually saw. A CLI
+that stops sending its call id degrades the same way — to the echo of the model-facing view — rather
+than failing.
+
 ### The mirror and the approval card are different things
 
 The mirror draws what *happened*: a `ToolRequest`/`ToolResponse` pair, green or red, after the fact.
@@ -573,11 +626,11 @@ outlasts stream consumption.
 
 | Concern | File |
 | --- | --- |
-| Grants, leases, the nonce, the task-locals, the transport budget | [`crates/biorouter/src/providers/coding_agent/bridge.rs`](../../../crates/biorouter/src/providers/coding_agent/bridge.rs) |
+| Grants, leases, the nonce, the task-locals, the transport budget; the child's view of a result (`child_view`) and the full result kept for the transcript (`call_for_child`, `take_recorded_result`) | [`crates/biorouter/src/providers/coding_agent/bridge.rs`](../../../crates/biorouter/src/providers/coding_agent/bridge.rs) |
 | Running one provider turn with Biorouter tools, from anywhere | [`crates/biorouter/src/providers/tool_turn.rs`](../../../crates/biorouter/src/providers/tool_turn.rs) |
 | Parking a call on a person: approval, elicitation, secret-safe credentials | [`crates/biorouter/src/pending_user_action.rs`](../../../crates/biorouter/src/pending_user_action.rs) |
 | The queue the card is published on, and the loop's wake seam | [`crates/biorouter/src/action_required_manager.rs`](../../../crates/biorouter/src/action_required_manager.rs) |
-| The mirror marker, and the request/response pair builders | [`crates/biorouter/src/providers/coding_agent/mirror.rs`](../../../crates/biorouter/src/providers/coding_agent/mirror.rs) |
+| The mirror marker, the request/response pair builders, and when the kept result is stored instead of the child's echo (`recorded_if_received`) | [`crates/biorouter/src/providers/coding_agent/mirror.rs`](../../../crates/biorouter/src/providers/coding_agent/mirror.rs) |
 | The loop branch that persists a mirrored pair without dispatching it | [`crates/biorouter/src/agents/agent.rs`](../../../crates/biorouter/src/agents/agent.rs) |
 | The HTTP/JSON-RPC endpoint | [`crates/biorouter-server/src/routes/tool_bridge.rs`](../../../crates/biorouter-server/src/routes/tool_bridge.rs) |
 | Handing the URL to Claude Code | [`crates/biorouter/src/providers/claude_code.rs`](../../../crates/biorouter/src/providers/claude_code.rs) |

@@ -42,6 +42,7 @@ import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { PinnedModelNote } from './privacy/PinnedModelNote';
+import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 import { scanWorkflow } from '../workflow';
@@ -81,6 +82,7 @@ import ArtifactViewer from './artifacts/ArtifactViewer';
 import { useArtifactPanel } from './artifacts/useArtifactPanel';
 import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
+import { ChatTurnStopped } from './conversation/ChatTurnStopped';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import type { LiveBrowserShare } from './artifacts/WebPagePreview';
@@ -1390,6 +1392,7 @@ function BaseChatContent({
     steer,
     sessionLoadError,
     turnError,
+    stopConfirmed,
     setWorkflowUserParams,
     tokenState,
     turnStartedAt,
@@ -2122,6 +2125,14 @@ function BaseChatContent({
         Mounted unconditionally — it renders nothing when there is nothing to
         say, which is almost always.
       */}
+      {/*
+        H3 (2026-09-10 security test drive) — privacy tiers are OFF, where the
+        switch is recorded, and whether the app recorded turning it off. Same
+        slot, same rails and the same unconditional mount as the note below,
+        and first of the two: it is about the whole machine, that one about
+        this chat. It renders nothing while the tiers are on.
+      */}
+      <PrivacyTiersOffNote className="mx-3 mb-2" />
       <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
       <ChatInput
         sessionId={sessionId}
@@ -2471,6 +2482,10 @@ function BaseChatContent({
                             {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
                               <ChatTurnError error={turnError} onRetry={retryTurn} />
                             )}
+                            {/* F5: a CONFIRMED Stop's outcome, in the slot a
+                                failed Stop's notice takes. Transient — the
+                                store decides when it shows and when it goes. */}
+                            {stopConfirmed && <ChatTurnStopped />}
                           </>
                         </SearchView>
                         {/* No tail spacer. A `block h-8` used to sit here, and

@@ -752,10 +752,16 @@ const PENDING_ARGS_CHARS: usize = 200;
 /// reached Biorouter over the tool bridge and ran behind its inspectors,
 /// permission mode, `.biorouterignore`, vault and privacy Gate C. The mark is
 /// what stops the agent loop dispatching it a second time.
+///
+/// `bridge_url` is this turn's bridge, whose grant kept Biorouter's own result
+/// for each call: the `Result` arm stores that rather than Claude Code's echo,
+/// which has lost every annotation (QA-E F4 — see
+/// [`mirror::stored_bridged_result`]).
 fn emit_tool_event(
     event: claude_stream::ToolBlockEvent,
     partial_args: &mut std::collections::HashMap<String, PendingArgs>,
     out: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+    bridge_url: Option<&str>,
 ) -> bool {
     let send = |item: ProviderStreamItem| out.send(Ok(item)).is_ok();
 
@@ -817,12 +823,24 @@ fn emit_tool_event(
         }
         claude_stream::ToolBlockEvent::Result { results } => {
             for result in results {
-                let message = mirror::response_message(
+                let message = match mirror::stored_bridged_result(
+                    bridge_url,
                     &result.tool_use_id,
-                    mirror::content_from_value(&result.content),
+                    &result.content,
                     result.is_error,
-                    mirror::Execution::Bridged,
-                );
+                ) {
+                    Some(recorded) => mirror::response_message_with_result(
+                        &result.tool_use_id,
+                        recorded,
+                        mirror::Execution::Bridged,
+                    ),
+                    None => mirror::response_message(
+                        &result.tool_use_id,
+                        mirror::content_from_value(&result.content),
+                        result.is_error,
+                        mirror::Execution::Bridged,
+                    ),
+                };
                 if !send((Some(message), None, None)) {
                     return false;
                 }
@@ -849,6 +867,9 @@ struct PumpInputs {
     initial_prompt: transcript::Prompt,
     steering: Option<ProviderSteerReceiver>,
     model_name: String,
+    /// Captured when the stream is built: the task-local is gone by the time
+    /// this task reads frames.
+    bridge_url: Option<String>,
     out_tx: tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
 }
 
@@ -1011,6 +1032,7 @@ fn route_claude_frame<S>(
     partial_args: &mut std::collections::HashMap<String, PendingArgs>,
     model_name: &str,
     out_tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+    bridge_url: Option<&str>,
 ) -> ClaudeFrameOutcome
 where
     S: futures::Stream<Item = anyhow::Result<ProviderStreamItem>>,
@@ -1025,7 +1047,9 @@ where
         }
         claude_stream::RoutedFrame::Tool(event) => {
             // Everything the decoder already produced belongs before this card.
-            if !drain_ready(decoded, out_tx) || !emit_tool_event(event, partial_args, out_tx) {
+            if !drain_ready(decoded, out_tx)
+                || !emit_tool_event(event, partial_args, out_tx, bridge_url)
+            {
                 ClaudeFrameOutcome::ConsumerClosed
             } else {
                 ClaudeFrameOutcome::Continue
@@ -1076,6 +1100,7 @@ struct ClaudeFrameContext<'a, S> {
     out_tx: &'a tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
     completed_usage: &'a mut Option<ProviderUsage>,
     outstanding_turns: &'a mut usize,
+    bridge_url: Option<&'a str>,
 }
 
 fn apply_claude_frame<S>(
@@ -1105,6 +1130,7 @@ where
         context.partial_args,
         context.model_name,
         context.out_tx,
+        context.bridge_url,
     ) {
         ClaudeFrameOutcome::Continue => ClaudeLoopOutcome::Continue,
         ClaudeFrameOutcome::ConsumerClosed => ClaudeLoopOutcome::Stop(None),
@@ -1140,6 +1166,7 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
         initial_prompt,
         mut steering,
         model_name,
+        bridge_url,
         out_tx,
     } = inputs;
     let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<anyhow::Result<String>>();
@@ -1210,6 +1237,7 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
             out_tx: &out_tx,
             completed_usage: &mut completed_usage,
             outstanding_turns: &mut outstanding_turns,
+            bridge_url: bridge_url.as_deref(),
         };
         match apply_claude_frame(router.push_line(&line), &mut context) {
             ClaudeLoopOutcome::Continue => {}
@@ -1359,6 +1387,7 @@ impl ClaudeCodeProvider {
         })?;
 
         let bridge_config = bridge_mcp_config()?;
+        let bridge_url = bridge::active_bridge_url();
         let model_config = self.model.clone();
         let model_name = model_config.model_name.clone();
 
@@ -1415,6 +1444,7 @@ impl ClaudeCodeProvider {
             initial_prompt: prompt,
             steering,
             model_name,
+            bridge_url,
             out_tx,
         }));
 
@@ -1566,6 +1596,93 @@ impl Provider for ClaudeCodeProvider {
             return Err(coding_agent::unavailable_error(KIND, &availability));
         }
         Ok(Some(known_models().into_iter().map(|m| m.name).collect()))
+    }
+}
+
+#[cfg(test)]
+mod bridged_result_tests {
+    use super::*;
+    use rmcp::model::{CallToolResult, Content};
+
+    const DATE: &str = "Thu Sep 11 01:00:00 PDT 2026";
+
+    fn shell_shaped(output: &str) -> CallToolResult {
+        CallToolResult::success(vec![
+            Content::text(output).with_audience(vec![Role::Assistant]),
+            Content::text(output)
+                .with_audience(vec![Role::User])
+                .with_priority(0.0),
+        ])
+    }
+
+    /// Feed one `tool_result` frame through the real handler and return the
+    /// `ToolResponse` it stored.
+    fn store(
+        tool_use_id: &str,
+        echo: Value,
+        is_error: bool,
+        bridge_url: Option<&str>,
+    ) -> crate::conversation::message::ToolResponse {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut partial_args = std::collections::HashMap::new();
+        assert!(emit_tool_event(
+            claude_stream::ToolBlockEvent::Result {
+                results: vec![claude_stream::ToolResultBlock {
+                    tool_use_id: tool_use_id.to_string(),
+                    content: echo,
+                    is_error,
+                    detail: None,
+                }],
+            },
+            &mut partial_args,
+            &tx,
+            bridge_url,
+        ));
+        let Ok(Ok((Some(message), _, _))) = rx.try_recv() else {
+            panic!("the handler must emit the response message");
+        };
+        let MessageContent::ToolResponse(response) = &message.content[0] else {
+            panic!("expected a tool response");
+        };
+        assert_eq!(
+            mirror::response_execution(response),
+            Some(mirror::Execution::Bridged)
+        );
+        response.clone()
+    }
+
+    /// QA-E F4 through the real handler. Claude Code echoes a shell result with
+    /// every annotation gone, so storing the echo made "2 results" of one shell
+    /// call and put the output twice into the next turn's prompt. What is stored
+    /// is the result the bridge kept for that call — both blocks, audiences
+    /// intact: one for the model, one for the card.
+    #[test]
+    fn a_bridged_result_is_stored_as_the_bridge_recorded_it() {
+        let recorded = shell_shaped(DATE);
+        let lease = bridge::lease_holding_for_test("toolu_F4", recorded.clone());
+        // Claude Code 2.1.266's echo of the view the bridge handed it.
+        let echo = serde_json::json!([{ "type": "text", "text": DATE }]);
+
+        let stored = store("toolu_F4", echo, false, Some(lease.url()));
+
+        assert_eq!(stored.tool_result.as_ref().ok(), Some(&recorded));
+    }
+
+    /// A child that timed out waiting never saw Biorouter's result, and its
+    /// card says what it did see.
+    #[test]
+    fn a_child_that_timed_out_is_stored_as_it_saw_it() {
+        let lease = bridge::lease_holding_for_test("toolu_late", shell_shaped(DATE));
+        let echo = serde_json::json!("The operation timed out");
+
+        let stored = store("toolu_late", echo, true, Some(lease.url()));
+
+        let result = stored.tool_result.as_ref().expect("a successful transport");
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].as_text().map(|t| t.text.as_str()),
+            Some("The operation timed out")
+        );
     }
 }
 

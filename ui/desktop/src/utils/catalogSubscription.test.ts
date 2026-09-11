@@ -224,7 +224,7 @@ describe('reading a delta', () => {
    * made somewhere else that this chat can now opt into; Biorouter's own
    * baseline is never that.
    */
-  it('does not announce Biorouter\'s own bundled extensions', () => {
+  it("does not announce Biorouter's own bundled extensions", () => {
     const d = delta(1, ['developer']);
     d.changes![0].extensions![0].config = {
       name: 'developer',

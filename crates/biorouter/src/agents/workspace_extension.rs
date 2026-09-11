@@ -109,8 +109,9 @@ const INSTRUCTIONS: &str = indoc! {r#"
       bounded completion receipt.
     - workspace_send_prompt: inject into ANY conversation you can see, related
       or not. turn starts it; steer redirects it mid-turn; note adds context
-      without running it. wait:"final_message" returns its answer. Injections
-      are permanently labeled as yours; a person may be reading that chat.
+      without running it. wait:"final_message" returns its answer and a
+      verdict; "declined" means nothing was done. Injections are permanently
+      labeled as yours; a person may be reading that chat.
     - workspace_set_tools: change a conversation's enabled capabilities and
       extensions, skills, model or knowledge bases. When available, use it
       instead of pointing at Settings.
@@ -677,6 +678,20 @@ struct WorkspaceSetToolsParams {
     /// must name one of them — the service refuses a target outside the set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     primary_knowledge_base: Option<String>,
+}
+
+/// What [`WorkspaceClient::preflight_set_tools`] resolved, for the handler to
+/// apply. Everything in it has already been gated and validated.
+struct SetToolsPlan {
+    /// The target's classification, as the write gate resolved it (`None`
+    /// under DR-15's opt-out) — what the first-crossing record half needs.
+    write_target: Option<crate::privacy::SessionClassification>,
+    add_configs: Vec<crate::agents::ExtensionConfig>,
+    new_provider: Option<(
+        String,
+        String,
+        std::sync::Arc<dyn crate::providers::base::Provider>,
+    )>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -1724,7 +1739,9 @@ impl WorkspaceClient {
                  instructed to apply it; every other injection arrives as \
                  untrusted cross-conversation data the target may decline to act \
                  on, so delivery is not compliance. \
-                 wait:\"final_message\" returns its answer. \
+                 wait:\"final_message\" returns JSON with its complete final \
+                 message and a verdict to branch on: completed, declined (nothing \
+                 was done), errored, timed_out or cancelled. \
                  ONLY WHEN NECESSARY: a human may be reading that conversation, \
                  and this interrupts them. Prefer answering here, or reading the \
                  other conversation, over writing into it; do not use it to chat \
@@ -3065,7 +3082,7 @@ impl WorkspaceClient {
         caller_session_id: &str,
         cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
-    ) -> Result<Vec<Content>, String> {
+    ) -> Result<CallToolResult, String> {
         // Kept before `parse_args` consumes it: the record half of the
         // first-crossing disclosure asks `crossing_payload` with the SAME raw
         // arguments the inspector asked it with. See the note on that function.
@@ -3119,11 +3136,14 @@ impl WorkspaceClient {
         let target_session_id = args.session_id.clone();
 
         let delivered = match args.mode.as_str() {
-            "note" => self.send_prompt_note(args, provenance).await,
-            "steer" => {
-                self.send_prompt_steer(caller_session_id, args, provenance, services)
-                    .await
-            }
+            "note" => self
+                .send_prompt_note(args, provenance)
+                .await
+                .map(CallToolResult::success),
+            "steer" => self
+                .send_prompt_steer(caller_session_id, args, provenance, services)
+                .await
+                .map(CallToolResult::success),
             "turn" => {
                 self.send_prompt_turn(caller_session_id, args, provenance, services)
                     .await
@@ -3136,7 +3156,16 @@ impl WorkspaceClient {
         // record that it now has, taken only once the write has actually
         // landed. Recording at the gate instead would let a denied approval —
         // or a refusal underneath it — buy silence for the retry.
-        if delivered.is_ok() {
+        //
+        // ⚠ An `errored` injected turn is an ERROR result and records nothing,
+        // exactly as it did while it travelled as `Err`: moving it into a
+        // structured `CallToolResult` (F3) must not quietly change which writes
+        // mark a pair as crossed. The fail-closed direction — ask again — is
+        // the one kept.
+        if delivered
+            .as_ref()
+            .is_ok_and(|result| result.is_error != Some(true))
+        {
             self.reflect_in_target_tab(&target_session_id).await;
             Self::record_crossing_if_disclosed(
                 cap,
@@ -3369,13 +3398,18 @@ impl WorkspaceClient {
 
     /// `mode:"turn"` — start the target's agent on the text, then either
     /// detach or park for its final message.
+    ///
+    /// `Err` means nothing was delivered. A delivered turn answers with a
+    /// `CallToolResult` whatever became of it, because the parked form carries
+    /// a structured verdict ([`InjectedTurnReport`]) and one of its verdicts
+    /// (`errored`) is itself an error result.
     async fn send_prompt_turn(
         &self,
         caller_session_id: &str,
         args: WorkspaceSendPromptParams,
         provenance: crate::conversation::message::MessageProvenance,
         services: Option<std::sync::Arc<dyn workspace_services::WorkspaceServices>>,
-    ) -> Result<Vec<Content>, String> {
+    ) -> Result<CallToolResult, String> {
         use crate::session_events;
 
         let services = services.ok_or(
@@ -3465,42 +3499,59 @@ impl WorkspaceClient {
         // loop that accepts the first terminal it sees therefore reports
         // the PREVIOUS turn's answer as this one's.
         if !wait_for_final {
-            return Ok(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![Content::text(format!(
                 "Detached turn {turn_id} started on session {}.",
                 args.session_id
-            ))]);
+            ))]));
         }
 
         // ui_ask-style bounded park (§4.1): watch the bus for the final
         // assistant message, bounded by timeout_s.
         let timeout = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
-        let mut follower = TurnFollower::new(
+        let mut follower = TurnFollower::collecting(
             final_rx.expect("the final-message wait subscribed before the turn started"),
             turn_id.clone(),
         );
         let waited = tokio::time::timeout(timeout, follower.run()).await;
 
-        match waited {
+        // F3: every ending the caller can reach is one verdict in one shape, so
+        // a refusal can no longer read as a completion — see
+        // [`InjectedTurnVerdict`].
+        let report = match waited {
             Ok(Ok(TurnOutcome::Finished {
                 reason,
                 last_assistant,
-            })) => Ok(vec![Content::text(format!(
-                "Turn {turn_id} finished ({reason}). Final message:\n\n{}",
-                last_assistant.unwrap_or_else(|| "<no assistant text>".into())
-            ))]),
-            Ok(Ok(TurnOutcome::Failed(e))) => Err(format!("turn {turn_id} ended in error: {e}")),
-            Ok(Err(e)) => Err(format!("event stream error while waiting: {e}")),
-            Err(_) => {
-                // The park gave up; the TURN did not. The independent slot
-                // follower above still owns the caller's reservation until the
-                // target emits this turn's terminal event.
-                Ok(vec![Content::text(format!(
-                    "Turn {turn_id} is still running after {}s; it continues in the background. \
-                     Read it later with workspace_read_conversation.",
-                    timeout.as_secs()
-                ))])
-            }
-        }
+                tool_calls,
+            })) => InjectedTurnReport::finished(
+                &args.session_id,
+                &turn_id,
+                reason,
+                last_assistant,
+                tool_calls,
+            ),
+            Ok(Ok(TurnOutcome::Failed {
+                message,
+                last_assistant,
+                tool_calls,
+            })) => InjectedTurnReport::errored(
+                &args.session_id,
+                &turn_id,
+                message,
+                last_assistant,
+                tool_calls,
+            ),
+            Ok(Err(e)) => return Err(format!("event stream error while waiting: {e}")),
+            // The park gave up; the TURN did not. The independent slot follower
+            // above still owns the caller's reservation until the target emits
+            // this turn's terminal event.
+            Err(_) => InjectedTurnReport::timed_out(
+                &args.session_id,
+                &turn_id,
+                timeout,
+                follower.tool_calls.len(),
+            ),
+        };
+        Ok(report.into_call_tool_result())
     }
 
     /// BR-71 `workspace_set_tools`: the one place an agent changes *what another
@@ -3517,51 +3568,18 @@ impl WorkspaceClient {
         let raw_arguments = arguments.clone();
         let args: WorkspaceSetToolsParams = parse_args(arguments)?;
 
-        // ⚠ **A conversation may not re-tool ITSELF through this door.**
-        //
-        // This is a cross-conversation tool: every other guard below asks what
-        // the caller may do to ANOTHER chat. Self-targeting was never the point,
-        // and once Workspace became a default-on capability it became an
-        // escalation: `apply_tool_changes` adds extensions with
-        // `agent.add_extension`, which stamps `ExtensionOrigin::Explicit`, and
-        // `has_non_injected_extensions` counts Explicit entries. So an agent
-        // could add any default-off public capability to its own session and
-        // thereby satisfy condition 5 of the delegation gate on the next tool
-        // listing.
-        //
-        // That is exactly the self-sustaining grant the gate exists to prevent.
-        // Excluding `workspace` by name (issue #76) closed the door Workspace
-        // came through; it did not close the door Workspace can OPEN. Found by
-        // review, not by a test, and the regression test lives beside this.
-        //
-        // Refused rather than silently ignored: an agent that asked for this
-        // should be told the boundary, not left believing it worked.
-        if args.session_id == caller_session_id {
-            return Err(
-                "workspace_set_tools operates on ANOTHER conversation, not this one. \
-                 To change the tools available here, ask the user: extensions are \
-                 Settings > Extensions, skills are the composer's skill menu. Do not \
-                 retry with this session's id."
-                    .to_string(),
-            );
-        }
-
-        // Issue #56, design §7 — the WRITE row, and the same predicate
-        // `workspace_send_prompt` asks one screen up. This tool rewrites another
-        // conversation's provider, its extension set, its skills and its
-        // knowledge bases; a public caller that may not even read a private
-        // conversation must certainly not re-tool one. FIRST, before any store
-        // read that could answer a question about the target.
-        //
-        let write_target = self.refuse_unless_writable(cap, &args.session_id).await?;
-
-        // ---- Resolve EVERYTHING before mutating anything, so a bad name is a
-        // clean no-op rather than a half-applied change. ------------------
-        let add_configs = Self::resolve_added_extensions(cap, &args.add_extensions)?;
-        self.refuse_workspace_grant_to_subagent(&args.session_id, &add_configs)
+        // ---- Resolve, gate and validate EVERYTHING before mutating anything,
+        // so a bad request is a clean no-op rather than a half-applied change.
+        // The same function the always-confirm inspector asks before it decides
+        // whether to raise a card (F4), so the two cannot disagree about what
+        // is possible.
+        let SetToolsPlan {
+            write_target,
+            add_configs,
+            new_provider,
+        } = self
+            .preflight_set_tools(caller_session_id, cap, &args)
             .await?;
-        // Model/provider (decision b): resolve and validate here; apply below.
-        let new_provider = Self::resolve_provider_switch(&args.provider, &args.model).await?;
 
         // ---- Apply. --------------------------------------------------------
         let mut applied = Vec::new();
@@ -3666,6 +3684,248 @@ impl WorkspaceClient {
             args.session_id,
             applied.join(", ")
         ))])
+    }
+
+    /// **F4's pre-flight, asked by the always-confirm inspector.** The refusal
+    /// `workspace_set_tools` WOULD return for this call, computed before
+    /// anything is applied or any approval is raised; `None` when every change
+    /// it names can be made.
+    ///
+    /// The 2026-09-10 QA run (finding F4) is why this exists:
+    /// `remove_extensions: ["autovisualiser"]` raised the 🔒 card ("removes
+    /// 'autovisualiser', which the user configured explicitly"), and only
+    /// AFTER the user approved did the handler answer that `autovisualiser` is
+    /// a built-in capability that cannot be removed this way. The user had been
+    /// asked to authorise a named change that was never possible. The card is
+    /// raised by an inspector, which runs before the handler, so the handler's
+    /// own validation came too late by construction.
+    ///
+    /// ⚠ **It is the handler's resolve phase, not a copy of it.** A transient
+    /// client over the caller's own store asks [`Self::preflight_set_tools`] —
+    /// the function `handle_set_tools` itself runs first — so the sentence the
+    /// inspector refuses with is the sentence the handler would have returned,
+    /// in the same order, including the privacy gates' anti-oracle answers.
+    /// Two spellings of "is this possible" are how the card and the handler
+    /// came to disagree.
+    ///
+    /// `cap` is the capability the inspector sampled (or was pinned to). The
+    /// handler re-runs the same pre-flight against the capability the call is
+    /// admitted on, so a model switched between the two can only make this
+    /// answer stale in the fail-safe direction: the handler still decides.
+    pub(crate) async fn set_tools_preflight_refusal(
+        session_manager: std::sync::Arc<crate::session::SessionManager>,
+        caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
+        arguments: &JsonObject,
+    ) -> Option<String> {
+        let args: WorkspaceSetToolsParams = match parse_args(Some(arguments.clone())) {
+            Ok(args) => args,
+            Err(refusal) => return Some(refusal),
+        };
+        let client = Self::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager,
+        })
+        .ok()?;
+        client
+            .preflight_set_tools(caller_session_id, cap, &args)
+            .await
+            .err()
+    }
+
+    /// Everything `workspace_set_tools` has to know before it changes anything:
+    /// resolved, gated and validated, with the refusal it owes if any of it
+    /// cannot happen. Mutates nothing — which is what lets the always-confirm
+    /// inspector ask it before it raises a card (see
+    /// [`Self::set_tools_preflight_refusal`]).
+    async fn preflight_set_tools(
+        &self,
+        caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
+        args: &WorkspaceSetToolsParams,
+    ) -> Result<SetToolsPlan, String> {
+        // ⚠ **A conversation may not re-tool ITSELF through this door.**
+        //
+        // This is a cross-conversation tool: every other guard below asks what
+        // the caller may do to ANOTHER chat. Self-targeting was never the point,
+        // and once Workspace became a default-on capability it became an
+        // escalation: `apply_tool_changes` adds extensions with
+        // `agent.add_extension`, which stamps `ExtensionOrigin::Explicit`, and
+        // `has_non_injected_extensions` counts Explicit entries. So an agent
+        // could add any default-off public capability to its own session and
+        // thereby satisfy condition 5 of the delegation gate on the next tool
+        // listing.
+        //
+        // That is exactly the self-sustaining grant the gate exists to prevent.
+        // Excluding `workspace` by name (issue #76) closed the door Workspace
+        // came through; it did not close the door Workspace can OPEN. Found by
+        // review, not by a test, and the regression test lives beside this.
+        //
+        // Refused rather than silently ignored: an agent that asked for this
+        // should be told the boundary, not left believing it worked.
+        if args.session_id == caller_session_id {
+            return Err(
+                "workspace_set_tools operates on ANOTHER conversation, not this one. \
+                 To change the tools available here, ask the user: extensions are \
+                 Settings > Extensions, skills are the composer's skill menu. Do not \
+                 retry with this session's id."
+                    .to_string(),
+            );
+        }
+
+        // Issue #56, design §7 — the WRITE row, and the same predicate
+        // `workspace_send_prompt` asks one screen up. This tool rewrites another
+        // conversation's provider, its extension set, its skills and its
+        // knowledge bases; a public caller that may not even read a private
+        // conversation must certainly not re-tool one. FIRST, before any store
+        // read that could answer a question about the target.
+        //
+        let write_target = self.refuse_unless_writable(cap, &args.session_id).await?;
+
+        let add_configs = Self::resolve_added_extensions(cap, &args.add_extensions)?;
+        self.refuse_workspace_grant_to_subagent(&args.session_id, &add_configs)
+            .await?;
+        // F4: removals are judged HERE, before any approval — they used to be
+        // judged only once the handler had fetched the target's agent, which is
+        // after the card the user had already been asked to approve.
+        Self::preflight_extension_removals(cap, &args.session_id, &args.remove_extensions).await?;
+        // Model/provider (decision b): resolve and validate here; apply later.
+        let new_provider = Self::resolve_provider_switch(&args.provider, &args.model).await?;
+        if let (Some((_, _, provider)), Some(classification)) = (&new_provider, write_target) {
+            // Gate A's own predicate (`privacy::bind_allowed`, which a test pins
+            // to the SQL `WHERE` clause that enforces it), asked before the card
+            // rather than discovered by `update_provider` after it. `Some` only
+            // under enforcement, so DR-15's opt-out is honoured the way the
+            // storage gate honours it.
+            if !crate::privacy::bind_allowed(provider.tier(), classification) {
+                return Err(format!(
+                    "failed to switch provider: {}",
+                    crate::privacy::refusal::PrivacyRefusal::PublicModelOnPrivateSession {
+                        session_id: args.session_id.clone(),
+                        provider: provider.get_name().to_string(),
+                    }
+                ));
+            }
+        }
+        Self::preflight_knowledge_bases(
+            &args.session_id,
+            args.set_knowledge_bases.as_deref(),
+            args.primary_knowledge_base.as_deref(),
+        )?;
+        Ok(SetToolsPlan {
+            write_target,
+            add_configs,
+            new_provider,
+        })
+    }
+
+    /// Gate F1's unload half — and "is it there at all" — for every name in
+    /// `remove_extensions`, before anything is applied (F4).
+    ///
+    /// ⚠ **Peek, never create.** `get_or_create_agent`'s miss path caches a
+    /// bare agent under the target's id (see `target_mode_requires_approval`),
+    /// so a pre-flight that created one would leave that behind for every
+    /// refused call. A conversation with no live agent is judged against
+    /// nothing loaded instead — which is exactly the manager the handler's
+    /// `get_or_create_agent` would build and then ask — through the same
+    /// [`manageability_refusal`] `ExtensionManager::assert_extension_manageable`
+    /// itself asks.
+    ///
+    /// The existence refusal comes LAST, below both privacy arms, so it is
+    /// reachable only by a caller already entitled to see what that
+    /// conversation has loaded: to a public caller naming a private connector,
+    /// "loaded" and "not loaded" stay the one sentence finding 13 requires.
+    ///
+    /// [`manageability_refusal`]: crate::agents::extension_manager::manageability_refusal
+    async fn preflight_extension_removals(
+        cap: crate::privacy::CallCapability,
+        target_session_id: &str,
+        names: &[String],
+    ) -> Result<(), String> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let live = match crate::execution::manager::AgentManager::instance().await {
+            Ok(manager) => manager.peek_agent(target_session_id).await,
+            Err(_) => None,
+        };
+        for name in names {
+            let Some(agent) = &live else {
+                if let Some(refusal) =
+                    crate::agents::extension_manager::manageability_refusal(name, None, cap)
+                {
+                    return Err(refusal.message.to_string());
+                }
+                continue;
+            };
+            agent
+                .extension_manager
+                .assert_extension_manageable(name, cap)
+                .await
+                .map_err(|e| e.message.to_string())?;
+            // `remove_extension` is a `HashMap::remove` on the normalized name
+            // that answers `Ok` whether or not anything was there, so a name the
+            // conversation does not have used to come back as `-name`, a
+            // removal indistinguishable from a real one.
+            if !agent
+                .extension_manager
+                .is_extension_enabled(&crate::agents::extension_manager::normalize(name))
+                .await
+            {
+                return Err(format!(
+                    "`{name}` is not enabled in conversation {target_session_id}, so there is \
+                     nothing to remove. Nothing was changed; check the conversation's extensions \
+                     with workspace_list."
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The knowledge-base half of the pre-flight (F4): everything
+    /// [`Self::apply_knowledge_bases`] would refuse, asked before anything else
+    /// in the call has been applied — it used to run LAST, after extensions,
+    /// skills and the provider had already landed.
+    fn preflight_knowledge_bases(
+        target_session_id: &str,
+        kbs: Option<&[String]>,
+        primary_knowledge_base: Option<&str>,
+    ) -> Result<(), String> {
+        let Some(kbs) = kbs else {
+            return Ok(());
+        };
+        let services = workspace_services::get()
+            .ok_or("knowledge-base scoping requires the BioRouter daemon")?;
+        let requested: Vec<&str> = kbs
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect();
+        // `set_knowledge_bases` drops an id it has no base for without a word,
+        // so a typo used to apply the rest of the set and quietly lose one.
+        if let Some(installed) = services.installed_knowledge_bases() {
+            if let Some(missing) = requested
+                .iter()
+                .find(|id| !installed.iter().any(|known| known == *id))
+            {
+                return Err(format!(
+                    "there is no knowledge base named '{missing}', so it cannot be set on \
+                     conversation {target_session_id}. Nothing was changed."
+                ));
+            }
+        }
+        match primary_knowledge_base.map(str::trim) {
+            Some(primary) if !primary.is_empty() && !requested.contains(&primary) => Err(format!(
+                "primary_knowledge_base '{primary}' is not one of set_knowledge_bases \
+                     ({}); it must name one of them. Nothing was changed.",
+                if requested.is_empty() {
+                    "none".to_string()
+                } else {
+                    requested.join(", ")
+                }
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// The extension half of `workspace_set_tools`: **Gate F1's unload check,
@@ -4672,13 +4932,21 @@ const SLOT_RELEASE_POLL: std::time::Duration = std::time::Duration::from_secs(2)
 /// How one injected turn ended, as [`TurnFollower`] observed it.
 #[derive(Debug)]
 enum TurnOutcome {
-    /// `TurnFinished`, plus the last non-empty assistant text of THAT turn.
+    /// `TurnFinished`, plus what THAT turn said and did.
     Finished {
         reason: String,
+        /// The most recent assistant text of the turn that was not blank,
+        /// complete — see [`TurnFollower`] on why "complete" needed saying.
         last_assistant: Option<String>,
+        /// Distinct tool calls the turn's assistant messages requested.
+        tool_calls: usize,
     },
     /// `TurnError` — terminal too. A turn publishes exactly one of the two.
-    Failed(String),
+    Failed {
+        message: String,
+        last_assistant: Option<String>,
+        tool_calls: usize,
+    },
 }
 
 /// Follows ONE detached turn on the session bus, from its own
@@ -4698,21 +4966,65 @@ enum TurnOutcome {
 /// The state lives in the struct, not in the future returned by [`Self::run`],
 /// so a park that times out can hand the follower to a background task mid-turn
 /// without forgetting that the start was already seen.
+///
+/// ⚠ **An assistant `Message` on the bus is a streaming CHUNK, not a message.**
+/// The turn runner republishes every `AgentEvent` the agent yields, and a
+/// streaming provider yields one `Message` per delta, each carrying the SAME
+/// provider id — the store only ever sees them whole because
+/// `Conversation::push` folds consecutive same-id chunks back together before
+/// they are persisted. This follower used to keep the last non-blank chunk
+/// instead, so a reply ending "…please ask directly in this chat." reached the
+/// caller as `.` — its final token (the 2026-09-10 QA run, finding F3: a
+/// wholesale refusal reported as a turn that finished with a one-character
+/// answer). The chunks are now folded by the store's own function, so what the
+/// caller is handed is what the transcript holds.
 struct TurnFollower {
     events: crate::session_events::Subscription,
     turn_id: String,
     started: bool,
-    last_assistant: Option<String>,
+    /// Only a follower that reports the turn's words keeps them; the slot
+    /// holder in [`WorkspaceClient::hold_slot_until_turn_ends`] waits for the
+    /// terminal alone and has no business buffering a long turn's output.
+    collect: bool,
+    /// This turn's assistant messages, merged exactly as the store merges them.
+    assistant: crate::conversation::Conversation,
+    /// Tool-request ids this turn's assistant messages carried. A set, because
+    /// a merged message is re-read as its chunks arrive.
+    tool_calls: std::collections::HashSet<String>,
 }
 
 impl TurnFollower {
+    /// A follower that only needs to know WHEN the turn ends.
     fn new(events: crate::session_events::Subscription, turn_id: String) -> Self {
         Self {
             events,
             turn_id,
             started: false,
-            last_assistant: None,
+            collect: false,
+            assistant: crate::conversation::Conversation::empty(),
+            tool_calls: std::collections::HashSet::new(),
         }
+    }
+
+    /// A follower that also reports what the turn said and did.
+    fn collecting(events: crate::session_events::Subscription, turn_id: String) -> Self {
+        Self {
+            collect: true,
+            ..Self::new(events, turn_id)
+        }
+    }
+
+    /// The most recent assistant text of the turn that is not blank.
+    fn last_assistant_text(&self) -> Option<String> {
+        self.assistant.messages().iter().rev().find_map(|message| {
+            let text = message
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.trim().is_empty()).then_some(text)
+        })
     }
 
     /// Fold one bus event in. `Some` when the turn reached its terminal.
@@ -4730,14 +5042,14 @@ impl TurnFollower {
             SessionBusEvent::Agent(crate::agents::AgentEvent::Message(m))
                 if m.role == rmcp::model::Role::Assistant =>
             {
-                let text: String = m
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !text.trim().is_empty() {
-                    self.last_assistant = Some(text);
+                if self.collect {
+                    self.tool_calls.extend(
+                        m.content
+                            .iter()
+                            .filter_map(|c| c.as_tool_request())
+                            .map(|request| request.id.clone()),
+                    );
+                    self.assistant.push(m);
                 }
                 None
             }
@@ -4745,13 +5057,18 @@ impl TurnFollower {
             // a two-field pattern here is a missing-field compile error.
             SessionBusEvent::TurnFinished { reason, .. } => Some(TurnOutcome::Finished {
                 reason,
-                last_assistant: self.last_assistant.take(),
+                last_assistant: self.last_assistant_text(),
+                tool_calls: self.tool_calls.len(),
             }),
             // A turn publishes "exactly one `TurnError` or one `TurnFinished`,
             // never both" (`workspace/turn.rs`), so an error is TERMINAL:
             // without this arm a park would sit out its whole timeout after the
             // turn had already died, and then report "still running".
-            SessionBusEvent::TurnError { message, .. } => Some(TurnOutcome::Failed(message)),
+            SessionBusEvent::TurnError { message, .. } => Some(TurnOutcome::Failed {
+                message,
+                last_assistant: self.last_assistant_text(),
+                tool_calls: self.tool_calls.len(),
+            }),
             _ => None,
         }
     }
@@ -4777,6 +5094,314 @@ impl TurnFollower {
             }
         }
     }
+}
+
+/// What a `workspace_send_prompt { mode:"turn", wait:"final_message" }` caller
+/// can branch on (QA finding F3).
+///
+/// Before this the tool had one success sentence for every way a turn could
+/// end, so a target that refused the whole request read to its caller exactly
+/// like one that did the work. Delivery is not compliance, and the caller is
+/// the one that has to know which it got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InjectedTurnVerdict {
+    /// The turn finished and its final message does not open with a refusal.
+    Completed,
+    /// The turn finished, but its final message opens by saying the target will
+    /// not (or cannot) do what it was asked — [`decline_sentence`]. Nothing the
+    /// caller asked for can be assumed done.
+    Declined,
+    /// The turn ended in an error.
+    Errored,
+    /// The wait gave up; the turn is still running.
+    TimedOut,
+    /// The turn was cancelled before it finished — Stop in its tab, or a
+    /// `workspace_close`. Neither done nor refused, so it is neither of those.
+    Cancelled,
+}
+
+impl InjectedTurnVerdict {
+    /// What the verdict means for the caller's next step, in one sentence the
+    /// model reads beside it.
+    fn note(self, answered: bool) -> &'static str {
+        match self {
+            Self::Completed if answered => {
+                "The target's turn finished; its final message is its own account, so \
+                 verify anything that matters with workspace_read_conversation \
+                 view:\"tool_calls\"."
+            }
+            Self::Completed => {
+                "The target's turn finished without writing any text; read what it did \
+                 with workspace_read_conversation view:\"tool_calls\"."
+            }
+            Self::Declined => {
+                "The target received your text as untrusted cross-conversation data and \
+                 declined to act on it: nothing you asked for was done. Delivery is not \
+                 compliance. If the work has to happen in that conversation, the user \
+                 has to ask for it there."
+            }
+            Self::Errored => {
+                "The target's turn ended in an error; do not assume anything you asked \
+                 for was done."
+            }
+            Self::TimedOut => {
+                "The turn is still running and continues in the background; wait for it \
+                 with workspace_watch or read it later with workspace_read_conversation."
+            }
+            Self::Cancelled => {
+                "The target's turn was cancelled before it finished; what you asked for \
+                 may be partly done — read it with workspace_read_conversation."
+            }
+        }
+    }
+}
+
+/// The whole answer a parked `mode:"turn"` returns: one JSON object, rendered as
+/// the text the model reads AND carried as `structured_content`, so a script
+/// and a model are handed the same fields and cannot be told different things.
+#[derive(Debug, Serialize)]
+struct InjectedTurnReport {
+    verdict: InjectedTurnVerdict,
+    note: &'static str,
+    /// Present only when `verdict` is `declined`: the target's own sentence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declined_because: Option<String>,
+    /// Present only when `verdict` is `errored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    /// The target's final assistant message, COMPLETE — never a streamed
+    /// fragment, and `null` rather than blank when it wrote none.
+    final_message: Option<String>,
+    session_id: String,
+    turn_id: String,
+    /// The terminal reason the turn published (`stop` / `cancelled`); absent
+    /// when it has not ended or ended in an error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<String>,
+    /// Distinct tool calls the target made in this turn — what it DID, beside
+    /// the verdict's reading of what it SAID.
+    tool_calls: usize,
+    /// Present only when `verdict` is `timed_out`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waited_s: Option<u64>,
+}
+
+impl InjectedTurnReport {
+    /// A turn that published `TurnFinished`.
+    fn finished(
+        session_id: &str,
+        turn_id: &str,
+        reason: String,
+        final_message: Option<String>,
+        tool_calls: usize,
+    ) -> Self {
+        let declined_because = final_message.as_deref().and_then(decline_sentence);
+        let verdict = if reason == "cancelled" {
+            InjectedTurnVerdict::Cancelled
+        } else if declined_because.is_some() {
+            InjectedTurnVerdict::Declined
+        } else {
+            InjectedTurnVerdict::Completed
+        };
+        Self {
+            verdict,
+            note: verdict.note(final_message.is_some()),
+            // Only on the verdict that means "refused". A cancelled turn whose
+            // last words happened to be a refusal is still a cancelled turn.
+            declined_because: declined_because.filter(|_| verdict == InjectedTurnVerdict::Declined),
+            error: None,
+            final_message,
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            finish_reason: Some(reason),
+            tool_calls,
+            waited_s: None,
+        }
+    }
+
+    fn errored(
+        session_id: &str,
+        turn_id: &str,
+        error: String,
+        final_message: Option<String>,
+        tool_calls: usize,
+    ) -> Self {
+        Self {
+            verdict: InjectedTurnVerdict::Errored,
+            note: InjectedTurnVerdict::Errored.note(final_message.is_some()),
+            declined_because: None,
+            error: Some(error),
+            final_message,
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            finish_reason: None,
+            tool_calls,
+            waited_s: None,
+        }
+    }
+
+    /// `tool_calls` is the count SO FAR: the turn is still running.
+    fn timed_out(
+        session_id: &str,
+        turn_id: &str,
+        waited: std::time::Duration,
+        tool_calls: usize,
+    ) -> Self {
+        Self {
+            verdict: InjectedTurnVerdict::TimedOut,
+            note: InjectedTurnVerdict::TimedOut.note(false),
+            declined_because: None,
+            error: None,
+            // Deliberately null: whatever the turn has said so far is not its
+            // final message, and handing it over as one is the F3 defect again.
+            final_message: None,
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            finish_reason: None,
+            tool_calls,
+            waited_s: Some(waited.as_secs()),
+        }
+    }
+
+    /// `is_error` only for `errored`, the one verdict that was already an error
+    /// result. A decline is NOT one: the target did what its safety rules say
+    /// to, and an error invites the caller to retry an injection that will be
+    /// declined again. A timeout never was one.
+    fn into_call_tool_result(self) -> CallToolResult {
+        let is_error = matches!(self.verdict, InjectedTurnVerdict::Errored);
+        let structured = serde_json::to_value(&self).unwrap_or_default();
+        let text = serde_json::to_string_pretty(&structured).unwrap_or_default();
+        CallToolResult {
+            content: vec![Content::text(text)],
+            structured_content: Some(structured),
+            is_error: Some(is_error),
+            meta: None,
+        }
+    }
+}
+
+/// A first-person refusal of the request: "I won't run …", "I can't act on …",
+/// "I'm not going to execute …", "I decline …".
+///
+/// ⚠ **Deliberately narrow, and a reading of prose rather than a protocol.** The
+/// target is an arbitrary conversation on an arbitrary model, and the one thing
+/// this change may not do is alter what that model is told (the untrusted
+/// envelope stays exactly as it is), so there is no marker to ask it for. What
+/// is matched is a first-person subject plus a refusal, never a bare negation:
+/// "I can't find any failing tests" is a finding, "I won't be able to confirm
+/// until CI finishes" is not a refusal of anything, and neither matches. The
+/// report always carries the whole final message beside the verdict, so a
+/// misreading costs the caller a sentence of reading, not the answer.
+static DECLINE_FIRST_PERSON: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(concat!(
+        r"\bI(?i:",
+        // An explicit decline, whatever it is of.
+        r"(?:'ll|'d|'m going to| will| would| must| have to| need to| am going to)?",
+        r"\s+(?:respectfully\s+)?(?:decline|refuse)\b",
+        r"|(?:'m| am)\s+(?:declining|refusing)\b",
+        r"|(?:'ve| have)?\s+declined\b",
+        r"|(?:'ll| will)\s+hold off\b",
+        // A negated action on the request itself.
+        r"|\s*(?:won't be able to|will not be able to|won't|will not|can't|cannot|can not",
+        r"|shouldn't|should not|must not|mustn't|don't|do not|'m not going to",
+        r"|am not going to|'m not able to|am not able to|'m unable to|am unable to",
+        r"|'d rather not|would rather not|'m not|am not)",
+        r"(?:\s+(?:actually|simply|just|blindly|directly|automatically|safely|go ahead and))?",
+        r"\s+(?:run|running|execute|executing|act|acting|follow|following|comply|complying",
+        r"|carry out|carrying out|perform|performing|proceed|proceeding|obey|obeying",
+        r"|honou?r|honou?ring|fulfill?|fulfill?ing|help with|helping with",
+        r"|do (?:that|this|it|so)|doing (?:that|this|it|so)|take (?:that|this) action",
+        r"|treat (?:it|this|that) as)\b",
+        r")",
+    ))
+    .expect("the decline pattern is a valid regex")
+});
+
+/// "…has not been executed" — a refusal with no first-person subject. Counted
+/// only in a sentence that ALSO names the injection's trust framing
+/// ([`DECLINE_TRUST_FRAMING`]); on its own it is how a report of skipped work
+/// reads too.
+static DECLINE_PASSIVE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)\b(?:not|never)\s+(?:been\s+)?(?:run|executed|carried out|performed|acted on|followed)\b",
+    )
+    .expect("the passive decline pattern is a valid regex")
+});
+
+static DECLINE_TRUST_FRAMING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(concat!(
+        r"(?i)\b(?:untrusted|lower[- ]trust|workspace[- ]injection|injected|injection",
+        r"|cross[- ](?:chat|conversation)|another (?:conversation|chat|agent)",
+        r"|not (?:from|typed by) (?:you|the user|my user))\b",
+    ))
+    .expect("the trust-framing pattern is a valid regex")
+});
+
+/// How many of the final message's opening sentences are read for a refusal. A
+/// decline leads with itself; a refusal-shaped sentence deep in a long report
+/// is far more often about something else ("…I won't retry that step").
+const DECLINE_LEADING_SENTENCES: usize = 3;
+
+/// The target's own sentence refusing the request, when its final message opens
+/// with one. See [`DECLINE_FIRST_PERSON`] for what counts and why.
+fn decline_sentence(final_message: &str) -> Option<String> {
+    leading_sentences(final_message, DECLINE_LEADING_SENTENCES)
+        .into_iter()
+        .find(|sentence| {
+            // Curly apostrophes are what most models actually emit.
+            let plain = sentence.replace(['\u{2019}', '\u{2018}'], "'");
+            DECLINE_FIRST_PERSON.is_match(&plain)
+                || (DECLINE_PASSIVE.is_match(&plain) && DECLINE_TRUST_FRAMING.is_match(&plain))
+        })
+}
+
+/// The first `limit` sentences of `text`, split at `.`/`!`/`?` followed by
+/// whitespace and at line breaks, each trimmed of markdown ornament. Closing
+/// ornament right after a terminator (`that.**`, `done."`) stays with its
+/// sentence. Built by pushing chars rather than by slicing, so no index can
+/// land inside a multi-byte character.
+fn leading_sentences(text: &str, limit: usize) -> Vec<String> {
+    fn flush(sentences: &mut Vec<String>, current: &mut String) {
+        let sentence = current
+            .trim_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '_' | '#' | '>' | '-'))
+            .trim();
+        if !sentence.is_empty() {
+            sentences.push(sentence.to_string());
+        }
+        current.clear();
+    }
+    fn closes(c: char) -> bool {
+        matches!(
+            c,
+            '*' | '_' | '`' | '"' | '\'' | ')' | ']' | '\u{2019}' | '\u{201D}'
+        )
+    }
+
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\n' {
+            flush(&mut sentences, &mut current);
+        } else {
+            current.push(c);
+            if matches!(c, '.' | '!' | '?') {
+                while let Some(next) = chars.next_if(|next| closes(*next)) {
+                    current.push(next);
+                }
+                if chars.peek().is_none_or(|next| next.is_whitespace()) {
+                    flush(&mut sentences, &mut current);
+                }
+            }
+        }
+        if sentences.len() >= limit {
+            return sentences;
+        }
+    }
+    flush(&mut sentences, &mut current);
+    sentences.truncate(limit);
+    sentences
 }
 
 /// §5 bounded fan-out: PER-SESSION counts of injected detached turns, keyed by
@@ -5003,7 +5628,17 @@ impl McpClientTrait for WorkspaceClient {
                 self.handle_read_conversation(caller, cap, child_scope_only, arguments)
                     .await
             }
-            "workspace_send_prompt" => self.handle_send_prompt(caller, cap, arguments).await,
+            // The one handler whose success is not a bare content list: a parked
+            // turn answers with a structured verdict (F3), and one verdict is
+            // itself an error result, so it builds its own `CallToolResult`.
+            "workspace_send_prompt" => {
+                return Ok(self
+                    .handle_send_prompt(caller, cap, arguments)
+                    .await
+                    .unwrap_or_else(|error| {
+                        CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
+                    }));
+            }
             "workspace_set_tools" => self.handle_set_tools(caller, cap, arguments).await,
             "workspace_close" => {
                 self.handle_close(caller, cap, child_scope_only, arguments)
@@ -8870,6 +9505,11 @@ pub(crate) mod tests {
         /// When set, `gui_command` fails with it (and records the frame anyway),
         /// the way a wedged renderer does: `emit_and_wait` gives up after 10s.
         gui_error: Mutex<Option<String>>,
+        /// What `installed_knowledge_bases` answers; `None` (the default) is a
+        /// host that cannot enumerate them, so no existence check runs.
+        installed_kbs: Mutex<Option<Vec<String>>>,
+        /// Every `set_knowledge_bases` call's session id, in order.
+        kb_writes: Mutex<Vec<String>>,
         turn_seq: AtomicUsize,
     }
 
@@ -8896,6 +9536,11 @@ pub(crate) mod tests {
         /// as a tool error instead of a cheerful "stopped and evicted".
         fn stop_fails(self, message: &str) -> Self {
             *self.stop_error.lock().unwrap() = Some(message.to_string());
+            self
+        }
+        /// The knowledge bases this machine has installed.
+        fn with_installed_kbs(self, ids: &[&str]) -> Self {
+            *self.installed_kbs.lock().unwrap() = Some(ids.iter().map(|s| s.to_string()).collect());
             self
         }
         /// Make the GUI round-trip fail — a renderer that never answers, which
@@ -9086,14 +9731,18 @@ pub(crate) mod tests {
         }
         fn set_knowledge_bases(
             &self,
-            _session_id: &str,
+            session_id: &str,
             _kbs: &[String],
             _primary: KbPrimaryChoice,
         ) -> Result<KbSelectionView, String> {
+            self.kb_writes.lock().unwrap().push(session_id.to_string());
             Ok(KbSelectionView::default())
         }
         fn knowledge_selection(&self, _session_id: &str) -> KbSelectionView {
             KbSelectionView::default()
+        }
+        fn installed_knowledge_bases(&self) -> Option<Vec<String>> {
+            self.installed_kbs.lock().unwrap().clone()
         }
         async fn gui_command(
             &self,
@@ -9826,8 +10475,9 @@ pub(crate) mod tests {
 
         assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
         let text = text_of(&result);
-        assert!(
-            text.contains("THIS TURN ANSWER"),
+        let report = injected_turn_report(&result);
+        assert_eq!(
+            report["final_message"], "THIS TURN ANSWER",
             "the wait must return the started turn's answer; got: {text}"
         );
         assert!(
@@ -9835,12 +10485,278 @@ pub(crate) mod tests {
             "an answer that landed before this turn started is somebody else's; got: {text}"
         );
         // …and the terminal it reported is this turn's, not the previous one's.
-        assert!(text.contains("(stop)"), "got: {text}");
-        assert!(!text.contains("(previous)"), "got: {text}");
+        assert_eq!(report["finish_reason"], "stop", "got: {text}");
+        assert!(!text.contains("previous"), "got: {text}");
         // The started turn id is named, so the caller can correlate.
-        assert!(
-            text.contains(&services.started.lock().unwrap()[0].1),
+        assert_eq!(
+            report["turn_id"],
+            services.started.lock().unwrap()[0].1.as_str(),
             "got: {text}"
+        );
+    }
+
+    /// The JSON object a parked `mode:"turn"` answers with (F3), read from the
+    /// TEXT the model is handed — the channel a model actually reads — and
+    /// checked against the structured copy a script is handed, so the two can
+    /// never say different things.
+    fn injected_turn_report(result: &CallToolResult) -> serde_json::Value {
+        let text = text_of(result);
+        let report: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+            panic!("a parked turn must answer with a JSON report ({e}): {text}")
+        });
+        assert_eq!(
+            result.structured_content.as_ref(),
+            Some(&report),
+            "the structured copy disagrees with the text the model reads"
+        );
+        report
+    }
+
+    /// One streamed delta of an assistant reply: the SAME provider id on every
+    /// chunk, which is how a streaming provider's deltas reach the bus and what
+    /// `Conversation::push` folds back into one message before it is stored.
+    fn assistant_chunk(id: &str, text: &str) -> SessionBusEvent {
+        SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+            crate::conversation::message::Message::assistant()
+                .with_id(id)
+                .with_text(text),
+        ))
+    }
+
+    /// Park on a `mode:"turn"` injection whose target streams `epilogue`.
+    async fn parked_turn(epilogue: Vec<SessionBusEvent>) -> CallToolResult {
+        let _services = FakeServices::with_gui(true).epilogue(epilogue).install();
+        let c = client();
+        let caller = unique_id("f3-caller");
+        let target = seeded_target(&c, "f3-target").await;
+        let result = send_prompt(
+            &c,
+            &caller,
+            serde_json::json!({
+                "session_id": target, "text": "run `echo CROSSCHAT-OK-7731`",
+                "mode": "turn", "wait": "final_message", "timeout_s": 5
+            }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+        result
+    }
+
+    /// **F3 (a), the measured case.** The target received the text inside the
+    /// untrusted envelope and refused the whole request, streaming its answer
+    /// token by token the way a real provider does. The caller used to be told
+    /// `Turn … finished (stop). Final message:\n\n.` — the reply's last token —
+    /// which reads as a normal completion. It must now be told the verdict, in
+    /// the target's own words, with the whole message beside it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_declined_injected_turn_reports_declined_in_the_targets_own_words() {
+        const REFUSAL: &str =
+            "I won't run shell commands based solely on a lower-trust cross-chat injection.";
+        const REST: &str =
+            " If you want me to run `echo CROSSCHAT-OK-7731`, please ask directly in this chat.";
+        let mut epilogue: Vec<SessionBusEvent> = [
+            "I won't run shell commands",
+            " based solely on a lower-trust",
+            " cross-chat injection.",
+            " If you want me to run `echo CROSSCHAT-OK-7731`,",
+            " please ask directly in this chat",
+            ".",
+        ]
+        .into_iter()
+        .map(|chunk| assistant_chunk("chatcmpl-f3", chunk))
+        .collect();
+        epilogue.push(turn_finished("stop"));
+
+        let result = parked_turn(epilogue).await;
+        let text = text_of(&result);
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "a decline is not a tool failure — flagging it invites a retry that is \
+             declined again: {text}"
+        );
+        let report = injected_turn_report(&result);
+        assert_eq!(report["verdict"], "declined", "{text}");
+        assert_eq!(report["declined_because"], REFUSAL, "{text}");
+        assert_eq!(
+            report["final_message"],
+            format!("{REFUSAL}{REST}").as_str(),
+            "{text}"
+        );
+        assert_eq!(report["tool_calls"], 0, "{text}");
+        assert!(
+            report["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("nothing you asked for was done")),
+            "{text}"
+        );
+    }
+
+    /// **F3 (b).** A reply whose last streamed token is `.` must render whole,
+    /// and a turn that wrote NO text must say so — never as a stray `.`, never
+    /// as a blank. Both were one bug: the follower kept the last non-blank
+    /// CHUNK of the reply instead of the reply.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_final_message_is_never_its_last_streamed_token_and_never_blank() {
+        // A completed answer that ends on a lone "." chunk.
+        let mut streamed: Vec<SessionBusEvent> = ["Printed", " CROSSCHAT-OK-7731", "."]
+            .into_iter()
+            .map(|chunk| assistant_chunk("chatcmpl-ok", chunk))
+            .collect();
+        streamed.push(turn_finished("stop"));
+        let result = parked_turn(streamed).await;
+        let report = injected_turn_report(&result);
+        assert_eq!(report["verdict"], "completed", "{}", text_of(&result));
+        assert_eq!(
+            report["final_message"],
+            "Printed CROSSCHAT-OK-7731.",
+            "{}",
+            text_of(&result)
+        );
+
+        // A turn whose assistant output is only whitespace.
+        let result = parked_turn(vec![
+            assistant_chunk("chatcmpl-blank", "  "),
+            assistant_chunk("chatcmpl-blank", "\n"),
+            turn_finished("stop"),
+        ])
+        .await;
+        let text = text_of(&result);
+        let report = injected_turn_report(&result);
+        assert_eq!(report["verdict"], "completed", "{text}");
+        assert!(
+            report["final_message"].is_null(),
+            "no text must read as null, not as a blank or a fragment: {text}"
+        );
+        assert!(
+            report["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("without writing any text")),
+            "{text}"
+        );
+    }
+
+    /// The other three endings, each distinct from `completed`: an errored turn
+    /// is still an error result (as it always was), a cancelled one is not a
+    /// completion, and a timeout says it gave up rather than handing over a
+    /// half-written answer as final.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn every_other_ending_of_an_injected_turn_has_its_own_verdict() {
+        let errored = parked_turn(vec![
+            assistant_chunk("chatcmpl-err", "Ran into this error: 403"),
+            SessionBusEvent::TurnError {
+                message: "provider refused the request".into(),
+                code: "inference_error".into(),
+                scope: "session".into(),
+                retryable: false,
+                provider_kind: None,
+            },
+        ])
+        .await;
+        assert_eq!(errored.is_error, Some(true), "{}", text_of(&errored));
+        let report = injected_turn_report(&errored);
+        assert_eq!(report["verdict"], "errored");
+        assert_eq!(report["error"], "provider refused the request");
+
+        let cancelled = parked_turn(vec![
+            assistant_chunk("chatcmpl-c", "I won't run that."),
+            turn_finished("cancelled"),
+        ])
+        .await;
+        let report = injected_turn_report(&cancelled);
+        assert_eq!(report["verdict"], "cancelled", "{}", text_of(&cancelled));
+        assert!(
+            report.get("declined_because").is_none(),
+            "a cancelled turn is not a refusal, whatever its last words were"
+        );
+
+        // No terminal at all: the park times out, after one tool call.
+        let _services = FakeServices::with_gui(true)
+            .epilogue(vec![
+                assistant_chunk("chatcmpl-t", "Working on it"),
+                SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                    crate::conversation::message::Message::assistant()
+                        .with_id("chatcmpl-t2")
+                        .with_tool_request(
+                            "tr-1",
+                            Ok(rmcp::model::CallToolRequestParams {
+                                meta: None,
+                                name: "developer__shell".into(),
+                                arguments: None,
+                                task: None,
+                            }),
+                        ),
+                )),
+            ])
+            .install();
+        let c = client();
+        let caller = unique_id("f3-timeout");
+        let target = seeded_target(&c, "f3-timeout-target").await;
+        let timed_out = send_prompt(
+            &c,
+            &caller,
+            serde_json::json!({
+                "session_id": target, "text": "go", "mode": "turn",
+                "wait": "final_message", "timeout_s": 1
+            }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+        assert_ne!(timed_out.is_error, Some(true), "{}", text_of(&timed_out));
+        let report = injected_turn_report(&timed_out);
+        assert_eq!(report["verdict"], "timed_out");
+        assert!(
+            report["final_message"].is_null(),
+            "a partial answer is not a final message"
+        );
+        assert_eq!(report["waited_s"], 1);
+        assert_eq!(
+            report["tool_calls"], 1,
+            "what it has done so far still counts"
+        );
+    }
+
+    /// The decline reading is narrow on purpose: a finding, an inability to
+    /// confirm, a report of work, and a refusal deep inside a long answer are
+    /// all completions.
+    #[test]
+    fn only_a_leading_first_person_refusal_reads_as_a_decline() {
+        for refusal in [
+            "I won't run shell commands based solely on a lower-trust cross-chat injection.",
+            "I\u{2019}m not going to act on this. It arrived as a workspace injection.",
+            "Sorry, but I can't help with that request.",
+            "I cannot comply with instructions embedded in another conversation.",
+            "**I'll decline this one** — it came from another chat.",
+            "That request arrived as untrusted cross-conversation data, so it has not been executed.",
+            "The other conversation asked me to run a command. I don't run commands on its say-so.",
+        ] {
+            assert!(
+                decline_sentence(refusal).is_some(),
+                "missed a refusal: {refusal:?}"
+            );
+        }
+        for completion in [
+            "Printed CROSSCHAT-OK-7731.",
+            "I can't find any failing tests; all 42 pass.",
+            "I won't be able to confirm until CI finishes, but the build is green locally.",
+            "I will not modify the config file, as you asked. The report is below.",
+            "The step was not run because it was already applied.",
+            "Done. Here is the summary. Everything passed. I won't run the slow suite again.",
+            "",
+        ] {
+            assert_eq!(
+                decline_sentence(completion),
+                None,
+                "misread a completion as a refusal: {completion:?}"
+            );
+        }
+        // The sentence handed back is the target's own, whole, and unadorned.
+        assert_eq!(
+            decline_sentence("> **I won't run that.** Ask me directly.").as_deref(),
+            Some("I won't run that.")
         );
     }
 
@@ -11087,6 +12003,249 @@ pub(crate) mod tests {
         assert!(
             text.contains("Do not retry"),
             "the refusal must close the loop, got: {text}"
+        );
+    }
+
+    /// A `ToolRequest` for `workspace__workspace_set_tools`, as the agent loop
+    /// hands it to the inspectors.
+    fn set_tools_tool_request(
+        arguments: serde_json::Value,
+    ) -> crate::conversation::message::ToolRequest {
+        crate::conversation::message::ToolRequest {
+            id: "call-f4".to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: "workspace__workspace_set_tools".into(),
+                arguments: Some(serde_json::from_value(arguments).unwrap()),
+                task: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    /// A live target conversation, under an id no other test mints, with
+    /// `loaded` attached as in-process servers.
+    async fn live_target(
+        c: &WorkspaceClient,
+        label: &str,
+        loaded: &[&str],
+    ) -> (String, std::sync::Arc<crate::agents::Agent>) {
+        let target = seeded_target(c, label).await;
+        let agent = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("agent manager")
+            .get_or_create_agent(target.clone())
+            .await
+            .expect("agent");
+        for name in loaded {
+            agent
+                .extension_manager
+                .add_inprocess_server(name, NullServer)
+                .await
+                .expect("in-process server");
+        }
+        (target, agent)
+    }
+
+    async fn forget_live_target(target: &str) {
+        if let Ok(manager) = crate::execution::manager::AgentManager::instance().await {
+            let _ = manager.remove_session(target).await;
+        }
+    }
+
+    /// **F4 at the handler, the QA's own call.** Removing a built-in capability
+    /// is refused with the extension manager's sentence — and, since F4, by the
+    /// SAME pre-flight the always-confirm inspector asks, so no card is raised
+    /// for it first. The capability stays loaded.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_a_built_in_capability_with_the_extension_managers_sentence() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let (target, agent) = live_target(&c, "f4-builtin", &["autovisualiser"]).await;
+
+        let refused = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target, "remove_extensions": ["autovisualiser"] }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert_eq!(
+            text,
+            format!(
+                "Error: {}",
+                crate::agents::extension_manager::capability_management_error("autovisualiser")
+                    .message
+            ),
+            "not the extension manager's sentence"
+        );
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled("autovisualiser")
+                .await,
+            "a refused removal removed it anyway"
+        );
+        forget_live_target(&target).await;
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **F4, the other half of the brief: a real, installed, non-capability
+    /// extension still passes the pre-flight and is still put to the user.**
+    /// The inspector is asked exactly as the agent loop asks it, over the
+    /// caller's own store, against a live target that has the extension loaded.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_real_extension_removal_passes_the_pre_flight_and_still_asks_first() {
+        use crate::agents::workspace_inspector::WorkspaceMutationInspector;
+        use crate::tool_inspection::{InspectionAction, ToolInspector};
+
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let caller_id = seeded_target(&c, "f4-real-caller").await;
+        let caller = c
+            .context
+            .session_manager
+            .get_session(&caller_id, false)
+            .await
+            .unwrap();
+        let (target, _agent) = live_target(&c, "f4-real-target", &["lab-mcp-server"]).await;
+
+        let inspector = WorkspaceMutationInspector::new(
+            std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            c.context.session_manager.clone(),
+        )
+        .with_operator_authored(&["lab-mcp-server"]);
+        let request = set_tools_tool_request(
+            serde_json::json!({ "session_id": target, "remove_extensions": ["lab-mcp-server"] }),
+        );
+        let results = inspector
+            .inspect(
+                std::slice::from_ref(&request),
+                &[],
+                crate::config::BioRouterMode::Auto,
+                &caller,
+            )
+            .await
+            .unwrap();
+        forget_live_target(&target).await;
+        crate::workspace_services::clear_test_override();
+
+        let [card] = results.as_slice() else {
+            panic!("expected exactly one verdict, got {results:?}");
+        };
+        let InspectionAction::RequireApproval(Some(message)) = &card.action else {
+            panic!("a change that CAN be made must still be put to the user: {card:?}");
+        };
+        assert!(message.contains("lab-mcp-server"), "{message}");
+        assert!(message.contains("configured explicitly"), "{message}");
+    }
+
+    /// The phantom removal the tool reference documented as a false success:
+    /// `remove_extension` is a `HashMap::remove` that answers `Ok` for a name
+    /// that was never there, so a typo came back as `-name`. Refused now, with
+    /// nothing applied — and only for a caller already allowed to see what the
+    /// conversation has loaded (the privacy arm answers first).
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_to_remove_what_the_conversation_does_not_have() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let (target, agent) = live_target(&c, "f4-phantom", &["realfixture"]).await;
+
+        let refused = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({
+                "session_id": target, "remove_extensions": ["realfixture", "ghost-fixture"]
+            }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        forget_live_target(&target).await;
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("`ghost-fixture` is not enabled in conversation"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("-ghost-fixture"),
+            "the phantom label came back: {text}"
+        );
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled("realfixture")
+                .await,
+            "resolution is atomic: the real removal in the same call must not have landed"
+        );
+    }
+
+    /// Knowledge bases used to be validated LAST — after extensions, skills
+    /// and the provider had already been applied — and an id with no base was
+    /// dropped without a word. Now: a missing base, or a write target outside
+    /// the requested set, refuses the whole call before anything lands.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_validates_knowledge_bases_before_applying_anything() {
+        let services = FakeServices::with_gui(false)
+            .with_installed_kbs(&["kb-a", "kb-b"])
+            .install();
+        let c = client();
+        let target = seeded_target(&c, "f4-kb").await;
+
+        for (arguments, expected) in [
+            (
+                serde_json::json!({
+                    "session_id": target, "add_skills": ["single-cell"],
+                    "set_knowledge_bases": ["kb-a", "kb-typo"],
+                }),
+                "there is no knowledge base named 'kb-typo'",
+            ),
+            (
+                serde_json::json!({
+                    "session_id": target, "add_skills": ["single-cell"],
+                    "set_knowledge_bases": ["kb-a"], "primary_knowledge_base": "kb-b",
+                }),
+                "primary_knowledge_base 'kb-b' is not one of set_knowledge_bases (kb-a)",
+            ),
+        ] {
+            let refused = set_tools(&c, arguments).await;
+            let text = text_of(&refused);
+            assert_eq!(refused.is_error, Some(true), "{text}");
+            assert!(text.contains(expected), "{text}");
+        }
+        // Nothing landed: neither the skill grant that rode along nor a write.
+        let over = crate::agents::session_skills::for_session(&c.context.session_manager, &target)
+            .await
+            .unwrap();
+        assert!(
+            over.add.is_empty(),
+            "a refused call applied its skills: {over:?}"
+        );
+        assert!(services.kb_writes.lock().unwrap().is_empty());
+
+        // The control: a set of real bases with a member as primary applies.
+        let applied = set_tools(
+            &c,
+            serde_json::json!({
+                "session_id": target, "set_knowledge_bases": ["kb-a", "kb-b"],
+                "primary_knowledge_base": "kb-b",
+            }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+        assert_ne!(applied.is_error, Some(true), "{}", text_of(&applied));
+        assert_eq!(
+            services.kb_writes.lock().unwrap().as_slice(),
+            std::slice::from_ref(&target)
         );
     }
 

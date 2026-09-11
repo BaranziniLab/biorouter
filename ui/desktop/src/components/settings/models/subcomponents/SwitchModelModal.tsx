@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useId, useMemo, useRef } from 'react';
 import { Brain, ExternalLink } from '../../../icons/app-icons';
 
 import {
@@ -121,7 +121,12 @@ const modelOptionSearchText = (option: ModelOption) =>
   [option.value, option.label, option.detail].filter(Boolean).join(' ').toLowerCase();
 
 /**
- * §14.2's pre-flight reason, rendered ON the row rather than after the attempt.
+ * §14.2's pre-flight reason, rendered before the attempt rather than after it:
+ * ON each barred row of the menu, and beside the field — with the confirm
+ * disabled — whenever the selection itself is barred. The second half is not
+ * redundant. A disabled row does not stop a barred model reaching the field
+ * (see `validation`), and until F3 the confirm only found out about one when it
+ * was clicked.
  *
  * States the rule and stops there, deliberately, because for THIS chat there is
  * no way forward to name. A row's classification only ever rises:
@@ -190,8 +195,9 @@ type SwitchModelModalProps = {
   /**
    * The tier of the chat being switched (issue #56, §14.2) — "pre-flight, not
    * post-refusal". A public model in a private chat is rendered disabled with
-   * the reason inline, instead of being offered, accepted, and then refused by
-   * Gate A with a 409.
+   * the reason inline — its row in the menu, and the confirm whenever it is the
+   * selection — instead of being offered, accepted, and then refused by Gate A
+   * with a 409.
    *
    * `undefined` judges nothing: the settings grid opens this modal with no
    * session at all (`sessionId={null}`), and a modal that greyed out every
@@ -231,11 +237,6 @@ export const SwitchModelModal = ({
     initialModel || (carryOverCurrentModel ? currentModel : '')
   );
   const [isCustomModel, setIsCustomModel] = useState(false);
-  const [validationErrors, setValidationErrors] = useState({
-    provider: '',
-    model: '',
-  });
-  const [isValid, setIsValid] = useState(true);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
   const [usePredefinedModels] = useState(shouldShowPredefinedModels());
   const [selectedPredefinedModel, setSelectedPredefinedModel] = useState<Model | null>(null);
@@ -330,54 +331,70 @@ export const SwitchModelModal = ({
     [privacyTier, publicProviderNames]
   );
 
-  // Validate form data
-  const validateForm = useCallback(() => {
-    const errors = {
-      provider: '',
-      model: '',
-    };
-    let formIsValid = true;
+  /**
+   * The form's verdict, DERIVED from the selection on every render — never
+   * computed inside a click (F3, QA of 7c96d796, 2026-09-10).
+   *
+   * ⚠ **A disabled row is not a disabled selection.** `isOptionDisabled` keeps a
+   * barred model from being PICKED, but the field can hold one the menu never
+   * offered: the auto-select effect below takes the provider's first model
+   * without asking it (`findFirstAvailableModel`), `initialModel` and the
+   * carried-over current model arrive from the caller, and the custom-model
+   * field and the predefined list bypass the option list outright. Choosing
+   * Claude Code in a private chat filled the field with a model whose every row
+   * was disabled while "Select model" stayed live — validity started `true` and
+   * was first computed inside the click. The click was refused, so the gate
+   * held; the pre-flight did not.
+   *
+   * So the rule is asked of whatever the selection IS. `blocked` is shown beside
+   * the field and disables the confirm before anything is clicked;
+   * `attemptedSubmit` only decides whether the "nothing chosen yet" messages
+   * show, because those are prompts, not refusals. `handleSubmit` reads the same
+   * verdict, as the fallback for a submit that arrives some other way.
+   */
+  const validation = useMemo(() => {
+    const errors = { provider: '', model: '' };
+    let blocked: string | null = null;
 
     if (usePredefinedModels) {
       if (!selectedPredefinedModel) {
         errors.model = 'Select a model';
-        formIsValid = false;
       } else {
         // This branch swaps both selects for a flat radio list and reaches the
         // same `changeModel`, so it bypasses the option list's pre-flight
         // exactly the way the custom-model field below does. Guarding only that
         // one would leave the identical hole open on the sibling path.
-        const blocked = blockedReasonFor(selectedPredefinedModel.provider);
-        if (blocked) {
-          errors.model = blocked;
-          formIsValid = false;
-        }
+        blocked = blockedReasonFor(selectedPredefinedModel.provider);
       }
     } else {
       if (!provider) {
         errors.provider = 'Select a provider';
-        formIsValid = false;
       }
 
       if (!model) {
         errors.model = 'Select or type a model name';
-        formIsValid = false;
-      }
-
-      // The custom-model field bypasses the option list entirely, so the same
-      // rule has to be asked again here or "Enter a model not listed…" would be
-      // the one way around the pre-flight.
-      const blocked = blockedReasonFor(provider);
-      if (blocked && model) {
-        errors.model = blocked;
-        formIsValid = false;
+      } else {
+        // The custom-model field bypasses the option list entirely, so the same
+        // rule has to be asked again here or "Enter a model not listed…" would be
+        // the one way around the pre-flight.
+        blocked = blockedReasonFor(provider);
       }
     }
+    if (blocked) errors.model = blocked;
 
-    setValidationErrors(errors);
-    setIsValid(formIsValid);
-    return formIsValid;
+    return { errors, blocked, isValid: !errors.provider && !errors.model };
   }, [model, provider, usePredefinedModels, selectedPredefinedModel, blockedReasonFor]);
+
+  // A refusal shows at once, because it is WHY the confirm is disabled; a
+  // prompt to choose something waits for an attempt. One node, rendered under
+  // whichever field is on screen, so the confirm can name it as its reason.
+  const modelMessageId = useId();
+  const modelMessage = validation.blocked ?? (attemptedSubmit ? validation.errors.model : '');
+  const modelMessageNode = modelMessage ? (
+    <div id={modelMessageId} className="text-text-danger text-sm mt-1">
+      {modelMessage}
+    </div>
+  ) : null;
 
   const handleClose = () => {
     onClose();
@@ -421,8 +438,10 @@ export const SwitchModelModal = ({
     }
     setAttemptedSubmit(true);
     setSubmitError(null);
-    const isFormValid = validateForm();
-    if (!isFormValid) return;
+    // The confirm is already disabled whenever this is false; this is the
+    // post-click half of the same verdict, for a submit that reaches here some
+    // other way (a keyboard submit, a caller that renders its own confirm).
+    if (!validation.isValid) return;
 
     setSwitching(true);
     try {
@@ -468,13 +487,6 @@ export const SwitchModelModal = ({
       setSwitching(false);
     }
   };
-
-  // Re-validate when inputs change and after attempted submission
-  useEffect(() => {
-    if (attemptedSubmit) {
-      validateForm();
-    }
-  }, [attemptedSubmit, validateForm]);
 
   useEffect(() => {
     // Load predefined models if enabled
@@ -753,7 +765,7 @@ export const SwitchModelModal = ({
                       key={model.id || model.name}
                       // The predefined branch swaps both selects for this flat
                       // list, so it bypasses `isDisabled` on them entirely — the
-                      // same hole `validateForm` documents for the tier
+                      // same hole `validation` documents for the tier
                       // pre-flight, and it has to be closed here for the same
                       // reason.
                       onClick={hostManaged ? undefined : () => setSelectedPredefinedModel(model)}
@@ -812,9 +824,7 @@ export const SwitchModelModal = ({
                 })}
               </div>
 
-              {attemptedSubmit && validationErrors.model && (
-                <div className="text-text-danger text-sm mt-1">{validationErrors.model}</div>
-              )}
+              {modelMessageNode}
             </div>
           ) : (
             /* Manual Provider/Model Selection */
@@ -851,8 +861,8 @@ export const SwitchModelModal = ({
                   isClearable
                   isDisabled={hostManaged}
                 />
-                {attemptedSubmit && validationErrors.provider && (
-                  <div className="text-text-danger text-sm mt-1">{validationErrors.provider}</div>
+                {attemptedSubmit && validation.errors.provider && (
+                  <div className="text-text-danger text-sm mt-1">{validation.errors.provider}</div>
                 )}
                 {/*
                   Issue #56, DR-26. Whose agreements cover the models under this
@@ -900,11 +910,7 @@ export const SwitchModelModal = ({
                         isDisabled={loadingModels || hostManaged}
                       />
 
-                      {attemptedSubmit && validationErrors.model && (
-                        <div className="text-text-danger text-sm mt-1">
-                          {validationErrors.model}
-                        </div>
-                      )}
+                      {modelMessageNode}
                     </div>
                   ) : (
                     <div className="flex flex-col gap-2">
@@ -924,11 +930,7 @@ export const SwitchModelModal = ({
                         value={model}
                         disabled={hostManaged}
                       />
-                      {attemptedSubmit && validationErrors.model && (
-                        <div className="text-text-danger text-sm mt-1">
-                          {validationErrors.model}
-                        </div>
-                      )}
+                      {modelMessageNode}
                     </div>
                   )}
                 </>
@@ -996,12 +998,15 @@ export const SwitchModelModal = ({
             <Button
               onClick={handleSubmit}
               disabled={
-                !isValid ||
-                (!usePredefinedModels && (!provider || !model)) ||
+                !validation.isValid ||
                 hostManaged ||
                 switching ||
                 providerInputValue.trim().length > 0
               }
+              // A barred selection's refusal, beside the field, is this
+              // button's reason for being disabled — so it is also its
+              // description, not merely a sentence that happens to be nearby.
+              aria-describedby={validation.blocked ? modelMessageId : undefined}
             >
               {switching ? 'Switching\u2026' : 'Select model'}
             </Button>

@@ -34,6 +34,12 @@
 //! 4. From then on the application presents `X-Secret-Key` exactly as the
 //!    desktop renderer does, and every API route is guarded exactly as before.
 //!
+//! Step 2 does not consume the token. It is honoured as often as it is
+//! presented until the daemon stops, and the cookie's value is the token
+//! itself, so single use would need a daemon-minted session and would break a
+//! second browser, a bookmark, and a browser that has dropped its cookie.
+//! Decision SD-9 in `docs/deployment/serve-decisions.md` has the reasoning.
+//!
 //! **The cookie gates the document and nothing else.** It is not accepted as
 //! authentication on any API route. Accepting it there would make every API
 //! route reachable by a credential the browser attaches automatically, which is
@@ -406,6 +412,31 @@ mod tests {
         // And with no credential at all.
         let res = index(State(ui), HeaderMap::new(), Query(IndexQuery { t: None })).await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The exchange does not spend the token (SD-9 in
+    /// `docs/deployment/serve-decisions.md`): a second browser, a bookmark of a
+    /// `--token` address, and a browser that has dropped its cookie all present
+    /// it again. Making it single-use is a decision to revisit there, not a fix
+    /// to make here.
+    #[tokio::test]
+    async fn the_token_is_not_consumed_by_the_exchange() {
+        let ui = ui_with(Some("tok"));
+        for attempt in 1..=3 {
+            let res = index(
+                State(ui.clone()),
+                HeaderMap::new(),
+                Query(IndexQuery {
+                    t: Some("tok".into()),
+                }),
+            )
+            .await;
+            assert_eq!(
+                res.status(),
+                StatusCode::SEE_OTHER,
+                "redemption {attempt} must succeed like the first"
+            );
+        }
     }
 
     #[tokio::test]

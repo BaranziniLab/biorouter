@@ -28,6 +28,7 @@ import {
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { createSession } from '../sessions';
 import LoadingBioRouter from './LoadingBioRouter';
+import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import type { UserAttachment } from '../types/message';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 
@@ -88,6 +89,12 @@ export default function Hub({
 
       <div className="biorouter-home-composer shrink-0 px-4 pb-6 sm:px-6">
         <div className="biorouter-composer-view-transition mx-auto w-full max-w-[760px]">
+          {/* H3 — the same standing off-state note every chat's composer
+              carries, on the same `mx-3` rails. Home is the route the app
+              LAUNCHES on, and a switch turned off outside the app takes effect
+              at a launch, so a note that only chats carried would first be
+              seen after the user had already started one. */}
+          <PrivacyTiersOffNote className="mx-3 mb-2" />
           {isCreatingSession && (
             <div className="pointer-events-none mb-2.5 pl-2">
               <LoadingBioRouter chatState={ChatState.LoadingConversation} />

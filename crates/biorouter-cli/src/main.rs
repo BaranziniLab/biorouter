@@ -1,5 +1,6 @@
 use biorouter::agents::turn_abort::{exit as abort_exit, TurnFailed};
 use biorouter_cli::cli::cli;
+use biorouter_cli::commands::needs_terminal::{self, NeedsTerminal};
 use std::process::ExitCode;
 
 // Tuned jemalloc as the global allocator (default-on `jemalloc` feature). The
@@ -61,6 +62,14 @@ async fn async_main() -> ExitCode {
     match cli().await {
         Ok(()) => ExitCode::from(abort_exit::OK),
         Err(e) => {
+            // A command that needs a person at a terminal and was run without
+            // one declined to start; nothing failed. Its sentence says what to
+            // run instead, so it is printed alone, and it exits 2 — the usage
+            // error status — rather than the generic 1 (QA-D F9).
+            if let Some(refusal) = e.downcast_ref::<NeedsTerminal>() {
+                eprintln!("{refusal}");
+                return ExitCode::from(needs_terminal::EXIT_CODE);
+            }
             eprintln!("Error: {e:?}");
             // A turn that ran but did not complete its work gets its own exit
             // code, so a caller can tell "the provider rejected our key" (75)

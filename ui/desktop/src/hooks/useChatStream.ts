@@ -7,6 +7,7 @@ import {
   type PendingContinuationView,
   type PendingToolCallView,
   type PinnedModelView,
+  type StopConfirmedView,
 } from './chatStreamStore';
 import type { ContinuationRecoveryAction } from '../utils/continuationLease';
 import type { ChatTurnErrorData } from '../types/turnError';
@@ -60,6 +61,8 @@ interface UseChatStreamReturn {
   /** BR-61: a soft interrupt issued but not yet echoed back by the agent. */
   pendingSteer?: PendingSteer;
   pendingContinuation?: PendingContinuationView;
+  /** F5: the daemon confirmed that this chat's last Stop ended a running turn. Transient. */
+  stopConfirmed?: StopConfirmedView;
   /**
    * Whether the session's model + extensions have finished loading. The
    * transcript is up well before this — anything reading AGENT state must gate
@@ -138,6 +141,7 @@ export function useChatStream({
     lastMessageAt: snapshot.lastMessageAt,
     pendingSteer: snapshot.pendingSteer,
     pendingContinuation: snapshot.pendingContinuation,
+    stopConfirmed: snapshot.stopConfirmed,
     agentReady: snapshot.agentReady,
     notifications: notificationsMap,
     pendingToolCalls: snapshot.pendingToolCalls,
