@@ -8613,6 +8613,17 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+        // A chat deleted earlier leaves its spend in `deleted_chat_usage` (F10);
+        // a reset takes that too.
+        let deleted = sm
+            .create_session(temp_dir.path().into(), "Deleted".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert!(sm
+            .apply_usage_event(billed_turn(&deleted.id, "deleted-1", "p", "m", 30))
+            .await
+            .unwrap());
+        sm.delete_session(&deleted.id).await.unwrap();
 
         assert_eq!(sm.count_all_sessions().await.unwrap(), 2);
         assert_eq!(sm.clear_all_sessions().await.unwrap(), 2);
@@ -8622,6 +8633,7 @@ mod tests {
             "messages",
             "messages_fts",
             "token_events",
+            "deleted_chat_usage",
             "checkpoints",
             "message_blobs",
         ] {
@@ -8632,6 +8644,329 @@ mod tests {
             assert_eq!(count, 0, "{table} should be empty");
         }
         assert_eq!(sm.get_usage_summary().await.unwrap().all_time.turns, 0);
+    }
+
+    /// One billed provider call, recorded through the production writer
+    /// (`apply_usage_event`), so a fixture row carries exactly the columns a
+    /// real turn writes.
+    fn billed_turn(
+        session_id: &str,
+        event_key: &str,
+        provider: &str,
+        model: &str,
+        billed: i32,
+    ) -> UsageLedgerEntry {
+        UsageLedgerEntry {
+            event_key: event_key.to_string(),
+            session_id: session_id.to_string(),
+            schedule_id: None,
+            current_total_tokens: Some(billed),
+            current_input_tokens: Some(billed),
+            current_output_tokens: Some(0),
+            billed_total_tokens: Some(i64::from(billed)),
+            input_tokens: Some(billed),
+            output_tokens: Some(0),
+            model_id: Some(model.to_string()),
+            provider: Some(provider.to_string()),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+        }
+    }
+
+    async fn token_event_count(sm: &SessionManager, session_id: &str) -> i64 {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar("SELECT COUNT(*) FROM token_events WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// F10 of the 2026-09-10 provider QA run (M24 of the 2026-09-09 drive).
+    /// Deleting a chat removed its messages, blobs and row, and left every
+    /// `token_events` row it had written — `model_id`, `provider` and a
+    /// timestamp per turn, a record of which model answered when for a chat the
+    /// user chose to delete.
+    ///
+    /// The rows now go with the chat; what they cost does not. The Usage panel
+    /// is held against the provider's own meter (issue #1), so the spend is
+    /// folded into `deleted_chat_usage` first — per day, model and provider,
+    /// with nothing that names the chat — while Home, which counts activity,
+    /// lets the chat go entirely.
+    #[tokio::test]
+    async fn deleting_a_chat_keeps_its_spend_anonymously_and_deletes_its_rows() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let mut chats = Vec::new();
+        for name in ["Deleted", "Deleted too", "Kept"] {
+            let chat = sm
+                .create_session(temp_dir.path().into(), name.into(), SessionType::User)
+                .await
+                .unwrap();
+            chats.push(chat.id);
+        }
+        let [deleted, deleted_too, kept] = [&chats[0], &chats[1], &chats[2]];
+        for entry in [
+            billed_turn(deleted, "deleted-1", "p", "m", 100),
+            billed_turn(deleted, "deleted-2", "p", "m", 200),
+            billed_turn(deleted_too, "deleted-too-1", "p", "m", 25),
+            billed_turn(kept, "kept-1", "p", "m", 50),
+        ] {
+            assert!(sm.apply_usage_event(entry).await.unwrap());
+        }
+        let spend_before = sm.get_usage_summary().await.unwrap().all_time;
+        assert_eq!(
+            (spend_before.turns, spend_before.total_tokens),
+            (4, Some(375))
+        );
+
+        sm.delete_session(deleted).await.unwrap();
+        sm.delete_session(deleted_too).await.unwrap();
+
+        // The per-turn trail is gone — and only the deleted chats'.
+        assert_eq!(
+            token_event_count(&sm, deleted).await,
+            0,
+            "a deleted chat's usage rows must be deleted with it"
+        );
+        assert_eq!(token_event_count(&sm, deleted_too).await, 0);
+        assert_eq!(
+            token_event_count(&sm, kept).await,
+            1,
+            "the delete is scoped to the chat being deleted"
+        );
+
+        // The spend is not refunded, however the Usage panel asks...
+        let spend_after = sm.get_usage_summary().await.unwrap();
+        assert_eq!(
+            spend_after.all_time, spend_before,
+            "a delete does not refund spend"
+        );
+        assert_eq!(spend_after.month_to_date.total_tokens, Some(375));
+        let pool = sm.storage().pool().await.unwrap();
+        // ...including through the panel's own window: local midnight on the
+        // 1st, through now (`UsageSection.tsx`).
+        let month_start: i64 = sqlx::query_scalar(
+            "SELECT CAST(strftime('%s', strftime('%Y-%m-01 00:00:00', 'now', 'localtime'), 'utc') AS INTEGER)",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let days = sm
+            .get_usage_report(month_start, now, UsageGroup::Day)
+            .await
+            .unwrap();
+        let report_tokens: i64 = days.iter().filter_map(|row| row.total_tokens).sum();
+        assert_eq!(report_tokens, 375, "the Usage panel's day bars: {days:?}");
+
+        // ...while Home counts only the chat that is left.
+        assert_eq!(sm.get_insights().await.unwrap().total_tokens, Some(50));
+
+        // Two deleted chats on one day and model share one bucket, and nothing
+        // in it can name either of them.
+        let buckets: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT model_id, provider, turns, billed_total_tokens, billed_known \
+             FROM deleted_chat_usage",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(buckets, vec![("m".into(), "p".into(), 3, 325, 3)]);
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('deleted_chat_usage')")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        for identifying in ["session_id", "event_key", "ts"] {
+            assert!(
+                !columns.iter().any(|column| column == identifying),
+                "deleted_chat_usage must not carry `{identifying}`: {columns:?}"
+            );
+        }
+    }
+
+    /// Why F10 is more than hygiene. `create_session` mints `<day>_<MAX(N)+1>`,
+    /// so deleting the newest chat of the day hands its id to the next chat
+    /// created that day — "delete the chat I just made and start again" — and
+    /// before the fix the new chat inherited the old one's ledger: its cost
+    /// popover (`get_session_model_usage`) listed turns it never ran, on a
+    /// provider it may never have used. Joining `sessions` cannot catch this,
+    /// because the id exists again; only deleting the rows with the chat does.
+    #[tokio::test]
+    async fn a_reissued_session_id_does_not_inherit_the_deleted_chats_usage() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let first = sm
+            .create_session(temp_dir.path().into(), "First".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert!(sm
+            .apply_usage_event(billed_turn(
+                &first.id,
+                "first-1",
+                "versa_azure",
+                "gpt-5.5",
+                900
+            ))
+            .await
+            .unwrap());
+        sm.delete_session(&first.id).await.unwrap();
+
+        let second = sm
+            .create_session(temp_dir.path().into(), "Second".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert_eq!(
+            second.id, first.id,
+            "the fixture must reproduce the id reuse, or this test proves nothing"
+        );
+        let rows = sm.get_session_model_usage(&second.id).await.unwrap();
+        assert!(
+            rows.is_empty(),
+            "a new chat inherited the deleted chat's turns: {rows:?}"
+        );
+    }
+
+    /// The read-side half of F10. A per-turn row whose chat no longer exists —
+    /// left by a build without the delete fix that shares this database, until
+    /// the next open folds it — must never be read, whichever surface asks. Its
+    /// spend reaches the Usage totals only through the anonymous fold, never
+    /// through the row that names the chat. Each aggregation is asked
+    /// separately because each is its own statement.
+    #[tokio::test]
+    async fn usage_aggregations_never_count_a_token_event_whose_chat_is_gone() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let live = seed_session_with_messages(&sm, 1).await;
+        assert!(sm
+            .apply_usage_event(billed_turn(&live.id, "live-1", "p", "m", 50))
+            .await
+            .unwrap());
+
+        // An orphan exactly as the pre-fix delete left one: a complete, billable
+        // row (its `session_type` captured as 'user' when the turn was written)
+        // whose chat is gone. Written raw because no current path produces one.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, \
+             billed_total_tokens, model_id, provider, cache_read_tokens, cache_creation_tokens, \
+             event_key, session_type) \
+             VALUES ('deleted_chat', CAST(strftime('%s', 'now') AS INTEGER), 7000, 0, 7000, 7000, \
+                     'orphan-model', 'orphan-provider', 0, 0, 'orphan-1', 'user')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let insights = sm.get_insights().await.unwrap();
+        assert_eq!(insights.total_tokens, Some(50), "insights: all time");
+        assert_eq!(insights.tokens_last_7_days, Some(50), "insights: 7 days");
+        assert_eq!(insights.tokens_last_30_days, Some(50), "insights: 30 days");
+
+        let activity = sm.get_activity(30).await.unwrap();
+        let heatmap_tokens: i64 = activity.days.iter().map(|day| day.tokens).sum();
+        assert_eq!(heatmap_tokens, 50, "Home heatmap");
+
+        let summary = sm.get_usage_summary().await.unwrap();
+        assert_eq!(summary.all_time.total_tokens, Some(50), "summary: all time");
+        assert_eq!(summary.all_time.turns, 1, "summary: all-time turns");
+        assert_eq!(
+            summary.month_to_date.total_tokens,
+            Some(50),
+            "summary: month to date"
+        );
+
+        let models = sm.get_model_usage(0, i64::MAX).await.unwrap();
+        assert!(
+            models
+                .iter()
+                .all(|row| row.model_id.as_deref() != Some("orphan-model")),
+            "per-model usage counted the orphan: {models:?}"
+        );
+
+        let report = sm
+            .get_usage_report(0, i64::MAX, UsageGroup::Model)
+            .await
+            .unwrap();
+        let report_tokens: i64 = report.iter().filter_map(|row| row.total_tokens).sum();
+        assert_eq!(report_tokens, 50, "usage report: {report:?}");
+    }
+
+    /// F10's existing orphans are retired — folded, then deleted — by the
+    /// reconcile that runs every time a store is opened, not by a numbered
+    /// migration arm, for the reason `prune_orphaned_token_events` gives. Pinned
+    /// here: a billable orphan's spend moves into the anonymous total, so the
+    /// Usage numbers an upgrade finds are the numbers it leaves; an unclassified
+    /// orphan, which no total ever counted, just goes; a live chat's rows are
+    /// never touched, however old; and a second open changes nothing, so no
+    /// spend is ever folded twice.
+    #[tokio::test]
+    async fn reopening_the_store_retires_token_events_whose_chat_is_gone() {
+        let temp_dir = TempDir::new().unwrap();
+        let live_id = {
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            let live = sm
+                .create_session(temp_dir.path().into(), "Live".into(), SessionType::User)
+                .await
+                .unwrap();
+            assert!(sm
+                .apply_usage_event(billed_turn(&live.id, "live-1", "p", "m", 50))
+                .await
+                .unwrap());
+            let pool = sm.storage().pool().await.unwrap();
+            for statement in [
+                // Two modern orphans, as the pre-fix delete left them.
+                "INSERT INTO token_events (session_id, ts, total_tokens, billed_total_tokens, \
+                 model_id, provider, event_key, session_type) \
+                 VALUES ('gone_1', 100, 10, 10, 'm', 'p', 'gone-1-a', 'user')",
+                "INSERT INTO token_events (session_id, ts, total_tokens, billed_total_tokens, \
+                 model_id, provider, event_key, session_type) \
+                 VALUES ('gone_1', 200, 10, 10, 'm', 'p', 'gone-1-b', 'user')",
+                // A legacy orphan: no identity and no captured type.
+                "INSERT INTO token_events (session_id, ts, total_tokens) VALUES ('gone_2', 300, 10)",
+            ] {
+                sqlx::query(statement).execute(pool).await.unwrap();
+            }
+            // A row older than its own chat, whose chat still exists. The sweep
+            // keys on existence alone, so it stays — and the migration fixtures
+            // in this module, which date their rows at `ts = 100`, rely on that.
+            sqlx::query(
+                "INSERT INTO token_events (session_id, ts, total_tokens, billed_total_tokens, \
+                 session_type) VALUES (?, 100, 5, 5, 'user')",
+            )
+            .bind(&live.id)
+            .execute(pool)
+            .await
+            .unwrap();
+            sm.close().await;
+            live.id
+        };
+
+        for open in 1..=2 {
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            assert_eq!(token_event_count(&sm, "gone_1").await, 0, "open {open}");
+            assert_eq!(token_event_count(&sm, "gone_2").await, 0, "open {open}");
+            assert_eq!(
+                token_event_count(&sm, &live_id).await,
+                2,
+                "open {open}: a live chat's rows are never swept"
+            );
+            // The live chat's 50 + 5, plus `gone_1`'s 10 + 10 folded; `gone_2`
+            // was never billable. Exactly what the unjoined queries counted.
+            let spend = sm.get_usage_summary().await.unwrap().all_time;
+            assert_eq!(
+                (spend.turns, spend.total_tokens),
+                (4, Some(75)),
+                "open {open}: the Usage totals an upgrade finds are the ones it leaves"
+            );
+            assert_eq!(
+                sm.get_insights().await.unwrap().total_tokens,
+                Some(55),
+                "open {open}: Home counts the live chat only"
+            );
+            sm.close().await;
+        }
     }
 
     #[tokio::test]
@@ -8646,6 +8981,7 @@ mod tests {
         );
         for table in [
             "token_events",
+            "deleted_chat_usage",
             "checkpoints",
             "messages_fts",
             "message_blobs",
