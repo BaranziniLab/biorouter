@@ -3524,6 +3524,11 @@ mod bypass_tests {
             ),
             (
                 "PUT",
+                format!("{base}/sources/s1/credibility"),
+                Some(serde_json::json!({})),
+            ),
+            (
+                "PUT",
                 base.clone(),
                 Some(serde_json::json!({ "name": "renamed by an unproven caller" })),
             ),

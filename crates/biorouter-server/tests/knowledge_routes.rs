@@ -3856,6 +3856,11 @@ mod h2_http_barrier {
             ),
             ("POST", format!("/bases/{id}/sources/s1/reclassify"), None),
             (
+                "PUT",
+                format!("/bases/{id}/sources/s1/credibility"),
+                Some(serde_json::json!({})),
+            ),
+            (
                 "POST",
                 format!("/bases/{id}/tier"),
                 Some(serde_json::json!({ "tier": "public" })),
