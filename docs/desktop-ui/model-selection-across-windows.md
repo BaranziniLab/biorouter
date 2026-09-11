@@ -106,6 +106,13 @@ the daemon classifies the chat by what it binds, whatever this check does.
 - **The window between the last look and `/agent/start`** — two loopback round trips — is not
   closed. Closing it needs `/agent/start` to accept an expected binding and refuse a
   mismatch, which is daemon work.
+- **`/config/set_provider` is not atomic.** `set_config_provider` writes
+  `BIOROUTER_PROVIDER` and then `BIOROUTER_MODEL` as two config writes; measured on
+  2026-09-11, `config.yaml` held `versa_azure` beside `gpt-6-astra` for about 55 ms of a
+  Codex → Versa switch. A re-read caused by an announcement never sees it, because the
+  announcement follows the write; one caused by a focus change landing in the gap could, and
+  the announcement right behind it corrects the chip. A `/agent/start` landing in the gap has
+  no such second chance and would bind the mixed pair. Daemon work.
 
 ## Tests
 
@@ -130,14 +137,28 @@ window's chip by its accessible name (`button[aria-label^="Current model:"]`).
 
 1. Change the model from window 1's Home chip (or tick **Also use for new chats** in a chat).
    Window 2's chip must read the new model within two seconds.
-2. Send from window 2's Home composer, then read what the turn really ran on:
+2. Send from window 2's Home composer, then read what the turn really ran on. The store sits
+   under the sandbox's `data/`, not beside `config/`:
 
    ```bash
-   sqlite3 "$SANDBOX/sessions/sessions.db" "select provider, model_id from token_events order by id desc limit 1"
+   sqlite3 -readonly ~/biorouter-runs/<run>/data/sessions/sessions.db "select provider, model_id from token_events order by id desc limit 1"
    ```
 
 3. Repeat in the private → public direction. At no point may window 2's chip read "Private
    model, UCSF" while its next turn goes to a public model.
+4. To see the last look refuse, hand-edit the two keys in `~/biorouter-runs/<run>/config/config.yaml`
+   and send from window 2 without giving it focus. The chip changes, the text stays in the
+   composer, and no session is created. ⚠ The toast carries the app's own class
+   (`TOAST_SURFACE_CLASS_NAME`), not `Toastify__toast`: watch `section.Toastify`, or an
+   observer will report "no toast" for one that rendered.
+
+Measured on 2026-09-11 in a sandboxed instance at load average ~120, with both chips logged
+every 50 ms against one clock: window 2's chip followed window 1's switch in 310 ms
+(Versa → Codex) and 390 ms (Codex → Versa), in both cases directly from one correct label to
+the other. The two turns sent from window 2 recorded `codex / gpt-6-astra` and
+`versa_azure / gpt-5.5-2026-04-24` in `token_events`, each equal to the chip at the moment of
+sending. The last look refused both directions of an unannounced hand edit within 100 ms,
+with no focus or visibility event involved.
 
 ## Related documentation
 
