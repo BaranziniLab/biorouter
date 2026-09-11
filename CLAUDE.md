@@ -41,6 +41,15 @@ cd ui/desktop && npm run test:run               # Run frontend unit tests (Vites
 cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
 ```
 
+**What CI runs.** `rust.yml`'s `test` job runs `--lib --bins` on all three OSes and, on
+ubuntu only, every `tests/*.rs` integration binary **except** the exclusion table inside its
+`cargo test (integration binaries, no network)` step. That step runs in a loopback-only network
+namespace and never passes `--ignored`. So a new integration binary is covered the day it lands,
+and a test that reaches the network fails there rather than passing while the third party is up.
+If a binary genuinely cannot run offline, put its live tests behind `#[ignore]`, or give the binary
+a line in that table saying why. Before 2026-09, `rust.yml` ran only the sandbox's integration
+target, so a green run said nothing about the rest of `tests/`.
+
 ### Code Quality
 
 ```bash
