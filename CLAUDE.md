@@ -288,7 +288,7 @@ what did not" section first**; the rest of that document is the design, not the 
     error: private rows silently vanish, and the Knowledge view's prune effects then read them as
     deleted.
   - A `biorouter serve` browser gets its operator's tier on listings and knowledge bases only
-    (SD-9).
+    (SD-10).
   - The wiring census (`crates/biorouter/tests/privacy_guard_wiring.rs`) counts every call site.
 - **Affiliation is a third axis** (DR-26, plan Phase 6): tier asks *how sensitive*, affiliation asks
   *whose*. HIPAA compliance does not transfer between institutions, so a UCSF model reaching another

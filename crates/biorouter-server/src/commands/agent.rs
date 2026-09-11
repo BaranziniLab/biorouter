@@ -201,7 +201,7 @@ pub async fn run() -> Result<()> {
             // there, so its absence here means a loopback bind whose launcher
             // chose not to require one.
             let browser_token = std::env::var("BIOROUTER_BROWSER_TOKEN").ok();
-            // Issue #56, QA 2026-09-10 (SD-9): the interface this daemon serves is
+            // Issue #56, QA 2026-09-10 (SD-10): the interface this daemon serves is
             // the operator's, and SD-1 pins the provider every session here runs
             // on — so that provider's tier is the reach the listing and
             // knowledge-base gates give a request carrying the served document's

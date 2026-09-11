@@ -48,7 +48,7 @@
 //! gates (`routes::session_reach`). A request holding only the secret is a
 //! public caller there. `SameSite=Strict` keeps the cookie off every cross-site
 //! request, and a forged request still needs the secret, so no CSRF surface
-//! appears. See `docs/deployment/serve-decisions.md` SD-9.
+//! appears. See `docs/deployment/serve-decisions.md` SD-10.
 //!
 //! # Why there is no brute-force throttle here
 //!

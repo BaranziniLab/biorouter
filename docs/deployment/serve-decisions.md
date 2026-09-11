@@ -227,7 +227,7 @@ can never half-believe a person is reachable.
 
 ---
 
-## SD-9 — The served interface keeps its operator's reach on listings and knowledge bases, and gains nothing else
+## SD-10 — The served interface keeps its operator's reach on listings and knowledge bases, and gains nothing else
 
 **Ruling (2026-09-11).** Since the privacy fix for QA findings H2 and M1 (2026-09-10), every
 daemon route that lists chats, or names, lists or reads a knowledge base, answers a caller that
@@ -255,12 +255,14 @@ the operator's reach, which reopens H2 on every `serve` daemon.
 
 - **It reaches no private transcript.** The transcript gate, and every route that names one chat
   (open, export, the live event stream, delete, rename, and the rest), never read this standing.
-  A `serve` browser was refused every private transcript before this ruling and still is. So on a
-  private provider the History list shows private chats that cannot be opened from the browser,
-  and cannot be deleted or renamed from it either. That is SD-7's limitation, unchanged, and it
-  keeps deleting a chat from ever being easier than reading it. Letting the transcript gate honour
-  a served operator would be the first time a gate widened. It is an **open decision**, recorded
-  here and not taken.
+  They judge a `serve` browser exactly as they judged it before this ruling: on the proof it
+  carries, which is none (SD-7), and on the capability it states with `X-Caller-Provider`, which
+  they judge as they judge any caller's. An interface that states no capability — the case this
+  ruling was written against — sees private chats in its History list that it cannot open, delete
+  or rename. That is SD-7's limitation, left where this ruling found it, and it keeps deleting a
+  chat from ever being easier than reading it. Letting the transcript gate honour the cookie
+  itself would be the first time a gate widened. It is an **open decision**, recorded here and not
+  taken.
 - **It is not authentication, and not a proof of a person.** `biorouter serve` passes both the
   secret and the browser token in the daemon's environment. A caller that can read one can read
   the other, which is the residual the `X-Caller-Provider` header already carries
@@ -279,9 +281,12 @@ different tiers, show different subsets of one shared history and knowledge stor
 from SD-1, which already made the provider a property of the daemon rather than of the tab.
 
 Implemented in `crates/biorouter-server/src/auth.rs` (`install_served_operator`,
-`served_operator_capability`) and `routes::session_reach::HttpCaller`. Pinned by
-`crates/biorouter-server/tests/serve_operator_reach.rs`, which asserts both halves: the interface
-keeps its listing and knowledge-base reach, and gains no transcript.
+`served_operator_capability`) and `routes::session_reach::HttpCaller`. Pinned in two places,
+each asserting both halves — the interface keeps its listing and knowledge-base reach, and the
+cookie gains it no transcript: `a_served_interface_keeps_its_listing_reach_and_gains_no_transcript`
+in `routes::session_reach`'s lib tests, which is the copy CI runs, and
+`crates/biorouter-server/tests/serve_operator_reach.rs`, which adds the keyless arm — a daemon with
+no user-action key, as `serve` really starts it.
 
 ---
 

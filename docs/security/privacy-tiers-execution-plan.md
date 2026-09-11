@@ -7309,7 +7309,7 @@ stop: that is a different product decision and it is [Open question 15](#open-qu
 > route that names a base by `{id}`, **reads and writes alike**, so a caller that may not read a base
 > cannot rewrite, restore or delete it either. `GET /knowledge/bases` and `/knowledge/active` omit
 > what the caller cannot reach. The Knowledge view still reads everything, because it sends the
-> proof. A `biorouter serve` browser keeps its operator's reach under SD-9. So "a barrier there
+> proof. A `biorouter serve` browser keeps its operator's reach under SD-10. So "a barrier there
 > would lock a user out of their own notes" did not come true: the barrier is on the caller who
 > proves nothing, and the user proves it on every request. Half (b) of
 > [Open question 15](#open-questions) is answered by this. Record:

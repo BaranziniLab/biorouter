@@ -83,7 +83,7 @@
 //!   document's cookie — is given its operator's configured tier on those
 //!   listing and knowledge-base surfaces, which were open to it before they
 //!   were gated, and on NOTHING this function decides ([`HttpCaller`],
-//!   `docs/deployment/serve-decisions.md` SD-9);
+//!   `docs/deployment/serve-decisions.md` SD-10);
 //! * **`workspace_read_conversation` was open too, and it is CLOSED — but by a
 //!   different instrument, and a reader must not credit this module for it.**
 //!   That MCP tool (`crates/biorouter/src/agents/workspace_extension.rs`) used
@@ -615,7 +615,7 @@ pub async fn session_reach(
 /// feeding the operator's tier into it would admit what it refused — the one
 /// thing this change may not do. Whether a serve operator on a private provider
 /// should reach a private transcript is a decision still to be made, and it is
-/// recorded as open in `docs/deployment/serve-decisions.md` SD-9, not taken here.
+/// recorded as open in `docs/deployment/serve-decisions.md` SD-10, not taken here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpCaller {
     /// DR-15's master opt-out, sampled with everything else.
@@ -3388,6 +3388,387 @@ mod bypass_tests {
         );
 
         let _ = state.knowledge_service.delete_base_async(&kb, None).await;
+    }
+
+    /// Appears in the seeded knowledge pages and nowhere else.
+    const KB_SENTINEL: &str = "qa-h2-lib-sweep-marker-not-real-data";
+
+    /// Two bases in the served tree's knowledge store, each with one page and
+    /// one commit; the first is then ratcheted private the way a private chat's
+    /// ingest leaves it. Deleted on drop — including when an assertion fails —
+    /// because every test in this binary shares that store.
+    struct SeededBases {
+        state: Arc<AppState>,
+        private: String,
+        public: String,
+        /// The private base's newest commit, for the history-shaped routes.
+        sha: String,
+    }
+
+    impl Drop for SeededBases {
+        fn drop(&mut self) {
+            let root = self.state.knowledge_service.root().to_path_buf();
+            for id in [&self.private, &self.public] {
+                let _ = self.state.knowledge_service.delete_base(id);
+                let _ = std::fs::remove_dir_all(root.join(id));
+            }
+        }
+    }
+
+    async fn seed_bases(state: &Arc<AppState>, label: &str) -> SeededBases {
+        let pid = std::process::id();
+        let mut seeded = SeededBases {
+            state: state.clone(),
+            private: format!("qa-{label}-private-{pid}"),
+            public: format!("qa-{label}-public-{pid}"),
+            sha: String::new(),
+        };
+        for (id, name) in [
+            (seeded.private.clone(), "QA private base (test fixture)"),
+            (seeded.public.clone(), "QA public base (test fixture)"),
+        ] {
+            let (status, body) = call(
+                state.clone(),
+                "POST",
+                "/knowledge/bases",
+                Some(serde_json::json!({ "id": id, "name": name })),
+                &[PROOF],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "creating {id}: {body}");
+            let (status, body) = call(
+                state.clone(),
+                "PUT",
+                &format!("/knowledge/bases/{id}/pages/knowledge/x.md"),
+                Some(serde_json::json!({
+                    "content": biorouter_mcp::knowledge::page_fixtures::valid_page(
+                        "note",
+                        "X",
+                        &format!("# X\n\n{KB_SENTINEL} in {id}"),
+                    ),
+                    "commit_message": "seed",
+                })),
+                &[PROOF],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "seeding {id}: {body}");
+        }
+        let root = state.knowledge_service.root().to_path_buf();
+        biorouter_mcp::knowledge::tier::raise_unlocked(&root, &seeded.private, true).unwrap();
+        let (status, body) = call(
+            state.clone(),
+            "GET",
+            &format!("/knowledge/bases/{}/history", seeded.private),
+            None,
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let history: serde_json::Value = serde_json::from_str(&body).unwrap();
+        seeded.sha = history[0]["commit_sha"].as_str().unwrap().to_string();
+        seeded
+    }
+
+    /// Every route under `/knowledge/bases/{id}` in the served tree, as
+    /// `(method, uri, body)`. Macros name a provider the registry does not
+    /// know, so an admitted one stops with a 400 long before any model.
+    ///
+    /// ⚠ **Destructive last**, for the reason the chat sweep gives.
+    fn base_addressing_routes(
+        id: &str,
+        sha: &str,
+        other: &str,
+    ) -> Vec<(&'static str, String, Option<serde_json::Value>)> {
+        let model = serde_json::json!({ "provider": "qa-h2-no-such-provider", "model": "m" });
+        let page = biorouter_mcp::knowledge::page_fixtures::valid_page(
+            "note",
+            "X",
+            "overwritten by an unproven caller",
+        );
+        let base = format!("/knowledge/bases/{id}");
+        vec![
+            ("GET", base.clone(), None),
+            ("GET", format!("{base}/tier"), None),
+            ("GET", format!("{base}/graph"), None),
+            ("GET", format!("{base}/location"), None),
+            ("GET", format!("{base}/page?path=knowledge/x.md"), None),
+            ("GET", format!("{base}/pages"), None),
+            ("GET", format!("{base}/pages/knowledge/x.md"), None),
+            ("GET", format!("{base}/history"), None),
+            (
+                "POST",
+                format!("{base}/preview"),
+                Some(serde_json::json!({ "commit_sha": sha, "path": "knowledge/x.md" })),
+            ),
+            ("GET", format!("{base}/export"), None),
+            (
+                "POST",
+                format!("{base}/query"),
+                Some(serde_json::json!({ "question": "what is in it?", "model": model })),
+            ),
+            (
+                "POST",
+                format!("{base}/lint"),
+                Some(serde_json::json!({ "model": model })),
+            ),
+            ("POST", format!("{base}/sources/s1/reclassify"), None),
+            (
+                "POST",
+                format!("{base}/tier"),
+                Some(serde_json::json!({ "tier": "public" })),
+            ),
+            (
+                "POST",
+                format!("{base}/merge"),
+                Some(serde_json::json!({ "source_kb_id": other })),
+            ),
+            (
+                "PUT",
+                base.clone(),
+                Some(serde_json::json!({ "name": "renamed by an unproven caller" })),
+            ),
+            (
+                "PUT",
+                format!("{base}/default-model"),
+                Some(serde_json::json!({ "model": model })),
+            ),
+            (
+                "PUT",
+                format!("{base}/pages/knowledge/x.md"),
+                Some(serde_json::json!({ "content": page, "commit_message": "overwrite" })),
+            ),
+            (
+                "POST",
+                format!("{base}/raw"),
+                Some(serde_json::json!({ "text": "an unproven raw source", "title": "t" })),
+            ),
+            (
+                "POST",
+                format!("{base}/ingest"),
+                Some(serde_json::json!({ "source": { "text": "t" }, "model": model })),
+            ),
+            (
+                "POST",
+                format!("{base}/ingest-conversation"),
+                Some(serde_json::json!({ "session_ids": ["29990101_1"], "model": model })),
+            ),
+            (
+                "POST",
+                format!("{base}/restore"),
+                Some(serde_json::json!({ "commit_sha": sha })),
+            ),
+            ("DELETE", base, None),
+        ]
+    }
+
+    /// **H2, through the tree the daemon serves and in the binary CI runs.**
+    /// Every route that names a knowledge base answers a caller holding only
+    /// the daemon secret, on a private base, exactly as the page read does —
+    /// the same status and the same bytes — and answers a base that does not
+    /// exist the same way. The person at the keyboard still reads all of it,
+    /// and a public base is untouched.
+    ///
+    /// `tests/knowledge_routes.rs` (`h2_http_barrier`) sweeps the bare router
+    /// as well, but CI runs `cargo test --workspace --lib --bins`, so that
+    /// binary is not what keeps this door shut; this test is.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn every_route_that_names_a_private_base_refuses_it_exactly_as_the_read_does() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let bases = seed_bases(&state, "h2-sweep").await;
+        let absent = format!("qa-h2-sweep-absent-{}", std::process::id());
+        let page_read = |id: &str| format!("/knowledge/bases/{id}/page?path=knowledge/x.md");
+
+        let (read_status, read_body) =
+            call(state.clone(), "GET", &page_read(&bases.private), None, &[]).await;
+        assert_eq!(
+            (read_status, read_body.as_str()),
+            (StatusCode::FORBIDDEN, KNOWLEDGE_BASE_OUT_OF_REACH),
+            "the read path's refusal is what every route below is compared against"
+        );
+
+        let mut leaks = Vec::new();
+        for id in [bases.private.as_str(), absent.as_str()] {
+            for (method, uri, body) in base_addressing_routes(id, &bases.sha, &bases.public) {
+                let (status, got) = call(state.clone(), method, &uri, body, &[]).await;
+                if status != read_status || got != read_body {
+                    leaks.push(format!("{method} {uri} -> {status}: {got:.160}"));
+                }
+            }
+        }
+        assert!(
+            leaks.is_empty(),
+            "a caller holding nothing but the daemon secret was answered differently from the \
+             page read by {} route(s):\n  {}",
+            leaks.len(),
+            leaks.join("\n  ")
+        );
+
+        // …and nothing moved: still there, still private, same page.
+        let root = state.knowledge_service.root().to_path_buf();
+        assert!(biorouter_mcp::knowledge::tier::is_private(
+            &root,
+            &bases.private
+        ));
+        let on_disk =
+            std::fs::read_to_string(root.join(&bases.private).join("knowledge/x.md")).unwrap();
+        assert!(
+            on_disk.contains(KB_SENTINEL),
+            "an unproven caller rewrote a private page"
+        );
+
+        // The listing omits the private base — its id and its name — from the
+        // same caller, and shows it to the user.
+        let (status, body) = call(state.clone(), "GET", "/knowledge/bases", None, &[]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains(&bases.public), "{body}");
+        assert!(
+            !body.contains(&bases.private) && !body.contains("QA private base"),
+            "the served list named a private base to a secret-only caller: {body}"
+        );
+        let (status, body) = call(state.clone(), "GET", "/knowledge/bases", None, &[PROOF]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(&bases.private), "{body}");
+
+        // The other half: "refuse everyone" would pass everything above.
+        for (method, uri, body) in base_addressing_routes(&bases.private, &bases.sha, "")
+            .into_iter()
+            .filter(|(method, _, _)| *method == "GET")
+        {
+            let (status, got) = call(state.clone(), method, &uri, body, &[PROOF]).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {got:.200}");
+        }
+        let (status, got) = call(
+            state.clone(),
+            "GET",
+            &page_read(&bases.private),
+            None,
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert!(got.contains(KB_SENTINEL), "{got}");
+        let (status, _) = call(
+            state.clone(),
+            "GET",
+            &format!("/knowledge/bases/{absent}"),
+            None,
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the user is entitled to know the base is not there"
+        );
+        let (status, got) = call(state.clone(), "GET", &page_read(&bases.public), None, &[]).await;
+        assert_eq!(status, StatusCode::OK, "a public base was refused: {got}");
+        assert!(got.contains(KB_SENTINEL));
+    }
+
+    /// The browser token a `biorouter serve` launch would have minted. Distinct
+    /// from every other cookie value in this binary's tests.
+    const SERVED_TOKEN: &str = "5d0c9b8a7f6e5d4c3b2a19f8e7d6c5b4";
+
+    /// **SD-10, in the binary CI runs.** A `serve` daemon's own interface —
+    /// told apart by the served document's cookie — keeps the listing and
+    /// knowledge-base reach its operator's private provider implies; the same
+    /// request without the cookie, or with the wrong one, is a public caller;
+    /// and the cookie opens no transcript — `GET /sessions/{id}` and `DELETE`
+    /// refuse it exactly as they refuse the secret alone.
+    ///
+    /// ⚠ It installs the operator standing into this test binary for good (a
+    /// `OnceLock`, as in the daemon). That is harmless to every other test here
+    /// because the standing is earned only by a request carrying this exact
+    /// cookie, and none of them sends it. The keyless arm — how `serve` really
+    /// starts its daemon — needs a binary with no user-action key, and is
+    /// `tests/serve_operator_reach.rs`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_served_interface_keeps_its_listing_reach_and_gains_no_transcript() {
+        install_test_user_action_key();
+        crate::auth::install_served_operator(SERVED_TOKEN.to_string(), ProviderTier::Private);
+        let cookie = format!("biorouter_session={SERVED_TOKEN}");
+        let mut probe = HeaderMap::new();
+        probe.insert(axum::http::header::COOKIE, cookie.parse().unwrap());
+        assert_eq!(
+            crate::auth::served_operator_capability(&probe),
+            ProviderTier::Private,
+            "a different serve operator was installed into this binary first; this test's \
+             premise does not hold"
+        );
+
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "SD-10 served private (test fixture)").await;
+        let bases = seed_bases(&state, "sd10").await;
+        let served = [("cookie", cookie.as_str())];
+        let wrong = [(
+            "cookie",
+            "biorouter_session=00000000000000000000000000000000",
+        )];
+
+        for (headers, operator) in [(&served[..], true), (&[][..], false), (&wrong[..], false)] {
+            let (status, body) = call(state.clone(), "GET", "/sessions", None, headers).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                body.contains(private.id()),
+                operator,
+                "GET /sessions {headers:?}"
+            );
+            let ids = sidebar_ids(&state, 50, headers).await;
+            assert_eq!(ids.contains(&private.id().to_string()), operator);
+
+            let (status, body) =
+                call(state.clone(), "GET", "/knowledge/bases", None, headers).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                body.contains(&bases.private),
+                operator,
+                "GET /knowledge/bases {headers:?}"
+            );
+            let (status, body) = call(
+                state.clone(),
+                "GET",
+                &format!(
+                    "/knowledge/bases/{}/page?path=knowledge/x.md",
+                    bases.private
+                ),
+                None,
+                headers,
+            )
+            .await;
+            if operator {
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert!(body.contains(KB_SENTINEL), "{body}");
+            } else {
+                assert_eq!(
+                    (status, body.as_str()),
+                    (StatusCode::FORBIDDEN, KNOWLEDGE_BASE_OUT_OF_REACH),
+                    "{headers:?}"
+                );
+            }
+        }
+
+        // The cookie earns nothing at the transcript gate: the read and the
+        // delete refuse the served interface exactly as the secret alone.
+        for method in ["GET", "DELETE"] {
+            let uri = format!("/sessions/{}", private.id());
+            let (status, body) = call(state.clone(), method, &uri, None, &served).await;
+            assert_eq!(
+                (status, body.as_str()),
+                (StatusCode::FORBIDDEN, SESSION_OUT_OF_REACH),
+                "{method} {uri} with the served cookie"
+            );
+        }
+        assert!(
+            state
+                .session_manager()
+                .get_session(private.id(), false)
+                .await
+                .is_ok(),
+            "the served cookie deleted a private chat"
+        );
     }
 
     /// Every id the sidebar hands this caller, walking `next_offset` to the end.

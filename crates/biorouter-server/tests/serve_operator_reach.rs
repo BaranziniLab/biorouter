@@ -1,4 +1,4 @@
-//! Issue #56, QA 2026-09-10 (SD-9): a `biorouter serve` daemon's own web
+//! Issue #56, QA 2026-09-10 (SD-10): a `biorouter serve` daemon's own web
 //! interface keeps the reach its operator's provider implies — on the listing
 //! and knowledge-base surfaces, which were open to it before they were gated —
 //! and a caller holding only the daemon secret does not.
@@ -118,7 +118,7 @@ async fn the_served_interface_keeps_the_operators_reach_on_knowledge_bases() {
 /// else. The transcript gate refused this browser every private chat before
 /// this change and still does, and so does every route that names a chat:
 /// deleting one is never cheaper than reading it. Widening the transcript gate
-/// for a serve operator is recorded as an open decision (SD-9), not taken.
+/// for a serve operator is recorded as an open decision (SD-10), not taken.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_served_interface_keeps_its_history_list_and_gains_nothing_else() {
     install_private_operator();
@@ -127,7 +127,7 @@ async fn the_served_interface_keeps_its_history_list_and_gains_nothing_else() {
     let chat = manager
         .create_session(
             std::path::PathBuf::from("/tmp/sd9_served_operator"),
-            "SD-9 private (test fixture)".to_string(),
+            "SD-10 private (test fixture)".to_string(),
             SessionType::User,
         )
         .await

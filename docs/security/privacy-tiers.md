@@ -91,7 +91,7 @@ this section is the ledger.
 
   The desktop app sends the proof on each of these calls and sees exactly what it saw before. A
   `biorouter serve` browser keeps its operator's reach on listings and knowledge bases and gains
-  no transcript ([SD-9](../deployment/serve-decisions.md#sd-9--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else)).
+  no transcript ([SD-10](../deployment/serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else)).
   Nothing refused before is permitted now.
 
   ⚠ **What it does not change**, stated so it is not over-read. Privacy remains a safety boundary

@@ -135,7 +135,7 @@ already passed `check_token` and also carries the cookie came from the document 
 served, so the listing and knowledge-base gates give it the tier of the provider the operator
 configured. A request holding only the secret is a public caller there. The transcript gate never
 reads the cookie. See
-[decision SD-9](serve-decisions.md#sd-9--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
+[decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
 
 > **Warning.** `check_token` records a failed attempt for every request without the secret and
 > refuses after twenty inside sixty seconds, keyed on the peer address. The browser-token check

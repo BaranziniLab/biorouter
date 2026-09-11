@@ -198,7 +198,7 @@ the caller could not open:
 | `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
 
 A browser pointed at `biorouter serve` is a special case of this, described in
-[decision SD-9](serve-decisions.md#sd-9--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
+[decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
 
 ## What the header does *not* cover
 
