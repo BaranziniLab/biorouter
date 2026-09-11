@@ -149,11 +149,13 @@ export const resetHostProviderForTests = (): void => {
  *   the tab the moment its first reply made it private — measured: the next
  *   request answered 403, the same request stating the host's provider 200.
  *
- * ⚠ **Not authentication, and not a widening.** Anything holding the daemon
- * secret can send that header already (`session_reach.rs` says as much); what
- * this adds is that the one legitimate browser client says what is true of it.
- * On a host configured with a public model it states a public one, and private
- * chats stay out of reach exactly as before.
+ * ⚠ **Not authentication, and no new reach for anything holding the secret** —
+ * that caller could always send the header (`session_reach.rs` says as much).
+ * What changes is the browser tab's own reach: on a host configured with a
+ * private model it now opens private chats, including ones started in the
+ * desktop app, which SD-9 records as a consequence. On a host configured with a
+ * public model it states a public one, and private chats stay out of reach
+ * exactly as before.
  */
 export const userActionHeaders = async (): Promise<Record<string, string>> => {
   if (isBrowserSurface()) {
