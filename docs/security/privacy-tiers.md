@@ -112,6 +112,13 @@ this section is the ledger.
   higher price for a yes, never the absence of one** — a build that withheld the control there
   would restore the hard block DR-26 exists to prevent, for exactly the deployments careful enough
   to choose `strict`.
+- **§14.3 P4's decoupling — added 2026-09-11, after this ledger was written.** A model switch made
+  in a chat changes that chat only; making it the model new chats start on is an explicit,
+  unticked "Also use for new chats" box in the switcher. Provider QA F measured the coupling it
+  replaces: one chat switched to Claude Code for one check, and the next chat opened came up
+  public. The same change (QA finding F3) makes every window's chip follow the app-wide
+  selection live, so no window names a private model while its next new chat would bind a public
+  one. See [model selection across windows](../desktop-ui/model-selection-across-windows.md).
 
 ### Did not ship
 
