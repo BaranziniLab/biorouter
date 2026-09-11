@@ -42,6 +42,7 @@ import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { PinnedModelNote } from './privacy/PinnedModelNote';
+import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
@@ -2115,6 +2116,14 @@ function BaseChatContent({
         Mounted unconditionally — it renders nothing when there is nothing to
         say, which is almost always.
       */}
+      {/*
+        H3 (2026-09-10 security test drive) — privacy tiers are OFF, where the
+        switch is recorded, and whether the app recorded turning it off. Same
+        slot, same rails and the same unconditional mount as the note below,
+        and first of the two: it is about the whole machine, that one about
+        this chat. It renders nothing while the tiers are on.
+      */}
+      <PrivacyTiersOffNote className="mx-3 mb-2" />
       <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
       <ChatInput
         sessionId={sessionId}

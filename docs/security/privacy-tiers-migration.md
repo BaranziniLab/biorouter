@@ -124,6 +124,19 @@ says. Change the switch in **Settings → Privacy**, which is the only thing tha
 If you want to check the state from outside the app, read `privacy-tiers.json` — `{"enabled":
 false}` means enforcement is off.
 
+**While privacy tiers are off, the app says so.** A note stands above every composer — Home's
+and every chat's — and Settings → Privacy repeats it, with where the switch is recorded and how
+it got to off: turned off in Settings → Privacy, carried over from your old `config.yaml`, or —
+when the app recorded no such change — *turned off outside the app*, meaning
+`privacy-tiers.json` was edited directly. The note has no dismiss button; turning privacy tiers
+back on is what clears it. The daemon also logs one warning at every start-up while they are
+off.
+
+If you turned privacy tiers off in Settings → Privacy with a version from before that note existed,
+your record carries no trace of which door wrote it, so the note reads *turned off outside the app*
+and says an older version could be the reason. To have it describe your change accurately, turn the
+tiers on and then off again in Settings → Privacy.
+
 ## Rolling back
 
 Downgrading leaves the columns in place and ignored, and the ledger inert. Nothing is moved,

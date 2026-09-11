@@ -352,6 +352,14 @@ pub async fn upsert_config(
         // polkit action — strands a machine with the feature disabled and no way
         // to turn it back on. That is the same asymmetry Task 55 Step 1 applies
         // to a `turn:*` chat: spend the cost where the consequence is.
+        let mut confirmation = biorouter::privacy::master_switch::Confirmation {
+            system_authenticated: false,
+            // Recorded, not required — see note (c) in privacy-tiers.md
+            // §12.2 for why this arm does not demand the header. The stamp says
+            // whether it came, so an audit can tell the app's own window from a
+            // caller holding only the daemon secret.
+            user_action: is_user_action(&headers),
+        };
         if !on {
             let prompter = biorouter::privacy::system_auth::prompter();
             let request = biorouter::privacy::system_auth::AuthRequest::about(
@@ -372,15 +380,20 @@ pub async fn upsert_config(
                     format!("{MASTER_SWITCH_AUTH_REFUSED} {refusal}"),
                 ));
             }
+            confirmation.system_authenticated = true;
         }
 
-        return match biorouter::privacy::master_switch::write_for(config, on) {
-            Ok(()) => {
+        return match biorouter::privacy::master_switch::write_for(config, on, confirmation) {
+            Ok(report) => {
                 // Hardening measure (3): the authoritative value lives in daemon
                 // memory, so the write to disk is not enough — this is the
                 // SECOND of the toggle's two writers (the first is start-up's
                 // `load_privacy_tiers_from_config`).
                 biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
+                // H3: and the report moves with the value, by the same writer,
+                // so the surface says "Settings > Privacy" the moment it lands
+                // rather than repeating what the last launch loaded.
+                biorouter::privacy::master_switch::remember(report);
                 Ok(Json(Value::String(format!("Upserted key {}", query.key))))
             }
             // The live value is deliberately NOT moved when the record could not
@@ -691,6 +704,12 @@ pub async fn read_config(
     if biorouter::privacy::is_privacy_tiers_key(&query.key) {
         return Ok(Json(ConfigValueResponse::Value(privacy_tiers_wire_value())));
     }
+    // H3 — and on both read paths, for the reason the mixing arm below gives.
+    if biorouter::privacy::is_privacy_tiers_record_key(&query.key) {
+        return Ok(Json(ConfigValueResponse::Value(
+            privacy_tiers_record_wire_value(),
+        )));
+    }
 
     // Issue #56 Task 52, DR-27 — and this arm is not optional. The value is not
     // in `config.yaml`, so without it `config.get` answers `NotFound` → `null`,
@@ -804,6 +823,12 @@ pub async fn read_all_config() -> Result<Json<ConfigResponse>, StatusCode> {
         biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY.to_string(),
         privacy_tiers_wire_value(),
     );
+    // H3. INSERTED, not merged: a copy of this key in `config.yaml` — which
+    // `/config/upsert` writes for any key — is replaced here, never passed on.
+    values.insert(
+        biorouter::privacy::PRIVACY_TIERS_RECORD_KEY.to_string(),
+        privacy_tiers_record_wire_value(),
+    );
     // Issue #56 Task 52, DR-27 — both read paths, for the reason the single-key
     // one gives: the value is not in `config.yaml`, so a bulk read that skipped
     // it would report the setting as absent on every machine.
@@ -855,6 +880,30 @@ fn privacy_tiers_wire_value() -> Value {
         }
         .to_string(),
     )
+}
+
+/// The switch's record report as the two config READ paths serve it (H3, the
+/// 2026-09-10 security test drive): where the record is and which door last
+/// wrote it, so the app can say "off, and turned off outside the app" instead
+/// of nothing.
+///
+/// ⚠ **From memory, never a second read of the record** — for
+/// [`privacy_tiers_wire_value`]'s reason. The report is what the loader loaded
+/// or the confirmed write wrote, remembered beside the atomic by the same two
+/// writers; a fresh read of the file would describe what the NEXT launch will
+/// do, which is not the control in force.
+///
+/// ⚠ **`null` when the report does not describe the live value** — a process
+/// that never loaded the switch, or a test that moved the atomic directly. The
+/// renderer then shows the off-state without an explanation; that loses the
+/// "how", and it never loses the notice, whose visibility is the switch's alone.
+fn privacy_tiers_record_wire_value() -> Value {
+    match biorouter::privacy::master_switch::remembered() {
+        Some(report) if report.enabled == biorouter::privacy::privacy_tiers_enabled() => {
+            serde_json::to_value(report).unwrap_or(Value::Null)
+        }
+        _ => Value::Null,
+    }
 }
 
 /// How long one provider gets to construct itself before its affiliation is
