@@ -22,6 +22,11 @@ interface DefaultProviderSetupFormProps {
 // Frontend-side defaults per provider — ensures defaults show up immediately
 // without requiring a backend recompile. The backend also declares these defaults
 // in Rust (azure.rs, bedrock.rs) for CLI consistency.
+//
+// ⚠ An entry only reaches a key the provider DECLARES in `metadata.config_keys`:
+// both readers below look a default up per declared parameter, so one for any
+// other key is never read. `versa_azure` declares its API key alone, which is
+// why it has no entry.
 const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
   azure_openai: {
     AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
@@ -29,11 +34,6 @@ const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
   },
   aws_bedrock: {
     AWS_REGION: 'us-west-2',
-  },
-  versa_azure: {
-    AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
-    AZURE_OPENAI_DEPLOYMENT_NAME: 'gpt-5.5-2026-04-24',
-    AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
   },
   versa_bedrock: {
     AWS_ENDPOINT_URL_BEDROCK: 'https://unified-api.ucsf.edu/general/awsai',
