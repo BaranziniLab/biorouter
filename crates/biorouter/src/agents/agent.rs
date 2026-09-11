@@ -692,13 +692,27 @@ fn skill_already_loaded_pointer() -> &'static str {
 // `user` message every turn. That over-reached: when the agent was genuinely stuck
 // (e.g. an unrecoverable provider error), it re-injected the same message forever
 // and never resolved the root cause — and it polluted the conversation with fake
-// user input. "Don't stop while work is unfinished" is now left to the proper,
-// bounded, user-configurable mechanisms: the Stop-hook system (`StopHookVerdict`,
-// capped by `STOP_HOOK_BLOCK_CAP`, delivered as hidden-visibility feedback + a
-// user-facing system notification) and the `/goal` loop (whose stall budget does
-// NOT reset when tools run, so it gives up when progress stalls). A user who wants
-// "keep going until the todos are done" sets a `/goal` or a Stop hook — both go
-// through that bounded, stall-aware path instead of an unbounded loop injection.
+// user input. "Don't stop while work is unfinished" now goes through bounded
+// paths only: the Stop-hook system (`StopHookVerdict`, capped by
+// `STOP_HOOK_BLOCK_CAP`, delivered as hidden-visibility feedback + a user-facing
+// system notification), the `/goal` loop (whose stall budget does NOT reset when
+// tools run, so it gives up when progress stalls), and — for the checklist
+// itself — the planning gate's stop check (`agents::planning_gate`). That check
+// is the old gate's intent without its defects: it runs only on a turn that
+// worked the list, is satisfied by a final message that NAMES the open items,
+// speaks through the same hidden feedback + notice as a Stop hook, and blocks at
+// most `STOP_HOOK_BLOCK_CAP` times per turn on a count that does not reset when
+// tools run.
+
+/// How a turn's attempt to finish resolves — decided by
+/// [`Agent::decide_turn_stop`], acted on by the reply loop.
+enum TurnStop {
+    /// Let the turn end, after showing the user `notices`.
+    Finish { notices: Vec<String> },
+    /// Keep working: `feedback` goes to the model as a hidden steer, `notice`
+    /// to the user.
+    KeepWorking { feedback: String, notice: String },
+}
 
 /// Context needed for the reply function
 pub struct ReplyContext {
@@ -3462,6 +3476,9 @@ pub struct Agent {
     pub(super) hooks_manager: Arc<crate::hooks::HooksManager>,
     /// Active `/goal` conditions per session (see [`crate::agents::goal`]).
     pub(super) goals: crate::agents::goal::GoalRegistry,
+    /// The planning gate's per-turn state, per session (see
+    /// [`crate::agents::planning_gate`]).
+    pub(super) planning: crate::agents::planning_gate::PlanningRegistry,
     /// Lazily-created scheduler for `/loop`/`/schedule` when no
     /// `scheduler_service` was injected (plain CLI/TUI sessions).
     pub(super) fallback_scheduler: tokio::sync::OnceCell<Arc<dyn SchedulerTrait>>,
@@ -4293,6 +4310,7 @@ impl Agent {
             )),
             hooks_manager,
             goals: Default::default(),
+            planning: Default::default(),
             fallback_scheduler: tokio::sync::OnceCell::new(),
             vault: Mutex::new(None),
             soft_interrupts: Arc::new(std::sync::Mutex::new(SoftInterrupts::new())),
@@ -5509,6 +5527,9 @@ impl Agent {
         let _phase = super::phase_timing::Phase::start("agent.assemble_turn_context");
 
         let moim_phase = super::phase_timing::Phase::start("agent.inject_moim");
+        // The planning gate's "write the checklist first", for as long as a
+        // multi-step turn's list is empty. See `planning_gate`.
+        let reminder = self.planning_reminder(session_id).await;
         let (conversation, moim_injected) = super::moim::inject_moim(
             session_id,
             conversation.clone(),
@@ -5516,6 +5537,7 @@ impl Agent {
             working_dir,
             &self.normalizer,
             cancel,
+            reminder.as_deref(),
         )
         .await;
         drop(moim_phase);
@@ -5588,6 +5610,18 @@ impl Agent {
             });
             inspection_results.append(&mut revalidated);
         }
+
+        // The planning gate's once-per-turn redirect, added as inspection
+        // results so the permission merge, the denial path and the transcript
+        // treat it like any other refusal. Deliberately NOT a registered
+        // inspector: the coding-agent bridge and the approval relay run the
+        // registered set too, and the bridge flattens every denial to a
+        // generic "denied by policy" — a pointer to `todo_write` that never
+        // reaches the model is a refusal with no way forward.
+        inspection_results.extend(
+            self.planning_gate_denials(&session.id, remaining_requests)
+                .await,
+        );
 
         let permission_check_result = self
             .tool_inspection_manager
@@ -6409,6 +6443,14 @@ impl Agent {
                     Some(result)
                         if result.inspector_name
                             == crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME =>
+                    {
+                        result.reason.clone()
+                    }
+                    // The planning gate: nobody declined, and the reason is
+                    // the instruction — write the checklist, then repeat.
+                    Some(result)
+                        if result.inspector_name
+                            == crate::agents::planning_gate::PLANNING_GATE_NAME =>
                     {
                         result.reason.clone()
                     }
@@ -8617,6 +8659,14 @@ impl Agent {
         self.restore_goal(&session_config.id).await;
 
         let message_text = user_message.as_concat_text();
+        // The planning gate's reading of this prompt. Classified here, where
+        // the prompt text is known, and armed in `reply_internal`, where the
+        // turn's tool roster is. A slash command is not a request to plan.
+        let planning_signal = if message_text.trim().starts_with('/') {
+            None
+        } else {
+            crate::agents::planning_gate::classify_request(&message_text)
+        };
 
         // User-configured hooks: SessionStart fires once per session, then
         // UserPromptSubmit may block the prompt or inject context. Slash
@@ -9018,7 +9068,7 @@ impl Agent {
                 }
             };
 
-            let mut reply_stream = self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token).await?;
+            let mut reply_stream = self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token, planning_signal).await?;
             while let Some(event) = reply_stream.next().await {
                 yield event?;
             }
@@ -9180,6 +9230,79 @@ impl Agent {
         }
     }
 
+    /// Everything that decides whether a turn may end, in order: the planning
+    /// gate's checklist check, then the Stop hooks (a `/goal` judge is one).
+    ///
+    /// The checklist goes first because it is deterministic and cheap — a
+    /// command hook may run a test suite and a prompt hook costs a model call,
+    /// neither worth paying on a stop the checklist is about to refuse. It is
+    /// skipped while a `/goal` is active: that session already has a judge
+    /// re-reading the work on every stop, and a checklist block would be
+    /// counted against the goal's own budget by `stop_hook_block_feedback`.
+    ///
+    /// Split out of the `reply_internal` generator to keep its `poll` frame
+    /// small — see [`ToolBatchMaps`].
+    async fn decide_turn_stop(
+        &self,
+        session_id: &str,
+        working_dir: &std::path::Path,
+        conversation: &Conversation,
+        active_goal: Option<crate::agents::goal::GoalState>,
+    ) -> TurnStop {
+        let mut notices = Vec::new();
+        if active_goal.is_none() {
+            match self.checklist_stop(session_id, conversation).await {
+                crate::agents::planning_gate::ChecklistStop::Block { feedback, notice } => {
+                    return TurnStop::KeepWorking { feedback, notice };
+                }
+                crate::agents::planning_gate::ChecklistStop::GiveUp { notice } => {
+                    notices.push(notice);
+                }
+                crate::agents::planning_gate::ChecklistStop::Clear => {}
+            }
+        }
+
+        let transcript_tail = crate::agents::goal::transcript_tail(conversation);
+        match self
+            .hooks_manager
+            .stop(session_id, working_dir, transcript_tail)
+            .await
+        {
+            crate::hooks::StopHookVerdict::Proceed => {
+                // An active goal whose evaluator let the stop proceed is met:
+                // clear it and tell the user.
+                if let Some(goal) = active_goal {
+                    self.clear_goal(session_id).await;
+                    notices.push(format!(
+                        "🎯 Goal met and cleared: {}",
+                        crate::agents::goal::ellipsize(&goal.condition, 200)
+                    ));
+                }
+                TurnStop::Finish { notices }
+            }
+            crate::hooks::StopHookVerdict::CapReached => {
+                let goal_hint = if active_goal.is_some() {
+                    " The /goal stays active and will be re-evaluated next turn; run /goal clear to stop it."
+                } else {
+                    ""
+                };
+                notices.push(format!(
+                    "Stop hook block limit ({}) reached; finishing anyway.{}",
+                    crate::hooks::STOP_HOOK_BLOCK_CAP,
+                    goal_hint
+                ));
+                TurnStop::Finish { notices }
+            }
+            crate::hooks::StopHookVerdict::Blocked { reason } => {
+                // The goal-budget accounting lives on `stop_hook_block_feedback`.
+                let (feedback, notice) = self
+                    .stop_hook_block_feedback(session_id, &reason, active_goal.is_some())
+                    .await;
+                TurnStop::KeepWorking { feedback, notice }
+            }
+        }
+    }
+
     /// Bill one overflow-recovery compaction's provider round-trips to both the
     /// reply budget and the session gauge.
     ///
@@ -9221,6 +9344,7 @@ impl Agent {
         session_config: SessionConfig,
         session: Session,
         cancel_token: Option<CancellationToken>,
+        planning_signal: Option<crate::agents::planning_gate::MultiStep>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         let session_manager = self.config.session_manager.clone();
         let provider_conversation = crate::conversation::without_bedrock_reasoning(&conversation);
@@ -9249,6 +9373,15 @@ impl Agent {
         } = context;
         let reply_span = tracing::Span::current();
         self.reset_retry_attempts().await;
+        // Opened here, outside the generator: the turn's roster is final and
+        // `session` still holds the checklist as the turn found it.
+        self.begin_planning_turn(
+            &session,
+            planning_signal,
+            &tools,
+            &toolshim_tools,
+            reply_provider.uses_tool_bridge_for_tool_surface(),
+        );
 
         // Freshness basis for this turn's overflow-recovery compactions.
         //
@@ -11270,69 +11403,40 @@ impl Agent {
                         }
                     }
 
-                    let transcript_tail = crate::agents::goal::transcript_tail(&conversation);
-                    match self.hooks_manager.stop(&session_config.id, &session.working_dir, transcript_tail).await {
-                        crate::hooks::StopHookVerdict::Proceed => {
-                            // An active goal whose evaluator let the stop
-                            // proceed is met: clear it and tell the user.
-                            if let Some(goal) = active_goal {
-                                self.clear_goal(&session_config.id).await;
-                                yield AgentEvent::Message(
-                                    inline_notice_user_only(
-                                        format!(
-                                            "🎯 Goal met and cleared: {}",
-                                            crate::agents::goal::ellipsize(&goal.condition, 200)
-                                        ),
-                                    ),
-                                );
+                    // The planning gate's checklist check, then the Stop hooks
+                    // (a /goal judge is one). The deciding lives in
+                    // `decide_turn_stop`, out of this generator's `poll` frame;
+                    // only the yields are left here.
+                    match self.decide_turn_stop(
+                        &session_config.id,
+                        &session.working_dir,
+                        &conversation,
+                        active_goal,
+                    ).await {
+                        TurnStop::Finish { notices } => {
+                            for notice in notices {
+                                yield AgentEvent::Message(inline_notice_user_only(notice));
                             }
                             break;
                         }
-                        crate::hooks::StopHookVerdict::CapReached => {
-                            let goal_hint = if active_goal.is_some() {
-                                " The /goal stays active and will be re-evaluated next turn; run /goal clear to stop it."
-                            } else {
-                                ""
-                            };
-                            yield AgentEvent::Message(
-                                inline_notice_user_only(
-                                    format!(
-                                        "Stop hook block limit ({}) reached; finishing anyway.{}",
-                                        crate::hooks::STOP_HOOK_BLOCK_CAP,
-                                        goal_hint
-                                    ),
-                                ),
-                            );
-                            break;
-                        }
-                        crate::hooks::StopHookVerdict::Blocked { reason } => {
-                            // The goal-budget accounting lives on
-                            // `stop_hook_block_feedback`.
-                            let (feedback_text, notice) = self.stop_hook_block_feedback(
-                                &session_config.id,
-                                &reason,
-                                active_goal.is_some(),
-                            ).await;
-
+                        TurnStop::KeepWorking { feedback, notice } => {
                             // #59 / #66 SHAPE 2: hidden from the user, named for
                             // the client.
                             let (feedback, published) = persist_steering_message(
                                 &session_manager,
                                 &session_config.id,
-                                feedback_text,
+                                feedback,
                             ).await?;
                             if let Some(published) = published {
                                 yield published;
                             }
                             conversation.push(feedback);
-                            yield AgentEvent::Message(
-                                inline_notice_user_only(notice,),
-                            );
+                            yield AgentEvent::Message(inline_notice_user_only(notice));
                             // Keep looping: the model sees the feedback next turn.
-                            // After a give-up the goal is cleared, so the next stop
+                            // After a goal gives up it is cleared, so the next stop
                             // proceeds once the agent delivers its wrap-up.
                             //
-                            // #69: a blocked Stop reverses the exit the queue was
+                            // #69: a blocked stop reverses the exit the queue was
                             // closed for, so re-open it for the extra work.
                             self.reopen_for_more_work();
                         }
@@ -16659,6 +16763,16 @@ mod tests {
                 names.contains(&expected),
                 "{expected} is dispatched by the agent loop and cannot be imported by a \
                  script, so Code Execution mode must leave it directly callable: {names:?}"
+            );
+        }
+        // The checklist is the second exemption, and the reason is the model
+        // rather than the plumbing: behind a script wrapper it went unused.
+        // `agent_for_tests` loads Todo, so all five are on this roster.
+        for expected in crate::agents::todo_extension::TODO_TOOL_NAMES {
+            assert!(
+                names.contains(&expected),
+                "{expected} must stay a direct call in Code Execution mode, or the planning \
+                 gate points the model at a tool it can only reach from a script: {names:?}"
             );
         }
     }

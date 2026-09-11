@@ -255,6 +255,16 @@ fn coerce_tool_arguments(
 /// `every_tool_absent_from_the_code_execution_catalogue_stays_directly_callable`
 /// below.
 ///
+/// The five Todo tools are the second superset exemption: in the catalogue AND
+/// kept, for a reason about models rather than plumbing. A planning tool that
+/// is reachable only by writing JavaScript inside `execute_code` is one a model
+/// does not reach for — measured in the 2026-09-10 composer QA run, where the
+/// collapsed roster had 18 tools, no `todo__*`, and the model built a checklist
+/// exactly once, when told to. They are cheap structural calls, the same class
+/// as the platform tools, and the planning gate (`agents::planning_gate`)
+/// points a multi-step turn at `todo__todo_write` by name, which only works if
+/// the model can call it.
+///
 /// Both name forms of the spawn tool are kept — models strip prefixes.
 ///
 /// [`ExtensionManager::get_prefixed_tools_excluding`]: crate::agents::ExtensionManager::get_prefixed_tools_excluding
@@ -297,6 +307,9 @@ pub(crate) fn survives_code_execution_filter(
         // roster" — which is the state that reaches nowhere, and the state this
         // tool shipped in for exactly one live run.
         || crate::security::knowledge_delete::is_knowledge_delete_tool(tool_name)
+        // The checklist: exact names, never a `todo__` prefix — see
+        // `TODO_TOOL_NAMES` for why the prefix is not the builtin's to claim.
+        || crate::agents::todo_extension::is_todo_tool_name(tool_name)
 }
 
 fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
@@ -467,6 +480,26 @@ impl Agent {
             &model_config.model_name,
         );
 
+        let is_subagent = matches!(
+            self.config
+                .session_manager
+                .get_session(session_id, false)
+                .await
+                .ok()
+                .map(|session| session.session_type),
+            Some(SessionType::SubAgent)
+        );
+        // The same predicate, over the same roster, that decides whether the
+        // turn enforces anything (`Agent::begin_planning_turn`) — so the prompt
+        // can never describe a gate this turn does not run. Read before the
+        // toolshim branch below empties `tools`.
+        let checklist_enforcement = crate::agents::planning_gate::enforcement_applies(
+            self.config.biorouter_mode,
+            is_subagent,
+            bridge_replaces_tool_surface,
+            tools.iter().map(|tool| tool.name.as_ref()),
+        );
+
         let prompt_manager = self.prompt_manager.lock().await;
         let enable_subagents = match active_bridge_plan {
             Some(plan) => plan.delegation_available,
@@ -477,20 +510,12 @@ impl Agent {
             .with_extensions(extensions_info.into_iter())
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
             .with_code_execution_mode(code_execution_active)
+            .with_checklist_enforcement(checklist_enforcement)
             .with_hints(working_dir)
             .with_enable_subagents(enable_subagents)
             .with_prompt_variant(prompt_variant)
             .build();
 
-        let is_subagent = matches!(
-            self.config
-                .session_manager
-                .get_session(session_id, false)
-                .await
-                .ok()
-                .map(|session| session.session_type),
-            Some(SessionType::SubAgent)
-        );
         if is_subagent {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(SUBAGENT_STEERING_INSTRUCTIONS);
@@ -1274,6 +1299,29 @@ mod tests {
         ));
         assert!(!survives_code_execution_filter(
             "memory__remember",
+            &prefix,
+            &no_frontend
+        ));
+    }
+
+    /// The checklist stays a direct call in Code Execution mode. Before this,
+    /// `todo__*` collapsed into the JS catalogue with everything else and a
+    /// model reached it only by scripting — which it did once, when told to.
+    #[test]
+    fn the_code_execution_filter_keeps_every_todo_tool_directly_callable() {
+        let prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+        let no_frontend = HashSet::new();
+        for name in crate::agents::todo_extension::TODO_TOOL_NAMES {
+            assert!(
+                survives_code_execution_filter(name, &prefix, &no_frontend),
+                "{name} is a cheap structural call the planning gate points at by name, so \
+                 Code Execution mode must keep it directly callable"
+            );
+        }
+        // Exact names, not a prefix: a third-party server keyed `todo` gets no
+        // exemption from sharing the builtin's key.
+        assert!(!survives_code_execution_filter(
+            "todo__some_other_tool",
             &prefix,
             &no_frontend
         ));

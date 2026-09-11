@@ -77,6 +77,15 @@ The syntax rules are:
 
 > **Warning.** `execute_code` is annotated as destructive and non-idempotent, and it can reach every effective tool exposed by enabled capabilities and loaded extensions — including `developer`'s `shell` and `text_editor`. It inherits the same blast radius as those tools, so the permission controls in the [Developer capability guide](developer.md) and [permission modes](../../security/permission-modes.md) apply to it too.
 
+## Tools that stay directly callable
+
+While Code Mode is on, the model's direct tool list shrinks to this capability's own tools, and everything else is reached by importing it into a script. A few tools stay direct calls anyway:
+
+- **Tools a script cannot reach.** These are the core `platform__*` operations and the workflow's structured-output tool, which the agent loop runs rather than any importable module, plus any tool the interface registered.
+- **Tools a script must not run.** Deleting a knowledge base is shown to you for approval first, and a script call cannot raise that approval.
+- **Delegation and workspace control.** The subagent tool and the `workspace__*` tools stay direct calls, because driving other conversations from inside a script is not what the sandbox is for.
+- **The [Todo](todo.md) checklist tools.** All five stay direct calls, even though scripts can import them too. A checklist the model could only update by writing JavaScript was one it did not keep, and BioRouter's plan-first rule points a multi-step request at `todo_write` by name.
+
 ## Example usage
 
 In this example, BioRouter compiles a report that would otherwise take several separate tool calls.
@@ -110,6 +119,7 @@ The file has been saved to the root directory as `LOG.md`.
 ## Related documentation
 
 - [Developer capability](developer.md) — the `shell` and `text_editor` tools most Code Mode scripts import, and the access controls that constrain them.
+- [Todo capability](todo.md) — the checklist tools that stay directly callable in Code Mode, and the plan-first rules that use them.
 - [Extension Manager capability](extension-manager.md) — the other lever for keeping the active tool count and context usage down.
 - [Context engineering](../../agent-loop/context-engineering.md) — the broader picture of how BioRouter manages its context window.
 - [Permission modes](../../security/permission-modes.md) — how to require approval before a script runs shell commands or edits files.

@@ -59,8 +59,25 @@ fn strip_existing_moim(messages: &mut Vec<Message>) {
     });
 }
 
+/// Put `reminder` at the head of the block, directly after the opening tag.
+///
+/// The head, not the tail, because [`cap_moim_block`] keeps the head: a
+/// reminder appended after a large workspace map would be the first thing the
+/// cap cut.
+fn with_reminder(moim: String, reminder: Option<&str>) -> String {
+    match reminder.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(reminder) => moim.replacen(MOIM_OPEN_TAG, &format!("{MOIM_OPEN_TAG}\n{reminder}"), 1),
+        None => moim,
+    }
+}
+
 /// Inject the MOIM `<info-msg>` block into the conversation handed to the model,
 /// returning the (re-normalized) conversation and whether a block was injected.
+///
+/// `reminder` is a first-party line the agent loop wants in front of the model
+/// for this call only — the planning gate's "write the checklist first". It
+/// rides inside the block, so it is never persisted and disappears the moment
+/// the loop stops passing it.
 ///
 /// BR-56: normalization goes through the agent's [`SharedNormalizer`], which
 /// re-fixes only the messages appended since the last call instead of the whole
@@ -73,6 +90,7 @@ pub async fn inject_moim(
     working_dir: &Path,
     normalizer: &SharedNormalizer,
     cancel: Option<&CancellationToken>,
+    reminder: Option<&str>,
 ) -> (Conversation, bool) {
     if SKIP.with(|f| f.get()) {
         return (conversation, false);
@@ -82,7 +100,7 @@ pub async fn inject_moim(
         .collect_moim(session_id, working_dir, cancel)
         .await
     {
-        let moim = cap_moim_block(moim, max_moim_tokens());
+        let moim = cap_moim_block(with_reminder(moim, reminder), max_moim_tokens());
         let mut messages = conversation.messages().clone();
         // Drop any stale MOIM from a prior loop iteration first, so a long
         // multi-tool turn never accumulates several near-identical (and
@@ -145,6 +163,7 @@ mod tests {
             &working_dir,
             &SharedNormalizer::new(),
             None,
+            None,
         )
         .await;
         let msgs = result.messages();
@@ -183,6 +202,7 @@ mod tests {
             &em,
             &working_dir,
             &SharedNormalizer::new(),
+            None,
             None,
         )
         .await;
@@ -256,6 +276,7 @@ mod tests {
             &em,
             &working_dir,
             &SharedNormalizer::new(),
+            None,
             None,
         )
         .await;
@@ -358,6 +379,52 @@ mod tests {
         assert_eq!(cap_moim_block(moim.clone(), 8_000), moim);
     }
 
+    /// The planning gate's reminder rides inside the one block, at its head, so
+    /// the size cap — which keeps the head — cannot be what removes it.
+    #[tokio::test]
+    async fn a_reminder_rides_at_the_head_of_the_block_and_survives_the_cap() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let conv = Conversation::new_unvalidated(vec![Message::user().with_text("do it")]);
+        let (result, injected) = inject_moim(
+            "test-session-id",
+            conv,
+            &em,
+            &PathBuf::from("/test/dir"),
+            &SharedNormalizer::new(),
+            None,
+            Some("Planning required: write the checklist first."),
+        )
+        .await;
+        assert!(injected);
+        assert_eq!(count_info_msgs(&result), 1, "one block, not two");
+        let block = result.messages()[0]
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .find(|t| t.contains(MOIM_OPEN_TAG))
+            .expect("the block")
+            .to_string();
+        assert!(
+            block.starts_with(&format!(
+                "{MOIM_OPEN_TAG}\nPlanning required: write the checklist first."
+            )),
+            "{block}"
+        );
+
+        let huge = format!(
+            "{MOIM_OPEN_TAG}\nIt is currently now\n{}\n{MOIM_CLOSE_TAG}",
+            "x".repeat(40_000)
+        );
+        let capped = cap_moim_block(with_reminder(huge, Some("KEEP ME")), 100);
+        assert!(capped.contains("KEEP ME"), "{capped}");
+        assert!(is_moim_block(&capped));
+
+        // No reminder, or a blank one, leaves the block exactly as it was.
+        assert_eq!(with_reminder(sample_moim(), None), sample_moim());
+        assert_eq!(with_reminder(sample_moim(), Some("  ")), sample_moim());
+    }
+
     /// BR-2: a cap of 0 disables MOIM truncation.
     #[test]
     fn test_cap_moim_block_disabled_with_zero() {
@@ -384,6 +451,7 @@ mod tests {
             &em,
             &working_dir,
             &SharedNormalizer::new(),
+            None,
             None,
         )
         .await;
