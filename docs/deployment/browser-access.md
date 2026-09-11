@@ -184,7 +184,7 @@ differs:
 
 | Area | In a browser |
 |---|---|
-| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application. |
+| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application, for everything public. **Private** chats and knowledge bases appear in History and the Knowledge view only when the provider you configured is private, and a private chat cannot be opened from the browser at all. See [decision SD-9](serve-decisions.md#sd-9--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else). |
 | Workspace control, several conversations at once, live app agents | Work — these are WebSocket-backed daemon routes, reached on the same origin. |
 | Model and provider selection | **Not available.** See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
 | File and folder pickers | No native dialog. You type a path, and it is a path **on the machine running the daemon**, not on the machine holding the browser. |
@@ -222,6 +222,15 @@ interface is served at the root of the daemon's own origin and nowhere else.
 **A file path the agent uses does not exist.** Paths are resolved on the serving machine. When the
 browser is on a different computer, its local files are not visible to the agent; copy them to the
 serving machine first.
+
+**A private chat or knowledge base you can see in the desktop app is missing from the browser.**
+Private chats and knowledge bases are shown in the browser only when the provider `serve` was
+started with is itself private, meaning institution-hosted or running on this machine, and only
+when `serve` was started with its access token (the default). The desktop app proves a person is at
+the keyboard; a browser cannot, so it is given the reach of the model its daemon runs on and no
+more. On a private provider the chat is listed but still cannot be opened from the browser. Open
+it in the desktop app. The reasoning is
+[decision SD-9](serve-decisions.md#sd-9--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
 
 ### When the interface cannot be found
 

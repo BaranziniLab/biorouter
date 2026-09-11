@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { listHistory, restoreState } from '../../../api';
+import { userActionHeaders } from '../../../utils/userAction';
 import type { HistoryEntry, RestoreResponse } from '../../../api/types.gen';
 
 export interface UseHistoryResult {
@@ -26,6 +27,7 @@ export function useHistory(kbId: string | null): UseHistoryResult {
       const res = await listHistory({
         path: { id: kbId },
         query: { limit: 200 },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       // ListHistoryResponses[200] is typed `unknown` in the generated SDK,
@@ -46,6 +48,7 @@ export function useHistory(kbId: string | null): UseHistoryResult {
       const res = await restoreState({
         path: { id: kbId },
         body: { commit_sha: commitSha },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       const sha = (res.data as RestoreResponse | undefined)?.new_commit_sha ?? '';

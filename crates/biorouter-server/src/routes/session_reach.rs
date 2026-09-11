@@ -24,15 +24,21 @@
 //!   inert there;
 //! * it still reaches every session-addressing route NOT on
 //!   [the gated list](self#the-gated-list). `POST /interrupt` and `POST
-//!   /agent/cancel` now require user-action proof; `GET
+//!   /agent/cancel` now require user-action proof. `GET
 //!   /sessions/{id}/extensions`, `GET /sessions/{id}/usage`, `PUT
 //!   /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_values` and
-//!   `DELETE /sessions/{id}` remain open, as do `GET /active_work` and `POST
-//!   /active_work/{id}/cancel` — which name no session id in their path and so
-//!   enumerate, in the manner of `GET /sessions` below, but carry a `title` and
-//!   `detail` holding the SHELL COMMAND or TASK PROMPT of every running job.
-//!   That is content rather than metadata, and it is the one row here that a
-//!   reader should not file mentally beside "titles and directories".
+//!   `DELETE /sessions/{id}` were open until QA's 2026-09-10 sweep, which
+//!   measured the last one deleting a private chat the read refused (F0), and
+//!   they are on the list now. `GET /active_work` and `POST
+//!   /active_work/{id}/cancel` remain open — they name no session id in their
+//!   path and so enumerate, but carry a `title` and `detail` holding the SHELL
+//!   COMMAND or TASK PROMPT of every running job. That is content rather than
+//!   metadata, and it is the one row here that a reader should not file
+//!   mentally beside "titles and directories". `GET /sessions/running` (ids
+//!   only, and `biorouter session list` needs it whole to report liveness
+//!   truthfully), `GET /sessions/changes` (a watched row's provider, model and
+//!   tier columns), `GET /sessions/insights` and `GET /sessions/activity`
+//!   (aggregates) remain open too.
 //!   ⚠ **This bullet listed `POST /agent/resume` as open until 2026-09-04, and
 //!   it was wrong** — measured against a live private session, `/agent/resume`
 //!   answers 403 without the capability header and 200 with it, because
@@ -55,16 +61,29 @@
 //! * both read and write halves of `/knowledge/active` are gated when they name
 //!   a session. Machine-wide selection requests name no chat and remain outside
 //!   the session boundary;
-//! * **`GET /sessions` and `GET /sessions/sidebar` are still open, and they
-//!   enumerate wholesale.** `SessionSummary` carries `id`, `name`, `working_dir`
-//!   and `privacy_tier`, so one unproven request returns every private chat on
-//!   the machine, titled, with the directory it runs in. This does not weaken the
-//!   gate — none of those rows carries a transcript — but it does undercut the
-//!   *reason* [`SESSION_OUT_OF_REACH`] is worded as one sentence for two
-//!   answers. That wording closes an oracle that enumerates private chats one id
-//!   at a time; the bigger one, which returns them all at once, is still there.
-//!   Closing it is a listing-route decision (what a caller with no proof may be
-//!   shown), not a reach decision, and it is not made here;
+//! * ~~**`GET /sessions` and `GET /sessions/sidebar` are still open, and they
+//!   enumerate wholesale.**~~ **ANSWERED 2026-09-11 (QA M1): they FILTER.** QA
+//!   measured `GET /sessions` returning all 5,543 rows — 792 private, each with
+//!   id, title, working directory and privacy reason — to a caller the singular
+//!   read refuses, which undercut the whole reason [`SESSION_OUT_OF_REACH`] is
+//!   one sentence for two answers. The decision this bullet left open is now
+//!   made: a listing shows a caller exactly the rows this gate would admit it to
+//!   ([`HttpCaller::lists_session`]), so the list is the union of what per-id
+//!   probing could learn and nothing more. **Filter, not refuse**: a refused
+//!   list would break every client on the public chats the gate is deliberately
+//!   inert on. The sidebar pages its filtered view by scanning, so `has_more`
+//!   cannot count the rows it hid. `GET /schedule/{id}/sessions` takes the same
+//!   filter;
+//! * **knowledge bases take the same decision** since the same sweep (QA H2):
+//!   every `/knowledge/bases/{id}…` route sits behind [`gate_knowledge_base`],
+//!   and `GET /knowledge/bases` and `/knowledge/active` omit what the caller
+//!   cannot reach. The target is the base's tier, an absent or malformed id is
+//!   [`TargetTier::Unreadable`], and the words are [`KNOWLEDGE_BASE_OUT_OF_REACH`];
+//! * a `biorouter serve` daemon's own interface — a request carrying the served
+//!   document's cookie — is given its operator's configured tier on those
+//!   listing and knowledge-base surfaces, which were open to it before they
+//!   were gated, and on NOTHING this function decides ([`HttpCaller`],
+//!   `docs/deployment/serve-decisions.md` SD-9);
 //! * **`workspace_read_conversation` was open too, and it is CLOSED — but by a
 //!   different instrument, and a reader must not credit this module for it.**
 //!   That MCP tool (`crates/biorouter/src/agents/workspace_extension.rs`) used
@@ -149,6 +168,18 @@
 //! | `POST /agent/continuation/recover` | Resumes a parked continuation in the named session. Gates directly. |
 //! | `POST /agent/update_from_session` | Adopts another session's provider configuration. Gates directly. |
 //! | `POST /agent/update_provider` · `restart` · `stop` · `remove_extension` | Gate through [`authorize_agent_control`](../agent/fn.authorize_agent_control.html), which calls [`session_reach`] and then reads the row. |
+//! | `DELETE /sessions/{session_id}` | QA 2026-09-10 F0: deleted a private chat the read refused, four of four. Gated before the turn is cancelled or anything parked is released. |
+//! | `PUT /sessions/{session_id}/name` · `user_workflow_values` | Writes into the chat; the second re-applies its workflow to the live agent. |
+//! | `POST /sessions/{session_id}/edit_message`, `editType: edit` | Truncates the chat in place. (`diverge` keeps DR-19's stricter proof gate.) |
+//! | `GET /sessions/{session_id}/extensions` · `usage` | The chat's extensions by name (M2's sibling); its usage, whose 200/404 was an existence oracle. |
+//! | `GET /agent/tools` · `GET /agent/callable_tool_count` | QA M2: a private chat's private-connector tool names. Both mint an agent for the chat, so the gate runs first. The empty `session_id` of the settings page names no chat. |
+//! | `POST /workflows/create` | Loads the chat's whole transcript and returns what a model makes of it. |
+//! | `POST /skills/session` | Writes a skill's instructions into the chat's next turn. |
+//! | `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, checked before any is loaded. |
+//!
+//! Every row since the 2026-09-10 sweep answers with [`SESSION_OUT_OF_REACH`]
+//! as PLAIN TEXT — the bytes `GET /sessions/{session_id}` returns — rather than
+//! through the route's own error envelope, so one boundary has one body.
 //!
 //! ⚠ **Two spellings, one list.** The last row reaches the gate through a helper
 //! rather than by naming it, which is why a scan for the literal `session_reach(`
@@ -3316,6 +3347,47 @@ mod bypass_tests {
                 "{headers:?}: {body}"
             );
         }
+    }
+
+    /// The knowledge-base layer, through the tree the daemon SERVES: nested
+    /// under `/knowledge` by `configure`, beneath `gate_knowledge_active`. Every
+    /// other test of it drives `knowledge::router` bare, and a layer that reads
+    /// its `{id}` from the matched route is exactly the kind of thing `nest` can
+    /// change underneath it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_knowledge_base_gate_fires_under_the_served_router_tree() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let kb = format!("qa-h2-served-{}", std::process::id());
+        let root = state.knowledge_service.root().to_path_buf();
+        state
+            .knowledge_service
+            .create_base(&kb, "QA H2", None)
+            .unwrap();
+        let page = root.join(&kb).join("knowledge").join("x.md");
+        std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+        std::fs::write(&page, "# x\n\nqa-h2-served-marker\n").unwrap();
+        biorouter_mcp::knowledge::tier::raise_unlocked(&root, &kb, true).unwrap();
+
+        let uri = format!("/knowledge/bases/{kb}/page?path=knowledge/x.md");
+        let (status, body) = call(state.clone(), "GET", &uri, None, &[]).await;
+        assert_eq!(
+            (status, body.as_str()),
+            (StatusCode::FORBIDDEN, KNOWLEDGE_BASE_OUT_OF_REACH),
+            "the served tree handed a secret-only caller a private base's page"
+        );
+        let (status, body) = call(state.clone(), "GET", &uri, None, &[PROOF]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("qa-h2-served-marker"));
+        let (status, body) = call(state.clone(), "GET", "/knowledge/bases", None, &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            !body.contains(&kb),
+            "the served list named a private base: {body}"
+        );
+
+        let _ = state.knowledge_service.delete_base_async(&kb, None).await;
     }
 
     /// Every id the sidebar hands this caller, walking `next_offset` to the end.

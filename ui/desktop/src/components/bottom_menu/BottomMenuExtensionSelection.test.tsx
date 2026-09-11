@@ -106,6 +106,13 @@ vi.mock('../../api', () => ({
   getSessionExtensions: mocks.getSessionExtensions,
 }));
 
+// The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) the
+// daemon answers a request without it as a public model — private chats and
+// knowledge bases omitted or refused — so each call here must carry it.
+vi.mock('../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-proof' }),
+}));
+
 vi.mock('../settings/extensions/agent-api', () => ({
   addToAgent: mocks.addToAgent,
   removeFromAgent: mocks.removeFromAgent,
@@ -355,6 +362,7 @@ describe('BottomMenuExtensionSelection', () => {
     );
     expect(mocks.getSessionExtensions).toHaveBeenLastCalledWith({
       path: { session_id: 'session-1' },
+      headers: { 'X-User-Action': 'test-proof' },
     });
     await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'true'));
     expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
@@ -400,6 +408,7 @@ describe('BottomMenuExtensionSelection', () => {
     );
     expect(mocks.getSessionExtensions).toHaveBeenLastCalledWith({
       path: { session_id: 'session-1' },
+      headers: { 'X-User-Action': 'test-proof' },
     });
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()

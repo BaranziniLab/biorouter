@@ -14,6 +14,13 @@ vi.mock('../../api', () => ({
   listSidebarSessions: mocks.listSidebarSessions,
 }));
 
+// The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) the
+// daemon answers a request without it as a public model — private chats and
+// knowledge bases omitted or refused — so each call here must carry it.
+vi.mock('../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-proof' }),
+}));
+
 function makeSummary(index: number): SessionSummary {
   const timestamp = new Date(Date.parse('2026-07-15T12:00:00.000Z') - index * 60_000).toISOString();
   return {
@@ -61,6 +68,7 @@ describe('useSidebarSessions', () => {
     expect(result.current.hasMore).toBe(true);
     expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(1, {
       query: { limit: 10, offset: 0 },
+      headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
 
@@ -70,6 +78,7 @@ describe('useSidebarSessions', () => {
     expect(result.current.hasMore).toBe(false);
     expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(2, {
       query: { limit: 10, offset: 10 },
+      headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
   });
@@ -107,6 +116,7 @@ describe('useSidebarSessions', () => {
     expect(result.current.sessions).toHaveLength(20);
     expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(3, {
       query: { limit: 10, offset: 0 },
+      headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
   });

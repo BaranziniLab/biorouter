@@ -186,6 +186,7 @@ export function KnowledgeProvider({
       try {
         const res = await getActive({
           query: sessionId ? { session_id: sessionId } : undefined,
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
         if (generation !== selectionGenerationRef.current) return;
@@ -323,7 +324,11 @@ export function KnowledgeProvider({
       return;
     }
     try {
-      const res = await getActive({ query: undefined, throwOnError: true });
+      const res = await getActive({
+        query: undefined,
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
       setDefaultPrimaryKbId(readPrimary(res.data));
     } catch (err) {
       // Keep the last known default: a failed read is not evidence that there
@@ -373,7 +378,15 @@ export function KnowledgeProvider({
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await listBases({ throwOnError: true });
+      // ⚠ With the user's proof, and it is load-bearing twice over. Since
+      // issue #56's QA sweep (2026-09-10) the daemon OMITS a private base from
+      // a caller without it — and the two effects below prune the selection
+      // against this list, so a list missing a base reads as "that base was
+      // deleted" and would drop it from the primary and the hidden set. The
+      // daemon also refuses to let such a caller move what it cannot see
+      // (`set_selection_within`), but the list the user is shown must be the
+      // whole one.
+      const res = await listBases({ headers: await userActionHeaders(), throwOnError: true });
       setBases(res.data || []);
       setBasesLoaded(true);
       setBasesError(null);
@@ -455,6 +468,7 @@ export function KnowledgeProvider({
       try {
         const res = await getActive({
           query: sessionId ? { session_id: sessionId } : undefined,
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
         if (cancelled || generation !== selectionGenerationRef.current) return;

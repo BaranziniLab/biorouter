@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listSidebarSessions, type SessionSummary } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { subscribeSessionListChanges } from '../../utils/sessionListCache';
 
@@ -50,8 +51,11 @@ export default function useSidebarSessions(): SidebarSessionsState {
     setIsLoading(true);
 
     try {
+      // With the user's proof: without it the daemon pages a view with every
+      // private chat omitted (issue #56, QA 2026-09-10 M1).
       const response = await listSidebarSessions<true>({
         query: { limit: SIDEBAR_SESSION_PAGE_SIZE, offset },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       const page = response.data;

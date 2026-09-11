@@ -6,6 +6,13 @@ vi.mock('../api', () => ({
   updateSessionName: vi.fn(async () => ({ data: {} })),
 }));
 
+// The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) the
+// daemon answers a request without it as a public model — private chats and
+// knowledge bases omitted or refused — so each call here must carry it.
+vi.mock('./userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-proof' }),
+}));
+
 import { updateSessionName } from '../api';
 import {
   announceSessionName,
@@ -127,6 +134,7 @@ describe('renameSession', () => {
     expect(updateSessionName).toHaveBeenCalledWith({
       path: { session_id: 's1' },
       body: { name: 'Q1 Plans' },
+      headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
   });

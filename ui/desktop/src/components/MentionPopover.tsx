@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom';
 import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
 import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBases } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import type { CatalogView } from '../api';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { IMAGE_EXTENSIONS } from '../utils/imageFormats';
@@ -543,14 +544,20 @@ const MentionPopover = forwardRef<
 
     const loadReferenceItems = useCallback(
       async (includeCommands: boolean) => {
+        // The user's proof on the three reads below that name a chat or its
+        // knowledge bases: since issue #56's QA sweep (2026-09-10) a request
+        // without it is answered as a public model, and would be shown no
+        // private base and no private chat's extensions.
+        const headers = await userActionHeaders();
         const [commandsResponse, basesResponse, activeResponse, skillsResult, sessionExtensions] =
           await Promise.all([
             includeCommands
               ? getSlashCommands({ throwOnError: true })
               : Promise.resolve({ data: { commands: [] } }),
-            listBases({ throwOnError: false }),
+            listBases({ headers, throwOnError: false }),
             getActive({
               query: sessionId ? { session_id: sessionId } : undefined,
+              headers,
               throwOnError: false,
             }),
             // The daemon's catalog, not a renderer scan: a skill bundled inside
@@ -560,7 +567,7 @@ const MentionPopover = forwardRef<
               () => ({ generation: 0, roots: [], skills: [], bundles: [] }) as CatalogView
             ),
             sessionId
-              ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
+              ? getSessionExtensions({ path: { session_id: sessionId }, headers }).catch(() => null)
               : Promise.resolve(null),
           ]);
         const commandItems: DisplayItem[] = (commandsResponse.data?.commands || [])

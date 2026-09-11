@@ -19,6 +19,14 @@ vi.mock('../api', () => ({
   updateSessionName: mocks.updateSessionName,
 }));
 
+// The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) a list
+// request without it is shown no private chat, so every request here must carry
+// it — and it arrives one async hop after the call, which is why the assertions
+// below wait for `listSessions` rather than expecting it synchronously.
+vi.mock('./userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-proof' }),
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
   clearSessionListCache();
@@ -36,7 +44,10 @@ describe('sessionListCache', () => {
     preloadSessionList();
     const viewLoad = refreshSessionList();
 
-    expect(mocks.listSessions).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(1));
+    expect(mocks.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'test-proof' } })
+    );
     finishRequest?.({ data: { sessions: [] } });
     await viewLoad;
     expect(getCachedSessionList()).toEqual([]);
@@ -103,7 +114,13 @@ describe('sessionListCache', () => {
 
     const first = refreshSessionList();
     const second = refreshSessionList(true);
-    expect(mocks.listSessions).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(2));
+    // Each request asks for the list it was issued for, even the orphan whose
+    // flag changed during the proof's async hop.
+    expect(mocks.listSessions.mock.calls.map(([options]) => options.query)).toEqual([
+      { include_subagents: false },
+      { include_subagents: true },
+    ]);
 
     finishSecond?.({ data: { sessions: [{ id: 'with-subagents' }] } });
     await second;
@@ -160,7 +177,7 @@ describe('sessionListCache', () => {
     notifySessionListChanged();
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(mocks.listSessions).toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
     unsub();
   });
 });

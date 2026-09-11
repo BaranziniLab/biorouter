@@ -274,6 +274,22 @@ what did not" section first**; the rest of that document is the design, not the 
 - **Knowledge bases ratchet too.** A base takes the tier of the most sensitive session that wrote to
   it (four write choke points), is refused to a public caller at the read choke points, and a
   refusal names what it refused. `biorouter-mcp/src/knowledge/tier*.rs`.
+- **Holding the daemon secret does not make a caller the user.** That was the premise behind
+  leaving the `/knowledge/*` read routes, `GET /sessions` and `DELETE /sessions/{id}` ungated. A
+  public chat's shell recovers the secret with `ps eww`, and QA used it to read a private base and
+  delete a private chat (H2/M1/M2/F0, 2026-09-10). Every HTTP route that names a chat or a
+  knowledge base now asks `routes::session_reach`'s one decision: a private target needs the
+  user-action proof or a stated private capability. The rules that follow:
+  - A route that names one chat calls `session_reach`, and refuses with its exact plain text.
+  - Listings filter through `HttpCaller::lists_session`.
+  - Every `/knowledge/bases/{id}` route sits in `knowledge::router`'s `base_routes`, behind
+    `gate_knowledge_base`. Put any new `{id}` route there.
+  - ⚠ **The renderer must send `userActionHeaders()` on every such call.** A missing proof is not an
+    error: private rows silently vanish, and the Knowledge view's prune effects then read them as
+    deleted.
+  - A `biorouter serve` browser gets its operator's tier on listings and knowledge bases only
+    (SD-9).
+  - The wiring census (`crates/biorouter/tests/privacy_guard_wiring.rs`) counts every call site.
 - **Affiliation is a third axis** (DR-26, plan Phase 6): tier asks *how sensitive*, affiliation asks
   *whose*. HIPAA compliance does not transfer between institutions, so a UCSF model reaching another
   institution's private connector is warned/refused even though both endpoints are Private.

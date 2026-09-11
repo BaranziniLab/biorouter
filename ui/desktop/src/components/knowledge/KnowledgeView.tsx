@@ -14,6 +14,7 @@ import {
   Trash2,
 } from '../icons/app-icons';
 import { getLocation } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import { Button } from '../ui/button';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { EmptyState } from '../ui/empty-state';
@@ -117,7 +118,11 @@ function KnowledgeViewInner() {
   async function openKbFolder() {
     if (!primaryKbId) return;
     try {
-      const res = await getLocation({ path: { id: primaryKbId }, throwOnError: true });
+      const res = await getLocation({
+        path: { id: primaryKbId },
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
       const path = res.data?.path;
       if (path) await window.electron.openDirectoryInExplorer(path);
     } catch (err) {

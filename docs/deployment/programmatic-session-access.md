@@ -175,6 +175,30 @@ one of them resolves the target's tier **before** it touches the session, so a r
 | `POST /agent/update_working_dir` | Repoints the session at a directory. |
 | `POST /agent/add_extension` · `remove_extension` | Attaches or detaches tools. |
 | `GET`/`POST /knowledge/active` | Reads or repoints the session's knowledge bases. |
+| `DELETE /sessions/{id}` | Deletes the chat. Ungated until 2026-09-10, when QA deleted a private chat the read refused (F0). |
+| `PUT /sessions/{id}/name` · `PUT /sessions/{id}/user_workflow_values` | Renames the chat; rewrites its workflow values and re-applies the workflow. |
+| `POST /sessions/{id}/edit_message` with `editType: edit` | Truncates the chat's history in place. (`diverge` keeps its stricter gate: see below.) |
+| `GET /sessions/{id}/extensions` · `GET /sessions/{id}/usage` | The chat's enabled extensions, and its per-model token counts. |
+| `GET /agent/tools` · `GET /agent/callable_tool_count`, naming a `session_id` | The chat's tool surface. Both build an agent for the chat, so both are gated before that happens. |
+| `POST /workflows/create` | A workflow a model writes from the chat's whole transcript. |
+| `POST /skills/session` | The chat's per-chat skill overrides. |
+| `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, each checked before any transcript is read. |
+
+Each of these refuses a caller exactly as `GET /sessions/{id}` does, with the same status and the
+same words, and answers a chat that does not exist the same way. Deleting, renaming or editing a
+chat is never easier than reading it.
+
+**Listings and knowledge bases apply the same rule.** They do not refuse a list; they leave out what
+the caller could not open:
+
+| Route | What a caller without the header or the proof gets |
+|---|---|
+| `GET /sessions`, `GET /sessions/sidebar`, `GET /schedule/{id}/sessions` | The public chats only. A private chat is omitted, never redacted. It is not shown with its title removed. The sidebar still pages cleanly: follow `next_offset` as returned rather than computing it. |
+| Every `/knowledge/bases/{id}…` route: pages, graph, history, location, export, preview, and the writes | A private base is refused with a knowledge-base twin of the chat refusal. A base that does not exist, and a malformed id, get the same refusal. |
+| `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
+
+A browser pointed at `biorouter serve` is a special case of this, described in
+[decision SD-9](serve-decisions.md#sd-9--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
 
 ## What the header does *not* cover
 
@@ -193,26 +217,25 @@ it would be wrong:
 | `POST /agent/call_tool` | Privacy Gate C at the extension-manager dispatch point, plus the uninspected-boundary refusals. |
 | `POST /agent/read_resource` | Gate C's sibling at the extension-manager resource read. Like `call_tool` it has no caller identity, so it declares `CallCapability::public_enforced()` rather than sampling the named session: naming a private chat buys nothing, and a private extension is refused with `403`. |
 
-**Ungated, and low-yield.** These name a session but return only its tool surface, not its contents:
-`GET /agent/tools`, `GET /agent/callable_tool_count`, `GET /skills/catalog`, `POST /skills/refresh`.
-They are listed as a measurement, not as a ruling — nothing in the source records a decision to
-exempt them, so read this row as "not gated" rather than "deliberately not gated". `POST
-/agent/read_resource` was on this list until 2026-09-09 and is now gated; the row above says how.
+**Ungated, and low-yield.** These name a session but return only skill state, not its contents:
+`GET /skills/catalog`, `POST /skills/refresh`. They are listed as a measurement, not as a ruling:
+nothing in the source records a decision to exempt them, so read this row as "not gated" rather
+than "deliberately not gated". `POST /agent/read_resource` was on this list until 2026-09-09 and is
+now gated, as the row above explains. `GET /agent/tools` and `GET /agent/callable_tool_count` were on
+it until 2026-09-10. QA then measured the first handing a private chat's private-connector tool names
+to a caller holding only the secret (M2), and both are now gated.
 
 **Ungated, and a known residual.** These reach or describe a private session without the gate. None
-returns a transcript, so none is the boundary this feature defends — but none is closed either, and
-a reader should not infer from this page that the surface is complete:
+returns a transcript, so none is the boundary this feature defends. None is closed either, and a
+reader should not infer from this page that the surface is complete:
 
 | Route | What an ungated caller gets |
 |---|---|
-| `GET /sessions`, `GET /sessions/sidebar` | Every session on the machine — id, name, working directory and tier. Enumerates wholesale; recorded as an open residual in `session_reach.rs`. |
-| `GET /sessions/running` | The ids of sessions with a turn in flight. |
-| `GET /active_work` | Every running background job, subagent, detached turn and scheduled run — with `sessionId`, and a `title`/`detail` that carries the **shell command or task prompt**. This is content rather than metadata, and it is not named in `session_reach.rs`'s residual list. |
+| `GET /sessions/running` | The ids of sessions with a turn in flight. Left unfiltered on purpose: `biorouter session list` reads it to report whether a run is still going, and a filtered answer would report a running private chat as finished. |
+| `GET /sessions/changes` | For the ids a caller names, and any other row that changed, the provider, model and tier columns. Metadata, not titles or transcripts. |
+| `GET /sessions/insights`, `GET /sessions/activity` | Machine-wide counts and per-day usage. Aggregates that name no chat. |
+| `GET /active_work` | Every running background job, subagent, detached turn and scheduled run. Each comes with its `sessionId` and a `title`/`detail` that carries the **shell command or task prompt**. This is content rather than metadata, and it is the most significant item on this list. |
 | `POST /active_work/{id}/cancel` | Cancels any of the above by its registry id. The id is not a session id, so the gate cannot be applied without a reverse lookup. |
-| `GET /sessions/{id}/usage` | Per-model token counts for a named session, and a `200`/`404` that tells the caller whether the id exists. |
-| `GET /sessions/{id}/extensions` | The session's enabled extension list. |
-| `PUT /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_values`, `DELETE /sessions/{id}` | Renames, edits workflow values, or deletes the session. |
-| `POST /skills/session` | Rewrites a session's per-chat skill overrides. |
 | `GET /schedule/{id}/inspect`, `POST /schedule/{id}/run_now`, `POST /schedule/create` | Inspects or launches scheduled work that may run in a private session. |
 
 The daemon has no principal, so none of this is a *tier* bypass in the strict sense — a caller

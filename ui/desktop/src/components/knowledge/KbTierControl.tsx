@@ -167,7 +167,11 @@ export function KbTierPanel({ kb }: { kb: { id: string; name: string; tier: KbTi
     setRadius(null);
     void (async () => {
       try {
-        const res = await getKbTier({ path: { id: kb.id }, throwOnError: true });
+        const res = await getKbTier({
+          path: { id: kb.id },
+          headers: await userActionHeaders(),
+          throwOnError: true,
+        });
         if (cancelled) return;
         setRadius({
           pageCount: res.data.page_count,

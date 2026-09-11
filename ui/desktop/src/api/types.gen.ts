@@ -1561,8 +1561,13 @@ export type KbFormat = 'okf' | 'biookf';
  * store already answers — and it would also appear on `kb_list_bases`, a
  * model-facing tool whose payload Task 10D's metadata register governs.
  *
- * This route is user-facing: the renderer is the only caller, and Task 10C
- * already removes private bases from the model's own listing entirely.
+ * ⚠ **"The renderer is the only caller" was this doc's premise, and QA
+ * measured it false on 2026-09-10 (H2):** a public chat's shell recovered the
+ * daemon secret and read this list, private bases included. So the rows are
+ * now the bases the caller could open — the desktop app, which sends the
+ * user's proof, still sees every one, with its tier — and a private base is
+ * OMITTED for anyone else, as Task 10C already omits it from the model's own
+ * listing: a base's id and name are user-authored content.
  */
 export type KbListEntry = Manifest & {
     tier: KbTier;
@@ -4382,6 +4387,10 @@ export type GetCallableToolCountErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -4795,6 +4804,10 @@ export type GetToolsErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
     /**
      * Extension timed out while loading for settings
      */
@@ -5688,7 +5701,7 @@ export type GetActiveErrors = {
 
 export type GetActiveResponses = {
     /**
-     * The session's knowledge bases and its primary
+     * The session's knowledge bases and its primary, showing only the bases this caller may open: a private base is omitted from both lists, and a private primary reads null, for a caller without the user's proof or a private capability
      */
     200: ActiveKbResponse;
 };
@@ -5708,7 +5721,7 @@ export type SetActiveErrors = {
      */
     400: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user; or `primary_kb` names a knowledge base this caller may not reach, answered exactly as a base that does not exist (body = plain text)
      */
     403: unknown;
 };
@@ -5731,7 +5744,7 @@ export type ListBasesData = {
 
 export type ListBasesResponses = {
     /**
-     * List of knowledge bases
+     * The knowledge bases this caller may open: every base for the desktop app (the user-action proof) or a caller stating a private provider, the public ones for anyone else. A private base is omitted, never redacted.
      */
     200: Array<KbListEntry>;
 };
@@ -7118,7 +7131,7 @@ export type SessionsHandlerErrors = {
 
 export type SessionsHandlerResponses = {
     /**
-     * A list of session display info
+     * A list of session display info, holding only the runs this caller could open: a private run is omitted for a caller with neither the user-action proof nor a private capability, as it is from `GET /sessions`
      */
     200: Array<SessionDisplayInfo>;
 };
@@ -7182,7 +7195,7 @@ export type ListSessionsErrors = {
 
 export type ListSessionsResponses = {
     /**
-     * List of available sessions retrieved successfully
+     * The sessions this caller could open. A private session is omitted — never redacted — for a caller that carries neither the user-action proof nor a private capability, exactly as `GET /sessions/{session_id}` would refuse it
      */
     200: SessionListResponse;
 };
@@ -7379,7 +7392,7 @@ export type ListSidebarSessionsErrors = {
 
 export type ListSidebarSessionsResponses = {
     /**
-     * Paginated lightweight session summaries for the sidebar
+     * Paginated lightweight session summaries for the sidebar, holding only the sessions this caller could open (see `GET /sessions`). `next_offset` is where the next page starts; for a caller shown every session it is `offset + limit` as before, and for one shown a filtered view it is a position in the underlying ordering, so pass it back as given rather than computing it
      */
     200: SidebarSessionListResponse;
 };
@@ -7403,6 +7416,10 @@ export type DeleteSessionErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56, QA 2026-09-10 F0): the same refusal, word for word, that `GET /sessions/{session_id}` gives — including for a chat that does not exist (body = plain text)
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -7695,6 +7712,10 @@ export type GetSessionExtensionsErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -7735,6 +7756,10 @@ export type UpdateSessionNameErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -7773,6 +7798,10 @@ export type GetSessionUsageErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -7808,6 +7837,10 @@ export type UpdateSessionUserWorkflowValuesErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -8013,6 +8046,10 @@ export type SetSessionSkillsErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: `sessionId` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * No such conversation
      */
     404: unknown;
@@ -8211,6 +8248,10 @@ export type CreateWorkflowErrors = {
      */
     400: unknown;
     /**
+     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Precondition failed - Agent not available
      */
     412: unknown;
@@ -8222,7 +8263,7 @@ export type CreateWorkflowErrors = {
 
 export type CreateWorkflowResponses = {
     /**
-     * Workflow created successfully
+     * Workflow created successfully. Its `knowledge_bases` names only the bases this caller may open
      */
     200: CreateWorkflowResponse;
 };

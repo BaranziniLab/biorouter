@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { listSessions, type Session } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 
 /**
  * The numbers the day-one notice quotes, over the population **History actually
@@ -187,8 +188,11 @@ export function shouldShowFirstRunNotice(counts: NoticeCounts): boolean {
  * answer, and touches no shared state. It costs one GET, once per install.
  */
 async function fetchVisibleSessions(): Promise<Session[]> {
+  // With the user's proof: without it the daemon omits every private chat —
+  // the chats this notice exists to count (issue #56, QA 2026-09-10 M1).
   const response = await listSessions<true>({
     throwOnError: true,
+    headers: await userActionHeaders(),
     query: { include_subagents: false },
   });
   return response.data.sessions;

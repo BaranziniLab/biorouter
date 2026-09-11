@@ -30,6 +30,13 @@ vi.mock('../../toasts', () => ({
   toastError: mocks.toastError,
 }));
 
+// The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) the
+// daemon answers a request without it as a public model — private chats and
+// knowledge bases omitted or refused — so each call here must carry it.
+vi.mock('../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-proof' }),
+}));
+
 vi.mock('../conversation/SearchView', () => ({
   SearchView: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
@@ -126,7 +133,12 @@ describe('SessionListView loading and cache', () => {
 
     expect(screen.getByText('Cached conversation')).toBeInTheDocument();
     expect(screen.queryByRole('status', { name: 'Loading chat history' })).not.toBeInTheDocument();
-    expect(mocks.listSessions).toHaveBeenCalledTimes(2);
+    // The revalidation leaves one async hop after mount — it waits for the
+    // user's proof, which it must carry — so it is awaited rather than assumed.
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(2));
+    expect(mocks.listSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'test-proof' } })
+    );
 
     await act(async () => {
       finishRefresh?.({ data: { sessions: [session] } });
@@ -284,6 +296,7 @@ describe('SessionListView row actions', () => {
     );
     expect(mocks.deleteSession).toHaveBeenCalledWith({
       path: { session_id: session.id },
+      headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
   });
@@ -511,6 +524,7 @@ describe('SessionListView row actions', () => {
     expect(mocks.updateSessionName).toHaveBeenCalledWith({
       path: { session_id: session.id },
       body: { name: 'Updated session name' },
+      headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
   });

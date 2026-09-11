@@ -130,6 +130,13 @@ API routes: doing so would make every API route reachable by a cookie the browse
 automatically, which is a cross-site request forgery surface that the header scheme does not
 have. Keeping the cookie's job to one request means `check_token` is unchanged.
 
+The cookie has one other reader, and it narrows rather than admits. An API request that has
+already passed `check_token` and also carries the cookie came from the document this daemon
+served, so the listing and knowledge-base gates give it the tier of the provider the operator
+configured. A request holding only the secret is a public caller there. The transcript gate never
+reads the cookie. See
+[decision SD-9](serve-decisions.md#sd-9--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
+
 > **Warning.** `check_token` records a failed attempt for every request without the secret and
 > refuses after twenty inside sixty seconds, keyed on the peer address. The browser-token check
 > must not feed that same counter — a mistyped URL would otherwise lock the user out of their own

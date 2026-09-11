@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
 import { createWorkflow, getActive, getSessionExtensions, listBases } from '../../api/sdk.gen';
+import { userActionHeaders } from '../../utils/userAction';
 import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
@@ -97,37 +98,51 @@ export default function CreateWorkflowFromSessionModal({
         setAnalysisStage(stages[currentStageIndex]);
       }, 800);
 
+      // The user's proof, on every request below that names this chat or its
+      // knowledge bases: since issue #56's QA sweep (2026-09-10) a request
+      // without it is answered as a public model, and a private chat — the
+      // chat this modal is opened from — would refuse all four.
+      const proof = userActionHeaders();
+
       // Pre-select session extensions immediately — independent of workflow analysis
-      getSessionExtensions({ path: { session_id: sessionId }, throwOnError: false }).then((res) => {
-        if (cancelled) return;
-        if (res.data?.extensions) {
-          setWorkflowExtensions(res.data.extensions);
-        }
-      });
+      void proof
+        .then((headers) =>
+          getSessionExtensions({ path: { session_id: sessionId }, headers, throwOnError: false })
+        )
+        .then((res) => {
+          if (cancelled) return;
+          if (res.data?.extensions) {
+            setWorkflowExtensions(res.data.extensions);
+          }
+        });
 
-      Promise.all([
-        listBases({ throwOnError: false }),
-        getActive({ query: { session_id: sessionId }, throwOnError: false }),
-      ]).then(([basesRes, activeRes]) => {
-        if (cancelled) return;
-        const bases: Manifest[] = basesRes.data ?? [];
-        const hidden = new Set(activeRes.data?.hidden_kbs ?? []);
-        const visible = bases.filter((base) => !hidden.has(base.id)).map((base) => base.id);
-        // The captured default is the session's primary; `active_kb` is the
-        // deprecated mirror, read so a fresh renderer survives an older daemon.
-        const primary = activeRes.data?.primary_kb ?? activeRes.data?.active_kb ?? null;
-        const defaultId = primary && visible.includes(primary) ? primary : (visible[0] ?? null);
+      void proof
+        .then((headers) =>
+          Promise.all([
+            listBases({ headers, throwOnError: false }),
+            getActive({ query: { session_id: sessionId }, headers, throwOnError: false }),
+          ])
+        )
+        .then(([basesRes, activeRes]) => {
+          if (cancelled) return;
+          const bases: Manifest[] = basesRes.data ?? [];
+          const hidden = new Set(activeRes.data?.hidden_kbs ?? []);
+          const visible = bases.filter((base) => !hidden.has(base.id)).map((base) => base.id);
+          // The captured default is the session's primary; `active_kb` is the
+          // deprecated mirror, read so a fresh renderer survives an older daemon.
+          const primary = activeRes.data?.primary_kb ?? activeRes.data?.active_kb ?? null;
+          const defaultId = primary && visible.includes(primary) ? primary : (visible[0] ?? null);
 
-        setKnowledgeBaseItems(
-          bases.map((base) => ({
-            id: base.id,
-            label: base.name,
-            description: base.id,
-          }))
-        );
-        setWorkflowKnowledgeBaseIds(visible);
-        setDefaultKnowledgeBaseId(defaultId);
-      });
+          setKnowledgeBaseItems(
+            bases.map((base) => ({
+              id: base.id,
+              label: base.name,
+              description: base.id,
+            }))
+          );
+          setWorkflowKnowledgeBaseIds(visible);
+          setDefaultKnowledgeBaseId(defaultId);
+        });
 
       // The daemon's catalog, so a skill bundled inside an installed extension
       // can be attached to a workflow like any other (#113).
@@ -154,10 +169,14 @@ export default function CreateWorkflowFromSessionModal({
         });
 
       // Analyze the conversation to generate a suggested workflow
-      createWorkflow({
-        body: { session_id: sessionId },
-        throwOnError: true,
-      })
+      proof
+        .then((headers) =>
+          createWorkflow({
+            body: { session_id: sessionId },
+            headers,
+            throwOnError: true,
+          })
+        )
         .then((response) => {
           if (cancelled) return;
           clearInterval(stageInterval);
