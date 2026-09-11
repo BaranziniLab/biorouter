@@ -970,4 +970,90 @@ mod tests {
              render can never appear"
         );
     }
+
+    /// A grant belongs to the chat it was given in, and "the chat" is not "the
+    /// id". `create_session` mints `<day>_<MAX(N)+1>`, so deleting the newest
+    /// chat of the day hands its id to the next one — "delete the chat I just
+    /// made and start again". Before a delete took the chat's grants with it,
+    /// that next chat silently inherited every cross-institutional flow the user
+    /// had accepted in the deleted one: a flow nobody accepted in the new chat,
+    /// which is exactly what [`GRANT_SCOPE_COPY`] promises cannot happen.
+    #[tokio::test]
+    async fn a_deleted_chats_grant_is_not_inherited_by_the_next_chat_to_get_its_id() {
+        let (_dir, sm, id) = session_manager_with_a_chat().await;
+        record_for_test(&sm, &id, "ucsfomopagent", bound_to("stanford"))
+            .await
+            .unwrap();
+        assert!(is_granted(&sm, &id, "ucsfomopagent", bound_to("stanford")).await);
+
+        sm.delete_session(&id).await.unwrap();
+        let next = sm
+            .create_session(PathBuf::from("."), "next".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(
+            next, id,
+            "the fixture must reproduce the id reuse, or this test proves nothing"
+        );
+
+        assert!(
+            !is_granted(&sm, &next, "ucsfomopagent", bound_to("stanford")).await,
+            "a new chat inherited a cross-institutional approval given in a chat the user deleted"
+        );
+    }
+
+    /// ...and a delete is not the only way a grant can outlive its chat. Every
+    /// build before this one left grants behind on delete, a terminal
+    /// `biorouter` that lags the desktop app still does while it shares this
+    /// database, and a restored backup can hold grants for ids that are live
+    /// again. So the reader refuses, on its own, a grant recorded before the chat
+    /// now holding the id existed — it cannot have been given in that chat — and
+    /// it does so at read time, not only when a startup sweep next runs.
+    #[tokio::test]
+    async fn a_grant_recorded_before_its_chat_existed_is_not_read() {
+        let (_dir, sm, id) = session_manager_with_a_chat().await;
+        record_for_test(&sm, &id, "ucsfomopagent", bound_to("stanford"))
+            .await
+            .unwrap();
+
+        // The delete an older build performs: the chat goes, its grants stay.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("DELETE FROM sessions WHERE id = ?1")
+            .bind(&id)
+            .execute(pool)
+            .await
+            .unwrap();
+        // Backdated, because a person takes longer than one clock second to
+        // accept a warning, delete the chat and start another; a fixture that
+        // did all three inside one second would be testing a tie no user makes.
+        sqlx::query("UPDATE cross_affiliation_grants SET granted_at = datetime('now', '-1 hour')")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let next = sm
+            .create_session(PathBuf::from("."), "next".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(
+            next, id,
+            "the fixture must reproduce the id reuse, or this test proves nothing"
+        );
+        assert!(
+            !is_granted(&sm, &next, "ucsfomopagent", bound_to("stanford")).await,
+            "a grant older than the chat holding its id was read as that chat's"
+        );
+
+        // ...and the new chat's own acceptance of the same flow is honoured: the
+        // upsert refreshes `granted_at`, so the row is this chat's again.
+        record_for_test(&sm, &next, "ucsfomopagent", bound_to("stanford"))
+            .await
+            .unwrap();
+        assert!(
+            is_granted(&sm, &next, "ucsfomopagent", bound_to("stanford")).await,
+            "re-accepting the flow in the new chat must work"
+        );
+    }
 }
