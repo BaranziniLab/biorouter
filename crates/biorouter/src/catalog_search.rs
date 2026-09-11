@@ -1,6 +1,8 @@
-//! Free-text search over the trusted marketplace catalog — the matcher behind
-//! both `skills__searchMarketplaceSkills` and
-//! `extensionmanager__search_marketplace_extensions`.
+//! Free-text search over a catalog of named entries — the ONE matcher behind
+//! `skills__searchMarketplaceSkills` and
+//! `extensionmanager__search_marketplace_extensions`. A new catalog search
+//! should call [`rank`] with its own fields rather than grow a matcher of its
+//! own: every copy of this logic so far has drifted into the failure below.
 //!
 //! ⚠ **A query is a set of words, not a substring.** The matcher this replaced
 //! asked whether the WHOLE lowercased query occurred inside a single field, so a
@@ -36,7 +38,7 @@
 
 /// How much a match in one field says about an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Weight {
+pub(crate) enum Weight {
     /// Free prose: a description.
     Prose = 1,
     /// Curated labels: tags, keywords, a category, an organization.
@@ -97,17 +99,17 @@ const FILLER: &[&str] = &[
 ];
 
 /// Filler specific to the skills catalog: every entry in it is a skill.
-pub(super) const SKILL_NOISE: &[&str] = &["skill", "skills"];
+pub(crate) const SKILL_NOISE: &[&str] = &["skill", "skills"];
 
 /// Filler specific to the extensions catalog: every entry in it is an extension.
-pub(super) const EXTENSION_NOISE: &[&str] = &["extension", "extensions"];
+pub(crate) const EXTENSION_NOISE: &[&str] = &["extension", "extensions"];
 
 /// Below this many characters a term matches whole words only.
 const MIN_PARTIAL_CHARS: usize = 3;
 
 /// One entry a search returned, with the query terms it matched.
 #[derive(Debug)]
-pub struct MarketplaceSearchHit<'a, T> {
+pub struct CatalogSearchHit<'a, T> {
     pub entry: &'a T,
     /// The terms this entry matched, in query order. Empty only for an entry
     /// that nothing but the verbatim query found.
@@ -117,14 +119,14 @@ pub struct MarketplaceSearchHit<'a, T> {
 /// A ranked search: the terms the query was split into, and every entry that
 /// matched at least one of them (or the whole query verbatim), best first.
 #[derive(Debug)]
-pub struct MarketplaceSearch<'a, T> {
+pub struct CatalogSearch<'a, T> {
     /// What the query was read as, after filler words were dropped. Reported
     /// to the model so a surprising result can be traced to its input.
     pub terms: Vec<String>,
-    pub hits: Vec<MarketplaceSearchHit<'a, T>>,
+    pub hits: Vec<CatalogSearchHit<'a, T>>,
 }
 
-impl<T> MarketplaceSearch<'_, T> {
+impl<T> CatalogSearch<'_, T> {
     pub fn len(&self) -> usize {
         self.hits.len()
     }
@@ -160,7 +162,7 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// The distinct terms of `query`, in the order written, without filler.
-pub(super) fn terms(query: &str, noise: &[&str]) -> Vec<String> {
+fn terms(query: &str, noise: &[&str]) -> Vec<String> {
     let mut all: Vec<String> = Vec::new();
     for word in words(query) {
         if !all.contains(&word) {
@@ -217,19 +219,19 @@ fn term_strength(term: &str, word: &str) -> u32 {
 ///
 /// An empty (or all-whitespace) query is the browse case: every entry, in
 /// registry order.
-pub(super) fn rank<'a, T>(
+pub(crate) fn rank<'a, T>(
     query: &str,
     noise: &[&str],
     entries: impl IntoIterator<Item = &'a T>,
     fields: impl Fn(&'a T) -> Vec<(&'a str, Weight)>,
-) -> MarketplaceSearch<'a, T> {
+) -> CatalogSearch<'a, T> {
     let phrase = query.trim().to_lowercase();
     if phrase.is_empty() {
-        return MarketplaceSearch {
+        return CatalogSearch {
             terms: Vec::new(),
             hits: entries
                 .into_iter()
-                .map(|entry| MarketplaceSearchHit {
+                .map(|entry| CatalogSearchHit {
                     entry,
                     matched_terms: Vec::new(),
                 })
@@ -265,7 +267,7 @@ pub(super) fn rank<'a, T>(
         if verbatim || !matched_terms.is_empty() {
             ranked.push((
                 (verbatim, matched_terms.len(), score),
-                MarketplaceSearchHit {
+                CatalogSearchHit {
                     entry,
                     matched_terms,
                 },
@@ -274,7 +276,7 @@ pub(super) fn rank<'a, T>(
     }
     // Stable, and descending on the key: equal ranks keep registry order.
     ranked.sort_by(|(left, _), (right, _)| right.cmp(left));
-    MarketplaceSearch {
+    CatalogSearch {
         terms,
         hits: ranked.into_iter().map(|(_, hit)| hit).collect(),
     }
@@ -301,7 +303,7 @@ mod tests {
         fields
     }
 
-    fn ids<'a>(search: &MarketplaceSearch<'a, Entry>) -> Vec<&'a str> {
+    fn ids<'a>(search: &CatalogSearch<'a, Entry>) -> Vec<&'a str> {
         search.hits.iter().map(|hit| hit.entry.id).collect()
     }
 
