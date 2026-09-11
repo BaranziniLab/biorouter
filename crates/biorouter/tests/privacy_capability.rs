@@ -156,23 +156,28 @@ const EXPECTED: &[Site] = &[
                §7's write row (`refuse_unless_writable`), Gate F reach for each \
                ADDED extension, the manageability refusal for each REMOVED one, \
                and `privacy::bind_allowed` for a provider switch — so the answer \
-               is either a Deny carrying the handler's own sentence or the \
-               always-confirm card, and a card for a change this caller's model \
-               may not make asks the user to authorise nothing. It is NOT the \
+               is a Deny carrying the handler's own sentence, the always-confirm \
+               card when the change is one §5 asks about, or silence and on to \
+               dispatch; a card for a change this caller's model may not make \
+               asks the user to authorise nothing. It is NOT the \
                gate: `handle_set_tools` re-runs the same pre-flight against the \
                capability the call is finally admitted on, so a model swapped \
                between inspection and dispatch can only make this sample stale in \
                the fail-safe direction. \
-               ⚠ Both funnel into `inspect_with_pinned_capability`, whose first \
-               act is `let mut sampled = capability` — a pinned pair is used AS \
-               IS and the provider mutex is never read. The only caller that pins \
-               one is the coding-agent bridge, which threads the pair it fixed at \
-               issue time so a bridged child's calls cannot re-read the flag \
-               across the process boundary; the agent loop and the approval relay \
-               pass `None`. (2) additionally samples LAZILY — inside the \
-               `is_set_tools_call` arm only, memoising back into `sampled` — so a \
-               batch carrying no `workspace_set_tools` call samples nothing at \
-               all, and one carrying two still gates on one model",
+               ⚠ Each funnels into its OWN `inspect_with_pinned_capability`, \
+               and in both a pinned pair WINS and the provider mutex is never \
+               read — but by different mechanisms, so grep for the right one: (2) \
+               binds `let mut sampled = capability` up front and memoises into \
+               it, while (1) has no `sampled` binding at all and matches the \
+               `Option` once at its sample point, after the early return above. \
+               The only caller that pins a pair is the coding-agent bridge, which \
+               threads the one it fixed at issue time so a bridged child's calls \
+               cannot re-read the flag across the process boundary; the agent \
+               loop, the approval relay and the non-capability entry point pass \
+               `None`. (2) additionally samples LAZILY — inside the \
+               `is_set_tools_call` arm only — so a batch carrying no \
+               `workspace_set_tools` call samples nothing at all, and one \
+               carrying two still gates on one model",
     },
     Site {
         needle: "CallCapability::sample(",
