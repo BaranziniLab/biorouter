@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import MentionPopover from './MentionPopover';
 import { reachGatedGetActive, USER_ACTION_KEY } from '../test/reachGate';
 
@@ -125,5 +125,62 @@ describe('the / palette in a private chat', () => {
         headers: { 'X-User-Action': USER_ACTION_KEY },
       })
     );
+  });
+
+  /**
+   * With the proof attached, a read that still fails is a genuine error: a
+   * surface that cannot prove the person, a dropped connection, an older
+   * daemon. None of those said "no base is hidden, none is primary", and the
+   * palette used to render exactly that — every base as "Knowledge base in
+   * this chat", Grant drafts included, and no primary.
+   *
+   * It keeps offering every base, because a reference names its base by id and
+   * an explicit id reaches a base whatever the chat's selection
+   * (`kb_id_or_primary` in the knowledge server). What it drops is the claim.
+   */
+  describe('when its selection cannot be read', () => {
+    let warn: MockInstance;
+
+    beforeEach(() => {
+      // The failure is reported, not swallowed; this keeps it out of the run's
+      // output and lets the test say so.
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    it.each<[string, () => void]>([
+      [
+        'the daemon refuses it',
+        // A preload with no bridge: `userActionHeaders()` sends no proof, and
+        // the gate answers the way it answers any caller that has none.
+        () => Object.assign(window, { electron: {} }),
+      ],
+      [
+        'the request fails in transit',
+        () => mocks.getActive.mockResolvedValue({ error: new TypeError('Failed to fetch') }),
+      ],
+      [
+        'the request throws',
+        // Before, this took the whole palette with it: `Promise.all` rejected
+        // and not one row, command or skill, was left to pick.
+        () => mocks.getActive.mockRejectedValue(new SyntaxError('Unexpected end of JSON input')),
+      ],
+    ])('offers every base and claims none of them for the chat when %s', async (_, fail) => {
+      fail();
+      renderPalette();
+
+      expect(await screen.findByText('kb:Grant drafts')).toBeInTheDocument();
+      expect(screen.getByText('kb:Lab notes')).toBeInTheDocument();
+      expect(screen.getByText('kb:Soul')).toBeInTheDocument();
+      for (const id of ['grant-drafts', 'lab-notes', 'soul']) {
+        expect(screen.getByText(`Knowledge base · ${id}`)).toBeInTheDocument();
+      }
+      expect(screen.queryAllByText(/Primary knowledge base/)).toHaveLength(0);
+      expect(screen.queryAllByText(/in this chat/)).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith('Knowledge selection not read:', expect.any(String));
+    });
   });
 });
