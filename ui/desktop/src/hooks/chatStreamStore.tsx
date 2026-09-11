@@ -34,6 +34,8 @@ import {
 } from '../utils/sessionListCache';
 import { subscribeToSessionMeta } from '../utils/sessionMetaSubscription';
 import { raiseTier } from '../components/privacy/sessionTier';
+import { isReadOnlySubagentChat } from '../components/subagent/subagentReadOnly';
+import { isBrowserSurface } from '../utils/surface';
 import {
   createElicitationResponseMessage,
   createUserMessage,
@@ -1792,6 +1794,12 @@ class ChatStreamController {
   private ensureAgentLoaded(): Promise<void> {
     if (!this.sessionId) return Promise.resolve();
     if (this.agentLoadPromise) return this.agentLoadPromise;
+    // A subagent's chat in a browser has no agent this tab may load: the
+    // `/agent/resume` below is refused there for every caller, and would only
+    // paint "could not load model and extensions" over a transcript that loaded
+    // fine. Not memoised, and `agentReady` deliberately left false — see
+    // `loadReadOnlySubagentChat` for why nothing may read agent state here.
+    if (isReadOnlySubagentChat(this.snapshot.session?.session_type)) return Promise.resolve();
 
     this.agentLoadPromise = (async () => {
       let initializing = false;
@@ -2025,6 +2033,8 @@ class ChatStreamController {
                 prev.turnError ?? clientTurnError(error, 'session_load_unreachable', 'transport'),
               chatState: ChatState.Idle,
             }));
+          } else if (await this.loadReadOnlySubagentChat(ownershipGeneration)) {
+            // A subagent's chat in a browser: painted read-only. See the method.
           } else {
             this.updateSnapshot((prev) => ({
               ...prev,
@@ -2040,6 +2050,90 @@ class ChatStreamController {
 
     await this.loadPromise;
     onSessionLoaded?.();
+  }
+
+  /**
+   * A delegated subagent's chat, in a browser: read it, follow it, load nothing.
+   *
+   * `/agent/resume` refuses a subagent's chat to any caller that cannot prove a
+   * person acted (`refuse_subagent_unless_user`, `routes/agent.rs`), and the
+   * daemon behind `biorouter serve` holds no user-action key (SD-7), so there it
+   * refuses every caller. The refusal used to land in `sessionLoadError` above,
+   * and the whole tab became "Could not load this chat" — including the tab the
+   * daemon opens to show a subagent it has just spawned. Measured on 2026-09-11
+   * against a real `biorouter serve`: `POST /agent/resume` answered 403 for the
+   * child while `GET /sessions/{id}` and `GET /sessions/{id}/events` both
+   * answered 200 for the same chat. Reading it was never the problem; this path
+   * was the only one that asked to resume it.
+   *
+   * So, on the browser surface and for a subagent's chat only, the transcript
+   * comes from `GET /sessions/{id}` — the read `useSubagentSession` already
+   * makes — and the observer feed follows it while it runs. What the resume
+   * path does next is left out on purpose, because each piece is refused or
+   * worse here:
+   *
+   * - no `ensureAgentLoaded`: its `/agent/resume` is refused the same way;
+   * - no `noteActiveTurn`: rejoining a turn re-POSTs `/reply`, refused too;
+   * - `agentReady` stays false, and that one is load-bearing. It gates the
+   *   reads of AGENT state, and `/agent/callable_tool_count` answers through
+   *   `get_or_create_agent` — on a miss it would mint a bare placeholder agent
+   *   under the child's session id, on the process default provider.
+   *
+   * The tab's controls follow from the same predicate (`isReadOnlySubagentChat`):
+   * no composer and no Stop, with the reason in their place (SD-8).
+   *
+   * Resolves `false` for everything else — the desktop, a chat that is not a
+   * subagent's, a chat this caller may not read at all — and the caller then
+   * reports the resume's own error exactly as it did before.
+   */
+  private async loadReadOnlySubagentChat(ownershipGeneration: number): Promise<boolean> {
+    if (!isBrowserSurface()) return false;
+    let loaded: Session | undefined;
+    try {
+      const response = await getSession({
+        path: { session_id: this.sessionId },
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
+      loaded = response.data;
+    } catch {
+      return false;
+    }
+    if (!loaded || loaded.id !== this.sessionId || !isReadOnlySubagentChat(loaded.session_type)) {
+      return false;
+    }
+    const session = loaded;
+    this.messagesRef = session.conversation || [];
+    // Unlike `/agent/resume` (`get_session(id, true)`), this read does not
+    // promise to name every stored row — see `viewNamesEveryStoredRow`.
+    this.viewNamesEveryStoredRow = false;
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      session,
+      messages: this.messagesRef,
+      tokenState: {
+        inputTokens: session.input_tokens ?? 0,
+        outputTokens: session.output_tokens ?? 0,
+        totalTokens: session.total_tokens ?? 0,
+        accumulatedInputTokens: session.accumulated_input_tokens ?? 0,
+        accumulatedOutputTokens: session.accumulated_output_tokens ?? 0,
+        accumulatedTotalTokens: session.accumulated_total_tokens ?? 0,
+      },
+      // An observer that already knows a turn is running keeps saying so; with
+      // nothing observed yet this is Idle, and the observer's own connection
+      // snapshot (`TurnState`) moves it the moment it lands.
+      chatState:
+        this.observing && this.activeTurnId && isRunningState(prev.chatState)
+          ? prev.chatState
+          : ChatState.Idle,
+      sessionLoadError: undefined,
+      turnError: undefined,
+    }));
+    // Follow it live, as a daemon-opened tab already does (idempotent there).
+    // Not if the tab closed while this read was in flight: `releaseOwnership`
+    // bumped the generation, and nothing would ever detach this observer.
+    if (this.ownershipGeneration === ownershipGeneration) void this.observeSession();
+    return true;
   }
 
   /**
