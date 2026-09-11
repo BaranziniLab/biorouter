@@ -3188,8 +3188,16 @@ mod new_session_provider_binding_tests {
     #[test]
     fn only_a_daemon_that_can_check_a_proof_asks_a_new_chat_for_one() {
         use UserActionProof::{NoKeyInstalled, Proven, Unproven};
-        assert!(!new_chat_bind_needs_user(true, ProviderTier::Private, Proven));
-        assert!(new_chat_bind_needs_user(true, ProviderTier::Private, Unproven));
+        assert!(!new_chat_bind_needs_user(
+            true,
+            ProviderTier::Private,
+            Proven
+        ));
+        assert!(new_chat_bind_needs_user(
+            true,
+            ProviderTier::Private,
+            Unproven
+        ));
         assert!(
             !new_chat_bind_needs_user(true, ProviderTier::Private, NoKeyInstalled),
             "a keyless daemon refusing its own configured default refuses every person, always"
@@ -3198,7 +3206,11 @@ mod new_session_provider_binding_tests {
             // A public default raises nothing, for anyone.
             assert!(!new_chat_bind_needs_user(true, ProviderTier::Public, proof));
             // DR-15's master opt-out turns the gate off, not the question.
-            assert!(!new_chat_bind_needs_user(false, ProviderTier::Private, proof));
+            assert!(!new_chat_bind_needs_user(
+                false,
+                ProviderTier::Private,
+                proof
+            ));
         }
     }
 
@@ -3209,7 +3221,10 @@ mod new_session_provider_binding_tests {
     fn a_keyless_daemon_has_no_private_floor_for_a_switch_to_build_on() {
         use UserActionProof::{NoKeyInstalled, Proven, Unproven};
         for current in [ProviderTier::Private, ProviderTier::Public] {
-            assert_eq!(raise_baseline(current, NoKeyInstalled), ProviderTier::Public);
+            assert_eq!(
+                raise_baseline(current, NoKeyInstalled),
+                ProviderTier::Public
+            );
             // A daemon that can check a proof keeps measuring from the live binding.
             assert_eq!(raise_baseline(current, Proven), current);
             assert_eq!(raise_baseline(current, Unproven), current);

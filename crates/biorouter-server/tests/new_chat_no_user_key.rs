@@ -135,7 +135,11 @@ async fn a_keyless_daemon_starts_a_new_chat_on_its_configured_private_model() {
         .expect("the started session carries an id")
         .to_string();
 
-    let row = state.session_manager().get_session(&id, false).await.unwrap();
+    let row = state
+        .session_manager()
+        .get_session(&id, false)
+        .await
+        .unwrap();
     assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
     assert_eq!(
         row.model_config.map(|config| config.model_name).as_deref(),
@@ -188,10 +192,7 @@ async fn a_keyless_daemon_will_not_move_a_new_chat_to_a_private_model_nobody_con
     // A loopback Ollama is Private (`self_hosted_tier`), and constructing one
     // opens no connection, so port 1 is never dialled.
     let (status, body) = with_config_overrides(
-        HashMap::from([(
-            "OLLAMA_HOST".to_string(),
-            "http://127.0.0.1:1".to_string(),
-        )]),
+        HashMap::from([("OLLAMA_HOST".to_string(), "http://127.0.0.1:1".to_string())]),
         post_json(
             biorouter_server::routes::agent::routes(Arc::clone(&state)),
             "/agent/update_provider",
@@ -210,7 +211,11 @@ async fn a_keyless_daemon_will_not_move_a_new_chat_to_a_private_model_nobody_con
         "refused, but not by the tier gate: {body}"
     );
 
-    let row = state.session_manager().get_session(&id, false).await.unwrap();
+    let row = state
+        .session_manager()
+        .get_session(&id, false)
+        .await
+        .unwrap();
     assert_eq!(
         row.provider_name.as_deref(),
         Some("versa_azure"),
@@ -260,7 +265,10 @@ async fn the_first_turn_on_a_keyless_default_chat_ratchets_it_as_usual() {
     };
     let sse = format!(
         "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-        chunk(json!({ "role": "assistant", "content": "ready" }), Value::Null),
+        chunk(
+            json!({ "role": "assistant", "content": "ready" }),
+            Value::Null
+        ),
         chunk(json!({ "content": "" }), json!("stop")),
     );
     Mock::given(method("POST"))
@@ -308,7 +316,11 @@ async fn the_first_turn_on_a_keyless_default_chat_ratchets_it_as_usual() {
         .as_str()
         .unwrap()
         .to_string();
-    let before = state.session_manager().get_session(&id, false).await.unwrap();
+    let before = state
+        .session_manager()
+        .get_session(&id, false)
+        .await
+        .unwrap();
     assert_eq!(before.provider_name.as_deref(), Some("ollama"));
     assert_eq!(before.privacy_tier, SessionClassification::Public);
 
@@ -329,7 +341,11 @@ async fn the_first_turn_on_a_keyless_default_chat_ratchets_it_as_usual() {
         "the turn did not run on the stub: {stream}"
     );
 
-    let after = state.session_manager().get_session(&id, false).await.unwrap();
+    let after = state
+        .session_manager()
+        .get_session(&id, false)
+        .await
+        .unwrap();
     assert_eq!(
         after.privacy_tier,
         SessionClassification::Private,
