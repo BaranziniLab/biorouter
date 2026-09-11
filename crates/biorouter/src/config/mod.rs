@@ -11,7 +11,7 @@ pub mod signup_tetrate;
 pub mod usage;
 
 pub use crate::agents::ExtensionConfig;
-pub use base::{with_config_overrides, Config, ConfigError};
+pub use base::{with_config_overrides, Config, ConfigError, ConfigWriteFailure};
 pub use biorouter_mode::BioRouterMode;
 pub use declarative_providers::DeclarativeProviderConfig;
 pub use experiments::ExperimentManager;

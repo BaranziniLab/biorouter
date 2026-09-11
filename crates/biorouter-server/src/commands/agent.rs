@@ -4,13 +4,30 @@ use anyhow::Result;
 use axum::middleware;
 use biorouter_server::auth::check_token;
 use http::HeaderValue;
+use tokio_util::sync::CancellationToken;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::info;
 
+/// How often a daemon started with `--exit-with-parent` checks that the process
+/// that launched it is still there.
+#[cfg(unix)]
+const PARENT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long an orphaned daemon gives its own graceful shutdown before it exits
+/// regardless.
+///
+/// Only the orphan has a deadline. Everywhere else, whoever sent the signal is
+/// still there to escalate if the daemon does not finish — `biorouter serve`
+/// does, after a grace of the same length. An orphan has nobody left to, and
+/// a graceful shutdown waits for open connections to finish: a browser tab that
+/// outlived `serve` holds some that never do.
+#[cfg(unix)]
+const ORPHAN_EXIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 // Graceful shutdown signal
 #[cfg(unix)]
-async fn shutdown_signal() {
+async fn shutdown_signal(orphaned: CancellationToken) {
     use tokio::signal::unix::{signal, SignalKind};
 
     let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
@@ -19,12 +36,77 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = sigint.recv() => {},
         _ = sigterm.recv() => {},
+        _ = orphaned.cancelled() => {},
     }
 }
 
 #[cfg(not(unix))]
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+async fn shutdown_signal(orphaned: CancellationToken) {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = orphaned.cancelled() => {},
+    }
+}
+
+/// Resolve once process `expected` is no longer this process's parent.
+///
+/// Compared with the pid the launcher named, not with 1. An orphan is
+/// re-parented to the nearest *subreaper*, and that is init only when there is
+/// no other: under `systemd --user`, beneath a container's init shim, or below
+/// anything that set `PR_SET_CHILD_SUBREAPER`, `getppid() == 1` is never true
+/// and the daemon would outlive its launcher indefinitely. Nor can the daemon
+/// read its parent's pid for itself at startup, because a launcher that died
+/// before that read would be recorded as the subreaper that inherited it.
+#[cfg(unix)]
+async fn until_orphaned(expected: u32) {
+    let mut tick = tokio::time::interval(PARENT_POLL);
+    loop {
+        tick.tick().await;
+        if std::os::unix::process::parent_id() != expected {
+            return;
+        }
+    }
+}
+
+/// Cancel the returned token once the launcher named by `--exit-with-parent`
+/// has gone, and make sure this process follows it.
+///
+/// This is the second layer of `biorouter serve`'s supervision. The first is
+/// `serve` itself stopping its daemon on every way it can exit; this covers
+/// the ways it cannot run any code at all — SIGKILL, a crash. Started before
+/// anything slow, so a daemon whose launcher is already gone does not finish
+/// a startup nobody will use.
+#[cfg(unix)]
+fn watch_parent(expected: u32) -> CancellationToken {
+    let orphaned = CancellationToken::new();
+    let token = orphaned.clone();
+    tokio::spawn(async move {
+        until_orphaned(expected).await;
+        // Armed before the graceful shutdown begins, and on a plain OS thread
+        // rather than a task: what it guards against includes the runtime
+        // itself never finishing — a drain parked on a connection that will not
+        // close, or a runtime drop waiting on a blocking task.
+        std::thread::spawn(|| {
+            std::thread::sleep(ORPHAN_EXIT_DEADLINE);
+            std::process::exit(1);
+        });
+        token.cancel();
+        tracing::warn!(
+            "the process that started this daemon (pid {expected}) is gone; shutting down, \
+             and exiting regardless in {}s",
+            ORPHAN_EXIT_DEADLINE.as_secs()
+        );
+    });
+    orphaned
+}
+
+#[cfg(not(unix))]
+fn watch_parent(expected: u32) -> CancellationToken {
+    tracing::warn!(
+        "--exit-with-parent {expected} is not supported on this platform; this daemon will \
+         not watch its parent"
+    );
+    CancellationToken::new()
 }
 
 /// Read the launcher's SHA-256 user-action digest off stdin, as one hex line
@@ -98,8 +180,14 @@ async fn served_operator_capability() -> biorouter::privacy::ProviderTier {
     capability
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
+
+    // Opt-in: only `biorouter serve` passes the flag. See `watch_parent`.
+    let orphaned = match exit_with_parent {
+        Some(pid) => watch_parent(pid),
+        None => CancellationToken::new(),
+    };
 
     let settings = configuration::Settings::new()?;
 
@@ -260,6 +348,14 @@ pub async fn run() -> Result<()> {
     // and without it a running app needs a restart to notice them.
     biorouter::catalog::spawn_config_watcher();
 
+    // QA 2026-09-10, F2 — the same problem for `schedule.json`. A schedule
+    // another process writes (`biorouter schedule add` when it cannot reach this
+    // daemon, which from an agent's shell it never can; a terminal session's
+    // `/loop`) used to stay invisible here until a restart: absent from the
+    // Scheduler page and `manage_schedule list`, undeletable through either, and
+    // never fired — after the CLI had printed "Scheduled job added".
+    app_state.agent_manager.watch_schedule_file();
+
     // `into_make_service_with_connect_info` is what puts the real peer address
     // in request extensions, so the auth throttle can key on it instead of the
     // client-supplied `x-forwarded-for` header.
@@ -267,7 +363,7 @@ pub async fn run() -> Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(shutdown_signal(orphaned))
     .await?;
 
     // Take the llama-server sidecar down with us.
@@ -289,4 +385,35 @@ pub async fn run() -> Result<()> {
 
     info!("server shutdown complete");
     Ok(())
+}
+
+/// Only [`until_orphaned`], never [`watch_parent`]: the latter arms a
+/// `process::exit`, which would take the test binary down with it.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_daemon_notices_that_its_named_parent_is_not_its_parent() {
+        // No process has this pid, so it cannot be the parent: this is exactly
+        // what a daemon sees once `serve` has been killed and it was re-parented.
+        tokio::time::timeout(Duration::from_secs(5), until_orphaned(u32::MAX))
+            .await
+            .expect("an orphan must notice within a few polls");
+    }
+
+    /// Paired with the test above, so a watch that fired unconditionally —
+    /// which would stop every `serve` daemon half a second after it started —
+    /// fails here rather than passing both.
+    #[tokio::test]
+    async fn a_daemon_whose_parent_is_still_there_keeps_running() {
+        let parent = std::os::unix::process::parent_id();
+        assert!(
+            tokio::time::timeout(PARENT_POLL * 4, until_orphaned(parent))
+                .await
+                .is_err(),
+            "a daemon whose launcher is alive must not shut itself down"
+        );
+    }
 }

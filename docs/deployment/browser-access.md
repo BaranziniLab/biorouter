@@ -43,7 +43,8 @@ biorouter serve --open
 ```
 
 `--open` launches your browser at that address. Without it, copy the URL — including the `?t=`
-part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port.
+part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port; so does
+stopping `serve` any other way (see [Stopping it](#stopping-it)).
 
 `biorouter headless` is an accepted alias for `biorouter serve` and behaves identically. It is the
 name the retired standalone binary was known by, kept so older instructions still land in the right
@@ -61,7 +62,7 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-d
 | `-p, --port <n>` | Port to listen on. | `8765` |
 | `--token <t>` | Use this access token instead of generating a fresh one. | A new random token each launch |
 | `--no-token` | Serve with no access token. Refused for a non-loopback bind, and cannot be combined with `--token`. | Off |
-| `--web-dir <dir>` | Directory holding the built interface. The directory must contain an `index.html`. | Found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
+| `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
 | `--open` | Open a browser once the server is ready. | Off |
 
 The default port is `8765` rather than `3000` deliberately: `3000` is `biorouterd`'s own default, so
@@ -72,21 +73,51 @@ a `serve` default of `3000` would collide with the daemon the command starts.
 > visible from both, but a turn running in one is not visible to the other. Having the desktop
 > application open does not mean `serve` is talking to it.
 
+## Stopping it
+
+Stop `serve` with `Ctrl-C` in its terminal, or by sending it `SIGTERM` — `kill <pid>`, which is
+also what `systemctl stop` and most process managers send. Either way `serve` stops the daemon it
+started and frees the port: it asks the daemon to shut down, gives it ten seconds to finish, then
+kills it. A second `Ctrl-C` skips the wait.
+
+With no browser tab open the daemon is gone in a fraction of a second. With one open, expect the
+full ten seconds and the line `biorouterd did not finish within 10s … killing it.` — the interface
+always keeps a request waiting on the daemon, and a graceful shutdown waits for it. That is
+expected, not a fault. The one thing a daemon stopped that way skips is shutting down a
+llama-server it started for a local model; the next Biorouter launch cleans that up.
+
+This is more than tidiness. The daemon honours the access token for as long as it runs, so
+stopping `serve` is how you revoke the address it printed.
+
+If `serve` itself is killed outright (`kill -9`) it cannot stop anything, so on macOS and Linux the
+daemon watches for that: it notices within a second that its parent has gone and shuts itself
+down, taking at most ten seconds more. On Windows there is no such watch — `Ctrl-C` reaches both
+processes, but if `biorouter.exe` is ended some other way, from Task Manager for example, end
+`biorouterd.exe` as well.
+
 ## The access token
 
 A browser cannot send an authentication header on its first request, so the address `serve` prints
-carries a one-off credential instead.
+carries a credential instead.
 
 - **It is minted per launch** — 32 random bytes, printed as 64 hexadecimal characters in the URL's
   `?t=` parameter, and different every time. It is shown once, in the terminal; there is nowhere
   else to read it back from.
-- **It is spent on the first request.** Opening the URL validates the token, sets an `HttpOnly`,
-  `SameSite=Strict` session cookie named `biorouter_session`, and redirects to `/`. The token then
-  disappears from the address bar, so it is not left in browser history or in the `Referer` of
-  anything the page later loads.
-- **The cookie gates the document and nothing else.** It is not accepted as authentication on any
-  API route. From the moment the page loads, the interface presents the daemon's secret key as a
-  header, exactly as the desktop application does.
+- **Opening the address exchanges it for a cookie.** The daemon validates the token, sets an
+  `HttpOnly`, `SameSite=Strict` session cookie named `biorouter_session`, and redirects to `/`. The
+  token then disappears from the address bar, so it is not left in browser history or in the
+  `Referer` of anything the page later loads.
+- **It is not used up.** The exchange works every time the token is presented, from any browser,
+  until the daemon stops — so a second browser, a colleague, or the same browser after it has
+  discarded the cookie can all open the same address. Anyone holding the address can do the same,
+  and stopping `serve` is how you revoke it ([decision SD-9](serve-decisions.md#sd-9--the-launch-token-works-until-the-daemon-stops-it-is-not-single-use)
+  records why it is not single-use).
+- **The cookie gates the document, and authenticates nothing else.** It is not accepted as
+  authentication on any API route. From the moment the page loads, the interface presents the
+  daemon's secret key as a header, exactly as the desktop application does. Its one other effect
+  narrows rather than admits: it tells the daemon a request came from the page it served, which
+  decides whether private chats and knowledge bases are listed there
+  ([decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else)).
 - **Opening the address without the token** returns a short page saying the link needs its access
   token. Open the full address the command printed, `?t=` included.
 
@@ -196,8 +227,11 @@ differs:
 
 ## Troubleshooting
 
-**`port 8765 on 127.0.0.1 is already in use.`** Something else holds the port — often an earlier
-`serve` that did not exit. Choose another with `--port <n>`, or stop the other process.
+**`port 8765 on 127.0.0.1 is already in use.`** Something else holds the port. Choose another with
+`--port <n>`, or stop the other process — on macOS and Linux, `lsof -nP -iTCP:8765 -sTCP:LISTEN`
+names it. A `biorouterd agent` holding it is usually left over from a `serve` of version 1.90.3 or
+earlier, which left its daemon running when it was stopped by anything other than `Ctrl-C` in its
+own terminal.
 
 **`biorouterd exited during startup`, or it never starts listening.** The daemon is started as a
 child process and watched while it comes up; if it dies, `serve` reports that rather than pretending
@@ -234,24 +268,36 @@ browser open, rename or delete it; when it cannot, open the chat in the desktop 
 
 ### When the interface cannot be found
 
-`serve` looks for the built interface in a fixed order, and names every location it tried when it
+A directory you name is used as named, or not at all. `--web-dir <dir>` wins when it is given;
+otherwise `BIOROUTER_SERVE_UI` does, if it is set to anything but blank. Whichever it is must
+contain an `index.html`. If it does not, `serve` stops with the same error for both, naming where
+the path came from:
+
+```text
+no web interface at /srv/biorouter/wbe (expected an index.html there; the path came from BIOROUTER_SERVE_UI)
+```
+
+It does not move on to a bundle it found somewhere else. Through version 1.90.3 a
+`BIOROUTER_SERVE_UI` with no `index.html` was skipped without a word, and `serve` served whichever
+bundle the search below turned up next — one you had not chosen.
+
+With neither set, `serve` searches in a fixed order, and names every location it tried when it
 finds none:
 
-1. `BIOROUTER_SERVE_UI`, or `--web-dir`, if either is set.
-2. `web/` beside the installed binaries (a packaged application).
-3. `ui/desktop/src/web/` in a development tree.
-4. `web/` beside the application a Windows install was made from.
-5. `/usr/share/biorouter/web` (where the Linux packages put it).
+1. `web/` beside the installed binaries (a packaged application).
+2. `ui/desktop/src/web/` in a development tree.
+3. `web/` beside the application a Windows install was made from.
+4. `/usr/share/biorouter/web` (where the Linux packages put it).
 
 "Beside" means beside the **real** binary. On macOS and Linux the CLI is installed on `PATH` as a
-symlink (`~/.local/bin/biorouter` → the application bundle), and steps 2 and 3 follow that link
+symlink (`~/.local/bin/biorouter` → the application bundle), and steps 1 and 2 follow that link
 before deriving anything from it — otherwise they would name directories in your home folder, which
 is what they did in v1.89.5 through v1.90.2.
 
 Windows has no symlink to follow. `biorouter setup-path` — and the in-app "Biorouter CLI Update"
 card, which runs it — *copies* `biorouter.exe` into `%LOCALAPPDATA%\Biorouter\bin`, leaving
 `biorouterd.exe` and the interface behind inside the application. So the copy also records the
-folder it came from, in a small file named `.biorouter-origin` beside itself, and step 4 reads that
+folder it came from, in a small file named `.biorouter-origin` beside itself, and step 3 reads that
 back. The same record is how `serve` and `biorouter apps` find `biorouterd.exe`. It is rewritten
 every time you install, so updating the application and running `biorouter setup-path` again is what
 points the CLI at the new one.

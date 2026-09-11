@@ -26,7 +26,7 @@ any deployment live in [configuration](../configuration/environment-variables.md
 | [Headless Linux deployment](headless-linux.md) | Running `biorouter serve` as a long-lived service on a Linux host with no graphical desktop: the CLI-only packages, the systemd unit, migrating secrets onto the host, and network exposure. |
 | [Reaching a private chat from a script](programmatic-session-access.md) | The `X-Caller-Provider` header: how a monitoring dashboard, a CI job or a shell script reads and follows a **private** conversation over the HTTP API, what the header is not (it is not authentication), and which routes honour it. |
 | [How browser-served Biorouter is built](serve-architecture.md) | Developer-facing architecture: what the daemon does with a web directory, how a browser is authenticated, and what the retired front door was replaced by. |
-| [Decisions behind `biorouter serve`](serve-decisions.md) | The seven decision records governing the serving path — why a browser session cannot change its model, why the bind defaults to loopback, and why the standalone binary was retired. |
+| [Decisions behind `biorouter serve`](serve-decisions.md) | The nine decision records governing the serving path — why a browser session cannot change its model, why the bind defaults to loopback, why the standalone binary was retired, and why the launch token is reusable until the daemon stops. |
 
 ## Related documentation
 

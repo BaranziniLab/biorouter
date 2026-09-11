@@ -112,6 +112,79 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     expect(row).toHaveTextContent(/private chat/i);
   });
 
+  /**
+   * F3 (QA of 7c96d796, 2026-09-10). A disabled ROW is not a disabled SELECTION.
+   * The auto-select fills the field with the provider's first model without
+   * asking `isOptionDisabled`, so opening this on a public provider in a private
+   * chat put a barred model in the field — and "Select model" stayed live,
+   * because validity started `true` and was first computed inside the click.
+   * The click was refused, so the gate held; the pre-flight did not.
+   *
+   * ⚠ Fails against the code before the fix: the confirm is enabled and the
+   * reason is nowhere on screen until something is clicked.
+   */
+  it('disables the confirm, with the reason beside it, before any click on a barred selection', async () => {
+    render(
+      <SwitchModelModal sessionId="s1" privacyTier="private" onClose={vi.fn()} setView={vi.fn()} />
+    );
+
+    // The auto-selected model: every row of this provider is barred here.
+    await screen.findByText('Claude Opus 4.8');
+
+    const confirm = screen.getByRole('button', { name: 'Select model' });
+    expect(confirm).toBeDisabled();
+    // The reason is on screen with the menu closed, and it is the confirm's
+    // own description rather than a sentence that merely happens to be nearby.
+    const reason = screen.getByText(/private chat, so only private models/i);
+    expect(reason.id).not.toBe('');
+    expect(confirm).toHaveAttribute('aria-describedby', reason.id);
+
+    fireEvent.click(confirm);
+    expect(mocks.changeModel).not.toHaveBeenCalled();
+  });
+
+  // "Every selection change", not "whatever was there at mount": moving the
+  // same dialog onto a private provider has to bring the confirm back.
+  it('re-validates when the selection moves off the barred provider', async () => {
+    render(
+      <SwitchModelModal sessionId="s1" privacyTier="private" onClose={vi.fn()} setView={vi.fn()} />
+    );
+
+    await screen.findByText('Claude Opus 4.8');
+    const confirm = screen.getByRole('button', { name: 'Select model' });
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'Versa' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Versa' }));
+
+    await waitFor(() => expect(confirm).toBeEnabled());
+    expect(confirm).not.toHaveAttribute('aria-describedby');
+    expect(screen.queryByText(/private chat/i)).toBeNull();
+  });
+
+  // The control for the two above: a private model in the same private chat
+  // leaves the confirm live and says nothing, so the fix cannot have been
+  // "disable the confirm in every private chat".
+  it('leaves the confirm live for a private model in a private chat', async () => {
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="private"
+        initialProvider="versa_azure"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Claude Opus 4.8');
+    const confirm = screen.getByRole('button', { name: 'Select model' });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    expect(screen.queryByText(/private chat/i)).toBeNull();
+
+    fireEvent.click(confirm);
+    await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
+  });
+
   // Without this the assertion above passes for a modal that disables EVERY
   // row, which would be a worse bug than the one it is meant to catch.
   it('leaves the same row selectable in a public chat', async () => {

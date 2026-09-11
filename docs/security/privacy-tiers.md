@@ -123,7 +123,10 @@ this section is the ledger.
   `docs/releases/v1.89.0-verification-log.md` § F-13.
 - **The master switch** (R7 / DR-15 / DR-22) in Settings → Privacy: one control that disables every
   gate and the ratchet, behind a typed confirmation, stored in its own record beside `config.yaml`
-  rather than in it — because a switch an agent can edit with `text_editor` is not a switch.
+  rather than in it — because a switch an agent can edit with `text_editor` is not a switch. The
+  record itself stays agent-writable (DR-17), so an OFF answer is **announced** rather than merely
+  obeyed: one `WARN` at load, a standing note above every composer, and *turned off outside the app*
+  when no door the app records wrote it — a signal, not a barrier (§10.6).
 - **The badges** (§14) on every session, model and extension surface, and the **registry and
   marketplace tiers** (§13).
 - **The migration and the day-one notice** (§15) — see
@@ -1626,7 +1629,7 @@ working on Windows.
 | `<config>/knowledge` | `knowledge::paths::knowledge_root()` | the tree the KB barrier gates |
 | `<config>/memory` | `memory::global_memory_dir()` | the global store §9.3 B3 is about |
 | `<config>/agent_drafter` | `agent_drafter::default_root()` | app source, `.vault/`, **and app ids** |
-| `<config>/privacy-tiers.json` | `privacy::master_switch::path_for` | **the master switch itself.** §10.6's toggle is loaded from this record at startup, and it is an ordinary non-`SecretGuard` file: a public model can edit it and the next restart has privacy tiers off |
+| `<config>/privacy-tiers.json` | `privacy::master_switch::path_for` | **the master switch itself.** §10.6's toggle is loaded from this record at startup, and it is an ordinary non-`SecretGuard` file: a public model can edit it and the next restart has privacy tiers off — *announced* since H3 (a load `WARN` and a standing note in the app, §10.6), never prevented |
 | `<config>/config.yaml` | `Paths::config_dir()` + `CONFIG_YAML_NAME` | **hooks.** A planted `PermissionRequest` hook loads from here (§17 Q2) and is the one control that can bypass the spawn-downgrade approval. Five tools can write it — `text_editor`, `shell`, `cache` **delete**, `kb_export`'s `dest_path` and `export_app`'s `target_dir` — so protecting one of them protects nothing, and the same five reach every other entry in this table |
 
 ⚠ **The switch's row moved, and an implementer working from this table must not harden the wrong
@@ -2024,6 +2027,47 @@ leaves it writable by an agent holding `developer__shell` exactly as it leaves t
 acknowledgement writable. What the move buys is that the documented key is inert and that the value
 has one writer; closing the file channel outright needs the barrier DR-17 deferred or an
 OS-authenticated store, and neither is in v1.
+
+**What it does instead: an OFF answer is never silent** (H3 of the 2026-09-10 security test drive).
+The drive overwrote the record with `{"enabled":false}` from a chat's `developer__shell`; at the
+next launch every gate and the ratchet were off and nothing said so — no log line, no banner, only
+a badge suffix and the strip inside Settings → Privacy. The file channel is still the accepted
+risk above; the silence is what changed.
+
+- **The load announces it.** `master_switch::load` logs one `WARN` per process whenever the record
+  resolves to OFF, naming the file and the fact. ON is the default and is not announced.
+- **Each door stamps what it writes.** The record carries `changed_by: {via, set_to,
+  system_authenticated, user_action}` — `via` is `settings` (the typed-confirmation arm of
+  `/config/upsert`) or `migration` (DR-22's one-time carry). A record whose `enabled` no stamp
+  vouches for — no stamp at all, or one whose `set_to` disagrees — is **unrecorded**, and the WARN
+  and the app both say *turned off outside the app*. The stamp names its value and not only its door
+  because the edit an agent is likeliest to make is a one-field flip (`jq '.enabled = false'`) that
+  keeps every other byte; a door-only stamp would vouch for a value it never wrote. A stamp that
+  does not parse is read as no stamp and never makes the record unreadable, for `changed_at`'s
+  reason: a stamp must not be able to turn a user's `off` into the fail-safe `on`.
+- **The report travels with the value.** The loader and the confirmed write — the atomic's two
+  writers — each remember a report beside their write, served on `/config` and `/config/read` as
+  `BIOROUTER_PRIVACY_TIERS_RECORD`: `enabled`, `origin` (`default` / `settings` / `migration` /
+  `unrecorded`), the record's `path` and the `last_change`. It is served from memory, never a
+  second read of the file, and both read paths overwrite any copy `config.yaml` holds under that
+  name, so a pre-filled report written through `/config/upsert` reaches no reader.
+- **The app stands a note above every composer** while the tiers are off
+  (`PrivacyTiersOffNote`), and Settings → Privacy's strip carries the same account. It has no
+  dismiss control — anything that remembered a dismissal would be a file an agent could write — so
+  the only way to clear it is to turn the tiers back on. Its visibility is the switch's alone; a
+  daemon that sends no report costs the explanation, never the note.
+- **The record is created owner-only (`0600`)** by both doors.
+
+⚠ **None of this is a barrier, and the stamp is not a proof.** The switch still obeys the file,
+exactly as DR-17 accepted. Anything that can write the record can write a plausible stamp into it;
+what the stamp reliably catches is the overwrite the drive measured and a one-field flip, not a
+forger who has read this section. `0600` keeps *other* local accounts out and does nothing about
+the agent, whose shell runs as the user and therefore owns the file — so no permission, ownership
+or integrity check at load can tell the agent from the user, and a check keyed to a secret on this
+machine would be exactly as strong as the agent's inability to read that secret, which DR-17 does
+not give. A record written by a Biorouter older than the stamp — including a deliberate `off` from
+Settings → Privacy — also reads as unrecorded, and the copy says so rather than accusing anyone;
+turning the tiers on and off again in Settings → Privacy stamps it.
 
 Because it is now one predicate read by every gate, the test that matters is a **matrix**: each gate
 asserted in both toggle positions. A master toggle wired to three gates out of ten passes every
@@ -2913,7 +2957,10 @@ Where this annoys someone who has done nothing wrong:
    §9.5.** A public chat reads `config.yaml` like any other file, so "why isn't my extension loading"
    debugging stays where it is. The corollary is the one §9.5.2 warned about and this design now
    accepts: **a master switch a public model can read and edit is not a switch**, so the toggle's
-   integrity rests on nothing but the file's own permissions.
+   integrity rests on nothing but the file's own permissions — owner-only (`0600`) since H3 of the
+   2026-09-10 test drive, which keeps other accounts out and is no obstacle to an agent running as
+   the owner. What H3 added is that the edit cannot be *silent*: an OFF record is announced at load
+   and in the app, and one no door stamped reads *turned off outside the app* (§10.6).
 9. ~~**On Windows and on Linux without bubblewrap, a public chat loses the five tools that spawn a
    child process.**~~ **Not paid — [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descopes §9.5.** `developer__shell` and its four
    siblings keep working for a public-capability chat on every platform. This was the single largest

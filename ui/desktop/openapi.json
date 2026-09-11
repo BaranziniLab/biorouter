@@ -6931,7 +6931,7 @@
           },
           "persisted": {
             "type": "boolean",
-            "description": "Whether `config.yaml` on disk holds what this report describes.\n\n`false` means the recovery could not write what it recovered: the keys\nabove live only in this process, the file on disk is unchanged — still\nabsent, or still the contents that would not load — nothing changed in\nthis session survives exit, and the next start runs the same recovery\nagain."
+            "description": "Whether this process's settings are persisting: `config.yaml` holds what\nthis report describes, and a write to it lands.\n\n`false` in one of two ways, which `message` spells out:\n- the recovery could not write what it recovered: the keys above live\nonly in this process, the file on disk is unchanged — still absent, or\nstill the contents that would not load — and the next start runs the\nsame recovery again;\n- `config.yaml` loads, so the keys above are the file's, but it cannot\nbe written right now.\n\nEither way a setting changed in this session will not be saved. Checked\nagainst the disk on every call, so a failure that has since been\nrepaired is not reported."
           },
           "recovered_keys": {
             "type": "array",

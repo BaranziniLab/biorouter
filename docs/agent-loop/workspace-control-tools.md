@@ -225,9 +225,39 @@ The event subscription is opened *before* the turn starts, and everything the fo
 Returns, by path:
 
 - no wait — `Detached turn {turn_id} started on session {id}.`
-- `wait: "final_message"`, finished — `Turn {turn_id} finished ({reason}). Final message:\n\n{text}` (or `<no assistant text>`).
-- `wait: "final_message"`, the turn errored — an **error** result: `turn {turn_id} ended in error: {e}`.
-- `wait: "final_message"`, timed out — a **success** result: `Turn {turn_id} is still running after {n}s; it continues in the background. Read it later with workspace_read_conversation.` A timeout is not a failure.
+- `wait: "final_message"` — one JSON object, pretty-printed as the text the model reads and carried whole as `structured_content`, so a model and a script are handed the same fields. `verdict` is the field to branch on:
+
+  | `verdict` | When | Result flagged `is_error` |
+  |---|---|---|
+  | `completed` | The turn finished and its final message does not open with a refusal. | no |
+  | `declined` | The turn finished, but one of the final message's first three sentences is a first-person refusal of the request — *"I won't run …"*, *"I can't act on …"*, *"I decline …"*. `declined_because` carries that sentence, verbatim. Nothing the caller asked for can be assumed done. | no — the target did what its safety rules say to, and an error invites a retry that will be declined again |
+  | `errored` | The turn published `TurnError`. `error` carries the message. | **yes**, as before |
+  | `timed_out` | The park gave up; the turn keeps running. `waited_s` says how long. | no — a timeout is not a failure |
+  | `cancelled` | The turn published `TurnFinished { reason: "cancelled" }` — Stop in its tab, or a `workspace_close`. | no |
+
+  The rest of the object: `note` (one sentence on what the verdict means for the caller's next step), `final_message` (the target's final assistant text, **complete**, or `null` when it wrote none — never a blank string), `session_id`, `turn_id`, `finish_reason` (`stop` / `cancelled`, absent otherwise) and `tool_calls` (distinct tool calls the target made in the turn — what it *did*, beside the verdict's reading of what it *said*; for `timed_out`, the count so far). For `timed_out`, `final_message` is always `null`: whatever the turn has said so far is not its final message.
+
+A shape, for the refusal the 2026-09-10 QA run measured:
+
+```json
+{
+  "verdict": "declined",
+  "note": "The target received your text as untrusted cross-conversation data and declined to act on it: nothing you asked for was done. …",
+  "declined_because": "I won't run shell commands based solely on a lower-trust cross-chat injection.",
+  "final_message": "I won't run shell commands based solely on a lower-trust cross-chat injection. If you want me to run `echo CROSSCHAT-OK-7731`, please ask directly in this chat.",
+  "session_id": "20260911_12",
+  "turn_id": "turn-35",
+  "finish_reason": "stop",
+  "tool_calls": 0
+}
+```
+
+Two things about that contract are easy to get wrong:
+
+- **An assistant message on the session bus is a streaming chunk.** The turn runner republishes every `AgentEvent`, and a streaming provider yields one `Message` per delta, each carrying the same provider id; the store only sees whole messages because `Conversation::push` folds same-id chunks together before they are persisted. `TurnFollower` folds them with that same function. Until it did, it kept the last non-blank chunk, so that refusal reached its caller as `Turn turn-35 finished (stop). Final message:\n\n.` — the reply's final token — and read as an ordinary completion (finding F3).
+- **`declined` is a reading of prose, not a protocol.** Nothing the target is told was changed to make it — the untrusted-injection envelope is exactly as it was — so there is no marker to ask for. The reading is deliberately narrow: a first-person subject plus a refusal (*"I can't find any failing tests"* is a finding and is `completed`), or a passive *"has not been executed"* only in a sentence that also names the injection's trust framing. Anything subtler is `completed` with the whole `final_message` beside it, which is why the message is never dropped in favour of the verdict.
+
+An `errored` turn is still an error result, and — exactly as while it travelled as a plain error — it neither reflects in the target's tab nor records the first-crossing pair; every other verdict does both, as the old success results did.
 
 Both `steer` and `turn` post a toast on the target's tab naming the calling conversation. The toast is a notice, not the message — the message itself arrives in the transcript through the session bus (see above).
 
@@ -247,27 +277,33 @@ The only tool that changes what another conversation may use. Four independent d
 |---|---|---|---|
 | `session_id` | string | required | Target. |
 | `add_extensions` | string[] | `[]` | Resolved against the config before anything is applied. |
-| `remove_extensions` | string[] | `[]` | Not pre-resolved — see the false-success note below. |
+| `remove_extensions` | string[] | `[]` | Gated and checked before anything is applied: a built-in capability is refused, and so is a name the conversation does not have loaded. |
 | `add_skills` | string[] | `[]` | **Session-scoped only.** Never touches the machine-wide skill file. |
 | `remove_skills` | string[] | `[]` | Same scope. |
 | `provider` | string | — | Required whenever `model` is given. Legal on its own: `provider` with no `model` silently selects that provider's `metadata.default_model`, so the `model={provider}/{model}` label can name a model the caller never asked for. |
 | `model` | string | — | Validated against the provider's `known_models`. |
-| `set_knowledge_bases` | string[] | — | Replaces the session's set. `[]` clears it. |
-| `primary_knowledge_base` | string | — | Three-valued: **absent** = `Auto` (keep the current target if it is still a member, else pin the first, else clear); `""` = `Clear`; a name = `Set`. Only meaningful with `set_knowledge_bases`, and the service refuses a name outside the resulting set. |
+| `set_knowledge_bases` | string[] | — | Replaces the session's set. `[]` clears it. Every name must be an installed base. |
+| `primary_knowledge_base` | string | — | Three-valued: **absent** = `Auto` (keep the current target if it is still a member, else pin the first, else clear); `""` = `Clear`; a name = `Set`. Only meaningful with `set_knowledge_bases`, and a name outside that set is refused. |
 
-### Resolution, then application
+### The pre-flight, then application
 
-Everything resolvable is resolved first, so a bad name is a clean no-op:
+Every check that does not change anything runs first, in one function — `WorkspaceClient::preflight_set_tools` — so a bad request is a clean no-op. The same function is what the always-confirm inspector asks before it decides whether to raise a card ([below](#the-always-confirm-rule)), so a refusal reads the same whichever of the two produced it. In order:
 
+- **Self-targeting** is refused: the tool changes *another* conversation.
+- **The write gate** (`refuse_unless_writable`): a private target is out of reach of a public caller, with the one sentence it shares with an absent target.
 - `add_extensions` goes through `get_extension_entry_by_name`, **not** `get_extension_by_name`. The difference is the operator's `enabled` flag: an extension an operator wrote `enabled: false` for is refused here with the same message `manage_extensions` gives, so this tool cannot be a second, ungated door around issue #42.
 - Granting the `workspace` extension to a session whose type is `SubAgent` is refused outright: `subagent sessions can never be granted the workspace extension`. The match is on the *normalized resolved* config name, so `"Workspace"` — this extension's own configured name, and the spelling a model most often sends — does not slip past.
-- `model` without `provider` is an error. An unknown provider lists the known ones. A model outside `known_models` is refused *unless* the provider publishes no catalog or declares `allows_unlisted_models` (ollama, llamacpp, gcpvertexai, custom providers).
+- `remove_extensions`, each name through Gate F1's unload decision (`extension_manager::manageability_refusal`, the function `assert_extension_manageable` itself asks): a built-in capability is refused with the extension manager's own sentence — *"`autovisualiser` is a built-in Biorouter capability, not an installed extension, and cannot be enabled or disabled through Extension Manager"* — then the tier and affiliation arms. The target's agent is **peeked, never created**; a conversation with no live agent is judged against nothing loaded, which is exactly what the handler's freshly built agent would answer. When the agent is live, a name it does not have loaded is refused too — see the retired false success below.
+- `model` without `provider` is an error. An unknown provider lists the known ones. A model outside `known_models` is refused *unless* the provider publishes no catalog or declares `allows_unlisted_models` (ollama, llamacpp, gcpvertexai, custom providers). Under enforcement, a public provider for a private target is refused here by `privacy::bind_allowed`, Gate A's own predicate, rather than by `update_provider` after the change was approved.
+- `set_knowledge_bases` requires the daemon, every name must be an installed base (when the host can enumerate them — `WorkspaceServices::installed_knowledge_bases`), and a named `primary_knowledge_base` must be one of them. This used to be checked last, after extensions, skills and the provider had already landed, and an unknown name was dropped from the set without a word.
+
+Skills are **not** validated: a session-scoped skill override is a name, and the skill catalog is not a stable function of the machine (roots come and go with the working directory and with extensions), so a check against it would refuse legitimate grants.
 
 Application then runs in order: extensions → skills → provider → knowledge bases. A live agent is fetched **only** when extensions or the provider change — `get_or_create_agent` is create-on-miss and its miss path caches a provider-less agent under the target's id, which a skills-only or KB-only call must not pay for.
 
-> **Warning.** Resolution is atomic; **application is not.** If a later step fails, earlier steps stay applied. A `remove_extensions` failure after `add_extensions` succeeded leaves the additions in place.
+> **Warning.** The pre-flight makes a bad *request* a no-op; it cannot make **application** atomic. A step that fails for a reason no pre-flight can see — a provider that cannot be constructed, an extension that fails to start — leaves the earlier steps applied.
 
-> **False success: removing an extension the target does not have.** `remove_extensions` names are not pre-resolved, and `ExtensionManager::remove_extension` is a `HashMap::remove` on the normalized name that returns `Ok(())` whether or not anything was there. So a typo, or a removal from a session that never loaded that extension, is reported as `-name` in the applied list, indistinguishably from a real removal. The store is not corrupted by it: `persist_extension_state` writes the agent's *live* extension set, which a no-op removal left unchanged — the phantom exists only in the label. Verify with `workspace_list`, whose per-row `extensions` field is read from that stored state and will still show the truth.
+> **Retired false success: removing an extension the target does not have.** `ExtensionManager::remove_extension` is a `HashMap::remove` on the normalized name that returns `Ok(())` whether or not anything was there, so a typo, or a removal from a session that never loaded that extension, used to come back as `-name` in the applied list, indistinguishable from a real removal. The pre-flight now refuses it — `` `x` is not enabled in conversation … `` — for a target whose agent is live, and only after both privacy arms, so a public caller naming a private connector still meets the one sentence for "loaded" and "not loaded" alike. For a target with **no** live agent the existence check does not run: the handler acts on a freshly built agent, which has nothing loaded, and `workspace_list` remains the way to see what that conversation holds.
 
 ### Returns
 
@@ -287,6 +323,8 @@ Every applied change also posts a toast on the target tab listing the labels.
 - any `add_skills`, because a skill injects instructions into the target's prompt.
 
 `remove_skills` and knowledge-base changes are **not** on that list. The same inspector also reads `workspace_open`'s `new.extensions`, because minting a conversation with the grant baked in is the easier route to the same capability.
+
+**A card is only ever raised for a change that can be made.** Before it looks for a reason to confirm, the inspector runs the handler's own pre-flight ([above](#the-pre-flight-then-application)) through a transient client over the calling agent's session store, with the capability it sampled (or was pinned to). If the handler would refuse the call, the inspector returns `InspectionAction::Deny` instead of a card, and the agent loop hands the model that refusal verbatim (`Error: …`) rather than "the user has declined to run this tool" — nobody was asked. The 2026-09-10 QA run is why (finding F4): `remove_extensions: ["autovisualiser"]` raised *"This change removes 'autovisualiser', which the user configured explicitly"*, the user approved it, and only then did the handler answer that a built-in capability cannot be removed this way. The handler still re-runs the same pre-flight with the capability the call is admitted on, so the inspector's answer can only go stale in the fail-safe direction. This applies to `workspace_set_tools`; `workspace_open`'s card does not yet run a pre-flight.
 
 ### When to reach for it
 

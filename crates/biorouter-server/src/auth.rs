@@ -199,28 +199,42 @@ pub fn served_document_matches(presented: Option<&str>, browser_token: &str) -> 
     }
 }
 
+/// How many failed authentications one address may have answered `401` inside
+/// [`FAILED_AUTH_WINDOW`]. Past it, the rest of that address's failures in the
+/// window are answered `429`.
+const FAILED_AUTH_BUDGET: usize = 20;
+
+/// The sliding window [`FAILED_AUTH_BUDGET`] is counted over.
+const FAILED_AUTH_WINDOW: Duration = Duration::from_secs(60);
+
 fn get_failed_attempts() -> &'static Mutex<HashMap<String, Vec<Instant>>> {
     FAILED_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn check_rate_limit(client_ip: &str) -> bool {
+/// The status for a request that FAILED authentication from `client_ip`,
+/// recorded against that address. Nothing that presented the correct secret
+/// reaches this; see the comment at its one call site in [`check_token`].
+fn refuse_unauthenticated(client_ip: &str) -> StatusCode {
     let mut map = get_failed_attempts()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let now = Instant::now();
-    let window = Duration::from_secs(60);
-    let entry = map.entry(client_ip.to_string()).or_default();
-    entry.retain(|t| now.duration_since(*t) < window);
-    entry.len() < 20
+    let attempts = map.entry(client_ip.to_string()).or_default();
+    failed_attempt_verdict(attempts, Instant::now())
 }
 
-fn record_failed_attempt(client_ip: &str) {
-    let mut map = get_failed_attempts()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    map.entry(client_ip.to_string())
-        .or_default()
-        .push(Instant::now());
+/// The window itself, over one address's recent failures, with the clock
+/// passed in so a test can step past the window instead of sleeping through it.
+///
+/// Over budget, the failure is answered and NOT recorded, so an address's
+/// vector never holds more than [`FAILED_AUTH_BUDGET`] entries however hard it
+/// is hammered. That bound predates this function and is kept on purpose.
+fn failed_attempt_verdict(attempts: &mut Vec<Instant>, now: Instant) -> StatusCode {
+    attempts.retain(|t| now.duration_since(*t) < FAILED_AUTH_WINDOW);
+    if attempts.len() >= FAILED_AUTH_BUDGET {
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
+    attempts.push(now);
+    StatusCode::UNAUTHORIZED
 }
 
 fn is_public_app_get(method: &axum::http::Method, path: &str) -> bool {
@@ -263,12 +277,15 @@ fn is_unauthenticated_path(path: &str) -> bool {
     // nonce in the path, which `routes::tool_bridge` resolves against a grant that
     // its lease revokes when the turn ends.
     //
-    // ⚠ This has to be an exemption rather than "the handler answers 401 itself".
-    // `check_token` calls `record_failed_attempt` for every request without the
-    // secret, and twenty of those inside a minute trips `check_rate_limit` — which
-    // is keyed on the client IP, and the child's IP is 127.0.0.1, the same one the
-    // desktop app uses. So without this the bridge never worked AND a couple of
-    // coding-agent turns would 429 the user out of their own app for a minute.
+    // ⚠ This has to be an exemption rather than "the handler answers 401 itself":
+    // the child never has the secret, so without it every bridge call is a 401
+    // and the bridge never works. It used to cost more than that. Until QA-D F3
+    // (2026-09-10) `check_token` consulted its failed-attempt throttle BEFORE
+    // comparing the secret, keyed on the client IP, and the child's IP is
+    // 127.0.0.1 — the desktop app's — so a couple of coding-agent turns 429'd the
+    // user out of their own app for a minute. A correct secret is no longer
+    // throttled at all, but the bridge's failures would still fill that
+    // address's window for no reason, which is one more reason to keep this.
     // Exactly one segment after the prefix, for the same reason the workspace
     // socket below is an exact match: a bare `starts_with` would exempt every
     // future route under this prefix, and the daemon has no other authentication.
@@ -310,31 +327,45 @@ pub async fn check_token(
         return Ok(next.run(request).await);
     }
 
-    // Key the throttle on the real peer. `x-forwarded-for` is client-supplied
-    // and there is no reverse proxy in front of this daemon, so an attacker
-    // could rotate it and defeat the limit entirely.
-    let client_ip = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    if !check_rate_limit(&client_ip) {
-        return Err(StatusCode::TOO_MANY_REQUESTS);
-    }
-
     let secret_key = request
         .headers()
         .get("X-Secret-Key")
         .and_then(|value| value.to_str().ok());
 
-    match secret_key {
-        Some(key) if secret_matches(key, &state) => Ok(next.run(request).await),
-        _ => {
-            record_failed_attempt(&client_ip);
-            Err(StatusCode::UNAUTHORIZED)
-        }
+    // The secret FIRST, and the failed-attempt throttle only for a request that
+    // failed it. A caller presenting the correct secret is never throttled.
+    //
+    // The throttle is keyed on the peer address, and where it matters that
+    // address is shared. Every browser on a `serve` daemon arrives from one
+    // address: 127.0.0.1 on the default loopback bind, over an SSH tunnel, or
+    // from the TLS proxy the deployment guide puts in front; on a LAN bind,
+    // everyone behind one NAT. The desktop app shares 127.0.0.1 with every
+    // other local process. With the throttle checked before the secret,
+    // anyone's twenty failures refused everyone on that address for a minute,
+    // including the user holding the correct key. A stale tab left over from a
+    // previous `serve` launch was enough (QA-D F3, 2026-09-10).
+    //
+    // What the window still does: past twenty failures a minute, an address's
+    // failures are answered `429` and no longer recorded. What it never did, and
+    // so does not stop doing here, is bound guesses at the secret.
+    // `/ui/workspace` compares this same secret with no throttle at all (it is
+    // exempt from this middleware), and a guess that is right is not a failure.
+    // Resistance to guessing is the secret's entropy: 256 random bits when the
+    // desktop app or `biorouter serve` launches the daemon, 128 when a bare
+    // `biorouterd` mints its own, and whatever an operator chose when they set
+    // `BIOROUTER_SERVER__SECRET_KEY` by hand (`just debug-server` uses `test`).
+    if secret_key.is_some_and(|key| secret_matches(key, &state)) {
+        return Ok(next.run(request).await);
     }
+
+    // Key the throttle on the real peer. `x-forwarded-for` is client-supplied,
+    // so an attacker could rotate it and defeat the limit entirely.
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    Err(refuse_unauthenticated(&client_ip))
 }
 
 #[cfg(test)]
@@ -755,13 +786,14 @@ mod tests {
     /// The coding-agent tool bridge is exempt, and only its one nonce segment is.
     ///
     /// Why it must be exempt at all, rather than letting the handler answer for
-    /// itself: `check_token` calls `record_failed_attempt` for every request that
-    /// arrives without the secret, and twenty inside a minute trips
-    /// `check_rate_limit`, which is keyed on the client IP. The child's IP is
-    /// 127.0.0.1 — the same one the desktop app uses — so a couple of
-    /// coding-agent turns would 429 the user out of their own app. This was found
-    /// by running a real turn against a real daemon; the route's own tests served
-    /// it on a bare Router with no middleware and so could not see it.
+    /// itself: the child never has the secret, so `check_token` would answer
+    /// every bridge call `401` and record it against 127.0.0.1 — the desktop
+    /// app's own address. Before QA-D F3 that also 429'd the user out of their
+    /// own app for a minute, because the throttle ran before the secret was
+    /// compared (`a_correct_secret_is_never_throttled_by_someone_elses_failures`
+    /// pins the fix). This was found by running a real turn against a real
+    /// daemon; the route's own tests served it on a bare Router with no
+    /// middleware and so could not see it.
     #[test]
     fn the_tool_bridge_is_exempt_and_only_its_nonce_segment_is() {
         assert!(is_unauthenticated_path(
@@ -812,5 +844,155 @@ mod tests {
         ));
         assert!(!is_public_app_get(&Method::GET, "/apps/bad%2Fid/"));
         assert!(!is_public_app_get(&Method::POST, "/apps/example/build"));
+    }
+
+    // --- The failed-attempt throttle (QA-D F3) ------------------------------
+
+    use super::{check_token, failed_attempt_verdict, FAILED_AUTH_BUDGET, FAILED_AUTH_WINDOW};
+    use axum::extract::ConnectInfo;
+    use axum::http::StatusCode;
+    use std::net::SocketAddr;
+    use std::time::{Duration, Instant};
+    use tower::ServiceExt;
+
+    const TEST_SECRET: &str = "qa-d-f3-throttle-secret";
+
+    /// The real middleware in front of one trivial route, layered the way
+    /// `commands::agent::run` layers it in front of the real router.
+    fn guarded() -> axum::Router {
+        axum::Router::new()
+            .route("/sessions", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                TEST_SECRET.to_string(),
+                check_token,
+            ))
+    }
+
+    /// One request from `peer`. The throttle keys on the peer address, which
+    /// the real server puts on every request through
+    /// `into_make_service_with_connect_info`; `oneshot` has no connection, so
+    /// the test puts it there itself. Each test uses addresses from the
+    /// documentation range that no other test uses: the throttle's map is one
+    /// process-wide static.
+    async fn status_from(app: &axum::Router, peer: [u8; 4], secret: Option<&str>) -> StatusCode {
+        let mut request = axum::http::Request::builder()
+            .uri("/sessions")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        if let Some(secret) = secret {
+            request
+                .headers_mut()
+                .insert("X-Secret-Key", secret.parse().unwrap());
+        }
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((peer, 51_000))));
+        app.clone().oneshot(request).await.unwrap().status()
+    }
+
+    /// QA-D F3, as reported: twenty-one requests without a secret, then the
+    /// user's own correctly authenticated request from the same address. That
+    /// request was answered `429` for a minute, because the throttle ran before
+    /// the secret was compared. On a `serve` daemon every browser shares one
+    /// address, so "the same address" is the normal case, not a contrived one.
+    #[tokio::test]
+    async fn a_correct_secret_is_never_throttled_by_someone_elses_failures() {
+        let app = guarded();
+        let shared = [203, 0, 113, 31];
+
+        // The attacker's half first, so the other assertions cannot pass
+        // against a throttle that simply stopped working.
+        for n in 1..=FAILED_AUTH_BUDGET {
+            assert_eq!(
+                status_from(&app, shared, None).await,
+                StatusCode::UNAUTHORIZED,
+                "failure {n} is inside the budget"
+            );
+        }
+        assert_eq!(
+            status_from(&app, shared, None).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "past the budget, an address's failures are refused 429"
+        );
+        // A WRONG secret is a failure too, and is locked out the same way: the
+        // report's other shape, a stale tab still holding the previous launch's
+        // secret.
+        assert_eq!(
+            status_from(&app, shared, Some("the-previous-launchs-secret")).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+
+        // The user, from the same address, inside the same window.
+        assert_eq!(
+            status_from(&app, shared, Some(TEST_SECRET)).await,
+            StatusCode::OK,
+            "a correct secret must never be throttled by someone else's failures"
+        );
+
+        // And the user's success lifts nothing for the attacker: this address's
+        // next failure is still refused.
+        assert_eq!(
+            status_from(&app, shared, None).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    /// The window is per address. A bystander's first failure is answered as
+    /// its own first, not as the attacker's twenty-first.
+    #[tokio::test]
+    async fn one_addresss_failures_do_not_throttle_another_address() {
+        let app = guarded();
+        let attacker = [203, 0, 113, 32];
+        let bystander = [203, 0, 113, 33];
+
+        for _ in 0..FAILED_AUTH_BUDGET {
+            status_from(&app, attacker, Some("guess")).await;
+        }
+        assert_eq!(
+            status_from(&app, attacker, Some("guess")).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            status_from(&app, bystander, Some("typo")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// The window over synthetic time, so its edges are asserted rather than
+    /// slept through. Also pins the bound `refuse_unauthenticated` relies on:
+    /// an address over its budget is answered without being recorded, so a
+    /// flood from it cannot grow its entry.
+    #[test]
+    fn the_failure_window_slides_and_never_holds_more_than_the_budget() {
+        let t0 = Instant::now();
+        let mut attempts = Vec::new();
+        for _ in 0..FAILED_AUTH_BUDGET {
+            assert_eq!(
+                failed_attempt_verdict(&mut attempts, t0),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        for _ in 0..1_000 {
+            assert_eq!(
+                failed_attempt_verdict(&mut attempts, t0),
+                StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+        assert_eq!(attempts.len(), FAILED_AUTH_BUDGET);
+
+        // One millisecond short of the window, every failure still counts.
+        assert_eq!(
+            failed_attempt_verdict(
+                &mut attempts,
+                t0 + FAILED_AUTH_WINDOW - Duration::from_millis(1)
+            ),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // At the window, they have all aged out and the address starts over.
+        assert_eq!(
+            failed_attempt_verdict(&mut attempts, t0 + FAILED_AUTH_WINDOW),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(attempts.len(), 1);
     }
 }

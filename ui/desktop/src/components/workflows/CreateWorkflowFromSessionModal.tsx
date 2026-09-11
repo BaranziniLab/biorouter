@@ -5,8 +5,9 @@ import { Save, Play, Loader2 } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
-import { createWorkflow, getActive, getSessionExtensions, listBases } from '../../api/sdk.gen';
+import { createWorkflow, getSessionExtensions, listBases } from '../../api/sdk.gen';
 import { userActionHeaders } from '../../utils/userAction';
+import { readKnowledgeSelection } from '../knowledge/knowledgeSelection';
 import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
@@ -23,6 +24,9 @@ interface CreateWorkflowFromSessionModalProps {
   onWorkflowCreated?: (workflow: Workflow) => void;
 }
 
+const KNOWLEDGE_SELECTION_UNREAD =
+  "Could not load this chat's knowledge bases, so none were selected automatically.";
+
 export default function CreateWorkflowFromSessionModal({
   isOpen,
   onClose,
@@ -37,6 +41,9 @@ export default function CreateWorkflowFromSessionModal({
   const [knowledgeBaseItems, setKnowledgeBaseItems] = useState<WorkflowResourceItem[]>([]);
   const [workflowKnowledgeBaseIds, setWorkflowKnowledgeBaseIds] = useState<string[]>([]);
   const [defaultKnowledgeBaseId, setDefaultKnowledgeBaseId] = useState<string | null>(null);
+  // The chat's selection could not be read, and the generation has not brought
+  // the daemon's own copy of it: nothing was captured, and the picker says so.
+  const [knowledgeSelectionUnread, setKnowledgeSelectionUnread] = useState(false);
   const [skillItems, setSkillItems] = useState<WorkflowResourceItem[]>([]);
   const [workflowSkillIds, setWorkflowSkillIds] = useState<string[]>([]);
   const generatedResourcesRef = useRef<{
@@ -116,33 +123,45 @@ export default function CreateWorkflowFromSessionModal({
           }
         });
 
-      void proof
-        .then((headers) =>
-          Promise.all([
-            listBases({ headers, throwOnError: false }),
-            getActive({ query: { session_id: sessionId }, headers, throwOnError: false }),
-          ])
-        )
-        .then(([basesRes, activeRes]) => {
-          if (cancelled) return;
-          const bases: Manifest[] = basesRes.data ?? [];
-          const hidden = new Set(activeRes.data?.hidden_kbs ?? []);
-          const visible = bases.filter((base) => !hidden.has(base.id)).map((base) => base.id);
-          // The captured default is the session's primary; `active_kb` is the
-          // deprecated mirror, read so a fresh renderer survives an older daemon.
-          const primary = activeRes.data?.primary_kb ?? activeRes.data?.active_kb ?? null;
-          const defaultId = primary && visible.includes(primary) ? primary : (visible[0] ?? null);
+      Promise.all([
+        // With the user's proof: since issue #56's QA sweep (2026-09-10) the
+        // daemon omits a private base from a caller without it, and a base
+        // missing from this list would be missing from the workflow saved here.
+        proof.then((headers) => listBases({ headers, throwOnError: false })),
+        // Issue #56 Task 58: this modal opens from the chat it names, and the
+        // read carries the user's proof, which a GET naming a PRIVATE chat
+        // needs. `null` when the read failed anyway.
+        readKnowledgeSelection(sessionId),
+      ]).then(([basesRes, selection]) => {
+        if (cancelled) return;
+        const bases: Manifest[] = basesRes.data ?? [];
+        setKnowledgeBaseItems(
+          bases.map((base) => ({
+            id: base.id,
+            label: base.name,
+            description: base.id,
+          }))
+        );
 
-          setKnowledgeBaseItems(
-            bases.map((base) => ({
-              id: base.id,
-              label: base.name,
-              description: base.id,
-            }))
-          );
-          setWorkflowKnowledgeBaseIds(visible);
-          setDefaultKnowledgeBaseId(defaultId);
-        });
+        if (!selection) {
+          // A failed read is not "nothing is hidden, nothing is primary", and
+          // capturing it as that saved every base, with whichever came first as
+          // the default, into a workflow that outlives this chat. Capture
+          // nothing instead. The generation carries the daemon's own block
+          // whenever a base exists, and the save path falls back to it; with
+          // none, the picker says why nothing is selected. A block that already
+          // arrived needs no such note, and must not be overwritten.
+          if (!generatedResourcesRef.current.knowledgeBases) setKnowledgeSelectionUnread(true);
+          return;
+        }
+        const visible = bases
+          .filter((base) => !selection.hiddenKbIds.has(base.id))
+          .map((base) => base.id);
+        const primary = selection.primaryKbId;
+        const defaultId = primary && visible.includes(primary) ? primary : (visible[0] ?? null);
+        setWorkflowKnowledgeBaseIds(visible);
+        setDefaultKnowledgeBaseId(defaultId);
+      });
 
       // The daemon's catalog, so a skill bundled inside an installed extension
       // can be attached to a workflow like any other (#113).
@@ -228,6 +247,9 @@ export default function CreateWorkflowFromSessionModal({
             }
 
             if (workflow.knowledge_bases) {
+              // The daemon read the chat's selection itself, so whatever this
+              // modal's own read said, the selection is known now.
+              setKnowledgeSelectionUnread(false);
               const visible = workflow.knowledge_bases.visible ?? [];
               generatedResourcesRef.current.knowledgeBases = {
                 default:
@@ -289,6 +311,7 @@ export default function CreateWorkflowFromSessionModal({
       setKnowledgeBaseItems([]);
       setWorkflowKnowledgeBaseIds([]);
       setDefaultKnowledgeBaseId(null);
+      setKnowledgeSelectionUnread(false);
       setSkillItems([]);
       setWorkflowSkillIds([]);
       generatedResourcesRef.current = {};
@@ -498,6 +521,9 @@ export default function CreateWorkflowFromSessionModal({
                   resourceEditsRef.current.knowledgeBases = true;
                   setDefaultKnowledgeBaseId(id);
                 }}
+                knowledgeBaseNotice={
+                  knowledgeSelectionUnread ? KNOWLEDGE_SELECTION_UNREAD : undefined
+                }
                 skillItems={skillItems}
                 selectedSkillIds={workflowSkillIds}
                 onSkillIdsChange={(ids) => {

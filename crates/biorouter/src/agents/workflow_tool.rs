@@ -48,9 +48,6 @@ use crate::session::session_manager::Session;
 use crate::workflow::service::{self, SaveTarget};
 use crate::workflow::Workflow;
 
-/// How long a workflow mutation waits for the user to answer its approval card.
-const WORKFLOW_MUTATION_APPROVAL_TTL: std::time::Duration = std::time::Duration::from_secs(300);
-
 /// The verbs that change something and therefore need a person.
 pub const MUTATING_ACTIONS: &[&str] = &["save", "delete", "import", "schedule"];
 
@@ -588,6 +585,10 @@ impl Agent {
     /// `requires_user_proof: true` matches the extension manager and the skills
     /// client: these writes reshape what future conversations run, so a model
     /// that has been told to "clean up my workflows" cannot do it unattended.
+    ///
+    /// The card itself is [`super::platform_approval`]'s, shared with
+    /// `platform__manage_schedule` so the two tools cannot disagree about whether
+    /// a change to the user's setup is asked about (QA 2026-09-10, F1).
     async fn require_workflow_approval(
         &self,
         action: &str,
@@ -597,55 +598,18 @@ impl Agent {
         risk: crate::permission::tool_risk::ToolRisk,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<(), ErrorData> {
-        if session_id.is_empty() {
-            return Err(err(format!(
-                "`{action}` needs an active conversation so Biorouter can show its approval card"
-            )));
-        }
-
-        let approval_arguments = arguments
-            .as_object()
-            .cloned()
-            .unwrap_or_else(serde_json::Map::new);
-        let request = crate::pending_user_action::UserActionRequest::ToolApproval(
-            crate::pending_user_action::ToolApprovalRequest {
-                tool_name: super::platform_tools::PLATFORM_MANAGE_WORKFLOW_TOOL_NAME.to_string(),
-                arguments: approval_arguments.clone(),
-                prompt: Some(summary.to_string()),
-                risk: Some(risk),
-                preview: crate::conversation::tool_preview::ToolPreview::for_tool_call(
-                    super::platform_tools::PLATFORM_MANAGE_WORKFLOW_TOOL_NAME,
-                    &approval_arguments,
-                ),
-                requires_user_proof: true,
+        super::platform_approval::require_platform_approval(
+            super::platform_approval::PlatformApproval {
+                tool_name: super::platform_tools::PLATFORM_MANAGE_WORKFLOW_TOOL_NAME,
+                action,
+                session_id,
+                summary,
+                arguments,
+                risk,
             },
-        );
-
-        let parked = crate::pending_user_action::PendingUserActions::global().park(
-            Some(session_id),
-            None,
-            request,
-        );
-        let outcome = parked
-            .wait(WORKFLOW_MUTATION_APPROVAL_TTL, cancellation_token)
-            .await;
-
-        match outcome {
-            crate::pending_user_action::UserActionOutcome::Approved { .. }
-                if !cancellation_token.is_some_and(CancellationToken::is_cancelled) =>
-            {
-                Ok(())
-            }
-            crate::pending_user_action::UserActionOutcome::Approved { .. } => Err(err(format!(
-                "`{action}` was cancelled after approval and before anything changed"
-            ))),
-            crate::pending_user_action::UserActionOutcome::Denied { .. } => Err(err(format!(
-                "The user declined the `{action}`. Nothing was changed."
-            ))),
-            other => Err(err(format!(
-                "`{action}` was not approved ({other:?}). Nothing was changed."
-            ))),
-        }
+            cancellation_token,
+        )
+        .await
     }
 }
 
