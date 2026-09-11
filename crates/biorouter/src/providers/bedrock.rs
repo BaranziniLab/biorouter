@@ -83,15 +83,23 @@ impl BedrockProvider {
         set_aws_env_vars(config.all_values());
         set_aws_env_vars(config.all_secrets());
 
-        // Normalize AWS_ENDPOINT_URL_BEDROCK → AWS_ENDPOINT_URL_BEDROCK_RUNTIME.
-        // The AWS SDK for Rust reads the service-specific key AWS_ENDPOINT_URL_BEDROCK_RUNTIME,
-        // but users (and older configs) often set the shorter AWS_ENDPOINT_URL_BEDROCK.
-        // Accept either: if only the short form is set, promote it to the correct key.
-        if std::env::var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").is_err() {
-            if let Ok(url) = std::env::var("AWS_ENDPOINT_URL_BEDROCK") {
-                std::env::set_var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", url);
-            }
-        }
+        // ⚠ `AWS_ENDPOINT_URL_BEDROCK` is not an endpoint for this provider. The
+        // AWS SDK aims Bedrock Runtime at `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`,
+        // from the environment or from `config.yaml` through the export above,
+        // or at an AWS profile's `services` section; that is how a VPC endpoint
+        // or a proxy is meant to be set. `AWS_ENDPOINT_URL_BEDROCK` is the name
+        // the SDK derives for a different service, the Bedrock control plane.
+        //
+        // This used to promote it to `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, added
+        // on 2026-04-12 for configs and setup scripts that used the short name,
+        // a month before Versa Bedrock existed. But every Biorouter surface that
+        // has written that key wrote it for Versa Bedrock: its onboarding card on
+        // every connect, its Settings form on every save, `biorouter configure`
+        // when asked to. So once Versa was set up, the promotion made UCSF's
+        // gateway THIS provider's endpoint, and the user's own AWS-signed
+        // requests went there and were refused. Versa reads its own
+        // `VERSA_BEDROCK_ENDPOINT` now, but installs keep the old key, so it has
+        // to be ignored here, not merely left unwritten (2026-09-11).
 
         // Use load_defaults() which supports AWS SSO, profiles, and environment variables
         let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
