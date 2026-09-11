@@ -26,7 +26,9 @@ use crate::commands::schedule::{
     handle_schedule_run_now, handle_schedule_services_status, handle_schedule_services_stop,
     handle_schedule_sessions,
 };
-use crate::commands::session::{handle_session_list, handle_session_remove};
+use crate::commands::session::{
+    handle_session_list, handle_session_remove, RemoveSelector, SessionScope,
+};
 use crate::session::{build_session, SessionBuilderConfig};
 use crate::workflows::extract_from_cli::extract_workflow_info_from_cli;
 use crate::workflows::workflow::{explain_workflow, render_workflow_as_yaml};
@@ -565,11 +567,28 @@ enum SessionCommand {
             help = "Include subagent runs, nested under the session that spawned them. \
                     With this flag --limit counts top-level sessions, not total rows, \
                     and each run is marked live/done (or 'state unknown' when no daemon \
-                    can be reached to ask)"
+                    can be reached to ask). Also lists sessions with no messages"
         )]
         subagents: bool,
+
+        #[arg(
+            long = "include-empty",
+            help = "Include sessions that have not recorded a message yet — what a `biorouter` \
+                    run that exited before its first prompt, `doctor --fix` and `term init` \
+                    leave behind (--subagents already includes them)"
+        )]
+        include_empty: bool,
     },
-    #[command(about = "Remove sessions. Runs interactively if no ID, name, or regex is provided.")]
+    #[command(
+        about = "Remove sessions by id, name or regex, or pick them interactively",
+        long_about = "Remove sessions. --session-id removes that session whatever it is, \
+                      including a subagent run or a session with no messages. --name removes the \
+                      one session carrying that name and refuses when several share it. --regex \
+                      removes every session whose id matches, among those `session list` shows \
+                      unless --include-empty or --subagents widens the search. With none of the \
+                      three, a picker opens. Asks for confirmation first unless --yes; without a \
+                      terminal, --yes is required."
+    )]
     Remove {
         #[command(flatten)]
         identifier: Option<Identifier>,
@@ -579,6 +598,24 @@ enum SessionCommand {
             help = "Regex for removing matched sessions (optional)"
         )]
         regex: Option<String>,
+        #[arg(
+            short = 'y',
+            long,
+            help = "Remove without asking for confirmation (required when not run from a terminal)"
+        )]
+        yes: bool,
+        #[arg(
+            long,
+            help = "With --regex or the picker: also match subagent runs (and sessions with no \
+                    messages)"
+        )]
+        subagents: bool,
+        #[arg(
+            long = "include-empty",
+            help = "With --regex or the picker: also match sessions that have not recorded a \
+                    message yet"
+        )]
+        include_empty: bool,
     },
     #[command(about = "Export a session")]
     Export {
@@ -619,7 +656,14 @@ enum SessionCommand {
         text: String,
         #[arg(
             long,
-            help = "Return as soon as the turn starts instead of streaming it"
+            help = "Return as soon as the daemon accepts the turn, printing its turn id, instead \
+                    of streaming it",
+            long_help = "Return as soon as the daemon accepts the turn, printing the session and \
+                         turn id, instead of streaming it. The turn runs on in the daemon: \
+                         `session watch <id>` follows it and `session cancel <id>` stops it. The \
+                         daemon stops a turn once nothing has been attached to its reply stream \
+                         for five minutes (`session watch` does not count), so --no-wait suits \
+                         turns shorter than that."
         )]
         no_wait: bool,
         #[arg(
@@ -1793,16 +1837,36 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             working_dir,
             limit,
             subagents,
+            include_empty,
         } => {
-            handle_session_list(format, ascending, working_dir, limit, subagents).await?;
+            let scope = SessionScope {
+                subagents,
+                include_empty,
+            };
+            handle_session_list(format, ascending, working_dir, limit, scope).await?;
         }
-        SessionCommand::Remove { identifier, regex } => {
+        SessionCommand::Remove {
+            identifier,
+            regex,
+            yes,
+            subagents,
+            include_empty,
+        } => {
             let (session_id, name) = if let Some(id) = identifier {
                 (id.session_id, id.name)
             } else {
                 (None, None)
             };
-            handle_session_remove(session_id, name, regex).await?;
+            let scope = SessionScope {
+                subagents,
+                include_empty,
+            };
+            handle_session_remove(
+                RemoveSelector::from_flags(session_id, name, regex),
+                scope,
+                yes,
+            )
+            .await?;
         }
         SessionCommand::Export {
             identifier,

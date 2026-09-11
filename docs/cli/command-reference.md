@@ -55,6 +55,12 @@ Configure biorouter settings - providers, extensions, etc.
 biorouter configure
 ```
 
+`configure` is interactive and needs a terminal. Run from a script, a pipe or
+anywhere else without one, it changes nothing and exits with status `2`, naming
+the non-interactive route instead: choose the model with
+`biorouter models set --provider <provider> --model <model>` and pass the
+provider's API key in its environment variable (for example `OPENAI_API_KEY`).
+
 ### info [options]
 
 Shows biorouter information, including the version, configuration file location, session storage, and logs.
@@ -162,7 +168,8 @@ List all saved sessions.
 - **`--ascending`**: Sort sessions by date in ascending order (oldest first)
 - **`-w, --working_dir <path>`**: Filter sessions by working directory
 - **`-l, --limit <number>`**: Limit the number of results
-- **`--subagents`**: Include subagent runs, nested under the session that spawned them
+- **`--subagents`**: Include subagent runs, nested under the session that spawned them (and sessions that have no messages)
+- **`--include-empty`**: Include sessions that have not recorded a message yet — what a `biorouter` run that exited before its first prompt, `doctor --fix` and `term init` leave behind. They are hidden by default, as they are in the desktop app's History
 
 **Usage:**
 
@@ -224,9 +231,12 @@ Remove one or more saved sessions.
 
 **Options:**
 
-- **`--session-id <session_id>`**: Remove a specific session by its session ID
-- **`-n, --name <name>`**: Remove a specific session by its name
-- **`-r, --regex <pattern>`**: Remove sessions matching a regex pattern
+- **`--session-id <session_id>`**: Remove a specific session by its session ID — any session, including a subagent run or a session with no messages
+- **`-n, --name <name>`**: Remove the one session carrying this name. When several sessions share it (every session a bare `biorouter` creates is listed as `New chat` until it is renamed), nothing is removed and the matching IDs are listed
+- **`-r, --regex <pattern>`**: Remove every session whose ID matches a regex pattern, among the sessions `session list` shows
+- **`--include-empty`**: With `--regex` or the picker, also match sessions that have not recorded a message yet
+- **`--subagents`**: With `--regex` or the picker, also match subagent runs (and sessions with no messages)
+- **`-y, --yes`**: Remove without asking for confirmation. Required when the command is not run from a terminal
 - **`--path <path>`**: Remove a specific session by its file path (legacy)
 
 **Usage:**
@@ -238,6 +248,9 @@ biorouter session remove
 # Remove a specific session by ID
 biorouter session remove --session-id 20251108_3
 
+# The same, from a script: no confirmation prompt
+biorouter session remove --session-id 20251108_3 --yes
+
 # Remove a specific session by name
 biorouter session remove -n my-project
 
@@ -248,7 +261,7 @@ biorouter session remove -r "project-.*"
 biorouter session remove -r ".*migration.*"
 ```
 
-> **Warning.** Session removal is permanent and cannot be undone. biorouter will show which sessions will be removed and ask for confirmation before deleting.
+> **Warning.** Session removal is permanent and cannot be undone. Unless you pass `--yes`, biorouter shows which sessions will be removed and asks for confirmation before deleting. Asking needs a terminal: without one — in a script or a pipe, even with `y` piped in — the command removes nothing and exits with status `2`, asking for `--yes`.
 
 Removing a session also removes its per-turn usage records — which model and provider answered each reply, when, and how many tokens it used — whether you remove it here or delete it from the desktop app's chat history. The tokens it spent are first added to an anonymous total, kept per day, model and provider with nothing that identifies the chat, so `biorouter usage` and the desktop app's Usage panel still match your provider's own billing meter. The Home heatmap and its token tiles count only the chats that still exist.
 
@@ -343,7 +356,7 @@ Send a prompt into an existing session and stream the resulting turn, without op
 
 **Options:**
 
-- **`--no-wait`**: Return as soon as the turn starts, instead of streaming it to completion
+- **`--no-wait`**: Return as soon as the daemon accepts the turn, printing `[started] turn <turn_id> in session <session_id>`, instead of streaming it to completion
 
 **Usage:**
 
@@ -354,6 +367,12 @@ biorouter session send 20251108_2 "summarize what you have found so far"
 # Kick off a turn and return immediately
 biorouter session send 20251108_2 "run the full test suite" --no-wait
 ```
+
+A turn started with `--no-wait` runs on in the daemon: `biorouter session watch
+<session_id>` follows it and `biorouter session cancel <session_id>` stops it.
+The daemon stops a turn once nothing has been attached to its reply stream for
+five minutes, and `session watch` does not count as attached — so `--no-wait`
+suits turns shorter than that. Leave `--no-wait` off for a longer one.
 
 ### session attach [options]
 
@@ -725,6 +744,10 @@ Choose one of your projects to start working on.
 ```bash
 biorouter projects
 ```
+
+Both `project` and `projects` are interactive and need a terminal. Without one
+they exit with status `2` and point at the scriptable equivalent,
+`biorouter run --resume --session-id <id> --text "<prompt>"`.
 
 ## Interface
 
