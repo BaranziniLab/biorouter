@@ -509,11 +509,11 @@ export default function CreateWorkflowFromSessionModal({
                 onKnowledgeBaseIdsChange={(ids) => {
                   resourceEditsRef.current.knowledgeBases = true;
                   setWorkflowKnowledgeBaseIds(ids);
-                  if (defaultKnowledgeBaseId && !ids.includes(defaultKnowledgeBaseId)) {
-                    setDefaultKnowledgeBaseId(ids[0] ?? null);
-                  } else if (!defaultKnowledgeBaseId && ids.length > 0) {
-                    setDefaultKnowledgeBaseId(ids[0]);
-                  }
+                  // Switching bases on or off never names a primary: only the
+                  // picker's Default control does. A primary already named stays
+                  // while its base is selected, and goes when it is not, rather
+                  // than passing to whichever base is left.
+                  setDefaultKnowledgeBaseId((current) => primaryAmong(current, ids));
                 }}
                 defaultKnowledgeBaseId={defaultKnowledgeBaseId}
                 onDefaultKnowledgeBaseIdChange={(id) => {

@@ -1,4 +1,14 @@
-import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  type MockInstance,
+} from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CreateWorkflowFromSessionModal from '../CreateWorkflowFromSessionModal';
@@ -764,6 +774,22 @@ describe('CreateWorkflowFromSessionModal', () => {
       mockGetActive.mockResolvedValue({ data: undefined, error: 'Failed to fetch' } as never);
     let warn: MockInstance;
 
+    beforeAll(() => {
+      // The picker is a Radix popover, and floating-ui measures it.
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        }
+      );
+    });
+
+    afterAll(() => {
+      vi.unstubAllGlobals();
+    });
+
     beforeEach(() => {
       warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockListBases.mockResolvedValue({
@@ -860,6 +886,57 @@ describe('CreateWorkflowFromSessionModal', () => {
         const saved = await saveTheWorkflow(user);
 
         expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['lab-notes', 'soul'] });
+      });
+    });
+
+    /**
+     * Only the picker's Default control names a primary. Switching a base on
+     * says the workflow may search it, not that KB-less writes go there, and
+     * switching one off must not hand the role to whichever base is left.
+     */
+    describe('when the user edits the knowledge bases', () => {
+      async function openThePicker(user: ReturnType<typeof userEvent.setup>) {
+        await user.click(await screen.findByText('2 KBs selected'));
+      }
+
+      it('switching a base on does not make it the primary', async () => {
+        const user = userEvent.setup();
+        render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+        await openThePicker(user);
+        await user.click(screen.getByRole('switch', { name: 'Toggle grant-drafts' }));
+
+        const saved = await saveTheWorkflow(user);
+        expect(saved?.knowledge_bases).toEqual({
+          default: null,
+          visible: ['soul', 'lab-notes', 'grant-drafts'],
+        });
+      });
+
+      it('switching a base off does not make another the primary', async () => {
+        const user = userEvent.setup();
+        render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+        await openThePicker(user);
+        await user.click(screen.getByRole('switch', { name: 'Toggle lab-notes' }));
+
+        const saved = await saveTheWorkflow(user);
+        expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['soul'] });
+      });
+
+      it('switching the primary off leaves no primary', async () => {
+        const user = userEvent.setup();
+        mockGetActive.mockResolvedValue({
+          data: { ...NO_PRIMARY, primary_kb: 'lab-notes', active_kb: 'lab-notes' },
+          error: undefined,
+        } as never);
+        render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+        await openThePicker(user);
+        await user.click(screen.getByRole('switch', { name: 'Toggle lab-notes' }));
+
+        const saved = await saveTheWorkflow(user);
+        expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['soul'] });
       });
     });
   });
