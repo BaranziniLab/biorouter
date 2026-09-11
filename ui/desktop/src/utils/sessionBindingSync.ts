@@ -66,13 +66,34 @@
  * the selection says what a NEW chat will run on. A window that hears "chat X is
  * now bound to Y" learns something true about chat X and nothing at all about
  * its own next new chat — which is exactly right, because a per-chat switch made
- * over there is not a statement about new chats over here. The global default
- * does move underneath both windows, and each picks it up from its own config
- * read; that is unchanged, and unrelated.
+ * over there is not a statement about new chats over here.
  *
  * What must NOT cross is a claim the receiver cannot check. So the receiver
  * treats an announcement about a chat it holds as authoritative (the daemon
  * accepted the write before it was announced) and ignores everything else.
+ *
+ * # The second fact crosses too — F3
+ *
+ * This header used to end the objection above with "the global default does
+ * move underneath both windows, and each picks it up from its own config read".
+ * **Each window read it once, when it mounted, and never again.** Measured on
+ * 2026-09-10 (provider QA, finding F3): switch the app-wide model in window 1 and
+ * window 2's chip never moved — it went on reading `gpt-5.5-2026-04-24 (Private
+ * model, UCSF)` while the chat it started bound `claude_code`, because
+ * `/agent/start` binds whatever `config.yaml` says at that instant. The session
+ * was classified `public` correctly; the label the user acted on was the lie.
+ *
+ * So the app-wide selection has its own announcement on this same channel
+ * ({@link announceAppModelSelection}). It differs from the binding in one way
+ * that matters: it is a **nudge, never a payload**. A binding is a fact about
+ * one row that the daemon accepted before it was announced; the selection is
+ * one pair of config keys that any window, the CLI or a hand edit may be
+ * rewriting at the same moment, and two announcements can arrive in the
+ * opposite order from the two writes they describe. A receiver that applied the
+ * values would end on whichever message arrived last; one that re-reads the
+ * daemon ends on whichever WRITE landed last, which is what `/agent/start` will
+ * bind. The same reason `catalogSubscription` refetches rather than applying a
+ * delta.
  */
 
 export interface SessionBindingChange {
@@ -97,10 +118,25 @@ type Listener = (change: SessionBindingChange) => void;
 
 const listeners = new Set<Listener>();
 
+/**
+ * The wire form of {@link announceAppModelSelection}: a kind and nothing else.
+ *
+ * ⚠ No provider, no model — deliberately, and not for brevity. See "The second
+ * fact crosses too" above: a receiver that could read the values off the message
+ * would eventually be written to apply them, and applying them is the race.
+ */
+export const APP_MODEL_SELECTION_MESSAGE = { kind: 'app-model-selection' } as const;
+
+type AppModelSelectionListener = () => void;
+
+const appSelectionListeners = new Set<AppModelSelectionListener>();
+
 // ── Cross-window broadcast ────────────────────────────────────────────────
 // Same mechanism and same channel shape as `sessionNameSync`: BroadcastChannel
 // reaches every React subtree in this renderer AND every other BrowserWindow of
-// the same origin, which is what a second Biorouter window is.
+// the same origin, which is what a second Biorouter window is. ONE channel
+// carries both facts, told apart by shape: a binding names a session, the
+// selection nudge names a `kind` and no session.
 
 let channel: BroadcastChannel | null = null;
 function getChannel(): BroadcastChannel | null {
@@ -108,7 +144,16 @@ function getChannel(): BroadcastChannel | null {
   if (typeof BroadcastChannel === 'undefined') return null;
   channel = new BroadcastChannel('biorouter:session-binding');
   channel.onmessage = (event: MessageEvent) => {
-    const change = event.data as SessionBindingChange | undefined;
+    const data = event.data as
+      | SessionBindingChange
+      | typeof APP_MODEL_SELECTION_MESSAGE
+      | null
+      | undefined;
+    if (data && (data as { kind?: unknown }).kind === APP_MODEL_SELECTION_MESSAGE.kind) {
+      for (const listener of [...appSelectionListeners]) listener();
+      return;
+    }
+    const change = data as SessionBindingChange | null | undefined;
     // Shape-checked, not trusted: this arrives from another window and a
     // malformed message must not patch a row with `undefined`.
     if (!change || !change.sessionId || !change.provider || !change.model) return;
@@ -140,4 +185,40 @@ export function subscribeSessionBindingChanges(listener: Listener): () => void {
 export function announceSessionBinding(change: SessionBindingChange): void {
   for (const listener of [...listeners]) listener(change);
   getChannel()?.postMessage(change);
+}
+
+/**
+ * Subscribe to "the app-wide model selection may have moved". Returns the
+ * unsubscribe.
+ *
+ * The listener gets no values, only the nudge: re-read `BIOROUTER_PROVIDER` /
+ * `BIOROUTER_MODEL` from the daemon and state what comes back. Subscribe from a
+ * MOUNT (`ModelAndProviderProvider`'s effect), never from a lookup — a
+ * subscription is a side effect, and one hung off a getter runs in every test
+ * that calls the getter.
+ */
+export function subscribeAppModelSelectionChanges(listener: () => void): () => void {
+  getChannel();
+  appSelectionListeners.add(listener);
+  return () => {
+    appSelectionListeners.delete(listener);
+  };
+}
+
+/**
+ * Announce that `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` were just written.
+ *
+ * Call it AFTER the write resolved: a receiver re-reads the daemon, and a nudge
+ * that outran its write would re-read the value it was sent to replace — and
+ * then, with nothing further to wake it, keep stating it.
+ *
+ * Local listeners run synchronously, as {@link announceSessionBinding}'s do, so
+ * the window that wrote re-reads too. That is not redundant: the writer is not
+ * always `ModelAndProviderContext` itself (onboarding and Lead/Worker write
+ * these keys through `ConfigContext.upsert`), and a read issued after the write
+ * is what settles a race with another window's write.
+ */
+export function announceAppModelSelection(): void {
+  for (const listener of [...appSelectionListeners]) listener();
+  getChannel()?.postMessage({ ...APP_MODEL_SELECTION_MESSAGE });
 }
