@@ -152,6 +152,33 @@ fn workflow_copy_extension(original: &Path) -> String {
         .to_string()
 }
 
+/// The 6-field expression the cron engine runs, or why `expression` cannot be
+/// scheduled.
+///
+/// The ONE place both the 5→6 conversion and the validity check live.
+/// [`Scheduler::create_cron_task`] builds every job through it, and
+/// `platform__manage_schedule` calls it to refuse an unschedulable expression
+/// before asking the user to approve it — a card for a schedule that cannot be
+/// created spends their attention on nothing. The check is the engine's own
+/// parser, so "valid" means exactly what the engine will accept.
+pub fn normalize_cron(expression: &str) -> Result<String, SchedulerError> {
+    let fields = expression.split_whitespace().count();
+    let cron = match fields {
+        5 => format!("0 {expression}"),
+        6 => expression.to_string(),
+        _ => {
+            return Err(SchedulerError::CronParseError(format!(
+                "Invalid cron expression '{expression}': expected 5 or 6 fields, got {fields}"
+            )))
+        }
+    };
+    Job::new_async_tz(cron.as_str(), Local::now().timezone(), |_uuid, _lock| {
+        Box::pin(async {})
+    })
+    .map_err(|e| SchedulerError::CronParseError(e.to_string()))?;
+    Ok(cron)
+}
+
 /// Where `make_copy` will put the job's own copy of its workflow, and the check
 /// that there is something to copy.
 ///
@@ -983,25 +1010,14 @@ impl Scheduler {
         // says the job is gone (see `converge_removals`).
         let cron_handle = self.tokio_scheduler.clone();
 
-        let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
-        let cron = match cron_parts.len() {
-            5 => {
-                tracing::warn!(
-                    "Job '{}' has legacy 5-field cron '{}', converting to 6-field",
-                    job.id,
-                    job.cron
-                );
-                format!("0 {}", job.cron)
-            }
-            6 => job.cron.clone(),
-            _ => {
-                return Err(SchedulerError::CronParseError(format!(
-                    "Invalid cron expression '{}': expected 5 or 6 fields, got {}",
-                    job.cron,
-                    cron_parts.len()
-                )))
-            }
-        };
+        if job.cron.split_whitespace().count() == 5 {
+            tracing::warn!(
+                "Job '{}' has legacy 5-field cron '{}', converting to 6-field",
+                job.id,
+                job.cron
+            );
+        }
+        let cron = normalize_cron(&job.cron)?;
 
         let local_tz = Local::now().timezone();
 

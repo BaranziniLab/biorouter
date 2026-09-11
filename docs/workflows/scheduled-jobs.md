@@ -41,9 +41,29 @@ biorouter session
 > Schedule the "nightly-analysis" workflow to run every day at 2am
 ```
 
-Biorouter will create the scheduled job and confirm the cron expression.
+Biorouter asks you to approve the job before creating it, then confirms the cron expression.
 
 > **Note.** To register a job non-interactively, use `biorouter schedule add`. Its flags and a worked example are in [Creating and sharing workflows](creating-and-sharing-workflows.md#schedule-a-workflow) and the [`schedule` command reference](../cli/command-reference.md#schedule).
+
+### When the agent schedules something, you approve it
+
+A scheduled job is a standing agent run. Once it exists, a new session starts on its schedule with nobody watching and does whatever its workflow says. So the agent cannot set one up, or change one, without you. Every change the `platform__manage_schedule` tool can make raises an approval card first:
+
+| Action | What the card asks |
+|---|---|
+| `create` | Run this workflow automatically on this schedule. |
+| `run_now` | Run this schedule once, right now, outside its schedule. |
+| `pause` / `unpause` | Stop this schedule running, or start it running again. |
+| `delete` | Remove this schedule for good. |
+| `kill` | Stop the run that is in progress now. |
+
+The card says in words when the job runs (for example *every day at 02:00, this computer's local time*), which workflow it runs, and how: in the background, on the chat's model, under your permission mode. The card for `create` also shows the whole workflow, not just its path, because the workflow is what the unattended run will do. The exact cron expression is always on the card as well. A schedule written in a shape the card cannot put into words is quoted rather than paraphrased.
+
+- **The card appears in every permission mode**, Autonomous included. The tool parks the card itself, so the permission mode does not decide whether you are asked. The card for saving a workflow with `platform__manage_workflow` works the same way.
+- **Only you can approve it.** The card needs proof that a person clicked it, so an agent cannot approve its own schedule.
+- **Reading asks nothing.** `list`, `inspect`, `sessions` and `session_content` change nothing and raise no card.
+- **Impossible changes are refused without a card.** For example: a schedule that does not exist, stopping a run that is not running, a cron expression the scheduler cannot parse, or a workflow that hides characters the card could not show.
+- **In a browser session started by `biorouter serve`**, nobody can approve anything, so the tool offers only the read actions. Make changes in the desktop app or with the `biorouter` command line instead.
 
 ## Cron expression format
 
