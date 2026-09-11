@@ -53,7 +53,10 @@ case with its own logic — it is that rule, stated on a request.
 The header is read by
 [`crates/biorouter-server/src/routes/session_reach.rs`](../../crates/biorouter-server/src/routes/session_reach.rs);
 `biorouter session watch`, `send` and `attach` already send it, which is why those commands reach a
-private chat from a terminal that can never prove a human is present.
+private chat from a terminal that can never prove a human is present. So does the browser interface
+`biorouter serve` serves, naming the model the host was configured with
+([SD-9](serve-decisions.md#sd-9--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)):
+a browser, like a terminal, can never carry the proof, and runs the model its host chose.
 
 ## What the header is *not*
 
@@ -67,9 +70,13 @@ which got the answer backwards in both directions: a terminal running an institu
 refused, while the desktop app was admitted for the same chat while running a public one.
 
 **It is not a way to raise or lower a tier.** Reaching a chat and *reclassifying* one are separate
-decisions. Raising a session's classification, declassifying it, and binding a private model all
-still require proof that the person at the keyboard acted (`X-User-Action`), and no header changes
-that. A capability is a fact about a model; neither of those is a decision a model may make.
+decisions. Raising a session's classification, declassifying it, and binding a private model to a
+chat all still require proof that the person at the keyboard acted (`X-User-Action`), and no header
+changes that. A capability is a fact about a model; neither of those is a decision a model may make.
+The one bind that needs no proof is not a header's doing either: on a daemon with no user-action
+key, a **new** chat starts on the model the operator configured, private or not, because choosing
+it with `biorouter configure` was the decision
+([SD-9](serve-decisions.md#sd-9--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)).
 
 **It is not a per-request opt-out.** There is no header that turns the gate off. The only
 machine-wide switch is the privacy master switch, which lives in its own record beside

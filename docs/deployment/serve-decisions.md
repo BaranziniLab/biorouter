@@ -17,7 +17,8 @@ This page records the decisions that replaced that arrangement. They were taken 
 several of them only make sense as a set: the reason a browser session cannot switch models
 (SD-1) is also the reason it needs no proof-of-user mechanism, which is the reason the daemon
 can be spawned with a closed stdin (SD-7) — and the reason every control that needs that proof
-must say so before the user reaches for it (SD-8). Read [the architecture](serve-architecture.md)
+must say so before the user reaches for it (SD-8), and the reason the one model the operator
+chose must not need that proof at all (SD-9). Read [the architecture](serve-architecture.md)
 for how the result is built, and [browser access](browser-access.md) for how to use it.
 
 Records are identified `SD-n` — *serve decision*. The numbering is stable; a superseded record
@@ -27,7 +28,7 @@ keeps its number and says what replaced it.
 
 ## SD-1 — A browser session cannot change its model or provider, and that is the point
 
-**Ruling.** `POST /config/provider` continues to refuse a request that carries no proof a human
+**Ruling.** `POST /config/set_provider` continues to refuse a request that carries no proof a human
 made it. Browser-served Biorouter installs no such proof. A browser session therefore runs
 whatever provider and model the machine was already configured with, and the model picker is
 inert.
@@ -45,6 +46,12 @@ it. Leaving it in place means the operator chooses the provider once, at the ter
 anyone opens a tab — and the tier that choice implies holds for every session in that daemon.
 A run started against an institutional Bedrock model is private for its whole life; one started
 against a commercial model is public for its whole life. Neither can drift.
+
+> ⚠ **The first half of that sentence was unreachable until SD-9.** A `serve` daemon holds no
+> user-action key, and the new-chat bind asked for that key's proof before binding a private
+> model — so with an institutional model configured, no chat could be started at all, and the
+> interface showed nothing (the 2026-09-10 QA run, finding F1). See
+> [SD-9](#sd-9--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does).
 
 **Displaced alternatives.**
 
@@ -224,6 +231,96 @@ who insists may proceed past a warning, but nothing proceeds automatically.
 started, so two daemons on the same machine can offer different tools. The availability flag is
 sampled once per roster and threaded, rather than re-read inside each declaration, so a roster
 can never half-believe a person is reachable.
+
+---
+
+## SD-9 — A new chat starts on the operator's model without a proof, and nothing else does
+
+**Ruling.** On a daemon that holds no user-action key — the one `biorouter serve` starts (SD-7),
+or a `biorouterd` started by hand — `POST /agent/start` binds the operator's configured provider
+to the new chat without asking for proof of a person, whether that provider is public or private.
+Three things hold beside it:
+
+- On that daemon, `POST /agent/update_provider` refuses every move onto a private model, whatever
+  the chat runs on now. The configured model is the only private model a chat there can reach.
+- A daemon that holds a key — the desktop application's — is unchanged. Its renderer sends the
+  proof on every start, and a start that lacks it is refused as before.
+- The browser interface states the host's configured model on the requests that reach into a chat
+  (`X-Caller-Provider`), the way `biorouter session` already does from a terminal, so a chat its
+  first reply made private stays reachable from the tab that started it.
+
+**Why.** The configured model is the person's decision, made out of band. `/agent/start` names no
+provider: it binds `BIOROUTER_PROVIDER`, which only a proven person may write over HTTP, or which
+the operator wrote at the terminal with `biorouter configure`. Open question 24 of the privacy plan
+already put the raise at that write — *a raise of every future session* — and SD-1 already says the
+tier that choice implies *holds for every session in that daemon*. A new chat taking that tier is
+the choice being honored, not a switch. DR-16 governs raising a chat that exists, and a chat that
+did not exist a moment ago has nothing to raise.
+
+On a daemon with no key, asking for the proof can only refuse everyone. The 2026-09-10 QA run
+measured it: with an institutional model configured, every new chat on a `serve` daemon was
+refused 409, in a sentence written for a model that pointed at a model picker SD-1 disables, and
+the interface showed nothing at all. A control nobody can pass is not a boundary; it is the
+product not working.
+
+The other two halves close what the exemption would otherwise open. Without the rule on
+`/agent/update_provider`, a chat bound to the private default could be moved to a different private
+model — `Private → Private`, which DR-16's raise predicate calls sideways and allows — that nobody
+configured. Without the capability statement, the tab that started a chat lost it after one reply:
+the reply makes the chat private (the classification ratchets on the turn, never on the bind), and a
+keyless daemon reaches a private chat only for a caller whose stated capability covers it. Measured:
+the chat's next request answered 403 with nothing stated, and 200 with the host's provider stated.
+
+**Why not on every daemon.** On a daemon that holds a key the proof costs the person nothing — the
+renderer attaches it to every start — and it still refuses a caller that cannot present it. That
+includes a model holding the daemon secret, which AR-11 found recoverable and which could otherwise
+mint a private-capability chat through `/agent/start` with an extension set of its own choosing.
+Relaxing the gate there buys the person nothing and gives that model something.
+
+**Who can do this, and what else reaches the same place.** The two questions every privacy
+control answers in writing ([privacy tiers §3.1](../security/privacy-tiers.md)):
+
+- *Who can initiate it.* On a keyless daemon, anything holding the daemon secret: the person in
+  the browser and, indistinguishably, a model running in a chat on that daemon that has recovered
+  the secret. Both get the configured model and nothing else.
+- *What else reaches a chat running on the configured private model:*
+
+  | Door | Proof asked | Changed here |
+  |---|---|---|
+  | `workspace_open { new: … }` — binds the machine default through `restore_provider_from_session` | None, on every daemon (privacy tiers, "Did not ship") | No |
+  | `POST /agent/restart` on a row that names no provider — `restore_provider_from_session` falls back to the configured default | None | No |
+  | An app session's creation bind (DR-21) | None, deliberately | No |
+  | `POST /agent/update_provider` onto a private model | The proof; on a keyless daemon, refused outright | Yes |
+  | `POST /config/set_provider`, and `/config/upsert` or `/config/remove` on a capability key | The proof (SD-1, open question 24) | No — the configured model stays the operator's to choose |
+
+**Displaced alternatives.**
+
+- *Keep the refusal, and explain it in the interface.* Rejected. SD-8's explanation is for a
+  control that can never work; this one is the product's core. A `serve` deployment whose only
+  model is institutional would be a chat application that cannot chat.
+- *Exempt every new chat, whatever provider it asks for.* Rejected. The operator's choice is what
+  makes the bind legitimate, so a provider the request picked would be a switch. `/agent/start`
+  names none today, and a field that ever let it name one must not inherit this exemption.
+- *Exempt the configured model on every daemon.* Rejected; see *Why not on every daemon*.
+- *Let a keyless daemon treat its configured model as the capability of any request that states
+  none.* Rejected. An absent header resolving to Public is the fail-safe the reach gate is built on,
+  and a default that raised it would speak for every caller rather than for the client that says
+  what it runs.
+
+**Consequence to accept.** On a keyless daemon whose configured model is private, a model running
+in a chat on that daemon — a public-model chat resumed from the shared session store — that has
+recovered the daemon secret can start a private-capability chat through `/agent/start` with
+extensions it chose, and can reach private chats by stating the host's provider. It could already
+do the first through `workspace_open { new }`, and the second by spelling a provider name (the
+header is not authentication, as `session_reach.rs` records); and the filesystem read-deny that
+would stop it carrying anything back out did not ship. It is recorded rather than closed: on a
+daemon that cannot tell a person from a model, closing it means refusing the person.
+
+And one visible change: a browser tab on a host configured with a private model now opens private
+chats started in the desktop application on the same machine, which it was refused before. That is
+the reach rule — *the caller's capability must be at least the chat's classification* — admitting
+it, exactly as it admits `biorouter session` configured with the same model. On a host configured
+with a public model nothing changes, and private chats stay out of the browser's reach.
 
 ---
 

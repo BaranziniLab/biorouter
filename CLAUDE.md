@@ -1177,6 +1177,22 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   **agent**, so every surface that writes a capability key asks `isBrowserSurface()`
   (`ui/desktop/src/utils/surface.ts`) and explains *before* the user can reach the 409. Do not
   "fix" browser mode by weakening the refusal.
+- **A new chat starts on the configured model without a proof, and nothing else does** (SD-9).
+  Until it, a `serve` daemon with a private provider configured refused EVERY `/agent/start`
+  (the 2026-09-10 QA's F1): the new-chat bind asked for a proof a keyless daemon cannot check.
+  Three pieces, each load-bearing — measured by removing it: on a keyless daemon
+  `new_chat_bind_needs_user` (`routes/agent.rs`) lets the configured default bind, while a keyed
+  daemon still refuses a proof-less private first bind; `raise_baseline` makes a keyless
+  daemon's `/agent/update_provider` measure every move onto a private model from Public, or the
+  exemption would carry sideways to a private model nobody configured; and the browser states the
+  host's model as `X-Caller-Provider` (`userActionHeaders()` on `isBrowserSurface()`), without
+  which a chat's first reply ratcheted it private and its next request 403'd. Tests:
+  `cargo test -p biorouter-server --test new_chat_no_user_key` (its own binary: the digest is a
+  process-global `OnceLock`). ⚠ **Still unreachable in a browser, and out of SD-9's scope:**
+  `/agent/cancel` and `/interrupt` require the proof unconditionally, so Stop and mid-turn
+  steering cannot work on a keyless daemon. ⚠ `privacy_ar15_is_retired.rs`'s closure scan took
+  the FIRST `TierRaiseNeedsUser` in `routes/agent.rs`, which from `eb594ded` was the new-chat gate
+  and not AR-15's — it now starts at `update_agent_provider`.
 - **A control that can never work here says so, before it is touched** (SD-8). The same
   `Stdio::null()` that closes SD-1 means NO approval carrying `requires_user_proof` can ever
   be granted on a `serve` daemon — for anyone, always. So `confirm_tool_action` answers a
