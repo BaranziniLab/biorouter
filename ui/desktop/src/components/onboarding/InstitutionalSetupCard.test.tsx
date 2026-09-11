@@ -27,6 +27,17 @@ async function connectVersaAzure() {
   await waitFor(() => expect(mockCheckProvider).toHaveBeenCalled());
 }
 
+async function connectVersaBedrock() {
+  const onSuccess = vi.fn();
+  render(<InstitutionalSetupCard onSuccess={onSuccess} />);
+  fireEvent.click(screen.getByRole('tab', { name: /Bedrock/i }));
+  fireEvent.change(screen.getByLabelText(/Access Key ID/i), { target: { value: 'an-id' } });
+  fireEvent.change(screen.getByLabelText(/Secret Access Key/i), { target: { value: 'a-secret' } });
+  fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Bedrock/i }));
+  // Past `checkProvider`, so every write the connect makes has been recorded.
+  await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('versa_bedrock'));
+}
+
 describe('InstitutionalSetupCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -54,5 +65,28 @@ describe('InstitutionalSetupCard', () => {
     expect(written).toContain('VERSA_AZURE_ENDPOINT');
     expect(written).toContain('VERSA_AZURE_DEPLOYMENT_NAME');
     expect(written).toContain('VERSA_AZURE_API_VERSION');
+  });
+
+  it('never writes a key in the public AWS namespace when connecting UCSF Versa Bedrock', async () => {
+    // Connecting UCSF's PRIVATE Versa Bedrock used to write `AWS_REGION` and
+    // `AWS_ENDPOINT_URL_BEDROCK`. The public `aws_bedrock` card declares
+    // `AWS_REGION`, so the write marked that card Configured and replaced its
+    // region; and `bedrock.rs` exports every `AWS_*` key into the process
+    // environment, which is how the UCSF gateway became the public provider's
+    // endpoint.
+    await connectVersaBedrock();
+    const written = mockUpsert.mock.calls.map((c) => c[0] as string);
+    expect(written.filter((key) => key.startsWith('AWS_'))).toEqual([]);
+  });
+
+  it('writes the Versa Bedrock credentials and overrides, then selects the provider', async () => {
+    await connectVersaBedrock();
+    expect(mockUpsert.mock.calls).toEqual([
+      ['VERSA_BEDROCK_ACCESS_KEY_ID', 'an-id', true],
+      ['VERSA_BEDROCK_SECRET_ACCESS_KEY', 'a-secret', true],
+      ['VERSA_BEDROCK_ENDPOINT', 'https://unified-api.ucsf.edu/general/awsai', false],
+      ['VERSA_BEDROCK_REGION', 'us-west-2', false],
+      ['BIOROUTER_PROVIDER', 'versa_bedrock', false],
+    ]);
   });
 });
