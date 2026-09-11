@@ -677,6 +677,11 @@ reads `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT_NAME` / `AZURE_OPENAI_A
 compiled-in UCSF gateway (`unified-api.ucsf.edu`), computed at construction when the endpoint is
 already resolved.
 
+> **Update (2026-09-11).** `versa_azure` now reads only its own `VERSA_AZURE_ENDPOINT` /
+> `_DEPLOYMENT_NAME` / `_API_VERSION`, so the shared-key half of this hazard is closed at the source:
+> whatever the public `azure_openai` card is set up with no longer reaches it. The demotion rule is
+> unchanged and still needed, because `VERSA_AZURE_ENDPOINT` is user-writable config.
+
 **Never keyed on a model id.** `us.anthropic.claude-opus-4-8` appears in both
 `BEDROCK_KNOWN_MODELS` and `VERSA_BEDROCK_KNOWN_MODELS`. Any model-name badge is wrong by
 construction.

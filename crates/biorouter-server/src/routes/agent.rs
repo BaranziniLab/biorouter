@@ -3057,7 +3057,7 @@ mod new_session_provider_binding_tests {
         );
         overrides.insert("VERSA_AZURE_API_KEY".into(), "test-api-key".into());
         overrides.insert(
-            "AZURE_OPENAI_ENDPOINT".into(),
+            "VERSA_AZURE_ENDPOINT".into(),
             biorouter::providers::versa_azure::VERSA_AZURE_ENDPOINT.into(),
         );
         overrides.insert(
@@ -3069,7 +3069,7 @@ mod new_session_provider_binding_tests {
             .into(),
         );
         overrides.insert(
-            "AZURE_OPENAI_API_VERSION".into(),
+            "VERSA_AZURE_API_VERSION".into(),
             biorouter::providers::versa_azure::VERSA_AZURE_API_VERSION.into(),
         );
         let request = || StartAgentRequest {

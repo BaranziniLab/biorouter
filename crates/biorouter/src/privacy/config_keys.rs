@@ -61,22 +61,17 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     //   Pointing a private-badged provider off-site is a real and different
     //   problem — it belongs to Task 5's tier definition and to Open question 5,
     //   not to DR-16 — and it is recorded here rather than left unstated.
-    (
-        "AZURE_OPENAI_ENDPOINT",
-        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
-    ),
-    // No `AZURE_OPENAI_DEPLOYMENT_NAME` row: no tier-input file reads it. It is
-    // the public `azure_openai` card's required key, and `versa_azure` reading
-    // it as a fallback let that card's deployment route every Versa request, so
-    // the read was removed (2026-09-11). `azure.rs` still reads it and is not a
-    // tier-input file: `azure_openai` is Public whatever deployment it names.
-    ("AZURE_OPENAI_API_VERSION", "wire version"),
-    // Versa's own namespace for the same three overrides. They exist because
-    // onboarding used to write the `AZURE_OPENAI_*` keys above on Versa's
-    // behalf, which made the PUBLIC `azure_openai` card report itself
-    // Configured whenever a user connected UCSF's PRIVATE Versa. Same
-    // classification as the legacy reads they replace: they move a Private
-    // provider's endpoint, they do not raise a tier.
+    //
+    // Versa Azure's three overrides, in its own namespace. It used to share the
+    // public `azure_openai` card's `AZURE_OPENAI_*` keys, which went wrong both
+    // ways: onboarding WROTE them on Versa's behalf, so connecting UCSF's
+    // PRIVATE Versa made that PUBLIC card report itself Configured (hence this
+    // namespace, 2026-09-03); and Versa went on READING them as a fallback, so
+    // whatever that card was set up with — a company resource's endpoint,
+    // deployment and API version — steered every Versa request (read removed
+    // 2026-09-11). No tier-input file reads the `AZURE_OPENAI_*` keys now, so
+    // they have no rows here; `azure.rs` still reads them and is not a
+    // tier-input file, because `azure_openai` is Public wherever it points.
     (
         "VERSA_AZURE_ENDPOINT",
         "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
@@ -187,10 +182,10 @@ mod tests {
         // of the two lists. Adding a config read to any of them fails this test
         // until someone decides whether it determines capability. That is the
         // checkable list: it does not depend on anyone remembering a rule.
-        let scanned = scan_get_param_keys(); // 25 today
+        let scanned = scan_get_param_keys(); // 23 today
         assert_eq!(
             scanned.len(),
-            25,
+            23,
             "the tier-input files' config surface changed: {scanned:?}"
         );
         for key in &scanned {

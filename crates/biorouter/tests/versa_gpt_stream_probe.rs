@@ -1,6 +1,6 @@
 //! Opt-in synthetic provider/decoder probe; returned tools are never executed.
 //! Requires BIOROUTER_RUN_VERSA_GPT_PROBE=1, BIOROUTER_VERSA_GPT_PROBE_MODEL,
-//! matching VERSA_AZURE_DEPLOYMENT_NAME, AZURE_OPENAI_ENDPOINT, and a NEW
+//! matching VERSA_AZURE_DEPLOYMENT_NAME, VERSA_AZURE_ENDPOINT, and a NEW
 //! BIOROUTER_VERSA_GPT_PROBE_OUTPUT directly under /tmp. CASE defaults to todo;
 //! BIOROUTER_VERSA_GPT_PROBE_CASE=python_sqlite requests a medium file instead.
 //! gpt-5.6 is an unverified requested deployment, not a claim of availability.
@@ -189,7 +189,7 @@ async fn manual_versa_gpt_stream_probe() {
         &required("VERSA_AZURE_DEPLOYMENT_NAME"),
     )
     .unwrap_or_else(|class| panic!("{class}"));
-    approved_endpoint(&required("AZURE_OPENAI_ENDPOINT")).unwrap_or_else(|class| panic!("{class}"));
+    approved_endpoint(&required("VERSA_AZURE_ENDPOINT")).unwrap_or_else(|class| panic!("{class}"));
     let case = std::env::var("BIOROUTER_VERSA_GPT_PROBE_CASE").unwrap_or_else(|_| "todo".into());
     synthetic_case(&case).unwrap_or_else(|class| panic!("{class}"));
     let path = required("BIOROUTER_VERSA_GPT_PROBE_OUTPUT");
