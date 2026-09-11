@@ -6459,7 +6459,12 @@ mod tests {
             refused.contains("secret/credential deny pattern"),
             "{refused}"
         );
-        assert!(refused.contains(".aws/credentials"), "{refused}");
+        // Separator-agnostic: the resolved path renders `.aws\credentials` on
+        // Windows and `.aws/credentials` elsewhere; the guard matched either way.
+        assert!(
+            refused.replace('\\', "/").contains(".aws/credentials"),
+            "{refused}"
+        );
     }
 
     /// A client that answers with credential material — standing in for a

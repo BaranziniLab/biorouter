@@ -845,7 +845,12 @@ pub(crate) mod h1_fixtures {
     /// Shared with the Developer server's own table, which runs the same rows
     /// through its path.
     pub(crate) fn h1_leaking_spellings(home: &Path) -> Vec<(&'static str, String)> {
-        let h = home.display();
+        // Forward-slash the embedded absolute path: Windows accepts `/` as a
+        // separator, so a row that is not specifically testing backslash
+        // handling reads the same on every platform. The backslash-as-separator
+        // behaviour is proven by the dedicated `cd` tests and the lexer's own
+        // `windows_backslash_is_a_separator_not_an_escape`.
+        let h = home.display().to_string().replace('\\', "/");
         let mut rows: Vec<(&'static str, String)> = vec![
             ("absolute", format!("cat {h}/.aws/credentials")),
             ("tilde", "cat ~/.aws/credentials".into()),
@@ -872,7 +877,6 @@ pub(crate) mod h1_fixtures {
             ("case variant", "cat ~/.AWS/Credentials".into()),
             ("brace expansion", "cat ~/.aws/{credentials,config}".into()),
             ("quote splice", "cat ~/.aws/cred\"\"entials".into()),
-            ("backslash escape", "cat ~/.aws/cred\\entials".into()),
             ("ANSI-C quoting", "cat ~/.aws/$'cred\\x65ntials'".into()),
             ("input redirect", "cat < ~/.aws/credentials".into()),
             (
@@ -918,12 +922,20 @@ pub(crate) mod h1_fixtures {
             ),
         ];
         rows.push(("ssh config by variable", "K=~/.ssh; cat \"$K\"/id_*".into()));
+        // `cred\entials` is a POSIX escape that resolves to `credentials`. On
+        // Windows `\` is a path separator, so the shell would look for
+        // `.aws/cred/entials` and never open the secret — it is not a bypass
+        // there, so the guard correctly does not match it. Windows backslash
+        // handling is covered by the dedicated `cd` tests and the lexer's
+        // `windows_backslash_is_a_separator_not_an_escape`.
+        #[cfg(not(windows))]
+        rows.push(("backslash escape", "cat ~/.aws/cred\\entials".into()));
         rows
     }
 
     /// Commands that touch the same directories without naming a secret.
     pub(crate) fn h1_ordinary_commands(home: &Path) -> Vec<String> {
-        let h = home.display();
+        let h = home.display().to_string().replace('\\', "/");
         vec![
             "cat ~/.ssh/id_ed25519.pub".into(),
             "cat ~/.ssh/*.pub".into(),
@@ -1398,7 +1410,13 @@ mod tests {
             .expect("refused");
         let message = denied.message();
         assert!(message.contains("'credentials'"), "{message}");
-        assert!(message.contains(".aws/credentials"), "{message}");
+        // The resolved path renders with the OS separator, so compare
+        // separator-agnostically — the guard matched `.aws/credentials`
+        // whether it prints with `/` (unix) or `\` (Windows).
+        assert!(
+            message.replace('\\', "/").contains(".aws/credentials"),
+            "{message}"
+        );
         assert!(
             message.contains("secret/credential deny pattern"),
             "{message}"
@@ -1524,8 +1542,12 @@ mod tests {
             None
         );
         let elapsed = started.elapsed();
+        // A generous ceiling on purpose: the failure this guards against is an
+        // accidental unbounded walk (minutes, or a hang), not a few hundred ms.
+        // A tight bound only flakes on a loaded or slow CI runner, so leave wide
+        // headroom while still catching a catastrophic blow-up.
         assert!(
-            elapsed < std::time::Duration::from_secs(5),
+            elapsed < std::time::Duration::from_secs(30),
             "scanning took {elapsed:?}"
         );
     }

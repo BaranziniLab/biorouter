@@ -71,12 +71,21 @@ pub(crate) enum Token {
 
 /// Lex a whole command line (or script).
 pub(crate) fn lex(input: &str) -> Vec<Token> {
-    Lexer::new(input, false).run()
+    lex_for(input, cfg!(windows))
+}
+
+/// [`lex`] for an explicit platform, so Windows path lexing can be exercised on
+/// any host. `windows` decides one thing: whether `\` is a POSIX escape (unix)
+/// or an ordinary character, i.e. a path separator (Windows). Everything else —
+/// quotes, `$VAR`, `~`, globs — is shared, because PowerShell honours `~` and
+/// `$VAR` and both Windows shells quote the same way; only backslash differs.
+pub(crate) fn lex_for(input: &str, windows: bool) -> Vec<Token> {
+    Lexer::new(input, false, windows).run()
 }
 
 /// Lex the word inside `${X:-word}`, where blanks and operators are literal.
 fn lex_param_word(input: &str) -> Word {
-    let mut lexer = Lexer::new(input, true);
+    let mut lexer = Lexer::new(input, true, cfg!(windows));
     lexer.read_word().unwrap_or_default()
 }
 
@@ -89,16 +98,21 @@ struct Lexer {
     pending: Vec<(usize, String, bool)>,
     /// Inside `${X:-…}`: blanks and operators do not end the word.
     param_word: bool,
+    /// On Windows `\` is a path separator, not a shell escape (H1). When set,
+    /// every escape site below leaves a `\` as an ordinary literal character so
+    /// a path like `C:\Users\me\.aws` is not mangled into `C:Usersme.aws`.
+    windows: bool,
 }
 
 impl Lexer {
-    fn new(input: &str, param_word: bool) -> Self {
+    fn new(input: &str, param_word: bool, windows: bool) -> Self {
         Self {
             chars: input.chars().collect(),
             i: 0,
             out: Vec::new(),
             pending: Vec::new(),
             param_word,
+            windows,
         }
     }
 
@@ -114,7 +128,7 @@ impl Lexer {
         while let Some(c) = self.cur() {
             match c {
                 ' ' | '\t' | '\r' => self.i += 1,
-                '\\' if self.peek(1) == Some('\n') => self.i += 2,
+                '\\' if !self.windows && self.peek(1) == Some('\n') => self.i += 2,
                 '\n' => {
                     self.i += 1;
                     self.out.push(Token::Op("\n"));
@@ -315,6 +329,12 @@ impl Lexer {
                         break;
                     }
                 }
+                // On Windows `\` is a path separator, kept literal (a `\` in
+                // `C:\Users\me\.aws` must not escape the next character).
+                '\\' if self.windows => {
+                    lit.push('\\');
+                    self.i += 1;
+                }
                 '\\' => match self.peek(1) {
                     Some('\n') => self.i += 2,
                     Some(next) => {
@@ -383,6 +403,11 @@ impl Lexer {
                 '"' => {
                     self.i += 1;
                     break;
+                }
+                // Inside double quotes on Windows `\` is still literal.
+                '\\' if self.windows => {
+                    text.push('\\');
+                    self.i += 1;
                 }
                 '\\' => match self.peek(1) {
                     Some('\n') => self.i += 2,
@@ -524,7 +549,7 @@ impl Lexer {
         let mut depth = 1usize;
         while let Some(c) = self.cur() {
             match c {
-                '\\' => self.i += 2,
+                '\\' => self.i += if self.windows { 1 } else { 2 },
                 '\'' => {
                     self.i += 1;
                     self.take_until('\'');
@@ -568,7 +593,7 @@ impl Lexer {
         let mut depth = 1usize;
         while let Some(c) = self.cur() {
             match c {
-                '\\' => self.i += 2,
+                '\\' => self.i += if self.windows { 1 } else { 2 },
                 '\'' => {
                     self.i += 1;
                     self.take_until('\'');
@@ -600,7 +625,7 @@ impl Lexer {
     fn skip_double_quoted(&mut self) {
         while let Some(c) = self.cur() {
             match c {
-                '\\' => self.i += 2,
+                '\\' => self.i += if self.windows { 1 } else { 2 },
                 '"' => {
                     self.i += 1;
                     return;
@@ -763,6 +788,59 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn words_windows(input: &str) -> Vec<Word> {
+        lex_for(input, true)
+            .into_iter()
+            .filter_map(|t| match t {
+                Token::Word(w) => Some(w),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn plain(word: &Word) -> String {
+        word.iter()
+            .map(|p| match p {
+                Piece::Lit { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    /// H1 on Windows: a `\` in a command is a path separator, not an escape, so
+    /// `C:\Users\me\.aws\credentials` must survive lexing intact. Under the unix
+    /// reading the backslashes would escape the next letters and mangle the path
+    /// (`C:Usersme.aws...`), and the guard would then never match it — the very
+    /// bypass this closes. Exercised on any host via `lex_for(_, true)`.
+    #[test]
+    fn windows_backslash_is_a_separator_not_an_escape() {
+        let w = words_windows(r"cat C:\Users\me\.aws\credentials");
+        assert_eq!(plain(&w[0]), "cat");
+        assert_eq!(plain(&w[1]), r"C:\Users\me\.aws\credentials");
+
+        // `cd C:\Users\me\.aws && head credentials`: the operators still split,
+        // and the path argument keeps every backslash.
+        let tokens = lex_for(r"cd C:\Users\me\.aws && head credentials", true);
+        let ops: Vec<&str> = tokens
+            .iter()
+            .filter_map(|t| match t {
+                Token::Op(op) => Some(*op),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops, vec!["&&"]);
+        let w = words_windows(r"cd C:\Users\me\.aws && head credentials");
+        assert_eq!(plain(&w[1]), r"C:\Users\me\.aws");
+
+        // Quoted the same way.
+        let w = words_windows(r#"type "C:\Users\me\.ssh\id_ed25519""#);
+        assert_eq!(plain(&w[1]), r"C:\Users\me\.ssh\id_ed25519");
+
+        // The unix reading still escapes, so the two platforms genuinely differ.
+        assert_eq!(plain(&words(r"c\d")[0]), "cd");
+        assert_eq!(plain(&words_windows(r"c\d")[0]), r"c\d");
     }
 
     #[test]

@@ -164,8 +164,12 @@ boundary against a determined adversary — the same ruling that governs
   reaches only the user's own screen; the model receives the final, redacted result.
 - **The deny set is editable by the agent**: a negation written into `.biorouterignore` reopens a
   file, as it always could.
-- **Windows shells** are judged by the literal pass and by the POSIX reading of the command;
-  PowerShell's own `$env:` expansion and `Set-Location` are not modelled.
+- **Windows shells**: `\` is read as a path separator (not a POSIX escape), so a native
+  `C:\Users\…\.aws\credentials` — bare, quoted, or after `cd` — is resolved and matched. What is
+  *not* modelled is PowerShell's own `$env:` expansion and `Set-Location`, and a backslash path that
+  appears only inside a non-shell **code literal** (`python -c "open('C:\\…')"`): the code-literal
+  scanner keys on `/`, so a `\`-only path there is missed. The output redactor is the backstop for
+  that residue — it withholds the credential bytes from the result whatever the path spelling.
 
 ## Tests
 
