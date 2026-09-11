@@ -8,6 +8,8 @@ pub mod azureauth;
 pub mod base;
 #[cfg(feature = "aws-providers")]
 pub mod bedrock;
+#[cfg(all(test, feature = "aws-providers"))]
+mod bedrock_namespace_tests;
 pub mod canonical;
 pub mod claude_code;
 pub mod codex;

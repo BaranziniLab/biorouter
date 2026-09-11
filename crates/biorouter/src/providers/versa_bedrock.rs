@@ -238,6 +238,20 @@ impl VersaBedrockProvider {
         })
     }
 
+    /// The same client with only its HTTP transport replaced. Everything the
+    /// constructor resolved — endpoint, region, credentials, auth scheme — is
+    /// kept, so a request captured through it is the request production would
+    /// have sent.
+    #[cfg(test)]
+    pub(crate) fn with_http_client(
+        mut self,
+        http_client: impl aws_sdk_bedrockruntime::config::HttpClient + 'static,
+    ) -> Self {
+        let config = self.client.config().to_builder().http_client(http_client);
+        self.client = Client::from_conf(config.build());
+        self
+    }
+
     fn load_retry_config(config: &crate::config::Config) -> RetryConfig {
         let max_retries = config
             .get_param::<usize>("BEDROCK_MAX_RETRIES")
