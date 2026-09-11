@@ -50,7 +50,7 @@ retry-with-backoff meant they failed silently rather than reporting it.
 whatever arrived. Now the browser presents the same credential every other client presents, and
 `check_token` is the only thing that inspects it.
 
-**The interface's own endpoints are authenticated.** The sixteen `/headless/*` endpoints — the
+**The interface's own endpoints are authenticated.** The sixteen `/headless/*` paths — the
 filesystem browser, settings, extension installation, skill extraction — were previously served
 by a router carrying exactly one layer, `TraceLayer`. Moved into the daemon they sit behind the
 same middleware as everything else.
@@ -219,8 +219,9 @@ successor are:
   stylesheet rewrites, and the routes registered to serve the rewritten copies (SD-4);
 - the cloud-metadata probes performed on every start.
 
-What moves rather than dies is the sixteen `/headless/*` handlers, which become a route module in
-the daemon, and the resolution of where the web directory lives.
+What moves rather than dies is the `/headless/*` surface — sixteen paths, seventeen handlers,
+since `/headless/settings` answers both `GET` and `POST` — which becomes a route module in the
+daemon, and the resolution of where the web directory lives.
 
 ## Where the bundle comes from
 

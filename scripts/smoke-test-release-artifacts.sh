@@ -169,7 +169,9 @@ smoke_serve() {
       code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/)
       test "$code" = "401"
 
-      # The token is exchanged for a session cookie, once.
+      # The token is exchanged for a session cookie. It is not consumed
+      # (SD-9 in docs/deployment/serve-decisions.md): the readiness loop above
+      # has already redeemed it.
       curl -s -o /dev/null -D /tmp/h "http://127.0.0.1:18080/?t=smoketoken"
       grep -qi "^HTTP/1.1 303" /tmp/h
       grep -qi "set-cookie: biorouter_session=" /tmp/h

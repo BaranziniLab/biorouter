@@ -757,7 +757,7 @@ biorouter serve --host 0.0.0.0
 biorouter serve --host 0.0.0.0 --token "$(openssl rand -hex 32)"
 ```
 
-The printed URL carries a one-off access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
+The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar; it is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
 
 > **Note.** A browser session cannot change its model or provider, deliberately — run `biorouter configure` to choose them **before** starting `serve`. [Reaching Biorouter from a browser](../deployment/browser-access.md) explains why, and covers the access token, remote access and troubleshooting.
 

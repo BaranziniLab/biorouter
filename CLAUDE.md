@@ -1164,7 +1164,7 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 prints a URL. The daemon serves the SPA **on its own origin**, so nothing is proxied. This
 replaced a standalone `biorouter-headless` binary and its Linux tarball, both deleted
 2026-08-23; release assets went 11 → 10. Design and reasoning:
-[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-8),
+[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-9),
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
@@ -1203,11 +1203,15 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
 - **The serving path.** `Settings.serve_ui` (`BIOROUTER_SERVE_UI`) →
   `routes::web_ui::attach`, called **after** `check_token` in `commands/agent.rs` so the shell
   and bundle sit *structurally outside* that middleware rather than being exempted by path.
-  The document is gated by a browser token exchanged once for an `HttpOnly; SameSite=Strict`
+  The document is gated by a browser token exchanged for an `HttpOnly; SameSite=Strict`
   cookie; the cookie authenticates **the document only** — API routes still take
-  `X-Secret-Key`, so there is no CSRF surface and `check_token` needed no change.
-- **`routes::shell`** holds the 16 `/headless/*` endpoints (path kept deliberately; the
-  renderer builds `origin + '/headless'`). They had **no authentication at all** on the old
+  `X-Secret-Key`, so there is no CSRF surface and `check_token` needed no change. ⚠ The
+  exchange does **not** consume the token — it is honoured as often as it is presented until the
+  daemon stops, and the cookie's value *is* the token. Deliberate, not an oversight: SD-9 in
+  `serve-decisions.md` records why single use was rejected. It used to be called "spent".
+- **`routes::shell`** holds the 16 `/headless/*` paths — 17 handlers, since `/headless/settings`
+  answers both GET and POST (path kept deliberately; the renderer builds
+  `origin + '/headless'`). They had **no authentication at all** on the old
   binary and `fs_read` had no path validation; the port confines every filesystem handler to
   an allowlist and refuses credential stores by name.
 - **WebSocket origins**: `routes::origin_matches_host` compares `Origin` to the request's own
@@ -1231,7 +1235,8 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   *relative* base and a relative bundle served at `/` breaks deep links while the landing page
   looks fine. And `<exe>/../web` resolves for the packaged app and Windows zip but **not** for
   deb/rpm (`/usr/bin/../web` = `/usr/web`), hence `/usr/share/biorouter/web`.
-- **Tests:** `cargo test -p biorouter-server --lib routes::web_ui routes::shell`,
+- **Tests:** `cargo test -p biorouter-server --lib -- routes::web_ui routes::shell` (the `--`
+  is required: cargo takes one filter before it and rejects a second with a usage error),
   `cargo test -p biorouter-cli --lib commands::serve`, the `serve` job in
   `.github/workflows/rust.yml`, and `smoke_serve` in
   `scripts/smoke-test-release-artifacts.sh`. The lifecycle has its own binary,

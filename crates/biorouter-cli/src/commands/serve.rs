@@ -308,9 +308,12 @@ fn ask_to_stop(_child: &Child) {}
 
 /// The URL to open, with the browser token in it.
 ///
-/// The token is spent on the first request: the daemon exchanges it for a
-/// session cookie and redirects, so it does not linger in the address bar or in
-/// the `Referer` of anything the page later loads.
+/// Opening it exchanges the token for a session cookie and redirects, so the
+/// token does not linger in the address bar or in the `Referer` of anything the
+/// page later loads. It is not *spent*, which is how this comment used to put
+/// it: the exchange works as often as the token is presented, for anyone who
+/// has it, until the daemon stops. Decision SD-9 in
+/// `docs/deployment/serve-decisions.md` records why that is deliberate.
 fn browser_url(host: &str, port: u16, token: Option<&str>) -> String {
     // A bare IPv6 address needs brackets in a URL; a hostname must not have them.
     let host = if host.contains(':') && !host.starts_with('[') {

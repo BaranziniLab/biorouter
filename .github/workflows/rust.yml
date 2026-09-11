@@ -441,7 +441,9 @@ jobs:
           [ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:18777/?t=wrong')" = 401 ] \
             || fail 'a wrong token was accepted'
 
-          # The token is spent once, for a cookie, and leaves the address bar.
+          # The token is exchanged for a cookie and leaves the address bar. It is
+          # not consumed (SD-9 in docs/deployment/serve-decisions.md): the
+          # readiness loop above has already redeemed it.
           curl -s -o /dev/null -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
           grep -qi '^HTTP/1.1 303' "$RUNNER_TEMP/h" || fail 'no redirect after the token exchange'
           grep -qi 'set-cookie: biorouter_session=' "$RUNNER_TEMP/h" || fail 'no session cookie'

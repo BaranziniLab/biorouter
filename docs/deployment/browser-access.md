@@ -98,15 +98,20 @@ processes, but if `biorouter.exe` is ended some other way, from Task Manager for
 ## The access token
 
 A browser cannot send an authentication header on its first request, so the address `serve` prints
-carries a one-off credential instead.
+carries a credential instead.
 
 - **It is minted per launch** — 32 random bytes, printed as 64 hexadecimal characters in the URL's
   `?t=` parameter, and different every time. It is shown once, in the terminal; there is nowhere
   else to read it back from.
-- **It is spent on the first request.** Opening the URL validates the token, sets an `HttpOnly`,
-  `SameSite=Strict` session cookie named `biorouter_session`, and redirects to `/`. The token then
-  disappears from the address bar, so it is not left in browser history or in the `Referer` of
-  anything the page later loads.
+- **Opening the address exchanges it for a cookie.** The daemon validates the token, sets an
+  `HttpOnly`, `SameSite=Strict` session cookie named `biorouter_session`, and redirects to `/`. The
+  token then disappears from the address bar, so it is not left in browser history or in the
+  `Referer` of anything the page later loads.
+- **It is not used up.** The exchange works every time the token is presented, from any browser,
+  until the daemon stops — so a second browser, a colleague, or the same browser after it has
+  discarded the cookie can all open the same address. Anyone holding the address can do the same,
+  and stopping `serve` is how you revoke it ([decision SD-9](serve-decisions.md#sd-9--the-launch-token-works-until-the-daemon-stops-it-is-not-single-use)
+  records why it is not single-use).
 - **The cookie gates the document and nothing else.** It is not accepted as authentication on any
   API route. From the moment the page loads, the interface presents the daemon's secret key as a
   header, exactly as the desktop application does.
