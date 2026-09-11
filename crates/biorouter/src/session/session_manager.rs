@@ -3679,6 +3679,107 @@ impl SessionStorage {
         Self::ensure_privacy_schema(pool).await?;
         Self::create_and_backfill_messages_fts(pool, false).await?;
         Self::create_message_blobs_table(pool).await?;
+        // Last: every table it sweeps exists by now.
+        Self::retire_side_rows_of_deleted_chats(pool).await?;
+        Ok(())
+    }
+
+    /// Retire the rows earlier builds left behind when they deleted a chat —
+    /// the rows [`Self::delete_chat_side_rows`] now removes with it.
+    ///
+    /// ⚠ **A startup sweep, not a numbered migration arm**, for the reasons
+    /// [`Self::prune_orphaned_token_events`] gives: it is idempotent, safe in
+    /// either merge order, and keeps repairing what a build without the delete
+    /// fix leaves while it shares this file. `BEGIN IMMEDIATE`, so no message,
+    /// checkpoint or grant can be written between a test here and its delete.
+    async fn retire_side_rows_of_deleted_chats(pool: &Pool<Sqlite>) -> Result<()> {
+        let mut connection = pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+        let result = Self::retire_side_rows_of_deleted_chats_locked(&mut connection).await;
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT").execute(&mut *connection).await?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn retire_side_rows_of_deleted_chats_locked(
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<()> {
+        // Recall text is tested against its MESSAGE, not its chat. A row mirrors
+        // exactly one message, and message rowids are AUTOINCREMENT — never
+        // minted twice — so "its message still exists" is exact, and it also
+        // finds a deleted chat's text filed under an id that is live again,
+        // which existence of the chat cannot. Every writer inserts the row in
+        // its message's own transaction, and this holds the write lock, so no
+        // live row can be caught between the two. It is a full scan of the
+        // index: 0.12–0.13 s end to end, measured in a fresh process against a
+        // 557 MB file holding 100,000 rows and 200 MB of indexed text.
+        let recall = if Self::messages_fts_exists(&mut *connection).await {
+            sqlx::query(
+                "DELETE FROM messages_fts WHERE message_id NOT IN (SELECT id FROM messages)",
+            )
+            .execute(&mut *connection)
+            .await?
+            .rows_affected()
+        } else {
+            0
+        };
+
+        // Checkpoints are tested on existence alone, as F10's usage rows are:
+        // one left under an id that is live again cannot be told from the new
+        // chat's own without a timestamp guess, and a wrong guess would delete
+        // somebody's undo point for good.
+        let checkpoints = sqlx::query(
+            "DELETE FROM checkpoints \
+              WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = checkpoints.session_id)",
+        )
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+
+        // Grants get the timestamp test that checkpoints do not, for the
+        // opposite reason: a grant recorded before the chat now holding its id
+        // cannot be that chat's, and deleting one by mistake costs the user one
+        // question asked again — the reader already refuses exactly these
+        // rows (`GRANT_IS_THE_CHATS_OWN`), so this changes nothing a gate sees.
+        //
+        // Shape-guarded like the rest of the reconcile: a `sessions` table
+        // without `created_at` (the experimental v11–v14 shapes) must cost the
+        // age test, not the startup.
+        let sessions_have_created_at: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'created_at'",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        let live_grant = if sessions_have_created_at > 0 {
+            crate::privacy::grant::GRANT_IS_THE_CHATS_OWN
+        } else {
+            "1 = 1"
+        };
+        let grants = sqlx::query(&format!(
+            "DELETE FROM cross_affiliation_grants \
+              WHERE rowid NOT IN (SELECT g.rowid FROM cross_affiliation_grants g \
+                                    JOIN sessions s ON s.id = g.session_id \
+                                   WHERE {live_grant})"
+        ))
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+
+        if recall + checkpoints + grants > 0 {
+            info!(
+                recall,
+                checkpoints, grants, "Retired side rows whose chat no longer exists"
+            );
+        }
         Ok(())
     }
 
@@ -6608,6 +6709,11 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
 
+        // ...and every other row that exists only for this chat, for the same
+        // reason: its text in the recall index, its checkpoints, and the
+        // cross-institution flows the user accepted in it.
+        Self::delete_chat_side_rows(&mut tx, session_id).await?;
+
         let removed = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
@@ -6620,7 +6726,93 @@ impl SessionStorage {
         }
 
         tx.commit().await?;
+        self.remove_checkpoint_repository(session_id).await;
         Ok(())
+    }
+
+    /// Delete every row of one chat outside `messages`, `message_blobs` and
+    /// `token_events`, inside the caller's transaction.
+    ///
+    /// Each table is keyed by the chat's id, and a row that outlived the chat
+    /// was not merely retained: `create_session` minted `<day>_<MAX(N)+1>`, so
+    /// the next chat to be handed the id read the row as its own.
+    ///
+    /// - `messages_fts` — the recall index's copy of the chat's user-visible
+    ///   text, word for word (BR-17). `replace_conversation` and
+    ///   `truncate_conversation` already kept it in step; a delete left all of
+    ///   it on disk. Recall joins `messages`, whose rowids are never minted
+    ///   twice, so no search could reach it — but the text of a chat the user
+    ///   deleted, possibly PHI, stayed in `sessions.db`.
+    /// - `checkpoints` — BR-43's records. A new chat under the id listed them,
+    ///   and restoring one would have rolled that chat back to a point in
+    ///   another. The shadow repository they point into is a directory, and
+    ///   goes after the commit: [`Self::remove_checkpoint_repository`].
+    /// - `cross_affiliation_grants` — issue #56 DR-26. The one table here that
+    ///   is an authorisation rather than a record: a new chat under the id was
+    ///   let through Gate C for flows accepted in a chat the user deleted.
+    ///   `privacy::grant::GRANT_IS_THE_CHATS_OWN` also refuses such a grant at
+    ///   read time, for the ones this delete never sees.
+    ///
+    /// Not here, deliberately: `classification_audit` survives deletion by
+    /// design (privacy-tiers §12.5) — it records what has ever been
+    /// declassified on this machine — so it is the reader,
+    /// [`Self::NOT_DECLASSIFIED_BY_USER`], that has to tell one chat under an id
+    /// from another. A deleted chat's subagent runs are sessions of their own
+    /// and are kept, for the reasons
+    /// `deleted_chat_side_rows_tests::a_deleted_chats_subagent_runs_are_kept_and_never_adopted`
+    /// gives.
+    async fn delete_chat_side_rows(
+        connection: &mut sqlx::SqliteConnection,
+        session_id: &str,
+    ) -> Result<()> {
+        if Self::messages_fts_exists(&mut *connection).await {
+            sqlx::query("DELETE FROM messages_fts WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut *connection)
+                .await?;
+        }
+        for table in ["checkpoints", "cross_affiliation_grants"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
+                .bind(session_id)
+                .execute(&mut *connection)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Remove a deleted chat's BR-43 shadow repository — snapshots of its
+    /// working tree, file contents and all — from
+    /// [`crate::checkpoint::repository_dir`] beside the session database.
+    /// `CheckpointManager::gc` was written to do this "on session delete" and
+    /// nothing ever called it, so every repository outlived its chat and the
+    /// next chat to be handed the id opened it and committed on top.
+    ///
+    /// After the commit, and best-effort: the rows are already gone, so a
+    /// failure leaves unreferenced files rather than a half-deleted chat, and is
+    /// logged rather than returned as a failed delete the user would retry
+    /// against a chat that no longer exists.
+    async fn remove_checkpoint_repository(&self, session_id: &str) {
+        let Some(dir) = self
+            .session_dir
+            .parent()
+            .and_then(|data_dir| crate::checkpoint::repository_dir(data_dir, session_id))
+        else {
+            return;
+        };
+        let removal = tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err((dir, error)),
+            _ => Ok(()),
+        })
+        .await;
+        match removal {
+            Ok(Ok(())) => {}
+            Ok(Err((dir, error))) => warn!(
+                %error,
+                dir = %dir.display(),
+                "could not remove a deleted chat's checkpoint repository"
+            ),
+            Err(error) => warn!(%error, "the checkpoint repository removal task failed"),
+        }
     }
 
     async fn count_all_sessions(&self) -> Result<u64> {
@@ -6643,12 +6835,16 @@ impl SessionStorage {
                 .execute(&mut *tx)
                 .await?;
         }
+        // `cross_affiliation_grants` belong to chats like every other table here
+        // (issue #56 DR-26); `classification_audit` does not — it survives
+        // deletion by design (privacy-tiers §12.5).
         for table in [
             "message_blobs",
             "checkpoints",
             "messages",
             "token_events",
             "deleted_chat_usage",
+            "cross_affiliation_grants",
             "sessions",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
@@ -17299,7 +17495,9 @@ mod deleted_chat_side_rows_tests {
     use tempfile::TempDir;
 
     fn stanford() -> Option<ModelAffiliation> {
-        Some(ModelAffiliation::institution(InstitutionId::new("stanford")))
+        Some(ModelAffiliation::institution(InstitutionId::new(
+            "stanford",
+        )))
     }
 
     async fn new_chat(sm: &SessionManager, dir: &TempDir) -> String {
@@ -17461,7 +17659,10 @@ mod deleted_chat_side_rows_tests {
             sm.delete_session(id).await.unwrap();
         }
 
-        assert!(bystander.join("git").exists(), "another chat's repository went");
+        assert!(
+            bystander.join("git").exists(),
+            "another chat's repository went"
+        );
         assert!(outside.exists(), "a directory outside `checkpoints/` went");
         assert!(dir.path().join(SESSIONS_FOLDER).join(DB_NAME).exists());
     }
@@ -17507,9 +17708,12 @@ mod deleted_chat_side_rows_tests {
         let live = {
             let sm = SessionManager::new(dir.path().to_path_buf());
             let live = new_chat(&sm, &dir).await;
-            sm.add_message(&live, &Message::user().with_text("the live chat's own text"))
-                .await
-                .unwrap();
+            sm.add_message(
+                &live,
+                &Message::user().with_text("the live chat's own text"),
+            )
+            .await
+            .unwrap();
             grant::record_for_test(&sm, &live, "ucsfomopagent", stanford())
                 .await
                 .unwrap();
@@ -17517,12 +17721,17 @@ mod deleted_chat_side_rows_tests {
                 .await
                 .unwrap();
 
+            // Grants go through the real writer even here: a second statement
+            // that inserts into the grant store would fail
+            // `grant::tests::exactly_one_statement_in_the_tree_writes_a_cross_affiliation_grant`,
+            // and rightly — that audit cannot tell a fixture from a door.
+            //
+            // A deleted chat's rows, exactly as the pre-fix delete left them.
+            grant::record_for_test(&sm, "gone", "ucsfomopagent", stanford())
+                .await
+                .unwrap();
             let pool = sm.storage().pool().await.unwrap();
             for statement in [
-                // A deleted chat's rows, exactly as the pre-fix delete left them.
-                "INSERT INTO cross_affiliation_grants \
-                     (session_id, extension, model_affiliation, app_version) \
-                 VALUES ('gone', 'ucsfomopagent', 'institution:stanford', 'old')",
                 "INSERT INTO messages_fts (text, session_id, message_id) \
                  VALUES ('text of a deleted chat', 'gone', 900001)",
                 "INSERT INTO checkpoints \
@@ -17531,16 +17740,20 @@ mod deleted_chat_side_rows_tests {
             ] {
                 sqlx::query(statement).execute(pool).await.unwrap();
             }
-            // A deleted chat's rows under an id that is live again.
+            // A deleted chat's rows under an id that is live again: a grant
+            // recorded a day before the live chat existed...
+            grant::record_for_test(&sm, &live, "cdwagent", stanford())
+                .await
+                .unwrap();
             sqlx::query(
-                "INSERT INTO cross_affiliation_grants \
-                     (session_id, extension, model_affiliation, granted_at, app_version) \
-                 VALUES (?1, 'cdwagent', 'institution:stanford', datetime('now', '-1 day'), 'old')",
+                "UPDATE cross_affiliation_grants SET granted_at = datetime('now', '-1 day') \
+                  WHERE session_id = ?1 AND extension = 'cdwagent'",
             )
             .bind(&live)
             .execute(pool)
             .await
             .unwrap();
+            // ...and recall text for a message the live chat never had.
             sqlx::query(
                 "INSERT INTO messages_fts (text, session_id, message_id) \
                  VALUES ('text of an older chat under this id', ?1, 900002)",
@@ -17780,11 +17993,13 @@ mod deleted_chat_side_rows_tests {
         let sm = SessionManager::new(dir.path().to_path_buf());
         let first = new_chat(&sm, &dir).await;
         let pool = sm.storage().pool().await.unwrap();
-        sqlx::query("INSERT INTO sessions (id, name, working_dir) VALUES (?1, 'older build', '/tmp')")
-            .bind(format!("{}_7", prefix(&first)))
-            .execute(pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, name, working_dir) VALUES (?1, 'older build', '/tmp')",
+        )
+        .bind(format!("{}_7", prefix(&first)))
+        .execute(pool)
+        .await
+        .unwrap();
 
         let next = new_chat(&sm, &dir).await;
         assert_eq!(suffix(&next), 8);
