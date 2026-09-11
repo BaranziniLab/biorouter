@@ -278,11 +278,16 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
-    expect(mocks.changeModel).toHaveBeenCalledWith('s1', {
-      name: 'gpt-5.6-sol',
-      provider: 'codex',
-      subtext: 'Codex',
-    });
+    expect(mocks.changeModel).toHaveBeenCalledWith(
+      's1',
+      {
+        name: 'gpt-5.6-sol',
+        provider: 'codex',
+        subtext: 'Codex',
+      },
+      // Opened from a chat, the box is offered and starts unticked.
+      { alsoForNewChats: false }
+    );
   });
 
   // The control case: a public provider has no affiliation at all, so the row is

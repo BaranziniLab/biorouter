@@ -43,6 +43,7 @@ import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { PinnedModelNote } from './privacy/PinnedModelNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
+import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
@@ -1203,6 +1204,8 @@ function BaseChatContent({
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // F3 — the model this chat is about to be created on is the one on screen.
+  const confirmNewChatModel = useConfirmNewChatModel();
   // #39 — the working directory chosen in the composer BEFORE a session
   // exists (sidebar "New chat" mounts this chat with no sessionId, so
   // DirSwitcher has nothing to persist to yet). Read exactly once, by the
@@ -1575,10 +1578,12 @@ function BaseChatContent({
   /**
    * Resolves FALSE when the message was refused and the composer still owns the
    * text (ChatInput puts it back). The pre-session branch returns TRUE on both
-   * of its outcomes: a created session has navigated with the message as its
-   * cargo, and a failed `createSession` has already restored the composer and
-   * toasted through `handleCreateSessionError`, so a second restore would be a
-   * duplicate rather than a rescue.
+   * of its outcomes once a session is attempted: a created session has
+   * navigated with the message as its cargo, and a failed `createSession` has
+   * already restored the composer and toasted through `handleCreateSessionError`,
+   * so a second restore would be a duplicate rather than a rescue. It returns
+   * FALSE only when F3's model check refused BEFORE anything was attempted —
+   * the one case where the composer's own restore is the rescue.
    */
   const handleFormSubmit = async (e: React.FormEvent): Promise<boolean> => {
     const customEvent = e as unknown as CustomEvent;
@@ -1591,6 +1596,10 @@ function BaseChatContent({
     // If no session exists, create one and navigate with the initial message
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
+      // F3. `/agent/start` binds whatever the app-wide selection is NOW, and the
+      // composer's chip is this window's copy of it. A refusal here has already
+      // put the fresh model on screen; resolving `false` hands the text back.
+      if (!(await confirmNewChatModel())) return false;
       setIsCreatingSession(true);
       try {
         // #39 — honour the directory picked in the composer before the

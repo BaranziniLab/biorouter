@@ -4,7 +4,12 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ModelAndProviderProvider, useModelAndProvider } from './ModelAndProviderContext';
+import {
+  ModelAndProviderProvider,
+  switchedModelMessage,
+  useModelAndProvider,
+  type ChangeModelOptions,
+} from './ModelAndProviderContext';
 import { subscribeSessionBindingChanges } from '../utils/sessionBindingSync';
 import type Model from './settings/models/modelInterface';
 
@@ -167,14 +172,16 @@ const clientRejecting = (body: unknown) => async (options?: { throwOnError?: boo
  * asserted on the boolean the callers branch on rather than on a rendered toast
  * alone.
  */
-function SessionSwitchHarness() {
+function SessionSwitchHarness({ options }: { options?: ChangeModelOptions } = {}) {
   const { changeModel } = useModelAndProvider();
   const [result, setResult] = useState<string>('pending');
   return (
     <>
       <button
         type="button"
-        onClick={() => void changeModel('sess-1', publicModel).then((ok) => setResult(String(ok)))}
+        onClick={() =>
+          void changeModel('sess-1', publicModel, options).then((ok) => setResult(String(ok)))
+        }
       >
         Switch this chat
       </button>
@@ -482,12 +489,12 @@ describe('ModelAndProviderProvider announces the binding it just wrote', () => {
   });
 
   /**
-   * ⚠ **Ordering, not just occurrence.** The announcement lands BEFORE
-   * `setConfigProvider` moves the global default, so in the only render where
-   * the row and the selection can disagree it is the ROW that holds the new
-   * binding. Announcing afterwards would invert that window and flash the model
-   * the user had just switched away from — the regression PR #192 narrowed its
-   * rule to avoid.
+   * ⚠ **Ordering, not just occurrence.** When the switch moves the new-chat
+   * default too, the announcement lands BEFORE `setConfigProvider` moves it, so
+   * in the only render where the row and the selection can disagree it is the
+   * ROW that holds the new binding. Announcing afterwards would invert that
+   * window and flash the model the user had just switched away from — the
+   * regression PR #192 narrowed its rule to avoid.
    */
   it('before the global default moves, not after', async () => {
     const order: string[] = [];
@@ -503,7 +510,7 @@ describe('ModelAndProviderProvider announces the binding it just wrote', () => {
 
     render(
       <ModelAndProviderProvider>
-        <SessionSwitchHarness />
+        <SessionSwitchHarness options={{ alsoForNewChats: true }} />
       </ModelAndProviderProvider>
     );
 
@@ -687,5 +694,25 @@ describe('ModelAndProviderProvider config readiness', () => {
     );
 
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('ready:none'));
+  });
+});
+
+/**
+ * F3 / privacy-tiers P4 — the success toast names where a switch landed. It
+ * used to say "Switched models — using X from Y" whichever of the chat and the
+ * new-chat default had moved, which is how a switch in one chat could quietly
+ * become what every new chat started on.
+ */
+describe('switchedModelMessage', () => {
+  it('names each of the three places a switch can land', () => {
+    expect(switchedModelMessage('Codex 6', 'Codex', { chat: true, newChats: false })).toBe(
+      'This chat now uses Codex 6 from Codex. Other chats, and new ones, are unchanged.'
+    );
+    expect(switchedModelMessage('Codex 6', 'Codex', { chat: true, newChats: true })).toBe(
+      'This chat, and new chats in every window, now use Codex 6 from Codex.'
+    );
+    expect(switchedModelMessage('Codex 6', 'Codex', { chat: false, newChats: true })).toBe(
+      'New chats in every window now start on Codex 6 from Codex. Existing chats keep their own model.'
+    );
   });
 });

@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '../../../ui/dialog';
 import { Button } from '../../../ui/button';
+import { Checkbox } from '../../../ui/Checkbox';
 import { QUICKSTART_GUIDE_URL } from '../../providers/modal/constants';
 import { Input } from '../../../ui/input';
 import { Select } from '../../../ui/Select';
@@ -134,6 +135,23 @@ const modelOptionSearchText = (option: ModelOption) =>
  */
 const PUBLIC_MODEL_IN_PRIVATE_CHAT =
   'Unavailable: this is a private chat, so only private models may run in it';
+
+/**
+ * F3 / privacy-tiers §14.3 P4 — what a switch from THIS dialog changes, said in
+ * the dialog, before the user commits.
+ *
+ * Opened from a chat, the dialog changes that chat and nothing else unless the
+ * box below the pickers is ticked; opened with no chat — Home's composer, a chat
+ * not started yet, Settings → Models, onboarding — the only thing it can change
+ * is the model new chats start on, in every window. The old description, "for
+ * your chats", fitted neither, and the switch it described did both.
+ */
+export const SWITCH_SCOPE_THIS_CHAT = 'Select a provider and model for this chat.';
+export const SWITCH_SCOPE_NEW_CHATS =
+  'Select the provider and model new chats start on, in every window. Existing chats keep their own model.';
+export const ALSO_FOR_NEW_CHATS_LABEL = 'Also use for new chats';
+export const ALSO_FOR_NEW_CHATS_HINT =
+  'New chats in every window will start on this model. Left unticked, only this chat changes.';
 
 const renderModelOptionLabel = (
   rawOption: unknown,
@@ -380,6 +398,12 @@ export const SwitchModelModal = ({
    */
   const [switching, setSwitching] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * P4's "Also make this my default for new chats", as an explicit and
+   * unticked box. Only offered from a chat: with no chat there is nothing else
+   * the switch could change. See `ChangeModelOptions`.
+   */
+  const [alsoForNewChats, setAlsoForNewChats] = useState(false);
 
   const handleSubmit = async () => {
     // The button below is already disabled on a browser surface; this is the
@@ -412,7 +436,9 @@ export const SwitchModelModal = ({
         modelObj = { name: model, provider: provider, subtext: providerDisplayName } as Model;
       }
 
-      const changed = await changeModel(sessionId, modelObj);
+      const changed = sessionId
+        ? await changeModel(sessionId, modelObj, { alsoForNewChats })
+        : await changeModel(null, modelObj);
       if (!changed) {
         // `changeModel` has already raised the toast that explains *why* — a
         // privacy barrier, a missing user proof, a provider failure. This says
@@ -699,7 +725,9 @@ export const SwitchModelModal = ({
           <DialogDescription>
             {hostManaged
               ? HOST_MANAGED_MODEL_TITLE
-              : 'Select a provider and model to use for your chats.'}
+              : sessionId
+                ? SWITCH_SCOPE_THIS_CHAT
+                : SWITCH_SCOPE_NEW_CHATS}
           </DialogDescription>
         </DialogHeader>
 
@@ -908,6 +936,30 @@ export const SwitchModelModal = ({
             </div>
           )}
         </div>
+
+        {/*
+          P4's opt-in, directly above the confirm it modifies. Unticked by
+          default: a switch made in a chat is a statement about that chat, and a
+          public model chosen for one scratch chat must not become what every
+          new chat — in every window — silently starts on.
+        */}
+        {sessionId && !hostManaged && (
+          <div className="flex items-start gap-2" data-testid="switch-model-also-new-chats">
+            <Checkbox
+              id="switch-model-also-new-chats"
+              checked={alsoForNewChats}
+              onChange={(event) => setAlsoForNewChats(event.target.checked)}
+              disabled={switching}
+              className="mt-0.5"
+            />
+            <label htmlFor="switch-model-also-new-chats" className="min-w-0 cursor-pointer">
+              <span className="block text-label text-text-default">{ALSO_FOR_NEW_CHATS_LABEL}</span>
+              <span className="block text-supporting text-text-muted">
+                {ALSO_FOR_NEW_CHATS_HINT}
+              </span>
+            </label>
+          </div>
+        )}
 
         {submitError && (
           <div

@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import ModelsBottomBar, { CHAT_KEEPS_ITS_MODEL_NOTE } from './ModelsBottomBar';
+import ModelsBottomBar, {
+  CHAT_KEEPS_ITS_MODEL_NOTE,
+  NEW_CHATS_MODEL_HEADING,
+  NEW_CHATS_MODEL_NOTE,
+} from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 
 /**
@@ -172,5 +176,40 @@ describe('a chat bound to something other than the app-wide selection', () => {
 
     await screen.findByText('Current model');
     expect(screen.queryByTestId('chat-binding-note')).toBeNull();
+  });
+});
+
+/**
+ * F3 — where there is no chat yet (Home, a chat not started), the chip names
+ * the APP-WIDE selection, and a switch from it changes that selection for every
+ * window. The dropdown says whose model it is and how far a change reaches,
+ * beside the control that makes the change.
+ */
+describe('the chip where there is no chat yet', () => {
+  const renderSessionless = () =>
+    render(
+      <ModelsBottomBar sessionId={null} dropdownRef={dropdownRef} setView={vi.fn()} alerts={[]} />
+    );
+
+  const openDropdown = async () => {
+    await screen.findByRole('button', { name: /Current model:/ });
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+  };
+
+  it('heads its dropdown as the model for new chats, reaching every window', async () => {
+    renderSessionless();
+    await openDropdown();
+
+    expect(await screen.findByText(NEW_CHATS_MODEL_HEADING)).toBeInTheDocument();
+    expect(screen.getByTestId('new-chats-model-note')).toHaveTextContent(NEW_CHATS_MODEL_NOTE);
+    expect(screen.queryByText('Current model')).toBeNull();
+  });
+
+  it('keeps "Current model", and no such line, in a chat', async () => {
+    renderBar(undefined);
+    await openDropdown();
+
+    expect(await screen.findByText('Current model')).toBeInTheDocument();
+    expect(screen.queryByTestId('new-chats-model-note')).toBeNull();
   });
 });

@@ -29,6 +29,7 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { createSession } from '../sessions';
 import LoadingBioRouter from './LoadingBioRouter';
 import type { UserAttachment } from '../types/message';
+import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 
 export default function Hub({
   setView,
@@ -38,14 +39,20 @@ export default function Hub({
   const { extensionsList } = useConfig();
   const [workingDir, setWorkingDir] = useState(getInitialWorkingDir());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const confirmNewChatModel = useConfirmNewChatModel();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent): Promise<boolean | void> => {
     const customEvent = e as unknown as CustomEvent;
     const combinedTextFromInput = customEvent.detail?.value || '';
     const attachments = (customEvent.detail?.attachments ?? []) as UserAttachment[];
     const hasAttachments = attachments.length > 0;
 
     if ((combinedTextFromInput.trim() || hasAttachments) && !isCreatingSession) {
+      // F3. Before anything is consumed — the extension overrides below are
+      // cleared as they are read — so a refused send leaves nothing behind but
+      // the text, which `ChatInput` puts back when this resolves `false`.
+      if (!(await confirmNewChatModel())) return false;
+
       const extensionConfigs = getExtensionConfigsWithOverrides(extensionsList);
       clearExtensionOverrides();
       setIsCreatingSession(true);

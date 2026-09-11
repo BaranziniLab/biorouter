@@ -1,6 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SwitchModelModal } from './SwitchModelModal';
+import {
+  ALSO_FOR_NEW_CHATS_HINT,
+  ALSO_FOR_NEW_CHATS_LABEL,
+  SWITCH_SCOPE_NEW_CHATS,
+  SWITCH_SCOPE_THIS_CHAT,
+  SwitchModelModal,
+} from './SwitchModelModal';
 
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
@@ -219,5 +225,122 @@ describe('SwitchModelModal switch feedback', () => {
     }
 
     expect(unhandled).toEqual([]);
+  });
+});
+
+/**
+ * F3 / `docs/security/privacy-tiers.md` §14.3 P4 — the dialog says what a
+ * switch changes, before the user commits.
+ *
+ * Until 2026-09-11 a switch made from a chat's composer also rewrote the model
+ * every new chat starts on, in every window, with nothing on screen to say so:
+ * provider QA F bound Claude Code in one chat for one check, and the next chat
+ * it opened came up public. The coupling is now an explicit, unticked box, and
+ * the dialog opened with no chat says plainly that it is the app-wide choice.
+ */
+describe('SwitchModelModal — what the switch changes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getProviders.mockResolvedValue([
+      {
+        name: 'versa_azure',
+        is_configured: true,
+        provider_type: 'Institutional',
+        metadata: {
+          name: 'versa_azure',
+          display_name: 'Versa API Azure',
+          default_model: 'gpt-5.5-2026-04-24',
+          known_models: [{ name: 'gpt-5.5-2026-04-24' }],
+          allows_unlisted_models: false,
+          config_keys: [],
+        },
+      },
+    ]);
+    mocks.getProviderModels.mockResolvedValue(['gpt-5.5-2026-04-24']);
+    mocks.read.mockResolvedValue('');
+    mocks.changeModel.mockResolvedValue(true);
+  });
+
+  const renderModal = (sessionId: string | null) =>
+    render(
+      <SwitchModelModal
+        sessionId={sessionId}
+        onClose={vi.fn()}
+        setView={vi.fn()}
+        initialProvider="versa_azure"
+        initialModel="gpt-5.5-2026-04-24"
+      />
+    );
+
+  const confirm = () =>
+    waitFor(() => {
+      const found = screen.getAllByRole('button').find((el) => el.textContent === 'Select model');
+      if (!found) throw new Error('Select model button not rendered');
+      return found;
+    });
+
+  /** Let the provider list land, and the model list after it, inside act. */
+  const settle = async () => {
+    await waitFor(() =>
+      expect(screen.getByTestId('provider-select')).toHaveTextContent('versa_azure')
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+
+  it('from a chat, says it switches this chat and offers new chats as an unticked box', async () => {
+    renderModal('s-1');
+
+    expect(screen.getByText(SWITCH_SCOPE_THIS_CHAT)).toBeInTheDocument();
+    const box = screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) });
+    expect(box).not.toBeChecked();
+    expect(screen.getByText(ALSO_FOR_NEW_CHATS_HINT)).toBeInTheDocument();
+    await settle();
+  });
+
+  it('leaves new chats alone unless the box is ticked', async () => {
+    renderModal('s-1');
+    fireEvent.click(await confirm());
+
+    await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
+    expect(mocks.changeModel).toHaveBeenCalledWith(
+      's-1',
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24', provider: 'versa_azure' }),
+      { alsoForNewChats: false }
+    );
+  });
+
+  it('carries a ticked box through to the switch', async () => {
+    renderModal('s-1');
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) }));
+    fireEvent.click(await confirm());
+
+    await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
+    expect(mocks.changeModel).toHaveBeenCalledWith(
+      's-1',
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' }),
+      { alsoForNewChats: true }
+    );
+  });
+
+  /**
+   * With no chat — Home, a chat not started, Settings → Models, onboarding —
+   * the only thing a switch can change is the model new chats start on, so
+   * there is no box to offer, and the description says how far it reaches.
+   */
+  it('with no chat, says it sets the model new chats start on in every window', async () => {
+    renderModal(null);
+
+    expect(screen.getByText(SWITCH_SCOPE_NEW_CHATS)).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+
+    await settle();
+    fireEvent.click(await confirm());
+    await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
+    expect(mocks.changeModel).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' })
+    );
   });
 });
