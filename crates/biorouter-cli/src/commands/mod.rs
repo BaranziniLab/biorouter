@@ -7,6 +7,7 @@ pub mod extension;
 pub mod info;
 pub mod knowledge;
 pub mod models;
+pub mod needs_terminal;
 pub mod project;
 pub mod schedule;
 pub mod serve;

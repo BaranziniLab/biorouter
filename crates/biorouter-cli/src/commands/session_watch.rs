@@ -513,6 +513,80 @@ pub(crate) enum Render {
     JoinThenLines,
 }
 
+/// How far a streamed response is read before the caller gets it back.
+///
+/// A `bool` (`stop_on_terminal`) until `session send --no-wait` needed a third
+/// answer. With only the bool, `--no-wait` could do nothing but switch the early
+/// exit OFF — so it read until the socket closed, waited at least as long as the
+/// default, and printed strictly more (QA-D F4: 16 s, 779 lines).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Until {
+    /// Until the daemon ends the stream: `watch --follow`, `attach`.
+    Closed,
+    /// Until the turn's terminal frame (`Finish` or `Error`): `watch`, and a
+    /// `send` that waits.
+    Terminal,
+    /// Until the daemon names the turn it accepted — the `turn_id` on the
+    /// stream's opening `TurnStarted` frame — or a terminal frame, whichever
+    /// comes first: `send --no-wait`.
+    Named,
+}
+
+impl Until {
+    /// Whether the read has gone as far as asked, given what it has seen.
+    fn reached(self, seen: &Progress) -> bool {
+        match self {
+            Until::Closed => false,
+            Until::Terminal => seen.ended,
+            Until::Named => seen.ended || seen.turn_id.is_some(),
+        }
+    }
+}
+
+/// What a read has seen so far, carried across socket reads.
+#[derive(Debug, Default)]
+struct Progress {
+    /// `Render::JoinThenLines` has expanded its join snapshot — see
+    /// `stream_frame_lines`.
+    joined: bool,
+    /// The first `turn_id` any frame carried. Every frame of a `/reply` turn log
+    /// carries one; its opening `TurnStarted` is frame 0.
+    turn_id: Option<String>,
+    /// A terminal frame (`Finish` or `Error`) has been seen.
+    ended: bool,
+}
+
+/// What reading one response came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Streamed {
+    /// The HTTP status the daemon answered with.
+    pub(crate) code: u16,
+    /// The turn the stream belongs to, from the first frame that carried a
+    /// `turn_id` — `None` when none did before the read stopped.
+    pub(crate) turn_id: Option<String>,
+    /// The read saw the turn's terminal frame.
+    pub(crate) ended: bool,
+}
+
+impl Streamed {
+    /// A response known only by its status line.
+    fn status_only(code: u16) -> Self {
+        Self {
+            code,
+            turn_id: None,
+            ended: false,
+        }
+    }
+
+    fn read(code: u16, seen: Progress) -> Self {
+        Self {
+            code,
+            turn_id: seen.turn_id,
+            ended: seen.ended,
+        }
+    }
+}
+
 /// The numeric status from an HTTP status line ("HTTP/1.1 202 Accepted" → 202).
 fn status_code(status_line: &str) -> Option<u16> {
     status_line.split_whitespace().nth(1)?.parse().ok()
@@ -520,10 +594,10 @@ fn status_code(status_line: &str) -> Option<u16> {
 
 /// Stream `request` from the daemon and return the status it answered with.
 ///
-/// On a 200 the body is consumed — rendering per `render` — until the stream
-/// ends, a terminal frame arrives (when `stop_on_terminal`), or the future is
-/// dropped. On any other status it returns at once, so a caller can branch on a
-/// 409 without reading a body it does not want.
+/// On a 200 the body is consumed — rendering per `render` — until `until` is
+/// reached, the stream ends, or the future is dropped. On any other status it
+/// returns at once, so a caller can branch on a 409 without reading a body it
+/// does not want.
 ///
 /// ⚠ Consuming a 200 `/reply` body to its terminal frame is not politeness.
 /// `stream_event` trips the turn's `CancellationToken` the moment its
@@ -536,47 +610,52 @@ fn status_code(status_line: &str) -> Option<u16> {
 /// far too late.
 async fn stream_request(
     request: String,
-    stop_on_terminal: bool,
+    until: Until,
     render: Render,
     status: Option<tokio::sync::oneshot::Sender<u16>>,
-) -> Result<u16> {
-    stream_request_bytes(request.as_bytes(), stop_on_terminal, render, status).await
+) -> Result<Streamed> {
+    stream_request_bytes(request.as_bytes(), until, render, status).await
 }
 
-async fn stream_request_bytes(
-    request: &[u8],
-    stop_on_terminal: bool,
-    render: Render,
-    status: Option<tokio::sync::oneshot::Sender<u16>>,
-) -> Result<u16> {
+/// A connection to the configured daemon, or the actionable "no daemon" error.
+async fn connect_to_daemon() -> Result<tokio::net::TcpStream> {
     let port = configured_port();
     if !daemon_ok(DAEMON_HOST, port).await {
         return Err(anyhow!("{}", no_daemon_at(port)));
     }
-    let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+    Ok(tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?)
+}
+
+async fn stream_request_bytes(
+    request: &[u8],
+    until: Until,
+    render: Render,
+    status: Option<tokio::sync::oneshot::Sender<u16>>,
+) -> Result<Streamed> {
+    let mut stream = connect_to_daemon().await?;
     stream.write_all(request).await?;
-    read_response(&mut stream, stop_on_terminal, render, status).await
+    read_response(&mut stream, until, render, status).await
 }
 
 /// Read one HTTP response off `stream` and return the status it carried.
 ///
 /// Generic over the stream so the rules below — a non-200 answered from the
-/// status line alone, a 200 consumed to its terminal frame, and a response that
-/// never completes reported as an ERROR — can be pinned over an in-memory pipe
-/// rather than only against a live daemon.
+/// status line alone, a 200 consumed as far as `until` asks, and a response
+/// that never completes reported as an ERROR — can be pinned over an in-memory
+/// pipe rather than only against a live daemon.
 async fn read_response<S: tokio::io::AsyncRead + Unpin>(
     stream: &mut S,
-    stop_on_terminal: bool,
+    until: Until,
     render: Render,
     status: Option<tokio::sync::oneshot::Sender<u16>>,
-) -> Result<u16> {
+) -> Result<Streamed> {
     let mut status = status;
     let mut raw = Vec::new();
     // Body bytes not yet decodable as whole characters — see `take_complete_utf8`.
     let mut pending: Vec<u8> = Vec::new();
     let mut buffer = String::new();
     let mut headers_done = false;
-    let mut joined = false;
+    let mut seen = Progress::default();
     let mut chunk = [0u8; 8192];
     loop {
         let read = stream.read(&mut chunk).await?;
@@ -605,20 +684,20 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
                 let _ = tx.send(code);
             }
             if code != 200 {
-                return Ok(code);
+                return Ok(Streamed::status_only(code));
             }
             headers_done = true;
             buffer.clear();
             pending.clear();
             let frames = absorb(&mut pending, &mut buffer, &raw[end + 4..]);
-            if print_frames(&frames, stop_on_terminal, render, &mut joined) {
-                return Ok(code);
+            if print_frames(&frames, until, render, &mut seen) {
+                return Ok(Streamed::read(code, seen));
             }
             continue;
         }
         let frames = absorb(&mut pending, &mut buffer, &chunk[..read]);
-        if print_frames(&frames, stop_on_terminal, render, &mut joined) {
-            return Ok(200);
+        if print_frames(&frames, until, render, &mut seen) {
+            return Ok(Streamed::read(200, seen));
         }
     }
     // ⚠ Reaching here without headers means the socket closed part-way through
@@ -633,12 +712,12 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
              so it is not known whether the request was accepted"
         ));
     }
-    Ok(200)
+    Ok(Streamed::read(200, seen))
 }
 
 /// `stream_request` for the callers that treat any non-200 as fatal.
-async fn stream_frames(request: String, stop_on_terminal: bool, render: Render) -> Result<()> {
-    match stream_request(request, stop_on_terminal, render, None).await? {
+async fn stream_frames(request: String, until: Until, render: Render) -> Result<()> {
+    match stream_request(request, until, render, None).await?.code {
         200 => Ok(()),
         code => Err(anyhow!(
             "daemon refused the request: HTTP {code}\n\
@@ -671,28 +750,36 @@ fn stream_frame_lines(frame: &serde_json::Value, render: Render, joined: &mut bo
     }
 }
 
-/// Returns true when a terminal frame was seen and the caller should stop.
+/// Print `frames`, noting in `seen` what they carried, and return true once the
+/// read has gone as far as `until` asks — at which point the rest of the batch
+/// is left unprinted, so `--no-wait` stops at the frame that named its turn
+/// rather than wherever a TCP read happened to end. (Nothing follows a terminal
+/// frame in a turn's log, so for the other two modes this changes nothing.)
 fn print_frames(
     frames: &[serde_json::Value],
-    stop_on_terminal: bool,
+    until: Until,
     render: Render,
-    joined: &mut bool,
+    seen: &mut Progress,
 ) -> bool {
-    let mut done = false;
     for frame in frames {
-        for line in stream_frame_lines(frame, render, joined) {
+        for line in stream_frame_lines(frame, render, &mut seen.joined) {
             println!("{line}");
         }
-        if stop_on_terminal
-            && matches!(
-                frame.get("type").and_then(serde_json::Value::as_str),
-                Some("Finish") | Some("Error")
-            )
-        {
-            done = true;
+        if seen.turn_id.is_none() {
+            seen.turn_id = frame
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        seen.ended |= matches!(
+            frame.get("type").and_then(serde_json::Value::as_str),
+            Some("Finish") | Some("Error")
+        );
+        if until.reached(seen) {
+            return true;
         }
     }
-    done
+    false
 }
 
 /// The sessions holding a turn right now, read from the daemon (BR-71 Task 38b).
@@ -832,6 +919,93 @@ async fn post_json(path: &str, body: &str, auth: &DaemonAuth) -> Result<(u16, St
     Ok((code, body.to_string()))
 }
 
+/// One request to a JSON route that takes the secret key and nothing more — the
+/// schedule routes — returning the status and the body.
+///
+/// Unlike [`post_json`] it carries no user-action proof, and it takes the port
+/// rather than reading `BIOROUTER_PORT` itself: the caller has already probed
+/// that port, and a request must go to the daemon the probe found.
+///
+/// `deadline` is `None` only for a request whose answer genuinely takes as long
+/// as it takes — `POST /schedule/{id}/run_now` answers when the run ends.
+pub(crate) async fn daemon_json_request(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    auth: &DaemonAuth,
+    port: u16,
+    deadline: Option<std::time::Duration>,
+) -> Result<(u16, String)> {
+    let body = body.unwrap_or("");
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {DAEMON_HOST}\r\n{}\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\
+         Accept: application/json\r\nConnection: close\r\n\r\n{body}",
+        auth.headers(),
+        body.len()
+    );
+    let exchange = async {
+        let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    };
+    let raw = match deadline {
+        Some(limit) => tokio::time::timeout(limit, exchange)
+            .await
+            .map_err(|_| anyhow!("the daemon did not answer {method} {path} within {limit:?}"))??,
+        None => exchange.await?,
+    };
+
+    // Split on BYTES: a chunk size counts bytes, and a lossy decode first could
+    // move them.
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| {
+            anyhow!(
+                "the daemon closed the connection before sending a complete response to {method} \
+             {path}, so it is not known whether the request was carried out"
+            )
+        })?;
+    let head = String::from_utf8_lossy(&raw[..end]).into_owned();
+    let status = head.lines().next().unwrap_or_default();
+    let code = status_code(status)
+        .ok_or_else(|| anyhow!("daemon sent a response carrying no status code: {status}"))?;
+    let body = &raw[end + 4..];
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        dechunk(body)
+    } else {
+        body.to_vec()
+    };
+    Ok((code, String::from_utf8_lossy(&body).into_owned()))
+}
+
+/// An HTTP/1.1 chunked body, joined. Malformed framing ends the body where it
+/// breaks rather than inventing bytes.
+fn dechunk(mut rest: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Some(line_end) = rest.windows(2).position(|w| w == b"\r\n") {
+        let Some(size) = std::str::from_utf8(&rest[..line_end])
+            .ok()
+            .and_then(|line| usize::from_str_radix(line.trim(), 16).ok())
+        else {
+            break;
+        };
+        let data = &rest[line_end + 2..];
+        if size == 0 || data.len() < size {
+            break;
+        }
+        out.extend_from_slice(&data[..size]);
+        rest = data[size..].strip_prefix(b"\r\n").unwrap_or(&data[size..]);
+    }
+    out
+}
+
 /// `biorouter sessions watch <id>` — read-only observation of a live session.
 pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> {
     let auth = daemon_auth().await?;
@@ -842,7 +1016,11 @@ pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> 
             DAEMON_HOST,
             &auth,
         ),
-        !follow,
+        if follow {
+            Until::Closed
+        } else {
+            Until::Terminal
+        },
         Render::Lines,
     )
     .await
@@ -867,8 +1045,93 @@ fn reply_body(session_id: &str, text: &str) -> String {
     .to_string()
 }
 
+/// How long `send --no-wait` waits for the daemon's answer and for the frame
+/// that names the turn.
+///
+/// The name is not slow to arrive: `run_turn_body` publishes `TurnStarted` as
+/// its first act, before the agent is even looked up, so on a healthy daemon it
+/// follows the status line within milliseconds. This bounds only a daemon that
+/// is not healthy, so a flag whose whole point is not blocking cannot block.
+const NO_WAIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What `session send` came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SendOutcome {
+    /// The turn's stream was read to its end (the default) — or, under
+    /// `--no-wait`, ended before it named a turn. Its frames are printed.
+    Streamed,
+    /// `--no-wait`: the daemon accepted the turn, which is running without
+    /// this client. `turn_id` is its name, when the daemon had given one by the
+    /// time this returned.
+    Accepted { turn_id: Option<String> },
+    /// 202: the session is a subagent still starting, and the message was kept
+    /// as steering for its first turn (`routes/reply.rs`).
+    Queued,
+}
+
+/// Send one `POST /reply` over `stream` and read the answer as far as `wait`
+/// asks. Generic over the stream so both modes are driven over an in-memory
+/// pipe in tests, through the same function `handle_session_send` calls.
+///
+/// ⚠ **Leaving early does not cancel the turn.** Since the live-turn-stream work
+/// a `/reply` connection is "simply the turn's FIRST observer" and "its
+/// departure means nothing to it" (`routes/reply.rs`), whatever older comments
+/// in this file say about dropping a `/reply` socket. What does end an
+/// unobserved turn is the daemon's orphan reaper, after five minutes with no
+/// `/reply` stream attached — which is why `--no-wait` says so.
+async fn send_turn<S>(
+    stream: &mut S,
+    request: &[u8],
+    wait: bool,
+    deadline: std::time::Duration,
+) -> Result<SendOutcome>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    stream.write_all(request).await?;
+    let streamed = if wait {
+        read_response(stream, Until::Terminal, Render::Lines, None).await?
+    } else {
+        let (status_tx, mut status_rx) = tokio::sync::oneshot::channel();
+        let named = read_response(stream, Until::Named, Render::Lines, Some(status_tx));
+        match tokio::time::timeout(deadline, named).await {
+            Ok(read) => read?,
+            // Out of time. A status line already read IS the acceptance: the turn
+            // lock is taken and the turn spawned before `/reply` answers. With no
+            // status at all the answer is unknown, and "started" would be a guess.
+            Err(_) => match status_rx.try_recv() {
+                Ok(code) => Streamed::status_only(code),
+                Err(_) => {
+                    return Err(anyhow!(
+                        "the daemon did not answer within {deadline:?}, so it is not known \
+                         whether the turn started"
+                    ))
+                }
+            },
+        }
+    };
+    match streamed.code {
+        200 if wait || streamed.ended => Ok(SendOutcome::Streamed),
+        200 => Ok(SendOutcome::Accepted {
+            turn_id: streamed.turn_id,
+        }),
+        202 => Ok(SendOutcome::Queued),
+        code => Err(anyhow!(
+            "daemon refused the request: HTTP {code}\n\
+             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
+              403 means the user-action key does not match the daemon's configured digest)"
+        )),
+    }
+}
+
 /// `biorouter sessions send <id> <text>` — inject a turn and, unless
 /// `--no-wait`, watch it to completion.
+///
+/// ⚠ `--no-wait` used to be passed down as `stop_on_terminal = false`, which
+/// switched OFF the one early exit there was: the flag documented as "return as
+/// soon as the turn starts" read until the socket closed, i.e. waited at least
+/// as long as the default and printed strictly more (QA-D F4). It now returns
+/// at the frame in which the daemon names the turn, and says what it started.
 pub async fn handle_session_send(
     session_id: &str,
     text: &str,
@@ -883,14 +1146,27 @@ pub async fn handle_session_send(
         &reply_body(session_id, text),
     )?;
     // `/reply` streams the turn back, so a send that waits is one request.
-    match stream_request_bytes(request.as_bytes(), wait, Render::Lines, None).await? {
-        200 => Ok(()),
-        code => Err(anyhow!(
-            "daemon refused the request: HTTP {code}\n\
-             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
-              403 means the user-action key does not match the daemon's configured digest)"
-        )),
+    let mut stream = connect_to_daemon().await?;
+    match send_turn(&mut stream, request.as_bytes(), wait, NO_WAIT_DEADLINE).await? {
+        SendOutcome::Streamed => {}
+        SendOutcome::Accepted { turn_id } => {
+            match turn_id {
+                Some(turn_id) => println!("[started] turn {turn_id} in session {session_id}"),
+                None => println!("[started] a turn in session {session_id}"),
+            }
+            eprintln!(
+                "It runs on in the daemon: `biorouter session watch {session_id}` follows it and \
+                 `biorouter session cancel {session_id}` stops it. The daemon stops a turn once \
+                 nothing has been attached to its reply stream for five minutes (`session watch` \
+                 does not count), so --no-wait suits turns shorter than that."
+            );
+        }
+        SendOutcome::Queued => println!(
+            "[queued] session {session_id} is a subagent that is still starting; the message \
+             will be part of its first turn"
+        ),
     }
+    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1141,8 +1417,13 @@ async fn post_reply_quiet(
     // silently kills one.
     window.open();
     let holder = tokio::spawn(async move {
-        let outcome =
-            stream_request_bytes(request.as_bytes(), true, Render::Silent, Some(status_tx)).await;
+        let outcome = stream_request_bytes(
+            request.as_bytes(),
+            Until::Terminal,
+            Render::Silent,
+            Some(status_tx),
+        )
+        .await;
         window.close();
         outcome
     });
@@ -1176,8 +1457,9 @@ async fn post_reply_quiet(
         // read, so the request failed outright. The holder carries the reason.
         Err(_) => match holder.await {
             Ok(Err(err)) => Err(err),
-            Ok(Ok(code)) => Err(anyhow!(
-                "the daemon answered POST /reply with HTTP {code} but never reported it"
+            Ok(Ok(streamed)) => Err(anyhow!(
+                "the daemon answered POST /reply with HTTP {} but never reported it",
+                streamed.code
             )),
             Err(join) => Err(anyhow!("the /reply request could not be run: {join}")),
         },
@@ -1494,7 +1776,7 @@ pub async fn handle_session_attach(
     };
     let observer = stream_request_bytes(
         observer_request.as_bytes(),
-        false,
+        Until::Closed,
         Render::JoinThenLines,
         None,
     );
@@ -1506,7 +1788,7 @@ pub async fn handle_session_attach(
     loop {
         tokio::select! {
             observed = &mut observer => {
-                match observed? {
+                match observed?.code {
                     200 => {
                         eprintln!("the session's event stream ended");
                         return Ok(());
@@ -2166,13 +2448,15 @@ mod tests {
 
     /// Reading a response off an in-memory pipe, so the status/termination rules
     /// below are pinned without a daemon, a port or a race.
-    async fn read_from(script: &'static [u8], stop_on_terminal: bool) -> Result<u16> {
+    async fn read_from(script: &'static [u8], until: Until) -> Result<u16> {
         let (mut client, mut daemon) = tokio::io::duplex(4096);
         tokio::spawn(async move {
             let _ = daemon.write_all(script).await;
             // and the connection closes here.
         });
-        read_response(&mut client, stop_on_terminal, Render::Silent, None).await
+        read_response(&mut client, until, Render::Silent, None)
+            .await
+            .map(|streamed| streamed.code)
     }
 
     /// A response whose headers never arrive is NOT a 200.
@@ -2184,7 +2468,7 @@ mod tests {
     /// inherits the same lie as a silent clean exit.
     #[tokio::test]
     async fn a_response_that_dies_before_its_headers_is_an_error_not_a_200() {
-        let err = read_from(b"HTTP/1.1 200 OK\r\nContent-Type: text/ev", true)
+        let err = read_from(b"HTTP/1.1 200 OK\r\nContent-Type: text/ev", Until::Terminal)
             .await
             .unwrap_err()
             .to_string();
@@ -2194,7 +2478,10 @@ mod tests {
         );
 
         // Nothing at all on the wire is the same failure.
-        let empty = read_from(b"", true).await.unwrap_err().to_string();
+        let empty = read_from(b"", Until::Terminal)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(empty.contains("closed the connection"), "{empty}");
     }
 
@@ -2208,7 +2495,7 @@ mod tests {
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
                   data: {\"type\":\"Ping\"}\n\n\
                   data: {\"type\":\"Finish\",\"reason\":\"stop\"}\n\n",
-                true,
+                Until::Terminal,
             )
             .await
             .unwrap(),
@@ -2219,7 +2506,7 @@ mod tests {
             read_from(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
                   data: {\"type\":\"Ping\"}\n\n",
-                false,
+                Until::Closed,
             )
             .await
             .unwrap(),
@@ -2242,11 +2529,17 @@ mod tests {
         let (status_tx, status_rx) = tokio::sync::oneshot::channel();
         let code = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            read_response(&mut client, true, Render::Silent, Some(status_tx)),
+            read_response(
+                &mut client,
+                Until::Terminal,
+                Render::Silent,
+                Some(status_tx),
+            ),
         )
         .await
         .expect("a 409 must not block on the socket closing")
-        .unwrap();
+        .unwrap()
+        .code;
         assert_eq!(code, 409);
         // The refusal reaches the status channel too. `post_reply_quiet` waits
         // on that channel, so a 409 that only came back as a return value would
@@ -2337,7 +2630,13 @@ mod tests {
         let (mut client, mut daemon) = tokio::io::duplex(4096);
         let (status_tx, status_rx) = tokio::sync::oneshot::channel();
         let holder = tokio::spawn(async move {
-            read_response(&mut client, true, Render::Silent, Some(status_tx)).await
+            read_response(
+                &mut client,
+                Until::Terminal,
+                Render::Silent,
+                Some(status_tx),
+            )
+            .await
         });
 
         daemon
@@ -2359,7 +2658,184 @@ mod tests {
             .write_all(b"data: {\"type\":\"Finish\",\"reason\":\"stop\"}\n\n")
             .await
             .unwrap();
-        assert_eq!(holder.await.unwrap().unwrap(), 200);
+        assert_eq!(holder.await.unwrap().unwrap().code, 200);
+    }
+
+    /// The opening of a real `/reply` turn log, as `attach_response` writes it:
+    /// headers, then `TurnStarted` as frame 0 carrying the server's turn id,
+    /// then the turn's own frames — every logged frame carries `seq` and
+    /// `turn_id`.
+    const TURN_OPENING: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+        data: {\"type\":\"TurnStarted\",\"turn_id\":\"turn-7\",\"seq\":0}\n\n\
+        data: {\"type\":\"Message\",\"seq\":1,\"turn_id\":\"turn-7\",\"message\":{\"role\":\
+        \"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Seven is\"}]}}\n\n";
+
+    const TURN_FINISH: &[u8] =
+        b"data: {\"type\":\"Finish\",\"reason\":\"stop\",\"seq\":2,\"turn_id\":\"turn-7\"}\n\n";
+
+    /// A `session send` over an in-memory pipe, through `send_turn` — the same
+    /// function `handle_session_send` calls. The daemon half is handed back
+    /// OPEN, so a send that returns has returned on its own terms and not
+    /// because the connection closed under it.
+    fn send_over_pipe(
+        wait: bool,
+        deadline: std::time::Duration,
+    ) -> (
+        tokio::task::JoinHandle<Result<SendOutcome>>,
+        tokio::io::DuplexStream,
+    ) {
+        let (mut client, daemon) = tokio::io::duplex(64 * 1024);
+        let send = tokio::spawn(async move {
+            send_turn(&mut client, b"POST /reply HTTP/1.1\r\n\r\n", wait, deadline).await
+        });
+        (send, daemon)
+    }
+
+    /// QA-D F4: `--no-wait` returns as soon as the daemon has accepted the turn
+    /// and named it — while the turn is still streaming, with the connection
+    /// still open — and reports the turn's id.
+    ///
+    /// The regression this pins: `--no-wait` was passed down as "do not stop at
+    /// the terminal frame", so it read until the socket closed. Against this
+    /// pipe, which never closes and never sends a terminal frame, that version
+    /// hangs and the timeout below fails the test.
+    #[tokio::test]
+    async fn no_wait_returns_at_the_frame_that_names_the_turn() {
+        let (send, mut daemon) = send_over_pipe(false, std::time::Duration::from_secs(30));
+
+        let mut request = vec![0u8; 64];
+        let read = daemon.read(&mut request).await.unwrap();
+        assert!(
+            request[..read].starts_with(b"POST /reply"),
+            "the request went out"
+        );
+        daemon.write_all(TURN_OPENING).await.unwrap();
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("--no-wait must return without waiting for the turn to finish")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            outcome,
+            SendOutcome::Accepted {
+                turn_id: Some("turn-7".to_string())
+            }
+        );
+        // Held open until here: the turn was still streaming when the client
+        // left, so nothing but the name can have ended the read.
+        drop(daemon);
+    }
+
+    /// The default still waits: the same opening leaves it streaming, and only
+    /// the terminal frame lets it return.
+    #[tokio::test]
+    async fn the_default_send_waits_for_the_terminal_frame() {
+        let (send, mut daemon) = send_over_pipe(true, std::time::Duration::from_secs(30));
+
+        let mut request = vec![0u8; 64];
+        let _ = daemon.read(&mut request).await.unwrap();
+        daemon.write_all(TURN_OPENING).await.unwrap();
+
+        // Only ever a false PASS on a very slow machine, never a false failure:
+        // a send that wrongly returned at the name is done within this window.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !send.is_finished(),
+            "the default must keep streaming until the turn ends"
+        );
+
+        daemon.write_all(TURN_FINISH).await.unwrap();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("the terminal frame must end the default send")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, SendOutcome::Streamed);
+    }
+
+    /// A daemon that accepted the turn but never names it still cannot hold
+    /// `--no-wait`: the status line is the acceptance, so it returns at the
+    /// deadline as a turn started without a known id.
+    #[tokio::test]
+    async fn no_wait_is_bounded_when_the_daemon_never_names_the_turn() {
+        let (send, mut daemon) = send_over_pipe(false, std::time::Duration::from_millis(300));
+        let mut request = vec![0u8; 64];
+        let _ = daemon.read(&mut request).await.unwrap();
+        daemon
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+            .await
+            .unwrap();
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("the deadline must bound --no-wait")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, SendOutcome::Accepted { turn_id: None });
+        drop(daemon);
+    }
+
+    /// …but a daemon that has not answered at all is NOT reported as started:
+    /// with no status line nothing is known, and "started" would be a guess.
+    #[tokio::test]
+    async fn no_wait_with_no_answer_at_all_is_an_error_not_a_start() {
+        let (send, daemon) = send_over_pipe(false, std::time::Duration::from_millis(300));
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), send)
+            .await
+            .expect("the deadline must bound --no-wait")
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not known whether the turn started"), "{err}");
+        drop(daemon);
+    }
+
+    /// The other answers `/reply` gives, in both modes: a 409 is still a
+    /// refusal, and a 202 — a subagent still starting kept the message as
+    /// steering for its first turn — is a delivery, not a refusal.
+    #[tokio::test]
+    async fn a_202_is_a_queued_delivery_and_a_409_is_still_a_refusal() {
+        for wait in [true, false] {
+            let (send, mut daemon) = send_over_pipe(wait, std::time::Duration::from_secs(30));
+            let mut request = vec![0u8; 64];
+            let _ = daemon.read(&mut request).await.unwrap();
+            daemon
+                .write_all(b"HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            assert_eq!(
+                send.await.unwrap().unwrap(),
+                SendOutcome::Queued,
+                "wait={wait}"
+            );
+
+            let (send, mut daemon) = send_over_pipe(wait, std::time::Duration::from_secs(30));
+            let _ = daemon.read(&mut request).await.unwrap();
+            daemon
+                .write_all(b"HTTP/1.1 409 Conflict\r\n\r\n{}")
+                .await
+                .unwrap();
+            let err = send.await.unwrap().unwrap_err().to_string();
+            assert!(err.contains("HTTP 409"), "wait={wait}: {err}");
+        }
+    }
+
+    /// A stream that ends in an error before it names any turn is not reported
+    /// as a turn that started: the error frame is what the user sees.
+    #[tokio::test]
+    async fn no_wait_does_not_announce_a_turn_the_stream_ended_before_naming() {
+        let (send, mut daemon) = send_over_pipe(false, std::time::Duration::from_secs(30));
+        let mut request = vec![0u8; 64];
+        let _ = daemon.read(&mut request).await.unwrap();
+        daemon
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+                  data: {\"type\":\"Error\",\"code\":\"turn_not_found\",\"error\":\"gone\"}\n\n",
+            )
+            .await
+            .unwrap();
+        assert_eq!(send.await.unwrap().unwrap(), SendOutcome::Streamed);
     }
 
     #[test]

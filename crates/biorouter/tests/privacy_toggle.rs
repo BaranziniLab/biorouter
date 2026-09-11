@@ -980,7 +980,8 @@ async fn no_environment_variable_can_turn_protection_off() {
     // …and the same resolution DOES honour a record on disk, so the assertion
     // above is about the environment rather than about a resolution that can
     // never say `off` at all.
-    biorouter::privacy::master_switch::write_for(&config, false).expect("record the switch");
+    biorouter::privacy::master_switch::write_for(&config, false, Default::default())
+        .expect("record the switch");
     assert!(
         !biorouter::privacy::resolve_privacy_tiers(&config),
         "the switch's own record is what the resolution reads"

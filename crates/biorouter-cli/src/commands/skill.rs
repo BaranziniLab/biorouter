@@ -100,14 +100,7 @@ pub async fn handle_install(source: String, force: bool, choice: Option<String>)
     };
 
     let root = skills_root();
-    for plan in &plans {
-        if !force && plan.destination(&root).exists() {
-            bail!(
-                "Already installed at {}. Re-run with --force to replace it.",
-                plan.destination(&root).display()
-            );
-        }
-    }
+    refuse_before_installing(&plans, &root, force)?;
 
     for plan in &plans {
         let installed = skill_package::install(plan, &root)?;
@@ -154,6 +147,39 @@ pub async fn handle_install(source: String, force: bool, choice: Option<String>)
                     style(installed.directory.display()).dim()
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+/// Every refusal an install can know about before it writes anything, for
+/// every plan, so a multi-plan install stops before its first write rather
+/// than halfway through.
+///
+/// ⚠ **The shipped-name refusal comes FIRST, from the installer's own guard.**
+/// This used to check only "already exists", and answered a shipped name with
+/// "Re-run with --force to replace it" — advertising an escape hatch that
+/// `skill_package::install` then refuses (`refuse_shipped`), so following the
+/// advice earned a second refusal (QA-D F10). A shipped name is refused
+/// whatever `--force` says, so the advice must never be offered for one. The
+/// verdict comes from `shipped_refusal`, the same predicate `install` applies,
+/// rather than a copy of the rule here that could drift from it.
+fn refuse_before_installing(
+    plans: &[biorouter::agents::skill_package::ImportPlan],
+    root: &Path,
+    force: bool,
+) -> Result<()> {
+    for plan in plans {
+        if let Some(refusal) =
+            biorouter::agents::skill_package::install::shipped_refusal(plan, root)
+        {
+            bail!(refusal);
+        }
+        if !force && plan.destination(root).exists() {
+            bail!(
+                "Already installed at {}. Re-run with --force to replace it.",
+                plan.destination(root).display()
+            );
         }
     }
     Ok(())
@@ -1439,5 +1465,84 @@ mod tests {
         let set = disabled_set(&config);
         assert!(set.contains("a") && set.contains("b"));
         assert_eq!(disabled_set(&json!({})), HashSet::new());
+    }
+
+    fn plan_named(id: &str) -> biorouter::agents::skill_package::ImportPlan {
+        use biorouter::agents::skill_package::{Evidence, ImportKind, ImportPlan, PlannedSkill};
+        ImportPlan {
+            kind: ImportKind::Single,
+            id: id.to_string(),
+            display_name: id.to_string(),
+            version: None,
+            entry_point: None,
+            groups: Default::default(),
+            components: vec![PlannedSkill {
+                name: id.to_string(),
+                description: "a package that shadows a name".to_string(),
+                directory: id.to_string(),
+                group: None,
+                entry_point: false,
+            }],
+            evidence: Evidence::SingleSkill,
+            ambiguity: None,
+            source: Default::default(),
+            origin: None,
+            shadows: Vec::new(),
+            files: vec![("SKILL.md".to_string(), b"---\nname: x\n---\n".to_vec())],
+        }
+    }
+
+    /// QA-D F10: over a SHIPPED name the pre-install check must never
+    /// recommend `--force` — the installer refuses a shipped name whatever
+    /// `--force` says — and must answer with the installer's own refusal,
+    /// with or without the flag, before anything is written.
+    ///
+    /// Under the process-wide environment lock with the root pinned to a temp
+    /// tree, like every test here that resolves `Paths`: the installer's guard
+    /// reads the seeded root from `Paths`, and an unpinned read could land on
+    /// the developer's real skills directory or race a test that moved it.
+    #[test]
+    fn a_shipped_name_is_never_answered_with_force_advice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(tmp.path().to_str().unwrap().to_string()),
+        )]);
+        let root = skills_root();
+        assert!(
+            root.starts_with(tmp.path()),
+            "the fixture resolved to {} — refusing to write there",
+            root.display()
+        );
+        let shipped = "about-biorouter";
+        assert!(
+            biorouter::agents::skills_extension::is_shipped_entry_name(shipped),
+            "the fixture must use a name Biorouter really ships, or this proves nothing"
+        );
+
+        // The state the QA run met: the seeded copy is on disk, so the old
+        // "exists → re-run with --force" branch was reachable.
+        fs::create_dir_all(root.join(shipped)).unwrap();
+        for force in [false, true] {
+            let err = refuse_before_installing(&[plan_named(shipped)], &root, force)
+                .unwrap_err()
+                .to_string();
+            assert!(!err.contains("--force"), "force={force}: {err}");
+            assert!(err.contains("ships with Biorouter"), "force={force}: {err}");
+        }
+
+        // The positive controls: an ordinary name that exists still gets the
+        // advice, and `--force` still lets it through.
+        fs::create_dir_all(root.join("my-own-skill")).unwrap();
+        let err = refuse_before_installing(&[plan_named("my-own-skill")], &root, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Re-run with --force"), "{err}");
+        refuse_before_installing(&[plan_named("my-own-skill")], &root, true).unwrap();
+
+        // …and the shipped refusal belongs to Biorouter's own root only: the
+        // same name under another root is somebody else's to install over.
+        let elsewhere = tmp.path().join("elsewhere");
+        refuse_before_installing(&[plan_named(shipped)], &elsewhere, false).unwrap();
     }
 }

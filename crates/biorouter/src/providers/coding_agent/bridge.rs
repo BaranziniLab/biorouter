@@ -52,7 +52,7 @@
 //! capability than the daemon's REST API — one session's tools, for one turn.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
@@ -67,6 +67,7 @@ use crate::pending_user_action::{
 };
 use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::privacy::CallCapability;
+use crate::providers::formats::audience;
 use crate::session::session_manager::Session;
 use crate::tool_inspection::ToolInspectionManager;
 
@@ -194,7 +195,21 @@ pub struct BridgeGrant {
     /// is what stops a panicking turn leaving a child blocked on an HTTP response
     /// nobody will ever answer.
     nonce: String,
+    /// Biorouter's own result for each call the child made, under the child's
+    /// own id for the call, until the provider mirrors that call into the
+    /// transcript. The child is handed only [`child_view`] of a result, and its
+    /// echo of even that is lossy, so this is where the transcript gets what
+    /// the tool actually returned. See [`take_recorded_result`].
+    recorded: Mutex<HashMap<String, CallToolResult>>,
 }
+
+/// How many results one grant holds for the transcript at a time.
+///
+/// Each is taken the moment its call is mirrored, so in practice the map holds
+/// only calls between the bridge answering and the child reporting. The cap
+/// bounds a child that never reports (one that crashed mid-turn): past it a
+/// call is not recorded, and its transcript entry falls back to the echo.
+const MAX_RECORDED_RESULTS: usize = 64;
 
 /// The per-call MCP deadline Biorouter asks each child CLI to apply (#110).
 ///
@@ -370,6 +385,7 @@ impl BridgeGrant {
             vault,
             tool_risks,
             nonce: String::new(),
+            recorded: Mutex::new(HashMap::new()),
         }
     }
 
@@ -430,6 +446,35 @@ impl BridgeGrant {
             .await;
         self.discard_staged_hook_context(&request_id);
         outcome
+    }
+
+    /// [`Self::call`], answered the way the child must receive it.
+    ///
+    /// The child gets [`child_view`] of the result: what a model is sent. The
+    /// full result is kept under `child_call_id` — the child's own id for the
+    /// call, see [`child_call_id`] — so the transcript can store what the tool
+    /// actually returned rather than the child's echo of the view
+    /// ([`take_recorded_result`]).
+    pub async fn call_for_child(
+        &self,
+        call: CallToolRequestParams,
+        child_call_id: Option<String>,
+    ) -> Result<CallToolResult, String> {
+        let result = self.call(call).await?;
+        if let Some(id) = child_call_id {
+            self.record(id, &result);
+        }
+        Ok(child_view(&result))
+    }
+
+    /// Keep `result` for the transcript, under the child's id for the call.
+    fn record(&self, child_call_id: String, result: &CallToolResult) {
+        let Ok(mut recorded) = self.recorded.lock() else {
+            return;
+        };
+        if recorded.len() < MAX_RECORDED_RESULTS || recorded.contains_key(&child_call_id) {
+            recorded.insert(child_call_id, result.clone());
+        }
     }
 
     /// The body of one bridged call, from the path jail to the tool's result.
@@ -950,6 +995,118 @@ pub fn advertised_tool_names(bridge_url: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What the child is handed: the blocks a model would be sent, unannotated.
+///
+/// A Biorouter tool can address the same output to two readers —
+/// `developer__shell` returns it once with `audience: ["assistant"]` and once,
+/// reformatted, with `audience: ["user"]` — and every provider formatter sends
+/// the model only the blocks addressed to it ([`audience::is_for_model`]). The
+/// bridge is the coding agents' formatter: whatever it returns, the child's
+/// model reads, and neither CLI filters by audience. It returned every block,
+/// so the child read each result twice (QA-E F4).
+///
+/// Annotations are removed from what remains. After the filter they tell a
+/// model nothing, and codex-cli cannot parse a result whose block carries
+/// `priority`: measured on 0.153.4, `priority: 0.0` alone fails the call with
+/// "Unexpected response type" while `audience` alone does not — and the
+/// shell's user block carries `priority: 0.0`.
+///
+/// Nothing is lost to the transcript: [`BridgeGrant::call_for_child`] keeps the
+/// full result for [`take_recorded_result`].
+pub fn child_view(result: &CallToolResult) -> CallToolResult {
+    let mut view = result.clone();
+    view.content.retain(audience::is_for_model);
+    for block in &mut view.content {
+        block.annotations = None;
+    }
+    view
+}
+
+/// The `_meta` keys under which each CLI names its own `tools/call`.
+///
+/// Measured on 2026-09-11: `claude` 2.1.266 sends `claudecode/toolUseId`, the
+/// same id as the stream's `tool_use` / `tool_result`; codex-cli 0.153.4 sends
+/// `callId`, the same id as the `mcpToolCall` item.
+const CHILD_CALL_ID_KEYS: [&str; 2] = ["claudecode/toolUseId", "callId"];
+
+/// The child's own id for a `tools/call`, read from the request's `_meta`.
+///
+/// It is what pairs the result Biorouter keeps with the frame on which the
+/// child later reports the call. `None` when the CLI sent neither key; the
+/// transcript then falls back to the child's echo.
+pub fn child_call_id(meta: Option<&serde_json::Value>) -> Option<String> {
+    let meta = meta?;
+    CHILD_CALL_ID_KEYS
+        .iter()
+        .find_map(|key| meta.get(*key).and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+}
+
+/// Take Biorouter's own result for one of the child's calls, if the grant
+/// behind `bridge_url` kept it. Taken, not read: each call is mirrored once.
+pub fn take_recorded_result(bridge_url: &str, child_call_id: &str) -> Option<CallToolResult> {
+    let nonce = bridge_url.trim_end_matches('/').rsplit('/').next()?;
+    let grant = lookup(nonce)?;
+    let mut recorded = grant.recorded.lock().ok()?;
+    recorded.remove(child_call_id)
+}
+
+/// A dispatcher for grants that exist only to hold results.
+///
+/// ⚠ Deliberately not an `ExtensionManager`: building one reaches
+/// `SessionManager::instance()`, whose sqlx pool panics outside a Tokio
+/// runtime — and a panic inside that process-global `LazyLock` poisons it for
+/// every later test in the binary, which then all fail as "previously
+/// poisoned" far from the cause.
+#[cfg(test)]
+struct InertDispatch;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl BridgeToolDispatch for InertDispatch {
+    async fn dispatch(
+        &self,
+        _session_id: &str,
+        _call: CallToolRequestParams,
+        _capability: CallCapability,
+        _cancel: CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        Err("this test grant dispatches nothing".to_string())
+    }
+}
+
+/// A grant that dispatches nothing and needs no runtime to build.
+#[cfg(test)]
+pub(crate) fn inert_grant_for_test() -> BridgeGrant {
+    BridgeGrant::new(
+        Session::default(),
+        BioRouterMode::Auto,
+        Arc::new(InertDispatch),
+        Arc::new(ToolInspectionManager::new()),
+        CallCapability::public_enforced(),
+        Vec::new(),
+        Conversation::new_unvalidated(vec![]),
+        None,
+        Arc::new(crate::hooks::HooksManager::with_config(
+            Default::default(),
+            false,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        )),
+        None,
+        Arc::new(ToolRiskRegistry::new()),
+    )
+}
+
+/// A live lease whose grant already holds `result` for `child_call_id`, as if
+/// the child had just made that call — for the providers' mirror tests.
+#[cfg(test)]
+pub(crate) fn lease_holding_for_test(child_call_id: &str, result: CallToolResult) -> BridgeLease {
+    publish_base_url("http://127.0.0.1:65535");
+    let grant = inert_grant_for_test();
+    grant.record(child_call_id.to_string(), &result);
+    issue(grant).expect("a base URL was just published")
+}
+
 /// How many grants are live.
 ///
 /// Diagnostic rather than test-facing: `GRANTS` is process-global, so a count is
@@ -1080,6 +1237,135 @@ mod tests {
             .expect_err("an expired request must not dispatch");
         assert!(error.contains("request ended"), "{error}");
         assert!(recorder.calls.lock().unwrap().is_empty());
+    }
+
+    /// The developer shell's result shape (`rmcp_developer.rs`): the output for
+    /// the assistant, and a copy for the user marked low priority.
+    fn shell_shaped_result(output: &str) -> CallToolResult {
+        CallToolResult::success(vec![
+            rmcp::model::Content::text(output).with_audience(vec![rmcp::model::Role::Assistant]),
+            rmcp::model::Content::text(format!("user copy: {output}"))
+                .with_audience(vec![rmcp::model::Role::User])
+                .with_priority(0.0),
+        ])
+    }
+
+    struct FixedResultDispatch(CallToolResult);
+
+    #[async_trait::async_trait]
+    impl BridgeToolDispatch for FixedResultDispatch {
+        async fn dispatch(
+            &self,
+            _session_id: &str,
+            _call: CallToolRequestParams,
+            _capability: CallCapability,
+            _cancel: CancellationToken,
+        ) -> Result<CallToolResult, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// QA-E F4: the child is handed what a model is sent — the assistant's
+    /// block — and nothing a model does not read. Every block used to go, so
+    /// the child read the shell's output twice; and the user block's `priority`
+    /// alone made codex-cli 0.153.4 fail the whole call.
+    #[test]
+    fn the_child_is_handed_only_the_model_facing_block_unannotated() {
+        let view = child_view(&shell_shaped_result("Thu Sep 11"));
+        assert_eq!(view.content.len(), 1, "one block for the model: {view:?}");
+        assert_eq!(
+            view.content[0].as_text().map(|t| t.text.as_str()),
+            Some("Thu Sep 11")
+        );
+        assert!(
+            view.content[0].annotations.is_none(),
+            "annotations must not reach the child: {view:?}"
+        );
+        let wire = serde_json::to_string(&view).expect("a serialisable result");
+        assert!(!wire.contains("priority"), "codex cannot parse it: {wire}");
+    }
+
+    /// Held to the same five-case fixture every provider formatter is.
+    #[test]
+    fn the_child_view_filters_exactly_as_a_formatter_does() {
+        let view = child_view(&CallToolResult::success(audience::every_audience_case()));
+        let texts: Vec<&str> = view
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert_eq!(texts, audience::MODEL_VISIBLE.to_vec());
+    }
+
+    /// The error flag and structured content are the tool's answer, not
+    /// display hints, and survive the view.
+    #[test]
+    fn the_child_view_keeps_the_error_flag_and_structured_content() {
+        let mut result = CallToolResult::error(vec![rmcp::model::Content::text("boom")]);
+        result.structured_content = Some(serde_json::json!({ "code": 7 }));
+        let view = child_view(&result);
+        assert_eq!(view.is_error, Some(true));
+        assert_eq!(
+            view.structured_content,
+            Some(serde_json::json!({ "code": 7 }))
+        );
+    }
+
+    /// Each CLI's own `_meta` key, as measured on 2026-09-11.
+    #[test]
+    fn each_cli_names_its_call_under_its_own_meta_key() {
+        let claude = serde_json::json!({ "claudecode/toolUseId": "toolu_01", "progressToken": 2 });
+        let codex = serde_json::json!({ "callId": "exec-1", "threadId": "t", "itemId": "ctc_1" });
+        assert_eq!(child_call_id(Some(&claude)).as_deref(), Some("toolu_01"));
+        assert_eq!(child_call_id(Some(&codex)).as_deref(), Some("exec-1"));
+        assert_eq!(
+            child_call_id(Some(&serde_json::json!({ "progressToken": 2 }))),
+            None
+        );
+        assert_eq!(child_call_id(None), None);
+    }
+
+    /// The bridge answers with the view and keeps the full result under the
+    /// child's id — once, because each call is mirrored once.
+    #[tokio::test]
+    async fn a_call_for_the_child_keeps_the_full_result_under_its_id() {
+        publish_base_url("http://127.0.0.1:65535");
+        let mut grant = dummy_grant();
+        grant.dispatcher = Arc::new(FixedResultDispatch(shell_shaped_result("out")));
+        grant.inspections = Arc::new(inspections_with(&grant.hooks, false));
+        let lease = issue(grant).expect("a base URL is published");
+        let grant = lookup(lease.url().rsplit('/').next().unwrap()).unwrap();
+
+        let answered = grant
+            .call_for_child(
+                CallToolRequestParams {
+                    name: "developer__shell".into(),
+                    arguments: Some(serde_json::Map::new()),
+                    meta: None,
+                    task: None,
+                },
+                Some("toolu_7".to_string()),
+            )
+            .await
+            .expect("approved in Auto mode");
+
+        assert_eq!(answered, child_view(&shell_shaped_result("out")));
+        assert_eq!(
+            take_recorded_result(lease.url(), "toolu_7"),
+            Some(shell_shaped_result("out")),
+            "the full result, annotations and all, is kept for the transcript"
+        );
+        assert_eq!(take_recorded_result(lease.url(), "toolu_7"), None);
+    }
+
+    /// A child that never reports its calls cannot grow the grant without bound.
+    #[test]
+    fn a_grant_keeps_a_bounded_number_of_results() {
+        let grant = inert_grant_for_test();
+        for i in 0..MAX_RECORDED_RESULTS + 5 {
+            grant.record(format!("call-{i}"), &CallToolResult::success(vec![]));
+        }
+        assert_eq!(grant.recorded.lock().unwrap().len(), MAX_RECORDED_RESULTS);
     }
 
     struct NestedApprovalDispatch;

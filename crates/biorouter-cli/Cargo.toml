@@ -81,6 +81,10 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["wincred"] }
 
+# `serve` asks the daemon it started to stop with SIGTERM before it kills it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["jemalloc"]
 # Use tuned jemalloc as the global allocator (returns freed pages to the OS).

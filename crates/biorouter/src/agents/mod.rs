@@ -31,6 +31,10 @@ pub mod mcp_client;
 pub mod mcp_pool;
 pub mod mistakes;
 pub mod moim;
+// The one approval card `platform__manage_workflow` and `platform__manage_schedule`
+// park before they change the user's setup — shared so the two cannot disagree
+// about whether to ask (QA 2026-09-10, F1).
+pub(crate) mod platform_approval;
 pub mod platform_tools;
 // BR-47: auto post-edit diagnostics — the config gate, write-detection, and
 // corrective-context formatting for the edit->check->fix reflection loop.
@@ -45,7 +49,7 @@ mod recurring;
 pub(crate) mod reply_parts;
 pub mod resource_refs;
 pub mod retry;
-mod schedule_tool;
+pub(crate) mod schedule_tool;
 mod session_blob_tool;
 // The session-row write for `enabled_extensions.v0`, plus the classifier that
 // says which catalog tools require it. `pub` because `agents::agent` is
