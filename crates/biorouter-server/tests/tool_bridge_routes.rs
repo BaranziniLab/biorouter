@@ -84,6 +84,66 @@ fn no_hooks() -> Arc<biorouter::hooks::HooksManager> {
     ))
 }
 
+/// A dispatcher that answers every call with one fixed result.
+///
+/// Stands in for an extension when a test needs to know that a call really ran
+/// on Biorouter's side (a random marker only this returns) or needs a tool's
+/// exact result shape.
+struct FixedResultDispatch {
+    result: rmcp::model::CallToolResult,
+}
+
+#[async_trait::async_trait]
+impl bridge::BridgeToolDispatch for FixedResultDispatch {
+    async fn dispatch(
+        &self,
+        _session_id: &str,
+        _call: rmcp::model::CallToolRequestParams,
+        _capability: CallCapability,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<rmcp::model::CallToolResult, String> {
+        Ok(self.result.clone())
+    }
+}
+
+/// A grant over [`advertised_tool`] whose calls are approved (Auto mode, a real
+/// permission inspector) and answered with `result`.
+fn fixed_result_grant(result: rmcp::model::CallToolResult) -> bridge::BridgeGrant {
+    use biorouter::config::permission::PermissionManager;
+    use biorouter::managed::ManagedPolicy;
+    use biorouter::permission::permission_inspector::PermissionInspector;
+    use biorouter::permission::tool_risk::ToolRiskRegistry;
+
+    let risks = Arc::new(ToolRiskRegistry::new());
+    let mut inspections = ToolInspectionManager::new();
+    inspections.add_inspector(Box::new(PermissionInspector::new(
+        Arc::clone(&risks),
+        PermissionManager::instance(),
+        Arc::new(ManagedPolicy::empty()),
+        Arc::new(tokio::sync::Mutex::new(None)),
+    )));
+    bridge::BridgeGrant::new(
+        Session::default(),
+        BioRouterMode::Auto,
+        Arc::new(FixedResultDispatch { result }),
+        Arc::new(inspections),
+        CallCapability::public_enforced(),
+        vec![advertised_tool()],
+        Conversation::new_unvalidated(vec![]),
+        None,
+        no_hooks(),
+        None,
+        risks,
+    )
+}
+
+/// A grant whose one tool answers with `marker=<marker>` and nothing else.
+fn marker_grant(marker: &str) -> bridge::BridgeGrant {
+    fixed_result_grant(rmcp::model::CallToolResult::success(vec![
+        rmcp::model::Content::text(format!("marker={marker}")),
+    ]))
+}
+
 /// The whole lifecycle in one test, because the assertions are sequential: a grant
 /// is reachable, serves its own tool set, and stops existing when its lease drops.
 #[tokio::test]
@@ -341,8 +401,17 @@ async fn the_real_codex_provider_reaches_biorouters_tools_over_the_bridge() {
     use biorouter::providers::base::Provider;
     use biorouter::providers::codex::CodexProvider;
 
+    // ⚠ QA-E F1: this used to issue a grant over an EMPTY extension manager and
+    // accept any answer that NAMED the tool, on the argument that a refusal "can
+    // only have come from Biorouter's side of the bridge". It could also come from
+    // Codex's own side — "MCP tool call requires approval, but approval policy is
+    // never" names the tool too — so on codex-cli 0.148+ this passed while every
+    // bridged call was refused inside the CLI. The tool now answers with a random
+    // marker that exists only in Biorouter's dispatcher, so only a call that
+    // really crossed the bridge and ran can put it in the answer.
+    let marker = format!("CODEXBRIDGE{:016x}", rand::random::<u64>());
     serve_real_bridge().await;
-    let lease = bridge::issue(grant().await).expect("the base URL is published");
+    let lease = bridge::issue(marker_grant(&marker)).expect("the base URL is published");
 
     // Drive the PROVIDER, not the CLI directly. `codex exec` cannot answer an
     // approval request, so an MCP tool call there fails with "user cancelled MCP
@@ -356,7 +425,7 @@ async fn the_real_codex_provider_reaches_biorouters_tools_over_the_bridge() {
 
     let messages = vec![Message::user().with_text(
         "Call the spokeagent__query_knowledge_graph tool with cypher='MATCH (n) RETURN n LIMIT 1'. \
-         Then report, in one line, the exact text the tool returned.",
+         Then reply with ONLY the marker value the tool returned, and nothing else.",
     )];
 
     let outcome = bridge::ACTIVE_BRIDGE_URL
@@ -373,14 +442,14 @@ async fn the_real_codex_provider_reaches_biorouters_tools_over_the_bridge() {
     match outcome {
         Ok((message, usage)) => {
             let text = message.as_concat_text();
-            // The grant's ExtensionManager holds no real extension, so the call is
-            // refused by the gate stack rather than executed — and that refusal is
-            // the proof: it can only have come from Biorouter's side of the bridge.
-            // A child that never reached the bridge would report a missing tool
-            // instead.
             assert!(
-                text.contains("spokeagent__query_knowledge_graph"),
-                "the model should have reached Biorouter's tool; it said: {text}"
+                !text.contains("approval policy"),
+                "Codex refused the call itself instead of asking Biorouter: {text}"
+            );
+            assert!(
+                text.contains(&marker),
+                "the bridged tool never ran: {marker} exists only in Biorouter's \
+                 dispatcher, and the answer was: {text}"
             );
             assert_eq!(
                 usage.provider.as_deref(),

@@ -43,6 +43,17 @@ without a confirmation step. That combination — a coding agent, full Developer
 and Auto mode — is the one to think about before pointing these providers at a
 machine holding credentials you care about.
 
+⚠ **On Codex, none of that reached the child from `codex-cli` 0.148.0 until
+2026-09-11** (QA-E F1, measured on 0.153.4 with `claude` 2.1.266 alongside).
+Every bridged call failed on its first attempt with the vendor's own sentence,
+`MCP tool call requires approval, but approval policy is never`: the CLI began
+answering its MCP tool-call approval itself under the `never` policy BioRouter
+passed, so BioRouter was never asked. The thread now runs under Codex's granular
+policy, which still refuses every child-local category inside the CLI and lets
+only that one approval through, and BioRouter accepts it for its own bridge
+alone — see
+[why the policy is not `never`](child-agent-isolation.md#why-the-policy-is-not-never-qa-e-f1).
+
 ## Documents
 
 | Document | What it covers |

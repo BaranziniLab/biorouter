@@ -30,7 +30,9 @@
 //! local model-controlled tools. Biorouter's own
 //! tools reach it over the one MCP bridge, and execute in Biorouter's dispatcher
 //! where every existing gate still fires. An unexpected approval request for a
-//! command or file change is refused rather than rubber-stamped.
+//! command or file change is refused rather than rubber-stamped; the thread's
+//! approval policy refuses those inside the CLI and lets only the MCP tool-call
+//! approval through, which Biorouter accepts for its own bridge alone.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -420,13 +422,7 @@ impl CodexProvider {
             let server = AppServer::spawn_with_home(command, Some(home)).await?;
 
             match server
-                .request(
-                    "initialize",
-                    json!({
-                        "clientInfo": { "name": "biorouter", "version": env!("CARGO_PKG_VERSION") },
-                        "capabilities": { "experimentalApi": true }
-                    }),
-                )
+                .request("initialize", Self::initialize_params())
                 .await
             {
                 Ok(_) => {
@@ -462,6 +458,53 @@ impl CodexProvider {
         ))
     }
 
+    /// `initialize` parameters.
+    ///
+    /// Identity is declared here: Biorouter says who it is rather than
+    /// impersonating the vendor's own first-party client.
+    fn initialize_params() -> Value {
+        json!({
+            "clientInfo": { "name": "biorouter", "version": env!("CARGO_PKG_VERSION") },
+            "capabilities": { "experimentalApi": true }
+        })
+    }
+
+    /// The approval policy every Codex thread runs under.
+    ///
+    /// ⚠ **Not `"never"`, and the reason is a vendor change rather than a
+    /// preference.** An MCP tool call asks for approval unless its server
+    /// pre-approved it, and `never` auto-approves that ask only when the sandbox
+    /// has full disk write — which Biorouter's read-only child never has. From
+    /// codex-cli 0.148.0 the CLI then answers the ask itself, with
+    /// `MCP tool call requires approval, but approval policy is never`, before any
+    /// request reaches Biorouter. So on 0.153.4 every bridged tool failed on its
+    /// first call (QA-E F1, 2026-09-10); 0.147.0, which predates the check, sent
+    /// the ask to the host and worked.
+    ///
+    /// `granular` is the vendor's per-category form of the same policy: a `false`
+    /// category is "automatically rejected instead of shown to the user", which is
+    /// what `never` does, so the child's own command, rule, skill and permission
+    /// requests stay refused inside the CLI with no round trip. Only
+    /// `mcp_elicitations` is let through, because that is the channel the
+    /// tool-call approval arrives on — see [`Self::answer_elicitation`] for which
+    /// of those are then accepted.
+    ///
+    /// ⚠ The variant is `#[experimental("askForApproval.granular")]` in the
+    /// app-server protocol, so it parses only for a client that declared
+    /// `experimentalApi` in [`Self::initialize_params`]. Its shape is identical in
+    /// the 0.147.0 and 0.153.4 protocol.
+    fn approval_policy() -> Value {
+        json!({
+            "granular": {
+                "sandbox_approval": false,
+                "rules": false,
+                "skill_approval": false,
+                "request_permissions": false,
+                "mcp_elicitations": true,
+            }
+        })
+    }
+
     /// `thread/start` parameters.
     ///
     /// `ephemeral` keeps Codex from writing its own session files: Biorouter owns
@@ -480,7 +523,7 @@ impl CodexProvider {
             "cwd": cwd,
             "ephemeral": true,
             "sandbox": "read-only",
-            "approvalPolicy": "never",
+            "approvalPolicy": Self::approval_policy(),
             "baseInstructions": system,
         });
         if !model.trim().is_empty() {
@@ -698,16 +741,19 @@ impl CodexProvider {
     /// model-controlled tools are disabled when the app server starts, so an
     /// approval request here means the CLI has exposed an unexpected capability
     /// or is reaching for authority it was not given. The honest answer is no.
-    /// Elicitation is accepted because that is how an MCP tool call Biorouter
-    /// itself is serving gets its go-ahead — and those run
-    /// in Biorouter's dispatcher, behind Biorouter's gates.
-    /// ⚠ **Each of these five methods wants a DIFFERENT response shape**, and
-    /// they are not interchangeable. Every one of them used to be answered with
+    /// The one request accepted is Codex asking whether it may call a tool on
+    /// Biorouter's own bridge — see [`Self::answer_elicitation`].
+    ///
+    /// ⚠ **Each method wants a DIFFERENT response shape**, and they are not
+    /// interchangeable. Every one of them used to be answered with
     /// `{"decision": "denied"}`, and `denied` is not a valid value for any of
-    /// them — verified against `codex app-server generate-json-schema` (0.147.0):
+    /// them — verified against `codex app-server generate-json-schema` (0.147.0,
+    /// and unchanged in 0.153.4):
     ///
     /// | Method | Response type | Refusal |
     /// |---|---|---|
+    /// | `mcpServer/elicitation/request` | `McpServerElicitationRequestResponse` | `{"action": "decline"}` |
+    /// | `item/tool/requestUserInput` | `ToolRequestUserInputResponse` — `{answers: {<question id>: …}}` | no answers: `{"answers": {}}` |
     /// | `item/commandExecution/requestApproval` | `CommandExecutionApprovalDecision` | `"decline"` (`accept`/`acceptForSession`/`acceptWithExecpolicyAmendment`/`applyNetworkPolicyAmendment`/`decline`/`cancel`) |
     /// | `item/fileChange/requestApproval` | `FileChangeApprovalDecision` | `"decline"` |
     /// | `item/permissions/requestApproval` | **not a decision at all** — `{permissions, scope?, strictAutoReview?}` | an empty `GrantedPermissionProfile`: grant nothing |
@@ -716,9 +762,15 @@ impl CodexProvider {
     /// `decline` rather than `cancel`, and `denied` rather than `abort`, on
     /// purpose: both refuse the action while letting the turn continue, so the
     /// child can say why it could not proceed instead of the turn dying silently.
-    fn decide(method: &str) -> Value {
+    fn decide(method: &str, params: &Value) -> Value {
         match method {
-            "mcpServer/elicitation/request" => json!({ "action": "accept", "content": {} }),
+            "mcpServer/elicitation/request" => Self::answer_elicitation(params),
+            // Where Codex sends the MCP tool-call approval when its
+            // `tool_call_mcp_elicitation` feature is off (and where its own
+            // `request_user_input` tool asks). The parameters name no server, so
+            // the request cannot be scoped to the bridge and is not accepted; no
+            // answers is the refusal, which Codex reads as a cancel.
+            "item/tool/requestUserInput" => json!({ "answers": {} }),
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                 json!({ "decision": "decline" })
             }
@@ -736,6 +788,42 @@ impl CodexProvider {
             // An unrecognised request still has to be answered or the turn stalls
             // forever. Refuse rather than guess, in the commonest shape.
             _ => json!({ "decision": "decline" }),
+        }
+    }
+
+    /// Answer `mcpServer/elicitation/request` — which is how codex-cli asks
+    /// whether it may make an MCP tool call, not only how an MCP server asks a
+    /// person a question.
+    ///
+    /// The tool-call approval has no method of its own. Codex sends it here,
+    /// marked `_meta.codex_approval_kind: "mcp_tool_call"`, with an empty
+    /// `requestedSchema` (feature `tool_call_mcp_elicitation`, stable and on by
+    /// default). Measured against 0.153.4 — the captured request is the fixture
+    /// of `a_tool_call_approval_for_the_bridge_is_accepted_once`. An accept with
+    /// empty content and no `persist` choice is Codex's one-time "Allow", so the
+    /// next call is asked again rather than remembered in the child.
+    ///
+    /// It is accepted only for the bridge ([`BRIDGE_SERVER`]): that call is
+    /// inspected, permission-checked and privacy-gated again on Biorouter's side,
+    /// so Codex's own ask adds nothing Biorouter would say no to. A tool call to
+    /// any other server is an isolation regression — the child's `CODEX_HOME`
+    /// holds no other — and is declined, which Codex reports to its model as a
+    /// rejected call and the turn continues.
+    ///
+    /// Everything else here is declined too. With `mcp_elicitations` allowed by
+    /// [`Self::approval_policy`], an MCP server's own form or URL elicitation now
+    /// reaches Biorouter instead of being declined inside Codex, and nobody here
+    /// can fill one in: an empty accept would submit a form no person saw.
+    fn answer_elicitation(params: &Value) -> Value {
+        let tool_call_approval = params
+            .pointer("/_meta/codex_approval_kind")
+            .and_then(Value::as_str)
+            == Some("mcp_tool_call");
+        let for_bridge = params.get("serverName").and_then(Value::as_str) == Some(BRIDGE_SERVER);
+        if tool_call_approval && for_bridge {
+            json!({ "action": "accept", "content": {} })
+        } else {
+            json!({ "action": "decline" })
         }
     }
 
@@ -1065,8 +1153,8 @@ impl CodexProvider {
                 break;
             };
             match message {
-                Inbound::Request { id, method, .. } => {
-                    server.respond(&id, Self::decide(&method)).await?;
+                Inbound::Request { id, method, params } => {
+                    server.respond(&id, Self::decide(&method, &params)).await?;
                 }
                 Inbound::Notification { method, params } => {
                     match Self::emit_stream_notification(
@@ -1322,8 +1410,8 @@ impl CodexProvider {
         let mut outcome = TurnOutcome::default();
         while let Some(message) = server.next_inbound().await {
             match message {
-                Inbound::Request { id, method, .. } => {
-                    server.respond(&id, Self::decide(&method)).await?;
+                Inbound::Request { id, method, params } => {
+                    server.respond(&id, Self::decide(&method, &params)).await?;
                 }
                 Inbound::Notification { method, params } => {
                     if Self::absorb(&mut outcome, &method, &params) {
@@ -2072,13 +2160,65 @@ for line in sys.stdin:
             p["ephemeral"], true,
             "Codex must not persist its own transcript"
         );
-        assert_eq!(p["approvalPolicy"], "never");
+        assert_eq!(p["approvalPolicy"], CodexProvider::approval_policy());
         assert_eq!(
             p["baseInstructions"], "SYSTEM",
             "Biorouter's prompt replaces Codex's own preamble"
         );
         assert_eq!(p["cwd"], "/tmp/work");
         assert_eq!(p["model"], "gpt-5.5");
+    }
+
+    /// QA-E F1: under `"never"`, codex-cli ≥ 0.148.0 refuses every MCP tool call
+    /// inside the CLI ("MCP tool call requires approval, but approval policy is
+    /// never") before Biorouter is asked anything, so the bridge was dead on
+    /// 0.153.4. The policy must let exactly the MCP-elicitation category through
+    /// — that is the channel the tool-call approval arrives on — and keep every
+    /// child-local category refused, which is what `false` means in `granular`.
+    #[test]
+    fn the_approval_policy_lets_only_mcp_elicitations_through() {
+        let policy = CodexProvider::approval_policy();
+        assert_ne!(
+            policy, "never",
+            "`never` makes codex-cli refuse every bridged MCP tool call itself"
+        );
+        let granular = policy
+            .get("granular")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("expected the granular form, got {policy}"));
+        assert_eq!(granular.get("mcp_elicitations"), Some(&json!(true)));
+        // Every child-local category is refused without a round trip, exactly as
+        // `never` refused it. Named explicitly, including the two the schema
+        // defaults to false, so a future default flip cannot open one silently.
+        for refused in [
+            "sandbox_approval",
+            "rules",
+            "skill_approval",
+            "request_permissions",
+        ] {
+            assert_eq!(
+                granular.get(refused),
+                Some(&json!(false)),
+                "{refused} must stay refused: the child's own command execution and \
+                 file changes are not Biorouter's to approve"
+            );
+        }
+        assert_eq!(
+            granular.len(),
+            5,
+            "an unknown category is a new approval surface: {policy}"
+        );
+    }
+
+    /// `granular` is gated behind `#[experimental("askForApproval.granular")]` in
+    /// the app-server protocol, so it is only accepted from a client that
+    /// declared the experimental API at `initialize`. Dropping that capability
+    /// would make every `thread/start` fail — pinned here so the two cannot drift.
+    #[test]
+    fn initialize_declares_the_experimental_api_the_policy_needs() {
+        let params = CodexProvider::initialize_params();
+        assert_eq!(params["capabilities"]["experimentalApi"], true);
+        assert_eq!(params["clientInfo"]["name"], "biorouter");
     }
 
     /// An empty model means "whatever Codex defaults to", which must be expressed
@@ -2290,8 +2430,106 @@ for line in sys.stdin:
         );
     }
 
-    /// Every approval that would let the child act on the machine is refused;
-    /// elicitation — how a Biorouter-served MCP tool call is cleared — is accepted.
+    /// The MCP tool-call approval exactly as codex-cli 0.153.4 sent it, captured
+    /// from a live `codex app-server` under the granular policy on 2026-09-11
+    /// (ids shortened). It is NOT a method of its own: it rides
+    /// `mcpServer/elicitation/request`, marked by `_meta.codex_approval_kind`.
+    fn captured_tool_call_approval(server: &str) -> Value {
+        json!({
+            "threadId": "01a08f7e-f25c", "turnId": "01a08f7e-f313",
+            "serverName": server, "mode": "form",
+            "_meta": {
+                "codex_approval_kind": "mcp_tool_call",
+                "persist": ["session", "always"],
+                "tool_description": "Echo the given text back.",
+                "tool_params": {"text": "hi"},
+                "tool_params_display": [{"name": "text", "value": "hi", "display_name": "text"}]
+            },
+            "message": "Allow the biorouter MCP server to run tool \"echo\"?",
+            "requestedSchema": {"type": "object", "properties": {}}
+        })
+    }
+
+    /// QA-E F1: the approval Codex asks before calling a bridged tool is
+    /// accepted — the call then runs behind Biorouter's own inspectors,
+    /// permission mode, `.biorouterignore`, vault and privacy Gate C.
+    ///
+    /// The answer carries no `persist` choice on purpose: Codex reads an accept
+    /// with none as a one-time `Approved`, so nothing is remembered in the child
+    /// and every later call is asked again (and so gated again on our side).
+    #[test]
+    fn a_tool_call_approval_for_the_bridge_is_accepted_once() {
+        let answer = CodexProvider::decide(
+            "mcpServer/elicitation/request",
+            &captured_tool_call_approval(BRIDGE_SERVER),
+        );
+        assert_eq!(answer["action"], "accept", "got {answer}");
+        assert_eq!(answer["content"], json!({}));
+        assert!(
+            answer.get("_meta").is_none(),
+            "no `persist` choice: `session`/`always` would let the child skip the ask \
+             for the rest of the turn (got {answer})"
+        );
+    }
+
+    /// Only the bridge is Biorouter's to vouch for. The child runs under an
+    /// isolated `CODEX_HOME` with no other MCP server, so a tool call to one is
+    /// an isolation regression, and the answer to it is no.
+    #[test]
+    fn a_tool_call_approval_for_any_other_server_is_declined() {
+        let answer = CodexProvider::decide(
+            "mcpServer/elicitation/request",
+            &captured_tool_call_approval("personal-clinical-db"),
+        );
+        assert_eq!(answer["action"], "decline", "got {answer}");
+    }
+
+    /// With `mcp_elicitations` allowed, an elicitation that is NOT a tool-call
+    /// approval can now reach Biorouter too (under `never` Codex declined those
+    /// itself). None of them is something Biorouter can answer for a person, so
+    /// each is declined — in particular an empty accept must not be sent to a
+    /// form that asked for fields, or to a URL flow.
+    #[test]
+    fn an_elicitation_that_is_not_a_tool_call_approval_is_declined() {
+        let form = json!({
+            "threadId": "t", "serverName": BRIDGE_SERVER, "mode": "form",
+            "message": "Which cohort?",
+            "requestedSchema": {"type": "object", "properties": {"cohort": {"type": "string"}}}
+        });
+        let url = json!({
+            "threadId": "t", "serverName": BRIDGE_SERVER, "mode": "url",
+            "elicitationId": "e1", "message": "Sign in", "url": "https://example.invalid/"
+        });
+        let mut other_kind = captured_tool_call_approval(BRIDGE_SERVER);
+        other_kind["_meta"]["codex_approval_kind"] = json!("tool_suggestion");
+        for params in [form, url, other_kind] {
+            let answer = CodexProvider::decide("mcpServer/elicitation/request", &params);
+            assert_eq!(answer["action"], "decline", "{params} got {answer}");
+        }
+    }
+
+    /// `item/tool/requestUserInput` is where Codex sends the tool-call approval
+    /// when its `tool_call_mcp_elicitation` feature is off, and where its own
+    /// `request_user_input` tool would ask. Its response is
+    /// `{answers: {<question id>: …}}`; the catch-all's `{decision}` is not
+    /// that shape at all. No answers is the valid refusal: the approval parser
+    /// reads it as a cancel.
+    #[test]
+    fn a_user_input_request_is_refused_in_its_own_shape() {
+        let params = json!({
+            "threadId": "t", "turnId": "u", "itemId": "exec-1", "isBlocking": true,
+            "questions": [{
+                "id": "mcp_tool_call_approval_exec-1",
+                "header": "Approve app tool call?",
+                "question": "Allow the biorouter MCP server to run tool \"echo\"?",
+                "options": [{"label": "Allow", "description": "Run the tool and continue."}]
+            }]
+        });
+        let answer = CodexProvider::decide("item/tool/requestUserInput", &params);
+        assert_eq!(answer, json!({ "answers": {} }));
+    }
+
+    /// Every approval that would let the child act on the machine is refused.
     ///
     /// ⚠ This test used to assert `decision == "denied"` for all five methods.
     /// That is not a valid value for **any** of them, so the refusals were being
@@ -2300,12 +2538,7 @@ for line in sys.stdin:
     /// response schema defines (`codex app-server generate-json-schema`, 0.147.0)
     /// — which is three different shapes, not one.
     #[test]
-    fn only_elicitation_is_accepted() {
-        assert_eq!(
-            CodexProvider::decide("mcpServer/elicitation/request")["action"],
-            "accept"
-        );
-
+    fn child_local_approvals_are_refused() {
         // `*ApprovalDecision`: a plain string. `decline` refuses the action and
         // lets the turn continue; `cancel` would kill the turn.
         for refused in [
@@ -2313,7 +2546,7 @@ for line in sys.stdin:
             "item/fileChange/requestApproval",
         ] {
             assert_eq!(
-                CodexProvider::decide(refused)["decision"],
+                CodexProvider::decide(refused, &Value::Null)["decision"],
                 "decline",
                 "{refused} takes a *ApprovalDecision, whose refusal is `decline`"
             );
@@ -2321,7 +2554,7 @@ for line in sys.stdin:
 
         // Not a decision at all: the response IS the permission grant, so
         // granting nothing is how it is refused.
-        let permissions = CodexProvider::decide("item/permissions/requestApproval");
+        let permissions = CodexProvider::decide("item/permissions/requestApproval", &Value::Null);
         assert!(
             permissions
                 .get("permissions")
@@ -2335,7 +2568,7 @@ for line in sys.stdin:
         // Legacy `ReviewDecision`: the refusal that continues the turn is the
         // OBJECT form. The bare string `denied` is not in the enum.
         for legacy in ["applyPatchApproval", "execCommandApproval"] {
-            let answer = CodexProvider::decide(legacy);
+            let answer = CodexProvider::decide(legacy, &Value::Null);
             assert!(
                 answer["decision"]["denied"]["rejection"].is_string(),
                 "{legacy} takes a ReviewDecision, whose continue-the-turn refusal \
@@ -2354,7 +2587,7 @@ for line in sys.stdin:
     /// forever waiting for one.
     #[test]
     fn an_unknown_request_is_still_answered() {
-        let answer = CodexProvider::decide("some/future/request");
+        let answer = CodexProvider::decide("some/future/request", &Value::Null);
         assert!(
             answer.is_object() && !answer.as_object().unwrap().is_empty(),
             "an unanswered server request blocks the turn indefinitely"
