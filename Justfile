@@ -332,9 +332,13 @@ run-server:
 # who started it chose, and on this path that person is the developer. It weakens
 # nothing in the shipped app, whose key is 32 random bytes per launch and never
 # leaves the Electron main process. Issue #56 DR-16 / open question 23.
+#
+# BIOROUTER_RENDERER_ORIGIN names `debug-ui`'s renderer, vite's page on its own
+# port, so the daemon's WebSocket gates admit it (QA-D F7). When vite takes the
+# next port because 5173 is busy, pass that origin instead.
 debug-server:
     @echo "Running server in debug mode (secret=test, published dev user-action key)..."
-    printf '%s\n' "$(printf 'biorouter-dev-user-action' | shasum -a 256 | cut -d' ' -f1)" | BIOROUTER_DISABLE_KEYRING=true BIOROUTER_SERVER__SECRET_KEY=test cargo run -p biorouter-server --bin biorouterd agent
+    printf '%s\n' "$(printf 'biorouter-dev-user-action' | shasum -a 256 | cut -d' ' -f1)" | BIOROUTER_DISABLE_KEYRING=true BIOROUTER_SERVER__SECRET_KEY=test BIOROUTER_RENDERER_ORIGIN="${BIOROUTER_RENDERER_ORIGIN:-http://localhost:5173}" cargo run -p biorouter-server --bin biorouterd agent
 
 # Check if OpenAPI schema is up-to-date
 check-openapi-schema: generate-openapi

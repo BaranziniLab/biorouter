@@ -1,61 +1,284 @@
-/// Origins the daemon is willing to be driven by. It binds loopback, so this is
-/// every origin it legitimately serves.
+use std::sync::LazyLock;
+
+use axum::http::HeaderMap;
+
+/// A web origin reduced to what same-origin compares (scheme, host, port) and
+/// normalised once, here: scheme and host lowercased, as RFC 6454 compares
+/// them. Every origin decision in the daemon parses through this, so no two of
+/// them can disagree about case again — QA-D F7 found `is_local_origin`
+/// comparing the host case-sensitively fifteen lines above a check that did not.
 ///
-/// CORS does not govern WebSocket handshakes and browsers freely open
-/// cross-origin WebSockets, so any endpoint that upgrades must check this itself.
+/// The port is kept exactly as written, present or absent, and is not filled in
+/// with the scheme's default. `http://host` and `http://host:80` are one origin
+/// in the RFC, but a gate that started admitting the second spelling where it
+/// had been refused would be a gate that got wider, and these only get
+/// narrower. Browsers never write the default port in either header, so the
+/// two spellings never actually meet.
 ///
 /// Parsed rather than prefix-matched: `http://127.0.0.1:` is a prefix of
 /// `http://127.0.0.1:8080.evil.com`.
-pub fn is_local_origin(origin: &str) -> bool {
-    let Some(rest) = origin.strip_prefix("http://") else {
-        return false;
-    };
-    let (host, port) = match rest.split_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (rest, None),
-    };
-    if host != "localhost" && host != "127.0.0.1" {
-        return false;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebOrigin {
+    scheme: &'static str,
+    host: String,
+    port: Option<u16>,
+}
+
+impl WebOrigin {
+    /// An `Origin` header's value: exactly `scheme://host[:port]` under `http`
+    /// or `https`. `None` for anything else — `null`, `file://`, a trailing
+    /// path, userinfo — never a best guess.
+    pub fn parse(origin: &str) -> Option<Self> {
+        let (scheme, authority) = origin.split_once("://")?;
+        Self::with_authority(scheme, authority)
     }
-    match port {
-        None => true,
-        Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+
+    /// The origin a request was addressed to: its `Host`, under the scheme the
+    /// client reached the daemon with ([`request_scheme`]).
+    fn of_request(host: &str, scheme: &str) -> Option<Self> {
+        Self::with_authority(scheme, host)
+    }
+
+    fn with_authority(scheme: &str, authority: &str) -> Option<Self> {
+        let scheme = if scheme.eq_ignore_ascii_case("http") {
+            "http"
+        } else if scheme.eq_ignore_ascii_case("https") {
+            "https"
+        } else {
+            return None;
+        };
+        let (host, port) = split_authority(authority)?;
+        Some(Self { scheme, host, port })
+    }
+
+    /// Plain `http` to `localhost` or `127.0.0.1`, on any port: the only
+    /// origins the daemon's cross-origin policy has ever admitted.
+    fn is_loopback_http(&self) -> bool {
+        self.scheme == "http" && matches!(self.host.as_str(), "localhost" | "127.0.0.1")
     }
 }
 
-/// Whether `origin` names the very origin this request was addressed to.
+/// The origin as a browser serializes it, normalised: `http://localhost:5173`.
+impl std::fmt::Display for WebOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}://{}", self.scheme, self.host)?;
+        match self.port {
+            Some(port) => write!(f, ":{port}"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// `host[:port]`, strictly: a bracketed IPv6 literal or a name of letters,
+/// digits, `-`, `.` and `_`, then optionally a port of one to five digits with
+/// no leading zero. The host comes back lowercased. Anything else (an empty
+/// host or port, a second colon, userinfo, a path) is `None`.
 ///
-/// [`is_local_origin`] answers "is this loopback", which was the whole question
-/// while the daemon only ever served a browser on the same machine. Since it can
-/// serve its own interface, a browser may legitimately reach it at a LAN address
-/// or a hostname — and the daemon cannot enumerate those. It may have bound
-/// `0.0.0.0`, and the address the user typed is not knowable from the bind.
+/// No leading zero because `:080` and `:80` are the same number and different
+/// strings: before this parser, the socket gates compared authorities as
+/// strings, and a zero-padded port that was refused then must stay refused.
+fn split_authority(authority: &str) -> Option<(String, Option<u16>)> {
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(bracketed) => {
+            let (address, rest) = bracketed.split_once(']')?;
+            let is_v6 = |b: u8| b.is_ascii_hexdigit() || b == b':' || b == b'.';
+            if address.is_empty() || !address.bytes().all(is_v6) {
+                return None;
+            }
+            let port = match rest {
+                "" => None,
+                rest => Some(rest.strip_prefix(':')?),
+            };
+            (format!("[{address}]"), port)
+        }
+        None => {
+            let (host, port) = match authority.split_once(':') {
+                Some((host, port)) => (host, Some(port)),
+                None => (authority, None),
+            };
+            let is_name = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_');
+            if host.is_empty() || !host.bytes().all(is_name) {
+                return None;
+            }
+            (host.to_string(), port)
+        }
+    };
+    let port = match port {
+        None => None,
+        Some(port) => {
+            if port.is_empty()
+                || port.len() > 5
+                || port.starts_with('0')
+                || !port.bytes().all(|b| b.is_ascii_digit())
+            {
+                return None;
+            }
+            Some(port.parse::<u16>().ok()?)
+        }
+    };
+    Some((host.to_ascii_lowercase(), port))
+}
+
+/// Origins the daemon's cross-origin policy admits: plain `http` to
+/// `localhost` or `127.0.0.1`, on any port. This is the CORS rule
+/// (`commands::agent`), for the dev renderer's `fetch` calls from its own vite
+/// port, and nothing else.
 ///
-/// What *is* knowable is the `Host` the request carries. A same-origin page
-/// always presents an `Origin` whose authority equals that `Host`, and a page on
-/// any other origin cannot — the browser sets both, and neither is reachable
-/// from script. So comparing the two is a precise same-origin test that needs no
-/// configuration and no wildcard, and it holds for every address the interface
-/// is ever reached at.
+/// It is NOT a WebSocket rule, and stopped being one in QA-D F7. CORS does not
+/// govern a WebSocket handshake at all, and "any loopback port" admitted every
+/// other local page's socket as though it were this daemon's own. The socket
+/// gates ask [`UpgradeOrigin::is_this_daemons`] instead.
+pub fn is_local_origin(origin: &str) -> bool {
+    WebOrigin::parse(origin).is_some_and(|origin| origin.is_loopback_http())
+}
+
+/// Whether `origin` names the very origin this request was addressed to:
+/// same scheme, same host, same port.
+///
+/// A browser may reach the daemon at a LAN address or a hostname that the
+/// daemon cannot enumerate: it may have bound `0.0.0.0`, and the address the
+/// user typed is not knowable from the bind. What *is* knowable is the `Host`
+/// the request carries. A same-origin page always presents an `Origin` whose
+/// host and port equal that `Host`, and a page on any other origin cannot: the
+/// browser sets both, and neither is reachable from script. So comparing the
+/// two is a precise same-origin test that needs no configuration and no
+/// wildcard, and it holds for every address the interface is ever reached at.
+///
+/// The scheme is compared too, against `scheme` — see [`request_scheme`].
+/// Without it this was an *authority* test (QA-D F7): behind the TLS proxy the
+/// deployment guide recommends, a plain-`http` page at the same host and port
+/// passed it.
 ///
 /// Both are compared whole. `http://evil.com` is not admitted by a `Host` of
 /// `evil.com.attacker.net`, because this is an equality test rather than a
-/// prefix one — the same trap [`is_local_origin`] documents.
-pub fn origin_matches_host(origin: &str, host: Option<&str>) -> bool {
+/// prefix one.
+pub fn origin_matches_host(origin: &str, host: Option<&str>, scheme: &str) -> bool {
     let Some(host) = host else {
-        // No `Host` to compare against. Refuse rather than guess: the caller
-        // still has the loopback rule and the socket's token.
+        // No `Host` to compare against. Refuse rather than guess.
         return false;
     };
-    let authority = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"));
-    let Some(authority) = authority else {
-        // `null`, `file://`, and anything else opaque. Callers that admit
-        // `file://` do so by name; this is not the place for it.
-        return false;
-    };
-    !authority.is_empty() && !host.is_empty() && authority.eq_ignore_ascii_case(host)
+    match (
+        WebOrigin::parse(origin),
+        WebOrigin::of_request(host, scheme),
+    ) {
+        (Some(origin), Some(request)) => origin == request,
+        // `null`, `file://` and anything else opaque, or a `Host` that is not
+        // one. Callers that admit `file://` do so by name; this is not the
+        // place for it.
+        _ => false,
+    }
+}
+
+/// The scheme the client used to reach this daemon.
+///
+/// The daemon itself speaks only plain HTTP, so that is the answer unless a
+/// reverse proxy in front of it says otherwise with `X-Forwarded-Proto` — the
+/// documented way to put TLS in front of `biorouter serve`. Such a proxy has to
+/// forward the original `Host` as well; the socket gates needed that already.
+///
+/// A header is trusted here where `check_token` refuses to trust
+/// `X-Forwarded-For`, and the difference is who each one constrains. The socket
+/// gates' `Origin` test exists for a browser page on another origin, and a page
+/// cannot set this header on a WebSocket handshake. A client that can set it is
+/// not a browser, and needs no help: it may send no `Origin` at all, which
+/// every gate admits because its token is the authority there.
+pub(crate) fn request_scheme(headers: &HeaderMap) -> &'static str {
+    let forwarded = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim);
+    match forwarded {
+        Some(proto) if proto.eq_ignore_ascii_case("https") => "https",
+        _ => "http",
+    }
+}
+
+/// The environment variable a launcher sets to name the renderer that drives
+/// this daemon from an origin other than the daemon's own.
+///
+/// The one such renderer is the desktop app in development: vite serves it from
+/// its own port (5173, or the next free one), so its sockets present
+/// `http://localhost:517x` while the daemon sits on an ephemeral port. The
+/// Electron main process knows the exact URL it loaded and declares its origin
+/// when it spawns the daemon, and `just debug-server` declares vite's default.
+/// The packaged app loads from `file://`, which the workspace gate admits by
+/// name, and declares nothing.
+pub const RENDERER_ORIGIN_ENV: &str = "BIOROUTER_RENDERER_ORIGIN";
+
+/// A declared renderer origin, if the value names one this daemon will admit.
+///
+/// Only plain `http` to `localhost` or `127.0.0.1` — exactly the origins the
+/// socket gates admitted on every port before QA-D F7 — so a declaration can
+/// only ever narrow them back to one port, never admit anything they refused.
+/// An unset or empty value declares nothing; anything else is refused with a
+/// warning rather than guessed at.
+pub(crate) fn declared_renderer(value: Option<&str>) -> Option<WebOrigin> {
+    let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+    match WebOrigin::parse(value).filter(WebOrigin::is_loopback_http) {
+        Some(origin) => Some(origin),
+        None => {
+            tracing::warn!(
+                "{RENDERER_ORIGIN_ENV}={value:?} is not an http origin on localhost or \
+                 127.0.0.1; no renderer origin is admitted"
+            );
+            None
+        }
+    }
+}
+
+/// This process's declared renderer origin, read once.
+pub(crate) fn declared_renderer_origin() -> Option<&'static WebOrigin> {
+    static DECLARED: LazyLock<Option<WebOrigin>> =
+        LazyLock::new(|| declared_renderer(std::env::var(RENDERER_ORIGIN_ENV).ok().as_deref()));
+    DECLARED.as_ref()
+}
+
+/// What a WebSocket upgrade says about where it came from and where it was
+/// sent, read off the request once so that both socket gates — the workspace
+/// socket and the per-app agent socket — ask the same question of it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UpgradeOrigin<'a> {
+    /// The browser-set `Origin`. A non-browser client sends none.
+    pub origin: Option<&'a str>,
+    /// The `Host` the upgrade was addressed to.
+    pub host: Option<&'a str>,
+    /// The scheme the client used; see [`request_scheme`].
+    pub scheme: &'static str,
+    /// The renderer origin this daemon's launcher declared, if any; see
+    /// [`RENDERER_ORIGIN_ENV`].
+    pub renderer: Option<&'a WebOrigin>,
+}
+
+impl<'a> UpgradeOrigin<'a> {
+    pub(crate) fn from_headers(headers: &'a HeaderMap) -> Self {
+        Self {
+            origin: headers
+                .get(axum::http::header::ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            host: headers
+                .get(axum::http::header::HOST)
+                .and_then(|value| value.to_str().ok()),
+            scheme: request_scheme(headers),
+            renderer: declared_renderer_origin(),
+        }
+    }
+
+    /// Is the page behind this upgrade one of this daemon's own: served from
+    /// its origin, or the renderer its launcher declared?
+    ///
+    /// `false` when the upgrade carries no `Origin`. Whether that is admitted
+    /// is each gate's own decision, and both admit it, because their token is
+    /// the authority there.
+    pub(crate) fn is_this_daemons(&self) -> bool {
+        let Some(origin) = self.origin else {
+            return false;
+        };
+        origin_matches_host(origin, self.host, self.scheme)
+            || self
+                .renderer
+                .is_some_and(|renderer| WebOrigin::parse(origin).as_ref() == Some(renderer))
+    }
 }
 
 /// Compare secrets without an early return, so a caller cannot recover the key
@@ -117,7 +340,11 @@ pub(crate) fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
 
 #[cfg(test)]
 mod origin_tests {
-    use super::is_local_origin;
+    use super::{
+        declared_renderer, is_local_origin, origin_matches_host, request_scheme, UpgradeOrigin,
+        WebOrigin,
+    };
+    use axum::http::HeaderMap;
 
     #[test]
     fn accepts_loopback_origins() {
@@ -139,6 +366,172 @@ mod origin_tests {
         assert!(!is_local_origin("http://127.0.0.1:"));
         // https to loopback is not an origin this server serves.
         assert!(!is_local_origin("https://127.0.0.1:8080"));
+    }
+
+    /// QA-D F7: this compared the host case-sensitively while
+    /// `origin_matches_host` beside it did not. Both parse through
+    /// `WebOrigin` now, which lowercases once. What the rule admits is
+    /// otherwise exactly what it admitted: plain `http`, `localhost` or
+    /// `127.0.0.1`, any port. `[::1]` was never in it and is not now.
+    #[test]
+    fn the_cors_rule_ignores_case_and_admits_nothing_else_new() {
+        assert!(is_local_origin("http://LOCALHOST:5173"));
+        assert!(is_local_origin("HTTP://127.0.0.1:5173"));
+        assert!(!is_local_origin("http://[::1]:5173"));
+        assert!(!is_local_origin("http://localhost:0"));
+        assert!(!is_local_origin("http://localhost:99999"));
+        assert!(!is_local_origin("http://localhost:05173"));
+        assert!(!is_local_origin("http://user@localhost:5173"));
+        assert!(!is_local_origin("http://localhost:5173/"));
+    }
+
+    /// Same origin means scheme, host AND port, against the request's own
+    /// `Host`. Each refused case here was admitted by the gates before QA-D F7,
+    /// either as "any loopback port" or by an authority-only comparison.
+    #[test]
+    fn same_origin_compares_scheme_host_and_port() {
+        let daemon = Some("127.0.0.1:9380");
+        // Accepted: the daemon's own page, however its host is cased.
+        assert!(origin_matches_host("http://127.0.0.1:9380", daemon, "http"));
+        assert!(origin_matches_host(
+            "http://LOCALHOST:9380",
+            Some("localhost:9380"),
+            "http"
+        ));
+        assert!(origin_matches_host(
+            "http://[::1]:9380",
+            Some("[::1]:9380"),
+            "http"
+        ));
+        // Accepted: a LAN address or a hostname, which nothing enumerated.
+        assert!(origin_matches_host(
+            "http://192.168.1.42:8765",
+            Some("192.168.1.42:8765"),
+            "http"
+        ));
+        // Accepted: behind a TLS proxy that says so, with no port in either.
+        assert!(origin_matches_host(
+            "https://lab.example.org",
+            Some("lab.example.org"),
+            "https"
+        ));
+
+        // Refused: another loopback port.
+        assert!(!origin_matches_host("http://127.0.0.1:1", daemon, "http"));
+        assert!(!origin_matches_host(
+            "http://localhost:3000",
+            daemon,
+            "http"
+        ));
+        // Refused: another scheme, both ways round.
+        assert!(!origin_matches_host(
+            "https://127.0.0.1:9380",
+            daemon,
+            "http"
+        ));
+        assert!(!origin_matches_host(
+            "http://lab.example.org",
+            Some("lab.example.org"),
+            "https"
+        ));
+        // Refused: another host, however it is cased. `localhost` and
+        // `127.0.0.1` are two origins, not one.
+        assert!(!origin_matches_host(
+            "http://LOCALHOST:9380",
+            daemon,
+            "http"
+        ));
+        assert!(!origin_matches_host(
+            "http://localhost:9380",
+            daemon,
+            "http"
+        ));
+        // Refused: the default port written in one header and not the other.
+        // One origin in the RFC, but a spelling these gates refused before,
+        // and they only narrow. No browser writes it in either.
+        assert!(!origin_matches_host(
+            "http://example.org",
+            Some("example.org:80"),
+            "http"
+        ));
+        assert!(!origin_matches_host(
+            "http://127.0.0.1:09380",
+            daemon,
+            "http"
+        ));
+        // Refused: anything that is not an origin, and no Host at all.
+        for origin in [
+            "null",
+            "file://",
+            "",
+            "http://",
+            "http://127.0.0.1:9380/",
+            "http://user@127.0.0.1:9380",
+        ] {
+            assert!(!origin_matches_host(origin, daemon, "http"), "{origin:?}");
+        }
+        assert!(!origin_matches_host("http://127.0.0.1:9380", None, "http"));
+    }
+
+    #[test]
+    fn the_scheme_is_http_unless_a_proxy_says_https() {
+        let with = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-proto", value.parse().unwrap());
+            request_scheme(&headers)
+        };
+        assert_eq!(request_scheme(&HeaderMap::new()), "http");
+        assert_eq!(with("https"), "https");
+        assert_eq!(with("HTTPS"), "https");
+        // Chained proxies: the first value is the client's.
+        assert_eq!(with("https, http"), "https");
+        assert_eq!(with("http"), "http");
+        assert_eq!(with("gopher"), "http");
+    }
+
+    /// The declaration can only name an origin the socket gates admitted on
+    /// every port before QA-D F7, so it narrows them back to one port and can
+    /// never admit anything they refused.
+    #[test]
+    fn a_renderer_can_only_be_declared_on_loopback_http() {
+        assert_eq!(
+            declared_renderer(Some("http://localhost:5173")),
+            WebOrigin::parse("http://localhost:5173")
+        );
+        assert!(declared_renderer(Some(" http://127.0.0.1:5174 ")).is_some());
+        for refused in [
+            "https://localhost:5173",
+            "http://example.org:5173",
+            "http://[::1]:5173",
+            "http://localhost:5173/",
+            "file://",
+            "localhost:5173",
+        ] {
+            assert_eq!(declared_renderer(Some(refused)), None, "{refused:?}");
+        }
+        assert_eq!(declared_renderer(Some("")), None);
+        assert_eq!(declared_renderer(None), None);
+    }
+
+    /// The whole question both socket gates ask, with and without a declared
+    /// renderer.
+    #[test]
+    fn an_upgrade_is_this_daemons_when_same_origin_or_the_declared_renderer() {
+        let vite = WebOrigin::parse("http://localhost:5173").unwrap();
+        let upgrade = |origin, renderer| UpgradeOrigin {
+            origin,
+            host: Some("127.0.0.1:9380"),
+            scheme: "http",
+            renderer,
+        };
+        assert!(upgrade(Some("http://127.0.0.1:9380"), None).is_this_daemons());
+        assert!(upgrade(Some("http://localhost:5173"), Some(&vite)).is_this_daemons());
+        // Only the declared port, not its neighbour...
+        assert!(!upgrade(Some("http://localhost:5174"), Some(&vite)).is_this_daemons());
+        // ...and nothing on loopback when nothing is declared.
+        assert!(!upgrade(Some("http://localhost:5173"), None).is_this_daemons());
+        // No Origin is not "this daemon's"; each gate decides that case itself.
+        assert!(!upgrade(None, Some(&vite)).is_this_daemons());
     }
 }
 

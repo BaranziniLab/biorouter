@@ -100,8 +100,10 @@ deliberately **not** extended to the renderer's partition:
   `fetch`, and Electron does not CORS-check a `file://` initiator — measured: a fetch to
   loopback returns 200 with no `Access-Control-Allow-Origin` in the response at all. Its
   WebSocket sends `Origin: file://`, which `routes/workspace.rs` admits by name, and the
-  dev renderer sends `http://localhost:517x`, which `routes::is_local_origin` admits.
-  Every gate already passes on the renderer's real origin.
+  dev renderer sends `http://localhost:517x`, which the daemon admits as the renderer origin
+  the main process declares when it spawns it (`BIOROUTER_RENDERER_ORIGIN`). Until QA-D F7
+  it was admitted as "any loopback port" (`routes::is_local_origin`), which admitted every
+  other local page too. Every gate already passes on the renderer's real origin.
 - **Extending it would be strictly worse.** The daemon's socket gates are same-origin
   tests (`origin_matches_host`) against the browser-set `Origin`. Replacing that with a
   constant the main process invented means the check validates our own literal instead

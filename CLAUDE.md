@@ -1210,9 +1210,18 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   renderer builds `origin + '/headless'`). They had **no authentication at all** on the old
   binary and `fs_read` had no path validation; the port confines every filesystem handler to
   an allowlist and refuses credential stores by name.
-- **WebSocket origins**: `routes::origin_matches_host` compares `Origin` to the request's own
-  `Host`. That is a same-origin test, not a wildcard, and it is what lets a browser reach the
-  daemon at a LAN address `is_local_origin` has never heard of.
+- **WebSocket origins**: both socket gates (`/ui/workspace`, `/apps/{id}/agent`) ask
+  `routes::UpgradeOrigin::is_this_daemons` — the `Origin` must match the request's own `Host`
+  in **scheme, host and port** (`origin_matches_host`), which is what lets a browser reach the
+  daemon at a LAN address nobody enumerated. The scheme is `http` unless a proxy in front says
+  `X-Forwarded-Proto: https`, so a TLS proxy must forward both `Host` and that header. The one
+  other origin admitted is a renderer the launcher declares in `BIOROUTER_RENDERER_ORIGIN`
+  (loopback `http` only): `main.ts` declares the dev renderer's vite origin, `just debug-server`
+  declares vite's default, and the packaged `file://` renderer is admitted by name on the
+  workspace gate. ⚠ Until QA-D F7 (2026-09-11) the gates also took `is_local_origin` — any
+  loopback port, scheme ignored — so every local page's socket passed as the daemon's own.
+  `is_local_origin` is the **CORS** rule now and nothing else; do not hand it back to a socket
+  gate.
 - ⚠ **Three traps.** The app uses a **HashRouter**, so its routes live in the fragment and
   never reach the daemon — that is the only reason `/sessions/{id}` (a real API route) does
   not collide with the app's own; a history router would break pages silently. The bundle must

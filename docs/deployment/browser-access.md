@@ -131,7 +131,9 @@ started `serve`.
 
 - **There is no transport encryption.** `serve` speaks plain HTTP. Over an untrusted network the
   token and everything else are readable in transit. For anything beyond a trusted local network,
-  put a TLS-terminating reverse proxy in front of it, or do not expose the port at all.
+  put a TLS-terminating reverse proxy in front of it, or do not expose the port at all. The proxy
+  must forward the original `Host` and set `X-Forwarded-Proto`; the
+  [headless Linux guide](headless-linux.md#decide-who-can-reach-the-port) has the configuration.
 - **There is one credential and no user accounts.** Everyone who opens the address is the same
   user, with the same files and the same history. Biorouter has no notion of separate accounts
   here.
@@ -217,7 +219,11 @@ terminal.
 
 **The page loads but nothing connects.** Check that you are on the address `serve` printed. A
 browser reaching the daemon on a different origin is not the supported configuration — the
-interface is served at the root of the daemon's own origin and nowhere else.
+interface is served at the root of the daemon's own origin and nowhere else. Behind a TLS proxy,
+check that it forwards the original `Host` and sets `X-Forwarded-Proto`: the live views are
+WebSockets, and the daemon admits one only from the scheme, host and port the browser used. The
+daemon logs each refusal as `rejected workspace WS: cross-origin connect rejected`, with the
+origin it was given.
 
 **A file path the agent uses does not exist.** Paths are resolved on the serving machine. When the
 browser is on a different computer, its local files are not visible to the agent; copy them to the

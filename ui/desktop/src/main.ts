@@ -1363,13 +1363,26 @@ const createChat = async (
   const useSharedDaemon = isSharedDaemonEnabled();
   const windowWorkingDir = path.resolve(path.normalize(dir || os.homedir()));
 
+  // The daemon's WebSocket gates admit a page only from the daemon's own
+  // origin, and the dev renderer is vite's page on another port, so the daemon
+  // is told which origin that is (QA-D F7; `routes::RENDERER_ORIGIN_ENV`).
+  // Packaged, the renderer loads from a `file:` URL, which the workspace gate
+  // admits by name, and nothing is declared: the explicit `undefined` also keeps
+  // a value inherited from the environment off a packaged app's daemon.
+  const rendererEntry = rendererEntryUrl();
+  const daemonEnv = {
+    BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT,
+    BIOROUTER_RENDERER_ORIGIN:
+      rendererEntry.protocol === 'file:' ? undefined : rendererEntry.origin,
+  };
+
   const biorouterdResult = useSharedDaemon
     ? await getSharedBackend(startBiorouterd, {
         app,
         serverSecret,
         userActionKey,
         dir: os.homedir(),
-        env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
+        env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
       })
     : await startBiorouterd({
@@ -1377,7 +1390,7 @@ const createChat = async (
         serverSecret,
         userActionKey,
         dir: dir || os.homedir(),
-        env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
+        env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
       });
 
@@ -5531,8 +5544,10 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
  *   (measured: a fetch to loopback returns 200 with no
  *   `Access-Control-Allow-Origin` in the response at all). Its WebSocket sends
  *   `Origin: file://`, which `routes/workspace.rs` admits by name; the dev
- *   renderer sends `http://localhost:517x`, which `routes::is_local_origin`
- *   admits. Every gate already passes on the renderer's real origin.
+ *   renderer sends `http://localhost:517x`, which the daemon admits as the
+ *   renderer origin this process declares when it spawns it
+ *   (`BIOROUTER_RENDERER_ORIGIN`, set beside the `startBiorouterd` calls).
+ *   Every gate already passes on the renderer's real origin.
  * - Extending it would be strictly worse. The daemon's socket gates are
  *   same-origin tests (`origin_matches_host`) against the browser-set `Origin`;
  *   replacing that with a value this process invented means the check is

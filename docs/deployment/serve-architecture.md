@@ -145,21 +145,36 @@ than `127.0.0.1`, so it can be pasted into a browser on another machine.
 Two existing checks constrain what that address may be, and both must be widened deliberately
 rather than relaxed:
 
-- `is_local_origin` (`crates/biorouter-server/src/routes/mod.rs:9`) accepts only
+- `is_local_origin` (`crates/biorouter-server/src/routes/mod.rs`) accepts only
   `http://localhost` and `http://127.0.0.1` on any port. It backs the daemon's cross-origin
-  policy.
+  policy, and nothing else.
 - The WebSocket routes carry their own origin checks, for cross-site WebSocket hijacking.
 
 Same-origin requests are unaffected by the first — a browser does not apply cross-origin rules
 to a page talking to its own origin — but the WebSocket origin gates are explicit checks in
 handler code, so both were taught the daemon's own serving origin.
 
-The rule is `origin_matches_host`: the request's `Origin` must equal its own `Host`. That is a
-same-origin test rather than a widening — the browser sets both headers and neither is reachable
-from script, so a page on any other origin cannot make them agree. It needs no configuration and
-no wildcard, and it holds for every address the interface is reached at, including ones the
-daemon could not have enumerated because it bound `0.0.0.0`. Both are compared whole, so a `Host`
-of `evil.com.attacker.net` does not admit an `Origin` of `http://evil.com`.
+The rule is `origin_matches_host`: the request's `Origin` must match its own `Host` in scheme,
+host and port. That is a same-origin test rather than a widening — the browser sets both headers
+and neither is reachable from script, so a page on any other origin cannot make them agree. It
+needs no configuration and no wildcard, and it holds for every address the interface is reached
+at, including ones the daemon could not have enumerated because it bound `0.0.0.0`. Both are
+compared whole, so a `Host` of `evil.com.attacker.net` does not admit an `Origin` of
+`http://evil.com`, and case is normalised once (`WebOrigin`), as RFC 6454 compares origins.
+
+The scheme is the one the client used to reach the daemon. The daemon speaks plain HTTP, so it is
+`http` unless a reverse proxy in front says `X-Forwarded-Proto: https` — the documented way to
+put TLS in front of `serve`. A browser page cannot set that header on a WebSocket handshake, and a
+client that can is not a browser: it may send no `Origin` at all, which both gates admit because
+their token is the authority there.
+
+Until QA-D F7 (2026-09-11) the gates also admitted `is_local_origin` — any loopback port, any
+scheme — so every other local page's socket passed as the daemon's own, and behind a TLS proxy a
+plain-`http` page at the same host passed the authority-only comparison. What remains beside the
+same-origin test is one declared renderer: the desktop app's dev renderer is vite's page on its
+own port, so the Electron main process names that origin in `BIOROUTER_RENDERER_ORIGIN` when it
+spawns the daemon (loopback `http` only; anything else is refused with a warning). The packaged
+renderer loads from `file://`, which the workspace gate admits by name.
 
 ## What is deleted
 

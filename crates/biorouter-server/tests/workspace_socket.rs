@@ -165,11 +165,33 @@ async fn the_mounted_socket_authenticates_and_carries_frames_both_ways() {
         ),
         axum::http::StatusCode::FORBIDDEN
     );
+    // QA-D F7, over the real handshake: another loopback port, the daemon's
+    // own address under another scheme, and another loopback host. Each was
+    // admitted until then — the first two by "any loopback origin", which is
+    // why this test's own success case used to connect from port 5173. Nothing
+    // here declares a renderer origin, so vite's page is just another port.
+    for origin in [
+        "http://127.0.0.1:1".to_string(),
+        "http://127.0.0.1:5173".to_string(),
+        format!("https://{addr}"),
+        format!("http://localhost:{}", addr.port()),
+    ] {
+        assert_eq!(
+            refusal_status(
+                connect(addr, &good, Some(&origin))
+                    .await
+                    .expect_err("an origin that is not the daemon's own must be refused")
+            ),
+            axum::http::StatusCode::FORBIDDEN,
+            "{origin}"
+        );
+    }
 
-    // …and the real thing connects.
-    let mut socket = connect(addr, &good, Some("http://127.0.0.1:5173"))
+    // …and the real thing connects: a page served from the daemon's own
+    // origin, which the handshake's `Host` names.
+    let mut socket = connect(addr, &good, Some(&format!("http://{addr}")))
         .await
-        .expect("a loopback origin with the right secret upgrades");
+        .expect("the daemon's own origin with the right secret upgrades");
 
     let bridge = biorouter_server::workspace::bridge::bridge_for(&window);
 
