@@ -460,6 +460,13 @@ compliance page is required reading before research data goes near either.
   (`routes/coding_agents.rs`) backs the onboarding card
   `onboarding/CodingAgentInlineCard.tsx`, wired beside `LlamaServerInlineCard` in
   `ProviderGuard.tsx`. `CLAUDE_CODE_COMMAND` / `CODEX_COMMAND` override discovery.
+- **"Configured" means the key is saved AND the CLI resolves.** `check_provider_configured`
+  (`routes/utils.rs`) asks `discovery::resolve_configured` — the lookup the status probe
+  uses — so a command key naming a missing CLI is served `is_configured: false` with
+  `unavailable_reason`, and `SwitchModelModal` shows that row disabled with the reason rather
+  than offering a bind `from_env` would refuse. Sign-in is deliberately NOT part of it: learning
+  it spawns the CLI, and `GET /config/providers` runs for every provider. See
+  [`docs/desktop-ui/provider-catalog.md`](docs/desktop-ui/provider-catalog.md).
 - **Tests:** `cargo test -p biorouter --lib providers::coding_agent`,
   `cargo test -p biorouter-server --test tool_bridge_routes`, and the vitest
   suite for the onboarding card. The live end-to-end tests need the real vendor

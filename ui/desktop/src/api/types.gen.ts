@@ -2625,6 +2625,21 @@ export type ProviderDetails = {
     name: string;
     provider_type: ProviderType;
     resolved_tier?: ProviderTier | null;
+    /**
+     * Why a provider the user HAS set up cannot run right now: a one-line
+     * sentence for the model picker to print on the row it disables.
+     *
+     * Set only when [`Self::is_configured`] is false for a reason other than a
+     * missing key — today, a coding agent whose command key is saved and whose
+     * CLI does not resolve (see `routes::utils::provider_readiness`). `None` for
+     * every usable provider and for every provider that is simply not set up,
+     * which the picker leaves out rather than greys out.
+     *
+     * ⚠ **Only what can be learned without spawning.** A signed-out CLI is not
+     * reported here: finding that out means running it, and this route runs
+     * for every provider on every settings open.
+     */
+    unavailable_reason?: string | null;
 };
 
 export type ProviderEngine = 'openai' | 'ollama' | 'anthropic';

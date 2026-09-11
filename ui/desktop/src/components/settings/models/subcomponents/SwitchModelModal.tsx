@@ -135,6 +135,18 @@ const modelOptionSearchText = (option: ModelOption) =>
 const PUBLIC_MODEL_IN_PRIVATE_CHAT =
   'Unavailable: this is a private chat, so only private models may run in it';
 
+/**
+ * A provider row in the picker. `unavailableReason` is set for a provider the
+ * user HAS set up that cannot run right now — the daemon's own sentence, from
+ * `ProviderDetails.unavailable_reason`.
+ */
+type ProviderOption = { value: string; label: string; unavailableReason?: string };
+
+/**
+ * Serves a provider row as well as a model row: both carry a `label`, and only a
+ * model row has a `detail` of its own, so a provider row shows its label alone
+ * until there is a reason to print beneath it.
+ */
 const renderModelOptionLabel = (
   rawOption: unknown,
   meta: { context: 'menu' | 'value' },
@@ -193,7 +205,7 @@ export const SwitchModelModal = ({
 }: SwitchModelModalProps) => {
   const { getProviders, getProviderModels, read } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
-  const [providerOptions, setProviderOptions] = useState<{ value: string; label: string }[]>([]);
+  const [providerOptions, setProviderOptions] = useState<ProviderOption[]>([]);
   const [activeProviders, setActiveProviders] = useState<ProviderDetails[]>([]);
   const [modelOptionsByProvider, setModelOptionsByProvider] = useState<
     Record<string, ModelOption[]>
@@ -312,6 +324,31 @@ export const SwitchModelModal = ({
     [privacyTier, publicProviderNames]
   );
 
+  /**
+   * F6 of the 2026-09-10 provider QA run — the same "pre-flight, not
+   * post-refusal" rule as {@link blockedReasonFor}, one level up: a whole
+   * PROVIDER that cannot run.
+   *
+   * With `CODEX_COMMAND` pointed at a path that did not exist, Codex stayed
+   * selectable here, and the bind was then refused by `from_env` with a toast in
+   * the far corner. The daemon now serves such a row with `is_configured: false`
+   * and the reason, and the row stays in the list — disabled, with the reason on
+   * it — rather than vanishing, because a provider the user chose and cannot
+   * find is exactly the one they need to be told about. The words are the
+   * daemon's (`CodingAgentKind::not_installed_summary`), the same sentence a turn
+   * would have failed with.
+   */
+  const unavailableReasonFor = useCallback(
+    (providerName: string | undefined | null) => {
+      const reason = providerOptions.find(
+        (option) => option.value === providerName
+      )?.unavailableReason;
+      return reason ? `Unavailable: ${reason}` : null;
+    },
+    [providerOptions]
+  );
+  const selectedProviderUnavailable = !usePredefinedModels ? unavailableReasonFor(provider) : null;
+
   // Validate form data
   const validateForm = useCallback(() => {
     const errors = {
@@ -329,7 +366,9 @@ export const SwitchModelModal = ({
         // same `changeModel`, so it bypasses the option list's pre-flight
         // exactly the way the custom-model field below does. Guarding only that
         // one would leave the identical hole open on the sibling path.
-        const blocked = blockedReasonFor(selectedPredefinedModel.provider);
+        const blocked =
+          unavailableReasonFor(selectedPredefinedModel.provider) ??
+          blockedReasonFor(selectedPredefinedModel.provider);
         if (blocked) {
           errors.model = blocked;
           formIsValid = false;
@@ -339,6 +378,15 @@ export const SwitchModelModal = ({
       if (!provider) {
         errors.provider = 'Select a provider';
         formIsValid = false;
+      } else {
+        // A disabled row cannot be picked, but the dialog can OPEN on one — the
+        // bound provider, or the one a configure form just saved — and a
+        // keyboard submit reaches here without the button.
+        const unavailable = unavailableReasonFor(provider);
+        if (unavailable) {
+          errors.provider = unavailable;
+          formIsValid = false;
+        }
       }
 
       if (!model) {
@@ -359,7 +407,14 @@ export const SwitchModelModal = ({
     setValidationErrors(errors);
     setIsValid(formIsValid);
     return formIsValid;
-  }, [model, provider, usePredefinedModels, selectedPredefinedModel, blockedReasonFor]);
+  }, [
+    model,
+    provider,
+    usePredefinedModels,
+    selectedPredefinedModel,
+    blockedReasonFor,
+    unavailableReasonFor,
+  ]);
 
   const handleClose = () => {
     onClose();
@@ -493,12 +548,19 @@ export const SwitchModelModal = ({
         const providersResponse = await getProviders(Boolean(initialProvider));
         const activeProviders = providersResponse.filter((provider) => provider.is_configured);
         setActiveProviders(activeProviders);
-        // Create provider options and add "Use other provider" option
+        // Every usable provider, plus every provider the user set up that cannot
+        // run right now (see `unavailableReasonFor`) — in the daemon's order, so
+        // a disabled row sits where it always sat instead of sinking to the
+        // bottom — then "Use other provider". A provider that is simply not set
+        // up stays out, as before.
         setProviderOptions([
-          ...activeProviders.map(({ metadata, name }) => ({
-            value: name,
-            label: metadata.display_name,
-          })),
+          ...providersResponse
+            .filter((provider) => provider.is_configured || provider.unavailable_reason)
+            .map(({ metadata, name, is_configured, unavailable_reason }) => ({
+              value: name,
+              label: metadata.display_name,
+              unavailableReason: is_configured ? undefined : (unavailable_reason ?? undefined),
+            })),
           {
             value: 'configure_providers',
             label: 'Use other provider',
@@ -822,9 +884,31 @@ export const SwitchModelModal = ({
                   placeholder="Provider, type to search"
                   isClearable
                   isDisabled={hostManaged}
+                  // The private-chat pre-flight's shape, one level up: the row is
+                  // react-select's own `aria-disabled` option, with the reason in
+                  // its detail line — see `unavailableReasonFor`.
+                  formatOptionLabel={(rawOption: unknown, meta) =>
+                    renderModelOptionLabel(
+                      rawOption,
+                      meta,
+                      unavailableReasonFor((rawOption as ProviderOption).value)
+                    )
+                  }
+                  isOptionDisabled={(rawOption: unknown) =>
+                    unavailableReasonFor((rawOption as ProviderOption).value) !== null
+                  }
                 />
-                {attemptedSubmit && validationErrors.provider && (
-                  <div className="text-text-danger text-sm mt-1">{validationErrors.provider}</div>
+                {/* Shown before any attempt when the dialog opened ON an
+                    unavailable provider: the reason the button below is inert
+                    has to be readable before the user tries it. */}
+                {(selectedProviderUnavailable ||
+                  (attemptedSubmit && validationErrors.provider)) && (
+                  <div
+                    data-testid="switch-model-provider-error"
+                    className="text-text-danger text-sm mt-1"
+                  >
+                    {selectedProviderUnavailable || validationErrors.provider}
+                  </div>
                 )}
                 {/*
                   Issue #56, DR-26. Whose agreements cover the models under this
@@ -869,7 +953,9 @@ export const SwitchModelModal = ({
                           loadingModels ? 'Loading models…' : 'Select a model, type to search'
                         }
                         isClearable
-                        isDisabled={loadingModels || hostManaged}
+                        isDisabled={
+                          loadingModels || hostManaged || selectedProviderUnavailable !== null
+                        }
                       />
 
                       {attemptedSubmit && validationErrors.model && (
@@ -938,6 +1024,7 @@ export const SwitchModelModal = ({
               disabled={
                 !isValid ||
                 (!usePredefinedModels && (!provider || !model)) ||
+                selectedProviderUnavailable !== null ||
                 hostManaged ||
                 switching ||
                 providerInputValue.trim().length > 0

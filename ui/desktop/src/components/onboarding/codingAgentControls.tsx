@@ -149,8 +149,19 @@ export interface CodingAgentControls {
  * would fork processes in the background for as long as the surface is on screen.
  * Both consumers mount this hook exactly once, which is what keeps that true:
  * `ProviderCatalog` mounts it at the tab panel, not per row.
+ *
+ * `onRechecked` runs after an explicit re-check settles (never after the mount
+ * probe). The catalog passes its provider-list refresh: the row's "Configured"
+ * check comes from `GET /config/providers`, which requires the CLI to resolve,
+ * so a re-check that changed "installed" has changed that answer too — and a
+ * list read before it would show a check the pill beside it contradicts (F6).
+ * The catalog also re-checks after any change to an agent's setup, for the
+ * same reason in the other direction.
  */
-export function useCodingAgents(onSuccess: (providerId: string) => void): CodingAgentControls {
+export function useCodingAgents(
+  onSuccess: (providerId: string) => void,
+  onRechecked?: () => void
+): CodingAgentControls {
   const { upsert } = useConfig();
   const [agents, setAgents] = useState<CodingAgentAvailability[] | null>(null);
   const [isChecking, setIsChecking] = useState(true);
@@ -171,6 +182,15 @@ export function useCodingAgents(onSuccess: (providerId: string) => void): Coding
     };
   }, []);
 
+  // ⚠ Through a ref, so `refresh` keeps its empty dependency list. The mount
+  // effect below re-runs whenever `refresh` changes identity, and a caller's
+  // fresh closure per render would turn the one mount probe into a probe per
+  // render — each of which spawns both vendor CLIs.
+  const onRecheckedRef = useRef(onRechecked);
+  useEffect(() => {
+    onRecheckedRef.current = onRechecked;
+  }, [onRechecked]);
+
   const refresh = useCallback(async (initial: boolean) => {
     if (initial) {
       setIsChecking(true);
@@ -190,6 +210,9 @@ export function useCodingAgents(onSuccess: (providerId: string) => void): Coding
       if (mountedRef.current) {
         setIsChecking(false);
         setIsRechecking(false);
+        // Success or not: a probe that failed says nothing about the list, and
+        // the change that prompted the re-check may still have moved it.
+        if (!initial) onRecheckedRef.current?.();
       }
     }
   }, []);
