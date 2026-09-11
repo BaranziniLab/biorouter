@@ -2223,7 +2223,8 @@ fn resolve_program(name: &str, search_path: &OsStr) -> PathBuf {
 // Router.
 // ---------------------------------------------------------------------------
 
-/// The seventeen `/headless/*` routes.
+/// The sixteen `/headless/*` paths — seventeen handlers, since
+/// `/headless/settings` answers both `GET` and `POST`.
 ///
 /// No handler reads [`AppState`]: this surface is about the machine the daemon
 /// runs on, not about its sessions. The parameter is kept so the module is
@@ -3029,7 +3030,7 @@ mod tests {
 
     /// Every route the retired binary served is still served, at the same path.
     #[test]
-    fn all_seventeen_routes_are_registered() {
+    fn all_sixteen_paths_are_registered() {
         let source = include_str!("shell.rs");
         for path in [
             "/headless/health",

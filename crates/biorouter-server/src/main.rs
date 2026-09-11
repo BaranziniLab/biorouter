@@ -51,7 +51,15 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run the agent server
-    Agent,
+    Agent {
+        /// Stop when process PID is no longer this daemon's parent.
+        ///
+        /// `biorouter serve` passes its own pid, so a daemon it started cannot
+        /// outlive it even when it is killed outright. Opt-in: the desktop app
+        /// and a hand-started daemon do not pass it. Unix only.
+        #[arg(long, value_name = "PID")]
+        exit_with_parent: Option<u32>,
+    },
     /// Run the MCP server
     Mcp {
         #[arg(value_parser = clap::value_parser!(McpCommand))]
@@ -82,8 +90,8 @@ async fn async_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Agent => {
-            commands::agent::run().await?;
+        Commands::Agent { exit_with_parent } => {
+            commands::agent::run(exit_with_parent).await?;
         }
         Commands::Mcp { server } => {
             logging::setup_logging(Some(&format!("mcp-{}", server.name())))?;

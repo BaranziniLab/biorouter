@@ -740,7 +740,7 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
-- **`--web-dir <DIR>`**: Directory holding the built interface. Located automatically when unset
+- **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
 - **`--open`**: Open a browser once the server is ready
 
 **Usage:**
@@ -759,7 +759,7 @@ biorouter serve --host 0.0.0.0
 biorouter serve --host 0.0.0.0 --token "$(openssl rand -hex 32)"
 ```
 
-The printed URL carries a one-off access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar. Use `Ctrl+C` to stop the server.
+The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar; it is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
 
 > **Note.** A browser session cannot change its model or provider, deliberately — run `biorouter configure` to choose them **before** starting `serve`. [Reaching Biorouter from a browser](../deployment/browser-access.md) explains why, and covers the access token, remote access and troubleshooting.
 

@@ -366,7 +366,11 @@ jobs:
   # docs/deployment/serve-decisions.md). What it does assert is everything
   # between the browser and that boundary.
   serve:
-    timeout-minutes: 30
+    # Was 30 against a measured 9.5m. The lifecycle step below builds
+    # biorouter-cli's tests, which unify its dev-dependency features and so
+    # recompile part of the graph a plain `cargo build` already built (4m56s on
+    # a loaded M4 Max); the budget keeps the same margin over that.
+    timeout-minutes: 45
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -437,7 +441,9 @@ jobs:
           [ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:18777/?t=wrong')" = 401 ] \
             || fail 'a wrong token was accepted'
 
-          # The token is spent once, for a cookie, and leaves the address bar.
+          # The token is exchanged for a cookie and leaves the address bar. It is
+          # not consumed (SD-9 in docs/deployment/serve-decisions.md): the
+          # readiness loop above has already redeemed it.
           curl -s -o /dev/null -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
           grep -qi '^HTTP/1.1 303' "$RUNNER_TEMP/h" || fail 'no redirect after the token exchange'
           grep -qi 'set-cookie: biorouter_session=' "$RUNNER_TEMP/h" || fail 'no session cookie'
@@ -474,5 +480,21 @@ jobs:
               'http://127.0.0.1:18777/headless/fs/read?path=/etc/passwd')" = 403 ] \
             || fail 'the filesystem endpoint read outside its allowed roots'
 
-          kill "$serve_pid" || true
+          # Stopping serve by pid stops its daemon. It used to leave the daemon
+          # running, still holding this port and still honouring the token.
+          # `serve` reaps the daemon before it exits, so the port is closed the
+          # moment `wait` returns.
+          kill "$serve_pid" || fail 'serve was no longer running'
+          wait "$serve_pid" || true
+          ! curl -s -o /dev/null --max-time 5 http://127.0.0.1:18777/status \
+            || fail 'the daemon outlived serve'
           echo 'the browser contract holds'
+
+      # SIGTERM and SIGINT to `serve`, and SIGKILL, which leaves only the
+      # daemon's own parent watch to stop it. Here rather than in the workspace
+      # test job, which runs `--lib --bins` only: this needs a `biorouterd` from
+      # the same tree beside `biorouter`, which the build step above provides.
+      - name: Stopping serve stops its daemon
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test -p biorouter-cli --test serve_lifecycle

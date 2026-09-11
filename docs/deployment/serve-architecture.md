@@ -50,7 +50,7 @@ retry-with-backoff meant they failed silently rather than reporting it.
 whatever arrived. Now the browser presents the same credential every other client presents, and
 `check_token` is the only thing that inspects it.
 
-**The interface's own endpoints are authenticated.** The sixteen `/headless/*` endpoints — the
+**The interface's own endpoints are authenticated.** The sixteen `/headless/*` paths — the
 filesystem browser, settings, extension installation, skill extraction — were previously served
 by a router carrying exactly one layer, `TraceLayer`. Moved into the daemon they sit behind the
 same middleware as everything else.
@@ -161,6 +161,53 @@ no wildcard, and it holds for every address the interface is reached at, includi
 daemon could not have enumerated because it bound `0.0.0.0`. Both are compared whole, so a `Host`
 of `evil.com.attacker.net` does not admit an `Origin` of `http://evil.com`.
 
+## How `serve` starts and stops the daemon
+
+`biorouter serve` spawns `biorouterd agent` rather than running the server itself (SD-7), so it
+is a supervisor, and the half of supervision that matters is stopping. The daemon, not `serve`,
+holds the port, answers the browser token and serves the shell that carries its secret — so for
+as long as it runs, the URL `serve` printed works. The daemon has to stop whenever `serve` does,
+and two layers see to that:
+
+| How `serve` ends | What stops the daemon |
+|---|---|
+| `Ctrl-C`, or `SIGTERM` (`kill <pid>`, `systemctl stop`) | `serve` sends the daemon `SIGTERM`, waits up to ten seconds, then kills it, and reaps it before exiting. A second request skips the wait. |
+| The daemon exits, or never becomes ready | The same path, with nothing or less to stop. |
+| `serve` is killed outright (`SIGKILL`), or crashes | On Unix the daemon was started with `--exit-with-parent <pid of serve>`. It sees within half a second that its parent has changed and shuts itself down, exiting regardless ten seconds later. |
+
+The listeners for the first row are installed **before** the daemon is spawned. Installing one
+replaces the default action, which for `SIGTERM` was to end `serve` on the spot — so a signal
+that arrives during the readiness wait is held until it is read, not lost with the daemon still
+running.
+
+Three details are deliberate:
+
+- **The ten seconds exist because a graceful shutdown waits for open connections to finish**,
+  and a browser tab left open holds some that never do. The daemon applies the same figure to
+  itself when it is orphaned, because then nobody is left to escalate. Measured with one
+  request in flight — the renderer's catalog long poll, which an open tab always has parked, for
+  up to 25 s — `serve` exited at 10.05 s by killing the daemon; with none, in under 0.1 s. A
+  daemon killed that way skips its own cleanup, so a llama-server sidecar it started is left for
+  the next launch's pidfile reaper (`llamacpp_sidecar::reap_orphans`).
+- **The parent check compares `getppid()` with the pid `serve` named, not with 1.** An orphan is
+  re-parented to the nearest *subreaper* — `systemd --user` on most Linux desktops, a
+  container's init shim — and to pid 1 only when there is none, so `getppid() == 1` would
+  never fire there. And the pid is passed in rather than read by the daemon at startup, because
+  a `serve` that died before that read would be recorded as the subreaper that inherited it.
+- **The flag is opt-in.** The desktop application starts `biorouterd agent` without it, and so
+  does anyone running the daemon by hand.
+
+Windows has neither `SIGTERM` nor the parent check. A console `Ctrl-C` reaches every process
+attached to the console, so both stop; `biorouter.exe` ended any other way leaves the daemon
+running.
+
+Until 2026-09 neither layer existed, although a comment in `serve` said the first did. The
+daemon's `Child` had been moved into the task waiting on it, so the `Ctrl-C` handler held no
+handle to kill it with; only a terminal's `Ctrl-C`, which signals the whole foreground process
+group, ever reached the daemon. `kill <pid of serve>` from anywhere else left it running with the
+port, the token and the secret. `crates/biorouter-cli/tests/serve_lifecycle.rs` stops `serve` by
+pid with each signal and asserts the daemon is gone and the port is closed.
+
 ## What is deleted
 
 The `biorouter-headless` crate goes entirely (SD-6). Of its two thousand lines, the parts with no
@@ -172,8 +219,9 @@ successor are:
   stylesheet rewrites, and the routes registered to serve the rewritten copies (SD-4);
 - the cloud-metadata probes performed on every start.
 
-What moves rather than dies is the sixteen `/headless/*` handlers, which become a route module in
-the daemon, and the resolution of where the web directory lives.
+What moves rather than dies is the `/headless/*` surface — sixteen paths, seventeen handlers,
+since `/headless/settings` answers both `GET` and `POST` — which becomes a route module in the
+daemon, and the resolution of where the web directory lives.
 
 ## Where the bundle comes from
 
@@ -187,9 +235,12 @@ package script so every platform's packaging can call it.
 > root base, from `vite.renderer.config.mts` directly. Reusing the packaged Electron bundle is not
 > a shortcut; it is a different artifact.
 
-The resolver looks for the directory in a fixed order — an explicit flag or environment variable,
-then a location relative to the executable, then a system-wide path for the Linux packages. When
-it finds none, the error names every path it tried.
+A directory named explicitly — `--web-dir`, or else `BIOROUTER_SERVE_UI` — is used as given or
+refused with the same error, never skipped. The variable used to be only the first candidate of
+the search, so one naming an empty directory was passed over and `serve` served whatever the
+search found next, while the same path given as `--web-dir` was fatal. With neither set, the
+resolver looks in a fixed order — locations relative to the executable, then a system-wide path
+for the Linux packages — and when it finds none, the error names every path it tried.
 
 ## Related documentation
 
