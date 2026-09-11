@@ -375,9 +375,15 @@ impl ScriptCallGate {
         let request = UserActionRequest::ToolApproval(ToolApprovalRequest {
             tool_name: name.clone(),
             arguments: arguments.clone(),
-            prompt: Some(card_prompt(
-                crate::tool_inspection::approval_prompt_for_request(&pending.id, inspections),
-            )),
+            // Exactly what a direct call's card carries: the inspectors' reasons,
+            // and nothing when none of them explained anything. ⚠ Do not add a
+            // "this came from a script" line here. The desktop reads ANY prompt
+            // as a security finding — it draws it as a warning banner and
+            // withholds "Always allow" (`ToolCallConfirmation.tsx`) — so a
+            // provenance note turned every ordinary script ask into an alarm the
+            // user could only answer once per call, which was measured in the
+            // running app. The transcript's step row already shows the script.
+            prompt: crate::tool_inspection::approval_prompt_for_request(&pending.id, inspections),
             risk: Some(risks.risk_for(&name)),
             preview: ToolPreview::for_tool_call(&name, &arguments),
             // The same answer a direct call's card takes: any surface of this
@@ -552,19 +558,6 @@ impl ScriptCallGate {
                  than left to leak into a later turn"
             );
         }
-    }
-}
-
-/// The ask's explanation: every inspector's reason first (the one that names
-/// what is at stake leads — see `approval_prompt_for_request`), then where the
-/// call came from, which is the one thing the card could not otherwise show.
-fn card_prompt(inspector_reasons: Option<String>) -> String {
-    const FROM_A_SCRIPT: &str = "This call was made by a Code Execution script \
-        (`code_execution__execute_code`). Allowing it runs this one call; every other \
-        call the script makes is decided on its own.";
-    match inspector_reasons {
-        Some(reasons) => format!("{reasons}\n\n{FROM_A_SCRIPT}"),
-        None => FROM_A_SCRIPT.to_string(),
     }
 }
 
@@ -952,12 +945,13 @@ mod tests {
             Some("echo SCRIPT-GATE-ALLOWED"),
             "the card must carry the call's own evaluated arguments"
         );
-        assert!(
-            card.prompt
-                .as_deref()
-                .is_some_and(|prompt| prompt.contains(EXECUTE_CODE)),
-            "the card must say the call came from a script: {:?}",
-            card.prompt
+        // The same card a direct call gets. An ordinary Manual-mode ask carries
+        // no prompt, and that is load-bearing: the desktop reads any prompt as a
+        // security finding, draws it as a warning and withholds "Always allow"
+        // — measured in the running app when a provenance line was added here.
+        assert_eq!(
+            card.prompt, None,
+            "an ordinary script ask must not look like a security finding"
         );
 
         answer(&f, &card, Permission::AllowOnce).await;

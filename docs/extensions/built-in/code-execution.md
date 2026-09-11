@@ -88,7 +88,7 @@ What that means in practice:
 
 | Situation | What happens |
 |---|---|
-| Manual Approval, `execute_code` always allowed, and the script calls `developer__shell` | A card asks about `developer__shell` and shows the command. The card says the call came from a script. |
+| Manual Approval, `execute_code` always allowed, and the script calls `developer__shell` | A card asks about `developer__shell` and shows the command — the same card, with the same **Allow Once** / **Always Allow** / **Deny** buttons, that calling the tool directly would raise. The script's step in the conversation shows it is waiting on that card. |
 | The same, with `developer__shell` also always allowed | The shell call runs with no card. |
 | `developer__shell` is set to **Never allow** | The call is refused with no card. The script receives a tool error, which it can catch and carry on from. |
 | You click **Deny** on the card | The same as Never allow, for this one call: the command does not run, and the script receives *"The user has declined to run this tool."* |
