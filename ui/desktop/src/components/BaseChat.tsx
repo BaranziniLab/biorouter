@@ -80,6 +80,7 @@ import ArtifactViewer from './artifacts/ArtifactViewer';
 import { useArtifactPanel } from './artifacts/useArtifactPanel';
 import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
+import { ChatTurnStopped } from './conversation/ChatTurnStopped';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import type { LiveBrowserShare } from './artifacts/WebPagePreview';
@@ -1387,6 +1388,7 @@ function BaseChatContent({
     steer,
     sessionLoadError,
     turnError,
+    stopConfirmed,
     setWorkflowUserParams,
     tokenState,
     turnStartedAt,
@@ -2462,6 +2464,10 @@ function BaseChatContent({
                             {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
                               <ChatTurnError error={turnError} onRetry={retryTurn} />
                             )}
+                            {/* F5: a CONFIRMED Stop's outcome, in the slot a
+                                failed Stop's notice takes. Transient — the
+                                store decides when it shows and when it goes. */}
+                            {stopConfirmed && <ChatTurnStopped />}
                           </>
                         </SearchView>
                         {/* No tail spacer. A `block h-8` used to sit here, and

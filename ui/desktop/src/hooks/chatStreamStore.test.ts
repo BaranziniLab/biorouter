@@ -2347,6 +2347,37 @@ describe('ChatStreamRegistry — a Stop the daemon confirms (F5)', () => {
     controlled.close();
     await submit;
   });
+
+  // The case above's harder sibling: an ORDINARY Stop the user upgrades while
+  // it is still on the wire. That Stop's own cancel comes back `cancelled:
+  // true` — and the replacement turn is still the outcome.
+  it('does not appear for an ordinary Stop upgraded to Stop-and-Send mid-flight', async () => {
+    const { controller, controlled, submit } = await startLongTurn('stop-upgraded-mid-flight');
+    const ordinaryCancellation = deferred<unknown>();
+    const continuationAdmission = deferred<unknown>();
+    vi.mocked(cancelTurn)
+      .mockReturnValueOnce(ordinaryCancellation.promise as never)
+      .mockReturnValueOnce(continuationAdmission.promise as never);
+
+    const ordinaryStop = controller.stopStreaming(false);
+    await vi.waitFor(() => expect(cancelTurn).toHaveBeenCalledTimes(1));
+    const stopAndSend = controller.stopStreaming(true);
+
+    ordinaryCancellation.resolve({ data: { cancelled: true, settled: true } });
+    await expect(ordinaryStop).resolves.toBe(true);
+    // Between the two requests: exactly where a line keyed on the ordinary
+    // Stop alone would flash.
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+
+    continuationAdmission.resolve({
+      data: { cancelled: false, settled: true, continuation_lease: 'lease-upgraded' },
+    });
+    await expect(stopAndSend).resolves.toBe(true);
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+
+    controlled.close();
+    await submit;
+  });
 });
 
 /**
