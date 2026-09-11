@@ -520,11 +520,11 @@ export function KnowledgeProvider({
    * Re-read the daemon: the base list and this scope's selection, together.
    *
    * This is the Knowledge feature's one change signal — the view calls it when
-   * it mounts, the picker and the manager when they open, and every create,
-   * delete, rename and import when it lands. The selection rides with the list
-   * because anything that moved one can have moved the other: deleting a base
-   * clears every pointer that named it, and the agent can create a base and pin
-   * it in one turn.
+   * it mounts, the picker and the manager when they open, every create, delete,
+   * rename and import when it lands, and the provider itself when a turn ends
+   * (below). The selection rides with the list because anything that moved one
+   * can have moved the other: deleting a base clears every pointer that named
+   * it, and the agent can create a base and pin it in one turn.
    */
   const refresh = useCallback(async () => {
     await Promise.all([refreshBases(), resyncSelectionRef.current()]);
@@ -543,6 +543,21 @@ export function KnowledgeProvider({
     // second read racing it would be answered by the same daemon twice.
     void refreshBases();
   }, [refreshBases]);
+
+  useEffect(() => {
+    // QA 2026-09-10 F6. The agent creates, deletes and merges knowledge bases in
+    // a chat — directly, or from inside `execute_code`, where no knowledge tool
+    // call is visible to the renderer at all — and before this nothing told the
+    // composer's chip, which read "2 visible" over three bases until a remount.
+    // `message-stream-finished` is the app's existing end-of-turn signal: the
+    // sidebar, the extension chip and the tool count already re-read on it, so
+    // this is one more reader of a signal rather than a second subscription.
+    // Mounted with the provider, once per renderer — a subscription belongs to a
+    // mount, not to a lookup.
+    const onTurnFinished = () => void refresh();
+    window.addEventListener('message-stream-finished', onTurnFinished);
+    return () => window.removeEventListener('message-stream-finished', onTurnFinished);
+  }, [refresh]);
 
   useEffect(() => {
     const local = localStorage.getItem(storageKey);
