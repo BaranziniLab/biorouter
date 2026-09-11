@@ -1250,6 +1250,14 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn a_boundary_refusal_stays_a_refusal_and_never_becomes_a_card() {
+        // The store is resolved here and again inside the boundary check, both
+        // through the process-global `BIOROUTER_PATH_ROOT`, which other tests
+        // change under `env_lock`. Hold env_lock's one global mutex for the whole
+        // test, writing nothing, so no such writer can land between the reads —
+        // and no value read outside the lock is ever republished (see the same
+        // guard in `code_execution_extension`'s rewrite test).
+        let _env = env_lock::lock_env(Vec::<(&str, Option<&str>)>::new());
+
         let f = fixture(BioRouterMode::Approve).await;
         let store = biorouter_mcp::global_memory_dir().join("probe.txt");
         let code = format!(

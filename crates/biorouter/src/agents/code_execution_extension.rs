@@ -2945,6 +2945,15 @@ mod tests {
     async fn a_hook_rewrite_cannot_carry_a_scripts_call_past_the_boundary_refusals() {
         use crate::agents::script_call_gate::test_support::{gate, hooks_rewriting_shell_to};
 
+        // The store is resolved TWICE — here, and inside the boundary check —
+        // and both follow the process-global `BIOROUTER_PATH_ROOT`, which other
+        // tests change under `env_lock`. Measured flaking without this. Hold
+        // env_lock's one global mutex, writing NOTHING: pinning the variable to
+        // a value read outside the lock (`pinned_store_root`'s shape) can catch
+        // another holder's transient root and republish it to every unguarded
+        // reader for the length of this test.
+        let _env = env_lock::lock_env(Vec::<(&str, Option<&str>)>::new());
+
         let dir = tempfile::TempDir::new().expect("a scratch directory");
         let store = biorouter_mcp::global_memory_dir().join("probe.txt");
         let hooks = hooks_rewriting_shell_to(&format!("cat '{}'", store.display()));
