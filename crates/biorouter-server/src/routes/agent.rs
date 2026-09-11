@@ -341,6 +341,59 @@ fn configured_new_session_provider() -> Result<Option<(String, ModelConfig)>, Er
     }
 }
 
+/// SD-9 (`docs/deployment/serve-decisions.md`): does binding the operator's
+/// configured default provider to a brand-new chat need a person's proof?
+///
+/// A new chat has no capability of its own yet, so a private default reads as a
+/// raise from Public — the reading `update_agent_provider` gives any first bind.
+/// What differs is who chose the model. `/agent/start` names no provider; it
+/// binds `BIOROUTER_PROVIDER`, a key only a proven person may write over HTTP
+/// (DR-16, open question 24) or the operator wrote out of band with `biorouter
+/// configure`. The proof is therefore asked for only where it can be given:
+///
+/// * `Proven` — the desktop renderer, which sends `X-User-Action` on every start
+///   (`ui/desktop/src/sessions.ts`). Binds.
+/// * `Unproven` — a daemon that holds a key, and a caller that did not present
+///   it: a script, or the model holding the daemon secret AR-11 found
+///   recoverable. Refused, as before. The person proves themselves here at no
+///   cost, and without the refusal a model could mint a private-capability chat
+///   with an extension set of its own choosing.
+/// * `NoKeyInstalled` — `biorouter serve` (SD-7) or a hand-run `biorouterd`.
+///   Nobody on this daemon can prove anything, so a refusal here refuses the
+///   person too, on every new chat, always — the 2026-09-10 QA's F1. Binds.
+///
+/// Only the configured default is exempt, and only at creation: `/agent/start`
+/// cannot name any other provider, and on a keyless daemon
+/// `update_agent_provider` refuses every private bind ([`raise_baseline`]), so a
+/// new chat there never reaches a private model the operator did not choose.
+fn new_chat_bind_needs_user(enforced: bool, tier: ProviderTier, proof: UserActionProof) -> bool {
+    enforced
+        && raise_needs_user_action(ProviderTier::Public, tier)
+        && match proof {
+            UserActionProof::Proven | UserActionProof::NoKeyInstalled => false,
+            UserActionProof::Unproven => true,
+        }
+}
+
+/// The capability `update_agent_provider` measures a raise from — SD-9's other
+/// half.
+///
+/// On a daemon that holds a user-action key it is the chat's live capability,
+/// as it always was. On one that holds none, no chat's private capability came
+/// from anything a person proved over HTTP: the only private binding such a
+/// daemon hands out through its routes is [`new_chat_bind_needs_user`]'s
+/// creation-time bind to the configured default. There is no private floor for
+/// a request to build on, so a bind to ANY private provider is measured from
+/// Public, and refused, since no proof can arrive. Without this, SD-9 would let
+/// a new chat on a private default be moved sideways, `Private -> Private`, to a
+/// private model nobody configured.
+fn raise_baseline(current: ProviderTier, proof: UserActionProof) -> ProviderTier {
+    match proof {
+        UserActionProof::NoKeyInstalled => ProviderTier::Public,
+        UserActionProof::Proven | UserActionProof::Unproven => current,
+    }
+}
+
 async fn bind_new_session_provider(
     state: &AppState,
     session: &Session,
@@ -355,10 +408,12 @@ async fn bind_new_session_provider(
             message: format!("Failed to configure the selected provider for the new chat: {error}"),
             status: StatusCode::BAD_REQUEST,
         })?;
-    if biorouter::privacy::privacy_tiers_enabled()
-        && raise_needs_user_action(ProviderTier::Public, provider.tier())
-        && !is_user_action(headers)
-    {
+    // DR-15's master opt-out, read inside the gate as every #56 surface does.
+    if new_chat_bind_needs_user(
+        biorouter::privacy::privacy_tiers_enabled(),
+        provider.tier(),
+        user_action_proof(headers),
+    ) {
         return Err(ErrorResponse {
             message: PrivacyRefusal::TierRaiseNeedsUser {
                 requested: provider_name,
@@ -619,7 +674,7 @@ pub struct RestartAgentResponse {
         (status = 200, description = "Agent started successfully", body = Session),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 409, description = "The selected private provider requires user-action proof", body = ErrorResponse),
+        (status = 409, description = "The configured provider is private and this daemon holds a user-action key, but the request carried no proof it came from the user (SD-9). A daemon with no user-action key binds its configured provider without one.", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -1297,7 +1352,9 @@ async fn get_callable_tool_count(
                                       a public model cannot be bound to a private chat \
                                       (body = PrivacyBarrierBody). DR-16: the bind raises this \
                                       chat's capability to Private and the request carried no \
-                                      proof it came from the user (body = plain text)",
+                                      proof it came from the user; on a daemon with no \
+                                      user-action key, any bind to a private model (SD-9) \
+                                      (body = plain text)",
                        body = PrivacyBarrierBody),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
@@ -1370,6 +1427,10 @@ async fn update_agent_provider(
     // DR-16 rejected. Sideways and downward binds are untouched for every
     // caller, which is what keeps Gate A's path, the CLI,
     // `restore_provider_from_session` and every apps-runtime bind working.
+    // The one exception is this route on a daemon with no user-action key,
+    // where a move onto a private model is measured from Public however the
+    // chat is bound today — `raise_baseline`, SD-9. The predicate itself is
+    // unchanged, and none of the in-process binds above passes through here.
     //
     // An unbound session reads as Public — `Agent::provider` errors when nothing
     // is bound (and when Gate B' refuses what is), and the conservative reading
@@ -1380,11 +1441,13 @@ async fn update_agent_provider(
         .await
         .map(|p| p.tier())
         .unwrap_or(ProviderTier::Public);
+    // SD-9's other half — see `raise_baseline`.
+    let baseline = raise_baseline(current, user_action_proof(&headers));
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
     // `CallCapability`: a provider raise over HTTP is not a tool call and has no
     // admitted capability to inherit.
     if biorouter::privacy::privacy_tiers_enabled()
-        && raise_needs_user_action(current, new_provider.tier())
+        && raise_needs_user_action(baseline, new_provider.tier())
         && !is_user_action(&headers)
     {
         return Err((
@@ -3116,6 +3179,52 @@ mod new_session_provider_binding_tests {
             .delete_session(&started.id)
             .await
             .unwrap();
+    }
+
+    /// SD-9, every proof verdict against both tiers. The keyless arm cannot be
+    /// reached through a route in this binary — the installed digest is a
+    /// process-global `OnceLock` and the test above installs one — so the route
+    /// half lives in `tests/new_chat_no_user_key.rs`, a binary that never does.
+    #[test]
+    fn only_a_daemon_that_can_check_a_proof_asks_a_new_chat_for_one() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        assert!(!new_chat_bind_needs_user(true, ProviderTier::Private, Proven));
+        assert!(new_chat_bind_needs_user(true, ProviderTier::Private, Unproven));
+        assert!(
+            !new_chat_bind_needs_user(true, ProviderTier::Private, NoKeyInstalled),
+            "a keyless daemon refusing its own configured default refuses every person, always"
+        );
+        for proof in [Proven, Unproven, NoKeyInstalled] {
+            // A public default raises nothing, for anyone.
+            assert!(!new_chat_bind_needs_user(true, ProviderTier::Public, proof));
+            // DR-15's master opt-out turns the gate off, not the question.
+            assert!(!new_chat_bind_needs_user(false, ProviderTier::Private, proof));
+        }
+    }
+
+    /// SD-9's other half: a keyless daemon measures every move onto a private
+    /// model from Public, so its exemption for the configured default cannot be
+    /// carried sideways to a private model nobody configured.
+    #[test]
+    fn a_keyless_daemon_has_no_private_floor_for_a_switch_to_build_on() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        for current in [ProviderTier::Private, ProviderTier::Public] {
+            assert_eq!(raise_baseline(current, NoKeyInstalled), ProviderTier::Public);
+            // A daemon that can check a proof keeps measuring from the live binding.
+            assert_eq!(raise_baseline(current, Proven), current);
+            assert_eq!(raise_baseline(current, Unproven), current);
+        }
+        // The composition `update_agent_provider` asks. Sideways onto a private
+        // model is a raise only where no proof can be checked.
+        let sideways = |proof| {
+            raise_needs_user_action(
+                raise_baseline(ProviderTier::Private, proof),
+                ProviderTier::Private,
+            )
+        };
+        assert!(sideways(NoKeyInstalled));
+        assert!(!sideways(Unproven));
+        assert!(!sideways(Proven));
     }
 }
 
