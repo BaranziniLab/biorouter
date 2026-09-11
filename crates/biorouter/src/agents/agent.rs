@@ -7163,8 +7163,16 @@ impl Agent {
             // for the same reason: the value the call is granted must be fixed
             // before the call runs, not re-read while it runs.
             let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+            // The turn's token, so a Stop releases an approval card nobody has
+            // answered rather than leaving the turn parked on it.
             let result = self
-                .handle_schedule_management(arguments, request_id.clone(), &session.id, cap)
+                .handle_schedule_management(
+                    arguments,
+                    request_id.clone(),
+                    &session.id,
+                    cap,
+                    cancellation_token.clone(),
+                )
                 .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,

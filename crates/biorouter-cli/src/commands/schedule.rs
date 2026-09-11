@@ -1,11 +1,33 @@
-use anyhow::{bail, Context, Result};
+//! `biorouter schedule …`.
+//!
+//! ## Which process makes the change
+//!
+//! A running daemon holds the schedule in memory and runs it; the file
+//! (`<data>/schedule.json`) is what every process shares. So a change goes to
+//! the DAEMON whenever this terminal can reach one — the same way `session send`
+//! finds it: `BIOROUTER_SERVER__SECRET_KEY` and `BIOROUTER_PORT` from this
+//! shell, and a daemon answering `/status` there. The daemon then registers,
+//! lists and fires the job at once.
+//!
+//! Only when no daemon can be reached does the command write the file with a
+//! `Scheduler` of its own — and then it says so, and says when the change will
+//! take effect, instead of the "added" it used to print for a job the running
+//! app would not see until a restart (QA 2026-09-10, F2). A running daemon now
+//! notices such a write itself (`Scheduler::spawn_file_watcher`). An agent's
+//! shell is always on this path: the daemon's secret is stripped from every tool
+//! child's environment (issue #57), and that is deliberate.
+
+use anyhow::{anyhow, bail, Context, Result};
 use biorouter::scheduler::{
     get_default_scheduled_workflows_dir, get_default_scheduler_storage_path, ScheduledJob,
-    Scheduler, SchedulerError, RUN_CANCELLED_MARKER,
+    Scheduler, SchedulerError, EXTERNAL_CHANGE_PICKUP, RUN_CANCELLED_MARKER,
 };
 use biorouter::session::SessionManager;
 use std::path::Path;
 use std::sync::Arc;
+
+use super::apps::{configured_port, daemon_ok, DAEMON_HOST};
+use super::session_watch::{daemon_auth, daemon_json_request, DaemonAuth};
 
 fn validate_cron_expression(cron: &str) -> Result<()> {
     // Basic validation and helpful suggestions
@@ -65,19 +87,311 @@ fn validate_cron_expression(cron: &str) -> Result<()> {
     Ok(())
 }
 
+/// Where a `biorouter schedule` change goes.
+pub(crate) enum Reach {
+    /// A running daemon answered on this terminal's port with this terminal's
+    /// key.
+    Daemon { auth: DaemonAuth, port: u16 },
+    /// No daemon could be reached from here; `why` says why.
+    File { why: String },
+}
+
+impl Reach {
+    /// Decided once per command, from this shell's environment.
+    async fn from_environment() -> Self {
+        Self::probe(daemon_auth().await.ok(), configured_port()).await
+    }
+
+    /// The decision, with its inputs passed in rather than read from the
+    /// process environment — so a test can aim it at a fake daemon without
+    /// setting `BIOROUTER_PORT`, which other tests in this binary read.
+    pub(crate) async fn probe(auth: Option<DaemonAuth>, port: u16) -> Self {
+        let Some(auth) = auth else {
+            return Reach::File {
+                why: "BIOROUTER_SERVER__SECRET_KEY is not set".to_string(),
+            };
+        };
+        if daemon_ok(DAEMON_HOST, port).await {
+            Reach::Daemon { auth, port }
+        } else {
+            Reach::File {
+                why: format!("no daemon answered on {DAEMON_HOST}:{port}"),
+            }
+        }
+    }
+}
+
+/// The schedule file this terminal writes when no daemon can be reached, and
+/// the session store a `Scheduler` over it needs.
+pub(crate) struct LocalStore {
+    storage_path: std::path::PathBuf,
+    sessions: Arc<SessionManager>,
+}
+
+impl LocalStore {
+    fn for_this_user() -> Result<Self> {
+        Ok(Self {
+            storage_path: get_default_scheduler_storage_path()
+                .context("Failed to get scheduler storage path")?,
+            sessions: Arc::new(SessionManager::instance()),
+        })
+    }
+
+    async fn scheduler(&self) -> Result<Arc<Scheduler>> {
+        Scheduler::new(self.storage_path.clone(), Arc::clone(&self.sessions))
+            .await
+            .context("Failed to initialize scheduler")
+    }
+
+    /// The store under `BIOROUTER_PATH_ROOT`, without the process-wide
+    /// `SessionManager::instance()` — which resolves its path once per process,
+    /// so a test that initialised it under its own temp root would hand that
+    /// (soon deleted) root to every later test in the binary.
+    #[cfg(test)]
+    fn at_data_dir(data_dir: &Path) -> Self {
+        Self {
+            storage_path: data_dir.join("schedule.json"),
+            sessions: Arc::new(SessionManager::new(data_dir.to_path_buf())),
+        }
+    }
+}
+
+/// How long a schedule request to the daemon may take. Every one of them is a
+/// small read or write; `run_now` is the exception and passes no deadline.
+const REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a change made straight in the schedule file owes the user: why the
+/// daemon was not used, and when the change actually takes effect.
+///
+/// The pickup time is the daemon's own promise
+/// ([`EXTERNAL_CHANGE_PICKUP`]), not a number written here, so the sentence
+/// cannot drift from what the daemon does.
+fn written_to_the_file(why: &str, done: &str, pickup: &str, tail: &str) -> String {
+    format!(
+        "No running Biorouter could be reached from this terminal ({why}), so {done}. A \
+         Biorouter that is already running — the desktop app included — {pickup} {} \
+         seconds{tail}",
+        EXTERNAL_CHANGE_PICKUP.as_secs()
+    )
+}
+
+/// A daemon that refused this terminal's key. Reported, never worked around:
+/// the user pointed this terminal at that daemon, and writing its file behind
+/// its back would be a second, silent answer to a question it already refused.
+fn key_refused(port: u16, consequence: &str) -> anyhow::Error {
+    anyhow!(
+        "The Biorouter on {DAEMON_HOST}:{port} refused this terminal's key (HTTP 401). \
+         {consequence}. BIOROUTER_SERVER__SECRET_KEY must be the key that daemon was started \
+         with."
+    )
+}
+
+/// The reason in a daemon's error body: `{"message": …}` when it sent one, the
+/// body itself otherwise.
+fn daemon_message(body: &str) -> String {
+    let body = body.trim();
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            if body.is_empty() {
+                "no reason given".to_string()
+            } else {
+                body.to_string()
+            }
+        })
+}
+
+fn stopped_message(schedule_id: &str) -> String {
+    format!(
+        "Schedule '{}' was stopped before it finished, so no work was recorded and its last-run \
+         cursor was not advanced.",
+        schedule_id
+    )
+}
+
+/// `schedule add` through the running daemon, which copies the workflow, parses
+/// the cron and registers the job itself — so its cron engine, its list and the
+/// file agree the moment it answers.
+async fn add_through_daemon(
+    auth: &DaemonAuth,
+    port: u16,
+    schedule_id: &str,
+    cron: &str,
+    workflow_source: &str,
+) -> Result<String> {
+    // The daemon resolves a relative path against ITS working directory.
+    let source = std::path::absolute(workflow_source)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| workflow_source.to_string());
+    let body = serde_json::json!({
+        "id": schedule_id,
+        "workflow_source": source,
+        "cron": cron,
+    })
+    .to_string();
+    let (status, answer) = daemon_json_request(
+        "POST",
+        "/schedule/create",
+        Some(&body),
+        auth,
+        port,
+        Some(REQUEST_DEADLINE),
+    )
+    .await?;
+    match status {
+        200 => Ok(format!(
+            "Scheduled job '{schedule_id}' added to the running Biorouter on {DAEMON_HOST}:{port}; \
+             it is live now.\n  cron: {cron}\n  workflow: {source} (the daemon keeps its own copy)"
+        )),
+        401 => Err(key_refused(port, "Nothing was scheduled")),
+        409 => bail!("Error: Job with ID '{}' already exists.", schedule_id),
+        _ => bail!(
+            "The running Biorouter on {DAEMON_HOST}:{port} did not add '{schedule_id}' (HTTP \
+             {status}): {}. Nothing was scheduled.",
+            daemon_message(&answer)
+        ),
+    }
+}
+
+async fn remove_through_daemon(auth: &DaemonAuth, port: u16, schedule_id: &str) -> Result<String> {
+    let path = format!("/schedule/delete/{}", urlencoding::encode(schedule_id));
+    let (status, answer) =
+        daemon_json_request("DELETE", &path, None, auth, port, Some(REQUEST_DEADLINE)).await?;
+    match status {
+        200 | 204 => Ok(format!(
+            "Scheduled job '{schedule_id}' removed from the running Biorouter on \
+             {DAEMON_HOST}:{port}; it will not run again."
+        )),
+        401 => Err(key_refused(port, "Nothing was removed")),
+        404 => bail!("Error: Job with ID '{}' not found.", schedule_id),
+        _ => bail!(
+            "The running Biorouter on {DAEMON_HOST}:{port} did not remove '{schedule_id}' (HTTP \
+             {status}): {}. Nothing was removed.",
+            daemon_message(&answer)
+        ),
+    }
+}
+
+async fn list_through_daemon(auth: &DaemonAuth, port: u16) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct Listing {
+        jobs: Vec<ScheduledJob>,
+    }
+    let (status, answer) = daemon_json_request(
+        "GET",
+        "/schedule/list",
+        None,
+        auth,
+        port,
+        Some(REQUEST_DEADLINE),
+    )
+    .await?;
+    match status {
+        200 => {
+            let listing: Listing = serde_json::from_str(answer.trim())
+                .context("the daemon's schedule list could not be read")?;
+            Ok(render_schedule_list(
+                &format!("Scheduled Jobs (from the running Biorouter on {DAEMON_HOST}:{port}):"),
+                listing.jobs,
+            ))
+        }
+        401 => Err(key_refused(port, "The schedules could not be listed")),
+        _ => bail!(
+            "The running Biorouter on {DAEMON_HOST}:{port} did not list its schedules (HTTP \
+             {status}): {}",
+            daemon_message(&answer)
+        ),
+    }
+}
+
+/// `run_now` in the daemon, where the desktop's Stop button can reach the run.
+/// No deadline: the route answers when the run ends.
+async fn run_now_through_daemon(auth: &DaemonAuth, port: u16, schedule_id: &str) -> Result<String> {
+    let path = format!("/schedule/{}/run_now", urlencoding::encode(schedule_id));
+    eprintln!(
+        "Running '{schedule_id}' in the Biorouter on {DAEMON_HOST}:{port}. Stopping this command \
+         does not stop the run; stop it from the app."
+    );
+    let (status, answer) = daemon_json_request("POST", &path, None, auth, port, None).await?;
+    match status {
+        200 => {
+            let session_id = serde_json::from_str::<serde_json::Value>(answer.trim())
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("session_id")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                })
+                .ok_or_else(|| {
+                    anyhow!("the daemon answered run_now with a body this client could not read")
+                })?;
+            // The sentinel `ScheduleDetailView.tsx` branches on too.
+            if session_id == "CANCELLED" {
+                Ok(stopped_message(schedule_id))
+            } else {
+                Ok(format!(
+                    "Successfully triggered schedule '{schedule_id}' on the running Biorouter on \
+                     {DAEMON_HOST}:{port}. New session ID: {session_id}"
+                ))
+            }
+        }
+        401 => Err(key_refused(port, "Nothing was run")),
+        404 => bail!("Error: Job with ID '{}' not found.", schedule_id),
+        _ => bail!(
+            "Failed to run schedule '{}' now: {}",
+            schedule_id,
+            daemon_message(&answer)
+        ),
+    }
+}
+
 pub async fn handle_schedule_add(
     schedule_id: String,
     cron: String,
     workflow_source_arg: String, // This is expected to be a file path by the Scheduler
 ) -> Result<()> {
     validate_cron_expression(&cron)?;
+    let report = add_schedule(
+        Reach::from_environment().await,
+        LocalStore::for_this_user,
+        &schedule_id,
+        &cron,
+        &workflow_source_arg,
+    )
+    .await?;
+    println!("{report}");
+    Ok(())
+}
+
+/// `schedule add`, minus the printing: what it did, in the words the terminal
+/// prints, or why it could not.
+pub(crate) async fn add_schedule(
+    reach: Reach,
+    local: impl FnOnce() -> Result<LocalStore>,
+    schedule_id: &str,
+    cron: &str,
+    workflow_source_arg: &str,
+) -> Result<String> {
+    let why = match reach {
+        Reach::Daemon { auth, port } => {
+            return add_through_daemon(&auth, port, schedule_id, cron, workflow_source_arg).await
+        }
+        Reach::File { why } => why,
+    };
 
     // The Scheduler's add_scheduled_job will handle copying the workflow from workflow_source_arg
     // to its internal storage and validating the path.
     let job = ScheduledJob {
-        id: schedule_id.clone(),
-        source: workflow_source_arg.clone(), // Pass the original user-provided path
-        cron: cron.clone(),
+        id: schedule_id.to_string(),
+        source: workflow_source_arg.to_string(), // Pass the original user-provided path
+        cron: cron.to_string(),
         last_run: None,
         currently_running: false,
         paused: false,
@@ -91,12 +405,8 @@ pub async fn handle_schedule_add(
         owns_source: None,
     };
 
-    let scheduler_storage_path =
-        get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
-    let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
-        .await
-        .context("Failed to initialize scheduler")?;
+    let store = local()?;
+    let scheduler = store.scheduler().await?;
 
     match scheduler.add_scheduled_job(job, true).await {
         Ok(_) => {
@@ -104,17 +414,29 @@ pub async fn handle_schedule_add(
             // We can reconstruct the likely path for display if needed, or adjust success message.
             let scheduled_workflows_dir = get_default_scheduled_workflows_dir()
                 .unwrap_or_else(|_| Path::new("./.biorouter_scheduled_workflows").to_path_buf()); // Fallback for display
-            let extension = Path::new(&workflow_source_arg)
+            let extension = Path::new(workflow_source_arg)
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("yaml");
             let final_workflow_path =
                 scheduled_workflows_dir.join(format!("{}.{}", schedule_id, extension));
 
-            println!("Scheduled job '{}' added.", schedule_id);
-            println!("  cron: {}", cron);
-            println!("  workflow: {}", final_workflow_path.display());
-            Ok(())
+            // ⚠ Not "added". The shipped command printed exactly that for a job
+            // a running app would not see until it restarted (QA 2026-09-10,
+            // F2). What the user is owed is when it will actually run.
+            Ok(format!(
+                "Scheduled job '{}' written to {}.\n  cron: {}\n  workflow: {}\n{}",
+                schedule_id,
+                store.storage_path.display(),
+                cron,
+                final_workflow_path.display(),
+                written_to_the_file(
+                    &why,
+                    "the job was written to the schedule file directly",
+                    "picks it up from that file within",
+                    "; if none is running, it first runs the next time Biorouter starts."
+                )
+            ))
         }
         Err(e) => {
             // No local file to clean up by the CLI in this revised flow.
@@ -137,23 +459,34 @@ pub async fn handle_schedule_add(
 }
 
 pub async fn handle_schedule_list() -> Result<()> {
-    let scheduler_storage_path =
-        get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
-    let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
-        .await
-        .context("Failed to initialize scheduler")?;
-
-    let jobs = scheduler.list_scheduled_jobs().await;
-    if jobs.is_empty() {
-        println!("No scheduled jobs found.");
-    } else {
-        println!("Scheduled Jobs:");
-        for job in jobs {
-            println!("{}", render_schedule_entry(&job));
-        }
-    }
+    let report = list_schedules(Reach::from_environment().await, LocalStore::for_this_user).await?;
+    println!("{report}");
     Ok(())
+}
+
+/// `schedule list`, minus the printing. From the daemon when one is reachable —
+/// what it lists is what will fire — and from the file otherwise.
+pub(crate) async fn list_schedules(
+    reach: Reach,
+    local: impl FnOnce() -> Result<LocalStore>,
+) -> Result<String> {
+    if let Reach::Daemon { auth, port } = reach {
+        return list_through_daemon(&auth, port).await;
+    }
+    let scheduler = local()?.scheduler().await?;
+    Ok(render_schedule_list(
+        "Scheduled Jobs:",
+        scheduler.list_scheduled_jobs().await,
+    ))
+}
+
+fn render_schedule_list(heading: &str, jobs: Vec<ScheduledJob>) -> String {
+    if jobs.is_empty() {
+        return "No scheduled jobs found.".to_string();
+    }
+    let mut lines = vec![heading.to_string()];
+    lines.extend(jobs.iter().map(render_schedule_entry));
+    lines.join("\n")
 }
 
 /// One schedule's block in `biorouter schedule list`.
@@ -192,21 +525,43 @@ fn render_schedule_entry(job: &ScheduledJob) -> String {
 }
 
 pub async fn handle_schedule_remove(schedule_id: String) -> Result<()> {
-    let scheduler_storage_path =
-        get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
-    let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
-        .await
-        .context("Failed to initialize scheduler")?;
+    let report = remove_schedule(
+        Reach::from_environment().await,
+        LocalStore::for_this_user,
+        &schedule_id,
+    )
+    .await?;
+    println!("{report}");
+    Ok(())
+}
 
-    match scheduler.remove_scheduled_job(&schedule_id, true).await {
-        Ok(_) => {
-            println!(
-                "Scheduled job '{}' and its associated workflow removed.",
-                schedule_id
-            );
-            Ok(())
+/// `schedule remove`, minus the printing.
+pub(crate) async fn remove_schedule(
+    reach: Reach,
+    local: impl FnOnce() -> Result<LocalStore>,
+    schedule_id: &str,
+) -> Result<String> {
+    let why = match reach {
+        Reach::Daemon { auth, port } => {
+            return remove_through_daemon(&auth, port, schedule_id).await
         }
+        Reach::File { why } => why,
+    };
+    let store = local()?;
+    let scheduler = store.scheduler().await?;
+
+    match scheduler.remove_scheduled_job(schedule_id, true).await {
+        Ok(_) => Ok(format!(
+            "Scheduled job '{}' and its associated workflow removed from {}.\n{}",
+            schedule_id,
+            store.storage_path.display(),
+            written_to_the_file(
+                &why,
+                "the change was made in the schedule file directly",
+                "stops scheduling it within",
+                "; a run it has already started finishes first."
+            )
+        )),
         Err(e) => match e {
             SchedulerError::JobNotFound(job_id) => {
                 bail!("Error: Job with ID '{}' not found.", job_id);
@@ -257,18 +612,35 @@ pub async fn handle_schedule_sessions(schedule_id: String, limit: Option<usize>)
 }
 
 pub async fn handle_schedule_run_now(schedule_id: String) -> Result<()> {
-    let scheduler_storage_path =
-        get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
-    let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
-        .await
-        .context("Failed to initialize scheduler")?;
-
-    println!(
-        "{}",
-        run_now_message(&schedule_id, scheduler.run_now(&schedule_id).await)?
-    );
+    let report = run_schedule_now(
+        Reach::from_environment().await,
+        LocalStore::for_this_user,
+        &schedule_id,
+    )
+    .await?;
+    println!("{report}");
     Ok(())
+}
+
+/// `schedule run-now`, minus the printing. In the daemon when one is reachable;
+/// otherwise in this terminal's own process, as it always ran.
+pub(crate) async fn run_schedule_now(
+    reach: Reach,
+    local: impl FnOnce() -> Result<LocalStore>,
+    schedule_id: &str,
+) -> Result<String> {
+    let why = match reach {
+        Reach::Daemon { auth, port } => {
+            return run_now_through_daemon(&auth, port, schedule_id).await
+        }
+        Reach::File { why } => why,
+    };
+    eprintln!(
+        "No running Biorouter could be reached from this terminal ({why}), so '{schedule_id}' \
+         runs here, in this terminal."
+    );
+    let scheduler = local()?.scheduler().await?;
+    run_now_message(schedule_id, scheduler.run_now(schedule_id).await)
 }
 
 /// What the terminal prints for a finished `schedule run-now`, or the error it
@@ -295,11 +667,7 @@ fn run_now_message(schedule_id: &str, result: Result<String, SchedulerError>) ->
         Err(SchedulerError::AnyhowError(ref err))
             if err.to_string().contains(RUN_CANCELLED_MARKER) =>
         {
-            Ok(format!(
-                "Schedule '{}' was stopped before it finished, so no work was recorded and its \
-                 last-run cursor was not advanced.",
-                schedule_id
-            ))
+            Ok(stopped_message(schedule_id))
         }
         // `{}` and not `{:?}`: `SchedulerError`'s `Display` is the whole point of
         // the carefully-worded messages behind it — the privacy barrier's
@@ -503,5 +871,341 @@ mod tests {
         )
         .expect_err("a missing schedule is an error exit");
         assert!(format!("{error}").contains("not found"), "{error}");
+    }
+
+    // -- F2: reaching the daemon ------------------------------------------------
+
+    /// A daemon that answers `/status` the way `biorouterd` does and replies to
+    /// every other request with `reply`, recording each one it was sent.
+    struct FakeDaemon {
+        port: u16,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl FakeDaemon {
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    async fn fake_daemon(reply: fn(&str) -> (u16, String)) -> FakeDaemon {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind((DAEMON_HOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&requests);
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let seen = Arc::clone(&seen);
+                tokio::spawn(async move {
+                    let request = read_request(&mut socket).await;
+                    let (status, body) = if request.starts_with("GET /status ") {
+                        (200, "ok".to_string())
+                    } else {
+                        seen.lock().unwrap().push(request.clone());
+                        reply(&request)
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status} Fake\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        FakeDaemon { port, requests }
+    }
+
+    /// One request off the socket: its head, then as many body bytes as its
+    /// `Content-Length` promises.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = socket.read(&mut chunk).await.unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
+            if let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if raw.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    /// A loopback port nothing is listening on.
+    async fn unused_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind((DAEMON_HOST, 0))
+            .await
+            .unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    fn body_of(request: &str) -> serde_json::Value {
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap_or_default())
+            .unwrap_or_else(|e| panic!("the request body is not JSON ({e}): {request}"))
+    }
+
+    fn local_store_is_off_limits() -> Result<LocalStore> {
+        panic!(
+            "a daemon was reachable, so this terminal must not write the schedule file behind \
+             its back — the daemon owns it"
+        )
+    }
+
+    const CREATED: &str =
+        r#"{"id":"qaf-probe","source":"/tmp/probe.yaml","cron":"0 2 * * *","last_run":null}"#;
+
+    /// QA 2026-09-10, F2, the half the CLI owns: `schedule add` built its own
+    /// `Scheduler` over the file even when a daemon was running and reachable,
+    /// so the daemon never registered the job. When a daemon answers on this
+    /// terminal's port with this terminal's key, it makes the change itself —
+    /// the one way its cron engine, its list and the file agree at once — and
+    /// this terminal never touches the file.
+    ///
+    /// Fails the shipped command, which wrote the file and sent nothing.
+    #[tokio::test]
+    async fn a_schedule_added_while_a_daemon_runs_is_registered_with_that_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let workflow = dir.path().join("probe.yaml");
+        std::fs::write(
+            &workflow,
+            "title: Probe\ndescription: d\nprompt: echo probe\n",
+        )
+        .unwrap();
+        let daemon = fake_daemon(|request| {
+            if request.starts_with("POST /schedule/create ") {
+                (200, CREATED.to_string())
+            } else {
+                (404, "{}".to_string())
+            }
+        })
+        .await;
+
+        let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
+        assert!(
+            matches!(reach, Reach::Daemon { .. }),
+            "a daemon that answers /status is reachable"
+        );
+        let report = add_schedule(
+            reach,
+            local_store_is_off_limits,
+            "qaf-probe",
+            "0 2 * * *",
+            &workflow.to_string_lossy(),
+        )
+        .await
+        .expect("the daemon accepted it");
+
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        let request = &requests[0];
+        assert!(
+            request.starts_with("POST /schedule/create HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(request.contains("X-Secret-Key: s3cret\r\n"), "{request}");
+        let body = body_of(request);
+        assert_eq!(body["id"], "qaf-probe");
+        assert_eq!(body["cron"], "0 2 * * *");
+        assert_eq!(
+            body["workflow_source"],
+            serde_json::Value::String(workflow.to_string_lossy().into_owned()),
+            "the daemon runs in another directory, so the path it is given must be absolute"
+        );
+        assert!(report.contains("running Biorouter"), "{report}");
+        assert!(report.contains(&daemon.port.to_string()), "{report}");
+    }
+
+    /// The daemon's refusal is the answer. A key the daemon rejects is a
+    /// configuration mistake to report — not a reason to go round the daemon and
+    /// write its file anyway.
+    #[tokio::test]
+    async fn a_daemon_that_refuses_this_terminals_key_is_reported_not_worked_around() {
+        let dir = tempfile::tempdir().unwrap();
+        let workflow = dir.path().join("probe.yaml");
+        std::fs::write(
+            &workflow,
+            "title: Probe\ndescription: d\nprompt: echo probe\n",
+        )
+        .unwrap();
+        let daemon = fake_daemon(|_| (401, String::new())).await;
+
+        let reach = Reach::probe(Some(DaemonAuth::for_test("wrong", "")), daemon.port).await;
+        let error = add_schedule(
+            reach,
+            local_store_is_off_limits,
+            "qaf-probe",
+            "0 2 * * *",
+            &workflow.to_string_lossy(),
+        )
+        .await
+        .expect_err("a refused key is not a scheduled job");
+        let text = format!("{error:#}");
+        assert!(text.contains("401"), "{text}");
+        assert!(text.contains("BIOROUTER_SERVER__SECRET_KEY"), "{text}");
+        assert!(text.contains("Nothing was scheduled"), "{text}");
+    }
+
+    /// With no daemon to reach, the job goes into the file — and the terminal
+    /// says what that means rather than "added". The shipped command printed
+    /// `Scheduled job '…' added.` and nothing else, for a job the running app
+    /// would not see until it restarted.
+    ///
+    /// Fails the shipped command: its report says nothing about when the job
+    /// will run.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_schedule_added_with_no_daemon_says_exactly_when_it_will_run() {
+        let root = tempfile::tempdir().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(root.path().to_string_lossy().into_owned()),
+        )]);
+        let data_dir = root.path().join("data");
+        let workflow = root.path().join("probe.yaml");
+        std::fs::write(
+            &workflow,
+            "title: Probe\ndescription: d\nprompt: echo probe\n",
+        )
+        .unwrap();
+        let port = unused_port().await;
+
+        let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), port).await;
+        let report = add_schedule(
+            reach,
+            || Ok(LocalStore::at_data_dir(&data_dir)),
+            "qaf-probe",
+            "0 2 * * *",
+            &workflow.to_string_lossy(),
+        )
+        .await
+        .expect("with no daemon the job still goes into the file");
+
+        let on_disk: Vec<ScheduledJob> =
+            serde_json::from_str(&std::fs::read_to_string(data_dir.join("schedule.json")).unwrap())
+                .unwrap();
+        assert_eq!(on_disk.len(), 1);
+        assert_eq!(on_disk[0].id, "qaf-probe");
+
+        assert!(
+            report.contains(&format!("no daemon answered on {DAEMON_HOST}:{port}")),
+            "the report must say why the daemon was not used: {report}"
+        );
+        assert!(
+            report.contains("picks it up from that file within"),
+            "the report must say when a running Biorouter will see it: {report}"
+        );
+        assert!(
+            report.contains("next time Biorouter starts"),
+            "the report must say what happens when none is running: {report}"
+        );
+    }
+
+    /// With no key in this shell there is nothing to probe with, and the report
+    /// names that — the case an agent's shell is always in, since the daemon's
+    /// secret is stripped from every tool's environment (issue #57).
+    #[tokio::test]
+    async fn without_a_key_there_is_no_daemon_to_reach_and_the_report_says_so() {
+        let daemon = fake_daemon(|_| (500, String::new())).await;
+        match Reach::probe(None, daemon.port).await {
+            Reach::File { why } => assert!(why.contains("BIOROUTER_SERVER__SECRET_KEY"), "{why}"),
+            Reach::Daemon { .. } => panic!("without a key the daemon cannot be asked anything"),
+        }
+        assert!(
+            daemon.requests().is_empty(),
+            "nothing may be sent without a key"
+        );
+    }
+
+    /// `schedule remove` reaches the daemon the same way, so the job stops
+    /// being listed and stops firing at once.
+    ///
+    /// Fails the shipped command, which removed it from the file only.
+    #[tokio::test]
+    async fn a_schedule_removed_while_a_daemon_runs_is_removed_by_that_daemon() {
+        let daemon = fake_daemon(|request| {
+            if request.starts_with("DELETE /schedule/delete/qaf-probe ") {
+                (204, String::new())
+            } else {
+                (404, "{}".to_string())
+            }
+        })
+        .await;
+        let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
+        let report = remove_schedule(reach, local_store_is_off_limits, "qaf-probe")
+            .await
+            .expect("the daemon removed it");
+        assert_eq!(daemon.requests().len(), 1, "{:?}", daemon.requests());
+        assert!(report.contains("running Biorouter"), "{report}");
+    }
+
+    /// A delete the daemon reports as 404 is "not found", in the same words the
+    /// file path has always used.
+    #[tokio::test]
+    async fn a_schedule_the_daemon_does_not_have_is_not_found() {
+        let daemon = fake_daemon(|_| (404, String::new())).await;
+        let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
+        let error = remove_schedule(reach, local_store_is_off_limits, "nightly")
+            .await
+            .expect_err("404 is not a removal");
+        assert!(format!("{error}").contains("not found"), "{error}");
+    }
+
+    /// `schedule list` asks the daemon too: what it lists is what will fire.
+    ///
+    /// Fails the shipped command, which read the file with a scheduler of its
+    /// own.
+    #[tokio::test]
+    async fn schedules_are_listed_by_the_daemon_that_runs_them() {
+        let daemon = fake_daemon(|request| {
+            if request.starts_with("GET /schedule/list ") {
+                (200, format!(r#"{{"jobs":[{CREATED}]}}"#))
+            } else {
+                (404, "{}".to_string())
+            }
+        })
+        .await;
+        let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
+        let listing = list_schedules(reach, local_store_is_off_limits)
+            .await
+            .expect("the daemon listed them");
+        assert!(listing.contains("qaf-probe"), "{listing}");
+        assert!(listing.contains("running Biorouter"), "{listing}");
+    }
+
+    /// `schedule run-now` runs the job IN the daemon when there is one — where
+    /// the desktop's Stop button can reach it — rather than in this terminal.
+    ///
+    /// Fails the shipped command, which ran it here.
+    #[tokio::test]
+    async fn run_now_runs_in_the_daemon_that_holds_the_schedule() {
+        let daemon = fake_daemon(|request| {
+            if request.starts_with("POST /schedule/qaf-probe/run_now ") {
+                (200, r#"{"session_id":"20260911_42"}"#.to_string())
+            } else {
+                (404, "{}".to_string())
+            }
+        })
+        .await;
+        let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
+        let report = run_schedule_now(reach, local_store_is_off_limits, "qaf-probe")
+            .await
+            .expect("the daemon ran it");
+        assert!(report.contains("20260911_42"), "{report}");
     }
 }

@@ -695,6 +695,16 @@ biorouter schedule run-now --schedule-id daily-report
 biorouter schedule remove --schedule-id daily-report
 ```
 
+**Which process makes the change.** `add`, `remove`, `list` and `run-now` go to a running daemon when this terminal can reach one. They find it the way `session send` does: `BIOROUTER_SERVER__SECRET_KEY` and `BIOROUTER_PORT` (default 3000) from this shell, and a daemon answering there. That daemon then makes the change itself, so the schedule is live, listed and deletable in the app at once, and `run-now` runs inside the daemon, where the app's Stop button can reach it. A daemon that rejects the key is reported as an error. The command does not fall back to editing the file behind the daemon's back.
+
+When no daemon can be reached, the command writes `schedule.json` in Biorouter's data directory itself and says so. For example:
+
+```text
+No running Biorouter could be reached from this terminal (no daemon answered on 127.0.0.1:3000), so the job was written to the schedule file directly. A Biorouter that is already running — the desktop app included — picks it up from that file within 60 seconds; if none is running, it first runs the next time Biorouter starts.
+```
+
+This is always the case next to the desktop app. The app's own daemon uses a random port and a new secret every launch, so a terminal cannot reach it. It is also always the case in an agent's shell, because the daemon's secret is never passed to a tool. A running Biorouter polls the file and usually picks up the change within a couple of seconds, but the promise is 60. `sessions` reads the session store directly and never needs a daemon.
+
 ### mcp
 
 Run an enabled MCP server specified by `<name>` (e.g. `'Google Drive'`). MCP is the Model Context Protocol, the standard biorouter extensions speak.
