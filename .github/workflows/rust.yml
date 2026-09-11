@@ -142,12 +142,18 @@ jobs:
       # matrix with NO Rust cache (see the cache-on-failure note below), so it
       # pays a cold full-workspace build every run and its debug symbols are
       # what would push the repository over GitHub's 10 GiB cache ceiling once
-      # it finally saves one. Ubuntu is deliberately LEFT OUT — it has a warm
-      # 1.7 GiB cache today and adding the variable would change rust-cache's
-      # CARGO_* environment hash, throwing that cache away to fix a problem
-      # ubuntu does not have.
+      # it finally saves one.
+      #
+      # ⚠ Ubuntu was left out while it had a warm 1.7 GiB cache and no problem
+      # for this to fix. It has one now: the integration-binary step below
+      # links ~117 more executables, and on Linux every one of them EMBEDS the
+      # DWARF of everything it links rather than leaving it in a side file.
+      # Measured 2026-09-11 (run 34628149105) with debug=2: that build took the
+      # runner from 70 GB free to 1.4 GB and died with `No space left on
+      # device` before it finished. The variable changes rust-cache's key, so
+      # ubuntu builds cold (measured: lib + bins 3.7 -> 7.5 min) until main's
+      # first run with it saves the new cache. A one-time price.
       - name: Reduce CI test debuginfo
-        if: matrix.os == 'windows-latest' || matrix.os == 'macos-latest'
         shell: bash
         run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
 
@@ -213,9 +219,12 @@ jobs:
           sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
 
       # Start narrow (lib + bins on every OS) so the matrix is green on arrival;
-      # widen as it proves stable. This selector leaves out `tests/`, so the
-      # cassette- and key-dependent integration suites (BIOROUTER_RECORD_MCP
-      # fixtures, provider credentials the runners do not have) never run here.
+      # widen as it proves stable. This selector leaves out `tests/`; those
+      # binaries run in their own step below, ubuntu only, with no network.
+      # (They were long assumed to need cassettes and credentials the runners
+      # lack. Measured, they do not: `mcp_integration_test` REPLAYS its
+      # cassettes offline and only records under BIOROUTER_RECORD_MCP, and the
+      # tests that need a real provider or vendor CLI are `#[ignore]`d.)
       #
       # ⚠ It does NOT follow that nothing in this step touches the network. The
       # selector filters by TARGET, not by behaviour, and a test that lives in
@@ -272,10 +281,96 @@ jobs:
       # The cross-platform-sensitive suites BR-70 exists to prove, run on every
       # OS they apply to. The workspace step above already runs the sandbox,
       # developer shell/background and security unit tests through their library
-      # targets. Only the sandbox integration target sits outside --lib/--bins;
+      # targets. The sandbox's integration target is the one `tests/` binary
+      # that runs on every OS (the rest follow in the next step, ubuntu only);
       # name it directly rather than executing those unit tests a second time.
       - name: cargo test (sandbox integration)
         run: cargo test -p biorouter-sandbox --test sandbox --locked --no-fail-fast
+
+      # ── Every other `tests/*.rs` binary, bar a table of exceptions ─────────
+      #
+      # Until this step no workflow ran them. The lib + bins selector above
+      # leaves `tests/` out, and `clippy --all-targets` below only COMPILES
+      # them, which says nothing about whether they pass. So the guards
+      # CLAUDE.md treats as load-bearing (the privacy master-switch binaries,
+      # the keyless-daemon binaries, `privacy_ar15_is_retired`,
+      # `every_test_binary_is_sandboxed`) ran only when someone remembered to.
+      # The cost is on record: from eb594ded until PR #229,
+      # `the_documented_closure_is_the_one_the_code_performs` read the wrong
+      # function, and would have stayed green with the AR-15 gate deleted.
+      #
+      # ⚠ The table is an EXCLUSION list on purpose. An allowlist would rebuild
+      # the gap one file at a time: a new binary would run only if its author
+      # remembered to add it. This way it runs the day it lands, and one that
+      # cannot run hermetically gets a line saying why. A line naming a target
+      # that no longer exists fails the step, so the table cannot outlive what
+      # it excuses.
+      #
+      # ⚠ Never add `--ignored` or `--include-ignored`. The live tests (real
+      # providers, the vendor CLIs, llama.cpp downloads, GitHub fetches) are
+      # `#[ignore]`d inside binaries whose other tests belong here, so the
+      # binary stays in and its live tests stay out.
+      #
+      # ⚠ No network, enforced rather than assumed. The tests run in a network
+      # namespace holding nothing but loopback, so a test that dials out fails
+      # at once with a connection error instead of passing whenever the third
+      # party is up (the lapstone note above is what that looks like).
+      # `setpriv` drops back to the runner user once loopback is up: as root,
+      # every "permission denied" assertion would pass for the wrong reason.
+      # Servers on 127.0.0.1 and ::1 work as usual.
+      #
+      # The table's second entry is the instructive one. `ui_example_apps`
+      # bundles each example with `npx --yes esbuild` when no local esbuild
+      # exists, and this job installs none. Offline it does NOT fail: measured,
+      # npx sits on the unreachable registry until the bundler's 60 s timeout,
+      # then the test passes on the type-stripper fallback without esbuild
+      # ever running. That is a minute spent proving nothing, and a pass that
+      # turns into a failure the day npm's retries give up before the timeout.
+      #
+      # Measured 2026-09-11, one binary at a time on hosted runners (scratch
+      # runs 34628149105 and 34629544896). ubuntu, inside the namespace: all
+      # 119 binaries green, 687 tests passed, 0 failed, 49 ignored. Building
+      # them took 135 s on top of the lib + bins build (14.5 GiB of
+      # executables, with the debuginfo setting above) and the 117 this step
+      # selects spend ~135 s in their tests. macOS was green but for one
+      # log-capture test that failed once in ~70 runs. windows-latest fails
+      # 31 tests in 9 binaries that had never run there, which is why this is
+      # ubuntu only: widening means fixing those first, and `unshare` is
+      # Linux-only, so another OS also needs its own way to stay offline.
+      - name: cargo test (integration binaries, no network)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          # One line per target, no wrapping: the first word is the name.
+          # target          why it does not run in this step
+          excluded='
+          sandbox           "cargo test (sandbox integration)" above runs it, on every OS
+          ui_example_apps   needs the npm registry (`npx --yes esbuild`); apps-smoke.yml runs it after `npm ci`
+          '
+          all=$(cargo metadata --format-version 1 --no-deps --locked \
+                  | jq -r '.packages[].targets[] | select(.kind == ["test"]) | .name' | sort)
+          # `--test` selects by name across the workspace, so a name two
+          # packages share would run (or be excluded) twice over.
+          dup=$(uniq -d <<<"$all")
+          if [ -n "$dup" ]; then
+            echo "::error::two packages have an integration target named: $dup"; exit 1
+          fi
+          skip=$(awk 'NF { print $1 }' <<<"$excluded" | sort)
+          stale=$(comm -13 <(echo "$all") <(echo "$skip"))
+          if [ -n "$stale" ]; then
+            echo "::error::the exclusion table names targets that no longer exist; delete their lines: $stale"; exit 1
+          fi
+          awk 'NF { t = $1; $1 = ""; printf "not run here: %s --%s\n", t, $0 }' <<<"$excluded"
+          args=()
+          for t in $(comm -23 <(echo "$all") <(echo "$skip")); do args+=(--test "$t"); done
+          echo "running $(( ${#args[@]} / 2 )) integration binaries"
+          sudo -E unshare --net -- sh -c \
+            'ip link set lo up && exec setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- "$@"' sh \
+            env HOME="$HOME" PATH="$PATH" \
+            cargo test --workspace --locked --no-fail-fast "${args[@]}"
 
       - name: clippy (host, informational until warnings are burned down)
         if: matrix.os == 'ubuntu-latest'
