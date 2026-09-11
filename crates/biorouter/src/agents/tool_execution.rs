@@ -134,6 +134,16 @@ pub(crate) fn denied_response_text(
         {
             result.reason.clone()
         }
+        // F4: a `workspace_set_tools` change that cannot be made — a built-in
+        // capability named for removal, a knowledge base that does not exist —
+        // refused BEFORE any card. Nobody was asked, so "the user has declined"
+        // would be false, and the reason is the handler's own sentence.
+        Some(result)
+            if result.inspector_name
+                == crate::agents::workspace_inspector::WORKSPACE_MUTATION_INSPECTOR_NAME =>
+        {
+            result.reason.clone()
+        }
         _ => DECLINED_RESPONSE.to_string(),
     }
 }

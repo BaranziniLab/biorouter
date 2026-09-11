@@ -23,6 +23,7 @@
 //! a stable prefix, so the marginal cost is far below the naive reading.
 
 use crate::conversation::message::{Message, MessageContent};
+use crate::providers::formats::audience;
 use rmcp::model::Role;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,10 +86,17 @@ fn render_content(content: &MessageContent) -> Option<String> {
         }
         MessageContent::ToolResponse(r) => Some(match &r.tool_result {
             Ok(result) => {
+                // What a model is sent and nothing else: the filter every provider
+                // formatter applies, reading text resources as well as text. A
+                // block a tool addressed only to the user — the shell's reformatted
+                // copy, a `ui://` figure — is not the model's, and passing both
+                // copies of an annotated result is how the child came to re-read
+                // every tool's output twice (QA-E F4).
                 let body = result
                     .content
                     .iter()
-                    .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+                    .filter(|c| audience::is_for_model(c))
+                    .filter_map(audience::flattened_text)
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!(
@@ -304,6 +312,44 @@ mod tests {
             out.len() < TOOL_RESULT_CHAR_BUDGET * 2,
             "truncation did not bound the prompt"
         );
+    }
+
+    /// QA-E F4: a result a tool addressed to two readers is flattened as a model
+    /// is sent it — the assistant's block once — not with the user's copy as
+    /// well. Both copies used to go in, so the child re-read every shell result
+    /// twice on every later turn.
+    #[test]
+    fn an_annotated_tool_result_reaches_the_prompt_once() {
+        use rmcp::model::{CallToolResult, Content};
+        let msg = Message::user().with_tool_response(
+            "call-1",
+            Ok(CallToolResult::success(vec![
+                Content::text("MODEL-COPY").with_audience(vec![Role::Assistant]),
+                Content::text("USER-COPY")
+                    .with_audience(vec![Role::User])
+                    .with_priority(0.0),
+            ])),
+        );
+        let out = flatten(&[user("first"), msg, user("now answer")]).unwrap();
+        assert_eq!(out.matches("MODEL-COPY").count(), 1, "{out}");
+        assert!(!out.contains("USER-COPY"), "{out}");
+    }
+
+    /// `text_editor view` hands the model the file as an embedded resource and
+    /// the user a rendering. Filtering by audience must not leave the child with
+    /// the rendering, or with nothing: it reads the file, as every formatter does.
+    #[test]
+    fn a_file_view_reaches_the_prompt_as_the_file_not_its_rendering() {
+        use crate::providers::formats::audience;
+        let msg = Message::user().with_tool_response(
+            "call-1",
+            Ok(rmcp::model::CallToolResult::success(
+                audience::text_editor_view_result(),
+            )),
+        );
+        let out = flatten(&[user("first"), msg, user("now answer")]).unwrap();
+        assert!(out.contains(audience::VIEW_FOR_MODEL), "{out}");
+        assert!(!out.contains(audience::VIEW_FOR_USER), "{out}");
     }
 
     /// Thinking blocks are dropped: they are the *previous* model's private

@@ -1,9 +1,10 @@
 # Decisions behind `biorouter serve`
 
 > **What this is.** The decision records governing browser-served Biorouter — why the daemon
-> serves the interface itself, why a browser session cannot change its model, and why the
-> standalone `biorouter-headless` binary was retired. Each record states the ruling, the
-> alternatives it displaced, and the consequence a future change would have to accept.
+> serves the interface itself, why a browser session cannot change its model, why the
+> standalone `biorouter-headless` binary was retired, and how long the launch token stays good
+> for. Each record states the ruling, the alternatives it displaced, and the consequence a
+> future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
 > changes anywhere near the serving path.
@@ -27,10 +28,15 @@ keeps its number and says what replaced it.
 
 ## SD-1 — A browser session cannot change its model or provider, and that is the point
 
-**Ruling.** `POST /config/provider` continues to refuse a request that carries no proof a human
-made it. Browser-served Biorouter installs no such proof. A browser session therefore runs
-whatever provider and model the machine was already configured with, and the model picker is
-inert.
+**Ruling.** `POST /config/set_provider` (`set_config_provider` in
+`crates/biorouter-server/src/routes/config_management.rs`) continues to refuse a request that
+carries no proof a human made it. Browser-served Biorouter installs no such proof. A browser
+session therefore runs whatever provider and model the machine was already configured with, and
+the model picker is inert.
+
+> **Note.** Until 2026-09 this record named the route `POST /config/provider`. No such route
+> exists, so an audit of SD-1 that followed the old text measured a 404 and could read it as
+> "no gate". The gate is on `/config/set_provider`, which answers a browser session with 409.
 
 **Why.** This looks like a missing feature and is actually the privacy boundary holding. The
 privacy tier system (issue #56) classifies a conversation by the sensitivity of what it has
@@ -193,6 +199,14 @@ proof-of-user digest. Under SD-1 that is the intended configuration, not a limit
 means the daemon a `serve` session talks to is deliberately less capable than the one the
 desktop application starts, and anything that assumes otherwise is wrong.
 
+**And the child must never outlive the parent.** The daemon, not `serve`, holds the port,
+answers the browser token and serves the shell carrying its secret, so a `serve` that exits
+without stopping it has revoked nothing. `serve` therefore stops the daemon on every path it can
+run code on, and on Unix starts it with `--exit-with-parent` so that it stops itself on the paths
+`serve` cannot — see [how `serve` starts and stops the daemon](serve-architecture.md#how-serve-starts-and-stops-the-daemon).
+A comment in `serve` claimed the first half from the start; until 2026-09 neither half was true,
+and only a terminal's `Ctrl-C`, which signals the whole process group, ever reached the daemon.
+
 ---
 
 ## SD-8 — A control that can never work here says so, rather than failing on click
@@ -224,6 +238,49 @@ who insists may proceed past a warning, but nothing proceeds automatically.
 started, so two daemons on the same machine can offer different tools. The availability flag is
 sampled once per roster and threaded, rather than re-read inside each declaration, so a roster
 can never half-believe a person is reachable.
+
+---
+
+## SD-9 — The launch token works until the daemon stops; it is not single-use
+
+**Ruling.** `GET /?t=<token>` exchanges the token for the session cookie every time it is
+presented, not only the first time. The exchange takes the token out of the address bar; it does
+not consume it. The token stops working when the daemon stops — which SD-7 ties to `serve`
+stopping — or, for one passed with `--token`, when a different one is passed.
+
+**Why.** The token was first described as "spent on the first request", and that was never true:
+the 2026-09-10 QA run redeemed one token four more times after the first and got a 303 each time.
+The choice was then whether to make the description true or correct it, and single use cannot be
+had without breaking what the product promises:
+
+- **It would be a different mechanism, not an added check.** The session cookie's value *is* the
+  token — the daemon compares both against one string — so a "spent" token would still open the
+  shell for anyone who set the cookie by hand. Real single use needs a cookie the daemon mints
+  and remembers: a session table, emptied by every restart.
+- **The supported uses need a second redemption.** A second browser, or a colleague on a shared
+  host, where everyone who opens the address is the same user; the same browser after it has
+  dropped its session cookie, which carries no expiry and may be discarded when the browser
+  closes; and a bookmark of an address fixed with `--token`, which
+  [browser access](browser-access.md) offers precisely so that the address survives restarts.
+- **Things other than people fetch links.** A browser prefetching a pasted address, or a chat
+  client unfurling it, would spend a single-use link before anyone clicked it.
+
+What the exchange is for is keeping the token out of browser history and out of the `Referer` of
+everything the page loads afterwards, and the redirect does that whether or not the token is
+consumed.
+
+**Displaced alternatives.**
+
+- *Single use, with a session cookie minted by the daemon.* Rejected for the reasons above.
+- *Keep the word "spent".* Rejected. In a section about security it reads as single use, and an
+  operator who believes a leaked address stopped working after its first use has the wrong
+  picture of their exposure.
+
+**Consequence to accept.** The address `serve` prints is a bearer credential for as long as the
+daemon runs. Revoking it means stopping `serve` — which is why SD-7 requires that the daemon never
+outlive it — and, for an address fixed with `--token`, choosing a new token. Treat it like the
+password it is. `the_token_is_not_consumed_by_the_exchange` in `routes::web_ui` pins the
+behaviour, so changing it means revisiting this record, not making a quiet fix.
 
 ---
 

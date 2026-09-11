@@ -12,6 +12,11 @@ use crate::config::paths::Paths;
 use crate::privacy::affiliation::InstitutionId;
 use crate::privacy::{ExtensionAffiliation, ProviderTier};
 
+mod search;
+
+use search::Weight;
+pub use search::{MarketplaceSearch, MarketplaceSearchHit};
+
 pub const REGISTRY_URL: &str = "https://biorouter.ucsf.edu/registry.json";
 const REGISTRY_SOURCE: &str = "https://biorouter.ucsf.edu/baam";
 pub const MAX_REGISTRY_BYTES: usize = 2 * 1024 * 1024;
@@ -109,56 +114,58 @@ impl MarketplaceCatalog {
             .collect()
     }
 
+    /// Rank the extensions visible to `caller` against a free-text query. How a
+    /// query is matched — and why a phrase is a union of its words rather than
+    /// one substring (finding F5) — is documented in `marketplace/search.rs`.
+    ///
+    /// The caller filter runs FIRST, so an extension hidden from `caller` is
+    /// never scored and cannot move, or be counted among, what it is shown.
     pub fn search_extensions(
         &self,
         caller: ProviderTier,
         query: &str,
-    ) -> Vec<&MarketplaceExtensionDescriptor> {
-        let query = query.trim().to_ascii_lowercase();
-        self.browse_extensions(caller)
-            .into_iter()
-            .filter(|entry| {
-                query.is_empty()
-                    || searchable(
-                        &query,
-                        [
-                            entry.registry_id.as_str(),
-                            entry.extension_name.as_str(),
-                            entry.name.as_str(),
-                            entry.organization.as_str(),
-                            entry.description.as_str(),
-                        ]
-                        .into_iter()
-                        .chain(entry.tags.iter().map(String::as_str)),
-                    )
-            })
-            .collect()
+    ) -> MarketplaceSearch<'_, MarketplaceExtensionDescriptor> {
+        search::rank(
+            query,
+            search::EXTENSION_NOISE,
+            self.browse_extensions(caller),
+            |entry| {
+                let mut fields = vec![
+                    (entry.registry_id.as_str(), Weight::Name),
+                    (entry.extension_name.as_str(), Weight::Name),
+                    (entry.name.as_str(), Weight::Name),
+                    (entry.organization.as_str(), Weight::Label),
+                    (entry.description.as_str(), Weight::Prose),
+                ];
+                fields.extend(entry.tags.iter().map(|tag| (tag.as_str(), Weight::Label)));
+                fields
+            },
+        )
     }
 
     pub fn browse_skills(&self) -> Vec<&MarketplaceSkillDescriptor> {
         self.skills.values().collect()
     }
 
-    pub fn search_skills(&self, query: &str) -> Vec<&MarketplaceSkillDescriptor> {
-        let query = query.trim().to_ascii_lowercase();
-        self.skills
-            .values()
-            .filter(|entry| {
-                query.is_empty()
-                    || searchable(
-                        &query,
-                        [
-                            entry.registry_id.as_str(),
-                            entry.name.as_str(),
-                            entry.category.as_str(),
-                            entry.description.as_str(),
-                        ]
-                        .into_iter()
-                        .chain(entry.tags.iter().map(String::as_str))
-                        .chain(entry.keywords.iter().map(String::as_str)),
-                    )
-            })
-            .collect()
+    /// Rank every skill against a free-text query, matched as documented in
+    /// `marketplace/search.rs`.
+    pub fn search_skills(&self, query: &str) -> MarketplaceSearch<'_, MarketplaceSkillDescriptor> {
+        search::rank(query, search::SKILL_NOISE, self.skills.values(), |entry| {
+            let mut fields = vec![
+                (entry.registry_id.as_str(), Weight::Name),
+                (entry.name.as_str(), Weight::Name),
+                (entry.category.as_str(), Weight::Label),
+                (entry.description.as_str(), Weight::Prose),
+            ];
+            fields.extend(entry.tags.iter().map(|tag| (tag.as_str(), Weight::Label)));
+            fields.extend(
+                entry
+                    .keywords
+                    .iter()
+                    .map(|keyword| (keyword.as_str(), Weight::Label)),
+            );
+            fields
+        })
     }
 
     pub fn resolve_extension_for_install(
@@ -217,10 +224,6 @@ impl MarketplaceCatalog {
         )
         .map_err(MarketplaceError::Cache)
     }
-}
-
-fn searchable<'a>(query: &str, mut fields: impl Iterator<Item = &'a str>) -> bool {
-    fields.any(|field| field.to_ascii_lowercase().contains(query))
 }
 
 #[derive(Debug, Deserialize)]
@@ -565,6 +568,19 @@ impl MarketplaceCatalogLoad {
     pub fn is_stale(&self) -> bool {
         self.source != MarketplaceCatalogSource::Live
     }
+
+    /// The registry snapshot shipped in the binary, loaded as the tools see it
+    /// offline — for tests of what a tool builds from a catalog, which must not
+    /// depend on the network.
+    #[cfg(test)]
+    pub(crate) fn embedded_for_test() -> Self {
+        Self {
+            catalog: MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY)
+                .expect("the shipped registry is a valid catalog"),
+            source: MarketplaceCatalogSource::Embedded,
+            cache_warning: None,
+        }
+    }
 }
 
 pub async fn load_marketplace_catalog() -> Result<MarketplaceCatalogLoad, MarketplaceError> {
@@ -874,6 +890,172 @@ mod tests {
             hidden.replace("private-agent", "<id>"),
             absent.replace("not-in-the-registry", "<id>"),
             "exact-id preflight must not reveal private catalog membership"
+        );
+    }
+
+    /// Seven skill rows copied VERBATIM from `landing/registry.json` at
+    /// 7c96d796, the registry the 2026-09-10 composer QA run measured finding
+    /// F5 against. Frozen here rather than read from [`EMBEDDED_REGISTRY`] so
+    /// the exact rankings below cannot drift when the registry gains a skill;
+    /// the shipped-registry test after them pins only the measured shape.
+    fn skills_snapshot() -> Vec<u8> {
+        fn row(
+            id: &str,
+            name: &str,
+            category: &str,
+            kind: &str,
+            description: &str,
+            tags: &[&str],
+            keywords: &[&str],
+        ) -> serde_json::Value {
+            json!({
+                "id": id,
+                "name": name,
+                "category": category,
+                "type": kind,
+                "description": description,
+                "tags": tags,
+                "keywords": keywords,
+                "download": format!("https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-{id}/{id}.zip"),
+                "filename": format!("{id}.zip"),
+                "license": "Apache-2.0"
+            })
+        }
+        serde_json::to_vec(&json!({
+            "version": 2,
+            "source": "https://biorouter.ucsf.edu/baam",
+            "institutions": { "ucsf": "UCSF" },
+            "extensions": [],
+            "skills": [
+                row("data-visualization", "Data Visualization", "Biomedical", "13 skills · auto-applied",
+                    "Publication-quality plots: heatmaps, volcano, Manhattan, dimplots.",
+                    &["ggplot2", "matplotlib", "ComplexHeatmap"],
+                    &["data-visualization", "ggplot2", "matplotlib", "complexheatmap"]),
+                row("ggplot-visualization", "ggplot2 Visualization", "Core", "Auto-applied · R plotting",
+                    "Applies ggplot2 best-practice style when writing R plotting code.",
+                    &["R", "ggplot2"], &[]),
+                row("python-scripting", "Python Scripting", "Core", "Auto-applied · Python code",
+                    "Applies Python naming, typing, error handling, and project structure conventions when writing Python code.",
+                    &["Python"], &[]),
+                row("r-scripting", "R Scripting", "Core", "Auto-applied · R code",
+                    "Applies tidyverse conventions and documentation standards when writing or reviewing R code.",
+                    &["R", "Tidyverse"], &[]),
+                row("scientific-visual-communication", "Scientific Visual Communication", "Core",
+                    "User-invocable · /scientific-visual-communication",
+                    "Plans schematics, posters, slides, figure panels, infographics, visual abstracts, and source-to-visual traceability.",
+                    &["Visuals", "Posters", "Apache-2.0"],
+                    &["scientific-visual-communication", "schematics", "infographics", "posters", "slides", "visual", "abstracts", "apache"]),
+                row("clinical-biostatistics", "Clinical Biostatistics", "Biomedical", "6 skills · auto-applied",
+                    "Survival, mixed models, and clinical-trial statistical analysis.",
+                    &["survival", "R", "lme4"], &["clinical-biostatistics", "survival", "r", "lme4"]),
+                row("single-cell", "Single-cell", "Biomedical", "14 skills · auto-applied",
+                    "scRNA-seq clustering, annotation, trajectory, and integration.",
+                    &["Scanpy", "Seurat", "scVI"], &["single-cell", "scanpy", "seurat", "scvi"]),
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn skill_ids(search: &MarketplaceSearch<'_, MarketplaceSkillDescriptor>) -> Vec<String> {
+        search
+            .hits
+            .iter()
+            .map(|hit| hit.entry.registry_id.clone())
+            .collect()
+    }
+
+    /// Finding F5, the three queries the QA run measured. The unfixed matcher
+    /// asked whether the whole query was a substring of one field, so the
+    /// phrase returned `total: 0` while each of its words, asked alone, found
+    /// the skills it names. It now returns their union, ranked: the skill
+    /// matching three of the four terms, then the two matching two, then the
+    /// single-term matches.
+    #[test]
+    fn a_natural_language_skill_query_returns_the_union_ranked() {
+        let catalog = MarketplaceCatalog::from_bytes(&skills_snapshot()).unwrap();
+
+        let phrase = catalog.search_skills("R scripting ggplot visualization");
+        assert_eq!(phrase.terms, ["r", "scripting", "ggplot", "visualization"]);
+        assert_eq!(
+            skill_ids(&phrase),
+            [
+                "ggplot-visualization",
+                "r-scripting",
+                "data-visualization",
+                "python-scripting",
+                "clinical-biostatistics",
+            ],
+            "measured before this fix: no hits at all"
+        );
+        assert_eq!(
+            phrase.hits[0].matched_terms,
+            ["r", "ggplot", "visualization"]
+        );
+        assert!(
+            !skill_ids(&phrase).contains(&"scientific-visual-communication".to_owned()),
+            "`visual` is not `visualization`: a long term must be found in the entry, not the \
+             other way round"
+        );
+
+        // The two single-term controls, measured in the same chat as 2 and 1.
+        assert_eq!(
+            skill_ids(&catalog.search_skills("ggplot")),
+            ["ggplot-visualization", "data-visualization"]
+        );
+        let id = catalog.search_skills("r-scripting");
+        assert_eq!(
+            skill_ids(&id)[0],
+            "r-scripting",
+            "the skill the query names ranks first, ahead of the other skills about R or \
+             scripting"
+        );
+        assert_eq!(id.hits[0].matched_terms, ["r", "scripting"]);
+
+        // The empty query stays the browse case, 129 of 129 in the QA run.
+        assert_eq!(
+            catalog.search_skills("").len(),
+            catalog.browse_skills().len()
+        );
+    }
+
+    /// The same property against the registry that ships in the binary — the
+    /// offline fallback, and the snapshot of the live registry the QA run read.
+    /// Only the measured SHAPE is pinned, so a new skill cannot fail it: the
+    /// phrase finds every skill that each of its words finds alone.
+    #[test]
+    fn on_the_shipped_registry_a_phrase_finds_what_each_of_its_words_finds() {
+        let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
+        let phrase = skill_ids(&catalog.search_skills("R scripting ggplot visualization"));
+        for word in ["ggplot", "r-scripting", "scripting", "visualization"] {
+            for id in skill_ids(&catalog.search_skills(word)) {
+                assert!(
+                    phrase.contains(&id),
+                    "`{word}` alone finds `{id}`, the phrase containing it does not: {phrase:?}"
+                );
+            }
+        }
+        assert!(phrase.len() >= 2, "{phrase:?}");
+    }
+
+    /// The extension catalog shares the matcher, and the caller filter runs
+    /// before the ranking: a public caller's multi-word query can match the
+    /// private row's words and still never be shown it.
+    #[test]
+    fn a_multi_word_extension_query_ranks_only_what_the_caller_may_see() {
+        let catalog = MarketplaceCatalog::from_bytes(&registry("public")).unwrap();
+        let ids = |caller| -> Vec<String> {
+            catalog
+                .search_extensions(caller, "private fixture")
+                .hits
+                .iter()
+                .map(|hit| hit.entry.registry_id.clone())
+                .collect()
+        };
+        assert_eq!(ids(ProviderTier::Public), ["public-agent"]);
+        assert_eq!(
+            ids(ProviderTier::Private),
+            ["private-agent", "public-agent"],
+            "the row matching both terms ranks first"
         );
     }
 

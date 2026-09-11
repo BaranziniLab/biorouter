@@ -107,8 +107,15 @@ pub use biorouter_mcp::privacy_toggle::privacy_tiers_enabled;
 ///
 /// A load error resolves to ON, for the same reason absence does: the failure of
 /// the loader must not be a way to disable the control.
+///
+/// ⚠ **An OFF answer is announced, not merely obeyed** (H3, 2026-09-10 security
+/// test drive): [`master_switch::load`] logs one WARN naming the record and how
+/// it got its value, and the report is [`master_switch::remember`]ed here —
+/// beside the atomic, by the same writer — for the config surface the app reads.
 pub fn load_privacy_tiers_from_config() {
-    let on = resolve_privacy_tiers(crate::config::Config::global());
+    let report = master_switch::load(crate::config::Config::global());
+    let on = report.enabled;
+    master_switch::remember(report);
     biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
 }
 
@@ -139,10 +146,12 @@ pub fn load_mixing_policy_from_record() {
 }
 
 pub fn resolve_privacy_tiers(config: &crate::config::Config) -> bool {
-    // Once, on the first start-up after the upgrade, and never again — the only
-    // read of the retired `config.yaml` key in the tree.
-    master_switch::migrate_once(config);
-    master_switch::read_for(config).unwrap_or(true) // nothing recorded OR unreadable => on
+    // `load` runs the migration (once, on the first start-up after the upgrade,
+    // and never again — the only read of the retired `config.yaml` key in the
+    // tree), reads the record, and resolves nothing recorded OR unreadable to
+    // ON. It also logs the OFF warning, so this seam exercises exactly what the
+    // loader says as well as what it stores.
+    master_switch::load(config).enabled
 }
 
 /// The key the master switch is addressed by — over `/config/upsert`, over
@@ -169,6 +178,27 @@ pub const PRIVACY_TIERS_CONFIG_KEY: &str = "BIOROUTER_PRIVACY_TIERS";
 /// to reason about "where can this value change" would be wrong.
 pub fn is_privacy_tiers_key(key: &str) -> bool {
     key == PRIVACY_TIERS_CONFIG_KEY
+}
+
+/// The key the master switch's RECORD REPORT is served under, beside
+/// [`PRIVACY_TIERS_CONFIG_KEY`] on `/config/read` and `/config` (H3): where the
+/// record lives and which door last wrote it — [`master_switch::SwitchReport`],
+/// as the process last loaded or wrote it. The renderer mirrors the spelling in
+/// `settings/privacy/privacyTiers.ts`.
+///
+/// ⚠ **A report, never a setting, and it has no writer on the wire.** Both read
+/// paths answer it from [`master_switch::remembered`] and overwrite whatever
+/// `config.yaml` holds under the same name, so an agent that `/config/upsert`s a
+/// flattering copy writes a line nothing reads. That is why neither write verb
+/// refuses it — the reason `/config/read`'s synthetic `model-limits` key needs
+/// no refusal either — and why no reader may ever consult `config.yaml` for it:
+/// the moment one does, "turned off outside the app" becomes something the
+/// agent can pre-empt.
+pub const PRIVACY_TIERS_RECORD_KEY: &str = "BIOROUTER_PRIVACY_TIERS_RECORD";
+
+/// Is this key the switch's record report? See [`PRIVACY_TIERS_RECORD_KEY`].
+pub fn is_privacy_tiers_record_key(key: &str) -> bool {
+    key == PRIVACY_TIERS_RECORD_KEY
 }
 
 /// The typed phrase Settings → Privacy sends with the flip. A **UX guard against
