@@ -1097,6 +1097,56 @@ mod tests {
         assert!(output.contains("SCRIPT-GATE-AUTO"), "{output}");
     }
 
+    /// The sensitive-operations inspector — the one that asks even in Auto mode
+    /// — judges a script's call too, on its evaluated arguments, and the card
+    /// carries its own reason (which is also what makes the desktop withhold
+    /// "Always allow" on it, as for a direct call).
+    ///
+    /// The target is `/etc`, which a test user cannot write, so a regression
+    /// here fails with a permission error rather than touching the system.
+    /// Not on Windows: the fixture is a POSIX command line, for the reason
+    /// `sensitive_ops`' own tests give above their `cfg`s.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn auto_mode_still_asks_for_a_scripts_sensitive_write() {
+        let f = fixture(BioRouterMode::Auto).await;
+        let mut script = run_script(
+            &f,
+            r#"import { shell } from "developer";
+               let caught = null;
+               try { shell({ command: "echo probe > /etc/biorouter-f7-sensitive-probe" }); }
+               catch (e) { caught = String(e); }
+               record_result({ caught });"#,
+            CancellationToken::new(),
+        )
+        .await;
+
+        let card = card_or_completion(&f.session.id, &mut script)
+            .await
+            .unwrap_or_else(|(_, output)| {
+                panic!("a sensitive write inside a script must ask even in Auto mode: {output}")
+            });
+        assert_eq!(card.tool_name, SHELL);
+        assert!(
+            card.prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.contains("Sensitive system operation")),
+            "the card must carry the sensitive-ops reason: {:?}",
+            card.prompt
+        );
+        answer(&f, &card, Permission::DenyOnce).await;
+
+        let (is_error, output) = finish(script).await;
+        assert!(!is_error, "{output}");
+        assert!(
+            recorded(&output)["caught"]
+                .as_str()
+                .is_some_and(|caught| caught.contains("declined")),
+            "{output}"
+        );
+    }
+
     /// `always_allow` is keyed by the inner tool's name in the other direction
     /// too: a call the user allowed by name runs with no card, script or not.
     #[tokio::test]
