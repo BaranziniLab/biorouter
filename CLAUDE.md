@@ -1213,6 +1213,17 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
 - **WebSocket origins**: `routes::origin_matches_host` compares `Origin` to the request's own
   `Host`. That is a same-origin test, not a wildcard, and it is what lets a browser reach the
   daemon at a LAN address `is_local_origin` has never heard of.
+- **`serve` owns its daemon's lifetime**, because the daemon honours the token and serves the
+  shell carrying its secret for as long as it runs: stopping `serve` is the only revocation.
+  Two layers. Every exit path after the spawn goes through `stop_daemon` (SIGTERM, a 10 s grace,
+  then SIGKILL and reap), with SIGINT/SIGTERM listeners installed *before* the spawn; and on
+  Unix the daemon is started with `biorouterd agent --exit-with-parent <serve pid>`, which
+  covers a SIGKILLed or crashed `serve`. ⚠ Until 2026-09 neither held — the `Child` was moved
+  into a `spawn_blocking` wait, so only a terminal's process-group Ctrl-C ever reached the
+  daemon and `kill <pid of serve>` orphaned it on the port. ⚠ The flag is opt-in and compares
+  `getppid()` with the pid `serve` named, **not with 1**: an orphan is re-parented to the
+  nearest subreaper (`systemd --user`, a container init), so `== 1` never fires there. Never
+  pass it from the desktop.
 - ⚠ **Three traps.** The app uses a **HashRouter**, so its routes live in the fragment and
   never reach the daemon — that is the only reason `/sessions/{id}` (a real API route) does
   not collide with the app's own; a history router would break pages silently. The bundle must
@@ -1223,7 +1234,12 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
 - **Tests:** `cargo test -p biorouter-server --lib routes::web_ui routes::shell`,
   `cargo test -p biorouter-cli --lib commands::serve`, the `serve` job in
   `.github/workflows/rust.yml`, and `smoke_serve` in
-  `scripts/smoke-test-release-artifacts.sh`.
+  `scripts/smoke-test-release-artifacts.sh`. The lifecycle has its own binary,
+  `cargo test -p biorouter-cli --test serve_lifecycle`, which runs the real `serve` and
+  signals it by pid; ⚠ it needs a `biorouterd` from the same tree beside `biorouter`, which
+  `cargo test -p biorouter-cli` does not build — run `cargo build -p biorouter-cli -p
+  biorouter-server` first. CI runs it in the `serve` job, because the workspace test job is
+  `--lib --bins` and never runs an integration binary.
 
 ### Communication Flow
 

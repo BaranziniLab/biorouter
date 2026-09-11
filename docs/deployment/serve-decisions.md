@@ -193,6 +193,14 @@ proof-of-user digest. Under SD-1 that is the intended configuration, not a limit
 means the daemon a `serve` session talks to is deliberately less capable than the one the
 desktop application starts, and anything that assumes otherwise is wrong.
 
+**And the child must never outlive the parent.** The daemon, not `serve`, holds the port,
+answers the browser token and serves the shell carrying its secret, so a `serve` that exits
+without stopping it has revoked nothing. `serve` therefore stops the daemon on every path it can
+run code on, and on Unix starts it with `--exit-with-parent` so that it stops itself on the paths
+`serve` cannot — see [how `serve` starts and stops the daemon](serve-architecture.md#how-serve-starts-and-stops-the-daemon).
+A comment in `serve` claimed the first half from the start; until 2026-09 neither half was true,
+and only a terminal's `Ctrl-C`, which signals the whole process group, ever reached the daemon.
+
 ---
 
 ## SD-8 — A control that can never work here says so, rather than failing on click

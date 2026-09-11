@@ -25,13 +25,33 @@
 //! configuration, not a missing feature — but it does mean the daemon a `serve`
 //! session talks to is less capable than the one the desktop application
 //! starts, and anything assuming otherwise is wrong.
+//!
+//! # Why the daemon cannot outlive this command
+//!
+//! The daemon holds the port, and it answers the browser token and serves the
+//! shell carrying its secret for as long as it runs — so stopping `serve` is
+//! the only way an operator has to revoke the URL it printed. Two layers make
+//! that hold however `serve` ends:
+//!
+//! 1. Every way out of [`handle_serve`] after the spawn — SIGINT, SIGTERM, the
+//!    daemon dying, a startup that never became ready — goes through
+//!    [`stop_daemon`], which asks the daemon to stop, waits, and then kills
+//!    and reaps it.
+//! 2. On Unix the daemon is started with `--exit-with-parent <our pid>` and
+//!    stops itself once this process is gone, which covers the endings that run
+//!    no code at all: SIGKILL, a crash.
+//!
+//! Before this, the only thing that ever stopped the daemon was a terminal's
+//! Ctrl-C, which reaches the whole foreground process group and so the daemon
+//! directly. `kill <pid of serve>` from anywhere else left it running.
 
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
 use anyhow::{bail, Context, Result};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{TcpListener, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
+use tokio::process::{Child, Command};
 
 /// Not 3000. That is `biorouterd`'s own default, and the old `biorouter web`
 /// used it too — a default that collides with the daemon this command starts is
@@ -40,6 +60,14 @@ pub const DEFAULT_PORT: u16 = 8765;
 
 /// How long to wait for the daemon to answer before giving up.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long the daemon gets to shut down on its own before it is killed.
+///
+/// Its graceful shutdown waits for open connections to finish, and a browser
+/// tab that is still open holds some that never do — so without a limit,
+/// stopping `serve` with a tab open would wait forever. The daemon applies the
+/// same figure to itself when it finds itself orphaned.
+const STOP_GRACE: Duration = Duration::from_secs(10);
 
 /// Run the browser-served interface.
 #[allow(clippy::too_many_arguments)]
@@ -90,9 +118,21 @@ pub async fn handle_serve(
     // child, so the pair covers the race this pre-flight cannot.
     preflight_port(&host, port)?;
 
+    // Listen for a stop request BEFORE the daemon exists. A handler replaces
+    // the default action — which for SIGTERM is to end this process on the spot
+    // and leave the daemon behind — so from here on a signal waits to be read,
+    // including one that lands during the readiness wait below.
+    let mut stop = StopSignals::install()?;
+
     let daemon = resolve_biorouterd()?;
-    let mut child = Command::new(&daemon)
-        .arg("agent")
+    let mut command = Command::new(&daemon);
+    command.arg("agent");
+    // The second layer; see the module documentation.
+    #[cfg(unix)]
+    command
+        .arg("--exit-with-parent")
+        .arg(std::process::id().to_string());
+    let mut child = command
         .env("BIOROUTER_HOST", &host)
         .env("BIOROUTER_PORT", port.to_string())
         .env("BIOROUTER_SERVER__SECRET_KEY", &secret_key)
@@ -104,22 +144,65 @@ pub async fn handle_serve(
         )
         // See the module documentation: no proof-of-user digest, on purpose.
         .stdin(Stdio::null())
+        // A backstop for a panic unwinding through here. Every ordinary path
+        // goes through `stop_daemon`, which asks before it insists.
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("could not start {}", daemon.display()))?;
 
-    if let Err(e) = wait_until_ready(&host, port, &mut child) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(e);
-    }
+    let outcome: Result<()> = async {
+        tokio::select! {
+            ready = wait_until_ready(&host, port, &mut child) => ready?,
+            _ = stop.recv() => {
+                println!("\nStopping.");
+                return Ok(());
+            }
+        }
 
-    let url = browser_url(&host, port, browser_token.as_deref());
+        let url = browser_url(&host, port, browser_token.as_deref());
+        print_banner(
+            &url,
+            &host,
+            port,
+            browser_token.as_deref(),
+            bind_is_loopback,
+        );
+        if open_browser {
+            let _ = webbrowser::open(&url);
+        }
+
+        tokio::select! {
+            _ = stop.recv() => {
+                println!("\nStopping.");
+                Ok(())
+            }
+            status = child.wait() => match status {
+                Ok(s) if s.success() => Ok(()),
+                Ok(s) => bail!("biorouterd exited with {s}"),
+                Err(e) => bail!("could not wait on biorouterd: {e}"),
+            },
+        }
+    }
+    .await;
+
+    stop_daemon(&mut child, &mut stop).await;
+    outcome
+}
+
+/// What the operator reads once the daemon is answering.
+fn print_banner(
+    url: &str,
+    host: &str,
+    port: u16,
+    browser_token: Option<&str>,
+    bind_is_loopback: bool,
+) {
     println!("\n  Biorouter is serving at\n\n      {url}\n");
     if !bind_is_loopback {
-        match reachable_address(&host) {
+        match reachable_address(host) {
             Some(addr) => println!(
                 "  From another machine on this network:\n\n      {}\n",
-                browser_url(&addr, port, browser_token.as_deref())
+                browser_url(&addr, port, browser_token)
             ),
             // The old implementation fell back to 127.0.0.1 here, which printed
             // a URL that could not possibly work from the other machine the user
@@ -138,30 +221,101 @@ pub async fn handle_serve(
     }
     println!("  The model is whichever `biorouter configure` chose; a browser cannot change it.");
     println!("  Press Ctrl-C to stop.\n");
+}
 
-    if open_browser {
-        let _ = webbrowser::open(&url);
+/// The requests to stop that `serve` honours: SIGINT and SIGTERM on Unix,
+/// Ctrl-C elsewhere.
+///
+/// SIGHUP is deliberately left alone. A terminal hanging up signals the whole
+/// foreground process group, daemon included; `nohup` exists to make both
+/// ignore it, and installing a handler here would override that. Any other
+/// SIGHUP ends `serve` the default way and the daemon's parent watch follows.
+struct StopSignals {
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn install() -> Result<Self> {
+        #[cfg(unix)]
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            #[cfg(unix)]
+            interrupt: signal(SignalKind::interrupt()).context("could not listen for SIGINT")?,
+            #[cfg(unix)]
+            terminate: signal(SignalKind::terminate()).context("could not listen for SIGTERM")?,
+        })
     }
 
-    // Hand the terminal back to the daemon and stop when it does, or when the
-    // user interrupts. Killing the child on the way out is what stops a stray
-    // daemon holding the port after Ctrl-C.
-    let result = tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            println!("\nStopping.");
-            Ok(())
+    /// Resolve on the next request to stop.
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
         }
-        status = tokio::task::spawn_blocking(move || child.wait()) => {
-            match status {
-                Ok(Ok(s)) if s.success() => Ok(()),
-                Ok(Ok(s)) => bail!("biorouterd exited with {s}"),
-                Ok(Err(e)) => bail!("could not wait on biorouterd: {e}"),
-                Err(e) => bail!("could not wait on biorouterd: {e}"),
-            }
+        // A console Ctrl-C reaches every process attached to the console, so on
+        // Windows the daemon has been told as well and is already stopping.
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
         }
-    };
-    result
+    }
 }
+
+/// Stop the daemon and reap it: ask, give it [`STOP_GRACE`], then insist.
+///
+/// A second request to stop while it is shutting down skips the rest of the
+/// wait. A daemon that has already exited is only reaped, so every path can end
+/// here without first asking whether it needs to.
+async fn stop_daemon(child: &mut Child, stop: &mut StopSignals) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    ask_to_stop(child);
+    tokio::select! {
+        waited = tokio::time::timeout(STOP_GRACE, child.wait()) => {
+            if matches!(waited, Ok(Ok(_))) {
+                return;
+            }
+            // The usual reason, measured: an open browser tab keeps the
+            // renderer's 25 s catalog long poll parked on the daemon, and its
+            // graceful shutdown waits for that request to finish.
+            eprintln!(
+                "biorouterd did not finish within {}s (an open browser tab keeps a request \
+                 waiting); killing it.",
+                STOP_GRACE.as_secs()
+            );
+        }
+        _ = stop.recv() => eprintln!("Killing biorouterd."),
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+/// Ask the daemon to shut down gracefully: SIGTERM, which it handles exactly as
+/// it handles Ctrl-C — draining connections and taking a llama-server sidecar
+/// down with it.
+#[cfg(unix)]
+fn ask_to_stop(child: &Child) {
+    let Some(pid) = child.id().and_then(|p| libc::pid_t::try_from(p).ok()) else {
+        return;
+    };
+    // SAFETY: `kill(2)` has no memory-safety preconditions. `id()` is `None`
+    // once the child has been reaped, so this pid is still our own child and
+    // cannot have been recycled for an unrelated process.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+}
+
+/// Windows has no SIGTERM to send. A console Ctrl-C has usually reached the
+/// daemon already; if nothing has, [`stop_daemon`] kills it once the grace has
+/// passed.
+#[cfg(not(unix))]
+fn ask_to_stop(_child: &Child) {}
 
 /// The URL to open, with the browser token in it.
 ///
@@ -238,7 +392,10 @@ fn preflight_port(host: &str, port: u16) -> Result<()> {
 /// reports success against *any* listener on that port — so a daemon that died
 /// on startup, next to some unrelated process holding the port, looks exactly
 /// like a healthy one.
-fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> Result<()> {
+///
+/// Asynchronous so that a request to stop can interrupt it: the wait can run
+/// for a minute, and the daemon is already running for all of it.
+async fn wait_until_ready(host: &str, port: u16, child: &mut Child) -> Result<()> {
     let connect_host = match host {
         "0.0.0.0" => "127.0.0.1",
         "::" | "[::]" => "::1",
@@ -249,9 +406,13 @@ fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> R
         if let Some(status) = child.try_wait().context("could not poll biorouterd")? {
             bail!("biorouterd exited during startup with {status}");
         }
-        if let Ok(addrs) = (connect_host, port).to_socket_addrs() {
+        if let Ok(addrs) = tokio::net::lookup_host((connect_host, port)).await {
             for addr in addrs {
-                if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+                let attempt = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    tokio::net::TcpStream::connect(addr),
+                );
+                if matches!(attempt.await, Ok(Ok(_))) {
                     return Ok(());
                 }
             }
@@ -262,7 +423,7 @@ fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> R
                 READY_TIMEOUT.as_secs()
             );
         }
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 

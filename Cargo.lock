@@ -1152,6 +1152,7 @@ dependencies = [
  "futures",
  "http 1.4.0",
  "indicatif",
+ "libc",
  "open",
  "pulldown-cmark",
  "rand 0.8.5",

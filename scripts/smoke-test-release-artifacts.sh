@@ -201,10 +201,17 @@ smoke_serve() {
       curl -fsS -H "X-Secret-Key: $secret" http://127.0.0.1:18080/headless/health >/tmp/health.json
       grep -q "\"status\":\"ok\"" /tmp/health.json
 
+      # Stopping serve by pid stops its daemon: serve reaps it before exiting,
+      # so the port is closed once wait returns. It used to stay bound by an
+      # orphaned daemon that still honoured the token.
       kill "$pid"
       wait "$pid" || true
+      if curl -s -o /dev/null --max-time 5 http://127.0.0.1:18080/status; then
+        echo "the daemon outlived serve" >&2
+        exit 1
+      fi
     '
-  log "biorouter serve: token exchange, gated shell, root-base bundle, and authenticated endpoints passed"
+  log "biorouter serve: token exchange, gated shell, root-base bundle, authenticated endpoints, and stopping with its daemon passed"
 }
 
 case "$TARGET" in

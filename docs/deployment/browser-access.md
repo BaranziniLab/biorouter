@@ -43,7 +43,8 @@ biorouter serve --open
 ```
 
 `--open` launches your browser at that address. Without it, copy the URL — including the `?t=`
-part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port.
+part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port; so does
+stopping `serve` any other way (see [Stopping it](#stopping-it)).
 
 `biorouter headless` is an accepted alias for `biorouter serve` and behaves identically. It is the
 name the retired standalone binary was known by, kept so older instructions still land in the right
@@ -71,6 +72,28 @@ a `serve` default of `3000` would collide with the daemon the command starts.
 > desktop application runs. The two share the on-disk session store, so past conversations are
 > visible from both, but a turn running in one is not visible to the other. Having the desktop
 > application open does not mean `serve` is talking to it.
+
+## Stopping it
+
+Stop `serve` with `Ctrl-C` in its terminal, or by sending it `SIGTERM` — `kill <pid>`, which is
+also what `systemctl stop` and most process managers send. Either way `serve` stops the daemon it
+started and frees the port: it asks the daemon to shut down, gives it ten seconds to finish, then
+kills it. A second `Ctrl-C` skips the wait.
+
+With no browser tab open the daemon is gone in a fraction of a second. With one open, expect the
+full ten seconds and the line `biorouterd did not finish within 10s … killing it.` — the interface
+always keeps a request waiting on the daemon, and a graceful shutdown waits for it. That is
+expected, not a fault. The one thing a daemon stopped that way skips is shutting down a
+llama-server it started for a local model; the next Biorouter launch cleans that up.
+
+This is more than tidiness. The daemon honours the access token for as long as it runs, so
+stopping `serve` is how you revoke the address it printed.
+
+If `serve` itself is killed outright (`kill -9`) it cannot stop anything, so on macOS and Linux the
+daemon watches for that: it notices within a second that its parent has gone and shuts itself
+down, taking at most ten seconds more. On Windows there is no such watch — `Ctrl-C` reaches both
+processes, but if `biorouter.exe` is ended some other way, from Task Manager for example, end
+`biorouterd.exe` as well.
 
 ## The access token
 
@@ -196,8 +219,11 @@ differs:
 
 ## Troubleshooting
 
-**`port 8765 on 127.0.0.1 is already in use.`** Something else holds the port — often an earlier
-`serve` that did not exit. Choose another with `--port <n>`, or stop the other process.
+**`port 8765 on 127.0.0.1 is already in use.`** Something else holds the port. Choose another with
+`--port <n>`, or stop the other process — on macOS and Linux, `lsof -nP -iTCP:8765 -sTCP:LISTEN`
+names it. A `biorouterd agent` holding it is usually left over from a `serve` of version 1.90.3 or
+earlier, which left its daemon running when it was stopped by anything other than `Ctrl-C` in its
+own terminal.
 
 **`biorouterd exited during startup`, or it never starts listening.** The daemon is started as a
 child process and watched while it comes up; if it dies, `serve` reports that rather than pretending
