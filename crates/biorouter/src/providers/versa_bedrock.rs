@@ -206,6 +206,17 @@ impl VersaBedrockProvider {
             Credentials::new(access_key_id, secret_access_key, None, None, "VersaBedrock");
         let loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
+            // ⚠ SigV4 with the credentials above, chosen in code. The AWS SDK
+            // reads `AWS_BEARER_TOKEN_BEDROCK` from the process environment by
+            // itself, and unless the auth scheme was chosen in code it then
+            // authenticates with that bearer token instead of signing. That
+            // variable is where AWS tells a user to put a Bedrock API key, i.e.
+            // the PUBLIC card's credential. Without this line a Versa chat that
+            // looked entirely right (UCSF gateway, us-west-2, Private) sent the
+            // public card's API key to UCSF, and Versa's own keys signed
+            // nothing. A preference set on this loader counts as chosen in code
+            // (`Origin::is_client_config`), so the SDK leaves it alone.
+            .auth_scheme_preference(["sigv4".into()])
             .region(aws_config::Region::new(region.clone()))
             .endpoint_url(endpoint.as_str());
         #[cfg(test)]
