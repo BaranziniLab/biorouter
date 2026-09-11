@@ -4256,7 +4256,7 @@ export type ListActiveWorkData = {
 
 export type ListActiveWorkResponses = {
     /**
-     * Current background jobs, subagents, and in-flight scheduled runs
+     * Current background jobs, subagents, and in-flight scheduled runs, holding only the work of the chats this caller could open: a row whose chat is private, cannot be read, or that names no chat at all is omitted — never redacted — for a caller with neither the user-action proof nor a private capability, as its chat is from `GET /sessions`
      */
     200: ActiveWorkResponse;
 };
@@ -4276,6 +4276,10 @@ export type CancelActiveWorkData = {
 };
 
 export type CancelActiveWorkErrors = {
+    /**
+     * The work belongs to a chat this caller could not open — a private chat, one that cannot be read, or none at all — and the request carried neither the user-action proof nor a private capability. Plain text, byte-for-byte what `GET /sessions/{session_id}` answers, and the same for an id that names nothing, so a refusal says nothing about the work. Nothing was stopped
+     */
+    403: unknown;
     /**
      * No such active-work item
      */
