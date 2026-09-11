@@ -170,6 +170,106 @@ fn is_privacy_refusal(err: &ErrorData) -> bool {
     err.code == ErrorCode::INVALID_REQUEST
 }
 
+/// What `list_resources` says when an extension the caller NAMED lists nothing
+/// (finding F8) — the name is the caller's own, and the reach gate has already
+/// admitted it.
+fn no_resources_in(extension: &str, supports_resources: bool) -> String {
+    if supports_resources {
+        format!(
+            "`{extension}` has no resources to list: it supports resources but is not \
+             publishing any right now."
+        )
+    } else {
+        format!("`{extension}` has no resources to list: it does not offer resources.")
+    }
+}
+
+/// Who a `list_resources` fan-out that found nothing may name, partitioned the
+/// way its sentence reports them. Every name is one Gate E has already shown
+/// the caller.
+#[derive(Debug, Default)]
+struct UnlistedResources {
+    /// Support resources, were asked, and had none.
+    asked: Vec<String>,
+    /// Support resources and could not be listed.
+    failed: Vec<String>,
+    /// Support resources and were refused to this caller's model — a
+    /// cross-affiliation mismatch (DR-26), which Gate E lists and marks rather
+    /// than hides. Without this group the sentence would call them extensions
+    /// that "do not offer resources".
+    withheld: Vec<String>,
+    /// How many other reachable extensions do not support resources at all. A
+    /// count, not a list: the model's own tool list already names them, and
+    /// the sentence is read to a user.
+    offer_none: usize,
+}
+
+/// What `list_resources`' fan-out says when no extension listed anything
+/// (finding F8).
+fn no_resources_listed(unlisted: &UnlistedResources) -> String {
+    let named = |names: &[String]| {
+        names
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut text = String::from("No resources to list.");
+    match unlisted.asked.as_slice() {
+        [] => {}
+        [one] => text.push_str(&format!(
+            " `{one}` supports resources and was asked, but is not publishing any right now."
+        )),
+        many => text.push_str(&format!(
+            " {} support resources and were asked, but none of them is publishing any right \
+             now.",
+            named(many)
+        )),
+    }
+    match unlisted.failed.as_slice() {
+        [] => {}
+        [one] => text.push_str(&format!(
+            " `{one}` supports resources but could not be listed: its server returned an error."
+        )),
+        many => text.push_str(&format!(
+            " {} support resources but could not be listed: their servers returned an error.",
+            named(many)
+        )),
+    }
+    match unlisted.withheld.as_slice() {
+        [] => {}
+        [one] => text.push_str(&format!(
+            " `{one}` supports resources, but this chat's model may not read them."
+        )),
+        many => text.push_str(&format!(
+            " {} support resources, but this chat's model may not read them.",
+            named(many)
+        )),
+    }
+    let offer_none = unlisted.offer_none;
+    let other = if unlisted.asked.is_empty()
+        && unlisted.failed.is_empty()
+        && unlisted.withheld.is_empty()
+    {
+        ""
+    } else {
+        " other"
+    };
+    match offer_none {
+        0 if other.is_empty() => {
+            text.push_str(" No extension this chat can reach offers resources.");
+        }
+        0 => {}
+        1 => text.push_str(&format!(
+            " The one{other} extension this chat can reach does not offer resources."
+        )),
+        n => text.push_str(&format!(
+            " The{other} {n} extensions this chat can reach do not offer resources."
+        )),
+    }
+    text
+}
+
 /// The prefixed tool list and the extension keys that named it, taken together.
 ///
 /// Issue #56 Gate E resolves a prefixed tool name against the set of installed
@@ -2566,6 +2666,12 @@ impl ExtensionManager {
                 )
             })
             .map(|lr| {
+                // Nothing listed is NOTHING, not one empty string: both callers
+                // compose a sentence from an empty result, and a `""` among the
+                // fan-out's contents would read as a listing (finding F8).
+                if lr.resources.is_empty() {
+                    return Vec::new();
+                }
                 let resource_list = lr
                     .resources
                     .into_iter()
@@ -2599,38 +2705,65 @@ impl ExtensionManager {
                     .await?;
 
                 // Handle single extension case
-                self.list_resources_from_extension(extension_name, admitted, cancellation_token)
+                let listed = self
+                    .list_resources_from_extension(extension_name, admitted, cancellation_token)
+                    .await?;
+                if !listed.is_empty() {
+                    return Ok(listed);
+                }
+                // The gate above admitted this name, and it is the caller's own
+                // word, so saying it back tells the caller nothing new.
+                let supports_resources = self
+                    .extensions
+                    .lock()
                     .await
+                    .get(extension_name)
+                    .is_some_and(Extension::supports_resources);
+                Ok(vec![Content::text(no_resources_in(
+                    extension_name,
+                    supports_resources,
+                ))])
             }
             None => {
                 // Handle all extensions case using FuturesUnordered
                 let mut futures = FuturesUnordered::new();
 
-                // Create futures for each resource_capable_extension
-                self.extensions
+                // The extensions that declare resource support: the ones this
+                // fan-out asks, and — by difference — the ones it need not.
+                let capable: Vec<String> = self
+                    .extensions
                     .lock()
                     .await
                     .iter()
                     .filter(|(_name, ext)| ext.supports_resources())
                     .map(|(name, _ext)| name.clone())
-                    .for_each(|name| {
-                        let token = cancellation_token.clone();
-                        futures.push(async move {
-                            self.list_resources_from_extension(&name.clone(), admitted, token)
-                                .await
-                        });
+                    .collect();
+                for name in capable.iter().cloned() {
+                    let token = cancellation_token.clone();
+                    futures.push(async move {
+                        let listed = self
+                            .list_resources_from_extension(&name, admitted, token)
+                            .await;
+                        (name, listed)
                     });
+                }
 
                 let mut all_resources = Vec::new();
+                let mut asked = Vec::new();
+                let mut failed = Vec::new();
                 let mut errors = Vec::new();
 
                 // Process results as they complete
-                while let Some(result) = futures.next().await {
+                while let Some((name, result)) = futures.next().await {
                     match result {
                         Ok(content) => {
+                            asked.push(name);
                             all_resources.extend(content);
                         }
                         Err(tool_error) => {
+                            if !is_privacy_refusal(&tool_error) {
+                                failed.push(name);
+                            }
                             errors.push(tool_error);
                         }
                     }
@@ -2663,7 +2796,54 @@ impl ExtensionManager {
                     );
                 }
 
-                Ok(all_resources)
+                if !all_resources.is_empty() {
+                    return Ok(all_resources);
+                }
+
+                // Finding F8 (2026-09-10 composer QA run): an empty listing
+                // used to come back as `""`, and the model could only report
+                // that the tool "returned an empty string". Every other empty
+                // or refusing result explains itself, so this one says which
+                // extensions were asked and that none of them had anything.
+                //
+                // ⚠ **Every name here is filtered through Gate E's roster**,
+                // the rule #219 set for the not-found message in
+                // `read_resource_tool`, and for the same reason: this sentence
+                // is composed right after a loop that declined to reach the
+                // private extensions, so naming what the loop consulted — or,
+                // worse, what it skipped — would hand a public caller the
+                // private roster Gate E withholds. A refused extension is never
+                // named and never counted. `admitted` is threaded, never
+                // resampled, and the roster is sorted because the map's
+                // iteration order is randomised per process.
+                let roster = self.allowed_extension_keys(admitted).await;
+                let shown = |mut names: Vec<String>| {
+                    names.retain(|name| roster.contains(name));
+                    names.sort();
+                    names
+                };
+                // What is left of the capable set once the asked and the failed
+                // are taken out is what the loop refused. Of that, only the
+                // part Gate E shows this caller is named — the cross-
+                // affiliation mismatches DR-26 lists and marks — and the rest,
+                // the private extensions a public caller may not see, vanishes
+                // here exactly as it vanished from the tool list.
+                let withheld = shown(
+                    capable
+                        .iter()
+                        .filter(|name| !asked.contains(name) && !failed.contains(name))
+                        .cloned()
+                        .collect(),
+                );
+                let offer_none = roster.iter().filter(|name| !capable.contains(name)).count();
+                Ok(vec![Content::text(no_resources_listed(
+                    &UnlistedResources {
+                        asked: shown(asked),
+                        failed: shown(failed),
+                        withheld,
+                        offer_none,
+                    },
+                ))])
             }
         }
     }
@@ -6953,6 +7133,9 @@ mod tests {
     struct CountingClient {
         label: &'static str,
         calls: Arc<std::sync::atomic::AtomicUsize>,
+        /// Whether `list_resources` returns a resource. `false` is a server
+        /// that supports resources and is publishing none — finding F8's case.
+        publishes: bool,
     }
 
     impl CountingClient {
@@ -6960,6 +7143,14 @@ mod tests {
             Self {
                 label,
                 calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                publishes: true,
+            }
+        }
+
+        fn publishing_nothing(label: &'static str) -> Self {
+            Self {
+                publishes: false,
+                ..Self::new(label)
             }
         }
 
@@ -6990,12 +7181,17 @@ mod tests {
         ) -> Result<ListResourcesResult, Error> {
             use rmcp::model::AnnotateAble;
             self.hit();
-            Ok(ListResourcesResult {
-                resources: vec![rmcp::model::RawResource::new(
+            let resources = if self.publishes {
+                vec![rmcp::model::RawResource::new(
                     "res://x",
                     format!("{}-resource", self.sentinel()),
                 )
-                .no_annotation()],
+                .no_annotation()]
+            } else {
+                vec![]
+            };
+            Ok(ListResourcesResult {
+                resources,
                 next_cursor: None,
                 meta: None,
             })
@@ -7402,6 +7598,248 @@ mod tests {
             "Unable to list resources for ucsfomopagent, TransportClosed".to_string(),
             None,
         )));
+    }
+
+    /// Finding F8's shape: extensions that SUPPORT resources and publish none
+    /// — the private `ucsfomopagent` and the public `developer` — beside the
+    /// public `todo`, which declares no resource support at all. The QA
+    /// sandbox's `computercontroller` had cached nothing, which is the
+    /// `developer` row; the private row is added so the roster filter can be
+    /// seen biting rather than assumed.
+    async fn quiet_resources_fixture() -> (TempDir, ExtensionManager, CountingClient) {
+        let dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let em = ExtensionManager::new(
+            Arc::new(Mutex::new(Some(provider_at(
+                crate::privacy::ProviderTier::Public,
+            )))),
+            session_manager,
+        );
+        let info = ServerInfo {
+            capabilities: rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+            ..Default::default()
+        };
+        let private = CountingClient::publishing_nothing("private");
+        for (name, client) in [
+            ("ucsfomopagent", private.clone()),
+            ("developer", CountingClient::publishing_nothing("public")),
+        ] {
+            em.add_client(
+                normalize(name),
+                ExtensionConfig::Builtin {
+                    name: name.to_string(),
+                    display_name: Some(name.to_string()),
+                    description: "built-in".to_string(),
+                    timeout: None,
+                    bundled: None,
+                    available_tools: vec![],
+                },
+                Arc::new(client),
+                Some(info.clone()),
+                None,
+            )
+            .await;
+        }
+        // No `ServerInfo`, so no declared resource support.
+        em.add_mock_extension("todo".to_string(), Arc::new(MockClient {}))
+            .await;
+        (dir, em, private)
+    }
+
+    /// `list_resources` as the `extensionmanager__list_resources` tool calls
+    /// it — an admitted capability, never a fresh sample — rendered to the text
+    /// the model reads.
+    async fn listed_resources(
+        em: &ExtensionManager,
+        params: Value,
+        caller: crate::privacy::ProviderTier,
+    ) -> String {
+        em.list_resources(
+            params,
+            Some(crate::privacy::CallCapability::for_test(caller, true)),
+            CancellationToken::default(),
+        )
+        .await
+        .expect("an empty listing is an answer, not an error")
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("\n")
+    }
+
+    /// Finding F8: `list_resources` found nothing and answered `""`, so the
+    /// model could only report that the tool "returned an empty string". It now
+    /// says who was asked and that none of them had anything.
+    ///
+    /// ⚠ **Both columns are needed, as in #219's M6 test next door.** The public
+    /// sentence must not name `ucsfomopagent` — it is composed right after a
+    /// loop that declined to reach it, and naming what the loop skipped is the
+    /// leak #219 closed in `read_resource_tool`. And it must still name
+    /// `developer`, or a sentence that named nothing would pass. The private
+    /// column is what shows the name was FILTERED rather than never collected.
+    #[tokio::test]
+    async fn an_empty_resource_listing_says_who_was_asked_naming_only_gate_es_roster() {
+        let (_dir, em, private) = quiet_resources_fixture().await;
+
+        let as_public = listed_resources(
+            &em,
+            serde_json::json!({}),
+            crate::privacy::ProviderTier::Public,
+        )
+        .await;
+        assert_eq!(
+            as_public,
+            "No resources to list. `developer` supports resources and was asked, but is not \
+             publishing any right now. The one other extension this chat can reach does not \
+             offer resources."
+        );
+        assert!(!as_public.contains("ucsfomopagent"), "{as_public}");
+        assert_eq!(
+            private.contacted(),
+            0,
+            "the public listing asked the private server"
+        );
+
+        let as_private = listed_resources(
+            &em,
+            serde_json::json!({}),
+            crate::privacy::ProviderTier::Private,
+        )
+        .await;
+        assert_eq!(
+            as_private,
+            "No resources to list. `developer`, `ucsfomopagent` support resources and were \
+             asked, but none of them is publishing any right now. The one other extension this \
+             chat can reach does not offer resources."
+        );
+        assert_eq!(private.contacted(), 1);
+    }
+
+    /// The named branch says the named extension has none — and a public caller
+    /// naming a private extension is still REFUSED, in the words a name that is
+    /// not installed gets (finding M18). "`ucsfomopagent` has no resources"
+    /// would confirm to a public caller that it is installed.
+    #[tokio::test]
+    async fn a_named_extension_with_nothing_to_list_says_so() {
+        use crate::privacy::ProviderTier::{Private, Public};
+        let (_dir, em, private) = quiet_resources_fixture().await;
+
+        assert_eq!(
+            listed_resources(&em, serde_json::json!({ "extension": "developer" }), Public).await,
+            "`developer` has no resources to list: it supports resources but is not publishing \
+             any right now."
+        );
+        assert_eq!(
+            listed_resources(
+                &em,
+                serde_json::json!({ "extension": "ucsfomopagent" }),
+                Private
+            )
+            .await,
+            "`ucsfomopagent` has no resources to list: it supports resources but is not \
+             publishing any right now."
+        );
+        assert_eq!(private.contacted(), 1, "only the private caller reached it");
+
+        let refused = |name: &'static str| {
+            let em = &em;
+            async move {
+                em.list_resources(
+                    serde_json::json!({ "extension": name }),
+                    Some(crate::privacy::CallCapability::for_test(Public, true)),
+                    CancellationToken::default(),
+                )
+                .await
+                .expect_err("a public caller reaches neither")
+                .message
+                .to_string()
+            }
+        };
+        assert_eq!(
+            refused("ucsfomopagent")
+                .await
+                .replace("ucsfomopagent", "NAME"),
+            refused("nonexistent_ext")
+                .await
+                .replace("nonexistent_ext", "NAME"),
+        );
+        assert_eq!(private.contacted(), 1);
+    }
+
+    /// A model bound to ANOTHER institution is shown `ucsfomopagent` — DR-26
+    /// lists and marks a mismatch rather than hiding it — and refused its
+    /// resources. The sentence must say that, not count it among the
+    /// extensions that "do not offer resources", which would be false.
+    #[tokio::test]
+    async fn an_empty_listing_names_a_cross_affiliation_refusal_as_withheld() {
+        let (_dir, em, private) = quiet_resources_fixture().await;
+        let elsewhere = crate::privacy::CallCapability::for_test_affiliated(
+            crate::privacy::ProviderTier::Private,
+            true,
+            Some(crate::privacy::affiliation::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new("stanford"),
+            )),
+        );
+        let text = em
+            .list_resources(
+                serde_json::json!({}),
+                Some(elsewhere),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("an empty listing is an answer, not an error")
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            text,
+            "No resources to list. `developer` supports resources and was asked, but is not \
+             publishing any right now. `ucsfomopagent` supports resources, but this chat's model \
+             may not read them. The one other extension this chat can reach does not offer \
+             resources."
+        );
+        assert_eq!(
+            private.contacted(),
+            0,
+            "Gate C refused it before any contact"
+        );
+    }
+
+    /// The composer's other branches, which the fixtures above do not reach:
+    /// no reachable extension supports resources at all, and ones that could
+    /// not be listed.
+    #[test]
+    fn the_empty_listing_sentence_accounts_for_every_group_it_is_given() {
+        let names = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            no_resources_listed(&UnlistedResources::default()),
+            "No resources to list. No extension this chat can reach offers resources."
+        );
+        assert_eq!(
+            no_resources_listed(&UnlistedResources {
+                offer_none: 11,
+                ..Default::default()
+            }),
+            "No resources to list. The 11 extensions this chat can reach do not offer resources."
+        );
+        assert_eq!(
+            no_resources_listed(&UnlistedResources {
+                failed: names(&["files", "notes"]),
+                withheld: names(&["cdwagent"]),
+                offer_none: 2,
+                ..Default::default()
+            }),
+            "No resources to list. `files`, `notes` support resources but could not be listed: \
+             their servers returned an error. `cdwagent` supports resources, but this chat's \
+             model may not read them. The other 2 extensions this chat can reach do not offer \
+             resources."
+        );
     }
 
     /// An MCP prompt body is server-authored text that lands in the transcript
