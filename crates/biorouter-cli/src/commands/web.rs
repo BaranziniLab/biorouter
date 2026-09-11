@@ -15,10 +15,13 @@ use base64::Engine;
 use biorouter::agents::turn_abort::TurnFailed;
 use biorouter::agents::{Agent, AgentEvent};
 use biorouter::conversation::message::Message as BioRouterMessage;
-use biorouter::session::session_manager::SessionType;
+use biorouter::privacy::visibility::{may_read, may_write};
+use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::session::session_manager::{SessionManager, SessionType};
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -33,6 +36,11 @@ struct AppState {
     cancellations: CancellationStore,
     auth_token: Option<String>,
     ws_token: String,
+    /// The chats this server started, through `GET /`. See [`page_capability`].
+    started_here: Arc<RwLock<HashSet<String>>>,
+    /// The tier of the provider this server was started on, read once, before
+    /// the first turn. See [`page_capability`].
+    server_tier: ProviderTier,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -190,7 +198,9 @@ fn get_provider_and_model() -> (String, String) {
     (provider_name, model)
 }
 
-async fn create_agent(provider_name: &str, model: &str) -> Result<Agent> {
+/// The agent every chat on this server shares, and the tier of the provider it
+/// was started on.
+async fn create_agent(provider_name: &str, model: &str) -> Result<(Agent, ProviderTier)> {
     let model_config = biorouter::model::ModelConfig::new(model)?;
 
     let agent = Agent::new();
@@ -205,6 +215,9 @@ async fn create_agent(provider_name: &str, model: &str) -> Result<Agent> {
         .await?;
 
     let provider = biorouter::providers::create(provider_name, model_config).await?;
+    // Read here, not off the agent later: the agent is shared by every chat, and
+    // a turn in a chat whose row names another provider rebinds it (Gate B).
+    let server_tier = provider.tier();
     agent.update_provider(provider, &init_session.id).await?;
 
     let enabled_configs = biorouter::config::get_enabled_extensions();
@@ -214,7 +227,7 @@ async fn create_agent(provider_name: &str, model: &str) -> Result<Agent> {
         }
     }
 
-    Ok(agent)
+    Ok((agent, server_tier))
 }
 
 fn build_cors_layer(auth_token: &Option<String>, host: &str, port: u16) -> CorsLayer {
@@ -236,14 +249,21 @@ fn build_cors_layer(auth_token: &Option<String>, host: &str, port: u16) -> CorsL
     }
 }
 
+/// ⚠ **There is no `/api/sessions` route, and there must not be one again.**
+/// `GET /api/sessions` listed every user and scheduled chat on the machine (id,
+/// title, working directory), and `GET /api/sessions/{id}` returned any chat's
+/// full transcript, private ones included, behind no reach check at all — and
+/// behind no credential either unless `--auth-token` was passed, which puts the
+/// token in this process's argv. The page read one of the two, for a message
+/// count and a tab title. Both were removed rather than gated (issue #56, SD-13
+/// in `docs/deployment/serve-decisions.md`); a chat is reached through this
+/// server only by sending it a message, which [`turn_reach`] judges.
 fn build_router(state: AppState, cors_layer: CorsLayer) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/session/{session_name}", get(serve_session))
         .route("/ws", get(websocket_handler))
         .route("/api/health", get(health_check))
-        .route("/api/sessions", get(list_sessions))
-        .route("/api/sessions/{session_id}", get(get_session))
         .route("/static/{*path}", get(serve_static))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -273,7 +293,7 @@ pub async fn handle_web(
     crate::logging::setup_logging(Some("biorouter-web"), None)?;
 
     let (provider_name, model) = get_provider_and_model();
-    let agent = create_agent(&provider_name, &model).await?;
+    let (agent, server_tier) = create_agent(&provider_name, &model).await?;
 
     let ws_token = if auth_token.is_none() {
         uuid::Uuid::new_v4().to_string()
@@ -286,6 +306,8 @@ pub async fn handle_web(
         cancellations: Arc::new(RwLock::new(std::collections::HashMap::new())),
         auth_token: auth_token.clone(),
         ws_token,
+        started_here: Arc::default(),
+        server_tier,
     };
 
     let cors_layer = build_cors_layer(&auth_token, &host, port);
@@ -333,6 +355,7 @@ async fn serve_index(
         )
         .await
         .map_err(|err| (http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    state.started_here.write().await.insert(session.id.clone());
 
     let redirect_url = if let Some(query) = uri.query() {
         format!("/session/{}?{}", session.id, query)
@@ -392,48 +415,109 @@ async fn health_check() -> Json<serde_json::Value> {
     }))
 }
 
-async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value> {
-    match state.agent.config.session_manager.list_sessions().await {
-        Ok(sessions) => {
-            let mut session_info = Vec::new();
+/// What a page is told when its message names a chat it may not reach.
+///
+/// ⚠ **One sentence for "that chat is private" and for "there is no chat with
+/// that id", deliberately**, for the reason the daemon's `SESSION_OUT_OF_REACH`
+/// gives (`routes/session_reach.rs`): a refusal that told the two apart would
+/// enumerate the machine's private chats one id at a time. It is fixed text and
+/// names nothing about the chat, so the two answers are equal byte for byte.
+///
+/// It states the page's own situation and forecloses the retry. The condition it
+/// names cannot be met for a chat that already exists elsewhere, so it hands a
+/// reader no way around itself; the one way through is the desktop app, where a
+/// person can show they are at the keyboard.
+const CHAT_OUT_OF_REACH: &str =
+    "That chat is private, or there is no chat with that id, and the two answers are \
+     deliberately the same so that nothing about the chat is disclosed. `biorouter web` cannot \
+     tell which model or which person is sending these messages, so it opens a private chat only \
+     when it started that chat itself and runs a private model. Your message was not sent and \
+     nothing was read; sending it again will be refused the same way. To continue a private \
+     chat, open it in the Biorouter desktop app.";
 
-            for session in sessions {
-                session_info.push(serde_json::json!({
-                    "name": session.id,
-                    "path": session.id,
-                    "description": session.name,
-                    "message_count": session.message_count,
-                    "working_dir": session.working_dir
-                }));
-            }
-            Json(serde_json::json!({
-                "sessions": session_info
-            }))
-        }
-        Err(e) => Json(serde_json::json!({
-            "error": e.to_string()
-        })),
+/// The capability a page brings to the chat its message names.
+///
+/// ⚠ **Nothing on the socket says who is on the other end of it.** The server's
+/// one credential proves nothing about that either: the WebSocket token is served
+/// by `/session/{name}` to anyone who can reach the port, and `--auth-token` sits
+/// in this process's argv, where any process of the same user reads it (AR-11 in
+/// `docs/security/privacy-tiers-execution-plan.md`). So a page is a PUBLIC
+/// caller, which is also how the daemon resolves a caller that states no
+/// capability (`session_reach::caller_capability`).
+///
+/// The exception is a chat this server started itself, which the page reaches at
+/// the tier of the provider this server was started on. Without it a server on a
+/// private model would give one reply per chat: that reply ratchets the chat to
+/// private, and the next message would be refused. On a public model the
+/// exception changes nothing, because the page is Public for every chat — so a
+/// chat it started that was taken private somewhere else is refused like any
+/// other.
+fn page_capability(started_here: bool, server_tier: ProviderTier) -> ProviderTier {
+    if started_here {
+        server_tier
+    } else {
+        ProviderTier::Public
     }
 }
-async fn get_session(
-    State(state): State<AppState>,
-    axum::extract::Path(session_id): axum::extract::Path<String>,
-) -> Json<serde_json::Value> {
-    match state
-        .agent
-        .config
-        .session_manager
-        .get_session(&session_id, true)
-        .await
-    {
-        Ok(session) => Json(serde_json::json!({
-            "metadata": session,
-            "messages": session.conversation.unwrap_or_default().messages()
-        })),
-        Err(e) => Json(serde_json::json!({
-            "error": e.to_string()
-        })),
+
+/// May a page with this capability run a turn in a chat in this state?
+///
+/// `target` is the chat's classification, or `None` when its row could not be
+/// read — no such chat, a deleted one, a store error — which is answered exactly
+/// as a private chat is. `enforced` is DR-15's master switch, taken as an
+/// argument so that "the switch is off" is a corner the tests drive; with it off
+/// the gate is inert, like every other.
+fn refuse_turn_unless_reachable(
+    enforced: bool,
+    capability: ProviderTier,
+    target: Option<SessionClassification>,
+) -> Result<(), &'static str> {
+    if !enforced {
+        return Ok(());
     }
+    let target = target.unwrap_or(SessionClassification::Private);
+    // A turn reads the whole conversation into the model and writes into it, so
+    // it asks both verbs, as `workspace_send_prompt` does. They coincide today;
+    // asking both keeps a later narrowing of either from being skipped here.
+    if may_read(capability, target) && may_write(capability, target) {
+        Ok(())
+    } else {
+        Err(CHAT_OUT_OF_REACH)
+    }
+}
+
+/// The gate on the one door into a chat this server keeps: a WebSocket message,
+/// which runs a turn in whichever chat it names.
+///
+/// ⚠ **It is the same door as the daemon's `POST /reply`, and it was open.** A
+/// message naming a private chat started anywhere else ran a turn there — Gate B
+/// rebinds the shared agent to the private model that chat's row names — and the
+/// reply, which can quote the whole conversation, streamed back to whoever held
+/// the socket. Removing `GET /api/sessions/{id}` alone would have closed the
+/// smaller door and left this one.
+///
+/// Called before anything touches the chat, as `session_reach` is. The row is
+/// read metadata-only, so resolving the tier never loads the transcript this may
+/// be about to refuse.
+async fn turn_reach(
+    manager: &SessionManager,
+    started_here: &RwLock<HashSet<String>>,
+    server_tier: ProviderTier,
+    session_id: &str,
+) -> Result<(), &'static str> {
+    // DR-15's master opt-out, read directly: a turn is not a tool call and has
+    // no sampled capability to inherit. Short-circuit before the store read.
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    if !enforced {
+        return Ok(());
+    }
+    let capability = page_capability(started_here.read().await.contains(session_id), server_tier);
+    let target = manager
+        .get_session(session_id, false)
+        .await
+        .ok()
+        .map(|session| session.privacy_tier);
+    refuse_turn_unless_reachable(enforced, capability, target)
 }
 
 #[derive(Deserialize)]
@@ -505,6 +589,18 @@ async fn handle_user_message(
     sender: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     state: &AppState,
 ) {
+    if let Err(refusal) = turn_reach(
+        &state.agent.config.session_manager,
+        &state.started_here,
+        state.server_tier,
+        &session_id,
+    )
+    .await
+    {
+        send_error(&sender, refusal).await;
+        return;
+    }
+
     let agent = state.agent.clone();
     let session_id_clone = session_id.clone();
 
@@ -595,10 +691,8 @@ async fn process_message_streaming(
     let session = agent
         .config
         .session_manager
-        .get_session(&session_id, true)
+        .get_session(&session_id, false)
         .await?;
-    let mut messages = session.conversation.unwrap_or_default();
-    messages.push(user_message.clone());
 
     let session_config = SessionConfig {
         id: session.id.clone(),
@@ -795,7 +889,23 @@ async fn send_error(
 
 #[cfg(test)]
 mod tests {
-    use super::token_matches;
+    use super::*;
+    use biorouter::agents::AgentConfig;
+    use biorouter::config::permission::PermissionManager;
+    use biorouter::config::BioRouterMode;
+    use serde_json::json;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_tungstenite::tungstenite::Message as Frame;
+
+    const TIERS: [ProviderTier; 2] = [ProviderTier::Public, ProviderTier::Private];
+    const TARGETS: [Option<SessionClassification>; 3] = [
+        Some(SessionClassification::Public),
+        Some(SessionClassification::Private),
+        None,
+    ];
+    const WS_TOKEN: &str = "test-ws-token";
 
     #[test]
     fn token_match_is_exact_and_length_checked() {
@@ -806,5 +916,278 @@ mod tests {
         assert!(!token_matches("abc123", "abc"));
         assert!(!token_matches("", "abc123"));
         assert!(token_matches("", ""));
+    }
+
+    /// Nothing on the socket names a model, so a page is a public caller — in
+    /// every chat but the ones its own server started, where it has the tier of
+    /// the model it has been talking to.
+    #[test]
+    fn a_page_is_a_public_caller_outside_the_chats_its_server_started() {
+        for server_tier in TIERS {
+            assert_eq!(page_capability(false, server_tier), ProviderTier::Public);
+            assert_eq!(page_capability(true, server_tier), server_tier);
+        }
+    }
+
+    /// The rule at every corner, with the switch on. An unreadable row is judged
+    /// as a private one, so a public page is refused both.
+    #[test]
+    fn a_turn_reaches_a_chat_only_at_the_tier_the_page_holds() {
+        use SessionClassification::{Private, Public};
+        #[rustfmt::skip]
+        let cases = [
+            // capability             target          admitted
+            (ProviderTier::Public,  Some(Public),  true),
+            (ProviderTier::Public,  Some(Private), false),
+            (ProviderTier::Public,  None,          false),
+            (ProviderTier::Private, Some(Public),  true),
+            (ProviderTier::Private, Some(Private), true),
+            (ProviderTier::Private, None,          true),
+        ];
+        for (capability, target, admitted) in cases {
+            assert_eq!(
+                refuse_turn_unless_reachable(true, capability, target).is_ok(),
+                admitted,
+                "a {capability:?} page naming a chat classified {target:?}"
+            );
+        }
+    }
+
+    /// DR-15: with privacy tiers off, this gate refuses nothing, like every other.
+    #[test]
+    fn with_privacy_tiers_off_the_gate_refuses_nothing() {
+        for capability in TIERS {
+            for target in TARGETS {
+                assert_eq!(
+                    refuse_turn_unless_reachable(false, capability, target),
+                    Ok(()),
+                    "{capability:?} / {target:?}"
+                );
+            }
+        }
+    }
+
+    /// A page cannot tell "no such chat" from "a private chat" by the answer.
+    /// Asserted as equality at every capability rather than as each answer being
+    /// vague, because a vagueness check passes an implementation that adds one
+    /// helpful clause to the branch it can tell apart.
+    #[test]
+    fn no_such_chat_and_a_private_chat_are_the_same_refusal() {
+        for capability in TIERS {
+            assert_eq!(
+                refuse_turn_unless_reachable(true, capability, None),
+                refuse_turn_unless_reachable(
+                    true,
+                    capability,
+                    Some(SessionClassification::Private)
+                ),
+                "a {capability:?} page can tell a missing chat from a private one"
+            );
+        }
+        assert_eq!(
+            refuse_turn_unless_reachable(true, ProviderTier::Public, None),
+            Err(CHAT_OUT_OF_REACH)
+        );
+    }
+
+    /// The page and the router agree: the page asks for no chat list and no
+    /// transcript, so the routes that served them could go.
+    #[test]
+    fn the_page_asks_for_no_chat_list_and_no_transcript() {
+        let page = include_str!("../../static/script.js");
+        assert!(
+            !page.contains("/api/sessions"),
+            "the page fetches a route this server no longer has"
+        );
+    }
+
+    /// A server as `handle_web` builds one, on an ephemeral port and over its
+    /// own store, minus the provider. A message the gate admits reaches
+    /// `process_message_streaming` and is answered "not configured", which is how
+    /// these tests tell an admitted message from a refused one without a model.
+    struct TestServer {
+        addr: SocketAddr,
+        manager: Arc<SessionManager>,
+        _store: tempfile::TempDir,
+    }
+
+    impl TestServer {
+        async fn start(server_tier: ProviderTier) -> Self {
+            assert!(
+                biorouter::privacy::privacy_tiers_enabled(),
+                "these tests drive the enforced gate, and something in this binary turned the \
+                 master switch off"
+            );
+            let store = tempfile::tempdir().unwrap();
+            let manager = Arc::new(SessionManager::new(store.path().to_path_buf()));
+            let agent = Agent::with_config(AgentConfig::new(
+                Arc::clone(&manager),
+                PermissionManager::instance(),
+                None,
+                BioRouterMode::Auto,
+            ));
+            let state = AppState {
+                agent: Arc::new(agent),
+                cancellations: Arc::default(),
+                auth_token: None,
+                ws_token: WS_TOKEN.to_string(),
+                started_here: Arc::default(),
+                server_tier,
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let app = build_router(state, build_cors_layer(&None, "127.0.0.1", addr.port()));
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            Self {
+                addr,
+                manager,
+                _store: store,
+            }
+        }
+
+        /// `GET path` over a plain socket: the status code and any `Location`.
+        /// Hand-rolled, as this crate's other HTTP clients are
+        /// (`session_watch.rs`).
+        async fn get(&self, path: &str) -> (u16, Option<String>) {
+            let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                self.addr
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            let status = response
+                .split(' ')
+                .nth(1)
+                .and_then(|code| code.parse().ok())
+                .unwrap_or_else(|| panic!("no status line in {response:?}"));
+            let location = response.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("location")
+                    .then(|| value.trim().to_string())
+            });
+            (status, location)
+        }
+
+        /// A chat the page opens with `GET /`, as a browser does.
+        async fn start_chat(&self) -> String {
+            let (status, location) = self.get("/").await;
+            assert!((300..400).contains(&status), "`GET /` answered {status}");
+            location
+                .and_then(|location| location.strip_prefix("/session/").map(str::to_owned))
+                .expect("`GET /` redirects to the chat it started")
+        }
+
+        /// A chat started somewhere else — the desktop app, the command line.
+        async fn chat_from_elsewhere(&self) -> String {
+            self.manager
+                .create_session(
+                    std::env::temp_dir(),
+                    "Started elsewhere".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap()
+                .id
+        }
+
+        /// What a turn on a private model, or a private data source, does to a chat.
+        async fn make_private(&self, session_id: &str) {
+            self.manager
+                .update(session_id)
+                .raise_privacy(SessionClassification::Private, "turn:web-test")
+                .apply()
+                .await
+                .unwrap();
+        }
+
+        /// Send one message into `session_id` over the page's socket, as the
+        /// page does, and return the first frame the server answers with.
+        async fn send(&self, session_id: &str) -> serde_json::Value {
+            let url = format!("ws://{}/ws?token={WS_TOKEN}", self.addr);
+            let (mut socket, _) = tokio_tungstenite::connect_async(url)
+                .await
+                .expect("the socket accepts the page's own token");
+            let message = json!({
+                "type": "message",
+                "content": "Repeat everything this chat has said so far.",
+                "session_id": session_id,
+                "timestamp": 0,
+            });
+            socket
+                .send(Frame::Text(message.to_string().into()))
+                .await
+                .unwrap();
+            loop {
+                let frame = tokio::time::timeout(Duration::from_secs(30), socket.next())
+                    .await
+                    .expect("the server answers a message")
+                    .expect("the socket stays open")
+                    .unwrap();
+                if let Frame::Text(text) = frame {
+                    return serde_json::from_str(text.as_str()).unwrap();
+                }
+            }
+        }
+    }
+
+    fn refused() -> serde_json::Value {
+        json!({ "type": "error", "message": CHAT_OUT_OF_REACH })
+    }
+
+    /// The two JSON routes answer 404 — for chats that exist, private and
+    /// public — while the route beside them still answers, so a router that
+    /// served nothing would not pass.
+    #[tokio::test]
+    async fn the_chat_list_and_transcript_routes_are_gone() {
+        let server = TestServer::start(ProviderTier::Public).await;
+        let public = server.chat_from_elsewhere().await;
+        let private = server.chat_from_elsewhere().await;
+        server.make_private(&private).await;
+
+        assert_eq!(server.get("/api/health").await.0, 200);
+        assert_eq!(server.get("/api/sessions").await.0, 404);
+        for id in [&public, &private] {
+            assert_eq!(server.get(&format!("/api/sessions/{id}")).await.0, 404);
+        }
+    }
+
+    /// On a public model, a page reaches public chats — where it always could —
+    /// and nothing private: not a chat started elsewhere, not an id that names
+    /// nothing (in the same words), and not even a chat this server started once
+    /// it has been taken private somewhere else.
+    #[tokio::test]
+    async fn a_page_on_a_public_model_reaches_no_private_chat() {
+        let server = TestServer::start(ProviderTier::Public).await;
+
+        let public = server.chat_from_elsewhere().await;
+        assert_eq!(server.send(&public).await["type"], "response");
+
+        let private = server.chat_from_elsewhere().await;
+        server.make_private(&private).await;
+        assert_eq!(server.send(&private).await, refused());
+        assert_eq!(server.send("19700101_0").await, refused());
+
+        let started = server.start_chat().await;
+        assert_eq!(server.send(&started).await["type"], "response");
+        server.make_private(&started).await;
+        assert_eq!(server.send(&started).await, refused());
+    }
+
+    /// On a private model, a chat the server started keeps working after its
+    /// first reply ratchets it private — and a private chat started anywhere
+    /// else is still refused, because the page is public there.
+    #[tokio::test]
+    async fn a_page_on_a_private_model_keeps_its_own_chats_and_no_others() {
+        let server = TestServer::start(ProviderTier::Private).await;
+
+        let started = server.start_chat().await;
+        server.make_private(&started).await;
+        assert_eq!(server.send(&started).await["type"], "response");
+
+        let elsewhere = server.chat_from_elsewhere().await;
+        server.make_private(&elsewhere).await;
+        assert_eq!(server.send(&elsewhere).await, refused());
     }
 }

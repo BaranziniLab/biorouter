@@ -798,7 +798,9 @@ The printed URL carries an access token as `?t=<token>`, minted per launch and s
 
 ### web
 
-> **Deprecated.** Use [`serve`](#serve) instead. `web` serves a minimal standalone chat page rather than the Biorouter interface, and its default port collides with `biorouterd`'s. It is kept for now and unchanged; new deployments should not use it.
+> **Deprecated.** Use [`serve`](#serve) instead. `web` serves a minimal standalone chat page rather than the Biorouter interface, and its default port collides with `biorouterd`'s. It is kept for now; new deployments should not use it.
+>
+> Since 2026-09-11 it lists no chats and returns no transcripts, and it opens a private chat only if it started that chat itself while running a private model. Continue any other private chat in the desktop app. [SD-13](../deployment/serve-decisions.md#sd-13--biorouter-web-serves-no-transcripts-and-opens-no-private-chat-it-did-not-start) records why.
 
 Start a new session in biorouter Web, a lightweight web-based interface launched via the CLI that mirrors the desktop app's chat experience.
 

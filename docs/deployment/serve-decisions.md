@@ -2,9 +2,9 @@
 
 > **What this is.** The decision records governing browser-served Biorouter — why the daemon
 > serves the interface itself, why a browser session cannot change its model, why the
-> standalone `biorouter-headless` binary was retired, and how long the launch token stays good
-> for. Each record states the ruling, the alternatives it displaced, and the consequence a
-> future change would have to accept.
+> standalone `biorouter-headless` binary was retired, how long the launch token stays good for,
+> and which chats the deprecated `biorouter web` may still open. Each record states the ruling,
+> the alternatives it displaced, and the consequence a future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
 > changes anywhere near the serving path.
@@ -281,6 +281,77 @@ daemon runs. Revoking it means stopping `serve` — which is why SD-7 requires t
 outlive it — and, for an address fixed with `--token`, choosing a new token. Treat it like the
 password it is. `the_token_is_not_consumed_by_the_exchange` in `routes::web_ui` pins the
 behaviour, so changing it means revisiting this record, not making a quiet fix.
+
+---
+
+## SD-13 — `biorouter web` serves no transcripts, and opens no private chat it did not start
+
+**Ruling (2026-09-11).** The deprecated `biorouter web` command no longer serves
+`GET /api/sessions` or `GET /api/sessions/{id}`. The one way into a chat it keeps — a WebSocket
+message, which runs a turn in whichever chat it names — is judged before anything touches that
+chat. The page is a **public** caller, except in a chat this server started itself through
+`GET /`, where it holds the tier of the provider the server was started on. A chat it may not
+reach is refused with one sentence, identical for a private chat and for an id that names
+nothing.
+
+**Why.** Both routes predate the privacy tiers (issue #56) and never learned them. The list
+returned every user and scheduled chat on the machine with its title and working directory; the
+transcript route returned any chat's full conversation, private ones included. The only
+credential in front of them was the page's own, and it held nothing back:
+
+- **Without `--auth-token`** — the default, and all a loopback bind requires — the auth
+  middleware lets every request through, so anything that can reach the port reads every chat.
+  A model with a shell does it with `curl`.
+- **With `--auth-token`**, the token is a command-line argument. Any process running as the same
+  user reads it with `ps -axww -o args` (measured on macOS), and on Linux `/proc/<pid>/cmdline`
+  is readable by every user unless `/proc` is mounted with `hidepid`. That is
+  [AR-11](../security/privacy-tiers-execution-plan.md#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)'s
+  recovery of the daemon's secret, through a channel that is more open than the environment.
+
+The page read the transcript route for a message count and a tab title, and never read the list.
+Gating them would have kept two routes nobody needed, so both were deleted.
+
+The WebSocket could not be deleted, because it is the chat; it is gated instead. It was the
+larger way in, and it was open as well. A message naming a private chat started anywhere else
+ran a turn there — Gate B rebinds the one shared agent to the private model that chat's row
+names — and streamed the reply, which can quote the whole conversation, back to whoever held
+the socket. That is the daemon's `POST /reply` under another name, and `/reply` heads the
+daemon's gated list because it dominates every read route. Deleting the transcript route alone
+would have closed the smaller way in and left this one.
+
+**How the page's capability is decided.** Nothing on the socket names the model or the person on
+the other end, so the page is a public caller, which is also how the daemon treats a caller that
+states no capability. A chat this server started is the exception, reached at the tier of the
+provider the server was started on. Without it, a server on a private model would give one reply
+per chat: the first reply ratchets the chat to private, and the next message would be refused.
+On a public model the exception changes nothing, so a chat this server started that was taken
+private somewhere else is refused like any other.
+
+**Displaced alternatives.**
+
+- *Gate the two routes: list public chats only, and refuse a private transcript.* Rejected. It
+  keeps a list nothing reads and a transcript the page never showed, and every route kept is one
+  more place the reach rule has to be right.
+- *Give the page the server's tier for every chat.* Rejected. On a private model, any process
+  that can reach the port — a public-model chat's shell included — would reach every private
+  chat on the machine without stating anything. The daemon's residual at least requires the
+  caller to name a private provider.
+- *Refuse every private chat.* Rejected. It breaks the command on the second message of every
+  chat for exactly the operator who chose a private model.
+
+**What this is NOT.** It is not authentication. The page's credential is still within any local
+process's reach — served to whoever can reach the port without `--auth-token`, read from argv
+with it — so a local process can still drive public chats and the chats this server started, as
+it could before; issue #47 is unchanged. Nothing that was refused before is permitted now: the
+change removes two routes and refuses turns, and grants nothing.
+
+**Consequence to accept.** A chat is known as started here only for the life of the process.
+After a restart it counts as started elsewhere, and a private one must be continued in the
+desktop app. The page also stops showing "Session resumed: N messages loaded", because that
+count came from the transcript route. Implemented in `crates/biorouter-cli/src/commands/web.rs`
+(`turn_reach`, `page_capability` and `refuse_turn_unless_reachable`) and pinned by that module's
+tests, three of which drive the real router and WebSocket handler over a socket, against a real
+session store.
 
 ---
 

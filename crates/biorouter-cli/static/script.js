@@ -149,9 +149,6 @@ function connectWebSocket() {
         connectionStatus.textContent = 'Connected';
         connectionStatus.className = 'status connected';
         sendButton.disabled = false;
-        
-        // Check if this session exists and load history if it does
-        loadSessionIfExists();
     };
     
     socket.onmessage = (event) => {
@@ -455,40 +452,6 @@ function sendSuggestion(text) {
     messageInput.value = text;
     sendMessage();
 }
-
-// Load session history if the session exists (like --resume in CLI)
-async function loadSessionIfExists() {
-    try {
-        const response = await fetch(`/api/sessions/${sessionId}`);
-        if (response.ok) {
-            const sessionData = await response.json();
-            if (sessionData.messages && sessionData.messages.length > 0) {
-                // Remove welcome message since we're resuming
-                const welcomeMessage = messagesContainer.querySelector('.welcome-message');
-                if (welcomeMessage) {
-                    welcomeMessage.remove();
-                }
-                
-                // Display session resumed message
-                const resumeDiv = document.createElement('div');
-                resumeDiv.className = 'message system-message';
-                resumeDiv.innerHTML = `<em>Session resumed: ${sessionData.messages.length} messages loaded</em>`;
-                messagesContainer.appendChild(resumeDiv);
-                                
-                // Update page title with session description if available
-                if (sessionData.metadata && sessionData.metadata.description) {
-                    document.title = `biorouter chat - ${sessionData.metadata.description}`;
-                }
-                
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            }
-        }
-    } catch (error) {
-        console.log('No existing session found or error loading:', error);
-        // This is fine - just means it's a new session
-    }
-}
-
 
 // Event listeners
 sendButton.addEventListener('click', sendMessage);
