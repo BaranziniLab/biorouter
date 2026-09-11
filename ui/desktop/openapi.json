@@ -308,7 +308,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "The request was not proven to come from the user"
+            "description": "The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)"
           },
           "409": {
             "description": "A different turn generation is active, another client owns the continuation, or its admission is still settling",
@@ -357,7 +357,7 @@
             }
           },
           "403": {
-            "description": "The request was not proven to come from the user"
+            "description": "The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)"
           },
           "409": {
             "description": "The lease is invalid or belongs to another session",
@@ -403,7 +403,7 @@
             "description": "The continuation owner id is missing or invalid"
           },
           "403": {
-            "description": "The session is out of reach or the request was not proven to come from the user"
+            "description": "The session is out of reach or the request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)"
           },
           "409": {
             "description": "The exact continuation generation was already resolved",
@@ -1864,7 +1864,7 @@
             "description": "Empty message text"
           },
           "403": {
-            "description": "The request was not proven to come from the user"
+            "description": "The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)"
           },
           "409": {
             "description": "No turn is accepting interrupts for this session"
