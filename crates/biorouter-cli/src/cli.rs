@@ -656,7 +656,14 @@ enum SessionCommand {
         text: String,
         #[arg(
             long,
-            help = "Return as soon as the turn starts instead of streaming it"
+            help = "Return as soon as the daemon accepts the turn, printing its turn id, instead \
+                    of streaming it",
+            long_help = "Return as soon as the daemon accepts the turn, printing the session and \
+                         turn id, instead of streaming it. The turn runs on in the daemon: \
+                         `session watch <id>` follows it and `session cancel <id>` stops it. The \
+                         daemon stops a turn once nothing has been attached to its reply stream \
+                         for five minutes (`session watch` does not count), so --no-wait suits \
+                         turns shorter than that."
         )]
         no_wait: bool,
         #[arg(
