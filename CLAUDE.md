@@ -279,7 +279,11 @@ what did not" section first**; the rest of that document is the design, not the 
   institution's private connector is warned/refused even though both endpoints are Private.
 - **The master switch** lives in its own record beside `config.yaml`, **not in it** and **not in an
   env var** — the agent has `developer__shell`, so a switch it can edit is not a switch. Loaded once
-  per process; a load error resolves to ON.
+  per process; a load error resolves to ON. ⚠ The record is still agent-writable (DR-17), so an OFF
+  answer is **announced, never prevented**: one `WARN` at load, `BIOROUTER_PRIVACY_TIERS_RECORD` on
+  `/config` (served from memory), and `PrivacyTiersOffNote` above every composer. Each door stamps
+  the record with the value it wrote; OFF with no matching stamp reads *turned off outside the app*.
+  The stamp is forgeable — a signal, not a barrier; see `privacy/master_switch.rs` and §10.6.
 - **Lineage is NOT a boundary; the tier is the only one.** `may_write` ⇔ `may_read` ⇔ `VIS`, so an
   agent may inject a prompt into any conversation it can see — a child, a sibling, an unrelated
   chat. R6's old "steer what you spawned, read everything else" rule is retired and
