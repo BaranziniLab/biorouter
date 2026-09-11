@@ -109,6 +109,20 @@ fn register_builtin_providers(registry: &mut ProviderRegistry) {
     registry.register::<ZaiProvider, _>(|m| Box::pin(ZaiProvider::from_env(m)), false);
 }
 
+/// Every built-in provider's metadata from a fresh registry — no declarative or
+/// user-written providers, so a test that reads it sees the same set on every
+/// machine.
+#[cfg(test)]
+pub(crate) fn builtin_provider_metadata() -> Vec<ProviderMetadata> {
+    let mut registry = ProviderRegistry::new();
+    register_builtin_providers(&mut registry);
+    registry
+        .all_metadata_with_types()
+        .into_iter()
+        .map(|(metadata, _)| metadata)
+        .collect()
+}
+
 fn load_custom_providers_into_registry(registry: &mut ProviderRegistry) -> Result<()> {
     register_declarative_providers(registry)
 }

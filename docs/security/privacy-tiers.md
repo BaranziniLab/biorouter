@@ -1306,6 +1306,15 @@ close the read in any case: `candidate_is_denied` (`secret_guard.rs:278-292`) is
 existence-gated, so a computed path or a shell expression walks past it. Stated honestly, it raises
 the cost and does not close the read.
 
+> ⚠ **Changed 2026-09-11 (QA-C H1).** The sentence above described the scan as it then was, and
+> QA-C measured exactly that hole on the credential floor: `~/.aws/credentials`, `$HOME/…`, a glob
+> and `cd … && head` all reached a public model. The scan now resolves a command the way the shell
+> will (`~`, variables, globs, `cd`, nested `sh -c`) and refuses a match **whether or not the file
+> exists**, and tool output is scanned for credential material on the way back — see
+> [secret guard](secret-guard.md). The conclusion of this paragraph still stands: a path a
+> *program* assembles at run time is invisible to any text scan, so a floor pattern still raises
+> the cost of reading `sessions.db` without closing the read.
+
 **The answer is §9.5** — a read-deny on the tools, conditioned on the session's capability. Note
 which half of §9.5 answers which half of the objection: the *capability-conditional* part is what
 makes it scoped rather than an always-on floor, and the *in-process barrier at the dispatch choke
@@ -1456,6 +1465,13 @@ variable indirection. The module's own doc-comment concedes it is "conservative 
 rely on it for the opt-out: hold the authoritative value in daemon memory from startup and require
 the GUI IPC path to change it, or read it from a trusted file using the `managed/trust.rs`
 `verify_trusted` pattern — noting `verify_trusted` is a **no-op on Windows**.
+
+> ⚠ **Changed 2026-09-11 (QA-C H1)** — the mechanism, not the advice. The scan no longer needs a
+> literal existing token: it follows `cd`, variables and nested shells and refuses a match whether
+> or not the file exists ([secret guard](secret-guard.md)). The advice stands for a different
+> reason: `config.yaml` and `privacy-tiers.json` are not in the floor, and a path a program
+> assembles at run time is invisible to any text scan, so SecretGuard is still not a control for
+> the opt-out.
 
 **C2 — a scheduled job created from a private session becomes permanently, silently broken.**
 `scheduler.rs:844-866` builds its provider from `Config::global()`, creates a fresh `Scheduled`

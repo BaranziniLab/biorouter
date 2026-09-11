@@ -308,6 +308,53 @@ fn dispatch_meta(
     meta
 }
 
+/// Run one tool call, and withhold any credential material in what it returns
+/// before it can reach a model (H1).
+///
+/// This is the second line behind [`ExtensionManager::secret_guard_denial`]:
+/// the argument scan cannot see a path a program assembles while it runs
+/// (`python -c` joining the pieces, base64), so the *output* is checked for
+/// key material too — see [`crate::guardrails::secret_output`]. It sits inside
+/// the dispatched future because every route to a model converges there: the
+/// agent loop, the coding-agent tool bridge (whose results never pass the
+/// agent loop's own output guardrail), `POST /agent/call_tool`, and code
+/// execution's sub-calls. An error is redacted as well: a failing
+/// `automation_script` carries the script's stdout in its message.
+async fn call_tool_withholding_secrets(
+    client: &McpClientBox,
+    tool_name: &str,
+    arguments: Option<rmcp::model::JsonObject>,
+    meta: McpMeta,
+    cancellation_token: CancellationToken,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    use crate::guardrails::secret_output;
+    let outcome = client
+        .call_tool(tool_name, arguments, meta, cancellation_token)
+        .await
+        .map_err(|e| match e {
+            ServiceError::McpError(error_data) => error_data,
+            _ => ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), e.maybe_to_value()),
+        });
+    let (outcome, withheld) = match outcome {
+        Ok(mut result) => {
+            let withheld = secret_output::redact_call_tool_result(&mut result);
+            (Ok(result), withheld)
+        }
+        Err(mut error) => {
+            let withheld = secret_output::redact_error(&mut error);
+            (Err(error), withheld)
+        }
+    };
+    if let Some(withheld) = withheld {
+        tracing::warn!(
+            tool = tool_name,
+            "secret guard: {} from a tool result",
+            withheld.summary()
+        );
+    }
+    outcome
+}
+
 /// Sanitizes a string by replacing invalid characters with underscores.
 /// Valid characters match [a-zA-Z0-9_-]
 pub fn normalize(input: &str) -> String {
@@ -2071,9 +2118,16 @@ impl ExtensionManager {
     /// third-party MCP, a different shell wrapper) could read a
     /// `.env`/private-key/cloud-credential file that the deny set forbids.
     /// Enforcing it at the single choke point every tool call flows through is
-    /// what stops an extension bypassing it. The scan is conservative: it only
-    /// blocks when an argument names a secret file that actually exists on disk
-    /// (see `SecretGuard::find_denied_path`).
+    /// what stops an extension bypassing it.
+    ///
+    /// H1 (QA-C): the scan resolves a command the way the shell will — `~`,
+    /// `$HOME`, globs, `cd`, nested `sh -c` — and refuses a match whether or
+    /// not the file exists. It used to test each whitespace token literally and
+    /// let a match through unless that literal existed, which is how
+    /// `cat ~/.aws/credentials` reached a public model while
+    /// `cat /Users/…/.aws/credentials` was refused. See
+    /// `SecretGuard::find_denied_access`. What a text scan cannot see is
+    /// covered on the way back out by [`call_tool_withholding_secrets`].
     async fn secret_guard_denial(&self, tool_call: &CallToolRequestParams) -> Option<ErrorData> {
         let args = tool_call.arguments.as_ref()?;
         let cwd = self.resolve_working_dir().await;
@@ -2084,14 +2138,11 @@ impl ExtensionManager {
         // on the very next dispatch (see `cached_for_dir`).
         let guard = biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(&cwd);
         drop(secret_guard_phase);
-        let denied = guard.find_denied_path(args)?;
+        let _scan_phase = crate::agents::phase_timing::Phase::start("mcp.secret_guard_scan");
+        let denied = guard.find_denied_access(args)?;
         Some(ErrorData::new(
             ErrorCode::INVALID_PARAMS,
-            format!(
-                "Access to '{denied}' is blocked: it matches a secret/credential deny pattern \
-                 (.env, private key, or cloud credentials). Add a negation to \
-                 .biorouterignore to allow it."
-            ),
+            denied.message(),
             None,
         ))
     }
@@ -2845,15 +2896,10 @@ impl ExtensionManager {
             // are internally synchronized, so the guard (and its
             // `mcp.client_lock_wait` span) is gone and calls now overlap.
             let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
-            client
-                .call_tool(&tool_name, arguments, meta, cancellation_token)
+            // H1: credential material is withheld from what comes back, here,
+            // where every path to a model converges.
+            call_tool_withholding_secrets(&client, &tool_name, arguments, meta, cancellation_token)
                 .await
-                .map_err(|e| match e {
-                    ServiceError::McpError(error_data) => error_data,
-                    _ => {
-                        ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), e.maybe_to_value())
-                    }
-                })
         };
 
         Ok(ToolCallResult {
@@ -6132,6 +6178,194 @@ mod tests {
              permanently classify the chat"
         );
         assert_eq!(row.privacy_reason, None);
+    }
+
+    /// H1: the dispatch boundary reads a command the way the shell will. A
+    /// relative path after `cd` into a credential store is refused here, at the
+    /// choke point, before any extension runs — the spelling QA-C measured
+    /// leaking the AWS key. Absolute paths into a temp dir, so the test never
+    /// depends on (or touches) the process's real HOME.
+    #[tokio::test]
+    async fn h1_a_cd_spelling_is_refused_at_dispatch() {
+        let (_dir, em, _sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("shelltool".to_string(), Arc::new(MockClient {}))
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let aws = home.path().join(".aws");
+        std::fs::create_dir_all(&aws).unwrap();
+        std::fs::write(aws.join("credentials"), "[default]\n").unwrap();
+
+        let refused = match em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "shelltool__tool".to_string().into(),
+                    arguments: Some(object!({
+                        "command": format!("cd {} && head credentials", aws.display())
+                    })),
+                    meta: None,
+                },
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    true,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(_) => panic!("`cd <home>/.aws && head credentials` was dispatched"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            refused.contains("secret/credential deny pattern"),
+            "{refused}"
+        );
+        assert!(refused.contains(".aws/credentials"), "{refused}");
+    }
+
+    /// A client that answers with credential material — standing in for a
+    /// spelling the argument scan could not see (`python -c` joining a path).
+    struct LeakyMockClient {
+        fail: bool,
+    }
+
+    fn fake_credentials_text() -> String {
+        // Made up, and assembled at run time so no key-shaped literal sits in
+        // the source for a secret scanner to trip on.
+        let id = format!("{}{}", "AKIA", "FAKEFAKEFAKE0000");
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+        format!("[default]\naws_access_key_id = {id}\naws_secret_access_key = {secret}\n")
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for LeakyMockClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: vec![Tool::new(
+                    "tool".to_string(),
+                    "A tool".to_string(),
+                    Arc::new(serde_json::json!({}).as_object().unwrap().clone()),
+                )],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            if self.fail {
+                return Err(Error::McpError(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!("Script failed.\nOutput:\n{}", fake_credentials_text()),
+                    None,
+                )));
+            }
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                fake_credentials_text(),
+            )]))
+        }
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// H1, defence in depth: whatever spelling reached the file, the key never
+    /// leaves `dispatch_tool_call`. Every route to a model — the agent loop,
+    /// the Claude Code / Codex tool bridge, `/agent/call_tool` — awaits this
+    /// same future, so this is the one place the redaction has to hold.
+    #[tokio::test]
+    async fn h1_credential_material_is_withheld_from_a_dispatched_result() {
+        let (_dir, em, _sm, id) = manager_with_a_session().await;
+        em.add_mock_extension(
+            "leaky".to_string(),
+            Arc::new(LeakyMockClient { fail: false }),
+        )
+        .await;
+        em.add_mock_extension(
+            "leakyfail".to_string(),
+            Arc::new(LeakyMockClient { fail: true }),
+        )
+        .await;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true);
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+        let key_id = format!("{}{}", "AKIA", "FAKEFAKEFAKE0000");
+
+        let dispatched = match em
+            .dispatch_tool_call(&id, call("leaky__tool"), cap, CancellationToken::default())
+            .await
+        {
+            Ok(dispatched) => dispatched,
+            Err(e) => panic!("dispatch refused: {e}"),
+        };
+        let result = dispatched.result.await.expect("the mock answers");
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains(&secret), "{serialized}");
+        assert!(!serialized.contains(&key_id), "{serialized}");
+        assert!(
+            serialized.contains("[REDACTED:aws-secret-access-key]"),
+            "{serialized}"
+        );
+        let stamp = crate::guardrails::secret_output::redaction_of(&result).expect("stamped");
+        assert_eq!(stamp.count, 2);
+
+        let dispatched = match em
+            .dispatch_tool_call(
+                &id,
+                call("leakyfail__tool"),
+                cap,
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(dispatched) => dispatched,
+            Err(e) => panic!("dispatch refused: {e}"),
+        };
+        let error = dispatched.result.await.expect_err("the mock fails");
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(!serialized.contains(&secret), "{serialized}");
+        assert!(!serialized.contains(&key_id), "{serialized}");
     }
 
     /// The capability `POST /agent/call_tool` hands the manager —

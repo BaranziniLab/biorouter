@@ -1492,14 +1492,15 @@ impl DeveloperServer {
         // cancellation notification it sent a moment earlier (issue #72).
         let request_ct = context.ct;
 
-        // Validate the shell command
-        self.validate_shell_command(command)?;
-
         // Resolve the directory this command runs in: a per-call override, else
         // the session working directory, else the process cwd. A missing
         // override errors here; a vanished session/env dir warns and falls back
         // so the shell keeps working. Applies to both foreground and background.
         let working_dir = self.resolve_shell_cwd_checked(params.working_directory.as_deref())?;
+
+        // Validate the shell command against the directory it will really run
+        // in, so a relative path is judged where it resolves (H1).
+        self.validate_shell_command(command, working_dir.as_deref())?;
 
         // Snapshot the pre-command content of any file this command redirects
         // to (`>`/`>>`), so `undo_edit` can revert shell-driven writes, not just
@@ -1667,27 +1668,37 @@ impl DeveloperServer {
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
-    /// [`Self::validate_shell_command`] against an explicit environment and the
-    /// directory the command will run in.
+    /// Validate a shell command before execution: it must not be empty, and it
+    /// must not reach a file the secret guard denies.
     ///
-    /// FAIL-BEFORE SHIM (H1): today's check resolves neither, so both are
-    /// ignored and the H1 table runs against it unchanged.
-    #[cfg(test)]
+    /// `working_dir` is where the command will run (`None`: the process cwd).
+    fn validate_shell_command(
+        &self,
+        command: &str,
+        working_dir: Option<&Path>,
+    ) -> Result<(), ErrorData> {
+        self.validate_shell_command_in(
+            command,
+            working_dir,
+            &crate::secret_guard::ShellEnv::from_process(),
+        )
+    }
+
+    /// [`Self::validate_shell_command`] against an explicit environment.
+    ///
+    /// H1 (QA-C): this used to split the command on whitespace, skip every
+    /// token that did not exist relative to the *process* cwd, and test the
+    /// rest literally — so `~/…`, `$HOME/…`, a glob and `cd … && head` all
+    /// passed, and a path relative to the directory the command actually runs
+    /// in was judged against a different one. It now reads the command the way
+    /// the shell will, from `working_dir`, through the same resolver as the
+    /// dispatch boundary (`SecretGuard::find_denied_in_command`).
     fn validate_shell_command_in(
         &self,
         command: &str,
-        _working_dir: Option<&Path>,
-        _env: &crate::secret_guard::ShellEnv,
+        working_dir: Option<&Path>,
+        env: &crate::secret_guard::ShellEnv,
     ) -> Result<(), ErrorData> {
-        self.validate_shell_command(command)
-    }
-
-    /// Validate a shell command before execution.
-    ///
-    /// Checks for empty commands and ensures the command doesn't attempt to access
-    /// files that are restricted by ignore patterns.
-    fn validate_shell_command(&self, command: &str) -> Result<(), ErrorData> {
-        // Check for empty commands
         if command.trim().is_empty() {
             return Err(ErrorData::new(
                 ErrorCode::INVALID_PARAMS,
@@ -1696,31 +1707,19 @@ impl DeveloperServer {
             ));
         }
 
-        let cmd_parts: Vec<&str> = command.split_whitespace().collect();
-
-        // Check if command arguments reference ignored files
-        for arg in &cmd_parts[1..] {
-            // Skip command flags
-            if arg.starts_with('-') {
-                continue;
-            }
-
-            // Skip invalid paths
-            let path = Path::new(arg);
-            if !path.exists() {
-                continue;
-            }
-
-            if self.is_ignored(path) {
-                return Err(ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!(
-                        "The command attempts to access '{}' which is restricted by .biorouterignore",
-                        arg
-                    ),
-                    None,
-                ));
-            }
+        let cwd = match working_dir {
+            Some(dir) => dir.to_path_buf(),
+            None => std::env::current_dir()
+                .ok()
+                .or_else(|| self.sanctioned_base())
+                .unwrap_or_default(),
+        };
+        if let Some(denied) = self.secret_guard.find_denied_in_command(command, &cwd, env) {
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                denied.message(),
+                None,
+            ));
         }
 
         Ok(())
@@ -2444,9 +2443,10 @@ impl DeveloperServer {
 
     // Helper method to check if a path should be ignored. Delegates to the
     // shared `SecretGuard` (BR-23) so the Developer server and the central
-    // extension-manager dispatch boundary enforce the same deny set.
+    // extension-manager dispatch boundary enforce the same deny set. Judged
+    // after symlinks too (H1): a `notes.txt` that links to `.env` is `.env`.
     fn is_ignored(&self, path: &Path) -> bool {
-        self.secret_guard.is_denied(path)
+        self.secret_guard.is_denied_resolved(path)
     }
 
     // Only returns true when 100% certain (checks /proc/1/cgroup for container markers)
