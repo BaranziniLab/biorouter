@@ -2799,52 +2799,62 @@ impl ExtensionManager {
                 if !all_resources.is_empty() {
                     return Ok(all_resources);
                 }
-
-                // Finding F8 (2026-09-10 composer QA run): an empty listing
-                // used to come back as `""`, and the model could only report
-                // that the tool "returned an empty string". Every other empty
-                // or refusing result explains itself, so this one says which
-                // extensions were asked and that none of them had anything.
-                //
-                // ⚠ **Every name here is filtered through Gate E's roster**,
-                // the rule #219 set for the not-found message in
-                // `read_resource_tool`, and for the same reason: this sentence
-                // is composed right after a loop that declined to reach the
-                // private extensions, so naming what the loop consulted — or,
-                // worse, what it skipped — would hand a public caller the
-                // private roster Gate E withholds. A refused extension is never
-                // named and never counted. `admitted` is threaded, never
-                // resampled, and the roster is sorted because the map's
-                // iteration order is randomised per process.
-                let roster = self.allowed_extension_keys(admitted).await;
-                let shown = |mut names: Vec<String>| {
-                    names.retain(|name| roster.contains(name));
-                    names.sort();
-                    names
-                };
-                // What is left of the capable set once the asked and the failed
-                // are taken out is what the loop refused. Of that, only the
-                // part Gate E shows this caller is named — the cross-
-                // affiliation mismatches DR-26 lists and marks — and the rest,
-                // the private extensions a public caller may not see, vanishes
-                // here exactly as it vanished from the tool list.
-                let withheld = shown(
-                    capable
-                        .iter()
-                        .filter(|name| !asked.contains(name) && !failed.contains(name))
-                        .cloned()
-                        .collect(),
-                );
-                let offer_none = roster.iter().filter(|name| !capable.contains(name)).count();
-                Ok(vec![Content::text(no_resources_listed(
-                    &UnlistedResources {
-                        asked: shown(asked),
-                        failed: shown(failed),
-                        withheld,
-                        offer_none,
-                    },
-                ))])
+                let unlisted = self
+                    .unlisted_resources(&capable, asked, failed, admitted)
+                    .await;
+                Ok(vec![Content::text(no_resources_listed(&unlisted))])
             }
+        }
+    }
+
+    /// Who an empty `list_resources` fan-out may name, and how (finding F8,
+    /// 2026-09-10 composer QA run). An empty listing used to come back as
+    /// `""`, and the model could only report that the tool "returned an empty
+    /// string"; every other empty or refusing result explains itself.
+    ///
+    /// `capable` is every extension that declares resource support; `asked`
+    /// and `failed` are the ones the fan-out listed and could not list.
+    ///
+    /// ⚠ **Every name is filtered through Gate E's roster**, the rule #219 set
+    /// for the not-found message in `read_resource_tool`, and for the same
+    /// reason: this is composed right after a loop that declined to reach the
+    /// private extensions, so naming what the loop consulted — or, worse, what
+    /// it skipped — would hand a public caller the private roster Gate E
+    /// withholds. A refused extension is never named and never counted.
+    /// `admitted` is threaded, never resampled, and names are sorted because
+    /// the map's iteration order is randomised per process.
+    async fn unlisted_resources(
+        &self,
+        capable: &[String],
+        asked: Vec<String>,
+        failed: Vec<String>,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> UnlistedResources {
+        let roster = self.allowed_extension_keys(admitted).await;
+        let shown = |mut names: Vec<String>| {
+            names.retain(|name| roster.contains(name));
+            names.sort();
+            names
+        };
+        // What is left of the capable set once the asked and the failed are
+        // taken out is what the loop refused. Of that, only the part Gate E
+        // shows this caller is named — the cross-affiliation mismatches DR-26
+        // lists and marks — and the rest, the private extensions a public
+        // caller may not see, vanishes here exactly as it vanished from the
+        // tool list.
+        let withheld = shown(
+            capable
+                .iter()
+                .filter(|name| !asked.contains(name) && !failed.contains(name))
+                .cloned()
+                .collect(),
+        );
+        let offer_none = roster.iter().filter(|name| !capable.contains(name)).count();
+        UnlistedResources {
+            asked: shown(asked),
+            failed: shown(failed),
+            withheld,
+            offer_none,
         }
     }
 
