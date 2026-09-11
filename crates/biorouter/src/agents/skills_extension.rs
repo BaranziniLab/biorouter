@@ -38,7 +38,7 @@ const SKILL_OPERATION_GUIDANCE: &[(&str, &str)] = &[
     ("loadSkill", "loadSkill reads an exact installed skill"),
     (
         "searchMarketplaceSkills",
-        "searchMarketplaceSkills lists trusted BAAM entries, or filters them when you pass a query",
+        "searchMarketplaceSkills lists trusted BAAM entries, or ranks those matching any word of a query you pass",
     ),
     (
         "installMarketplaceSkill",
@@ -1786,20 +1786,51 @@ impl SkillsClient {
         let loaded = crate::marketplace::load_marketplace_catalog()
             .await
             .map_err(|error| error.to_string())?;
+        Ok(vec![Content::text(
+            Self::marketplace_skill_page_json(&loaded, query, offset, limit).to_string(),
+        )])
+    }
+
+    /// One page of `searchMarketplaceSkills`, from a catalog already loaded —
+    /// split from the load so the page is testable without the network.
+    fn marketplace_skill_page_json(
+        loaded: &crate::marketplace::MarketplaceCatalogLoad,
+        query: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> serde_json::Value {
         let source = Self::marketplace_source_name(loaded.source);
         let stale = loaded.is_stale();
         let cache_warning = loaded.cache_warning.clone();
-        let matches = match query {
-            Some(query) => loaded.catalog.search_skills(query),
-            None => loaded.catalog.browse_skills(),
+        let registry_size = loaded.catalog.browse_skills().len();
+        // A query is ranked, not filtered (finding F5): its terms are matched
+        // separately and each hit says which of them it matched, so a model
+        // reading a long list can tell an entry that matched every term from
+        // one that matched a single common word.
+        let search = query.map(|query| loaded.catalog.search_skills(query));
+        let matches: Vec<(
+            &crate::marketplace::MarketplaceSkillDescriptor,
+            Option<&[String]>,
+        )> = match &search {
+            Some(search) => search
+                .hits
+                .iter()
+                .map(|hit| (hit.entry, Some(hit.matched_terms.as_slice())))
+                .collect(),
+            None => loaded
+                .catalog
+                .browse_skills()
+                .into_iter()
+                .map(|entry| (entry, None))
+                .collect(),
         };
         let total = matches.len();
         let entries: Vec<_> = matches
             .into_iter()
             .skip(offset)
             .take(limit)
-            .map(|entry| {
-                serde_json::json!({
+            .map(|(entry, matched_terms)| {
+                let mut row = serde_json::json!({
                     "registryId": &entry.registry_id,
                     "name": &entry.name,
                     "category": &entry.category,
@@ -1808,25 +1839,58 @@ impl SkillsClient {
                     "tags": &entry.tags,
                     "keywords": &entry.keywords,
                     "license": &entry.license,
-                })
+                });
+                if let (Some(matched_terms), Some(fields)) = (matched_terms, row.as_object_mut()) {
+                    fields.insert("matchedTerms".to_owned(), serde_json::json!(matched_terms));
+                }
+                row
             })
             .collect();
         let returned = entries.len();
         let next_offset = (offset + returned < total).then_some(offset + returned);
-        Ok(vec![Content::text(
-            serde_json::json!({
-                "source": source,
-                "stale": stale,
-                "cacheWarning": cache_warning,
-                "total": total,
-                "offset": offset,
-                "limit": limit,
-                "returned": returned,
-                "nextOffset": next_offset,
-                "skills": entries,
-            })
-            .to_string(),
-        )])
+        let mut body = serde_json::json!({
+            "source": source,
+            "stale": stale,
+            "cacheWarning": cache_warning,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "returned": returned,
+            "nextOffset": next_offset,
+            "skills": entries,
+        });
+        if let (Some(query), Some(search), Some(fields)) = (query, &search, body.as_object_mut()) {
+            fields.insert("terms".to_owned(), serde_json::json!(&search.terms));
+            if search.is_empty() {
+                fields.insert(
+                    "guidance".to_owned(),
+                    serde_json::Value::String(Self::no_marketplace_skill_matched(
+                        &search.describe_query(query),
+                        registry_size,
+                    )),
+                );
+            }
+        }
+        body
+    }
+
+    /// What an empty marketplace search says instead of a bare `total: 0`
+    /// (finding F5). That answer let a model report *"no matching marketplace
+    /// skills found"* about a registry that held every skill the user named,
+    /// so the guidance says how big the registry is and what to try next — a
+    /// miss is more often the query's wording than the registry's contents.
+    fn no_marketplace_skill_matched(asked: &str, registry_size: usize) -> String {
+        let skills = if registry_size == 1 {
+            "skill"
+        } else {
+            "skills"
+        };
+        format!(
+            "No marketplace skill matched {asked}. The registry holds {registry_size} {skills}, \
+             so this does not mean there is nothing relevant: try a shorter or more general term \
+             (one tool, language or topic name), or call searchMarketplaceSkills with no query \
+             to list them all."
+        )
     }
 
     /// Browse or search the trusted BAAM skill registry.
@@ -2793,8 +2857,10 @@ impl SkillsClient {
             indoc! {r#"
                     Browse or search the trusted skill entries published in BAAM.
 
-                    Pass `query` to match an id, name, category, description, tag or keyword;
-                    omit it to list the whole registry. This returns registry ids and metadata,
+                    Pass `query` to search ids, names, categories, descriptions, tags and keywords:
+                    an entry matching any of its words is returned, the entries matching the most
+                    words first, each with the `matchedTerms` it matched. Omit `query` to list the
+                    whole registry. This returns registry ids and metadata,
                     never arbitrary download URLs — pass an exact returned registryId as
                     installMarketplaceSkill's registry_id.
                 "#}
@@ -5936,6 +6002,70 @@ mod merged_surface_tests {
                 );
             }
         }
+    }
+
+    /// Finding F5 at the tool's own output. The QA run read `total: 0` for the
+    /// phrase below against a registry holding every skill it names, and the
+    /// model reported "no matching marketplace skills found". The phrase now
+    /// finds them, each hit says which terms it matched, and a query that
+    /// genuinely matches nothing explains itself instead of returning a bare
+    /// zero.
+    #[test]
+    fn a_marketplace_skill_page_ranks_a_phrase_and_explains_an_empty_result() {
+        let loaded = crate::marketplace::MarketplaceCatalogLoad::embedded_for_test();
+        let registry = loaded.catalog.browse_skills().len();
+
+        let page = SkillsClient::marketplace_skill_page_json(
+            &loaded,
+            Some("R scripting ggplot visualization"),
+            0,
+            50,
+        );
+        assert!(page["total"].as_u64().unwrap() >= 2, "{page}");
+        assert_eq!(
+            page["terms"],
+            serde_json::json!(["r", "scripting", "ggplot", "visualization"])
+        );
+        let skills = page["skills"].as_array().unwrap();
+        let ids: Vec<&str> = skills
+            .iter()
+            .map(|skill| skill["registryId"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"ggplot-visualization") && ids.contains(&"r-scripting"),
+            "{ids:?}"
+        );
+        assert!(
+            skills
+                .iter()
+                .all(|skill| !skill["matchedTerms"].as_array().unwrap().is_empty()),
+            "{page}"
+        );
+        assert!(page.get("guidance").is_none(), "{page}");
+
+        let none = SkillsClient::marketplace_skill_page_json(&loaded, Some("zzqx"), 0, 50);
+        assert_eq!(none["total"], 0);
+        let guidance = none["guidance"]
+            .as_str()
+            .expect("an empty result explains itself");
+        assert!(
+            guidance.contains(&format!("The registry holds {registry} skills")),
+            "{guidance}"
+        );
+        assert!(
+            guidance.contains("`zzqx`") && guidance.contains("shorter"),
+            "{guidance}"
+        );
+
+        // Browsing is untouched: no terms, no matchedTerms, no guidance.
+        let browse = SkillsClient::marketplace_skill_page_json(&loaded, None, 0, 5);
+        assert_eq!(browse["total"], registry);
+        assert!(browse.get("terms").is_none(), "{browse}");
+        assert!(
+            browse["skills"][0].get("matchedTerms").is_none(),
+            "{browse}"
+        );
+        assert!(browse.get("guidance").is_none(), "{browse}");
     }
 
     /// The retired names keep dispatching. They are not advertised — that is
