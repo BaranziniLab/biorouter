@@ -124,8 +124,9 @@ pub async fn run() -> Result<()> {
     let user_action_digest = read_user_action_digest().await;
     if user_action_digest.is_none() {
         tracing::warn!(
-            "no user-action key on stdin: this daemon will refuse every request that raises a \
-             session's privacy capability, including one made by the person at the keyboard"
+            "no user-action key on stdin: this daemon will refuse every request that raises an \
+             existing chat's privacy capability, including one made by the person at the \
+             keyboard; a new chat still starts on the configured provider (SD-9)"
         );
     }
     // A tool whose approval can never be granted must not be offered. `serve`
