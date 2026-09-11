@@ -25,6 +25,9 @@ vi.mock('../toasts', async (importOriginal) => ({
   toastError: mockToastError,
 }));
 vi.mock('./sessions/SessionsInsights', () => ({ SessionInsights: () => null }));
+// The privacy-off note (H3) needs a router and two more ConfigContext hooks, and
+// says nothing about starting a chat.
+vi.mock('./privacy/PrivacyTiersOffNote', () => ({ PrivacyTiersOffNote: () => null }));
 vi.mock('./ConfigContext', () => ({
   useConfig: () => ({
     extensionsList: [],
