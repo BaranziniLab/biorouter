@@ -1219,6 +1219,13 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   and a subagent's tab stays refused. ⚠ Keyless behaviour can only be tested in its own binary
   (the digest is a process-global `OnceLock`): `cargo test -p biorouter-server --test
   turn_control_no_user_key`.
+  ⚠ **The CLI reads the refusal's shape, not its status.** `biorouter session cancel` / `attach`
+  / `send` cannot ask a daemon whether it holds a key, so they send without the proof and ask the
+  person for the key only on turn control's **empty** 403 — the keyed `Unproven` arm; every
+  keyless refusal carries a sentence and is printed instead (`key_verdict` in
+  `commands/session_watch.rs`). A sentence added to `Unproven`, or an empty keyless refusal,
+  breaks the terminal silently — one never prompts on the desktop's daemon, the other prompts a
+  `serve` user for a key that does not exist. Pinned from both sides.
 - **Proof of a person is checked at the resolution choke point, not at one route.** Every door
   that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
   CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into
