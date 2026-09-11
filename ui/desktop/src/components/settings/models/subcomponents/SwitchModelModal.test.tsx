@@ -299,6 +299,21 @@ describe('SwitchModelModal — what the switch changes', () => {
     await settle();
   });
 
+  /**
+   * ⚠ Found by driving the running app, not by a test. `Checkbox` draws its
+   * square beside an `sr-only` input; with the label as a SIBLING (`htmlFor`)
+   * only the words toggled it, and a click on the square — the thing a person
+   * aims at — did nothing at all.
+   */
+  it('ticks when the square itself is clicked, not only its words', async () => {
+    renderModal('s-1');
+    const box = screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) });
+    // The square: Checkbox's own 24px target, which holds the hidden input.
+    fireEvent.click(box.parentElement as HTMLElement);
+    expect(box).toBeChecked();
+    await settle();
+  });
+
   it('leaves new chats alone unless the box is ticked', async () => {
     renderModal('s-1');
     fireEvent.click(await confirm());

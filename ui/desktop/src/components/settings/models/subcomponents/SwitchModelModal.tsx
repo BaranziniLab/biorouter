@@ -942,9 +942,17 @@ export const SwitchModelModal = ({
           default: a switch made in a chat is a statement about that chat, and a
           public model chosen for one scratch chat must not become what every
           new chat — in every window — silently starts on.
+
+          ⚠ The `label` WRAPS the box, as `SessionListView`'s does. `Checkbox`
+          draws a square beside an `sr-only` input, so with a sibling label
+          (`htmlFor`) only the text toggled it and clicking the square itself did
+          nothing — found in the running app, which is where it showed.
         */}
         {sessionId && !hostManaged && (
-          <div className="flex items-start gap-2" data-testid="switch-model-also-new-chats">
+          <label
+            className="flex cursor-pointer items-start gap-2"
+            data-testid="switch-model-also-new-chats"
+          >
             <Checkbox
               id="switch-model-also-new-chats"
               checked={alsoForNewChats}
@@ -952,13 +960,13 @@ export const SwitchModelModal = ({
               disabled={switching}
               className="mt-0.5"
             />
-            <label htmlFor="switch-model-also-new-chats" className="min-w-0 cursor-pointer">
+            <span className="min-w-0">
               <span className="block text-label text-text-default">{ALSO_FOR_NEW_CHATS_LABEL}</span>
               <span className="block text-supporting text-text-muted">
                 {ALSO_FOR_NEW_CHATS_HINT}
               </span>
-            </label>
-          </div>
+            </span>
+          </label>
         )}
 
         {submitError && (
