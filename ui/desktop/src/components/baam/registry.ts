@@ -8,6 +8,14 @@ import { nameToKey } from '../settings/extensions/utils';
 import { rememberPrivateExtensionKeys } from './privateSet';
 import fallback from './registry.fallback.json';
 import { classifyExtension } from '../settings/extensions/extensionPrivacy';
+import {
+  EXTENSION_NOISE,
+  rankEntries,
+  SKILL_NOISE,
+  Weight,
+  type SearchField,
+  type SearchResult,
+} from './search';
 
 export interface RegistryExtension {
   id: string;
@@ -369,29 +377,56 @@ export function catalogFreshnessLine(load: { live: boolean; fetchedAt?: string }
   return `catalog last updated ${when.toLocaleDateString()}`;
 }
 
-/** Case-insensitive match of a query against a skill's searchable fields. */
-export function skillMatches(skill: RegistrySkill, q: string): boolean {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  return (
-    skill.name.toLowerCase().includes(needle) ||
-    skill.description.toLowerCase().includes(needle) ||
-    skill.category.toLowerCase().includes(needle) ||
-    skill.tags.some((t) => t.toLowerCase().includes(needle)) ||
-    skill.keywords.some((t) => t.toLowerCase().includes(needle)) ||
-    (skill.license?.toLowerCase().includes(needle) ?? false)
-  );
+/**
+ * Every label in a list, as a search field. Total, because an entry can omit
+ * any field — `isRegistryDocument` checks only that an entry is an object — and
+ * a search that throws in render takes the whole modal with it.
+ */
+function labelFields(labels: readonly string[] | undefined): SearchField[] {
+  return Array.isArray(labels) ? labels.map((label): SearchField => [label, Weight.Label]) : [];
 }
 
-/** Case-insensitive match of a query against an extension's searchable fields. */
-export function extensionMatches(ext: RegistryExtension, q: string): boolean {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  return (
-    ext.name.toLowerCase().includes(needle) ||
-    ext.description.toLowerCase().includes(needle) ||
-    ext.organization.toLowerCase().includes(needle) ||
-    ext.tags.some((t) => t.toLowerCase().includes(needle)) ||
-    (ext.license?.toLowerCase().includes(needle) ?? false)
-  );
+/**
+ * Rank skills against what the user typed in Browse skills, best first; an
+ * empty query returns them all in registry order. How a query is matched — and
+ * why a phrase is a union of its words rather than one substring (finding F5) —
+ * is documented in `search.ts`.
+ *
+ * The fields are exactly the Rust catalog's (`MarketplaceCatalog::search_skills`),
+ * so this modal and the model's search tool agree. ⚠ That excludes the license,
+ * which the whole-phrase matcher searched: every skill and extension in the
+ * registry is Apache-2.0, so it separates nothing, and under word matching it
+ * made `PACS` list every skill — a plural's singular, `pac`, is inside `apache`.
+ */
+export function rankSkills(
+  skills: readonly RegistrySkill[],
+  query: string
+): SearchResult<RegistrySkill> {
+  return rankEntries(query, SKILL_NOISE, skills, (skill) => [
+    [skill.id, Weight.Name],
+    [skill.name, Weight.Name],
+    [skill.category, Weight.Label],
+    [skill.description, Weight.Prose],
+    ...labelFields(skill.tags),
+    ...labelFields(skill.keywords),
+  ]);
+}
+
+/**
+ * Rank extensions against what the user typed in Browse extensions, matched as
+ * {@link rankSkills} is, over exactly the Rust catalog's fields
+ * (`MarketplaceCatalog::search_extensions`).
+ */
+export function rankExtensions(
+  extensions: readonly RegistryExtension[],
+  query: string
+): SearchResult<RegistryExtension> {
+  return rankEntries(query, EXTENSION_NOISE, extensions, (ext) => [
+    [ext.id, Weight.Name],
+    [ext.extension_name, Weight.Name],
+    [ext.name, Weight.Name],
+    [ext.organization, Weight.Label],
+    [ext.description, Weight.Prose],
+    ...labelFields(ext.tags),
+  ]);
 }
