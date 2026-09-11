@@ -100,19 +100,17 @@ const NO_DEPLOYMENT_ROUTE: &str =
 
 /// The deployment override `value` amounts to, if any.
 ///
-/// Judges BOTH sources of one — a configured `VERSA_AZURE_DEPLOYMENT_NAME` (or
-/// its legacy twin) and the `deployment` a session's restore binding stored —
-/// so a live provider and a restored one cannot disagree about whether an
-/// override is in force.
+/// Judges BOTH sources of one — a configured `VERSA_AZURE_DEPLOYMENT_NAME` and
+/// the `deployment` a session's restore binding stored — so a live provider and
+/// a restored one cannot disagree about whether an override is in force.
 ///
 /// ⚠ A value that names a CATALOG deployment is not an override, and the fix
 /// turns on it:
 ///
 ///   * Nobody chose it. The onboarding card upserts `VERSA_AZURE_DEPLOYMENT_NAME`
-///     with the shipped default on every connect, and before 2026-09-03 the
-///     setup form wrote `AZURE_OPENAI_DEPLOYMENT_NAME` the same way. Honouring
-///     either would pin every onboarded install to one model — F1 again, in
-///     exactly the installs the QA sandbox did not have.
+///     with the shipped default on every connect. Honouring it would pin every
+///     onboarded install to one model — F1 again, in exactly the installs the
+///     QA sandbox did not have.
 ///   * It is what every stored binding says. Before this change `deployment`
 ///     was the fixed default whatever the model, and a subagent's model override
 ///     still rewrites the binding's model without touching its route
@@ -123,6 +121,11 @@ const NO_DEPLOYMENT_ROUTE: &str =
 ///
 /// What is left is the real escape hatch: a deployment the catalog does not
 /// know, which then serves every request.
+///
+/// A row written by a build that still read the public `azure_openai` card's
+/// `AZURE_OPENAI_DEPLOYMENT_NAME` may carry that card's deployment here, and
+/// nothing in the row tells it from a chosen one — so it is honoured like one
+/// until the chat's model is picked again, which rebuilds through `from_env`.
 fn explicit_override(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     (!value.is_empty() && value != NO_DEPLOYMENT_ROUTE && !is_catalog_deployment(value))
@@ -274,15 +277,22 @@ impl VersaAzureProvider {
         // What the configuration names is a CANDIDATE override, and
         // `explicit_override` decides whether it is one — which is what keeps
         // the default the onboarding card persists from pinning every model.
-        let configured_deployment = resolve_override(
-            "",
-            config
-                .get_param::<String>("VERSA_AZURE_DEPLOYMENT_NAME")
-                .ok(),
-            config
-                .get_param::<String>("AZURE_OPENAI_DEPLOYMENT_NAME")
-                .ok(),
-        );
+        //
+        // ⚠ Versa's OWN key, and no fallback. `AZURE_OPENAI_DEPLOYMENT_NAME`
+        // used to be read after it, and it is not Versa's to read: it is the
+        // one key the public `azure_openai` card requires and ships no default
+        // for, so it names a deployment on whatever Azure resource the user set
+        // THAT card up with (`my-gpt4o`, or `gpt-4o` — Azure's habit of naming a
+        // deployment after its model). The catalog knows no such name, so it
+        // became an override serving every Versa request: DeploymentNotFound on
+        // each turn, or — where it is a real UCSF deployment the catalog does
+        // not offer — a silent answer from the wrong model. The fallback was
+        // kept for installs whose pre-2026-09-03 Versa forms wrote that key,
+        // and those forms prefilled catalog deployments, which are not
+        // overrides; only a value someone typed over the prefill is dropped.
+        let configured_deployment = config
+            .get_param::<String>("VERSA_AZURE_DEPLOYMENT_NAME")
+            .unwrap_or_default();
         let deployment_override = explicit_override(Some(&configured_deployment));
         match &deployment_override {
             Some(deployment) => tracing::info!(
@@ -519,10 +529,10 @@ impl Provider for VersaAzureProvider {
             // Configured — pointing at the UCSF endpoint while carrying the
             // weaker Public tier. Reported from the field.
             //
-            // Removing them costs nothing: `from_env` reads the same names with
-            // `unwrap_or_else(|_| VERSA_AZURE_*)`, so an operator who sets them
-            // in the environment or config still overrides, and an install that
-            // sets nothing still gets the UCSF gateway.
+            // Removing them costs nothing: an install that sets nothing still
+            // gets the UCSF gateway, because `from_env` falls back to the
+            // `VERSA_AZURE_*` constants, and an operator overrides through
+            // Versa's own `VERSA_AZURE_*` keys (see `from_env`).
             vec![ConfigKey::new("VERSA_AZURE_API_KEY", true, true, None)],
         )
         // ⚠ No `with_unlisted_models()`, which this provider used to declare. A
@@ -970,12 +980,15 @@ mod tests {
         );
         assert!(!is_catalog_deployment(NO_DEPLOYMENT_ROUTE));
 
-        // Every default a setup surface ever persisted must stay a non-override.
+        // Every default a setup surface ever persisted must stay a non-override:
+        // the onboarding card writes gpt-5.5 into `VERSA_AZURE_DEPLOYMENT_NAME`,
+        // and a session row written by a build that still read the legacy
+        // `AZURE_OPENAI_DEPLOYMENT_NAME` stored that key's default as its route.
         // Today each is a catalog deployment, which is the only reason it is
         // ignored — so trimming one from the catalog would silently turn it into
-        // an override and pin every install that onboarded while it shipped. If
-        // this fails after a trim, keep recognising the value (a retired-defaults
-        // list beside the catalog) rather than editing it out of this test.
+        // an override and pin every chat that carries it. If this fails after a
+        // trim, keep recognising the value (a retired-defaults list beside the
+        // catalog) rather than editing it out of this test.
         for shipped_default in [
             "gpt-5.2-2025-12-11", // provider default 2026-05-07 .. 2026-07-02
             "gpt-5.5-2026-04-24", // provider default since; the onboarding card's
@@ -1242,10 +1255,11 @@ mod routing_tests {
         provider
     }
 
-    /// A key, the two deployment keys as given, and every other override key
-    /// blank — blank is absent — so the machine running the suite cannot leak
-    /// its own configuration into what is being measured.
-    fn config(deployment: &str, legacy_deployment: &str) -> HashMap<String, String> {
+    /// A key, Versa's deployment key and the public `azure_openai` card's as
+    /// given, and every other override key blank — blank is absent — so the
+    /// machine running the suite cannot leak its own configuration into what is
+    /// being measured.
+    fn config(deployment: &str, public_deployment: &str) -> HashMap<String, String> {
         HashMap::from([
             ("VERSA_AZURE_API_KEY".into(), "test-key".into()),
             ("VERSA_AZURE_ENDPOINT".into(), String::new()),
@@ -1255,7 +1269,7 @@ mod routing_tests {
             ("VERSA_AZURE_DEPLOYMENT_NAME".into(), deployment.into()),
             (
                 "AZURE_OPENAI_DEPLOYMENT_NAME".into(),
-                legacy_deployment.into(),
+                public_deployment.into(),
             ),
         ])
     }
@@ -1411,6 +1425,64 @@ mod routing_tests {
         );
     }
 
+    /// `AZURE_OPENAI_DEPLOYMENT_NAME` belongs to the PUBLIC `azure_openai`
+    /// provider: it is the one key that card requires and ships no default for,
+    /// so whoever set it up typed a deployment on THEIR Azure resource into it.
+    /// Versa used to read it as a fallback, and a name the catalog does not know
+    /// then served every Versa request. None of these may route one — each
+    /// fails differently at the real gateway, so each is here. A catalog name in
+    /// that key was never an override; for those see
+    /// `a_persisted_default_deployment_does_not_pin_the_model`.
+    #[tokio::test]
+    async fn the_public_azure_cards_deployment_never_routes_a_versa_request() {
+        let server = gateway().await;
+        let public_deployments = [
+            // A company deployment: DeploymentNotFound on every Versa turn.
+            "my-gpt4o",
+            // Azure's habit of naming a deployment after its model. The short
+            // aliases are DeploymentNotFound at the gateway (measured).
+            "gpt-4o",
+            // A real UCSF deployment the catalog does not offer: the gateway
+            // ANSWERS, so the wrong model replies and nothing says so — F1.
+            "gpt-5-mini-2025-08-07",
+        ];
+        for public_deployment in public_deployments {
+            let chat = aimed_at(
+                bound("gpt-4.1-2025-04-14", config("", public_deployment)).await,
+                &server,
+            );
+            let answered = answered_by(&chat).await.unwrap();
+            assert_eq!(
+                requested_paths(&server).await.pop().unwrap_or_default(),
+                path_of("gpt-4.1-2025-04-14"),
+                "the public azure_openai card's deployment `{public_deployment}` routed a \
+                 Versa request for gpt-4.1-2025-04-14"
+            );
+            assert_eq!(answered, "gpt-4.1-2025-04-14");
+            // The route a reopened chat reuses is the model's own too, so the
+            // other card's value cannot be persisted into the session row.
+            assert_eq!(
+                serde_json::to_value(chat.restore_binding()).unwrap()["deployment"],
+                "gpt-4.1-2025-04-14",
+                "`{public_deployment}` was written into the restore binding"
+            );
+
+            // Nor may it rescue a model no deployment serves.
+            let probe = aimed_at(
+                bound(UNMAPPED, config("", public_deployment)).await,
+                &server,
+            );
+            assert!(
+                answered_by(&probe).await.is_err(),
+                "`{public_deployment}` answered for a model no Versa deployment serves"
+            );
+        }
+        assert_eq!(
+            requested_paths(&server).await,
+            vec![path_of("gpt-4.1-2025-04-14"); public_deployments.len()]
+        );
+    }
+
     /// Every row written before this change stores gpt-5.5's deployment,
     /// whatever its model — the QA run read exactly that off a rebound chat. A
     /// restore must re-derive the route from the model, not carry it forward.
@@ -1451,12 +1523,13 @@ mod routing_tests {
             &server,
         );
         assert_eq!(answered_by(&live).await.unwrap(), custom);
-        // The legacy key still overrides where Versa's own is unset.
-        let legacy = aimed_at(
-            bound("gpt-4.1-2025-04-14", config("", custom)).await,
+        // Versa's own key is the one way to set it, and the public card's key
+        // naming some other deployment does not compete with it.
+        let beside_public = aimed_at(
+            bound("gpt-4.1-2025-04-14", config(custom, "my-gpt4o")).await,
             &server,
         );
-        assert_eq!(answered_by(&legacy).await.unwrap(), custom);
+        assert_eq!(answered_by(&beside_public).await.unwrap(), custom);
         // An override is the operator saying where requests go, so it serves a
         // model the catalog does not list as well.
         let unlisted = aimed_at(bound(UNMAPPED, config(custom, "")).await, &server);

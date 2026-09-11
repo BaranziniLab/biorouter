@@ -65,13 +65,17 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
         "AZURE_OPENAI_ENDPOINT",
         "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
     ),
-    ("AZURE_OPENAI_DEPLOYMENT_NAME", "deployment selection"),
+    // No `AZURE_OPENAI_DEPLOYMENT_NAME` row: no tier-input file reads it. It is
+    // the public `azure_openai` card's required key, and `versa_azure` reading
+    // it as a fallback let that card's deployment route every Versa request, so
+    // the read was removed (2026-09-11). `azure.rs` still reads it and is not a
+    // tier-input file: `azure_openai` is Public whatever deployment it names.
     ("AZURE_OPENAI_API_VERSION", "wire version"),
     // Versa's own namespace for the same three overrides. They exist because
     // onboarding used to write the `AZURE_OPENAI_*` keys above on Versa's
     // behalf, which made the PUBLIC `azure_openai` card report itself
-    // Configured whenever a user connected UCSF's PRIVATE Versa. Same meaning,
-    // same classification as their legacy twins: they move a Private
+    // Configured whenever a user connected UCSF's PRIVATE Versa. Same
+    // classification as the legacy reads they replace: they move a Private
     // provider's endpoint, they do not raise a tier.
     (
         "VERSA_AZURE_ENDPOINT",
@@ -183,10 +187,10 @@ mod tests {
         // of the two lists. Adding a config read to any of them fails this test
         // until someone decides whether it determines capability. That is the
         // checkable list: it does not depend on anyone remembering a rule.
-        let scanned = scan_get_param_keys(); // 26 today
+        let scanned = scan_get_param_keys(); // 25 today
         assert_eq!(
             scanned.len(),
-            26,
+            25,
             "the tier-input files' config surface changed: {scanned:?}"
         );
         for key in &scanned {
@@ -205,6 +209,21 @@ mod tests {
         // survives.
         assert!(CAPABILITY_CONFIG_KEYS.contains(&"BIOROUTER_PROVIDER"));
         assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5);
+
+        // …and the other way round: every classified key is still READ by a
+        // tier-input file. Without this, a read that goes away leaves its row
+        // behind — the count above moves, someone edits the number, and the
+        // lists quietly start classifying keys nothing reads.
+        let classified = CAPABILITY_CONFIG_KEYS
+            .iter()
+            .copied()
+            .chain(NOT_CAPABILITY_CONFIG_KEYS.iter().map(|(key, _why)| *key));
+        for key in classified.filter(|key| *key != "BIOROUTER_PROVIDER") {
+            assert!(
+                scanned.iter().any(|read| read == key),
+                "{key} is classified but no tier-input file reads it; delete its row"
+            );
+        }
     }
 
     #[test]
