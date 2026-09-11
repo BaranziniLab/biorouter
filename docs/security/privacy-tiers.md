@@ -677,6 +677,21 @@ reads `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT_NAME` / `AZURE_OPENAI_A
 compiled-in UCSF gateway (`unified-api.ucsf.edu`), computed at construction when the endpoint is
 already resolved.
 
+> **Update (2026-09-11).** `versa_azure` now reads only its own `VERSA_AZURE_ENDPOINT` /
+> `_DEPLOYMENT_NAME` / `_API_VERSION`, so the shared-key half of this hazard is closed at the source:
+> whatever the public `azure_openai` card is set up with no longer reaches it. The demotion rule is
+> unchanged and still needed, because `VERSA_AZURE_ENDPOINT` is user-writable config.
+>
+> **Update (2026-09-11), Bedrock.** `versa_bedrock` now reads only its own `VERSA_BEDROCK_ENDPOINT` /
+> `VERSA_BEDROCK_REGION`, with no fallback to an `AWS_*` key or to the process environment, and
+> `bedrock.rs` no longer promotes `AWS_ENDPOINT_URL_BEDROCK` to `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`.
+> That closes the fallback named above in both directions. The shared namespace also hid a crossing
+> no endpoint check can see: the AWS SDK reads `AWS_BEARER_TOKEN_BEDROCK` from the environment itself
+> and authenticated Versa's requests with that token. So an instance that resolved the gateway, and
+> was rightly Private, carried the public card's Bedrock API key to UCSF. `versa_bedrock` now chooses
+> SigV4 in code. The demotion rule is unchanged and still needed, because `VERSA_BEDROCK_ENDPOINT`
+> is user-writable config.
+
 **Never keyed on a model id.** `us.anthropic.claude-opus-4-8` appears in both
 `BEDROCK_KNOWN_MODELS` and `VERSA_BEDROCK_KNOWN_MODELS`. Any model-name badge is wrong by
 construction.

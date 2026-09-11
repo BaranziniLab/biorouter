@@ -15,9 +15,13 @@ interface InstitutionalSetupCardProps {
 
 type VersaFlavor = 'azure' | 'bedrock';
 
+// Versa Bedrock's own keys, the only ones `versa_bedrock.rs` reads. This card
+// used to write `AWS_ENDPOINT_URL_BEDROCK` and `AWS_REGION`, which belong to the
+// PUBLIC Amazon Bedrock card: the write marked that card Configured and replaced
+// its region, and the public provider took UCSF's gateway as its endpoint.
 const VERSA_BEDROCK_DEFAULTS = {
-  AWS_ENDPOINT_URL_BEDROCK: 'https://unified-api.ucsf.edu/general/awsai',
-  AWS_REGION: 'us-west-2',
+  VERSA_BEDROCK_ENDPOINT: 'https://unified-api.ucsf.edu/general/awsai',
+  VERSA_BEDROCK_REGION: 'us-west-2',
 };
 
 // ⚠ No deployment, deliberately. `versa_azure` posts each model to its own
@@ -68,9 +72,9 @@ export default function InstitutionalSetupCard({
   const [bedrockSecretKey, setBedrockSecretKey] = useState('');
   const [azureApiKey, setAzureApiKey] = useState('');
   const [bedrockEndpoint, setBedrockEndpoint] = useState(
-    VERSA_BEDROCK_DEFAULTS.AWS_ENDPOINT_URL_BEDROCK
+    VERSA_BEDROCK_DEFAULTS.VERSA_BEDROCK_ENDPOINT
   );
-  const [bedrockRegion, setBedrockRegion] = useState(VERSA_BEDROCK_DEFAULTS.AWS_REGION);
+  const [bedrockRegion, setBedrockRegion] = useState(VERSA_BEDROCK_DEFAULTS.VERSA_BEDROCK_REGION);
   const [azureEndpoint, setAzureEndpoint] = useState(VERSA_AZURE_DEFAULTS.VERSA_AZURE_ENDPOINT);
   const [azureApiVersion, setAzureApiVersion] = useState(
     VERSA_AZURE_DEFAULTS.VERSA_AZURE_API_VERSION
@@ -95,8 +99,8 @@ export default function InstitutionalSetupCard({
       if (flavor === 'bedrock') {
         await upsert('VERSA_BEDROCK_ACCESS_KEY_ID', bedrockAccessKey.trim(), true);
         await upsert('VERSA_BEDROCK_SECRET_ACCESS_KEY', bedrockSecretKey.trim(), true);
-        await upsert('AWS_ENDPOINT_URL_BEDROCK', bedrockEndpoint.trim(), false);
-        await upsert('AWS_REGION', bedrockRegion.trim(), false);
+        await upsert('VERSA_BEDROCK_ENDPOINT', bedrockEndpoint.trim(), false);
+        await upsert('VERSA_BEDROCK_REGION', bedrockRegion.trim(), false);
         await checkProvider({ body: { provider: 'versa_bedrock' }, throwOnError: true });
         await upsert('BIOROUTER_PROVIDER', 'versa_bedrock', false);
         onSuccess('versa_bedrock');
@@ -253,7 +257,7 @@ export default function InstitutionalSetupCard({
             <>
               <div>
                 <label className="block text-[11px] text-text-muted mb-1">
-                  AWS_ENDPOINT_URL_BEDROCK
+                  VERSA_BEDROCK_ENDPOINT
                 </label>
                 <input
                   type="text"
@@ -264,7 +268,9 @@ export default function InstitutionalSetupCard({
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-text-muted mb-1">AWS_REGION</label>
+                <label className="block text-[11px] text-text-muted mb-1">
+                  VERSA_BEDROCK_REGION
+                </label>
                 <input
                   type="text"
                   value={bedrockRegion}

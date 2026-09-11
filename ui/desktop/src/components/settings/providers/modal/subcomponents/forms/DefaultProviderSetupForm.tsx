@@ -25,18 +25,14 @@ interface DefaultProviderSetupFormProps {
 //
 // ⚠ An entry only reaches a key the provider DECLARES in `metadata.config_keys`:
 // both readers below look a default up per declared parameter, so one for any
-// other key is never read. `versa_azure` declares its API key alone, which is
-// why it has no entry.
+// other key is never read. `versa_azure` and `versa_bedrock` declare only their
+// credentials, which is why neither has an entry.
 const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
   azure_openai: {
     AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
     AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
   },
   aws_bedrock: {
-    AWS_REGION: 'us-west-2',
-  },
-  versa_bedrock: {
-    AWS_ENDPOINT_URL_BEDROCK: 'https://unified-api.ucsf.edu/general/awsai',
     AWS_REGION: 'us-west-2',
   },
 };
