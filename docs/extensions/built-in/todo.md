@@ -4,7 +4,7 @@
 > **Status:** Current. The capability is enabled by default, so no manual setup is normally needed. The rules under [What BioRouter enforces](#what-biorouter-enforces) are enforced by the agent loop as of 2026-09-11; before that they were advice in the system prompt that nothing checked.
 > **Audience:** end users.
 
-The Todo capability keeps BioRouter organized on long tasks. When your request has several steps, BioRouter writes a checklist before it starts, ticks items off as it works, and does not end the turn with items left open unless it tells you which ones and why. The checklist appears in the chat summary's **To Do** section as soon as it exists, so you can see where BioRouter is rather than waiting for a single opaque answer.
+The Todo capability keeps BioRouter organized on long tasks. When your request has several steps, BioRouter writes a checklist before it starts, ticks items off as it works, and does not end the turn with items left open without naming them for you. The checklist appears in the chat summary's **To Do** section as soon as it exists, so you can see where BioRouter is rather than waiting for a single opaque answer.
 
 ## What BioRouter enforces
 
