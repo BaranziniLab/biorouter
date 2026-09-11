@@ -46,6 +46,7 @@ import {
 import { SearchView } from '../conversation/SearchView';
 import cronstrue from 'cronstrue';
 import { getInitialWorkingDir } from '../../utils/workingDir';
+import { startChatFailureNotice } from '../../utils/startChatFailure';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -147,9 +148,11 @@ export default function WorkflowsView() {
         resumeSessionId: session.id,
       });
     } catch (error) {
-      console.error('Failed to load workflow:', error);
-      const errorMsg = error instanceof Error ? error.message : 'Failed to load workflow';
-      setError(errorMsg);
+      // A toast, not `setError`: that state is the LIST's load error, and
+      // setting it replaced a list that had loaded fine with "Couldn't load
+      // workflows", whose Try again reloads the list rather than the chat.
+      console.error('Failed to start workflow chat:', error);
+      toastError(startChatFailureNotice(error, { kept: false }));
     }
   };
 

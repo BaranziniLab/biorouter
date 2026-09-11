@@ -1,5 +1,7 @@
 import type { NavigateFunction } from 'react-router-dom';
 import { createSession } from '../sessions';
+import { toastError } from '../toasts';
+import { startChatFailureNotice } from './startChatFailure';
 import { getInitialWorkingDir } from './workingDir';
 import type { PairRouteState } from '../components/Pair';
 
@@ -31,7 +33,9 @@ import type { PairRouteState } from '../components/Pair';
  * The message itself still travels as location.state, which is where the IN
  * effect reads cargo from once the param has opened the gate. On failure we
  * navigate nowhere: the marker keeps the window parked on the empty pane (the
- * pre-#38 resting state) rather than silently discarding the launch intent.
+ * pre-#38 resting state) rather than silently discarding the launch intent —
+ * and the failure is said out loud, in `startChatFailureNotice`'s words, since
+ * a parked pane explains nothing by itself.
  */
 export async function deliverLauncherMessage(
   navigate: NavigateFunction,
@@ -46,5 +50,6 @@ export async function deliverLauncherMessage(
     });
   } catch (error) {
     console.error('Failed to create session for launcher message:', error);
+    toastError(startChatFailureNotice(error, { kept: false }));
   }
 }

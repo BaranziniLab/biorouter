@@ -58,6 +58,8 @@ import { View, ViewOptions } from './utils/navigationUtils';
 
 import { useNavigation } from './hooks/useNavigation';
 import { errorMessage } from './utils/conversionUtils';
+import { startChatFailureNotice } from './utils/startChatFailure';
+import { toastError } from './toasts';
 import { getInitialWorkingDir } from './utils/workingDir';
 import { deliverLauncherMessage } from './utils/launcherMessage';
 import { ChatStreamProvider } from './hooks/chatStreamStore';
@@ -168,6 +170,14 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
           });
         } catch (error) {
           console.error('Failed to create session:', error);
+          toastError(startChatFailureNotice(error, { kept: false }));
+          // Leave. Every input this effect keys on is still true after a
+          // failure, so staying would re-run it the moment `isCreatingSession`
+          // drops — a `POST /agent/start` loop for as long as the refusal
+          // holds. Home is the resting state for a layout with no tabs (#38).
+          // The cargo here is a workflow window's; a launcher message arrives
+          // with a session id and never reaches this branch.
+          navigate('/', { replace: true });
         } finally {
           setIsCreatingSession(false);
         }

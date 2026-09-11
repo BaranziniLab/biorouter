@@ -29,6 +29,8 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { createSession } from '../sessions';
 import LoadingBioRouter from './LoadingBioRouter';
 import type { UserAttachment } from '../types/message';
+import { toastError } from '../toasts';
+import { startChatFailureNotice } from '../utils/startChatFailure';
 
 export default function Hub({
   setView,
@@ -39,7 +41,16 @@ export default function Hub({
   const [workingDir, setWorkingDir] = useState(getInitialWorkingDir());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  /**
+   * Resolves FALSE when no chat was started, which is ChatInput's signal to put
+   * the box back exactly as the user left it — text, reference chips and pasted
+   * images — since it wiped itself before this awaited anything.
+   *
+   * ⚠ The failure used to reach `console.error` and nothing else: the text
+   * vanished and the Home screen sat unchanged (the 2026-09-10 QA run, F1). It
+   * is now a toast in words for a person — see `startChatFailureNotice`.
+   */
+  const handleSubmit = async (e: React.FormEvent): Promise<boolean | void> => {
     const customEvent = e as unknown as CustomEvent;
     const combinedTextFromInput = customEvent.detail?.value || '';
     const attachments = (customEvent.detail?.attachments ?? []) as UserAttachment[];
@@ -49,6 +60,7 @@ export default function Hub({
       const extensionConfigs = getExtensionConfigsWithOverrides(extensionsList);
       clearExtensionOverrides();
       setIsCreatingSession(true);
+      e.preventDefault();
 
       try {
         const session = await createSession(workingDir, {
@@ -61,13 +73,17 @@ export default function Hub({
           initialMessage: combinedTextFromInput,
           initialAttachments: attachments,
         });
+        return true;
       } catch (error) {
         console.error('Failed to create session:', error);
         setIsCreatingSession(false);
+        toastError(startChatFailureNotice(error, { kept: true }));
+        return false;
       }
-
-      e.preventDefault();
     }
+    // A second send while the first is still creating the chat: refused, so
+    // the composer keeps it.
+    return false;
   };
 
   return (

@@ -8,6 +8,7 @@ import {
   ExtensionLoadingStatus,
 } from './components/GroupedExtensionLoadingToast';
 import { getInitialWorkingDir } from './utils/workingDir';
+import { startChatFailureNotice } from './utils/startChatFailure';
 import { launchDependencyDebugSession } from './utils/launchDependencyDebug';
 import type { DependencyFailure } from './utils/dependencyDebugPrompt';
 
@@ -340,7 +341,11 @@ function ToastErrorContent({
           <Button
             size="sm"
             variant="secondary"
-            onClick={() => startNewSession(getInitialWorkingDir(), recoverHints, setView)}
+            onClick={() =>
+              void startNewSession(getInitialWorkingDir(), recoverHints, setView).catch((error) =>
+                toastError(startChatFailureNotice(error, { kept: false }))
+              )
+            }
           >
             Ask Biorouter
           </Button>
