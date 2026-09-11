@@ -27,10 +27,13 @@ import { RecordedIn } from './RecordedIn';
  * {@link usePrivacyTiersEnabled} reads off; the record only chooses the words.
  * A daemon that sends no record costs the explanation, never the notice.
  *
- * On the composer's own rails, in the slot `PinnedModelNote` uses — NOT above
- * the chat header, whose 44px band must stay level with the sidebar's and the
- * artifact strip's (`--chrome-height`), and not as a new app-wide strip, which
- * the `h-screen` routes inside the shell would overflow.
+ * Mounted above BOTH composers the app has — every chat's (`BaseChat`, in the
+ * slot `PinnedModelNote` uses) and Home's (`Hub`), because Home is the route
+ * the app launches on and an off switch takes effect at a launch. On the
+ * composer's own rails — NOT above the chat header, whose 44px band must stay
+ * level with the sidebar's and the artifact strip's (`--chrome-height`), and
+ * not as a new app-wide strip, which the `h-screen` routes inside the shell
+ * would overflow.
  */
 export function PrivacyTiersOffNote({
   className,

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -155,5 +157,20 @@ describe('PrivacyTiersOffNote', () => {
 
     await user.click(controls[0]);
     expect(screen.getByTestId('location')).toHaveTextContent('/settings {"section":"privacy"}');
+  });
+
+  /**
+   * A note nobody mounts is the same silence the drive measured. Asserted at the
+   * source, as `PrivacyBadge.test.tsx` does for its own call sites, because
+   * neither surface mounts cheaply in jsdom. Home is the load-bearing one: it
+   * is the route the app LAUNCHES on, and a switch turned off outside the app
+   * takes effect at a launch.
+   */
+  it('is mounted above both composers the app has: every chat, and Home', () => {
+    // vitest runs with `ui/desktop` as its root.
+    const source = (file: string) => readFileSync(path.join(process.cwd(), file), 'utf8');
+    for (const file of ['src/components/BaseChat.tsx', 'src/components/Hub.tsx']) {
+      expect(source(file), `${file} does not mount the note`).toMatch(/<PrivacyTiersOffNote\b/);
+    }
   });
 });
