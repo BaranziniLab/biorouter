@@ -309,9 +309,9 @@ fn numbered_list(prose: &str) -> Option<(&str, Vec<&str>)> {
     if run.len() > best.len() {
         best = run;
     }
-    if best.len() < 2 {
-        return None;
-    }
+    let &(list_start, _) = best.first().filter(|_| best.len() >= 2)?;
+    // Every offset here is a regex match boundary or a `find` result, so a
+    // char boundary; `get` only states that without an index that could panic.
     let items = best
         .iter()
         .enumerate()
@@ -320,14 +320,15 @@ fn numbered_list(prose: &str) -> Option<(&str, Vec<&str>)> {
                 Some(&(next_marker, _)) => next_marker,
                 // The last item ends with its line: an inline list has one line,
                 // and prose after a line list is not part of its last step.
-                None => prose[item_start..]
-                    .find('\n')
+                None => prose
+                    .get(item_start..)
+                    .and_then(|rest| rest.find('\n'))
                     .map_or(prose.len(), |offset| item_start + offset),
             };
-            prose[item_start..end].trim()
+            prose.get(item_start..end).unwrap_or_default().trim()
         })
         .collect();
-    Some((&prose[..best[0].0], items))
+    Some((prose.get(..list_start).unwrap_or_default(), items))
 }
 
 fn bulleted_list(prose: &str) -> Option<(&str, Vec<&str>)> {
@@ -341,7 +342,7 @@ fn bulleted_list(prose: &str) -> Option<(&str, Vec<&str>)> {
         items.push(item.as_str().trim());
     }
     let start = first_start?;
-    (items.len() >= 2).then(|| (&prose[..start], items))
+    (items.len() >= 2).then(|| (prose.get(..start).unwrap_or_default(), items))
 }
 
 fn action_clause_count(prose: &str) -> usize {
@@ -706,9 +707,9 @@ fn names_item(final_text: &str, final_words: &[String], item: &TodoItem) -> bool
 fn mentions_id(text: &str, id: &str) -> bool {
     let needle = format!("#{id}");
     text.match_indices(&needle).any(|(at, _)| {
-        !text[at + needle.len()..]
-            .chars()
-            .next()
+        !text
+            .get(at + needle.len()..)
+            .and_then(|rest| rest.chars().next())
             .is_some_and(|c| c.is_ascii_digit())
     })
 }
@@ -894,11 +895,22 @@ impl Agent {
             return ChecklistStop::Clear;
         };
         if blocks >= STOP_HOOK_BLOCK_CAP {
+            tracing::info!(
+                session_id,
+                open = objection.open,
+                "planning gate: checklist still open at the stop-check cap; letting the turn end"
+            );
             return ChecklistStop::GiveUp {
                 notice: give_up_notice(objection.open),
             };
         }
         self.planning.record_stop_block(session_id);
+        tracing::info!(
+            session_id,
+            open = objection.open,
+            block = blocks + 1,
+            "planning gate: sent the turn back to finish or name its open checklist items"
+        );
         ChecklistStop::Block {
             feedback: objection.feedback,
             notice: objection.notice,
