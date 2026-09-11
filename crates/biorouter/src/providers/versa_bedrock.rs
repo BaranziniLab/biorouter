@@ -80,9 +80,8 @@ pub struct VersaBedrockProvider {
     #[serde(skip)]
     name: String,
     /// The endpoint this instance resolved at construction. `tier()` reads it,
-    /// never the provider's name — the last fallback in the chain below is
-    /// `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which `bedrock.rs` sets
-    /// process-globally with `std::env::set_var`.
+    /// never the provider's name — `VERSA_BEDROCK_ENDPOINT` is user-writable, so
+    /// an instance can resolve somewhere that is not the UCSF gateway.
     #[serde(skip)]
     resolved_endpoint: String,
     #[serde(skip)]
@@ -95,33 +94,42 @@ impl VersaBedrockProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        // Endpoint: configurable, but always falls back to the UCSF MuleSoft proxy
-        // so a fresh install with just the key + secret works out of the box.
+        // Overrides come from this provider's OWN namespace and nowhere else. A
+        // blank value is absent, and absent is the UCSF gateway, so a fresh
+        // install with just the key and secret works out of the box.
+        //
+        // ⚠ Not `AWS_ENDPOINT_URL_BEDROCK` or `AWS_REGION`, and not the process
+        // environment. The `AWS_*` namespace is the public `aws_bedrock` card's:
+        // it declares `AWS_REGION`, and `bedrock.rs` exports every `AWS_*`
+        // config value and secret into the environment. Sharing it went wrong in
+        // both directions. Versa read those two keys, then
+        // `AWS_ENDPOINT_URL_BEDROCK` and `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` from
+        // the environment, as fallbacks. So the public card's region, or an
+        // endpoint left by its export or by a shell, steered Versa: UCSF-issued
+        // keys signed requests for someone's own AWS region, which refused them,
+        // and the instance turned Public. Versa's setup also WROTE both keys, so
+        // connecting it marked the public card Configured, and handed it UCSF's
+        // gateway as an endpoint. The fallbacks are gone (2026-09-11).
+        //
+        // Where nothing was set, every Versa setup surface prefilled the shipped
+        // defaults, and neither default has changed: the region has been
+        // us-west-2 since Versa Bedrock shipped (2026-05-07), and the endpoint
+        // has been UCSF's gateway since it became configurable (2026-05-12). So a
+        // value this drops was either typed over that prefill or came from the
+        // public side, and the second is the bug itself.
+        //
+        // ⚠ Each key is a STRING LITERAL passed straight to `get_param`, as in
+        // `versa_azure`, because `privacy::config_keys` scans this file for them.
         let endpoint_url: String = config
-            .get_param::<String>("AWS_ENDPOINT_URL_BEDROCK")
+            .get_param::<String>("VERSA_BEDROCK_ENDPOINT")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                std::env::var("AWS_ENDPOINT_URL_BEDROCK")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            })
-            .or_else(|| {
-                std::env::var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            })
             .unwrap_or_else(|| VERSA_BEDROCK_DEFAULT_ENDPOINT.to_string());
 
         let region: String = config
-            .get_param::<String>("AWS_REGION")
+            .get_param::<String>("VERSA_BEDROCK_REGION")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                std::env::var("AWS_REGION")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            })
             .unwrap_or_else(|| VERSA_BEDROCK_DEFAULT_REGION.to_string());
 
         let retry_config = Self::load_retry_config(config);
@@ -381,21 +389,24 @@ impl Provider for VersaBedrockProvider {
             VERSA_BEDROCK_DEFAULT_MODEL,
             models,
             VERSA_BEDROCK_DOC_LINK,
+            // ⚠ The key and secret, and NOTHING else, as the description above
+            // says. This used to declare `AWS_ENDPOINT_URL_BEDROCK` and
+            // `AWS_REGION`, and the setup form persists a declared key's default
+            // (DefaultProviderSetupForm seeds it as a value; DefaultSubmitHandler
+            // submits it). `AWS_REGION` is one of the two keys the PUBLIC
+            // `aws_bedrock` card declares, both required and both defaulted, so
+            // `check_provider_configured` calls that card Configured once either
+            // is in `config.yaml`: setting up UCSF's private Versa lit up the
+            // public, commercial Amazon Bedrock card. `versa_azure` had the same
+            // defect with the public Azure card (2026-09-03).
+            //
+            // Dropping them costs nothing. An install that sets nothing still
+            // reaches the UCSF gateway through the constants above, and an
+            // operator overrides through Versa's own `VERSA_BEDROCK_*` keys (see
+            // `from_env`).
             vec![
                 ConfigKey::new("VERSA_BEDROCK_ACCESS_KEY_ID", true, true, None),
                 ConfigKey::new("VERSA_BEDROCK_SECRET_ACCESS_KEY", true, true, None),
-                ConfigKey::new(
-                    "AWS_ENDPOINT_URL_BEDROCK",
-                    false,
-                    false,
-                    Some(VERSA_BEDROCK_DEFAULT_ENDPOINT),
-                ),
-                ConfigKey::new(
-                    "AWS_REGION",
-                    false,
-                    false,
-                    Some(VERSA_BEDROCK_DEFAULT_REGION),
-                ),
             ],
         )
         .with_unlisted_models()
@@ -766,10 +777,9 @@ mod tests {
     /// `tier_tests.rs`, but a test of the predicate alone cannot see whether
     /// this provider calls it, or hands it the right field. Replace the body of
     /// `tier()` with an unconditional `Private` and every one of those tests
-    /// still passes. This one does not — and the demotion matters most here,
-    /// because the last fallback in `from_env`'s endpoint chain is
-    /// `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which `bedrock.rs` sets
-    /// **process-globally** with `std::env::set_var`.
+    /// still passes. This one does not. The demotion is still needed although
+    /// `from_env` no longer falls back to the public side's keys:
+    /// `VERSA_BEDROCK_ENDPOINT` is user-writable config.
     #[tokio::test]
     async fn tier_follows_the_endpoint_this_instance_resolved() {
         let shipped = provider_at(VERSA_BEDROCK_DEFAULT_ENDPOINT).await;
@@ -787,12 +797,9 @@ mod tests {
     }
 
     /// DR-26 (Task 46) rule, **wired** — the same argument as the tier test
-    /// above, for the third axis, and it matters most here: the last fallback in
-    /// `from_env`'s endpoint chain is `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which
-    /// `bedrock.rs` sets **process-globally** with `std::env::set_var`. An
-    /// affiliation keyed on the provider's name would keep claiming `ucsf` for
-    /// an instance that another provider's construction had already repointed at
-    /// a plain AWS region.
+    /// above, for the third axis. `VERSA_BEDROCK_ENDPOINT` is user-writable, and
+    /// an affiliation keyed on the provider's name would keep claiming `ucsf`
+    /// for an instance repointed at a plain AWS region.
     #[tokio::test]
     async fn affiliation_follows_the_endpoint_this_instance_resolved() {
         use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};

@@ -54,13 +54,18 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     ("LLAMACPP_TIMEOUT", "transport timeout"),
     ("LLAMACPP_STARTUP_TIMEOUT", "sidecar readiness deadline"),
     ("LLAMACPP_CONTEXT_SIZE", "token budget"),
-    // ⚠ The four endpoint keys below MOVE where a Private-badged provider sends
-    //   traffic, but they cannot RAISE a tier: Task 5 name-keys versa_azure and
-    //   versa_bedrock Private regardless of endpoint, and azure.rs ships the
-    //   UCSF gateway as a PUBLIC provider's default for the same reason.
-    //   Pointing a private-badged provider off-site is a real and different
-    //   problem — it belongs to Task 5's tier definition and to Open question 5,
-    //   not to DR-16 — and it is recorded here rather than left unstated.
+    // ⚠ The two endpoint keys below MOVE where a Private-badged provider sends
+    //   traffic, and since `e2e4eb9d` that moves its tier as well: `tier()`
+    //   follows the endpoint an instance resolved (`ucsf_gateway_tier`), so an
+    //   off-site value demotes it to Public, and deleting that value restores
+    //   Private. These rows used to say the keys "cannot RAISE a tier" because
+    //   Task 5 name-keyed versa_* Private regardless of endpoint, and that
+    //   stopped being true. The classification rests on this instead: the only
+    //   value that reads Private is the UCSF gateway's own host, so no write can
+    //   make an off-site endpoint look Private, and a raise through one of these
+    //   keys is always a return to the institution's gateway. Whether even that
+    //   raise should be a user act, as it is for `OLLAMA_HOST`, is an open DR-16
+    //   question, recorded here rather than left unstated.
     //
     // Versa Azure's three overrides, in its own namespace. It used to share the
     // public `azure_openai` card's `AZURE_OPENAI_*` keys, which went wrong both
@@ -74,15 +79,25 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     // tier-input file, because `azure_openai` is Public wherever it points.
     (
         "VERSA_AZURE_ENDPOINT",
-        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
+        "moves a Private provider's endpoint; only the UCSF gateway reads Private (see above)",
     ),
     ("VERSA_AZURE_DEPLOYMENT_NAME", "deployment selection"),
     ("VERSA_AZURE_API_VERSION", "wire version"),
+    // Versa Bedrock's two overrides, in its own namespace since 2026-09-11. It
+    // used to declare and read the public Amazon Bedrock card's `AWS_REGION` and
+    // an `AWS_ENDPOINT_URL_BEDROCK` key, then fall back to the process
+    // environment, so the public side's values steered Versa and a Versa setup
+    // configured the public card. No tier-input file reads an `AWS_*` key now,
+    // so none has a row; `bedrock.rs` still reads them and is not a tier-input
+    // file, because `aws_bedrock` is Public wherever it points.
     (
-        "AWS_ENDPOINT_URL_BEDROCK",
-        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
+        "VERSA_BEDROCK_ENDPOINT",
+        "moves a Private provider's endpoint; only the UCSF gateway reads Private (see above)",
     ),
-    ("AWS_REGION", "region selection"),
+    (
+        "VERSA_BEDROCK_REGION",
+        "SigV4 signing region; the endpoint, not the region, decides where a request goes",
+    ),
     ("BEDROCK_MAX_RETRIES", "retry policy"),
     ("BEDROCK_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
     ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
