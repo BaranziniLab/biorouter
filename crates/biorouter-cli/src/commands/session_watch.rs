@@ -1123,14 +1123,46 @@ async fn post_json_to(
     .await
     .map_err(|_| anyhow!("the daemon did not answer POST {path} within 10s"))??;
 
-    let text = String::from_utf8_lossy(&raw).to_string();
-    let (head, body) = text
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| anyhow!("daemon sent a malformed response to POST {path}"))?;
+    parse_http_response(&raw, &format!("POST {path}"))
+}
+
+/// One HTTP response, as its status code and its body — dechunked when the head
+/// says the body is chunked.
+///
+/// ⚠ **Chunked framing is not part of the body, and reading it as one is not a
+/// theoretical worry.** hyper answers an EMPTY body with `transfer-encoding:
+/// chunked` and a lone `0\r\n\r\n` terminator, so a parser that hands the bytes
+/// back as they came reports a body of `"0"`. Measured against a real daemon
+/// that holds a user-action key on 2026-09-11: [`key_verdict`] read that `"0"`
+/// as the daemon's refusal sentence, so `session cancel` printed *the daemon
+/// would not stop the turn: 0* instead of asking for the key the daemon was
+/// waiting for — the empty 403 is exactly the answer that must reach it intact.
+fn parse_http_response(raw: &[u8], what: &str) -> Result<(u16, String)> {
+    // Split on BYTES: a chunk size counts bytes, and a lossy decode first could
+    // move them.
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| {
+            anyhow!(
+            "the daemon closed the connection before sending a complete response to {what}, so \
+             it is not known whether the request was carried out"
+        )
+        })?;
+    let head = String::from_utf8_lossy(&raw[..end]).into_owned();
     let status = head.lines().next().unwrap_or_default();
     let code = status_code(status)
         .ok_or_else(|| anyhow!("daemon sent a response carrying no status code: {status}"))?;
-    Ok((code, body.to_string()))
+    let body = &raw[end + 4..];
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        dechunk(body)
+    } else {
+        body.to_vec()
+    };
+    Ok((code, String::from_utf8_lossy(&body).into_owned()))
 }
 
 /// One request to a JSON route that takes the secret key and nothing more — the
@@ -1172,31 +1204,7 @@ pub(crate) async fn daemon_json_request(
         None => exchange.await?,
     };
 
-    // Split on BYTES: a chunk size counts bytes, and a lossy decode first could
-    // move them.
-    let end = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| {
-            anyhow!(
-                "the daemon closed the connection before sending a complete response to {method} \
-             {path}, so it is not known whether the request was carried out"
-            )
-        })?;
-    let head = String::from_utf8_lossy(&raw[..end]).into_owned();
-    let status = head.lines().next().unwrap_or_default();
-    let code = status_code(status)
-        .ok_or_else(|| anyhow!("daemon sent a response carrying no status code: {status}"))?;
-    let body = &raw[end + 4..];
-    let body = if head
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked")
-    {
-        dechunk(body)
-    } else {
-        body.to_vec()
-    };
-    Ok((code, String::from_utf8_lossy(&body).into_owned()))
+    parse_http_response(&raw, &format!("{method} {path}"))
 }
 
 /// An HTTP/1.1 chunked body, joined. Malformed framing ends the body where it
@@ -2968,9 +2976,60 @@ mod tests {
         )
     }
 
-    /// `authorize_turn_control`'s refusal on a daemon that holds a key.
+    /// The same answer as a real daemon frames it: chunked, which is what hyper
+    /// does for these routes. See [`empty_403`].
+    fn chunked(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\
+             \r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+            body.len()
+        )
+    }
+
+    /// `authorize_turn_control`'s refusal on a daemon that holds a key, framed
+    /// as a real one frames it.
+    ///
+    /// ⚠ **Chunked, with a lone `0\r\n\r\n` terminator, because that is what was
+    /// on the wire.** Captured from a keyed `biorouterd` on 2026-09-11: hyper
+    /// sends no `content-length` for an empty body. A fixture that used
+    /// `content-length: 0` passed every test here while the real thing was read
+    /// as a refusal whose sentence was "0" — so the terminal printed that
+    /// instead of asking for the key. [`parse_http_response`] is what keeps the
+    /// framing out of the body.
     fn empty_403() -> String {
-        "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n".to_string()
+        "HTTP/1.1 403 Forbidden\r\nconnection: close\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n"
+            .to_string()
+    }
+
+    /// An empty refusal is an empty refusal however the daemon framed it, and
+    /// either way it is the answer that asks the person for the key.
+    #[tokio::test]
+    async fn an_empty_refusal_reads_as_wanted_however_it_is_framed() {
+        for empty in [
+            empty_403(),
+            "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n".to_string(),
+            // Belt and braces: a chunked body that is genuinely empty, spelled
+            // with the terminator on its own read.
+            "HTTP/1.1 403 Forbidden\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n".to_string(),
+        ] {
+            let daemon =
+                FakeDaemon::start(vec![empty.clone(), http("200 OK", "{\"cancelled\":false}")])
+                    .await;
+            let asked = std::cell::Cell::new(0);
+            let line = cancel_turn(
+                daemon.port,
+                "20260911_4",
+                DaemonAuth::for_test("s3cret", ""),
+                person_types("the-typed-key", &asked),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("framing {empty:?} was not read as an empty 403: {err}"));
+            assert_eq!(
+                line,
+                "nothing to cancel: this session had no turn in flight"
+            );
+            assert_eq!(asked.get(), 1, "framing {empty:?}");
+        }
     }
 
     /// The regression SD-11 left behind, end to end over a socket: on a daemon
@@ -3039,7 +3098,10 @@ mod tests {
     /// none — is shown in the daemon's words, and nobody is asked for a key.
     #[tokio::test]
     async fn a_refusal_no_key_can_change_is_shown_rather_than_prompted_for() {
-        let daemon = FakeDaemon::start(vec![http("403 Forbidden", &keyless_refusal_body())]).await;
+        // Chunked, as a real daemon sends it: the sentence must survive the
+        // framing intact, with no chunk sizes in it.
+        let daemon =
+            FakeDaemon::start(vec![chunked("403 Forbidden", &keyless_refusal_body())]).await;
         let asked = std::cell::Cell::new(0);
         let err = cancel_turn(
             daemon.port,
