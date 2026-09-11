@@ -282,6 +282,10 @@ what did not" section first**; the rest of that document is the design, not the 
   user-action proof or a stated private capability. The rules that follow:
   - A route that names one chat calls `session_reach`, and refuses with its exact plain text.
   - Listings filter through `HttpCaller::lists_session`.
+  - Running work is the same rule reached through the row's chat. `GET /active_work` filters
+    through `HttpCaller::lists_work`, and its cancel asks `work_reach` before anything stops. A
+    row that names no chat is treated as a private chat's, so a registrant that knows its chat must
+    set `ActiveWorkItem::session_id`. The shell's rows take it from the `_meta` session id.
   - Every `/knowledge/bases/{id}` route sits in `knowledge::router`'s `base_routes`, behind
     `gate_knowledge_base`. Put any new `{id}` route there.
   - ⚠ **The renderer must send `userActionHeaders()` on every such call.** A missing proof is not an

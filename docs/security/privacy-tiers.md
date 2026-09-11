@@ -88,6 +88,14 @@ this section is the ledger.
     writes alike. An absent or malformed id is answered as a private one.
   - **Knowledge-base listings.** `GET /knowledge/bases` and `/knowledge/active` omit what the
     caller cannot reach, and a selection write cannot move a base its caller cannot see.
+  - **Running work.** `GET /active_work` omits every row whose chat the caller could not open. A
+    row is a background job's or a foreground command's shell text, or a subagent's task prompt,
+    which is content rather than metadata. `POST /active_work/{id}/cancel` resolves its id to the
+    chat that owns the work and asks that chat's read gate before it stops anything, refusing in
+    the read's own words. A row that names no chat is answered as a private chat's row, because
+    its command came from some chat and nothing says whose. The shell now records the chat that
+    ran each command, which leaves that arm to work that genuinely has no chat. Open question 10
+    below was this.
 
   The desktop app sends the proof on each of these calls and sees exactly what it saw before. A
   `biorouter serve` browser keeps its operator's reach on listings and knowledge bases and gains
@@ -2989,6 +2997,14 @@ prediction stands for whatever the next narrowest reading of it turns out to be.
     applied to it, but it is exposed only via `GET /active_work` for the GUI (the model-facing
     `workspace_read_conversation` / `workspace_watch` are session-scoped), so it may deserve its own
     fix rather than riding this one.
+    ✅ **Answered 2026-09-11, with its own fix.** It was wider than the title: `detail` carries
+    every running shell command verbatim, and `POST /active_work/{id}/cancel` stopped any of them.
+    Both routes now ask the HTTP reach gate about the chat that owns each row. The listing omits a
+    row its caller could not open, and the cancel refuses in the chat read's own words. A row that
+    names no chat is treated as a private chat's. The instrument is `routes::session_reach` rather
+    than `appears_in_list`, because an HTTP caller has no `CallCapability`; its capability is the
+    one it states, or the user's proof. The rule it applies is the same one. See
+    [Reaching a private chat from a script](../deployment/programmatic-session-access.md).
 11. **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because
     the barrier is in the extension manager, but the route is a standing hazard for every *future*
     inspector-based control, including BR-71's.

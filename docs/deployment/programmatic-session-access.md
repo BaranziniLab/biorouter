@@ -183,10 +183,11 @@ one of them resolves the target's tier **before** it touches the session, so a r
 | `POST /workflows/create` | A workflow a model writes from the chat's whole transcript. |
 | `POST /skills/session` | The chat's per-chat skill overrides. |
 | `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, each checked before any transcript is read. |
+| `POST /active_work/{id}/cancel` | Stops one chat's running work: a shell command, a subagent, a detached turn or a scheduled run. The id names the work, not the chat, so the daemon looks up the chat that owns it and applies this gate to that chat before anything stops. |
 
 Each of these refuses a caller exactly as `GET /sessions/{id}` does, with the same status and the
 same words, and answers a chat that does not exist the same way. Deleting, renaming or editing a
-chat is never easier than reading it.
+chat is never easier than reading it, and neither is stopping its work.
 
 **Listings and knowledge bases apply the same rule.** They do not refuse a list; they leave out what
 the caller could not open:
@@ -196,9 +197,23 @@ the caller could not open:
 | `GET /sessions`, `GET /sessions/sidebar`, `GET /schedule/{id}/sessions` | The public chats only. A private chat is omitted, never redacted. It is not shown with its title removed. The sidebar still pages cleanly: follow `next_offset` as returned rather than computing it. |
 | Every `/knowledge/bases/{id}…` route: pages, graph, history, location, export, preview, and the writes | A private base is refused with a knowledge-base twin of the chat refusal. A base that does not exist, and a malformed id, get the same refusal. |
 | `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
+| `GET /active_work` | The running work of public chats only. Each row carries its chat's `sessionId` and a `title` and `detail` holding the shell command or task prompt, which is the chat's content. A row whose chat is private, or cannot be read, is omitted. So is a row that names no chat at all (see below). |
 
 A browser pointed at `biorouter serve` is a special case of this, described in
 [decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
+`GET /active_work` is a listing, so the served interface keeps its operator's reach there. Stopping
+one piece of that work names one chat, so it does not.
+
+**Work that names no chat is treated as a private chat's work.** A registry row can be missing its
+chat: work registered from outside any chat, or a schedule that has started but not yet opened its
+chat. Such a row still carries a command or a prompt from some chat, and nothing says which. So
+`GET /active_work` shows it only to a caller that would be shown a private chat, and `POST
+/active_work/{id}/cancel` refuses it in the same words as a private chat. A handle that names
+nothing is refused the same way, so a refusal does not say whether the work exists. Background
+jobs and foreground commands used to register without their chat, so this rule alone would have
+hidden every shell command, a public chat's included, from any caller not shown private chats. The
+shell now records the chat that ran each command, from the chat id Biorouter's MCP client attaches
+to every tool call, which leaves this rule to work that genuinely has no chat.
 
 ## What the header does *not* cover
 
@@ -234,9 +249,8 @@ reader should not infer from this page that the surface is complete:
 | `GET /sessions/running` | The ids of sessions with a turn in flight. Left unfiltered on purpose: `biorouter session list` reads it to report whether a run is still going, and a filtered answer would report a running private chat as finished. |
 | `GET /sessions/changes` | For the ids a caller names, and any other row that changed, the provider, model and tier columns. Metadata, not titles or transcripts. |
 | `GET /sessions/insights`, `GET /sessions/activity` | Machine-wide counts and per-day usage. Aggregates that name no chat. |
-| `GET /active_work` | Every running background job, subagent, detached turn and scheduled run. Each comes with its `sessionId` and a `title`/`detail` that carries the **shell command or task prompt**. This is content rather than metadata, and it is the most significant item on this list. |
-| `POST /active_work/{id}/cancel` | Cancels any of the above by its registry id. The id is not a session id, so the gate cannot be applied without a reverse lookup. |
-| `GET /schedule/{id}/inspect`, `POST /schedule/{id}/run_now`, `POST /schedule/create` | Inspects or launches scheduled work that may run in a private session. |
+| `GET /schedule/list`, `GET /schedule/{id}/inspect`, `POST /schedule/{id}/kill` | Every schedule, with the chat that created it and each running one's `current_session_id`, and a way to stop it. This is the scheduled half of what `/active_work` now filters, still open through the schedule routes: a caller that `/active_work` refuses a private chat's scheduled run can find its chat here and stop it here. |
+| `POST /schedule/{id}/run_now`, `POST /schedule/create` | Launch scheduled work that may run in a private session. |
 
 The daemon has no principal, so none of this is a *tier* bypass in the strict sense — a caller
 holding the secret is already inside. It is the same open problem as
