@@ -49,6 +49,31 @@ use super::text_editor::{
 use super::undo_history::{self, FileHistory};
 use std::time::Duration;
 
+/// The `_meta` key Biorouter's MCP client writes the dispatching chat's id
+/// under, on every tool call (`McpMeta` / `session_context::SESSION_ID_HEADER`
+/// in the `biorouter` crate, which this crate cannot name). The knowledge and
+/// Agent Drafter servers read the same key.
+const SESSION_ID_META_KEY: &str = "biorouter-session-id";
+
+/// The chat a tool call was dispatched from, when a Biorouter client sent it.
+///
+/// It rides the call's `_meta`, which the client composes itself — the model
+/// supplies the arguments and never this — so it is the chat that asked, not a
+/// chat the model named. `None` for a call from any other MCP client.
+///
+/// Issue #56: the shell's active-work rows carry it, because `GET /active_work`
+/// shows a row only to a caller that could open its chat and answers a row
+/// that names no chat as a private chat's.
+fn dispatching_session_id(context: &RequestContext<RoleServer>) -> Option<String> {
+    context
+        .meta
+        .0
+        .get(SESSION_ID_META_KEY)
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
 fn redirect_target_within_base(base: &Path, target: &str) -> Option<PathBuf> {
     // Path::join preserves relative targets and replaces the base for absolute
     // ones on every supported platform. Always check the resulting path: a
@@ -1482,6 +1507,8 @@ impl DeveloperServer {
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
         let command = &params.command;
+        // Read before `context` is taken apart below.
+        let session_id = dispatching_session_id(&context);
         let peer = context.peer;
         let request_id = context.id;
         // rmcp's own request-scoped token. It is a descendant of the serve
@@ -1511,7 +1538,7 @@ impl DeveloperServer {
         if params.background.unwrap_or(false) {
             let id = self
                 .background_jobs
-                .spawn(command, params.label.clone(), working_dir)
+                .spawn(command, params.label.clone(), working_dir, session_id)
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1537,7 +1564,7 @@ impl DeveloperServer {
             mirror_ct.cancel();
         }));
         let output_result = self
-            .execute_shell_command(command, working_dir, &peer, run_ct)
+            .execute_shell_command(command, working_dir, session_id, &peer, run_ct)
             .await;
 
         // Clean up the process from tracking
@@ -1762,6 +1789,7 @@ impl DeveloperServer {
         &self,
         command: &str,
         working_dir: Option<PathBuf>,
+        session_id: Option<String>,
         peer: &rmcp::service::Peer<RoleServer>,
         cancellation_token: CancellationToken,
     ) -> Result<(String, Option<i32>), ErrorData> {
@@ -1819,7 +1847,8 @@ impl DeveloperServer {
         // can leave this function by `?` as well as by returning a value, and a
         // heartbeat that outlives its command would notify the client forever.
         let started = std::time::Instant::now();
-        let _active_work = super::shell::ForegroundWorkGuard::register(&command_text, pid);
+        let _active_work =
+            super::shell::ForegroundWorkGuard::register(&command_text, pid, session_id);
         let _heartbeat = super::shell::AbortOnDrop::new(Self::foreground_heartbeat(
             peer.clone(),
             command_text.clone(),
@@ -5835,6 +5864,135 @@ mod tests {
             assert!(
                 mine(active_work().list()).is_none(),
                 "a finished command must be deregistered, not left as a phantom entry"
+            );
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// A tool call from a chat, stamped the way Biorouter's MCP client stamps
+    /// every call it dispatches: the chat's id on the call's `_meta`.
+    ///
+    /// The key is spelled out rather than borrowed from `SESSION_ID_META_KEY`
+    /// on purpose: it is the WIRE spelling the `biorouter` crate's client
+    /// writes, and a reader whose constant drifted from it must fail here
+    /// rather than agree with itself.
+    fn context_from_chat(
+        peer: &rmcp::service::Peer<RoleServer>,
+        request: i64,
+        session_id: &str,
+    ) -> RequestContext<RoleServer> {
+        let mut meta = rmcp::model::Meta::default();
+        meta.0.insert(
+            "biorouter-session-id".to_string(),
+            serde_json::Value::String(session_id.to_string()),
+        );
+        RequestContext {
+            ct: Default::default(),
+            id: NumberOrString::Number(request),
+            meta,
+            extensions: Default::default(),
+            peer: peer.clone(),
+        }
+    }
+
+    /// Issue #56: `GET /active_work` shows a row only to a caller that could
+    /// open the chat the row belongs to, and treats a row that names no chat as
+    /// a private chat's. So a foreground command has to say which chat ran it —
+    /// or every command from every chat is withheld from every caller that
+    /// cannot open a private one, the public chat's own client included.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_running_foreground_command_names_the_chat_that_ran_it() {
+        use crate::active_work::active_work;
+
+        run_shell_test(|| async {
+            let server = create_test_server();
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let marker = "br56-foreground-owner-probe";
+            let command = format!("sleep 30 # {marker}");
+            let context = context_from_chat(&peer, 5601, "20260911_4242");
+            let server_clone = server.clone();
+            let shell_task = tokio::spawn(async move {
+                server_clone
+                    .shell(
+                        Parameters(ShellParams {
+                            working_directory: None,
+                            command,
+                            background: None,
+                            label: None,
+                        }),
+                        context,
+                    )
+                    .await
+            });
+
+            let mine = || {
+                active_work()
+                    .list()
+                    .into_iter()
+                    .find(|i| i.detail.as_deref().is_some_and(|d| d.contains(marker)))
+            };
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut entry = None;
+            while entry.is_none() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                entry = mine();
+            }
+            let entry =
+                entry.expect("a running foreground command must appear in the active-work view");
+            // Stopped before the assertion, so a failure leaves no sleep behind.
+            assert!(active_work().cancel(&entry.id));
+            let _ = timeout(Duration::from_secs(10), shell_task).await;
+            assert_eq!(
+                entry.session_id.as_deref(),
+                Some("20260911_4242"),
+                "a foreground command's active-work row does not name the chat that ran it"
+            );
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// …and the same for a background job, which outlives the call that
+    /// started it, so it is the row most likely to be listed long after.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_background_job_names_the_chat_that_started_it() {
+        use crate::active_work::active_work;
+
+        run_shell_test(|| async {
+            let server = create_test_server();
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let marker = "br56-background-owner-probe";
+            let started = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: format!("sleep 30 # {marker}"),
+                        background: Some(true),
+                        label: None,
+                    }),
+                    context_from_chat(&peer, 5602, "20260911_4343"),
+                )
+                .await;
+            assert!(started.is_ok(), "{started:?}");
+            let entry = active_work()
+                .list()
+                .into_iter()
+                .find(|i| i.detail.as_deref().is_some_and(|d| d.contains(marker)))
+                .expect("a background job must appear in the active-work view");
+            assert!(active_work().cancel(&entry.id));
+            assert_eq!(
+                entry.session_id.as_deref(),
+                Some("20260911_4343"),
+                "a background job's active-work row does not name the chat that started it"
             );
 
             cleanup_test_service(running_service, peer);
