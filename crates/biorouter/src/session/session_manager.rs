@@ -119,6 +119,121 @@ CREATE TABLE IF NOT EXISTS cross_affiliation_grants (
 )
 "#;
 
+/// Usage of deleted chats, folded out of `token_events` when a chat is deleted
+/// (F10): one row per local calendar day, model and provider, holding sums and
+/// the number of turns behind them — and nothing that identifies a chat: no
+/// session id, no event key, no turn time. `''` stands for an unknown model or
+/// provider, because a primary key cannot tell two NULLs apart.
+///
+/// Each `*_known` counts the turns that reported that bucket, and each sum
+/// covers only those turns, so a total drawn from here is exactly as complete —
+/// or as incomplete — as the turns it came from.
+///
+/// ⚠ **No numbered migration arm**, for the reason the grants table above gives:
+/// it is additive, so `create_usage_schema` creates it for a fresh database and
+/// `reconcile_usage_schema` for every existing one, on every open.
+const DELETED_CHAT_USAGE_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS deleted_chat_usage (
+  day                   TEXT    NOT NULL,
+  model_id              TEXT    NOT NULL DEFAULT '',
+  provider              TEXT    NOT NULL DEFAULT '',
+  turns                 INTEGER NOT NULL DEFAULT 0,
+  input_tokens          INTEGER NOT NULL DEFAULT 0,
+  input_known           INTEGER NOT NULL DEFAULT 0,
+  output_tokens         INTEGER NOT NULL DEFAULT 0,
+  output_known          INTEGER NOT NULL DEFAULT 0,
+  billed_total_tokens   INTEGER NOT NULL DEFAULT 0,
+  billed_known          INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+  cache_read_known      INTEGER NOT NULL DEFAULT 0,
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_known  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, model_id, provider)
+)
+"#;
+
+/// Billable usage: the relation the Usage panel, `biorouter usage` and the
+/// global per-model rollup total (F10). Aliased `u`, with two halves of one
+/// shape:
+///
+/// - every billable turn of a chat that still exists, one row per turn —
+///   joined to `sessions`, so a per-turn row whose chat is gone is never read;
+/// - [`DELETED_CHAT_USAGE_DDL`]'s rows, dated at their day's local midnight, so
+///   a window that starts on a day boundary and ends now — the Usage panel's —
+///   always contains them.
+///
+/// Deleted chats stay in these totals on purpose. The Usage panel exists so a
+/// user can hold Biorouter's numbers against the provider's own meter and the
+/// UCSF allowance (issue #1), and a delete does not refund a token there.
+/// Home's heatmap and insight tiles count activity rather than spend and read
+/// only chats that still exist — the same split that already counts subagent
+/// spend here and not there.
+///
+/// `turns` stands in for `COUNT(*)` and each `*_known` for `COUNT(column)`, so a
+/// total is complete only when every turn behind it reported that bucket — the
+/// rule the per-turn queries applied before the fold existed.
+const BILLABLE_USAGE: &str = "(
+    SELECT te.ts AS ts,
+           date(te.ts, 'unixepoch', 'localtime') AS day,
+           te.model_id AS model_id,
+           te.provider AS provider,
+           1 AS turns,
+           te.input_tokens AS input_tokens,
+           te.input_tokens IS NOT NULL AS input_known,
+           te.output_tokens AS output_tokens,
+           te.output_tokens IS NOT NULL AS output_known,
+           te.billed_total_tokens AS billed_total_tokens,
+           te.billed_total_tokens IS NOT NULL AS billed_known,
+           te.cache_read_tokens AS cache_read_tokens,
+           te.cache_read_tokens IS NOT NULL AS cache_read_known,
+           te.cache_creation_tokens AS cache_creation_tokens,
+           te.cache_creation_tokens IS NOT NULL AS cache_creation_known
+      FROM token_events te
+      JOIN sessions s ON s.id = te.session_id
+     WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
+    UNION ALL
+    SELECT CAST(strftime('%s', d.day, 'utc') AS INTEGER),
+           d.day,
+           NULLIF(d.model_id, ''),
+           NULLIF(d.provider, ''),
+           d.turns,
+           d.input_tokens, d.input_known,
+           d.output_tokens, d.output_known,
+           d.billed_total_tokens, d.billed_known,
+           d.cache_read_tokens, d.cache_read_known,
+           d.cache_creation_tokens, d.cache_creation_known
+      FROM deleted_chat_usage d
+) u";
+
+/// The `(day, model, provider)` grain every priced usage total starts from,
+/// over [`BILLABLE_USAGE`]. `day` is the expression for the `day` column —
+/// `u.day`, or `''` for a caller that sums across days — and `filter` the
+/// `WHERE` clause. One builder, so the three priced totals cannot drift apart
+/// in how they turn `turns` and `*_known` back into completeness.
+fn billable_usage_grain_sql(day: &str, filter: &str) -> String {
+    format!(
+        "SELECT {day} AS day,
+                u.model_id,
+                u.provider,
+                COALESCE(SUM(u.input_tokens), 0)  AS input_tokens,
+                COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                CASE WHEN SUM(u.billed_known) = SUM(u.turns)
+                     THEN SUM(u.billed_total_tokens) END AS total_tokens,
+                CASE WHEN SUM(u.cache_read_known) = SUM(u.turns)
+                     THEN SUM(u.cache_read_tokens) END AS cache_read_tokens,
+                CASE WHEN SUM(u.cache_creation_known) = SUM(u.turns)
+                     THEN SUM(u.cache_creation_tokens) END AS cache_creation_tokens,
+                SUM(u.turns) AS turns,
+                CAST(SUM(u.input_known) = SUM(u.turns) AS INTEGER) AS input_complete,
+                CAST(SUM(u.output_known) = SUM(u.turns) AS INTEGER) AS output_complete,
+                CAST(SUM(u.cache_read_known) = SUM(u.turns) AS INTEGER) AS cache_read_complete,
+                CAST(SUM(u.cache_creation_known) = SUM(u.turns) AS INTEGER) AS cache_creation_complete
+           FROM {BILLABLE_USAGE}
+          WHERE {filter}
+          GROUP BY 1, u.model_id, u.provider"
+    )
+}
+
 /// True when `err` is the `UNIQUE(messages.session_id, messages.msg_uid)`
 /// violation (SQLite error 2067) from the message insert — the one failure
 /// [`SessionStorage::add_message`] recovers from by re-minting the uid (#41).
@@ -3395,6 +3510,7 @@ impl SessionStorage {
         )
         .execute(pool)
         .await?;
+        sqlx::query(DELETED_CHAT_USAGE_DDL).execute(pool).await?;
         Ok(())
     }
 
@@ -3618,8 +3734,14 @@ impl SessionStorage {
         .execute(&mut *connection)
         .await?;
 
-        // Capture the session classification while it still exists. Rows whose
-        // parent session was already deleted remain NULL and are conservatively
+        sqlx::query(DELETED_CHAT_USAGE_DDL)
+            .execute(&mut *connection)
+            .await?;
+        Self::prune_orphaned_token_events(connection).await?;
+
+        // Capture the session classification while it still exists. The prune
+        // above has already removed every row whose chat is gone, so this only
+        // classifies rows of live chats; a row left unclassified would still be
         // excluded from user/subagent spend rather than assumed billable.
         sqlx::query(
             r#"
@@ -3656,6 +3778,98 @@ impl SessionStorage {
         .await?;
 
         Ok(())
+    }
+
+    /// Retire every `token_events` row whose chat no longer exists (F10): fold
+    /// its billable usage into `deleted_chat_usage`, exactly as `delete_session`
+    /// does, then delete it.
+    ///
+    /// The production writer, `apply_usage_event`, only inserts beside the
+    /// `sessions` row it updates in the same transaction, and `delete_session`
+    /// now retires a chat's ledger together with the chat. What this repairs is
+    /// every row an earlier delete left behind — and any an older build still
+    /// leaves while it shares this file, which the desktop daemon, a terminal
+    /// `biorouter` and a scheduled job all open. Folding before deleting is what
+    /// makes the upgrade invisible in the Usage panel: every token it counted
+    /// before, it still counts; only the per-chat trail is gone.
+    ///
+    /// ⚠ **A startup sweep, not a numbered migration arm, deliberately.** An arm
+    /// consumes a migration number, and this file already records both ways
+    /// that goes wrong: development branches have collided on numbers (v11–v14,
+    /// and 17), and work added to a number a tester's database has already
+    /// passed never runs there (the O10 hazard, arms 18–20). A second open finds
+    /// nothing to fold or delete, so running this on every open is the same
+    /// one-time repair on a database that has orphans, a standing one for the
+    /// mixed-build case above, and safe in either merge order. It runs inside
+    /// `reconcile_usage_schema`'s `BEGIN IMMEDIATE`, so the fold and the delete
+    /// land together and can never see a turn half-recorded.
+    ///
+    /// ⚠ **Existence is the whole test**, so a row whose `session_id` names a
+    /// live chat is never touched, however old. That leaves one residual this
+    /// cannot see: an orphan whose id `create_session` has already re-issued
+    /// now reads as the new chat's. Telling the two apart would take a
+    /// timestamp guess (a row older than its chat's `created_at`) run
+    /// destructively on every open — the wrong trade for a population that
+    /// measured zero on a real 11,780-chat store, and one the delete path
+    /// closes for every chat deleted from now on.
+    async fn prune_orphaned_token_events(connection: &mut sqlx::SqliteConnection) -> Result<()> {
+        sqlx::query(&Self::fold_into_deleted_chat_usage_sql(
+            "NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = te.session_id)",
+        ))
+        .execute(&mut *connection)
+        .await?;
+        let pruned = sqlx::query(
+            "DELETE FROM token_events \
+              WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = token_events.session_id)",
+        )
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+        if pruned > 0 {
+            info!("Retired {pruned} token_events rows whose chat no longer exists");
+        }
+        Ok(())
+    }
+
+    /// The one statement that folds the billable `token_events` rows matching
+    /// `filter` — a predicate over `te` — into `deleted_chat_usage`, one bucket
+    /// per local day, model and provider, adding into any bucket already there.
+    /// Shared by `delete_session` and the startup sweep, each of which deletes
+    /// the rows it folded inside the same transaction.
+    ///
+    /// Only billable turns are kept, because only the totals over
+    /// [`BILLABLE_USAGE`] read this table: a hidden, terminal or unclassified
+    /// row was never counted by any of them, so it goes without a trace.
+    fn fold_into_deleted_chat_usage_sql(filter: &str) -> String {
+        format!(
+            "INSERT INTO deleted_chat_usage \
+                 (day, model_id, provider, turns, \
+                  input_tokens, input_known, output_tokens, output_known, \
+                  billed_total_tokens, billed_known, cache_read_tokens, cache_read_known, \
+                  cache_creation_tokens, cache_creation_known) \
+             SELECT date(te.ts, 'unixepoch', 'localtime'), \
+                    COALESCE(te.model_id, ''), COALESCE(te.provider, ''), COUNT(*), \
+                    COALESCE(SUM(te.input_tokens), 0), COUNT(te.input_tokens), \
+                    COALESCE(SUM(te.output_tokens), 0), COUNT(te.output_tokens), \
+                    COALESCE(SUM(te.billed_total_tokens), 0), COUNT(te.billed_total_tokens), \
+                    COALESCE(SUM(te.cache_read_tokens), 0), COUNT(te.cache_read_tokens), \
+                    COALESCE(SUM(te.cache_creation_tokens), 0), COUNT(te.cache_creation_tokens) \
+               FROM token_events te \
+              WHERE te.session_type IN ('user', 'scheduled', 'sub_agent') AND ({filter}) \
+              GROUP BY 1, 2, 3 \
+             ON CONFLICT (day, model_id, provider) DO UPDATE SET \
+                 turns = turns + excluded.turns, \
+                 input_tokens = input_tokens + excluded.input_tokens, \
+                 input_known = input_known + excluded.input_known, \
+                 output_tokens = output_tokens + excluded.output_tokens, \
+                 output_known = output_known + excluded.output_known, \
+                 billed_total_tokens = billed_total_tokens + excluded.billed_total_tokens, \
+                 billed_known = billed_known + excluded.billed_known, \
+                 cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens, \
+                 cache_read_known = cache_read_known + excluded.cache_read_known, \
+                 cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens, \
+                 cache_creation_known = cache_creation_known + excluded.cache_creation_known"
+        )
     }
 
     async fn get_schema_version(pool: &Pool<Sqlite>) -> Result<i32> {
@@ -6369,6 +6583,31 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
 
+        // ...and so does its usage ledger (F10). Each row names the model and
+        // provider that answered one turn, and when — a record of a chat the
+        // user chose to delete — and leaving them cost twice more: Home kept
+        // counting them, and because `create_session` mints `<day>_<MAX(N)+1>`,
+        // deleting the newest chat of the day hands its id to the next one,
+        // which inherited the whole ledger. A `JOIN sessions` at read time
+        // cannot tell those rows apart; deleting them here can.
+        //
+        // The tokens themselves were spent, and a delete does not refund them
+        // at the provider — the whole reason the Usage panel exists is to hold
+        // Biorouter's numbers against that meter (issue #1). So the billable
+        // turns are first folded into `deleted_chat_usage`, which keeps sums
+        // per local day, model and provider and nothing that identifies the
+        // chat. See [`BILLABLE_USAGE`] for which totals read it.
+        sqlx::query(&Self::fold_into_deleted_chat_usage_sql(
+            "te.session_id = ?1",
+        ))
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM token_events WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
         let removed = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
@@ -6409,6 +6648,7 @@ impl SessionStorage {
             "checkpoints",
             "messages",
             "token_events",
+            "deleted_chat_usage",
             "sessions",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
@@ -6458,6 +6698,11 @@ impl SessionStorage {
         // had merely been touched in the window, so a 60-day-old session holding
         // 2,000,000 tokens that received one reply today contributed all
         // 2,000,000 to "past 7 days".
+        //
+        // Joined to `sessions`: Home counts the activity of chats that still
+        // exist, so a deleted chat's tokens leave these tiles with it (F10). The
+        // spend stays where it is held against the provider's meter — the Usage
+        // panel, which reads [`BILLABLE_USAGE`] instead.
         let tokens = sqlx::query_as::<
             _,
             (
@@ -6484,6 +6729,7 @@ impl SessionStorage {
               COUNT(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-30 days') AS INTEGER) THEN te.billed_total_tokens END),
               SUM(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-30 days') AS INTEGER) THEN te.billed_total_tokens END)
             FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
             WHERE te.session_type IN ('user', 'scheduled')
             "#,
         )
@@ -6500,7 +6746,9 @@ impl SessionStorage {
         })
     }
 
-    /// Record one turn's usage. Append-only; never updated, never deleted.
+    /// Record one turn's usage. Append-only: never updated, and deleted only
+    /// with its chat — `delete_session` first folds it into the anonymous
+    /// `deleted_chat_usage` — or by `clear_all_sessions`.
     #[allow(clippy::too_many_arguments)]
     async fn record_token_event(
         &self,
@@ -6680,29 +6928,29 @@ impl SessionStorage {
 
     /// Global per-model rollup over the inclusive `[from, to]` unix-second window,
     /// restricted to billable session types. Subagent calls are real provider
-    /// spend even though their internal sessions stay hidden from session lists.
+    /// spend even though their internal sessions stay hidden from session lists,
+    /// and so is a deleted chat's: this reads [`BILLABLE_USAGE`] (F10).
     async fn get_model_usage(&self, from: i64, to: i64) -> Result<Vec<ModelUsageRow>> {
         let pool = self.pool().await?;
-        let rows = sqlx::query_as::<_, ModelUsageRow>(
+        let rows = sqlx::query_as::<_, ModelUsageRow>(&format!(
             r#"
-            SELECT te.model_id,
-                   te.provider,
-                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
-                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
-                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
-                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
-                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
-                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
-                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
-                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
-                   COUNT(*)                           AS turns
-            FROM token_events te
-            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
-              AND te.ts >= ?1 AND te.ts <= ?2
-            GROUP BY te.model_id, te.provider
+            SELECT u.model_id,
+                   u.provider,
+                   COALESCE(SUM(u.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                   CASE WHEN SUM(u.billed_known) = SUM(u.turns)
+                        THEN SUM(u.billed_total_tokens) END AS total_tokens,
+                   CASE WHEN SUM(u.cache_read_known) = SUM(u.turns)
+                        THEN SUM(u.cache_read_tokens) END AS cache_read_tokens,
+                   CASE WHEN SUM(u.cache_creation_known) = SUM(u.turns)
+                        THEN SUM(u.cache_creation_tokens) END AS cache_creation_tokens,
+                   SUM(u.turns)                       AS turns
+            FROM {BILLABLE_USAGE}
+            WHERE u.ts >= ?1 AND u.ts <= ?2
+            GROUP BY u.model_id, u.provider
             ORDER BY total_tokens DESC
-            "#,
-        )
+            "#
+        ))
         .bind(from)
         .bind(to)
         .fetch_all(pool)
@@ -6715,7 +6963,8 @@ impl SessionStorage {
     /// The SQL always groups at the finest `(day, model, provider)` grain; Rust
     /// then prices each grain row once and rolls it up into `group`. That order
     /// is what lets a `Day` bucket report a correct dollar cost even though the
-    /// day mixes models at different prices.
+    /// day mixes models at different prices. Reads [`BILLABLE_USAGE`], so a
+    /// deleted chat's spend stays in the day it was spent on (F10).
     async fn get_usage_report(
         &self,
         from: i64,
@@ -6723,30 +6972,10 @@ impl SessionStorage {
         group: UsageGroup,
     ) -> Result<Vec<UsageReportRow>> {
         let pool = self.pool().await?;
-        let grain = sqlx::query_as::<_, UsageGrainRow>(
-            r#"
-            SELECT date(te.ts, 'unixepoch', 'localtime') AS day,
-                   te.model_id,
-                   te.provider,
-                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
-                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
-                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
-                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
-                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
-                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
-                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
-                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
-                   COUNT(*) AS turns,
-                   CAST(COUNT(te.input_tokens) = COUNT(*) AS INTEGER) AS input_complete,
-                   CAST(COUNT(te.output_tokens) = COUNT(*) AS INTEGER) AS output_complete,
-                   CAST(COUNT(te.cache_read_tokens) = COUNT(*) AS INTEGER) AS cache_read_complete,
-                   CAST(COUNT(te.cache_creation_tokens) = COUNT(*) AS INTEGER) AS cache_creation_complete
-            FROM token_events te
-            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
-              AND te.ts >= ?1 AND te.ts <= ?2
-            GROUP BY day, te.model_id, te.provider
-            "#,
-        )
+        let grain = sqlx::query_as::<_, UsageGrainRow>(&billable_usage_grain_sql(
+            "u.day",
+            "u.ts >= ?1 AND u.ts <= ?2",
+        ))
         .bind(from)
         .bind(to)
         .fetch_all(pool)
@@ -6755,65 +6984,25 @@ impl SessionStorage {
         Ok(rollup_report_with_pricing(&grain, group, &pricing))
     }
 
-    /// Month-to-date (current local month) + all-time priced totals.
+    /// Month-to-date (current local month) + all-time priced totals, over
+    /// [`BILLABLE_USAGE`] — deleted chats' spend included, since the gauge is
+    /// held against the provider's own meter (F10, issue #1).
     async fn get_usage_summary(&self) -> Result<UsageSummary> {
         let pool = self.pool().await?;
 
         // Per-model grain is required so each model prices at its own rate before
         // summing; `day` is unused here, so a constant keeps the shared struct.
-        let mtd_grain = sqlx::query_as::<_, UsageGrainRow>(
-            r#"
-            SELECT '' AS day,
-                   te.model_id,
-                   te.provider,
-                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
-                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
-                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
-                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
-                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
-                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
-                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
-                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
-                   COUNT(*) AS turns,
-                   CAST(COUNT(te.input_tokens) = COUNT(*) AS INTEGER) AS input_complete,
-                   CAST(COUNT(te.output_tokens) = COUNT(*) AS INTEGER) AS output_complete,
-                   CAST(COUNT(te.cache_read_tokens) = COUNT(*) AS INTEGER) AS cache_read_complete,
-                   CAST(COUNT(te.cache_creation_tokens) = COUNT(*) AS INTEGER) AS cache_creation_complete
-            FROM token_events te
-            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
-              AND strftime('%Y-%m', te.ts, 'unixepoch', 'localtime')
-                  = strftime('%Y-%m', 'now', 'localtime')
-            GROUP BY te.model_id, te.provider
-            "#,
-        )
+        let mtd_grain = sqlx::query_as::<_, UsageGrainRow>(&billable_usage_grain_sql(
+            "''",
+            "substr(u.day, 1, 7) = strftime('%Y-%m', 'now', 'localtime')",
+        ))
         .fetch_all(pool)
         .await?;
 
-        let all_grain = sqlx::query_as::<_, UsageGrainRow>(
-            r#"
-            SELECT '' AS day,
-                   te.model_id,
-                   te.provider,
-                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
-                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
-                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
-                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
-                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
-                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
-                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
-                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
-                   COUNT(*) AS turns,
-                   CAST(COUNT(te.input_tokens) = COUNT(*) AS INTEGER) AS input_complete,
-                   CAST(COUNT(te.output_tokens) = COUNT(*) AS INTEGER) AS output_complete,
-                   CAST(COUNT(te.cache_read_tokens) = COUNT(*) AS INTEGER) AS cache_read_complete,
-                   CAST(COUNT(te.cache_creation_tokens) = COUNT(*) AS INTEGER) AS cache_creation_complete
-            FROM token_events te
-            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
-            GROUP BY te.model_id, te.provider
-            "#,
-        )
-        .fetch_all(pool)
-        .await?;
+        let all_grain =
+            sqlx::query_as::<_, UsageGrainRow>(&billable_usage_grain_sql("''", "1 = 1"))
+                .fetch_all(pool)
+                .await?;
 
         let month: String = sqlx::query_scalar("SELECT strftime('%Y-%m', 'now', 'localtime')")
             .fetch_one(pool)
@@ -6849,6 +7038,9 @@ impl SessionStorage {
         .fetch_all(pool)
         .await?;
 
+        // Tokens of chats that still exist (F10), like the session and message
+        // counts beside them: a deleted chat leaves all three series at once.
+        // Its spend stays in the Usage panel; see [`BILLABLE_USAGE`].
         let token_rows = sqlx::query_as::<_, (String, i64, i64, i64, bool)>(
             r#"
             SELECT date(te.ts, 'unixepoch', 'localtime') AS day,
@@ -6857,6 +7049,7 @@ impl SessionStorage {
                    COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
                    COUNT(te.billed_total_tokens) = COUNT(*) AS tokens_complete
             FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
             WHERE te.session_type IN ('user', 'scheduled')
               AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
             GROUP BY day
@@ -8613,6 +8806,17 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+        // A chat deleted earlier leaves its spend in `deleted_chat_usage` (F10);
+        // a reset takes that too.
+        let deleted = sm
+            .create_session(temp_dir.path().into(), "Deleted".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert!(sm
+            .apply_usage_event(billed_turn(&deleted.id, "deleted-1", "p", "m", 30))
+            .await
+            .unwrap());
+        sm.delete_session(&deleted.id).await.unwrap();
 
         assert_eq!(sm.count_all_sessions().await.unwrap(), 2);
         assert_eq!(sm.clear_all_sessions().await.unwrap(), 2);
@@ -8622,6 +8826,7 @@ mod tests {
             "messages",
             "messages_fts",
             "token_events",
+            "deleted_chat_usage",
             "checkpoints",
             "message_blobs",
         ] {
@@ -8632,6 +8837,329 @@ mod tests {
             assert_eq!(count, 0, "{table} should be empty");
         }
         assert_eq!(sm.get_usage_summary().await.unwrap().all_time.turns, 0);
+    }
+
+    /// One billed provider call, recorded through the production writer
+    /// (`apply_usage_event`), so a fixture row carries exactly the columns a
+    /// real turn writes.
+    fn billed_turn(
+        session_id: &str,
+        event_key: &str,
+        provider: &str,
+        model: &str,
+        billed: i32,
+    ) -> UsageLedgerEntry {
+        UsageLedgerEntry {
+            event_key: event_key.to_string(),
+            session_id: session_id.to_string(),
+            schedule_id: None,
+            current_total_tokens: Some(billed),
+            current_input_tokens: Some(billed),
+            current_output_tokens: Some(0),
+            billed_total_tokens: Some(i64::from(billed)),
+            input_tokens: Some(billed),
+            output_tokens: Some(0),
+            model_id: Some(model.to_string()),
+            provider: Some(provider.to_string()),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+        }
+    }
+
+    async fn token_event_count(sm: &SessionManager, session_id: &str) -> i64 {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar("SELECT COUNT(*) FROM token_events WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// F10 of the 2026-09-10 provider QA run (M24 of the 2026-09-09 drive).
+    /// Deleting a chat removed its messages, blobs and row, and left every
+    /// `token_events` row it had written — `model_id`, `provider` and a
+    /// timestamp per turn, a record of which model answered when for a chat the
+    /// user chose to delete.
+    ///
+    /// The rows now go with the chat; what they cost does not. The Usage panel
+    /// is held against the provider's own meter (issue #1), so the spend is
+    /// folded into `deleted_chat_usage` first — per day, model and provider,
+    /// with nothing that names the chat — while Home, which counts activity,
+    /// lets the chat go entirely.
+    #[tokio::test]
+    async fn deleting_a_chat_keeps_its_spend_anonymously_and_deletes_its_rows() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let mut chats = Vec::new();
+        for name in ["Deleted", "Deleted too", "Kept"] {
+            let chat = sm
+                .create_session(temp_dir.path().into(), name.into(), SessionType::User)
+                .await
+                .unwrap();
+            chats.push(chat.id);
+        }
+        let [deleted, deleted_too, kept] = [&chats[0], &chats[1], &chats[2]];
+        for entry in [
+            billed_turn(deleted, "deleted-1", "p", "m", 100),
+            billed_turn(deleted, "deleted-2", "p", "m", 200),
+            billed_turn(deleted_too, "deleted-too-1", "p", "m", 25),
+            billed_turn(kept, "kept-1", "p", "m", 50),
+        ] {
+            assert!(sm.apply_usage_event(entry).await.unwrap());
+        }
+        let spend_before = sm.get_usage_summary().await.unwrap().all_time;
+        assert_eq!(
+            (spend_before.turns, spend_before.total_tokens),
+            (4, Some(375))
+        );
+
+        sm.delete_session(deleted).await.unwrap();
+        sm.delete_session(deleted_too).await.unwrap();
+
+        // The per-turn trail is gone — and only the deleted chats'.
+        assert_eq!(
+            token_event_count(&sm, deleted).await,
+            0,
+            "a deleted chat's usage rows must be deleted with it"
+        );
+        assert_eq!(token_event_count(&sm, deleted_too).await, 0);
+        assert_eq!(
+            token_event_count(&sm, kept).await,
+            1,
+            "the delete is scoped to the chat being deleted"
+        );
+
+        // The spend is not refunded, however the Usage panel asks...
+        let spend_after = sm.get_usage_summary().await.unwrap();
+        assert_eq!(
+            spend_after.all_time, spend_before,
+            "a delete does not refund spend"
+        );
+        assert_eq!(spend_after.month_to_date.total_tokens, Some(375));
+        let pool = sm.storage().pool().await.unwrap();
+        // ...including through the panel's own window: local midnight on the
+        // 1st, through now (`UsageSection.tsx`).
+        let month_start: i64 = sqlx::query_scalar(
+            "SELECT CAST(strftime('%s', strftime('%Y-%m-01 00:00:00', 'now', 'localtime'), 'utc') AS INTEGER)",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let days = sm
+            .get_usage_report(month_start, now, UsageGroup::Day)
+            .await
+            .unwrap();
+        let report_tokens: i64 = days.iter().filter_map(|row| row.total_tokens).sum();
+        assert_eq!(report_tokens, 375, "the Usage panel's day bars: {days:?}");
+
+        // ...while Home counts only the chat that is left.
+        assert_eq!(sm.get_insights().await.unwrap().total_tokens, Some(50));
+
+        // Two deleted chats on one day and model share one bucket, and nothing
+        // in it can name either of them.
+        let buckets: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT model_id, provider, turns, billed_total_tokens, billed_known \
+             FROM deleted_chat_usage",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(buckets, vec![("m".into(), "p".into(), 3, 325, 3)]);
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('deleted_chat_usage')")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        for identifying in ["session_id", "event_key", "ts"] {
+            assert!(
+                !columns.iter().any(|column| column == identifying),
+                "deleted_chat_usage must not carry `{identifying}`: {columns:?}"
+            );
+        }
+    }
+
+    /// Why F10 is more than hygiene. `create_session` mints `<day>_<MAX(N)+1>`,
+    /// so deleting the newest chat of the day hands its id to the next chat
+    /// created that day — "delete the chat I just made and start again" — and
+    /// before the fix the new chat inherited the old one's ledger: its cost
+    /// popover (`get_session_model_usage`) listed turns it never ran, on a
+    /// provider it may never have used. Joining `sessions` cannot catch this,
+    /// because the id exists again; only deleting the rows with the chat does.
+    #[tokio::test]
+    async fn a_reissued_session_id_does_not_inherit_the_deleted_chats_usage() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let first = sm
+            .create_session(temp_dir.path().into(), "First".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert!(sm
+            .apply_usage_event(billed_turn(
+                &first.id,
+                "first-1",
+                "versa_azure",
+                "gpt-5.5",
+                900
+            ))
+            .await
+            .unwrap());
+        sm.delete_session(&first.id).await.unwrap();
+
+        let second = sm
+            .create_session(temp_dir.path().into(), "Second".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert_eq!(
+            second.id, first.id,
+            "the fixture must reproduce the id reuse, or this test proves nothing"
+        );
+        let rows = sm.get_session_model_usage(&second.id).await.unwrap();
+        assert!(
+            rows.is_empty(),
+            "a new chat inherited the deleted chat's turns: {rows:?}"
+        );
+    }
+
+    /// The read-side half of F10. A per-turn row whose chat no longer exists —
+    /// left by a build without the delete fix that shares this database, until
+    /// the next open folds it — must never be read, whichever surface asks. Its
+    /// spend reaches the Usage totals only through the anonymous fold, never
+    /// through the row that names the chat. Each aggregation is asked
+    /// separately because each is its own statement.
+    #[tokio::test]
+    async fn usage_aggregations_never_count_a_token_event_whose_chat_is_gone() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let live = seed_session_with_messages(&sm, 1).await;
+        assert!(sm
+            .apply_usage_event(billed_turn(&live.id, "live-1", "p", "m", 50))
+            .await
+            .unwrap());
+
+        // An orphan exactly as the pre-fix delete left one: a complete, billable
+        // row (its `session_type` captured as 'user' when the turn was written)
+        // whose chat is gone. Written raw because no current path produces one.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, \
+             billed_total_tokens, model_id, provider, cache_read_tokens, cache_creation_tokens, \
+             event_key, session_type) \
+             VALUES ('deleted_chat', CAST(strftime('%s', 'now') AS INTEGER), 7000, 0, 7000, 7000, \
+                     'orphan-model', 'orphan-provider', 0, 0, 'orphan-1', 'user')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let insights = sm.get_insights().await.unwrap();
+        assert_eq!(insights.total_tokens, Some(50), "insights: all time");
+        assert_eq!(insights.tokens_last_7_days, Some(50), "insights: 7 days");
+        assert_eq!(insights.tokens_last_30_days, Some(50), "insights: 30 days");
+
+        let activity = sm.get_activity(30).await.unwrap();
+        let heatmap_tokens: i64 = activity.days.iter().map(|day| day.tokens).sum();
+        assert_eq!(heatmap_tokens, 50, "Home heatmap");
+
+        let summary = sm.get_usage_summary().await.unwrap();
+        assert_eq!(summary.all_time.total_tokens, Some(50), "summary: all time");
+        assert_eq!(summary.all_time.turns, 1, "summary: all-time turns");
+        assert_eq!(
+            summary.month_to_date.total_tokens,
+            Some(50),
+            "summary: month to date"
+        );
+
+        let models = sm.get_model_usage(0, i64::MAX).await.unwrap();
+        assert!(
+            models
+                .iter()
+                .all(|row| row.model_id.as_deref() != Some("orphan-model")),
+            "per-model usage counted the orphan: {models:?}"
+        );
+
+        let report = sm
+            .get_usage_report(0, i64::MAX, UsageGroup::Model)
+            .await
+            .unwrap();
+        let report_tokens: i64 = report.iter().filter_map(|row| row.total_tokens).sum();
+        assert_eq!(report_tokens, 50, "usage report: {report:?}");
+    }
+
+    /// F10's existing orphans are retired — folded, then deleted — by the
+    /// reconcile that runs every time a store is opened, not by a numbered
+    /// migration arm, for the reason `prune_orphaned_token_events` gives. Pinned
+    /// here: a billable orphan's spend moves into the anonymous total, so the
+    /// Usage numbers an upgrade finds are the numbers it leaves; an unclassified
+    /// orphan, which no total ever counted, just goes; a live chat's rows are
+    /// never touched, however old; and a second open changes nothing, so no
+    /// spend is ever folded twice.
+    #[tokio::test]
+    async fn reopening_the_store_retires_token_events_whose_chat_is_gone() {
+        let temp_dir = TempDir::new().unwrap();
+        let live_id = {
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            let live = sm
+                .create_session(temp_dir.path().into(), "Live".into(), SessionType::User)
+                .await
+                .unwrap();
+            assert!(sm
+                .apply_usage_event(billed_turn(&live.id, "live-1", "p", "m", 50))
+                .await
+                .unwrap());
+            let pool = sm.storage().pool().await.unwrap();
+            for statement in [
+                // Two modern orphans, as the pre-fix delete left them.
+                "INSERT INTO token_events (session_id, ts, total_tokens, billed_total_tokens, \
+                 model_id, provider, event_key, session_type) \
+                 VALUES ('gone_1', 100, 10, 10, 'm', 'p', 'gone-1-a', 'user')",
+                "INSERT INTO token_events (session_id, ts, total_tokens, billed_total_tokens, \
+                 model_id, provider, event_key, session_type) \
+                 VALUES ('gone_1', 200, 10, 10, 'm', 'p', 'gone-1-b', 'user')",
+                // A legacy orphan: no identity and no captured type.
+                "INSERT INTO token_events (session_id, ts, total_tokens) VALUES ('gone_2', 300, 10)",
+            ] {
+                sqlx::query(statement).execute(pool).await.unwrap();
+            }
+            // A row older than its own chat, whose chat still exists. The sweep
+            // keys on existence alone, so it stays — and the migration fixtures
+            // in this module, which date their rows at `ts = 100`, rely on that.
+            sqlx::query(
+                "INSERT INTO token_events (session_id, ts, total_tokens, billed_total_tokens, \
+                 session_type) VALUES (?, 100, 5, 5, 'user')",
+            )
+            .bind(&live.id)
+            .execute(pool)
+            .await
+            .unwrap();
+            sm.close().await;
+            live.id
+        };
+
+        for open in 1..=2 {
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            assert_eq!(token_event_count(&sm, "gone_1").await, 0, "open {open}");
+            assert_eq!(token_event_count(&sm, "gone_2").await, 0, "open {open}");
+            assert_eq!(
+                token_event_count(&sm, &live_id).await,
+                2,
+                "open {open}: a live chat's rows are never swept"
+            );
+            // The live chat's 50 + 5, plus `gone_1`'s 10 + 10 folded; `gone_2`
+            // was never billable. Exactly what the unjoined queries counted.
+            let spend = sm.get_usage_summary().await.unwrap().all_time;
+            assert_eq!(
+                (spend.turns, spend.total_tokens),
+                (4, Some(75)),
+                "open {open}: the Usage totals an upgrade finds are the ones it leaves"
+            );
+            assert_eq!(
+                sm.get_insights().await.unwrap().total_tokens,
+                Some(55),
+                "open {open}: Home counts the live chat only"
+            );
+            sm.close().await;
+        }
     }
 
     #[tokio::test]
@@ -8646,6 +9174,7 @@ mod tests {
         );
         for table in [
             "token_events",
+            "deleted_chat_usage",
             "checkpoints",
             "messages_fts",
             "message_blobs",

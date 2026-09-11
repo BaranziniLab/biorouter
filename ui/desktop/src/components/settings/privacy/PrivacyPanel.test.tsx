@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PrivacyPanel, { DISABLE_PHRASE, PRIVACY_TIERS_KEY } from './PrivacyPanel';
+import { PRIVACY_TIERS_RECORD_KEY } from './privacyTiers';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 
 const mocks = vi.hoisted(() => ({
@@ -252,6 +253,67 @@ describe('Settings > Privacy', () => {
       render(<PrivacyPanel />);
       await waitFor(() => screen.getByRole('switch', { name: /Privacy tiers/ }));
       expect(screen.queryByTestId('non-private-model-statement')).toBeNull();
+    });
+  });
+
+  /**
+   * H3 (2026-09-10 security test drive). The composer's off-state note sends
+   * the user here, so this strip carries the same account of how the switch
+   * got to off and where it is recorded — and re-reads it after the user's own
+   * flip, so it never quotes a stale "outside the app" beside a change they
+   * just made.
+   */
+  describe('where the switch is recorded, and how it got to off', () => {
+    const PATH = '/Users/someone/.config/biorouter/privacy-tiers.json';
+    let record: unknown = null;
+
+    beforeEach(() => {
+      record = null;
+      // Key-aware: the switch and its record are two keys on one surface.
+      mocks.read.mockImplementation(async (key: string) =>
+        key === PRIVACY_TIERS_RECORD_KEY ? record : mocks.value
+      );
+    });
+
+    it('says the switch was turned off outside the app, and where it is recorded', async () => {
+      mocks.value = 'off';
+      record = { enabled: false, origin: 'unrecorded', path: PATH, last_change: null };
+      render(<PrivacyPanel />);
+
+      const strip = await screen.findByTestId('privacy-enforcement-off-strip');
+      await waitFor(() => expect(strip).toHaveTextContent(/turned off outside the app/i));
+      expect(strip).toHaveTextContent(PATH);
+    });
+
+    it('re-reads the record after the user turns the tiers off here', async () => {
+      const user = userEvent.setup();
+      mocks.upsert.mockImplementation(async (_key: string, value: unknown) => {
+        mocks.value = value;
+        // What the daemon's confirmed arm now remembers beside the value.
+        record = {
+          enabled: false,
+          origin: 'settings',
+          path: PATH,
+          last_change: {
+            via: 'settings',
+            set_to: false,
+            at: '2026-09-10T18:04:00+00:00',
+            system_authenticated: true,
+            user_action: true,
+          },
+        };
+      });
+      render(<PrivacyPanel />);
+      await waitFor(() => screen.getByRole('switch', { name: /Privacy tiers/ }));
+
+      await user.click(screen.getByRole('switch', { name: /Privacy tiers/ }));
+      await user.type(screen.getByLabelText('Confirmation phrase'), DISABLE_PHRASE);
+      await user.click(screen.getByRole('button', { name: /Turn off privacy tiers/ }));
+
+      const strip = await screen.findByTestId('privacy-enforcement-off-strip');
+      await waitFor(() => expect(strip).toHaveTextContent(/turned off in Settings → Privacy/i));
+      expect(strip).not.toHaveTextContent(/outside the app/i);
+      expect(strip).toHaveTextContent(PATH);
     });
   });
 });

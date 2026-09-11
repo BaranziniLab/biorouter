@@ -31,7 +31,11 @@ pub struct AgentManager {
     /// live turn is not idle, and evicting it would restore the very bug
     /// `register_agent` exists to fix.
     pinned: Arc<RwLock<HashMap<String, PinnedAgent>>>,
-    scheduler: Arc<dyn SchedulerTrait>,
+    /// Concrete, not `dyn SchedulerTrait`, so the daemon can start the one
+    /// thing only the concrete scheduler can do — watch its file
+    /// ([`Self::watch_schedule_file`]). Everyone else gets the trait object from
+    /// [`Self::scheduler`].
+    scheduler: Arc<Scheduler>,
     session_manager: Arc<SessionManager>,
     default_provider: Arc<RwLock<Option<Arc<dyn crate::providers::base::Provider>>>>,
 }
@@ -98,7 +102,7 @@ impl AgentManager {
         // runs before this point so that clients never observe the pre-OKF bases
         // startup is purging, or an empty store before its built-in OKF Soul
         // exists.
-        let scheduler = Arc::clone(&manager.scheduler);
+        let scheduler = manager.scheduler();
         if std::env::var_os("BIOROUTER_BLOCKING_STARTUP").is_some() {
             Self::run_first_run_init(scheduler, config_dir).await;
         } else {
@@ -153,7 +157,18 @@ impl AgentManager {
     }
 
     pub fn scheduler(&self) -> Arc<dyn SchedulerTrait> {
-        Arc::clone(&self.scheduler)
+        Arc::clone(&self.scheduler) as Arc<dyn SchedulerTrait>
+    }
+
+    /// Keep this manager's scheduler in step with changes other processes make
+    /// to the schedule file (QA 2026-09-10, F2).
+    ///
+    /// For the daemon to call once at startup, beside its `config.yaml` watcher —
+    /// and deliberately not called from [`Self::new`]: a manager is also built in
+    /// other processes (a terminal session that runs a subagent builds one), and
+    /// only the long-lived daemon should be adopting jobs other processes add.
+    pub fn watch_schedule_file(&self) {
+        self.scheduler.spawn_file_watcher();
     }
 
     /// Get the shared SessionManager for session-only operations
@@ -266,7 +281,7 @@ impl AgentManager {
         let config = AgentConfig::new(
             Arc::clone(&self.session_manager),
             permission_manager,
-            Some(Arc::clone(&self.scheduler)),
+            Some(self.scheduler()),
             mode,
         );
         let agent = Arc::new(Agent::with_config(config));

@@ -41,6 +41,15 @@ cd ui/desktop && npm run test:run               # Run frontend unit tests (Vites
 cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
 ```
 
+**What CI runs.** `rust.yml`'s `test` job runs `--lib --bins` on all three OSes and, on
+ubuntu only, every `tests/*.rs` integration binary **except** the exclusion table inside its
+`cargo test (integration binaries, no network)` step. That step runs in a loopback-only network
+namespace and never passes `--ignored`. So a new integration binary is covered the day it lands,
+and a test that reaches the network fails there rather than passing while the third party is up.
+If a binary genuinely cannot run offline, put its live tests behind `#[ignore]`, or give the binary
+a line in that table saying why. Before 2026-09, `rust.yml` ran only the sandbox's integration
+target, so a green run said nothing about the rest of `tests/`.
+
 ### Code Quality
 
 ```bash
@@ -54,12 +63,22 @@ just check-everything               # Run all style/lint checks
 ⚠ **Frontend formatting is not enforced anywhere.** `lint:check` resolves to
 `typecheck && eslint && check:themes && check:contrast && check:tokens` — no
 Prettier — and no workflow under `.github/workflows/` invokes Prettier either.
-This line used to claim `lint:check` was an "ESLint + Prettier check"; it never
-was, and the drift is measurable: on 2026-09-02, five files under
-`ui/desktop/src` failed `format:check` on `main`. Run `format:check` yourself
-before pushing frontend changes, and do not wire it into CI without fixing
-those five first — a gate that fails on arrival gets disabled rather than
-obeyed.
+Two things look like they do and do not: `just check-everything` prints
+"Checking UI code formatting..." and then runs `lint:check`; and the
+`lint-staged` block in `ui/desktop/package.json` runs `prettier --write` but
+nothing triggers it — `prepare` runs `husky` from `ui/desktop`, husky 9 exits
+early when the current directory has no `.git` (`npm ci` prints `.git can't be
+found`), and `.githooks/` holds only `commit-msg`. This line used to claim
+`lint:check` was an "ESLint + Prettier check"; it never was, and the drift is
+measurable: five files under `ui/desktop/src` failed `format:check` on `main`
+on 2026-09-02, and four on 2026-09-11. Those four were reformatted that day
+(formatting only), after which `format:check` passed with **0 failing files,
+measured 2026-09-11**. That meets the precondition this note used to set for
+wiring `format:check` into `lint:check` or CI — whether to do it is a
+maintainer's call — but nothing holds the count at zero, so re-measure right
+before wiring it in: a gate that fails on arrival gets disabled rather than
+obeyed. Until then, run `format:check` yourself before pushing frontend
+changes.
 
 ### Build & Release
 
@@ -279,7 +298,11 @@ what did not" section first**; the rest of that document is the design, not the 
   institution's private connector is warned/refused even though both endpoints are Private.
 - **The master switch** lives in its own record beside `config.yaml`, **not in it** and **not in an
   env var** — the agent has `developer__shell`, so a switch it can edit is not a switch. Loaded once
-  per process; a load error resolves to ON.
+  per process; a load error resolves to ON. ⚠ The record is still agent-writable (DR-17), so an OFF
+  answer is **announced, never prevented**: one `WARN` at load, `BIOROUTER_PRIVACY_TIERS_RECORD` on
+  `/config` (served from memory), and `PrivacyTiersOffNote` above every composer. Each door stamps
+  the record with the value it wrote; OFF with no matching stamp reads *turned off outside the app*.
+  The stamp is forgeable — a signal, not a barrier; see `privacy/master_switch.rs` and §10.6.
 - **Lineage is NOT a boundary; the tier is the only one.** `may_write` ⇔ `may_read` ⇔ `VIS`, so an
   agent may inject a prompt into any conversation it can see — a child, a sibling, an unrelated
   chat. R6's old "steer what you spawned, read everything else" rule is retired and
@@ -1164,7 +1187,7 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 prints a URL. The daemon serves the SPA **on its own origin**, so nothing is proxied. This
 replaced a standalone `biorouter-headless` binary and its Linux tarball, both deleted
 2026-08-23; release assets went 11 → 10. Design and reasoning:
-[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-8),
+[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-9),
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
@@ -1203,11 +1226,15 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
 - **The serving path.** `Settings.serve_ui` (`BIOROUTER_SERVE_UI`) →
   `routes::web_ui::attach`, called **after** `check_token` in `commands/agent.rs` so the shell
   and bundle sit *structurally outside* that middleware rather than being exempted by path.
-  The document is gated by a browser token exchanged once for an `HttpOnly; SameSite=Strict`
+  The document is gated by a browser token exchanged for an `HttpOnly; SameSite=Strict`
   cookie; the cookie authenticates **the document only** — API routes still take
-  `X-Secret-Key`, so there is no CSRF surface and `check_token` needed no change.
-- **`routes::shell`** holds the 16 `/headless/*` endpoints (path kept deliberately; the
-  renderer builds `origin + '/headless'`). They had **no authentication at all** on the old
+  `X-Secret-Key`, so there is no CSRF surface and `check_token` needed no change. ⚠ The
+  exchange does **not** consume the token — it is honoured as often as it is presented until the
+  daemon stops, and the cookie's value *is* the token. Deliberate, not an oversight: SD-9 in
+  `serve-decisions.md` records why single use was rejected. It used to be called "spent".
+- **`routes::shell`** holds the 16 `/headless/*` paths — 17 handlers, since `/headless/settings`
+  answers both GET and POST (path kept deliberately; the renderer builds
+  `origin + '/headless'`). They had **no authentication at all** on the old
   binary and `fs_read` had no path validation; the port confines every filesystem handler to
   an allowlist and refuses credential stores by name.
 - **WebSocket origins**: both socket gates (`/ui/workspace`, `/apps/{id}/agent`) ask
@@ -1222,6 +1249,17 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   loopback port, scheme ignored — so every local page's socket passed as the daemon's own.
   `is_local_origin` is the **CORS** rule now and nothing else; do not hand it back to a socket
   gate.
+- **`serve` owns its daemon's lifetime**, because the daemon honours the token and serves the
+  shell carrying its secret for as long as it runs: stopping `serve` is the only revocation.
+  Two layers. Every exit path after the spawn goes through `stop_daemon` (SIGTERM, a 10 s grace,
+  then SIGKILL and reap), with SIGINT/SIGTERM listeners installed *before* the spawn; and on
+  Unix the daemon is started with `biorouterd agent --exit-with-parent <serve pid>`, which
+  covers a SIGKILLed or crashed `serve`. ⚠ Until 2026-09 neither held — the `Child` was moved
+  into a `spawn_blocking` wait, so only a terminal's process-group Ctrl-C ever reached the
+  daemon and `kill <pid of serve>` orphaned it on the port. ⚠ The flag is opt-in and compares
+  `getppid()` with the pid `serve` named, **not with 1**: an orphan is re-parented to the
+  nearest subreaper (`systemd --user`, a container init), so `== 1` never fires there. Never
+  pass it from the desktop.
 - ⚠ **Three traps.** The app uses a **HashRouter**, so its routes live in the fragment and
   never reach the daemon — that is the only reason `/sessions/{id}` (a real API route) does
   not collide with the app's own; a history router would break pages silently. The bundle must
@@ -1229,10 +1267,16 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   *relative* base and a relative bundle served at `/` breaks deep links while the landing page
   looks fine. And `<exe>/../web` resolves for the packaged app and Windows zip but **not** for
   deb/rpm (`/usr/bin/../web` = `/usr/web`), hence `/usr/share/biorouter/web`.
-- **Tests:** `cargo test -p biorouter-server --lib routes::web_ui routes::shell`,
+- **Tests:** `cargo test -p biorouter-server --lib -- routes::web_ui routes::shell` (the `--`
+  is required: cargo takes one filter before it and rejects a second with a usage error),
   `cargo test -p biorouter-cli --lib commands::serve`, the `serve` job in
   `.github/workflows/rust.yml`, and `smoke_serve` in
-  `scripts/smoke-test-release-artifacts.sh`.
+  `scripts/smoke-test-release-artifacts.sh`. The lifecycle has its own binary,
+  `cargo test -p biorouter-cli --test serve_lifecycle`, which runs the real `serve` and
+  signals it by pid; ⚠ it needs a `biorouterd` from the same tree beside `biorouter`, which
+  `cargo test -p biorouter-cli` does not build — run `cargo build -p biorouter-cli -p
+  biorouter-server` first. CI runs it in the `serve` job, because the workspace test job is
+  `--lib --bins` and never runs an integration binary.
 
 ### Communication Flow
 

@@ -7,7 +7,16 @@ import { Skeleton } from '../../ui/skeleton';
 import { useConfig } from '../../ConfigContext';
 import { disclosureTitle, useDisclosure } from '../../privacy/disclosureCopy';
 import { DisclosureProse } from '../../privacy/DisclosureProse';
-import { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './privacyTiers';
+import { privacyTiersOffCopy } from '../../privacy/privacyTiersOffCopy';
+import { RecordedIn } from '../../privacy/RecordedIn';
+import {
+  DISABLE_PHRASE,
+  PRIVACY_TIERS_KEY,
+  PRIVACY_TIERS_RECORD_KEY,
+  privacyTiersEnabledFromConfig,
+  privacyTiersRecordFromConfig,
+  type PrivacyTiersRecord,
+} from './privacyTiers';
 
 // Re-exported so the panel stays the name every existing importer already
 // reaches for; the definitions live in `privacyTiers.ts` because
@@ -39,10 +48,22 @@ export default function PrivacyPanel() {
   // configuration where the exposure is largest.
   const { copy: disclosure } = useDisclosure();
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [record, setRecord] = useState<PrivacyTiersRecord | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // H3. How the switch got its value and where it is recorded — the
+  // explanation, never the state: a failed read leaves `null`, which drops the
+  // "how" from the strip and never the strip itself.
+  const readRecord = useCallback(async () => {
+    try {
+      setRecord(privacyTiersRecordFromConfig(await read(PRIVACY_TIERS_RECORD_KEY, false)));
+    } catch {
+      setRecord(null);
+    }
+  }, [read]);
 
   const refresh = useCallback(async () => {
     try {
@@ -52,7 +73,8 @@ export default function PrivacyPanel() {
       // the failure of a read must not be a way to *display* the feature as off.
       setEnabled(true);
     }
-  }, [read]);
+    await readRecord();
+  }, [read, readRecord]);
 
   useEffect(() => {
     void refresh();
@@ -81,6 +103,9 @@ export default function PrivacyPanel() {
         // refusal instead of being displayed as a success.
         const applied = privacyTiersEnabledFromConfig(await read(PRIVACY_TIERS_KEY, false));
         setEnabled(applied);
+        // The write moved the record too: a strip still quoting the previous
+        // launch's "outside the app" beside the user's own flip would be false.
+        await readRecord();
         if (applied !== on) {
           setError(
             'Biorouter did not apply that change. Privacy tiers are still ' +
@@ -101,7 +126,7 @@ export default function PrivacyPanel() {
         setBusy(false);
       }
     },
-    [upsert, read, refresh]
+    [upsert, read, readRecord, refresh]
   );
 
   if (enabled === null) {
@@ -114,6 +139,8 @@ export default function PrivacyPanel() {
       </section>
     );
   }
+
+  const offCopy = privacyTiersOffCopy(record);
 
   return (
     // `data-privacy-panel` marks this section's root so SettingsView's suite
@@ -130,11 +157,21 @@ export default function PrivacyPanel() {
 
       <div className="space-y-3">
         {!enabled && (
-          <Note tone="warning" role="status" testId="privacy-enforcement-off-strip">
-            <strong>Privacy tiers are off.</strong> Nothing on this machine is separating private
-            chats, extensions or knowledge bases from public models, and Biorouter is not recording
-            which chats touch private material. Every badge in the app reads{' '}
-            <em>enforcement off</em> while this is the case.
+          // H3: the headline, the HOW and the path are the composer note's own
+          // (`privacyTiersOffCopy`) — its one control lands here, and the two
+          // must not tell the user different stories. The consequence stays
+          // this panel's, which says more than the composer has room for.
+          <Note
+            tone={offCopy.tone}
+            role="status"
+            testId="privacy-enforcement-off-strip"
+            className="min-w-0"
+          >
+            <strong>{offCopy.headline}</strong> {offCopy.how && <>{offCopy.how} </>}
+            Nothing on this machine is separating private chats, extensions or knowledge bases from
+            public models, and Biorouter is not recording which chats touch private material. Every
+            badge in the app reads <em>enforcement off</em> while this is the case.
+            <RecordedIn path={offCopy.path} />
           </Note>
         )}
 

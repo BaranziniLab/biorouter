@@ -170,8 +170,10 @@ systemctl status biorouter.service
 The URL to hand to users is `http://<host>:8765/?t=<the token from the environment file>`. It stays
 valid until you change the token.
 
-> **Note.** `biorouter serve` starts `biorouterd` as a child process and stops it on the way out, so
-> systemd supervises one unit and not two. There is no separate daemon unit to enable.
+> **Note.** `biorouter serve` starts `biorouterd` as a child process and stops it whenever it stops
+> itself — `systemctl stop` sends `serve` SIGTERM, and `serve` gives the daemon ten seconds to
+> finish before killing it — so systemd supervises one unit and not two. There is no separate
+> daemon unit to enable. See [Stopping it](browser-access.md#stopping-it).
 
 ## Decide who can reach the port
 

@@ -134,6 +134,16 @@ pub trait WorkspaceServices: Send + Sync {
     /// (the reason `KnowledgeService::selection` takes the root lock). Empty /
     /// `None` headless or when none are set.
     fn knowledge_selection(&self, session_id: &str) -> KbSelectionView;
+    /// Every installed knowledge base's id, so `workspace_set_tools` can refuse
+    /// a name that matches none of them BEFORE it raises an approval or changes
+    /// anything (QA finding F4). [`Self::set_knowledge_bases`] silently drops an
+    /// id it has no base for, so without this a typo is a partly-applied set.
+    ///
+    /// `None` when this host cannot enumerate them — then nothing is refused on
+    /// those grounds, and the setter's own validation is the only check.
+    fn installed_knowledge_bases(&self) -> Option<Vec<String>> {
+        None
+    }
     /// Push a workspace frame to the GUI (§4.3). `wait_result` parks for the
     /// renderer's `workspace_result`. Errors when no GUI is attached.
     async fn gui_command(
