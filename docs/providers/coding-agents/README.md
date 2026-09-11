@@ -54,6 +54,17 @@ only that one approval through, and BioRouter accepts it for its own bridge
 alone — see
 [why the policy is not `never`](child-agent-isolation.md#why-the-policy-is-not-never-qa-e-f1).
 
+⚠ **Fixing the policy alone would not have brought the Codex shell back, and
+both children read every tool result twice** (QA-E F4, same date and CLI
+versions). The bridge handed the child every content block a tool returned,
+including the copy a tool addresses only to the user: neither CLI filters by
+audience, so the child's model read each shell result twice, and codex-cli
+cannot parse the `priority` annotation on the shell's user copy, so every
+`developer__shell` and `text_editor view` call failed there with `Unexpected
+response type`. The child is now handed only what a model is sent, unannotated,
+and the transcript stores the full result the bridge kept — see
+[what the child is handed](tool-bridge.md#what-the-child-is-handed-and-what-the-transcript-keeps-qa-e-f4).
+
 ## Documents
 
 | Document | What it covers |

@@ -1089,7 +1089,9 @@ impl CodexProvider {
             turn_id_tx.send_replace(Some(turn_id));
             Ok::<(), ProviderError>(())
         };
-        let pump = Self::stream_pump(server, model, &thread_id, turn_id_rx, tx, steering);
+        let pump = Self::stream_pump(
+            server, model, &thread_id, turn_id_rx, tx, steering, bridge_url,
+        );
 
         let (started, pumped) = coding_agent::await_turn(
             async { tokio::join!(start, pump) },
@@ -1107,6 +1109,9 @@ impl CodexProvider {
     }
 
     /// Read notifications, decode them, and forward each decoded event.
+    ///
+    /// `bridge_url` is this turn's bridge, whose grant kept Biorouter's own
+    /// result for each bridged call — see [`emit_codex_tool_event`].
     async fn stream_pump(
         server: &AppServer,
         model: &ModelConfig,
@@ -1114,6 +1119,7 @@ impl CodexProvider {
         mut turn_id_rx: tokio::sync::watch::Receiver<Option<String>>,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
         mut steering: Option<ProviderSteerReceiver>,
+        bridge_url: Option<&str>,
     ) -> Result<(), ProviderError> {
         let mut decoder = codex_stream::CodexDecoder::new();
         let mut streamed_anything = false;
@@ -1164,6 +1170,7 @@ impl CodexProvider {
                         &params,
                         tx,
                         &mut streamed_anything,
+                        bridge_url,
                     )? {
                         StreamPumpEvent::Continue => {}
                         StreamPumpEvent::ConsumerClosed => return Ok(()),
@@ -1299,6 +1306,7 @@ impl CodexProvider {
         params: &Value,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
         streamed_anything: &mut bool,
+        bridge_url: Option<&str>,
     ) -> Result<StreamPumpEvent, ProviderError> {
         for event in decoder.push(method, params) {
             match event {
@@ -1340,7 +1348,7 @@ impl CodexProvider {
                     return Ok(StreamPumpEvent::Terminal);
                 }
                 codex_stream::CodexEvent::Tool(event) => {
-                    if !emit_codex_tool_event(*event, tx) {
+                    if !emit_codex_tool_event(*event, tx, bridge_url) {
                         return Ok(StreamPumpEvent::ConsumerClosed);
                     }
                 }
@@ -1486,10 +1494,15 @@ fn codex_tool_identity(kind: &codex_stream::CodexToolKind) -> (String, Value, mi
 ///
 /// `item/started` raises the skeleton card; `item/completed` mints the marked
 /// request/response pair that settles it. The pairing id is the Codex item id,
-/// which both halves carry.
+/// which both halves carry — and which is also the `callId` Codex sent on the
+/// `tools/call`, so for a bridged call it names the result the grant behind
+/// `bridge_url` kept. That result is stored rather than Codex's echo, which
+/// carries only the view the bridge handed the child (QA-E F4 — see
+/// [`mirror::stored_bridged_result`]).
 fn emit_codex_tool_event(
     event: codex_stream::CodexToolEvent,
     tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
+    bridge_url: Option<&str>,
 ) -> bool {
     let (name, base_args, exec) = codex_tool_identity(&event.kind);
 
@@ -1527,6 +1540,22 @@ fn emit_codex_tool_event(
                 .and_then(Value::as_bool)
                 == Some(true);
             let is_error = event.error.is_some() || failed || bad_exit || declined || tool_failed;
+
+            if exec == mirror::Execution::Bridged {
+                // What the child got back: its transport error, else the result.
+                let echoed = match (&event.error, &event.result) {
+                    (Some(error), _) => Value::String(error.clone()),
+                    (None, Some(result)) => result.clone(),
+                    (None, None) => Value::Null,
+                };
+                if let Some(mut recorded) =
+                    mirror::stored_bridged_result(bridge_url, &event.id, &echoed, is_error)
+                {
+                    recorded.is_error = Some(is_error);
+                    let response = mirror::response_message_with_result(&event.id, recorded, exec);
+                    return tx.send(Ok((Some(response), None, None))).is_ok();
+                }
+            }
 
             if event.error.is_none() && event.aggregated_output.is_none() && !declined {
                 if let Some(mut result) = event.result.as_ref().and_then(|value| {
@@ -3255,7 +3284,7 @@ for line in sys.stdin:
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         for event in events {
             if let codex_stream::CodexEvent::Tool(event) = event {
-                assert!(emit_codex_tool_event(*event, &sender));
+                assert!(emit_codex_tool_event(*event, &sender, None));
             }
         }
         let mut messages = Vec::new();
@@ -3267,6 +3296,74 @@ for line in sys.stdin:
         assert!(
             settled[0].failed,
             "an MCP tool error is not a successful catalog mutation"
+        );
+    }
+
+    /// The `ToolResponse` a completed `mcpToolCall` item is stored as.
+    fn stored_response(item: Value, bridge_url: Option<&str>) -> rmcp::model::CallToolResult {
+        let mut decoder = codex_stream::CodexDecoder::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        for event in decoder.push("item/completed", &json!({ "item": item })) {
+            if let codex_stream::CodexEvent::Tool(event) = event {
+                assert!(emit_codex_tool_event(*event, &sender, bridge_url));
+            }
+        }
+        let mut results = Vec::new();
+        while let Ok(Ok((Some(message), _, _))) = receiver.try_recv() {
+            for content in message.content {
+                if let MessageContent::ToolResponse(response) = content {
+                    results.push(response.tool_result.expect("a successful transport"));
+                }
+            }
+        }
+        assert_eq!(results.len(), 1, "one response per completed call");
+        results.remove(0)
+    }
+
+    fn shell_shaped(output: &str) -> rmcp::model::CallToolResult {
+        rmcp::model::CallToolResult::success(vec![
+            rmcp::model::Content::text(output).with_audience(vec![Role::Assistant]),
+            rmcp::model::Content::text(output)
+                .with_audience(vec![Role::User])
+                .with_priority(0.0),
+        ])
+    }
+
+    /// QA-E F4: Codex's echo carries only the view the bridge handed the child,
+    /// so the stored result is the one the bridge kept for that `callId` — both
+    /// blocks, audiences intact.
+    #[test]
+    fn a_bridged_result_is_stored_as_the_bridge_recorded_it() {
+        let recorded = shell_shaped("Thu Sep 11");
+        let lease = bridge::lease_holding_for_test("exec-f4", recorded.clone());
+        let item = json!({
+            "id": "exec-f4", "type": "mcpToolCall", "server": "biorouter",
+            "tool": "developer__shell", "status": "completed",
+            "arguments": {"command": "date"},
+            "result": {"content": [{"type": "text", "text": "Thu Sep 11"}],
+                       "structuredContent": null, "_meta": null}
+        });
+
+        assert_eq!(stored_response(item, Some(lease.url())), recorded);
+    }
+
+    /// A call the child never got an answer to is stored as the failure the
+    /// child saw, not as the result Biorouter eventually produced.
+    #[test]
+    fn a_bridged_call_the_child_never_got_is_stored_as_it_failed() {
+        let lease = bridge::lease_holding_for_test("exec-late", shell_shaped("Thu Sep 11"));
+        let item = json!({
+            "id": "exec-late", "type": "mcpToolCall", "server": "biorouter",
+            "tool": "developer__shell", "status": "failed", "arguments": {},
+            "result": null, "error": {"message": "tool call error: request timed out"}
+        });
+
+        let stored = stored_response(item, Some(lease.url()));
+
+        assert_eq!(stored.is_error, Some(true));
+        assert_eq!(
+            stored.content[0].as_text().map(|t| t.text.as_str()),
+            Some("tool call error: request timed out")
         );
     }
 
@@ -3293,7 +3390,7 @@ for line in sys.stdin:
             }}),
         ) {
             if let codex_stream::CodexEvent::Tool(event) = event {
-                assert!(emit_codex_tool_event(*event, &sender));
+                assert!(emit_codex_tool_event(*event, &sender, None));
             }
         }
         let mut results = Vec::new();

@@ -144,6 +144,82 @@ fn marker_grant(marker: &str) -> bridge::BridgeGrant {
     ]))
 }
 
+/// QA-E F4 at the wire, through the real router: a child's `tools/call` is
+/// answered with the model's view of the result — the assistant's block, no
+/// annotations — and the full result is kept under the child's own call id, for
+/// each CLI's `_meta` spelling (measured: claude 2.1.266, codex-cli 0.153.4).
+///
+/// The shape is `developer__shell`'s. Handing the child both blocks made it read
+/// every result twice, and the user block's `priority: 0.0` made codex-cli fail
+/// the call outright with "Unexpected response type".
+#[tokio::test]
+#[serial_test::serial]
+async fn the_child_is_answered_with_the_models_view_and_the_full_result_is_kept() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    bridge::publish_base_url("http://127.0.0.1:65535");
+    let shell = rmcp::model::CallToolResult::success(vec![
+        rmcp::model::Content::text("Thu Sep 11").with_audience(vec![rmcp::model::Role::Assistant]),
+        rmcp::model::Content::text("Thu Sep 11")
+            .with_audience(vec![rmcp::model::Role::User])
+            .with_priority(0.0),
+    ]);
+    let lease = bridge::issue(fixed_result_grant(shell.clone())).expect("issued");
+    let nonce = lease.url().rsplit('/').next().expect("a nonce").to_string();
+
+    for (meta, child_call_id) in [
+        (
+            json!({ "claudecode/toolUseId": "toolu_wire", "progressToken": 2 }),
+            "toolu_wire",
+        ),
+        (
+            json!({ "callId": "exec-wire", "threadId": "t", "progressToken": 1 }),
+            "exec-wire",
+        ),
+    ] {
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "spokeagent__query_knowledge_graph",
+                "arguments": { "cypher": "MATCH (n) RETURN n LIMIT 1" },
+                "_meta": meta,
+            }
+        });
+        let response = biorouter_server::routes::tool_bridge::routes()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/tool_bridge/{nonce}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .expect("a request"),
+            )
+            .await
+            .expect("the route answers");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+
+        assert_eq!(
+            body["result"]["content"],
+            json!([{ "type": "text", "text": "Thu Sep 11" }]),
+            "the child gets the model's block, unannotated: {body}"
+        );
+        assert!(
+            !body.to_string().contains("priority"),
+            "codex-cli cannot parse a `priority` annotation: {body}"
+        );
+        assert_eq!(
+            bridge::take_recorded_result(lease.url(), child_call_id),
+            Some(shell.clone()),
+            "the full result is kept for the transcript under {child_call_id}"
+        );
+    }
+}
+
 /// The whole lifecycle in one test, because the assertions are sequential: a grant
 /// is reachable, serves its own tool set, and stops existing when its lease drops.
 #[tokio::test]

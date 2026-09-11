@@ -57,6 +57,7 @@
 use crate::conversation::message::{
     Message, MessageContent, ProviderMetadata, ToolRequest, ToolResponse,
 };
+use crate::providers::formats::audience;
 
 /// The reserved `ProviderMetadata` key. Namespaced, because the map is shared
 /// with whatever a provider chooses to record there.
@@ -580,6 +581,234 @@ pub fn content_from_value(value: &serde_json::Value) -> Vec<rmcp::model::Content
             )
             .collect(),
         other => vec![rmcp::model::Content::text(other.to_string())],
+    }
+}
+
+/// The texts in a vendor's echo of a tool result, whatever its shape: a bare
+/// string, an array of blocks, or a result object carrying `content`.
+///
+/// Text blocks contribute their text and embedded text resources theirs;
+/// images and anything else contribute nothing, because neither side of the
+/// comparison in [`recorded_if_received`] can be matched on them.
+#[must_use]
+pub fn echoed_texts(value: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block.get("type").and_then(Value::as_str) {
+                Some("text") => block.get("text").and_then(Value::as_str),
+                Some("resource") => block.pointer("/resource/text").and_then(Value::as_str),
+                _ => None,
+            })
+            .map(str::to_string)
+            .collect(),
+        Value::Object(result) => result.get("content").map(echoed_texts).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Biorouter's own result for a bridged call, when the child demonstrably got it.
+///
+/// The bridge hands the child only [`super::bridge::child_view`] — the blocks a
+/// model reads, with their annotations removed — and keeps the full result. The
+/// vendor's echo of that view is lossy on top: Claude Code drops every
+/// annotation and rewrites an embedded resource as
+/// `[Resource from biorouter at <uri>] <text>`. So the transcript stores the full
+/// result instead, and the card counts its user-facing block and the next
+/// turn's prompt its model-facing one, exactly as for any other provider's call
+/// (QA-E F4).
+///
+/// Only when the echo shows the child received it, though. A child whose call
+/// timed out (#110), or whose CLI truncated a large result, worked from
+/// something else, and the transcript records what the child actually saw: the
+/// error flag must agree, and every text Biorouter sent must appear in what the
+/// child echoed.
+#[must_use]
+pub fn recorded_if_received(
+    recorded: rmcp::model::CallToolResult,
+    echoed_texts: &[String],
+    echoed_is_error: bool,
+) -> Option<rmcp::model::CallToolResult> {
+    if recorded.is_error.unwrap_or(false) != echoed_is_error {
+        return None;
+    }
+    let echoed = echoed_texts.join("\n");
+    let received = super::bridge::child_view(&recorded)
+        .content
+        .iter()
+        .filter_map(audience::flattened_text)
+        .all(|sent| echoed.contains(sent.as_str()));
+    received.then_some(recorded)
+}
+
+/// The result to store for a bridged call: Biorouter's own when the bridge
+/// kept it and the child's echo shows the child got it, else `None` — the
+/// caller then stores the echo, as it always did.
+#[must_use]
+pub fn stored_bridged_result(
+    bridge_url: Option<&str>,
+    child_call_id: &str,
+    echoed: &serde_json::Value,
+    echoed_is_error: bool,
+) -> Option<rmcp::model::CallToolResult> {
+    let recorded = super::bridge::take_recorded_result(bridge_url?, child_call_id)?;
+    recorded_if_received(recorded, &echoed_texts(echoed), echoed_is_error)
+}
+
+#[cfg(test)]
+mod recorded_result_tests {
+    use super::*;
+    use rmcp::model::{CallToolResult, Content, Role};
+    use serde_json::json;
+
+    const DATE: &str = "Thu Sep 11 01:00:00 PDT 2026";
+
+    /// The developer shell's result shape (`rmcp_developer.rs`): the output for
+    /// the assistant, and a copy for the user marked low priority.
+    fn shell_shaped(output: &str) -> CallToolResult {
+        CallToolResult::success(vec![
+            Content::text(output).with_audience(vec![Role::Assistant]),
+            Content::text(output)
+                .with_audience(vec![Role::User])
+                .with_priority(0.0),
+        ])
+    }
+
+    /// Blocks the card shows: no audience, or one naming the user.
+    fn user_visible(content: &[Content]) -> usize {
+        content
+            .iter()
+            .filter(|c| c.audience().is_none_or(|a| a.contains(&Role::User)))
+            .count()
+    }
+
+    fn stored_result(message: &Message) -> &CallToolResult {
+        let MessageContent::ToolResponse(response) = &message.content[0] else {
+            panic!("expected a tool response");
+        };
+        response
+            .tool_result
+            .as_ref()
+            .expect("a successful transport")
+    }
+
+    /// QA-E F4, the case the finding names: `developer__shell {"command":"date"}`
+    /// over Claude Code stored two identical, unlabelled blocks — "2 results" on
+    /// the card, and the output twice in the child's next prompt. The same
+    /// two-block annotated result must mirror to ONE model-facing block (and one
+    /// user-facing block, so the card reads "1 result"), audiences preserved.
+    #[test]
+    fn a_two_block_annotated_result_mirrors_to_one_model_facing_block_with_audience_preserved() {
+        let recorded = shell_shaped(DATE);
+        // Claude Code's echo in the QA run: both blocks, annotations gone.
+        let echo = json!([{"type": "text", "text": DATE}, {"type": "text", "text": DATE}]);
+
+        let stored = recorded_if_received(recorded.clone(), &echoed_texts(&echo), false)
+            .expect("the child demonstrably received the result");
+        let message = response_message_with_result("toolu_1", stored, Execution::Bridged);
+        let content = &stored_result(&message).content;
+
+        let model_facing: Vec<&Content> = content
+            .iter()
+            .filter(|c| audience::is_for_model(c))
+            .collect();
+        assert_eq!(
+            model_facing.len(),
+            1,
+            "one block for the model: {content:?}"
+        );
+        assert_eq!(model_facing[0].audience(), Some(&vec![Role::Assistant]));
+        assert_eq!(user_visible(content), 1, "the card must read \"1 result\"");
+        assert_eq!(
+            stored_result(&message),
+            &recorded,
+            "stored exactly as the tool returned it"
+        );
+    }
+
+    /// After the fix the child is handed only the model's block, and echoes one.
+    #[test]
+    fn the_echo_of_the_model_view_adopts_the_full_result() {
+        let echo = json!([{"type": "text", "text": DATE}]);
+        let recorded = shell_shaped(DATE);
+        assert_eq!(
+            recorded_if_received(recorded.clone(), &echoed_texts(&echo), false),
+            Some(recorded)
+        );
+    }
+
+    /// A child whose call timed out (#110) never saw Biorouter's result, and
+    /// the transcript records what it did see.
+    #[test]
+    fn a_child_that_timed_out_keeps_its_own_echo() {
+        let echo = json!("The operation timed out");
+        assert!(recorded_if_received(shell_shaped(DATE), &echoed_texts(&echo), true).is_none());
+    }
+
+    /// Same when the flags disagree the other way round, or the CLI truncated
+    /// a large result before the child read it.
+    #[test]
+    fn an_echo_that_is_not_what_biorouter_sent_keeps_the_echo() {
+        let echo = json!([{"type": "text", "text": DATE}]);
+        assert!(
+            recorded_if_received(shell_shaped(DATE), &echoed_texts(&echo), true).is_none(),
+            "the child says its call failed"
+        );
+
+        let long = "x".repeat(1_000);
+        let truncated = json!([{"type": "text", "text": "x".repeat(200)}]);
+        assert!(
+            recorded_if_received(shell_shaped(&long), &echoed_texts(&truncated), false).is_none(),
+            "the child saw only part of the output"
+        );
+    }
+
+    /// Claude Code rewrites an embedded text resource as prose with a prefix
+    /// (measured, 2.1.266); the file's text is still what the child received.
+    #[test]
+    fn a_resource_echoed_as_prefixed_text_still_counts_as_received() {
+        let recorded = CallToolResult::success(audience::text_editor_view_result());
+        let echo = json!([{
+            "type": "text",
+            "text": format!("[Resource from biorouter at str:///notes.rs] {}", audience::VIEW_FOR_MODEL)
+        }]);
+        assert_eq!(
+            recorded_if_received(recorded.clone(), &echoed_texts(&echo), false),
+            Some(recorded)
+        );
+    }
+
+    #[test]
+    fn echoed_texts_reads_every_vendor_shape() {
+        assert_eq!(echoed_texts(&json!("plain")), vec!["plain"]);
+        assert_eq!(
+            echoed_texts(&json!([
+                {"type": "text", "text": "a"},
+                {"type": "image", "source": {"type": "base64", "data": "AA=="}},
+                {"type": "resource", "resource": {"uri": "str:///f", "text": "r"}}
+            ])),
+            vec!["a", "r"]
+        );
+        assert_eq!(
+            echoed_texts(&json!({"content": [{"type": "text", "text": "c"}], "isError": false})),
+            vec!["c"]
+        );
+        assert!(echoed_texts(&serde_json::Value::Null).is_empty());
+    }
+
+    /// No bridge, or nothing recorded for the call: the caller keeps the echo.
+    #[test]
+    fn with_nothing_recorded_the_echo_is_kept() {
+        assert!(stored_bridged_result(None, "toolu_1", &json!("x"), false).is_none());
+        assert!(stored_bridged_result(
+            Some("http://127.0.0.1:1/tool_bridge/00000000000000000000000000000000"),
+            "toolu_1",
+            &json!("x"),
+            false
+        )
+        .is_none());
     }
 }
 
