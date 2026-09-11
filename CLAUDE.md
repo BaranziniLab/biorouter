@@ -54,12 +54,22 @@ just check-everything               # Run all style/lint checks
 ⚠ **Frontend formatting is not enforced anywhere.** `lint:check` resolves to
 `typecheck && eslint && check:themes && check:contrast && check:tokens` — no
 Prettier — and no workflow under `.github/workflows/` invokes Prettier either.
-This line used to claim `lint:check` was an "ESLint + Prettier check"; it never
-was, and the drift is measurable: on 2026-09-02, five files under
-`ui/desktop/src` failed `format:check` on `main`. Run `format:check` yourself
-before pushing frontend changes, and do not wire it into CI without fixing
-those five first — a gate that fails on arrival gets disabled rather than
-obeyed.
+Two things look like they do and do not: `just check-everything` prints
+"Checking UI code formatting..." and then runs `lint:check`; and the
+`lint-staged` block in `ui/desktop/package.json` runs `prettier --write` but
+nothing triggers it — `prepare` runs `husky` from `ui/desktop`, husky 9 exits
+early when the current directory has no `.git` (`npm ci` prints `.git can't be
+found`), and `.githooks/` holds only `commit-msg`. This line used to claim
+`lint:check` was an "ESLint + Prettier check"; it never was, and the drift is
+measurable: five files under `ui/desktop/src` failed `format:check` on `main`
+on 2026-09-02, and four on 2026-09-11. Those four were reformatted that day
+(formatting only), after which `format:check` passed with **0 failing files,
+measured 2026-09-11**. That meets the precondition this note used to set for
+wiring `format:check` into `lint:check` or CI — whether to do it is a
+maintainer's call — but nothing holds the count at zero, so re-measure right
+before wiring it in: a gate that fails on arrival gets disabled rather than
+obeyed. Until then, run `format:check` yourself before pushing frontend
+changes.
 
 ### Build & Release
 
