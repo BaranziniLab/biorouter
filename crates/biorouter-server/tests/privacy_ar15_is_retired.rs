@@ -345,9 +345,24 @@ fn the_documented_closure_is_the_one_the_code_performs() {
     // The docs now assert a specific gate. If the gate goes, the docs are
     // wrong in the *dangerous* direction — claiming a hole is closed when it is
     // open — and no other test in this tree ties the two together.
-    let refusal = AGENT_ROUTE
-        .find("PrivacyRefusal::TierRaiseNeedsUser")
-        .expect("routes/agent.rs no longer refuses an unproven tier raise at all");
+    //
+    // ⚠ The scan starts at `update_agent_provider`, the handler AR-15 is about.
+    // It used to take the FIRST refusal in the file, which stopped being this
+    // handler's when `eb594ded` put the new-chat gate above it: from then on the
+    // scan read that gate, and deleting the proof from this one left it green.
+    // The new-chat gate is SD-9's, a different rule with its own tests in
+    // `routes/agent.rs`.
+    let handler = AGENT_ROUTE
+        .find("async fn update_agent_provider")
+        .expect("update_agent_provider moved; AR-15's gate is the one inside it");
+    let body = cut_from(AGENT_ROUTE, handler);
+    // Bounded by the next route, so a refusal that left this handler cannot be
+    // found in the one after it.
+    let body = cut_to(body, body.find("\n#[utoipa::path(").unwrap_or(body.len()));
+    let refusal = handler
+        + body
+            .find("PrivacyRefusal::TierRaiseNeedsUser")
+            .expect("update_agent_provider no longer refuses an unproven tier raise at all");
     let guard = cut_to(AGENT_ROUTE, refusal)
         .rfind("    if ")
         .expect("the tier-raise refusal is not inside an `if`");
