@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeProvider, SELECTION_NOT_SAVED_TITLE, useKnowledge } from './KnowledgeContext';
 import { useKnowledgeBases } from './hooks/useKnowledgeBases';
+import { reachGatedGetActive, SESSION_OUT_OF_REACH, USER_ACTION_KEY } from '../../test/reachGate';
 
 /** A promise the test resolves by hand, so "after the response settled" is a fact, not a race. */
 function deferred<T>() {
@@ -42,22 +43,6 @@ vi.mock('../../api', () => ({
 }));
 
 vi.mock('../../toasts', () => ({ toastError: mocks.toastError }));
-
-/**
- * What the preload bridge hands `userActionHeaders()` in the tests that model
- * the daemon's reach gate. Everywhere else `window.electron` is absent, the
- * helper resolves to `{}`, and the mocks below answer every request.
- */
-const USER_ACTION_KEY = 'knowledge-context-test-user-action-key';
-
-/** The first sentence of `SESSION_OUT_OF_REACH` (`routes/session_reach.rs`). */
-const SESSION_OUT_OF_REACH =
-  'That chat is private, or there is no chat with that id. This request was made on a public ' +
-  'model and carried no proof it came from the person at the keyboard.';
-
-function sentProof(options?: { headers?: Record<string, string> }) {
-  return options?.headers?.['X-User-Action'] === USER_ACTION_KEY;
-}
 
 function base(id: string) {
   return { id, name: id, color: '#cf6d47', created_at: '', schema_version: 1 };
@@ -172,19 +157,6 @@ beforeEach(() => {
   });
   mocks.deleteBase.mockResolvedValue({});
 });
-
-afterEach(() => {
-  Reflect.deleteProperty(window, 'electron');
-});
-
-/** Hand `userActionHeaders()` a key, as the desktop's preload bridge does. */
-function installUserActionBridge() {
-  Object.defineProperty(window, 'electron', {
-    value: { getUserActionKey: vi.fn(async () => USER_ACTION_KEY) },
-    configurable: true,
-    writable: true,
-  });
-}
 
 describe('KnowledgeContext', () => {
   it('renders Soul as the primary in a fresh default selection', async () => {
@@ -474,34 +446,11 @@ describe('KnowledgeContext', () => {
     expect(screen.getByTestId('bases-error').textContent).not.toBe('');
   });
 
-  // QA 2026-09-10 F14, on a default UCSF install: every chat is private, and the
-  // Knowledge view could neither read nor reliably set the selection of one.
-  describe("a private chat's selection", () => {
-    // The daemon's reach gate refuses a read naming a private chat unless it
-    // carries the user's proof. The reads went without it, so the view showed
-    // this renderer's cache as the chat's selection.
-    it("reads a private chat's selection with the user's proof", async () => {
-      installUserActionBridge();
-      // What this renderer cached on an earlier visit, and no longer true.
-      localStorage.setItem('knowledge_active_kb:chat-1', 'beta');
-      localStorage.setItem('knowledge_hidden_kbs:chat-1', '[]');
-      mocks.getActive.mockImplementation(
-        (options?: { query?: { session_id?: string }; headers?: Record<string, string> }) =>
-          options?.query?.session_id && !sentProof(options)
-            ? Promise.reject(SESSION_OUT_OF_REACH)
-            : Promise.resolve({
-                data: options?.query?.session_id ? daemon.session : daemon.machine,
-              })
-      );
-
-      renderProvider();
-
-      await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
-      expect(screen.getByTestId('hidden')).toHaveTextContent('beta');
-      expect(sentProof(mocks.getActive.mock.calls[0]?.[0])).toBe(true);
-      expect(localStorage.getItem('knowledge_active_kb:chat-1')).toBe('alpha');
-    });
-
+  // QA 2026-09-10 F14. Around the refused reads (see 'a private chat' below), the
+  // renderer made selection writes nobody asked for, which is how a click could
+  // look saved and not be. It now writes only what a person clicked, persists
+  // only what the daemon confirmed, and says so when a write does not land.
+  describe('writes only what the daemon confirmed', () => {
     // The renderer believed the write succeeded while the daemon had refused
     // it: `localStorage` took the guess before the POST went out, and nothing on
     // screen ever said the click had not landed.
@@ -785,6 +734,93 @@ describe('KnowledgeContext', () => {
       await userEvent.click(screen.getByRole('button', { name: 'follow the default' }));
       await settle(() => {});
       expect(mocks.setActive).not.toHaveBeenCalled();
+    });
+  });
+
+  // Issue #56 Task 58. `GET /knowledge/active` naming a PRIVATE chat is on the
+  // reach gate's list, and the desktop app gets through it the way `setActive`
+  // already does: with the user's proof. The reads carried none, so the daemon
+  // refused every private chat's selection — whatever model was bound — and the
+  // chip fell back to whatever this renderer had cached, which the daemon may
+  // have moved past (the agent's `kb_set_active`, the CLI, another window).
+  describe('a private chat', () => {
+    let savedElectron: unknown;
+
+    beforeEach(() => {
+      savedElectron = (window as { electron?: unknown }).electron;
+      Object.assign(window, {
+        electron: { getUserActionKey: vi.fn(async () => USER_ACTION_KEY) },
+      });
+      mocks.getActive.mockImplementation(
+        reachGatedGetActive(['chat-1'], (sessionId) =>
+          sessionId ? daemon.session : daemon.machine
+        )
+      );
+    });
+
+    afterEach(() => {
+      Object.assign(window, { electron: savedElectron });
+    });
+
+    it('hydrates its selection from the daemon, not from what this renderer cached', async () => {
+      localStorage.setItem('knowledge_active_kb:chat-1', 'beta');
+      localStorage.setItem('knowledge_hidden_kbs:chat-1', '[]');
+
+      renderProvider();
+
+      await waitFor(() => expect(screen.getByTestId('primary').textContent).toBe('alpha'));
+      expect(screen.getByTestId('hidden').textContent).toBe('beta');
+      expect(mocks.getActive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: { session_id: 'chat-1' },
+          headers: { 'X-User-Action': USER_ACTION_KEY },
+        })
+      );
+    });
+
+    // Seeded to match the daemon, so the first read cannot be what puts the
+    // selection back: only the recovery read can.
+    it('re-reads its selection with the proof when a write does not land', async () => {
+      localStorage.setItem('knowledge_active_kb:chat-1', 'alpha');
+      localStorage.setItem('knowledge_hidden_kbs:chat-1', '["beta"]');
+      const pending = deferred<unknown>();
+      renderProvider();
+      await waitFor(() => expect(mocks.getActive).toHaveBeenCalledTimes(1));
+      await settle(() => {});
+
+      mocks.setActive.mockReturnValue(pending.promise);
+      await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+
+      await settle(() => pending.reject(new Error('network down')));
+
+      await waitFor(() => expect(mocks.getActive).toHaveBeenCalledTimes(2));
+      expect(mocks.getActive.mock.calls[1]?.[0]).toMatchObject({
+        query: { session_id: 'chat-1' },
+        headers: { 'X-User-Action': USER_ACTION_KEY },
+      });
+      await waitFor(() => expect(screen.getByTestId('primary').textContent).toBe('alpha'));
+      expect(screen.getByTestId('hidden').textContent).toBe('beta');
+    });
+
+    // What the refused read cost, measured in the running app on 2026-09-11:
+    // the chip showed a hidden base as switched on, and one click on another
+    // base wrote that stale set back — the hidden base was in the chat again.
+    // A set-only edit is only as right as the set it starts from.
+    it('toggles from the set the daemon holds, so a toggle cannot re-expose a hidden base', async () => {
+      localStorage.setItem('knowledge_hidden_kbs:chat-1', '[]');
+      renderProvider();
+      await waitFor(() => expect(mocks.getActive).toHaveBeenCalled());
+      // Let the hydrate's answer land, whichever way the daemon answered it.
+      await act(async () => {
+        await Promise.allSettled(mocks.getActive.mock.results.map((result) => result.value));
+      });
+
+      await userEvent.click(screen.getByRole('button', { name: 'toggle alpha' }));
+
+      await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
+      const calls = mocks.setActive.mock.calls;
+      expect(calls[calls.length - 1]?.[0]?.body.hidden_kbs).toEqual(['alpha', 'beta']);
     });
   });
 });

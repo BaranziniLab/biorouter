@@ -8,7 +8,13 @@ import {
   useRef,
   useState,
 } from 'react';
-import { listBases, getActive, setActive } from '../../api';
+import { listBases, setActive } from '../../api';
+import {
+  fetchKnowledgeSelection,
+  readHidden,
+  readPrimary,
+  type SelectionPayload,
+} from './knowledgeSelection';
 import { briefSelectionFailure } from './selectionWarning';
 import { userActionHeaders } from '../../utils/userAction';
 import { toastError } from '../../toasts';
@@ -52,54 +58,6 @@ type PrimaryUpdate =
   | { kind: 'clear' }
   | { kind: 'inherit' }
   | { kind: 'set'; id: string };
-
-/** The shape both selection endpoints answer with — GET /active and POST /active. */
-type SelectionPayload =
-  | { primary_kb?: string | null; active_kb?: string | null; hidden_kbs?: string[] | null }
-  | undefined;
-
-/** `active_kb` is the deprecated mirror, read so a fresh renderer keeps working
- * against a daemon that predates `primary_kb`. */
-function readPrimary(data: SelectionPayload): string | null {
-  return data?.primary_kb ?? data?.active_kb ?? null;
-}
-
-/** `null` means "this answer did not state a set" (a daemon that predates the
- * field) — distinct from an empty set, and the caller must leave what it has
- * rather than erase the session's whole working set. */
-function readHidden(data: SelectionPayload): string[] | null {
-  return Array.isArray(data?.hidden_kbs)
-    ? data.hidden_kbs.filter((id): id is string => typeof id === 'string')
-    : null;
-}
-
-/**
- * Read one scope's selection — the chat's when `sessionId` is set, the
- * machine-wide default otherwise — as the person at the keyboard.
- *
- * ⚠ **Every selection read goes through here, and every one carries the
- * proof.** `GET /knowledge/active` naming a PRIVATE chat is on the reach gate's
- * list (`routes/session_reach.rs`) exactly as the POST in `syncSelection` is, and
- * the desktop gets through it the only way it can: `userActionHeaders()`, the
- * one helper that decides how this surface proves a person (issue #56 Task 58).
- * The reads used to go without it, so the daemon refused every private chat —
- * which is every chat on a UCSF install — and the Knowledge view, the chip and
- * the ingest target all showed this renderer's `localStorage` instead of the
- * daemon's selection (QA 2026-09-10 F14). It reaches nothing new: the same proof
- * already reads the chat's whole transcript through `getSession`.
- *
- * It sends the proof at machine scope too, where the gate is inert today, so
- * that a daemon which filters what an unproven caller may see never hands this
- * surface a selection with the user's own private bases missing from it.
- */
-async function readSelection(sessionId: string | null) {
-  const res = await getActive({
-    query: sessionId ? { session_id: sessionId } : undefined,
-    headers: await userActionHeaders(),
-    throwOnError: true,
-  });
-  return res.data;
-}
 
 /**
  * The title of the one error a person sees when a selection change they made
@@ -262,7 +220,7 @@ export function KnowledgeProvider({
     if (writesInFlightRef.current > 0) return;
     const generation = selectionGenerationRef.current;
     try {
-      const data = await readSelection(sessionId);
+      const data = await fetchKnowledgeSelection(sessionId);
       if (generation !== selectionGenerationRef.current) return;
       applyPrimary(readPrimary(data));
       const hidden = readHidden(data);
@@ -277,7 +235,7 @@ export function KnowledgeProvider({
   const refreshBases = useCallback(async () => {
     setLoading(true);
     try {
-      // With the proof, for the reason `readSelection` gives: a daemon that
+      // With the proof, for the reason `fetchKnowledgeSelection` gives: a daemon that
       // filters what an unproven caller may see would otherwise hand this list
       // back with the user's own private bases missing.
       const res = await listBases({ headers: await userActionHeaders(), throwOnError: true });
@@ -316,7 +274,7 @@ export function KnowledgeProvider({
       });
       void refreshBases();
       try {
-        const data = await readSelection(sessionId);
+        const data = await fetchKnowledgeSelection(sessionId);
         if (generation !== selectionGenerationRef.current) return;
         applyPrimary(readPrimary(data));
         const hidden = readHidden(data);
@@ -464,7 +422,7 @@ export function KnowledgeProvider({
       return;
     }
     try {
-      setDefaultPrimaryKbId(readPrimary(await readSelection(null)));
+      setDefaultPrimaryKbId(readPrimary(await fetchKnowledgeSelection(null)));
     } catch (err) {
       // Keep the last known default: a failed read is not evidence that there
       // is none, and inventing one would offer a base nobody chose.
@@ -587,7 +545,7 @@ export function KnowledgeProvider({
 
     void (async () => {
       try {
-        const data = await readSelection(sessionId);
+        const data = await fetchKnowledgeSelection(sessionId);
         if (cancelled || generation !== selectionGenerationRef.current) return;
         applyPrimary(readPrimary(data));
         applyHidden(readHidden(data) ?? []);
@@ -597,14 +555,17 @@ export function KnowledgeProvider({
         // characters addressed to an AI agent, and its first sentence is all a
         // person reading the console needs (`selectionWarning.ts`).
         //
-        // ⚠ This comment used to call that refusal "a correct outcome" for "a
-        // private chat opened while a public model is bound". It was neither:
-        // the read carried no proof, so the daemon refused it for EVERY private
-        // chat whatever model was bound, and the Knowledge view then showed this
-        // renderer's cache as the chat's selection (QA 2026-09-10 F14). With the
-        // proof on the read, a refusal lands here only for a caller that
-        // genuinely has neither the proof nor a private model — a daemon started
-        // without a user-action key — and only there is falling back right.
+        // ⚠ Until 2026-09-11 this comment called that refusal "a correct
+        // outcome" for "a private chat opened while a public model is bound".
+        // Neither half held. This read carried no proof, so the daemon refused
+        // it for EVERY private chat, whatever model was bound — measured with a
+        // chat on its own private model — and what followed was not correct:
+        // the chip showed this renderer's cache instead of the daemon's
+        // selection, and the next toggle wrote that stale set back over it. A
+        // refusal still lands here for a caller that genuinely has neither the
+        // proof nor a private model (a daemon started without a user-action
+        // key, a browser tab not running a private model), and only there is
+        // it the right answer.
         console.warn('Knowledge selection not hydrated:', briefSelectionFailure(err));
         setPrimaryKbIdState(local);
         setHiddenKbIdsState(localHidden);

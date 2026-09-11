@@ -29,8 +29,30 @@ use std::collections::HashMap;
 // cursor-selected and cursor-unselected items.
 const MULTISELECT_VISIBILITY_HINT: &str = "<";
 
+/// What `biorouter configure` says when there is no terminal to prompt on
+/// (QA-D F9). It names the non-interactive route to the same end state rather
+/// than only refusing: this is the command every install guide points at, so it
+/// is the one most often run from a script.
+pub(crate) const CONFIGURE_NEEDS_A_TERMINAL: &str =
+    "`biorouter configure` is interactive and needs a terminal; without one, choose a model \
+     with `biorouter models set --provider <provider> --model <model>` (`biorouter models \
+     providers` lists the providers) and pass the provider's API key in its environment \
+     variable, e.g. `OPENAI_API_KEY`.";
+
 pub async fn handle_configure() -> anyhow::Result<()> {
-    let config = Config::global();
+    configure(Config::global(), super::needs_terminal::prompt_can_run()).await
+}
+
+/// [`handle_configure`] over an explicit config, so the refusal can be pinned
+/// against a file a test owns rather than the process-global one.
+///
+/// ⚠ **The terminal check is the first statement**, ahead of the
+/// `config.exists()` branch: both branches open with a cliclack prompt, and a
+/// command that is about to decline must not have read or written anything on
+/// the way there. Under a pipe this used to die inside the first prompt with
+/// cliclack's bare `Error: not connected`.
+async fn configure(config: &Config, terminal: bool) -> anyhow::Result<()> {
+    super::needs_terminal::require(terminal, CONFIGURE_NEEDS_A_TERMINAL)?;
 
     if !config.exists() {
         handle_first_time_setup(config).await
@@ -2258,5 +2280,75 @@ mod privacy_disclosure_tests {
 
         assert!(non_private_model_disclosure(&meta("llamacpp").await).is_none());
         assert!(non_private_model_disclosure(&meta("versa_azure").await).is_none());
+    }
+}
+
+#[cfg(test)]
+mod needs_terminal_tests {
+    use super::{configure, CONFIGURE_NEEDS_A_TERMINAL};
+    use crate::commands::needs_terminal::NeedsTerminal;
+    use biorouter::config::Config;
+    use std::ffi::OsString;
+
+    fn entries(dir: &std::path::Path) -> Vec<OsString> {
+        let mut names: Vec<OsString> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// QA-D F9: under a pipe, `configure` refuses with a sentence that names
+    /// what to run instead — and the configuration is **byte-identical**
+    /// afterwards, with nothing written beside it.
+    ///
+    /// Driven through `configure` itself, the function `handle_configure`
+    /// calls, so moving the check below anything that touches the file fails
+    /// here. The file carries a comment and odd spacing on purpose: a
+    /// parse-and-re-serialise round trip would normalise both, so "identical
+    /// bytes" cannot be satisfied by a write that happened to preserve the keys.
+    #[tokio::test]
+    async fn without_a_terminal_configure_refuses_and_leaves_the_config_byte_identical() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let original: &[u8] = b"# hand-edited\nBIOROUTER_PROVIDER:   versa_azure\n\
+                                BIOROUTER_MODEL: gpt-5.5-2026-04-24\n";
+        std::fs::write(&config_path, original).unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let err = configure(&config, false).await.unwrap_err();
+        let refusal = err
+            .downcast_ref::<NeedsTerminal>()
+            .expect("the refusal must be the typed one main maps to exit 2");
+        assert_eq!(refusal.to_string(), CONFIGURE_NEEDS_A_TERMINAL);
+        assert!(
+            CONFIGURE_NEEDS_A_TERMINAL.contains("biorouter models set --provider"),
+            "the sentence must name the non-interactive route: {CONFIGURE_NEEDS_A_TERMINAL}"
+        );
+
+        assert_eq!(std::fs::read(&config_path).unwrap(), original);
+        assert_eq!(entries(dir.path()), vec![OsString::from("config.yaml")]);
+    }
+
+    /// The first-run branch (no config yet) refuses the same way and creates
+    /// nothing — no config file, no secrets file.
+    #[tokio::test]
+    async fn without_a_terminal_first_run_configure_creates_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+
+        let err = configure(&config, false).await.unwrap_err();
+        assert!(err.downcast_ref::<NeedsTerminal>().is_some(), "{err:?}");
+        assert!(
+            entries(dir.path()).is_empty(),
+            "a refused first run must leave no file behind: {:?}",
+            entries(dir.path())
+        );
     }
 }

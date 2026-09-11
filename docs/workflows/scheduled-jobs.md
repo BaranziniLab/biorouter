@@ -15,7 +15,7 @@ The scheduler lets you:
 - Persist scheduled jobs across sessions
 - Manage (list, pause, delete) scheduled jobs through the Desktop UI or CLI
 
-Scheduled jobs are stored persistently in an SQLite database, so they survive application restarts.
+Scheduled jobs are stored in `schedule.json` in Biorouter's data directory, so they survive application restarts. Every Biorouter process on the machine shares that file. See [One schedule, several processes](#one-schedule-several-processes).
 
 ## Creating a scheduled job
 
@@ -41,9 +41,29 @@ biorouter session
 > Schedule the "nightly-analysis" workflow to run every day at 2am
 ```
 
-Biorouter will create the scheduled job and confirm the cron expression.
+Biorouter asks you to approve the job before creating it, then confirms the cron expression.
 
 > **Note.** To register a job non-interactively, use `biorouter schedule add`. Its flags and a worked example are in [Creating and sharing workflows](creating-and-sharing-workflows.md#schedule-a-workflow) and the [`schedule` command reference](../cli/command-reference.md#schedule).
+
+### When the agent schedules something, you approve it
+
+A scheduled job is a standing agent run. Once it exists, a new session starts on its schedule with nobody watching and does whatever its workflow says. So the agent cannot set one up, or change one, without you. Every change the `platform__manage_schedule` tool can make raises an approval card first:
+
+| Action | What the card asks |
+|---|---|
+| `create` | Run this workflow automatically on this schedule. |
+| `run_now` | Run this schedule once, right now, outside its schedule. |
+| `pause` / `unpause` | Stop this schedule running, or start it running again. |
+| `delete` | Remove this schedule for good. |
+| `kill` | Stop the run that is in progress now. |
+
+The card says in words when the job runs (for example *every day at 02:00, this computer's local time*), which workflow it runs, and how: in the background, on the chat's model, under your permission mode. The card for `create` also shows the whole workflow, not just its path, because the workflow is what the unattended run will do. The exact cron expression is always on the card as well. A schedule written in a shape the card cannot put into words is quoted rather than paraphrased.
+
+- **The card appears in every permission mode**, Autonomous included. The tool parks the card itself, so the permission mode does not decide whether you are asked. The card for saving a workflow with `platform__manage_workflow` works the same way.
+- **Only you can approve it.** The card needs proof that a person clicked it, so an agent cannot approve its own schedule.
+- **Reading asks nothing.** `list`, `inspect`, `sessions` and `session_content` change nothing and raise no card.
+- **Impossible changes are refused without a card.** For example: a schedule that does not exist, stopping a run that is not running, a cron expression the scheduler cannot parse, or a workflow that hides characters the card could not show.
+- **In a browser session started by `biorouter serve`**, nobody can approve anything, so the tool offers only the read actions. Make changes in the desktop app or with the `biorouter` command line instead.
 
 ## Cron expression format
 
@@ -86,8 +106,16 @@ The Schedule panel shows all active and paused jobs with:
 biorouter schedule list
 
 # Delete a scheduled job by ID
-biorouter schedule delete <job-id>
+biorouter schedule remove --schedule-id <job-id>
 ```
+
+### One schedule, several processes
+
+Whichever process runs a schedule keeps it in memory, but all of them share `schedule.json`. So a job added in a terminal, by a terminal session's `/schedule`, or by a second Biorouter is still one schedule:
+
+- **A running Biorouter follows the file.** It checks the file every couple of seconds. It picks up jobs other processes added or removed, and jobs they paused or re-timed, within 60 seconds at most. It checks again before every run, so it does not run a job that was deleted or paused elsewhere. Before this, a job added from a terminal while the app was running was missing from the Scheduler page and from the agent's list, could not be deleted from either, and never ran until the app restarted.
+- **`biorouter schedule` asks the running daemon first.** When this terminal can reach a daemon (`BIOROUTER_SERVER__SECRET_KEY` and `BIOROUTER_PORT` in its environment), `add`, `remove`, `list` and `run-now` go to that daemon, and the change is live at once. When it cannot, the command writes the file itself and says when a running Biorouter will pick up the change. A terminal next to the desktop app can never reach the app's own daemon, which uses a random port and secret, so it takes the second path, and the app picks the job up from the file. See the [`schedule` command reference](../cli/command-reference.md#schedule).
+- **A row the app cannot schedule** is not listed. Usually this is a row whose workflow file has been deleted. You can still remove it by ID.
 
 ## Headless (non-interactive) mode
 

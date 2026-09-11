@@ -62,12 +62,12 @@ The result is a more focused session where BioRouter has exactly the tools it ne
 | Tool | Description | Use Case |
 |------|-------------|----------|
 | `search_available_extensions` | List installed third-party extensions and exact names | Finding what is already installed |
-| `search_marketplace_extensions` | Browse or search trusted BAAM entries visible to this model — omit the query to list everything | Finding a package to install |
+| `search_marketplace_extensions` | Browse or search trusted BAAM entries visible to this model — omit the query to list everything. A query is matched word by word, so a phrase returns every entry matching any of its words, best match first; a query that matches nothing says so and suggests shorter terms | Finding a package to install |
 | `manage_extensions` | Enable or disable an extension by name | Loading/unloading extensions dynamically |
 | `install_extension` | Install a BAAM marketplace extension end to end | The extension is not installed at all |
 | `delete_extension_package` | Delete one or up to 50 validated marketplace packages after approval | Permanent removal of something installed from BAAM; shared credentials are retained |
 | `remove_extension` | Remove one or up to 50 installed extensions by installed name after approval | Permanent removal of anything else — a sideloaded `.brxt`, a hand-configured MCP server |
-| `list_resources` | List resources from extensions (if supported) | Discovering available data sources |
+| `list_resources` | List resources from extensions (if supported). When there are none, it says which extensions were asked — naming only extensions the model has already been shown | Discovering available data sources |
 | `read_resource` | Read specific resource content (if supported) | Accessing extension-provided data |
 
 > **Tip.** Not every tool in this table is offered in every session. The resource tools (`list_resources` and `read_resource`) appear only when at least one enabled extension supports resources. `install_extension`, `delete_extension_package` and `remove_extension` each wait on your approval, so they are withheld entirely where no one can be asked for it — on a daemon started by `biorouter serve` for browser access, for instance. Browsing and searching are read-only and always available.

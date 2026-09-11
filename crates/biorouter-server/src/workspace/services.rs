@@ -400,6 +400,19 @@ impl WorkspaceServices for ServerWorkspaceServices {
         })
     }
 
+    fn installed_knowledge_bases(&self) -> Option<Vec<String>> {
+        // The same universe `set_visible_kbs` resolves visibility against
+        // (`installed_kb_ids_unlocked` is `list_bases` ids), read without the
+        // root lock: this answers a pre-flight question, and the setter still
+        // re-decides under the lock. A registry that cannot be read answers
+        // `None`, so a transient failure never refuses a real base.
+        self.state
+            .knowledge_service
+            .list_bases()
+            .ok()
+            .map(|bases| bases.into_iter().map(|base| base.id).collect())
+    }
+
     fn knowledge_selection(&self, session_id: &str) -> KbSelectionView {
         // `KnowledgeService::selection` takes the root lock and returns set +
         // pointer TOGETHER. Do not rebuild this from `session_kb_ids` +

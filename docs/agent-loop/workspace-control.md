@@ -152,10 +152,15 @@ Hidden sessions are refused in every view. And because a read is an ordinary too
 
 Some of these changes raise a confirmation card **in every permission mode, including the fully automatic one** — handing a conversation a process-spawning extension, removing a security-relevant one, switching its provider, or adding a skill. The full list and the reasoning are in the [extension page's always-confirm rule](../extensions/built-in/workspace.md#the-always-confirm-rule). Whatever changes, the target's tab gets a toast saying what happened and who did it. Silent cross-session action is not a supported configuration.
 
-Two refusals you may see and should not try to work around:
+A change that cannot be made never reaches you as a card: the request is checked first — the conversation, every extension, knowledge base, provider and model it names — and a request that would fail is refused with the reason before you are asked anything. The confirmation card only ever describes a change that will happen if you approve it.
 
+Three refusals you may see and should not try to work around:
+
+- A built-in capability — Auto Visualiser, Developer, Memory, Workspace Control itself — is part of Biorouter, not an installed extension, and cannot be removed from a conversation this way.
 - An extension an operator wrote `enabled: false` for cannot be enabled here. The refusal names the operator's decision and tells the agent to ask you rather than route around it.
 - A subagent session can never be granted workspace control, so a child cannot spawn grandchildren or steer its parent.
+
+The same honesty applies to talking to another conversation. When the agent sends one a prompt and waits for the answer, it gets the whole reply back with a verdict — and if the other conversation *declined* (it treats injected text as coming from another agent rather than from you, and may refuse to act on it), the agent is told that nothing was done rather than that the turn finished. Ask for the work in that conversation yourself if it has to happen there.
 
 ## The limits you will actually meet
 
