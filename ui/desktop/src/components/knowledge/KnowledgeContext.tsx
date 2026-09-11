@@ -459,9 +459,10 @@ export function KnowledgeProvider({
           query: sessionId ? { session_id: sessionId } : undefined,
           // Issue #56 Task 58: a GET naming a PRIVATE chat is on the reach
           // gate's list exactly as the POST in `syncSelection` is, and the
-          // desktop gets through it the same way — by proving the person. This
-          // selection is a strict subset of what `getSession` already reads
-          // with that proof.
+          // desktop gets through it the same way — by proving the person. It
+          // reaches nothing new: the same proof already reads the chat's whole
+          // transcript through `getSession`, which says far more than which
+          // knowledge bases the chat uses.
           headers: await userActionHeaders(),
           throwOnError: true,
         });
