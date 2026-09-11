@@ -589,6 +589,93 @@ fn unjudged(name: &str, detail: &str) -> ScriptCallVerdict {
     ))
 }
 
+/// A gate built by hand, for tests that exercise it — or `execute_code`'s use
+/// of it — without an agent. The agent-path tests below build none of this:
+/// they go through `Agent::dispatch_tool_call`, which is the only way to prove
+/// the judge reaches a script at all.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use super::ScriptCallGate;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::hooks::HooksManager;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use crate::tool_inspection::ToolInspectionManager;
+
+    /// A user PreToolUse hook that rewrites every `developer__shell` call's
+    /// command to `command` — the fixture shape the bridge's BR-19 tests use.
+    pub(crate) fn hooks_rewriting_shell_to(command: &str) -> Arc<HooksManager> {
+        let output = serde_json::json!({
+            "hookSpecificOutput": { "updatedInput": { "command": command } }
+        })
+        .to_string();
+        let hook = if cfg!(target_os = "windows") {
+            // cmd.exe keeps the JSON's double quotes and would echo single ones.
+            format!("echo {output}")
+        } else {
+            format!("echo '{}'", output.replace('\'', "'\"'\"'"))
+        };
+        let yaml = format!(
+            "PreToolUse:\n  - matcher: \"developer__shell\"\n    hooks:\n      - type: command\n        command: {}\n",
+            serde_json::to_string(&hook).expect("a json string"),
+        );
+        Arc::new(HooksManager::with_config(
+            serde_yaml::from_str(&yaml).expect("the hook config parses"),
+            false,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        ))
+    }
+
+    /// A gate over the inspectors a verdict is read off — the permission
+    /// inspector and the user's hooks, plus the security floor on request —
+    /// with its own permission table in `dir`.
+    pub(crate) async fn gate(
+        dir: &std::path::Path,
+        mode: BioRouterMode,
+        hooks: Arc<HooksManager>,
+        with_security: bool,
+    ) -> (ScriptCallGate, Arc<PermissionManager>) {
+        let permissions = Arc::new(PermissionManager::new(dir.join("config")));
+        let mut inspections = ToolInspectionManager::new();
+        if with_security {
+            inspections.add_inspector(Box::new(
+                crate::security::security_inspector::SecurityInspector::new(),
+            ));
+        }
+        inspections.add_inspector(Box::new(
+            crate::permission::permission_inspector::PermissionInspector::new(
+                Arc::new(crate::permission::tool_risk::ToolRiskRegistry::new()),
+                Arc::clone(&permissions),
+                Arc::new(crate::managed::ManagedPolicy::empty()),
+                Arc::new(tokio::sync::Mutex::new(None)),
+            ),
+        ));
+        inspections.add_inspector(Box::new(crate::hooks::HookInspector::new(Arc::clone(
+            &hooks,
+        ))));
+        let session = SessionManager::new(dir.join("sessions"))
+            .create_session(dir.to_path_buf(), "gate".into(), SessionType::User)
+            .await
+            .expect("a session");
+        (
+            ScriptCallGate::new(Arc::new(inspections), mode, session, hooks),
+            permissions,
+        )
+    }
+
+    pub(crate) fn shell_call(command: &str) -> rmcp::model::CallToolRequestParams {
+        rmcp::model::CallToolRequestParams {
+            task: None,
+            meta: None,
+            name: "developer__shell".into(),
+            arguments: Some(rmcp::object!({ "command": command })),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1195,6 +1282,71 @@ mod tests {
                 .is_some_and(|caught| caught.contains("global memory store")),
             "{output}"
         );
+    }
+
+    /// BR-19 on the script's path: a PreToolUse hook's rewrite of a script's
+    /// call is applied, and the rewritten call — not the script's — is what the
+    /// gate hands back to be dispatched.
+    #[tokio::test]
+    async fn a_hook_rewrite_of_a_scripts_call_is_what_runs() {
+        use super::test_support::{gate, hooks_rewriting_shell_to, shell_call};
+        use super::ScriptCallVerdict;
+
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let hooks = hooks_rewriting_shell_to("echo SCRIPT-GATE-REWRITTEN");
+        let (gate, permissions) = gate(dir.path(), BioRouterMode::Approve, hooks, false).await;
+        permissions.update_user_permission(SHELL, PermissionLevel::AlwaysAllow);
+
+        let verdict = gate
+            .judge(
+                shell_call("echo SCRIPT-GATE-ORIGINAL"),
+                crate::privacy::CallCapability::for_test_restricted(),
+                &crate::permission::tool_risk::ToolRiskRegistry::new(),
+                &CancellationToken::new(),
+            )
+            .await;
+        let ScriptCallVerdict::Run(call) = verdict else {
+            panic!("an always-allowed call with a benign rewrite runs: {verdict:?}");
+        };
+        assert_eq!(
+            call.arguments
+                .as_ref()
+                .and_then(|args| args.get("command"))
+                .and_then(|command| command.as_str()),
+            Some("echo SCRIPT-GATE-REWRITTEN"),
+            "what runs is what the hook rewrote it to"
+        );
+    }
+
+    /// …and the rewrite is judged AGAIN, by the inspectors that only saw the
+    /// script's original: the user's always-allow for `developer__shell` does
+    /// not carry a rewritten `rm -rf /` past the catastrophic-command block.
+    #[tokio::test]
+    async fn a_rewritten_script_call_is_judged_again_before_it_runs() {
+        use super::test_support::{gate, hooks_rewriting_shell_to, shell_call};
+        use super::ScriptCallVerdict;
+
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let hooks = hooks_rewriting_shell_to("rm -rf /");
+        let (gate, permissions) = gate(dir.path(), BioRouterMode::Approve, hooks, true).await;
+        permissions.update_user_permission(SHELL, PermissionLevel::AlwaysAllow);
+
+        let verdict = gate
+            .judge(
+                shell_call("ls"),
+                crate::privacy::CallCapability::for_test_restricted(),
+                &crate::permission::tool_risk::ToolRiskRegistry::new(),
+                &CancellationToken::new(),
+            )
+            .await;
+        match verdict {
+            ScriptCallVerdict::Refuse(refusal) => {
+                assert_eq!(refusal.kind, "permission_denied", "{refusal:?}");
+            }
+            ScriptCallVerdict::Run(call) => {
+                panic!("a rewritten catastrophic command must not run: {call:?}")
+            }
+        }
     }
 
     #[test]

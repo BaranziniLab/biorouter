@@ -2436,8 +2436,12 @@ impl CodeExecutionClient {
     /// The JS sandbox hands a script's inner tool calls straight to
     /// `ExtensionManager::dispatch_tool_call`, so the whole inspector stack —
     /// which is where the global-memory consent gate, the session-store refusal
-    /// and issue #56's first-crossing disclosure all live — is simply not on
-    /// this path. Each of the three is therefore re-asked here, against the
+    /// and issue #56's first-crossing disclosure all live — was not on this
+    /// path. Since QA finding F7 it is, when the agent loop dispatched the
+    /// script (`script_call_gate`); it is still not when a person ran the script
+    /// through `POST /agent/call_tool`, and these refusals run FIRST either way,
+    /// so none of them becomes an approval card. Each of the three is therefore
+    /// re-asked here, against the
     /// **already-evaluated** arguments rather than against the script text: a
     /// path or a payload the script computed at runtime is fully assembled by
     /// the time it arrives, which is what makes these boundary checks strictly
@@ -2513,33 +2517,26 @@ impl CodeExecutionClient {
         cancellation_token: &CancellationToken,
     ) -> Result<String, PreDispatchRefusal> {
         // Issue #63 review, finding 3. A script's tool calls go straight to
-        // the extension manager below, so no `ToolInspector` — the
-        // global-memory consent gate included — ever sees them. The gate
-        // compensated by scanning the *script text* for an embedded memory
-        // call, which a runtime-assembled call walks past
+        // the extension manager below, and until F7 no `ToolInspector` — the
+        // global-memory consent gate included — saw them at all; none still
+        // does when no agent loop dispatched the script (`judge` is `None`).
+        // The gate had compensated by scanning the *script text* for an
+        // embedded memory call, which a runtime-assembled call walks past
         // (`is_global: flag`). This is the same decision taken where there
         // is nothing left to compute: the dispatched name and the evaluated
-        // arguments. A boundary that cannot ask the user refuses.
-        let evaluated = serde_json::from_str::<serde_json::Value>(arguments).ok();
-        let evaluated = evaluated.as_ref().and_then(serde_json::Value::as_object);
+        // arguments. A boundary that cannot ask the user refuses — and it keeps
+        // refusing when a judge below could ask: turning one of these refusals
+        // into a card is a decision of its own, not a side effect of F7.
         // Every boundary refusal this door owes, asked in one place. See
         // `uninspected_boundary_refusal` for why a door that no
         // `ToolInspector` reaches has to carry its own.
-        if let Some((kind, refusal)) =
-            Self::uninspected_boundary_refusal(cap, session_id, tool_name, evaluated).await
-        {
-            return Err(PreDispatchRefusal {
-                kind,
-                user_note: None,
-                error: refusal,
-            });
-        }
+        Self::boundary_check(cap, session_id, tool_name, arguments).await?;
         // QA finding F7: the call faces the permission decision it would face
         // as a direct call — the agent's inspectors, its mode, and the user's
         // allow/deny entries under THIS tool's name — and an ask goes to the
         // person on a card naming it. After the boundary refusals, so nothing
         // they refuse becomes something a card can allow.
-        Self::judged_arguments(
+        let admitted = Self::judged_arguments(
             judge,
             cap,
             tool_name,
@@ -2551,7 +2548,36 @@ impl CodeExecutionClient {
             kind: refusal.kind,
             user_note: Some(refusal.user_note),
             error: attribute_sub_call_error(tool_name, refusal.message),
-        })
+        })?;
+        // …and that holds for what actually RUNS. A PreToolUse hook may have
+        // rewritten the arguments, and the refusals above only ever saw the
+        // script's own; a rewrite must not be the one way a call that names the
+        // global memory store or the transcript database reaches a card instead
+        // of this refusal.
+        if admitted != arguments {
+            Self::boundary_check(cap, session_id, tool_name, &admitted).await?;
+        }
+        Ok(admitted)
+    }
+
+    /// [`Self::uninspected_boundary_refusal`] on one set of arguments, as the
+    /// refusal the loop answers with.
+    async fn boundary_check(
+        cap: crate::privacy::CallCapability,
+        session_id: &str,
+        tool_name: &str,
+        arguments: &str,
+    ) -> Result<(), PreDispatchRefusal> {
+        let evaluated = serde_json::from_str::<serde_json::Value>(arguments).ok();
+        let evaluated = evaluated.as_ref().and_then(serde_json::Value::as_object);
+        match Self::uninspected_boundary_refusal(cap, session_id, tool_name, evaluated).await {
+            Some((kind, refusal)) => Err(PreDispatchRefusal {
+                kind,
+                user_note: None,
+                error: refusal,
+            }),
+            None => Ok(()),
+        }
     }
 
     async fn run_tool_handler(
@@ -2909,6 +2935,45 @@ mod tests {
     use rmcp::object;
     use std::sync::Arc;
     use test_case::test_case;
+
+    /// QA finding F7. A PreToolUse hook's rewrite is what runs, so the boundary
+    /// refusals have to see the rewrite as well as the script's own arguments:
+    /// a hook that turns a harmless command into one naming the machine-wide
+    /// memory store must meet the outright refusal the script's own call would
+    /// have met — not a card, and not a dispatch.
+    #[tokio::test]
+    async fn a_hook_rewrite_cannot_carry_a_scripts_call_past_the_boundary_refusals() {
+        use crate::agents::script_call_gate::test_support::{gate, hooks_rewriting_shell_to};
+
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let store = biorouter_mcp::global_memory_dir().join("probe.txt");
+        let hooks = hooks_rewriting_shell_to(&format!("cat '{}'", store.display()));
+        // Auto mode, and no memory inspector in this gate: the judge itself lets
+        // the rewrite through, so a refusal can only come from the boundary.
+        let (gate, _permissions) =
+            gate(dir.path(), crate::config::BioRouterMode::Auto, hooks, false).await;
+        let judge = ScriptJudge {
+            gate: Arc::new(gate),
+            risks: crate::permission::tool_risk::ToolRiskRegistry::new(),
+        };
+
+        let refusal = CodeExecutionClient::admit_sub_call(
+            "boundary-after-rewrite",
+            crate::privacy::CallCapability::for_test_restricted(),
+            Some(&judge),
+            "developer__shell",
+            r#"{"command":"echo harmless"}"#,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("a rewrite naming the global memory store must be refused");
+        assert_eq!(refusal.kind, "global_memory_consent");
+        assert!(
+            refusal.error.contains("global memory store"),
+            "{}",
+            refusal.error
+        );
+    }
 
     /// Issue #141. A script naming a `platform__*` tool used to fall through to
     /// `ExtensionManager::dispatch_tool_call`, which does not know these tools
