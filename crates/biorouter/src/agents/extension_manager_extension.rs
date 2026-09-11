@@ -421,6 +421,87 @@ fn marketplace_descriptor_json(
     payload
 }
 
+/// The `search_marketplace_extensions` result, from a catalog already loaded —
+/// split from the load so it is testable without the network.
+///
+/// `caller` is the admitted capability's tier. Everything below — the hits, the
+/// browse list and the count the guidance quotes — is taken from what that
+/// caller may see, so a public model's answer never counts a private row.
+fn marketplace_extensions_json(
+    loaded: &crate::marketplace::MarketplaceCatalogLoad,
+    query: Option<&str>,
+    caller: crate::privacy::ProviderTier,
+) -> Value {
+    let visible = loaded.catalog.browse_extensions(caller);
+    // Ranked, and each hit says which query terms it matched: the search is
+    // shared with the skills catalog (finding F5).
+    let search = query.map(|query| loaded.catalog.search_extensions(caller, query));
+    let extensions: Vec<Value> = match &search {
+        Some(search) => search
+            .hits
+            .iter()
+            .map(|hit| {
+                let mut payload = marketplace_descriptor_json(hit.entry);
+                if let Some(fields) = payload.as_object_mut() {
+                    fields.insert(
+                        "matchedTerms".to_owned(),
+                        serde_json::json!(hit.matched_terms),
+                    );
+                }
+                payload
+            })
+            .collect(),
+        None => visible
+            .iter()
+            .copied()
+            .map(marketplace_descriptor_json)
+            .collect(),
+    };
+    let source = match loaded.source {
+        crate::marketplace::MarketplaceCatalogSource::Live => "live",
+        crate::marketplace::MarketplaceCatalogSource::LastGood => "lastGood",
+        crate::marketplace::MarketplaceCatalogSource::Embedded => "embedded",
+    };
+    let mut body = serde_json::json!({
+        "source": source,
+        "stale": loaded.is_stale(),
+        "extensions": extensions,
+    });
+    if let (Some(query), Some(search), Some(fields)) = (query, &search, body.as_object_mut()) {
+        fields.insert("terms".to_owned(), serde_json::json!(&search.terms));
+        if search.is_empty() {
+            fields.insert(
+                "guidance".to_owned(),
+                Value::String(no_marketplace_extension_matched(
+                    &search.describe_query(query),
+                    visible.len(),
+                )),
+            );
+        }
+    }
+    body
+}
+
+/// What an empty `search_marketplace_extensions` says instead of an empty list
+/// — the extension half of finding F5, whose skills half let a model tell a
+/// user the marketplace had nothing.
+///
+/// ⚠ `visible` is the count shown to THIS caller. For a public model that is
+/// the public rows only; the registry's full size would count the private
+/// extensions Gate E keeps out of its sight.
+fn no_marketplace_extension_matched(asked: &str, visible: usize) -> String {
+    let available = match visible {
+        1 => "1 extension is".to_owned(),
+        n => format!("{n} extensions are"),
+    };
+    format!(
+        "No marketplace extension available to this model matched {asked}. {available} \
+         available to this model, so this does not mean there is nothing relevant: try a \
+         shorter or more general term (one tool, data source or topic name), or call \
+         search_marketplace_extensions with no query to list them all."
+    )
+}
+
 fn marketplace_approval_request(
     mutation: MarketplaceMutation,
     descriptor: &crate::marketplace::MarketplaceExtensionDescriptor,
@@ -2241,23 +2322,7 @@ impl ExtensionManagerClient {
             .map_err(|error| ExtensionManagerToolError::OperationFailed {
                 message: error.to_string(),
             })?;
-        let entries = match query {
-            Some(query) => loaded.catalog.search_extensions(cap.tier(), query),
-            None => loaded.catalog.browse_extensions(cap.tier()),
-        };
-        let source = match loaded.source {
-            crate::marketplace::MarketplaceCatalogSource::Live => "live",
-            crate::marketplace::MarketplaceCatalogSource::LastGood => "lastGood",
-            crate::marketplace::MarketplaceCatalogSource::Embedded => "embedded",
-        };
-        let body = serde_json::json!({
-            "source": source,
-            "stale": loaded.is_stale(),
-            "extensions": entries
-                .into_iter()
-                .map(marketplace_descriptor_json)
-                .collect::<Vec<_>>(),
-        });
+        let body = marketplace_extensions_json(&loaded, query, cap.tier());
         Ok(vec![Content::text(
             serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_owned()),
         )])
@@ -3267,7 +3332,7 @@ impl ExtensionManagerClient {
         tools.extend([
             Tool::new(
                 SEARCH_MARKETPLACE_EXTENSIONS_TOOL_NAME.to_owned(),
-                "Browse or search trusted BAAM marketplace extensions. Pass `query` to match an id, name, organization, description or tag; omit it to list everything visible to this model. Private entries are hidden from public models. Results carry `registryId` (camelCase); pass that exact value as install_extension's `registry_id` (snake_case) — the two tools spell the same field differently."
+                "Browse or search trusted BAAM marketplace extensions. Pass `query` to search ids, names, organizations, descriptions and tags — an entry matching any of its words is returned, best match first; omit it to list everything visible to this model. Private entries are hidden from public models. Results carry `registryId` (camelCase); pass that exact value as install_extension's `registry_id` (snake_case) — the two tools spell the same field differently."
                     .to_owned(),
                 Arc::new(
                     serde_json::to_value(schema_for!(SearchMarketplaceExtensionsParams))
@@ -3570,6 +3635,82 @@ mod tests {
             ProviderTier::Private,
         )
         .unwrap()
+    }
+
+    /// The extension half of finding F5, at the tool's output: a phrase is
+    /// matched by any of its words and ranked, and a query matching nothing
+    /// explains itself instead of returning an empty list.
+    ///
+    /// ⚠ The explanation counts what THIS caller may see. A public caller
+    /// whose query matches only the private row it is not shown must read
+    /// exactly what a query matching nothing at all reads — otherwise the
+    /// guidance, not the hit list, becomes the private catalog's oracle.
+    #[test]
+    fn marketplace_search_ranks_a_phrase_and_explains_an_empty_result_from_visible_rows() {
+        let loaded = crate::marketplace::MarketplaceCatalogLoad {
+            catalog: marketplace_catalog(),
+            source: crate::marketplace::MarketplaceCatalogSource::Embedded,
+            cache_warning: None,
+        };
+        let ids = |body: &Value| -> Vec<String> {
+            body["extensions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["registryId"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let as_public = marketplace_extensions_json(
+            &loaded,
+            Some("public fixture manager"),
+            ProviderTier::Public,
+        );
+        assert_eq!(
+            as_public["terms"],
+            serde_json::json!(["public", "fixture", "manager"])
+        );
+        assert_eq!(ids(&as_public), ["manager-public-fixture"]);
+        assert_eq!(
+            as_public["extensions"][0]["matchedTerms"],
+            serde_json::json!(["public", "fixture", "manager"])
+        );
+        let as_private = marketplace_extensions_json(
+            &loaded,
+            Some("public fixture manager"),
+            ProviderTier::Private,
+        );
+        assert_eq!(
+            ids(&as_private),
+            ["manager-public-fixture", "manager-private-fixture"],
+            "the row matching every term ranks first"
+        );
+
+        let guidance = |query: &str| -> String {
+            let body = marketplace_extensions_json(&loaded, Some(query), ProviderTier::Public);
+            assert!(ids(&body).is_empty(), "{body}");
+            body["guidance"]
+                .as_str()
+                .expect("an empty result explains itself")
+                .replace(&format!("`{query}`"), "`QUERY`")
+        };
+        let hidden_match = guidance("private");
+        assert!(
+            hidden_match.contains("1 extension is available to this model"),
+            "{hidden_match}"
+        );
+        assert_eq!(
+            hidden_match,
+            guidance("zzqx"),
+            "a public caller's miss on a hidden private row reads differently from a miss on \
+             nothing"
+        );
+        assert!(
+            marketplace_extensions_json(&loaded, None, ProviderTier::Public)
+                .get("guidance")
+                .is_none(),
+            "browsing needs no explanation"
+        );
     }
 
     #[test]

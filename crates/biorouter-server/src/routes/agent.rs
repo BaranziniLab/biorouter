@@ -341,7 +341,7 @@ fn configured_new_session_provider() -> Result<Option<(String, ModelConfig)>, Er
     }
 }
 
-/// SD-9 (`docs/deployment/serve-decisions.md`): does binding the operator's
+/// SD-12 (`docs/deployment/serve-decisions.md`): does binding the operator's
 /// configured default provider to a brand-new chat need a person's proof?
 ///
 /// A new chat has no capability of its own yet, so a private default reads as a
@@ -375,7 +375,7 @@ fn new_chat_bind_needs_user(enforced: bool, tier: ProviderTier, proof: UserActio
         }
 }
 
-/// The capability `update_agent_provider` measures a raise from — SD-9's other
+/// The capability `update_agent_provider` measures a raise from — SD-12's other
 /// half.
 ///
 /// On a daemon that holds a user-action key it is the chat's live capability,
@@ -384,7 +384,7 @@ fn new_chat_bind_needs_user(enforced: bool, tier: ProviderTier, proof: UserActio
 /// daemon hands out through its routes is [`new_chat_bind_needs_user`]'s
 /// creation-time bind to the configured default. There is no private floor for
 /// a request to build on, so a bind to ANY private provider is measured from
-/// Public, and refused, since no proof can arrive. Without this, SD-9 would let
+/// Public, and refused, since no proof can arrive. Without this, SD-12 would let
 /// a new chat on a private default be moved sideways, `Private -> Private`, to a
 /// private model nobody configured.
 fn raise_baseline(current: ProviderTier, proof: UserActionProof) -> ProviderTier {
@@ -674,7 +674,7 @@ pub struct RestartAgentResponse {
         (status = 200, description = "Agent started successfully", body = Session),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 409, description = "The configured provider is private and this daemon holds a user-action key, but the request carried no proof it came from the user (SD-9). A daemon with no user-action key binds its configured provider without one.", body = ErrorResponse),
+        (status = 409, description = "The configured provider is private and this daemon holds a user-action key, but the request carried no proof it came from the user (SD-12). A daemon with no user-action key binds its configured provider without one.", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -1353,7 +1353,7 @@ async fn get_callable_tool_count(
                                       (body = PrivacyBarrierBody). DR-16: the bind raises this \
                                       chat's capability to Private and the request carried no \
                                       proof it came from the user; on a daemon with no \
-                                      user-action key, any bind to a private model (SD-9) \
+                                      user-action key, any bind to a private model (SD-12) \
                                       (body = plain text)",
                        body = PrivacyBarrierBody),
         (status = 424, description = "Agent not initialized"),
@@ -1429,7 +1429,7 @@ async fn update_agent_provider(
     // `restore_provider_from_session` and every apps-runtime bind working.
     // The one exception is this route on a daemon with no user-action key,
     // where a move onto a private model is measured from Public however the
-    // chat is bound today — `raise_baseline`, SD-9. The predicate itself is
+    // chat is bound today — `raise_baseline`, SD-12. The predicate itself is
     // unchanged, and none of the in-process binds above passes through here.
     //
     // An unbound session reads as Public — `Agent::provider` errors when nothing
@@ -1441,7 +1441,7 @@ async fn update_agent_provider(
         .await
         .map(|p| p.tier())
         .unwrap_or(ProviderTier::Public);
-    // SD-9's other half — see `raise_baseline`.
+    // SD-12's other half — see `raise_baseline`.
     let baseline = raise_baseline(current, user_action_proof(&headers));
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
     // `CallCapability`: a provider raise over HTTP is not a tool call and has no
@@ -3181,7 +3181,7 @@ mod new_session_provider_binding_tests {
             .unwrap();
     }
 
-    /// SD-9, every proof verdict against both tiers. The keyless arm cannot be
+    /// SD-12, every proof verdict against both tiers. The keyless arm cannot be
     /// reached through a route in this binary — the installed digest is a
     /// process-global `OnceLock` and the test above installs one — so the route
     /// half lives in `tests/new_chat_no_user_key.rs`, a binary that never does.
@@ -3214,7 +3214,7 @@ mod new_session_provider_binding_tests {
         }
     }
 
-    /// SD-9's other half: a keyless daemon measures every move onto a private
+    /// SD-12's other half: a keyless daemon measures every move onto a private
     /// model from Public, so its exemption for the configured default cannot be
     /// carried sideways to a private model nobody configured.
     #[test]

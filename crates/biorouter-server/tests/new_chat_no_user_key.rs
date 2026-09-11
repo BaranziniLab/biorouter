@@ -1,4 +1,4 @@
-//! SD-9: on a daemon that holds no proof-of-user key — `biorouter serve` (SD-7)
+//! SD-12: on a daemon that holds no proof-of-user key — `biorouter serve` (SD-7)
 //! or a hand-run `biorouterd` — a new chat starts on the operator's configured
 //! provider, private or not, and nothing on the HTTP surface can move it onto a
 //! private model the operator did not configure.
@@ -227,7 +227,7 @@ async fn a_keyless_daemon_will_not_move_a_new_chat_to_a_private_model_nobody_con
     discard(&state, &id).await;
 }
 
-/// SD-1 is untouched by SD-9: the configured default itself still cannot be
+/// SD-1 is untouched by SD-12: the configured default itself still cannot be
 /// changed from a keyless daemon, which is what makes it the operator's choice.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
@@ -356,7 +356,7 @@ async fn the_first_turn_on_a_keyless_default_chat_ratchets_it_as_usual() {
     // The chat's NEXT request, now that it is private. A keyless daemon reaches a
     // private chat only for a caller whose stated capability covers it, so a
     // browser tab that states nothing loses the chat it just started; the host's
-    // provider, which is what a tab on this host states (SD-9), keeps it.
+    // provider, which is what a tab on this host states (SD-12), keeps it.
     let reach = |caller: Option<&str>| {
         let mut request = Request::builder().uri(format!("/sessions/{id}"));
         if let Some(provider) = caller {

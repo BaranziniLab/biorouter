@@ -350,7 +350,7 @@ fn the_documented_closure_is_the_one_the_code_performs() {
     // It used to take the FIRST refusal in the file, which stopped being this
     // handler's when `eb594ded` put the new-chat gate above it: from then on the
     // scan read that gate, and deleting the proof from this one left it green.
-    // The new-chat gate is SD-9's, a different rule with its own tests in
+    // The new-chat gate is SD-12's, a different rule with its own tests in
     // `routes/agent.rs`.
     let handler = AGENT_ROUTE
         .find("async fn update_agent_provider")

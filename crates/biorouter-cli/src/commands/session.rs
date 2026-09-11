@@ -1,6 +1,7 @@
 use crate::session::message_to_markdown;
 use anyhow::{Context, Result};
 
+use crate::commands::needs_terminal;
 use crate::commands::session_grouping::{
     group_by_parent, listed_session_types, liveness_label, render_child, Liveness, SessionRow,
 };
@@ -15,23 +16,155 @@ use std::path::PathBuf;
 
 const TRUNCATED_DESC_LENGTH: usize = 60;
 
-async fn remove_sessions(session_manager: &SessionManager, sessions: Vec<Session>) -> Result<()> {
-    println!("The following sessions will be removed:");
-    for session in &sessions {
-        println!("- {} {}", session.id, session.name);
+/// What `session remove` says when it would have to ask before deleting and
+/// there is no terminal to ask on (QA-D F5a / F9).
+pub(crate) const REMOVE_CONFIRMATION_NEEDS_A_TERMINAL: &str =
+    "`biorouter session remove` asks before it deletes anything and needs a terminal to ask on; \
+     to remove without asking, re-run it with --yes.";
+
+/// What `session remove` says when it was given nothing to select by, so it
+/// would open its picker, and there is no terminal to draw one on.
+pub(crate) const REMOVE_PICKER_NEEDS_A_TERMINAL: &str =
+    "`biorouter session remove` with no --session-id, --name or --regex opens a picker, which \
+     needs a terminal; name what to remove with one of those flags and add --yes.";
+
+/// Which rows a listing — and a removal that selects from one — looks through.
+///
+/// The default is what `session list` has always shown: `user` and `scheduled`
+/// sessions that have recorded at least one message.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionScope {
+    /// Also subagent runs (`sub_agent` rows). Implies [`Self::include_empty`],
+    /// as `--subagents` always has — see [`fetch_sessions`].
+    pub subagents: bool,
+    /// Also sessions that have not recorded a message yet: what a bare
+    /// `biorouter` that exited before its first prompt, `doctor --fix` and
+    /// `term init` leave behind (QA-D F5b measured 5,313 of 10,855 rows).
+    pub include_empty: bool,
+}
+
+impl SessionScope {
+    /// Every row any listing can show: what a `--name` addresses.
+    const EVERYTHING: Self = Self {
+        subagents: true,
+        include_empty: true,
+    };
+}
+
+/// How `session remove` picks its rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveSelector {
+    /// `--session-id`: exactly that row, whatever its type and whether or not
+    /// it has recorded a message.
+    Id(String),
+    /// `--name`: the one row carrying that name.
+    Name(String),
+    /// `--regex`: every row in the scope whose id matches.
+    Regex(String),
+    /// Nothing given: an interactive picker over the scope.
+    Pick,
+}
+
+impl RemoveSelector {
+    /// The selector the flags describe, in the precedence the command has
+    /// always applied: an id beats a name beats a regex.
+    pub fn from_flags(
+        session_id: Option<String>,
+        name: Option<String>,
+        regex: Option<String>,
+    ) -> Self {
+        match (session_id, name, regex) {
+            (Some(id), _, _) => Self::Id(id),
+            (None, Some(name), _) => Self::Name(name),
+            (None, None, Some(regex)) => Self::Regex(regex),
+            (None, None, None) => Self::Pick,
+        }
+    }
+}
+
+/// The row `id` names, of any type, with or without messages.
+///
+/// ⚠ **A direct read, not a search of a listing.** This used to look the id up
+/// in `list_sessions()`, which is `user`/`scheduled` only and INNER JOINs
+/// `messages`, so `session remove --session-id` answered "not found" for a
+/// message-less row (QA-D F5b) and for every subagent run (QA-F F9) — rows that
+/// `session export` and `session rename` reached by the same id without
+/// complaint. An id is unambiguous; there is nothing to filter.
+async fn session_by_id(session_manager: &SessionManager, id: &str) -> Result<Session> {
+    match session_manager.get_session(id, false).await {
+        Ok(session) => Ok(session),
+        // The storage layer's own wording for an absent row, matched the way the
+        // daemon's `DELETE /sessions/{id}` matches it. Anything else is a real
+        // store failure and must not be reported as a typo.
+        Err(e) if e.to_string().contains("not found") => {
+            Err(anyhow::anyhow!("Session ID '{}' not found.", id))
+        }
+        Err(e) => Err(e.context(format!("could not read session '{id}'"))),
+    }
+}
+
+/// The ONE row named `name`, among every row a name addresses elsewhere in
+/// the CLI (`resolve_session_by_name`'s set).
+///
+/// ⚠ **A name shared by several rows is refused, never guessed.** This used to
+/// delete the first match. Every session a bare `biorouter` creates reads back
+/// as `New chat` (its stored `CLI Session` is canonicalised on read), and
+/// subagent names are written by the model, so "the first match" is a deletion
+/// of an arbitrary one of them — and with `--yes` nobody would even see which.
+async fn session_by_name(session_manager: &SessionManager, name: &str) -> Result<Session> {
+    let mut matches: Vec<Session> = fetch_sessions(session_manager, SessionScope::EVERYTHING)
+        .await?
+        .into_iter()
+        .filter(|s| s.name == name)
+        .collect();
+    match matches.len() {
+        0 => Err(anyhow::anyhow!("Session with name '{}' not found.", name)),
+        1 => Ok(matches.remove(0)),
+        count => {
+            let ids: Vec<&str> = matches.iter().map(|s| s.id.as_str()).collect();
+            Err(anyhow::anyhow!(
+                "{count} sessions are named '{name}' ({}), so the name does not say which to \
+                 remove; remove one with --session-id <id>.",
+                ids.join(", ")
+            ))
+        }
+    }
+}
+
+/// Delete `sessions`, asking first unless `yes`.
+///
+/// ⚠ **No terminal and no `--yes` is a refusal, checked before anything is
+/// printed or deleted.** This called `cliclack::confirm` unconditionally, which
+/// under a pipe died with cliclack's bare `Error: not connected` even with `y`
+/// piped in (QA-D F5a) — and when a controlling terminal does exist, cliclack
+/// reads the keyboard through `/dev/tty` and ignores the pipe, so `echo y |`
+/// would sit waiting for a key the user thinks they already sent.
+async fn remove_sessions(
+    session_manager: &SessionManager,
+    sessions: Vec<Session>,
+    yes: bool,
+    terminal: bool,
+) -> Result<()> {
+    if !yes {
+        needs_terminal::require(terminal, REMOVE_CONFIRMATION_NEEDS_A_TERMINAL)?;
+
+        println!("The following sessions will be removed:");
+        for session in &sessions {
+            println!("- {} {}", session.id, session.name);
+        }
+
+        let should_delete = confirm("Are you sure you want to delete these sessions?")
+            .initial_value(false)
+            .interact()?;
+        if !should_delete {
+            println!("Skipping deletion of the sessions.");
+            return Ok(());
+        }
     }
 
-    let should_delete = confirm("Are you sure you want to delete these sessions?")
-        .initial_value(false)
-        .interact()?;
-
-    if should_delete {
-        for session in sessions {
-            session_manager.delete_session(&session.id).await?;
-            println!("Session `{}` removed.", session.id);
-        }
-    } else {
-        println!("Skipping deletion of the sessions.");
+    for session in sessions {
+        session_manager.delete_session(&session.id).await?;
+        println!("Session `{}` removed.", session.id);
     }
 
     Ok(())
@@ -76,64 +209,87 @@ fn prompt_interactive_session_removal(sessions: &[Session]) -> Result<Vec<Sessio
 }
 
 pub async fn handle_session_remove(
-    session_id: Option<String>,
-    name: Option<String>,
-    regex_string: Option<String>,
+    selector: RemoveSelector,
+    scope: SessionScope,
+    yes: bool,
 ) -> Result<()> {
-    let session_manager = SessionManager::instance();
-    let all_sessions = match session_manager.list_sessions().await {
-        Ok(sessions) => sessions,
-        Err(e) => {
-            tracing::error!("Failed to retrieve sessions: {:?}", e);
-            return Err(anyhow::anyhow!("Failed to retrieve sessions"));
+    remove_in(
+        &SessionManager::instance(),
+        selector,
+        scope,
+        yes,
+        needs_terminal::prompt_can_run(),
+    )
+    .await
+}
+
+/// [`handle_session_remove`] over an explicit store and terminal answer, so
+/// every rule below is testable against a throwaway database.
+///
+/// Rows are resolved BEFORE the terminal is consulted (the picker aside, which
+/// needs the terminal to resolve anything at all): a script with a mistyped id
+/// is told "not found", not told to add `--yes` and then told "not found".
+async fn remove_in(
+    session_manager: &SessionManager,
+    selector: RemoveSelector,
+    scope: SessionScope,
+    yes: bool,
+    terminal: bool,
+) -> Result<()> {
+    let matched_sessions: Vec<Session> = match selector {
+        RemoveSelector::Id(id) => vec![session_by_id(session_manager, &id).await?],
+        RemoveSelector::Name(name) => vec![session_by_name(session_manager, &name).await?],
+        RemoveSelector::Regex(regex_val) => {
+            let session_regex = Regex::new(&regex_val)
+                .with_context(|| format!("Invalid regex pattern '{}'", regex_val))?;
+
+            let matched: Vec<Session> = fetch_sessions(session_manager, scope)
+                .await?
+                .into_iter()
+                .filter(|session| session_regex.is_match(&session.id))
+                .collect();
+
+            if matched.is_empty() {
+                println!(
+                    "Regex string '{}' does not match any sessions{}",
+                    regex_val,
+                    widen_hint(scope)
+                );
+                return Ok(());
+            }
+            matched
+        }
+        RemoveSelector::Pick => {
+            needs_terminal::require(terminal, REMOVE_PICKER_NEEDS_A_TERMINAL)?;
+            let all_sessions = fetch_sessions(session_manager, scope).await?;
+            if all_sessions.is_empty() {
+                return Err(anyhow::anyhow!("No sessions found."));
+            }
+            prompt_interactive_session_removal(&all_sessions)?
         }
     };
-
-    let matched_sessions: Vec<Session>;
-
-    if let Some(id_val) = session_id {
-        if let Some(session) = all_sessions.iter().find(|s| s.id == id_val) {
-            matched_sessions = vec![session.clone()];
-        } else {
-            return Err(anyhow::anyhow!("Session ID '{}' not found.", id_val));
-        }
-    } else if let Some(name_val) = name {
-        if let Some(session) = all_sessions.iter().find(|s| s.name == name_val) {
-            matched_sessions = vec![session.clone()];
-        } else {
-            return Err(anyhow::anyhow!(
-                "Session with name '{}' not found.",
-                name_val
-            ));
-        }
-    } else if let Some(regex_val) = regex_string {
-        let session_regex = Regex::new(&regex_val)
-            .with_context(|| format!("Invalid regex pattern '{}'", regex_val))?;
-
-        matched_sessions = all_sessions
-            .into_iter()
-            .filter(|session| session_regex.is_match(&session.id))
-            .collect();
-
-        if matched_sessions.is_empty() {
-            println!("Regex string '{}' does not match any sessions", regex_val);
-            return Ok(());
-        }
-    } else {
-        if all_sessions.is_empty() {
-            return Err(anyhow::anyhow!("No sessions found."));
-        }
-        matched_sessions = prompt_interactive_session_removal(&all_sessions)?;
-    }
 
     if matched_sessions.is_empty() {
         return Ok(());
     }
 
-    remove_sessions(&session_manager, matched_sessions).await
+    remove_sessions(session_manager, matched_sessions, yes, terminal).await
 }
 
-/// The rows a listing sees, for a given `--subagents`.
+/// The flags that would widen a selection that found nothing, or nothing when
+/// the scope is already as wide as it goes.
+fn widen_hint(scope: SessionScope) -> &'static str {
+    match (scope.subagents, scope.include_empty) {
+        (true, _) => "",
+        (false, true) => " (--subagents also searches subagent runs)",
+        (false, false) => {
+            " (--include-empty also searches sessions with no messages, --subagents also \
+             searches subagent runs)"
+        }
+    }
+}
+
+/// The rows a listing sees, for a given [`SessionScope`].
 ///
 /// BR-71 Task 38b: `list_sessions()` filters `sub_agent` rows out in SQL, so the
 /// flag has to widen the *query* — a display-only change would show nothing new.
@@ -142,10 +298,14 @@ pub async fn handle_session_remove(
 /// defect has a regression guard:
 /// `the_subagents_flag_widens_the_query_not_just_the_rendering`.
 ///
-/// `subagents == false` is the historical behaviour byte for byte:
+/// The default scope is the historical behaviour byte for byte:
 /// `list_sessions()` IS `list_sessions_by_types(&[User, Scheduled])`.
-async fn fetch_sessions(session_manager: &SessionManager, subagents: bool) -> Result<Vec<Session>> {
-    if subagents {
+async fn fetch_sessions(
+    session_manager: &SessionManager,
+    scope: SessionScope,
+) -> Result<Vec<Session>> {
+    let subagents = scope.subagents;
+    if subagents || scope.include_empty {
         // ⚠ **A subagent that produced nothing was invisible here.** The
         // historical query INNER JOINs `messages`, so a child spawned and ended
         // before its first message is not returned by SQL at all — and this
@@ -155,9 +315,10 @@ async fn fetch_sessions(session_manager: &SessionManager, subagents: bool) -> Re
         // existed, which reads as "no subagent was spawned" rather than "the
         // subagent produced nothing".
         //
-        // Widened only on this branch: without `--subagents` the behaviour is
-        // byte for byte what it was, so the sidebar's deliberate hiding of
-        // message-less rows is untouched.
+        // `--include-empty` reaches the same query for the rows a bare
+        // `biorouter` leaves behind (QA-D F5b). Widened only on these flags:
+        // without either, the behaviour is byte for byte what it was, so the
+        // sidebar's deliberate hiding of message-less rows is untouched.
         return session_manager
             .list_sessions_by_types_including_empty(listed_session_types(subagents))
             .await;
@@ -177,7 +338,7 @@ pub async fn resolve_session_by_name(
     session_manager: &SessionManager,
     name: &str,
 ) -> Result<Option<String>> {
-    let sessions = fetch_sessions(session_manager, true).await?;
+    let sessions = fetch_sessions(session_manager, SessionScope::EVERYTHING).await?;
     Ok(sessions
         .into_iter()
         .find(|s| s.name == name || s.id == name)
@@ -189,10 +350,11 @@ pub async fn handle_session_list(
     ascending: bool,
     working_dir: Option<PathBuf>,
     limit: Option<usize>,
-    subagents: bool,
+    scope: SessionScope,
 ) -> Result<()> {
+    let subagents = scope.subagents;
     let session_manager = SessionManager::instance();
-    let mut sessions = fetch_sessions(&session_manager, subagents).await?;
+    let mut sessions = fetch_sessions(&session_manager, scope).await?;
 
     if let Some(ref pat) = working_dir {
         let pat_lower = pat.to_string_lossy().to_lowercase();
@@ -962,6 +1124,299 @@ mod tests {
     use biorouter::session::session_manager::SessionType;
     use tempfile::TempDir;
 
+    /// `session list --subagents`, which has always implied message-less rows.
+    const SUBAGENTS: SessionScope = SessionScope {
+        subagents: true,
+        include_empty: false,
+    };
+
+    /// `session list --include-empty`.
+    const INCLUDE_EMPTY: SessionScope = SessionScope {
+        subagents: false,
+        include_empty: true,
+    };
+
+    /// One row of each kind `session remove` must reach, in a throwaway store:
+    /// a chat with a message, a chat with NONE (what a bare `biorouter` that
+    /// exited before its first prompt leaves — QA-D F5b), and a subagent run
+    /// (QA-F F9). Returned as `(store, chat, empty, subagent)`.
+    async fn store_with_three_row_kinds(dir: &TempDir) -> (SessionManager, String, String, String) {
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let chat = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Cohort review".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&chat.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let empty = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "CLI Session".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let subagent = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Subagent: audit the cohort".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&subagent.id, &Message::user().with_text("audit it"))
+            .await
+            .unwrap();
+        (sm, chat.id, empty.id, subagent.id)
+    }
+
+    async fn exists(sm: &SessionManager, id: &str) -> bool {
+        sm.get_session(id, false).await.is_ok()
+    }
+
+    /// QA-D F5b + QA-F F9: `session remove --session-id` reaches EVERY kind of
+    /// row, and `--yes` removes it with no terminal at all.
+    ///
+    /// The first block is the fixture's own control: the listing the old lookup
+    /// searched really does hide two of the three rows, so a pass below is a
+    /// statement about the new lookup rather than about a fixture that never
+    /// reproduced the defect.
+    #[tokio::test]
+    async fn remove_by_id_reaches_a_message_less_row_and_a_subagent_run() {
+        let dir = TempDir::new().unwrap();
+        let (sm, chat, empty, subagent) = store_with_three_row_kinds(&dir).await;
+
+        let old_view: Vec<String> = fetch_sessions(&sm, SessionScope::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(
+            old_view,
+            vec![chat.clone()],
+            "the listing the old lookup searched must hide the empty and subagent rows, or \
+             this test proves nothing"
+        );
+
+        for id in [&empty, &subagent, &chat] {
+            remove_in(
+                &sm,
+                RemoveSelector::Id(id.clone()),
+                SessionScope::default(),
+                true,
+                false,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("remove --session-id {id} --yes failed: {e:#}"));
+            assert!(!exists(&sm, id).await, "{id} is still in the store");
+        }
+    }
+
+    /// Without `--yes` and without a terminal, the refusal is the typed one
+    /// (exit 2, a sentence naming `--yes`) — and NOTHING is deleted.
+    #[tokio::test]
+    async fn without_yes_and_without_a_terminal_remove_refuses_and_deletes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (sm, chat, empty, subagent) = store_with_three_row_kinds(&dir).await;
+
+        for id in [&chat, &empty, &subagent] {
+            let err = remove_in(
+                &sm,
+                RemoveSelector::Id(id.clone()),
+                SessionScope::default(),
+                false,
+                false,
+            )
+            .await
+            .unwrap_err();
+            let refusal = err
+                .downcast_ref::<needs_terminal::NeedsTerminal>()
+                .unwrap_or_else(|| panic!("not the typed refusal: {err:#}"));
+            assert_eq!(refusal.to_string(), REMOVE_CONFIRMATION_NEEDS_A_TERMINAL);
+            assert!(REMOVE_CONFIRMATION_NEEDS_A_TERMINAL.contains("--yes"));
+            assert!(
+                exists(&sm, id).await,
+                "{id} was deleted by a refused remove"
+            );
+        }
+
+        // The picker cannot run either, and says so before listing anything.
+        let err = remove_in(
+            &sm,
+            RemoveSelector::Pick,
+            SessionScope::default(),
+            true,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<needs_terminal::NeedsTerminal>()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some(REMOVE_PICKER_NEEDS_A_TERMINAL)
+        );
+    }
+
+    /// An id that names no row is "not found" — exit 1, not the terminal
+    /// refusal — even with no terminal: rows are resolved before the terminal
+    /// is consulted, so a script is told about its typo first.
+    #[tokio::test]
+    async fn an_unknown_id_is_not_found_before_the_terminal_is_consulted() {
+        let dir = TempDir::new().unwrap();
+        let (sm, ..) = store_with_three_row_kinds(&dir).await;
+
+        let err = remove_in(
+            &sm,
+            RemoveSelector::Id("20990101_1".to_string()),
+            SessionScope::default(),
+            false,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(err
+            .downcast_ref::<needs_terminal::NeedsTerminal>()
+            .is_none());
+        assert_eq!(err.to_string(), "Session ID '20990101_1' not found.");
+    }
+
+    /// `--regex` and the picker select from the scope, and the scope flags
+    /// widen it to the rows `session list` hides.
+    #[tokio::test]
+    async fn regex_removal_selects_from_the_scope_the_flags_describe() {
+        for (scope, expect_removed) in [
+            (SessionScope::default(), [true, false, false]),
+            (INCLUDE_EMPTY, [true, true, false]),
+            (SUBAGENTS, [true, true, true]),
+        ] {
+            let dir = TempDir::new().unwrap();
+            let (sm, chat, empty, subagent) = store_with_three_row_kinds(&dir).await;
+
+            remove_in(
+                &sm,
+                RemoveSelector::Regex(".".to_string()),
+                scope,
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+
+            for (id, removed) in [&chat, &empty, &subagent].into_iter().zip(expect_removed) {
+                assert_eq!(
+                    !exists(&sm, id).await,
+                    removed,
+                    "scope {scope:?}: {id} removed={}",
+                    !exists(&sm, id).await
+                );
+            }
+        }
+    }
+
+    /// `--name` must never guess. Every session a bare `biorouter` creates is
+    /// stored as `CLI Session` and reads back as the default name, `New chat`,
+    /// so a shared name is the ordinary case — and deleting "the first match",
+    /// silently under `--yes`, would delete an arbitrary chat.
+    #[tokio::test]
+    async fn a_name_shared_by_several_sessions_is_refused_and_a_unique_one_is_removed() {
+        use biorouter::session::session_manager::DEFAULT_SESSION_NAME;
+
+        let dir = TempDir::new().unwrap();
+        let (sm, chat, empty, subagent) = store_with_three_row_kinds(&dir).await;
+        let twin = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "CLI Session".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sm.get_session(&twin.id, false).await.unwrap().name,
+            DEFAULT_SESSION_NAME,
+            "the fixture assumes a CLI-created row reads back under the default name"
+        );
+
+        let err = remove_in(
+            &sm,
+            RemoveSelector::Name(DEFAULT_SESSION_NAME.to_string()),
+            SessionScope::default(),
+            true,
+            false,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains(&empty) && err.contains(&twin.id),
+            "both candidates must be named: {err}"
+        );
+        assert!(err.contains("--session-id"), "{err}");
+        assert!(exists(&sm, &empty).await && exists(&sm, &twin.id).await);
+
+        // A name held by one row is removed — including a subagent's, which the
+        // old `list_sessions()` lookup could not see at all.
+        remove_in(
+            &sm,
+            RemoveSelector::Name("Subagent: audit the cohort".to_string()),
+            SessionScope::default(),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(!exists(&sm, &subagent).await);
+        assert!(exists(&sm, &chat).await, "only the named row goes");
+    }
+
+    /// `session list --include-empty` shows the rows a bare `biorouter` leaves
+    /// behind, and still hides subagent runs unless `--subagents` is given.
+    #[tokio::test]
+    async fn the_include_empty_flag_widens_the_listing_to_message_less_rows() {
+        let dir = TempDir::new().unwrap();
+        let (sm, chat, empty, subagent) = store_with_three_row_kinds(&dir).await;
+
+        let mut listed: Vec<String> = fetch_sessions(&sm, INCLUDE_EMPTY)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        listed.sort();
+        let mut expected = vec![chat, empty];
+        expected.sort();
+        assert_eq!(listed, expected);
+        assert!(!listed.contains(&subagent));
+    }
+
+    #[test]
+    fn remove_flags_map_to_one_selector_in_the_historical_precedence() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(
+            RemoveSelector::from_flags(s("20260910_2"), s("x"), s(".")),
+            RemoveSelector::Id("20260910_2".to_string())
+        );
+        assert_eq!(
+            RemoveSelector::from_flags(None, s("x"), s(".")),
+            RemoveSelector::Name("x".to_string())
+        );
+        assert_eq!(
+            RemoveSelector::from_flags(None, None, s(".")),
+            RemoveSelector::Regex(".".to_string())
+        );
+        assert_eq!(
+            RemoveSelector::from_flags(None, None, None),
+            RemoveSelector::Pick
+        );
+    }
+
     /// Issue #56 — **the export gate is consulted, and it is consulted first.**
     ///
     /// Two assertions, and the second is the one that matters. A gate that ran
@@ -1056,7 +1511,7 @@ mod tests {
             .await
             .unwrap();
 
-        let listed: Vec<String> = fetch_sessions(&sm, true)
+        let listed: Vec<String> = fetch_sessions(&sm, SUBAGENTS)
             .await
             .unwrap()
             .into_iter()
@@ -1071,7 +1526,7 @@ mod tests {
         // …and the default listing is unchanged: it still hides message-less
         // rows, because that is what keeps "Untitled chat" placeholders out of
         // every listing the desktop builds from the same query.
-        let default: Vec<String> = fetch_sessions(&sm, false)
+        let default: Vec<String> = fetch_sessions(&sm, SessionScope::default())
             .await
             .unwrap()
             .into_iter()
@@ -1129,7 +1584,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (sm, parent_id, child_id) = store_with_a_user_and_a_subagent_session(&dir).await;
 
-        let narrow = fetch_sessions(&sm, false).await.unwrap();
+        let narrow = fetch_sessions(&sm, SessionScope::default()).await.unwrap();
         assert!(
             narrow.iter().any(|s| s.id == parent_id),
             "the default listing still shows user sessions"
@@ -1140,7 +1595,7 @@ mod tests {
              and it lives in the SQL type filter"
         );
 
-        let wide = fetch_sessions(&sm, true).await.unwrap();
+        let wide = fetch_sessions(&sm, SUBAGENTS).await.unwrap();
         assert!(
             wide.iter().any(|s| s.id == child_id),
             "--subagents must widen the query; a rendering-only change shows nothing new"

@@ -9,7 +9,7 @@ import { CALLER_PROVIDER_HEADER, resetHostProviderForTests, userActionHeaders } 
 import { BROWSER_SURFACE_MARKER } from './surface';
 
 /**
- * SD-9: what each surface says on the requests the daemon's reach gate reads.
+ * SD-12: what each surface says on the requests the daemon's reach gate reads.
  *
  * The browser half is the one that was missing. On a `biorouter serve` daemon a
  * chat started on the host's private model is private from its first reply, and

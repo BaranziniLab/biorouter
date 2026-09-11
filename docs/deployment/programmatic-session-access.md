@@ -55,7 +55,7 @@ The header is read by
 `biorouter session watch`, `send` and `attach` already send it, which is why those commands reach a
 private chat from a terminal that can never prove a human is present. So does the browser interface
 `biorouter serve` serves, naming the model the host was configured with
-([SD-9](serve-decisions.md#sd-9--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)):
+([SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)):
 a browser, like a terminal, can never carry the proof, and runs the model its host chose.
 
 ## What the header is *not*
@@ -76,7 +76,7 @@ changes that. A capability is a fact about a model; neither of those is a decisi
 The one bind that needs no proof is not a header's doing either: on a daemon with no user-action
 key, a **new** chat starts on the model the operator configured, private or not, because choosing
 it with `biorouter configure` was the decision
-([SD-9](serve-decisions.md#sd-9--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)).
+([SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)).
 
 **It is not a per-request opt-out.** There is no header that turns the gate off. The only
 machine-wide switch is the privacy master switch, which lives in its own record beside

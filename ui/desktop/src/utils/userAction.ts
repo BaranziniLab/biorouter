@@ -141,7 +141,7 @@ export const resetHostProviderForTests = (): void => {
  *
  * * **The desktop app proves the person**: `X-User-Action`, the key the
  *   Electron main process minted and handed the daemon's digest on stdin.
- * * **A browser states its model** (SD-9). The `biorouter serve` daemon holds no
+ * * **A browser states its model** (SD-12). The `biorouter serve` daemon holds no
  *   key (SD-7), so there is no person to prove, and a browser session runs the
  *   model the host was configured with (SD-1). It says so the way `biorouter
  *   session` does from a terminal: `X-Caller-Provider` naming that provider.
@@ -153,7 +153,7 @@ export const resetHostProviderForTests = (): void => {
  * that caller could always send the header (`session_reach.rs` says as much).
  * What changes is the browser tab's own reach: on a host configured with a
  * private model it now opens private chats, including ones started in the
- * desktop app, which SD-9 records as a consequence. On a host configured with a
+ * desktop app, which SD-12 records as a consequence. On a host configured with a
  * public model it states a public one, and private chats stay out of reach
  * exactly as before.
  */

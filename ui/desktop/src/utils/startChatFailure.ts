@@ -31,7 +31,7 @@ export const BACKEND_DISCONNECTED_TITLE = 'Backend disconnected';
 /**
  * The daemon refused to bind its private default because the request carried
  * no proof it came from a person, on a backend that holds a user-action key
- * (SD-9). The `serve` daemon holds none and binds its default, so this reaches
+ * (SD-12). The `serve` daemon holds none and binds its default, so this reaches
  * a person only on a desktop app pointed at a backend started elsewhere — the
  * case `NO_USER_PROOF_TOAST_MSG` in `ModelAndProviderContext` words the same way.
  *

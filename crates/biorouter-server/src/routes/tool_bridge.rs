@@ -123,6 +123,10 @@ async fn call_tool(
         Some(_) => return rpc_error(id, -32602, "tools/call arguments must be an object"),
     };
 
+    // The child's own id for this call. Not forwarded to the tool — `meta` stays
+    // `None` — but it is what lets the transcript pair the full result the grant
+    // keeps with the frame on which the child reports the call.
+    let child_call_id = bridge::child_call_id(params.get("_meta"));
     let call = CallToolRequestParams {
         name: name.to_string().into(),
         arguments,
@@ -130,7 +134,9 @@ async fn call_tool(
         task: None,
     };
 
-    match grant.call(call).await {
+    // The child is answered with the model's view of the result: the blocks a
+    // model is sent, unannotated (`bridge::child_view`, QA-E F4).
+    match grant.call_for_child(call, child_call_id).await {
         Ok(result) => rpc_ok(
             id,
             serde_json::to_value(result).unwrap_or_else(|e| {

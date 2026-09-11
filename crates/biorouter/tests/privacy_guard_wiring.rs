@@ -617,6 +617,18 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "workflow execution, plus its import",
             },
+            Site {
+                file: "crates/biorouter/src/agents/workspace_extension.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`workspace_set_tools`' pre-flight (QA finding F4): asked BEFORE the \
+                       always-confirm card, so a provider switch this bind would refuse is \
+                       refused before the user is asked to approve it, instead of after. It \
+                       is a pre-flight, not the gate — `Agent::update_provider`'s conditional \
+                       `WHERE` still decides when the change is applied — and it asks this \
+                       predicate by name rather than re-spelling it, only when the write gate \
+                       resolved a classification (i.e. under enforcement)",
+            },
         ],
     },
     Guard {
@@ -736,11 +748,14 @@ const REGISTRY: &[Guard] = &[
             file: "crates/biorouter/src/agents/extension_manager.rs",
             counts: c(1, 0, 0),
             kind: SiteKind::Guard,
-            what: "`assert_extension_reachable`, the ONE caller and deliberately so. Every \
-                   other tier gate resolves its extension from an installed record before it \
-                   refuses, so `privacy_refusal`'s flat statement is a fact there and the \
-                   better thing to hand a model. A second caller of this one would be a gate \
-                   hedging about an extension it can see",
+            what: "`reachability_refusal`, the ONE caller and deliberately so — the decision \
+                   `assert_extension_reachable` (and, through `manageability_refusal`, \
+                   `assert_extension_manageable` and `workspace_set_tools`' pre-flight) \
+                   asks, split out of the method in F4 so a caller with no manager asks it \
+                   rather than re-spelling it. Every other tier gate resolves its extension \
+                   from an installed record before it refuses, so `privacy_refusal`'s flat \
+                   statement is a fact there and the better thing to hand a model. A second \
+                   caller of this one would be a gate hedging about an extension it can see",
         }],
     },
     Guard {

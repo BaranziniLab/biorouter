@@ -1,8 +1,9 @@
 # Decisions behind `biorouter serve`
 
 > **What this is.** The decision records governing browser-served Biorouter — why the daemon
-> serves the interface itself, why a browser session cannot change its model, and why the
-> standalone `biorouter-headless` binary was retired. Each record states the ruling, the
+> serves the interface itself, why a browser session cannot change its model yet starts every
+> chat on the one the operator chose, why the standalone `biorouter-headless` binary was
+> retired, and how long the launch token stays good for. Each record states the ruling, the
 > alternatives it displaced, and the consequence a future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
@@ -18,7 +19,7 @@ several of them only make sense as a set: the reason a browser session cannot sw
 (SD-1) is also the reason it needs no proof-of-user mechanism, which is the reason the daemon
 can be spawned with a closed stdin (SD-7) — and the reason every control that needs that proof
 must say so before the user reaches for it (SD-8), and the reason the one model the operator
-chose must not need that proof at all (SD-9). Read [the architecture](serve-architecture.md)
+chose must not need that proof at all (SD-12). Read [the architecture](serve-architecture.md)
 for how the result is built, and [browser access](browser-access.md) for how to use it.
 
 Records are identified `SD-n` — *serve decision*. The numbering is stable; a superseded record
@@ -28,10 +29,15 @@ keeps its number and says what replaced it.
 
 ## SD-1 — A browser session cannot change its model or provider, and that is the point
 
-**Ruling.** `POST /config/set_provider` continues to refuse a request that carries no proof a human
-made it. Browser-served Biorouter installs no such proof. A browser session therefore runs
-whatever provider and model the machine was already configured with, and the model picker is
-inert.
+**Ruling.** `POST /config/set_provider` (`set_config_provider` in
+`crates/biorouter-server/src/routes/config_management.rs`) continues to refuse a request that
+carries no proof a human made it. Browser-served Biorouter installs no such proof. A browser
+session therefore runs whatever provider and model the machine was already configured with, and
+the model picker is inert.
+
+> **Note.** Until 2026-09 this record named the route `POST /config/provider`. No such route
+> exists, so an audit of SD-1 that followed the old text measured a 404 and could read it as
+> "no gate". The gate is on `/config/set_provider`, which answers a browser session with 409.
 
 **Why.** This looks like a missing feature and is actually the privacy boundary holding. The
 privacy tier system (issue #56) classifies a conversation by the sensitivity of what it has
@@ -47,11 +53,11 @@ anyone opens a tab — and the tier that choice implies holds for every session 
 A run started against an institutional Bedrock model is private for its whole life; one started
 against a commercial model is public for its whole life. Neither can drift.
 
-> ⚠ **The first half of that sentence was unreachable until SD-9.** A `serve` daemon holds no
+> ⚠ **The first half of that sentence was unreachable until SD-12.** A `serve` daemon holds no
 > user-action key, and the new-chat bind asked for that key's proof before binding a private
 > model — so with an institutional model configured, no chat could be started at all, and the
 > interface showed nothing (the 2026-09-10 QA run, finding F1). See
-> [SD-9](#sd-9--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does).
+> [SD-12](#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does).
 
 **Displaced alternatives.**
 
@@ -200,6 +206,14 @@ proof-of-user digest. Under SD-1 that is the intended configuration, not a limit
 means the daemon a `serve` session talks to is deliberately less capable than the one the
 desktop application starts, and anything that assumes otherwise is wrong.
 
+**And the child must never outlive the parent.** The daemon, not `serve`, holds the port,
+answers the browser token and serves the shell carrying its secret, so a `serve` that exits
+without stopping it has revoked nothing. `serve` therefore stops the daemon on every path it can
+run code on, and on Unix starts it with `--exit-with-parent` so that it stops itself on the paths
+`serve` cannot — see [how `serve` starts and stops the daemon](serve-architecture.md#how-serve-starts-and-stops-the-daemon).
+A comment in `serve` claimed the first half from the start; until 2026-09 neither half was true,
+and only a terminal's `Ctrl-C`, which signals the whole process group, ever reached the daemon.
+
 ---
 
 ## SD-8 — A control that can never work here says so, rather than failing on click
@@ -234,7 +248,50 @@ can never half-believe a person is reachable.
 
 ---
 
-## SD-9 — A new chat starts on the operator's model without a proof, and nothing else does
+## SD-9 — The launch token works until the daemon stops; it is not single-use
+
+**Ruling.** `GET /?t=<token>` exchanges the token for the session cookie every time it is
+presented, not only the first time. The exchange takes the token out of the address bar; it does
+not consume it. The token stops working when the daemon stops — which SD-7 ties to `serve`
+stopping — or, for one passed with `--token`, when a different one is passed.
+
+**Why.** The token was first described as "spent on the first request", and that was never true:
+the 2026-09-10 QA run redeemed one token four more times after the first and got a 303 each time.
+The choice was then whether to make the description true or correct it, and single use cannot be
+had without breaking what the product promises:
+
+- **It would be a different mechanism, not an added check.** The session cookie's value *is* the
+  token — the daemon compares both against one string — so a "spent" token would still open the
+  shell for anyone who set the cookie by hand. Real single use needs a cookie the daemon mints
+  and remembers: a session table, emptied by every restart.
+- **The supported uses need a second redemption.** A second browser, or a colleague on a shared
+  host, where everyone who opens the address is the same user; the same browser after it has
+  dropped its session cookie, which carries no expiry and may be discarded when the browser
+  closes; and a bookmark of an address fixed with `--token`, which
+  [browser access](browser-access.md) offers precisely so that the address survives restarts.
+- **Things other than people fetch links.** A browser prefetching a pasted address, or a chat
+  client unfurling it, would spend a single-use link before anyone clicked it.
+
+What the exchange is for is keeping the token out of browser history and out of the `Referer` of
+everything the page loads afterwards, and the redirect does that whether or not the token is
+consumed.
+
+**Displaced alternatives.**
+
+- *Single use, with a session cookie minted by the daemon.* Rejected for the reasons above.
+- *Keep the word "spent".* Rejected. In a section about security it reads as single use, and an
+  operator who believes a leaked address stopped working after its first use has the wrong
+  picture of their exposure.
+
+**Consequence to accept.** The address `serve` prints is a bearer credential for as long as the
+daemon runs. Revoking it means stopping `serve` — which is why SD-7 requires that the daemon never
+outlive it — and, for an address fixed with `--token`, choosing a new token. Treat it like the
+password it is. `the_token_is_not_consumed_by_the_exchange` in `routes::web_ui` pins the
+behaviour, so changing it means revisiting this record, not making a quiet fix.
+
+---
+
+## SD-12 — A new chat starts on the operator's model without a proof, and nothing else does
 
 **Ruling.** On a daemon that holds no user-action key — the one `biorouter serve` starts (SD-7),
 or a `biorouterd` started by hand — `POST /agent/start` binds the operator's configured provider
