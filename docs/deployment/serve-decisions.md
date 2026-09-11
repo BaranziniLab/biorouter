@@ -17,7 +17,8 @@ This page records the decisions that replaced that arrangement. They were taken 
 several of them only make sense as a set: the reason a browser session cannot switch models
 (SD-1) is also the reason it needs no proof-of-user mechanism, which is the reason the daemon
 can be spawned with a closed stdin (SD-7) — and the reason every control that needs that proof
-must say so before the user reaches for it (SD-8). Read [the architecture](serve-architecture.md)
+must say so before the user reaches for it (SD-8), and the reason the controls that stop and steer
+a turn answer to the reach gate there instead (SD-11). Read [the architecture](serve-architecture.md)
 for how the result is built, and [browser access](browser-access.md) for how to use it.
 
 Records are identified `SD-n` — *serve decision*. The numbering is stable; a superseded record
@@ -224,6 +225,131 @@ who insists may proceed past a warning, but nothing proceeds automatically.
 started, so two daemons on the same machine can offer different tools. The availability flag is
 sampled once per roster and threaded, rather than re-read inside each declaration, so a roster
 can never half-believe a person is reachable.
+
+---
+
+## SD-11 — Stop and steering work on a daemon with no key; a subagent's tab stays the person's
+
+**Ruling.** On a daemon that holds no user-action key — the one `biorouter serve` starts (SD-7), or
+a `biorouterd` started by hand — the four routes that control a running turn admit exactly the
+callers `POST /agent/stop` already admits there:
+
+| Route | What it does |
+|---|---|
+| `POST /agent/cancel` | Stop, and the first half of Stop-and-Send. |
+| `POST /interrupt` | Steers the turn that is running. |
+| `POST /agent/continuation/abandon` | Gives up a Stop-and-Send replacement. |
+| `POST /agent/continuation/recover` | Takes a Stop-and-Send replacement back after a reload, or gives it up. |
+
+That gate is `authorize_agent_control` in `routes/agent.rs`, called by name rather than written
+again: the reach rule — every public chat, and a private one only for a caller whose stated
+capability covers it — and then no subagent's chat. Three things hold beside it:
+
+- A steer admitted this way is recorded **unstamped**, exactly as `/reply` records the same caller's
+  message. It is never stamped `UserDirect`, the provenance that says a person typed it.
+- A daemon that holds a key — the desktop application's — is unchanged. These routes take the proof
+  there and nothing else.
+- A subagent's chat is refused on a keyless daemon, as `/reply` and `/agent/stop` already refuse it
+  there, and the refusal now names the daemon, not the caller, as what cannot prove a person acted
+  (SD-8).
+
+**Why.** The four routes asked for proof of a person before anything else, and on a daemon that
+holds no key that proof can only refuse everyone, the person at the browser included. Measured on
+2026-09-11 against a real `biorouter serve`, from the page, with the daemon secret and the host's
+provider stated: `POST /agent/cancel` and `POST /interrupt` both answered `403` with an empty body.
+The Stop button could stop nothing on any `serve` host, including one configured with a public
+model. `crates/biorouter-server/tests/turn_control_no_user_key.rs` reproduces it on the code this
+record changed: on a keyless daemon and an ordinary public chat, `/agent/stop` answered `200` and
+cancelled the turn while `/agent/cancel` answered `403`. Stop is the control that ends a runaway
+turn, and a chat that cannot be stopped from the only interface it has is less safe, not more.
+
+And the refusal protected nothing. The proof is on these routes so that a model holding the daemon
+secret, which AR-11 found recoverable, cannot stop another chat's turn or put words in a person's
+mouth. On a keyless daemon that caller already does each of those next door:
+
+| What the refusal withheld | Where the same caller already does it on a keyless daemon | Guarded by |
+|---|---|---|
+| Cancel the running turn of a chat it can reach | `POST /agent/stop`, which trips the same turn and evicts its agent besides | `authorize_agent_control` — the gate this record adopts |
+| The same, as a model holding no secret at all | `workspace_close { scope: "turn" }` | `refuse_unless_writable`: the tier, and nothing else |
+| Put text in front of the chat's model as the user | `POST /reply`, which a non-subagent chat accepts, unstamped, from any caller that reaches it | `session_reach` |
+| Give up a chat's pending Stop-and-Send | `workspace_close { scope: "turn" }`, which abandons every pending continuation of the chat it names | `refuse_unless_writable` |
+
+So admitting a caller here gives nothing that holds the secret a capability it lacked. The person
+gains the Stop button, mid-turn steering and Stop-and-Send, which the desktop application has
+always had.
+
+**Why the four routes move together.** Stop-and-Send cancels with a continuation, and the
+continuation mints a lease that holds the chat for its replacement: until the lease is used or
+given up, every other turn in that chat is refused. A daemon that let the cancel through and
+refused the abandon or the recover would wedge the chat the first time a person removed a queued
+message or reloaded the page. The test binary above measures both.
+
+**Why a steer is not stamped.** `UserDirect` is a claim that a person typed the text, and the
+subagent machinery acts on it: a child's parent is told a human intervened. Only the proof can back
+that claim, so on a keyless daemon the steer carries no stamp — which is what `/reply` gives the
+same caller's message, so the two ways of putting text in front of a chat's model agree about who
+sent it.
+
+**Why a subagent's tab is not included.** That tab is where `UserDirect` means something, and
+`/reply` and `/agent/stop` already refuse an unproven caller there, on every daemon. Admitting turn
+control alone would give that tab a Stop that works beside a composer that cannot send, and the
+rule for the tab is a decision about the whole tab rather than one of its buttons.
+
+**Why not on every daemon.** On a daemon that holds a key the proof costs the person nothing — the
+renderer attaches it to every request — and it still refuses a caller that cannot present it.
+Relaxing it there buys the person nothing, and would admit an unstamped steer where the desktop has
+always stamped one.
+
+**Who can do this, and what else reaches the same place.** The two questions every privacy control
+answers in writing ([privacy tiers §3.1](../security/privacy-tiers.md#31-the-review-checklist--two-questions-every-control-answers-in-writing)):
+
+- *Who can initiate it.* On a keyless daemon, anything holding the daemon secret: the person in the
+  browser and, indistinguishably, a model running in a chat on that daemon that has recovered the
+  secret. Both reach the chats the reach gate admits them to, less every subagent's. On a daemon
+  that holds a key, only a request carrying the proof.
+- *What else reaches the same place:*
+
+  | Other entry point to the same capability | Reachable by | Guarded by | Where that guard is called |
+  |---|---|---|---|
+  | `POST /agent/stop` — cancels the running turn | user; any holder of the daemon secret | `authorize_agent_control`: reach, then the subagent rule | `routes/agent.rs::stop_agent` |
+  | `workspace_close { scope: "turn" \| "agent" }` — cancels the turn, abandons its pending continuations | model | `refuse_unless_writable` (the tier) | `agents/workspace_extension.rs::handle_close` |
+  | `POST /active_work/{id}/cancel` — cancels a running subagent or background job by registry id | user; any holder of the daemon secret | **nothing**: the id is not a session id, so the reach gate cannot be applied | `routes/active_work.rs::cancel_active_work`; an open residual in `session_reach.rs` |
+  | `POST /reply` — puts the caller's text in front of the chat's model | user; any holder of the daemon secret | `session_reach`, then the subagent rule | `routes/reply.rs::reply` |
+  | `workspace_send_prompt { mode: "steer" \| "turn" }` — the same, from another chat | model | `refuse_unless_writable`; the text arrives framed as `AgentInjection`, and a private-to-public write raises a first-crossing approval | `agents/workspace_extension.rs::handle_send_prompt` |
+  | `biorouter session attach` and `session cancel` → these routes | user at a terminal | the proof, which the CLI demands before it sends anything | `commands/session_watch.rs::build_user_action_post_request` |
+
+  The third row is a finding rather than a guard: a subagent's work can be cancelled on any daemon
+  by a caller that holds the secret and reads the id from `GET /active_work`. It is the residual
+  `session_reach.rs` already records, and this record does not widen it.
+
+**Displaced alternatives.**
+
+- *Keep the refusal, and explain it before the click (SD-8).* Rejected. SD-8 is for a control whose
+  absence is safe to explain; this one is how a person ends a turn they did not want. A Stop button
+  that says "unavailable here" is honest and still leaves the turn running.
+- *Point the browser's Stop at `/agent/stop`.* Rejected. It cancels whatever turn is running rather
+  than the generation the person saw, so a late click can kill a successor; it does not wait for the
+  turn to settle and has no Stop-and-Send; and it evicts the agent. It would give the browser a
+  blunter Stop than the desktop's, to route around a refusal that guards nothing.
+- *Relax the routes on every daemon.* Rejected; see *Why not on every daemon*.
+- *Stamp the keyless steer `UserDirect`.* Rejected; see *Why a steer is not stamped*.
+- *Admit plain Stop and refuse Stop-and-Send.* Rejected. The queue's "Stop and send" and a typed
+  "stop" in a busy composer both cancel with a continuation, so this would leave half of the Stop
+  controls refused, and a lease a person can mint must be a lease they can give up.
+
+**Consequence to accept.** On a keyless daemon, a model running in a chat on that daemon that has
+recovered the daemon secret can stop or steer a turn in any chat the reach gate admits it to — a
+public chat always, and a private one by stating a private provider, which the header does not
+authenticate (`session_reach.rs` records as much). It could already stop those turns through
+`/agent/stop` or `workspace_close`, and put text in front of those chats through `/reply`; what it
+gains is steering a turn while it runs, with text that arrives unstamped, as a `/reply` from the same
+caller would. It is recorded rather than closed: on a daemon that cannot tell a person from a model,
+closing it means a Stop button nobody can press.
+
+**Not decided here.** A subagent's tab in a browser still offers a composer, a steer and a Stop
+that all refuse; SD-8 requires them to say so before the click, and they do not yet. The CLI's
+`session cancel` and `attach` steering still demand a user-action key from the terminal before they
+send anything, so against a keyless daemon they refuse locally a request the daemon would now admit.
 
 ---
 
