@@ -7,12 +7,39 @@
 //! one list so the user (via a GUI panel, deferred) can see and stop
 //! runaway/forgotten work. `GET /active_work` lists; `POST
 //! /active_work/{id}/cancel` cancels one item, dispatched by its id.
+//!
+//! # Whose work a caller sees (issue #56)
+//!
+//! Every row carries the id of the chat it belongs to and a `title`/`detail`
+//! holding that chat's SHELL COMMAND or TASK PROMPT — content, not metadata. So
+//! both routes ask `routes::session_reach`'s one decision about that chat:
+//!
+//! * the list shows a row exactly when `GET /sessions` would show its chat
+//!   ([`HttpCaller::lists_work`](crate::routes::session_reach::HttpCaller::lists_work)),
+//!   omitted and never redacted;
+//! * the cancel resolves its id to the owning chat and asks the chat READ's own
+//!   gate ([`work_reach`](crate::routes::session_reach::work_reach)) before it
+//!   stops anything, and refuses with the read's exact words.
+//!
+//! ⚠ **Work that names no chat is answered as a private chat's**, on both
+//! routes, and so is work whose chat cannot be read, a handle that names
+//! nothing and a schedule that is not running: the registry cannot say whose
+//! command an unattributed row holds. The shell attributes its rows from the
+//! chat id Biorouter's MCP client stamps on every call, so this arm is left to
+//! work that genuinely has no chat.
+//!
+//! ⚠ **The scheduled half is not closed by this file.** `GET /schedule/list`
+//! and `GET /schedule/{id}/inspect` still name a running schedule's chat, and
+//! `POST /schedule/{id}/kill` still stops it, for any holder of the daemon
+//! secret; see the residual table in
+//! `docs/deployment/programmatic-session-access.md`.
 
 use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -128,19 +155,51 @@ fn build_items(
     items
 }
 
+/// The rows this caller may be shown: those whose chat it could open. See the
+/// module header.
+///
+/// One resolved caller for the whole list, so the rows cannot half-believe two
+/// answers; each row's chat is looked up only when the caller is not already
+/// shown every row.
+async fn visible_items(
+    caller: &crate::routes::session_reach::HttpCaller,
+    manager: &biorouter::session::session_manager::SessionManager,
+    items: Vec<ActiveWorkItemDto>,
+) -> Vec<ActiveWorkItemDto> {
+    let mut visible = Vec::with_capacity(items.len());
+    for item in items {
+        if caller.lists_work(manager, item.session_id.as_deref()).await {
+            visible.push(item);
+        }
+    }
+    visible
+}
+
 #[utoipa::path(
     get,
     path = "/active_work",
     responses(
-        (status = 200, description = "Current background jobs, subagents, and in-flight scheduled runs", body = ActiveWorkResponse),
+        (status = 200, description = "Current background jobs, subagents, and in-flight scheduled \
+                                      runs, holding only the work of the chats this caller could \
+                                      open: a row whose chat is private, cannot be read, or that \
+                                      names no chat at all is omitted — never redacted — for a \
+                                      caller with neither the user-action proof nor a private \
+                                      capability, as its chat is from `GET /sessions`", body = ActiveWorkResponse),
     ),
     tag = "active_work"
 )]
 #[axum::debug_handler]
-async fn list_active_work(State(state): State<Arc<AppState>>) -> Json<ActiveWorkResponse> {
+async fn list_active_work(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Json<ActiveWorkResponse> {
+    // Issue #56: every row is some chat's command or prompt, and this handed
+    // all of them to a caller holding nothing but the daemon secret.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
     let registry = active_work().list();
     let jobs = state.scheduler().list_scheduled_jobs().await;
     let items = build_items(registry, jobs, Utc::now());
+    let items = visible_items(&caller, state.session_manager(), items).await;
     Json(ActiveWorkResponse { items })
 }
 
@@ -152,6 +211,13 @@ async fn list_active_work(State(state): State<Arc<AppState>>) -> Json<ActiveWork
     ),
     responses(
         (status = 200, description = "Cancel requested", body = CancelActiveWorkResponse),
+        (status = 403, description = "The work belongs to a chat this caller could not open — a \
+                                      private chat, one that cannot be read, or none at all — and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Plain text, byte-for-byte what `GET \
+                                      /sessions/{session_id}` answers, and the same for an id \
+                                      that names nothing, so a refusal says nothing about the \
+                                      work. Nothing was stopped"),
         (status = 404, description = "No such active-work item"),
         (status = 500, description = "Internal server error"),
     ),
@@ -161,8 +227,32 @@ async fn list_active_work(State(state): State<Arc<AppState>>) -> Json<ActiveWork
 async fn cancel_active_work(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<CancelActiveWorkResponse>, StatusCode> {
-    match classify_cancel_id(&id) {
+    headers: HeaderMap,
+) -> Result<Json<CancelActiveWorkResponse>, Response> {
+    let target = classify_cancel_id(&id);
+
+    // Issue #56: the id names WORK, not a chat. Resolve it to the chat that
+    // owns the work and ask the chat read's own gate BEFORE anything is
+    // stopped — this route stopped any chat's work for a caller holding only
+    // the daemon secret. Both lookups are reads; a handle that names nothing,
+    // and a schedule with no run in a chat, resolve to no chat at all.
+    let owner = match &target {
+        CancelTarget::Scheduler(sched_id) => state
+            .scheduler()
+            .get_running_job_info(sched_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|(session_id, _)| session_id),
+        CancelTarget::Registry(reg_id) => {
+            active_work().get(reg_id).and_then(|item| item.session_id)
+        }
+    };
+    crate::routes::session_reach::work_reach(state.session_manager(), owner.as_deref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
+
+    match target {
         CancelTarget::Scheduler(sched_id) => {
             state
                 .scheduler()
@@ -172,7 +262,8 @@ async fn cancel_active_work(
                     biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
                     biorouter::scheduler::SchedulerError::AnyhowError(_) => StatusCode::BAD_REQUEST,
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
-                })?;
+                })
+                .map_err(IntoResponse::into_response)?;
             Ok(Json(CancelActiveWorkResponse {
                 message: format!("Requested cancel of scheduled run '{sched_id}'"),
             }))
@@ -183,7 +274,7 @@ async fn cancel_active_work(
                     message: format!("Requested cancel of '{reg_id}'"),
                 }))
             } else {
-                Err(StatusCode::NOT_FOUND)
+                Err(StatusCode::NOT_FOUND.into_response())
             }
         }
     }
@@ -282,5 +373,120 @@ mod tests {
             classify_cancel_id("sub-7"),
             CancelTarget::Registry(s) if s == "sub-7"
         ));
+    }
+
+    // ─── Issue #56: whose work a caller sees ───
+
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use crate::routes::session_reach::{http_caller, CALLER_PROVIDER_HEADER};
+    use biorouter::privacy::SessionClassification;
+    use biorouter::session::session_manager::SessionManager;
+
+    /// A session store of this test's own, holding one public and one private
+    /// chat, so no `AppState` has to be built and no other test's rows are in
+    /// it. The private one gets there the way a real one does, by binding a
+    /// private provider.
+    async fn store_with_a_public_and_a_private_chat(
+    ) -> (tempfile::TempDir, SessionManager, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let mut ids = Vec::new();
+        for label in ["public", "private"] {
+            let session = manager
+                .create_session(
+                    std::path::PathBuf::from("/tmp/active_work_reach"),
+                    format!("Active work {label} (test fixture)"),
+                    biorouter::session::SessionType::User,
+                )
+                .await
+                .unwrap();
+            ids.push(session.id);
+        }
+        manager
+            .update(&ids[1])
+            .provider_name("versa_azure")
+            .model_config(biorouter::model::ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        let private = ids.pop().unwrap();
+        let public = ids.pop().unwrap();
+        (dir, manager, public, private)
+    }
+
+    fn owned_by(id: &str, kind: ActiveWorkKind, owner: Option<&str>) -> ActiveWorkItem {
+        ActiveWorkItem {
+            session_id: owner.map(str::to_string),
+            ..reg_item(id, kind, true)
+        }
+    }
+
+    fn running_in(id: &str, owner: Option<&str>) -> ScheduledJob {
+        ScheduledJob {
+            current_session_id: owner.map(str::to_string),
+            ..sched_job(id, true)
+        }
+    }
+
+    fn ids(items: Vec<ActiveWorkItemDto>) -> Vec<String> {
+        items.into_iter().map(|item| item.id).collect()
+    }
+
+    /// The list's own filter, row by row and kind by kind — including a
+    /// scheduled run, whose `currently_running` only the scheduler can set, so
+    /// the HTTP tests in `session_reach` cannot fabricate one.
+    ///
+    /// A secret-only caller keeps exactly the rows of the public chat. The
+    /// private chat's rows go, and so do the rows that name no chat or a chat
+    /// that is not there — a schedule between starting its run and naming its
+    /// chat among them. The person at the keyboard and a program on a private
+    /// model keep everything.
+    #[tokio::test]
+    async fn the_list_shows_each_row_exactly_when_its_chat_would_be_shown() {
+        install_test_user_action_key();
+        let (_dir, manager, public, private) = store_with_a_public_and_a_private_chat().await;
+        let items = build_items(
+            vec![
+                owned_by("bg-1", ActiveWorkKind::BackgroundJob, Some(public.as_str())),
+                owned_by("sub-2", ActiveWorkKind::Subagent, Some(private.as_str())),
+                owned_by("fg-3", ActiveWorkKind::ForegroundCommand, None),
+                owned_by(
+                    "dturn-4",
+                    ActiveWorkKind::DetachedTurn,
+                    Some("29990101_99999"),
+                ),
+            ],
+            vec![
+                running_in("hourly", Some(public.as_str())),
+                running_in("nightly", Some(private.as_str())),
+                running_in("starting", None),
+            ],
+            Utc::now(),
+        );
+        let every_id = ids(items.clone());
+
+        let secret_only = http_caller(&HeaderMap::new()).await;
+        assert_eq!(
+            ids(visible_items(&secret_only, &manager, items.clone()).await),
+            ["bg-1", "sched:hourly"],
+            "a caller holding only the daemon secret must be shown the public chat's work and \
+             nothing else"
+        );
+
+        let mut proof = HeaderMap::new();
+        proof.insert("X-User-Action", TEST_USER_ACTION_KEY.parse().unwrap());
+        let mut private_model = HeaderMap::new();
+        private_model.insert(CALLER_PROVIDER_HEADER, "versa_azure".parse().unwrap());
+        for headers in [proof, private_model] {
+            let caller = http_caller(&headers).await;
+            assert_eq!(
+                ids(visible_items(&caller, &manager, items.clone()).await),
+                every_id,
+                "{headers:?} lost a row it could open"
+            );
+        }
     }
 }

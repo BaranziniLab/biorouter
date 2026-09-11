@@ -30,11 +30,16 @@
 //!   `DELETE /sessions/{id}` were open until QA's 2026-09-10 sweep, which
 //!   measured the last one deleting a private chat the read refused (F0), and
 //!   they are on the list now. `GET /active_work` and `POST
-//!   /active_work/{id}/cancel` remain open — they name no session id in their
-//!   path and so enumerate, but carry a `title` and `detail` holding the SHELL
-//!   COMMAND or TASK PROMPT of every running job. That is content rather than
-//!   metadata, and it is the one row here that a reader should not file
-//!   mentally beside "titles and directories". `GET /sessions/running` (ids
+//!   /active_work/{id}/cancel` were open until 2026-09-11. They name no session
+//!   id in their path and so enumerate, and every row carries a `title` and
+//!   `detail` holding a running job's SHELL COMMAND or TASK PROMPT, which is
+//!   content rather than metadata. The list now shows a row only to a caller
+//!   that could open the row's chat ([`HttpCaller::lists_work`]). The cancel
+//!   resolves its id to that chat and asks [`work_reach`]. A row that names no
+//!   chat is answered as a private one. ⚠ Their SCHEDULED half is not closed:
+//!   `GET /schedule/list` and `GET /schedule/{id}/inspect` still name a running
+//!   schedule's chat, and `POST /schedule/{id}/kill` still stops it, for any
+//!   holder of the secret. `GET /sessions/running` (ids
 //!   only, and `biorouter session list` needs it whole to report liveness
 //!   truthfully), `GET /sessions/changes` (a watched row's provider, model and
 //!   tier columns), `GET /sessions/insights` and `GET /sessions/activity`
@@ -73,7 +78,10 @@
 //!   list would break every client on the public chats the gate is deliberately
 //!   inert on. The sidebar pages its filtered view by scanning, so `has_more`
 //!   cannot count the rows it hid. `GET /schedule/{id}/sessions` takes the same
-//!   filter;
+//!   filter, and so, since 2026-09-11, does `GET /active_work`. A row of running
+//!   work is not a chat, so [`HttpCaller::lists_work`] resolves the chat it
+//!   belongs to, and a row that names no chat, or one that cannot be read, is
+//!   answered as a private chat's row;
 //! * **knowledge bases take the same decision** since the same sweep (QA H2):
 //!   every `/knowledge/bases/{id}…` route sits behind [`gate_knowledge_base`],
 //!   and `GET /knowledge/bases` and `/knowledge/active` omit what the caller
@@ -176,6 +184,7 @@
 //! | `POST /workflows/create` | Loads the chat's whole transcript and returns what a model makes of it. |
 //! | `POST /skills/session` | Writes a skill's instructions into the chat's next turn. |
 //! | `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, checked before any is loaded. |
+//! | `POST /active_work/{id}/cancel` | Stops one chat's running work: a shell command's process group, a subagent, a detached turn or a scheduled run. The id names the work, so the route resolves it to the owning chat and asks [`work_reach`], which is `session_reach` on that chat. A handle that names nothing, work that names no chat and a schedule that is not running are all refused as a private chat is. |
 //!
 //! Every row since the 2026-09-10 sweep answers with [`SESSION_OUT_OF_REACH`]
 //! as PLAIN TEXT — the bytes `GET /sessions/{session_id}` returns — rather than
@@ -188,7 +197,8 @@
 //! without the capability header and proceeds with it. A future sweep that greps
 //! for the call must follow `authorize_agent_control` too, or it will "discover"
 //! four holes that are not there and, worse, trust the same grep when it reports
-//! a real one.
+//! a real one. The same holds for `POST /active_work/{id}/cancel`, which reaches
+//! the gate through [`work_reach`]; its ordering rows below name `work_reach(`.
 //!
 //! # Why `X-User-Action` and not a new mechanism, for the proof half
 //!
@@ -534,10 +544,11 @@ pub fn refuse_unless_reachable(
 /// ⚠ **Deliberately NOT `pub`.** This module is one of `COMPLETE_MODULES` in the
 /// wiring census (`crates/biorouter/tests/privacy_guard_wiring.rs`): every
 /// public function in it must carry a census row classifying it as a reach
-/// decision. This is not one — it resolves an input to [`session_reach`], which
-/// is the guard and which does carry a row — and its only caller is that
-/// function, three lines below. Making it public to save an import would either
-/// break the census or add a row that misdescribes what it is.
+/// decision. This is not one — it resolves an input to [`session_reach`],
+/// [`work_reach`] and [`http_caller`], which are the guards and which do carry
+/// rows — and those three, all in this file, are its only callers. Making it
+/// public to save an import would either break the census or add a row that
+/// misdescribes what it is.
 async fn caller_capability(headers: &HeaderMap) -> ProviderTier {
     let Some(name) = headers
         .get(CALLER_PROVIDER_HEADER)
@@ -591,6 +602,48 @@ pub async fn session_reach(
     refuse_unless_reachable(
         enforced,
         target_tier(manager, session_id).await,
+        caller_capability(headers).await,
+        user_action_proof(headers),
+    )
+}
+
+/// The gate for RUNNING WORK a caller named by its own handle — `POST
+/// /active_work/{id}/cancel` — rather than by its chat's id.
+///
+/// `owner` is the chat that owns the work, which the route resolves from the
+/// registry entry or the scheduler BEFORE anything is stopped.
+///
+/// * **`Some(id)` is [`session_reach`] on that chat, by the same call**, so the
+///   same status, the same words, and the same answer for a chat that is gone.
+///   Stopping a chat's work is never easier than reading the chat.
+/// * **`None` is [`TargetTier::Unreadable`]**: work that names no chat, a
+///   handle that names nothing, and a schedule that is not running. Refused
+///   exactly as a private chat is, to a caller with neither the capability nor
+///   the proof — for the reason [`HttpCaller::lists_work`] omits such a row,
+///   and so that a refusal cannot tell a caller which of the four it hit. A
+///   caller that IS admitted is let through to the route, which tells it the
+///   truth (404 for a handle that names nothing).
+///
+/// ⚠ **Never the served-operator standing**, for the reason [`session_reach`]
+/// never reads it: a stop names one chat's work, and SD-10 gives a `biorouter
+/// serve` browser its operator's reach on listings and knowledge bases only. So
+/// that browser can be listed a private chat's work it cannot stop — as it is
+/// listed private chats it cannot open or delete.
+pub async fn work_reach(
+    manager: &SessionManager,
+    owner: Option<&str>,
+    headers: &HeaderMap,
+) -> Result<(), SessionOutOfReach> {
+    if let Some(session_id) = owner {
+        return session_reach(manager, session_id, headers).await;
+    }
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    if !enforced {
+        return Ok(());
+    }
+    refuse_unless_reachable(
+        enforced,
+        TargetTier::Unreadable,
         caller_capability(headers).await,
         user_action_proof(headers),
     )
@@ -659,13 +712,49 @@ impl HttpCaller {
     /// directory, both content (§11.4), which is the rule `workspace_list`
     /// already applies to a model.
     pub fn lists_session(&self, classification: SessionClassification) -> bool {
-        refuse_unless_reachable(
-            self.enforced,
-            TargetTier::from(classification),
-            self.capability(),
-            self.proof,
-        )
-        .is_ok()
+        self.admits(TargetTier::from(classification))
+    }
+
+    /// May this caller be shown a row of RUNNING WORK — `GET /active_work` —
+    /// that belongs to the chat `owner`?
+    ///
+    /// [`lists_session`](Self::lists_session) for a row the listing does not
+    /// hold a chat for. A row of running work carries its chat's id and a title
+    /// and detail holding that chat's shell command or task prompt, which is
+    /// content, so it is shown exactly when the chat would be: omitted, never
+    /// redacted. The chat has to be resolved to get there, and resolution can
+    /// fail, so the target is [`target_tier`]'s answer — `Unreadable` for a chat
+    /// this daemon cannot read.
+    ///
+    /// ⚠ **`owner: None` — work that names no chat — is `Unreadable` too, and
+    /// so is answered exactly as a private chat's row.** Its command came from
+    /// SOME chat and nothing says which; shown to a public caller, it would
+    /// carry a private chat's commands out past this gate.
+    /// Such a row is listed to the desktop app, to a program stating a private
+    /// capability, and with tiers switched off; to nobody else. [`work_reach`]
+    /// answers its cancel the same way. Registrants that know their chat say so
+    /// (`ActiveWorkItem::session_id`), which keeps this arm for work that
+    /// genuinely has none.
+    pub async fn lists_work(&self, manager: &SessionManager, owner: Option<&str>) -> bool {
+        // A caller admitted to a chat this daemon cannot even read is admitted
+        // to every chat — `refuse_unless_reachable` answers `Unreadable` as it
+        // answers `Private`, and `Public` always — so it is answered without a
+        // store read: the sidebar's one-query fast path, row by row. Pinned by
+        // `the_listing_fast_path_admits_nothing_the_row_check_refuses`.
+        if self.admits(TargetTier::Unreadable) {
+            return true;
+        }
+        let target = match owner {
+            Some(session_id) => target_tier(manager, session_id).await,
+            None => TargetTier::Unreadable,
+        };
+        self.admits(target)
+    }
+
+    /// The one spelling of this caller's listing decision, which both
+    /// listing predicates above are.
+    fn admits(&self, target: TargetTier) -> bool {
+        refuse_unless_reachable(self.enforced, target, self.capability(), self.proof).is_ok()
     }
 
     /// The reach gate for a knowledge base the caller named — the same pure
@@ -1356,6 +1445,7 @@ mod tests {
         let workflow_rs = include_str!("workflow.rs");
         let skills_rs = include_str!("skills.rs");
         let knowledge_rs = include_str!("knowledge.rs");
+        let active_work_rs = include_str!("active_work.rs");
         for (src, func, gate_call, first_touch, what) in [
             (
                 reply_rs,
@@ -1493,6 +1583,21 @@ mod tests {
                 ".get_session(sid, true)",
                 "the transcript load",
             ),
+            // ── Running work: named by its own handle, gated on its chat ──
+            (
+                active_work_rs,
+                "async fn cancel_active_work(",
+                "work_reach(",
+                "kill_running_job(",
+                "the scheduler's kill of the run",
+            ),
+            (
+                active_work_rs,
+                "async fn cancel_active_work(",
+                "work_reach(",
+                "active_work().cancel(",
+                "the registry's cancel action, which kills a process group or trips a turn",
+            ),
         ] {
             let handler = body_of(src, func);
             let gate = handler.find(gate_call).unwrap_or_else(|| {
@@ -1628,6 +1733,195 @@ mod tests {
         );
         assert!(!public_operator.lists_session(SessionClassification::Private));
         assert!(public_operator.lists_session(SessionClassification::Public));
+    }
+
+    // ─── Running work (`GET /active_work`, `POST /active_work/{id}/cancel`) ───
+
+    /// A store of this test's own with one public and one private chat, so the
+    /// corners below cannot meet a row another test left in the binary's
+    /// shared sandbox store, and no `AppState` has to be built.
+    async fn store_with_a_public_and_a_private_chat(
+    ) -> (tempfile::TempDir, SessionManager, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let mut ids = Vec::new();
+        for label in ["public", "private"] {
+            let session = manager
+                .create_session(
+                    std::path::PathBuf::from("/tmp/session_reach_running_work"),
+                    format!("Running work {label} (test fixture)"),
+                    biorouter::session::SessionType::User,
+                )
+                .await
+                .unwrap();
+            ids.push(session.id);
+        }
+        manager
+            .update(&ids[1])
+            .provider_name("versa_azure")
+            .model_config(biorouter::model::ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        let private = ids.pop().unwrap();
+        let public = ids.pop().unwrap();
+        (dir, manager, public, private)
+    }
+
+    /// `lists_work` answers a caller admitted to an `Unreadable` target without
+    /// reading the store. That is only sound if being admitted there means
+    /// being admitted to every target, so it is checked at every corner rather
+    /// than argued — including the served-operator standing and the switch.
+    #[test]
+    fn the_listing_fast_path_admits_nothing_the_row_check_refuses() {
+        for enforced in [true, false] {
+            for stated in CAPABILITIES {
+                for served_operator in CAPABILITIES {
+                    for proof in PROOFS {
+                        let who = HttpCaller {
+                            enforced,
+                            stated,
+                            served_operator,
+                            proof,
+                        };
+                        if !who.admits(TargetTier::Unreadable) {
+                            continue;
+                        }
+                        for tier in [
+                            TargetTier::Public,
+                            TargetTier::Private,
+                            TargetTier::Unreadable,
+                        ] {
+                            assert!(
+                                who.admits(tier),
+                                "the fast path would show {who:?} a {tier:?} row the row check \
+                                 refuses"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A row of running work is listed exactly when its chat would be, at
+    /// every (switch, capability, served standing, proof) corner, resolved
+    /// against a real store: its chat's tier when the chat reads, `Unreadable`
+    /// when it does not — and `Unreadable` when the row names no chat at all.
+    ///
+    /// ⚠ The last pair is the decision this test exists for, asserted as an
+    /// EQUALITY: work that names no chat is listed to exactly the callers that
+    /// would be shown a chat that is not there, which is to say the callers
+    /// shown private chats. A vaguer assertion ("a secret-only caller does not
+    /// see it") passes against an implementation that shows it to one more.
+    #[tokio::test]
+    async fn a_row_of_running_work_is_listed_exactly_as_its_chat_would_be() {
+        let (_dir, manager, public, private) = store_with_a_public_and_a_private_chat().await;
+        let owners = [
+            (Some(public.as_str()), TargetTier::Public),
+            (Some(private.as_str()), TargetTier::Private),
+            (Some("29990101_99999"), TargetTier::Unreadable),
+            (None, TargetTier::Unreadable),
+        ];
+        for enforced in [true, false] {
+            for stated in CAPABILITIES {
+                for served_operator in CAPABILITIES {
+                    for proof in PROOFS {
+                        let who = HttpCaller {
+                            enforced,
+                            stated,
+                            served_operator,
+                            proof,
+                        };
+                        for (owner, tier) in owners {
+                            assert_eq!(
+                                who.lists_work(&manager, owner).await,
+                                refuse_unless_reachable(enforced, tier, who.capability(), proof)
+                                    .is_ok(),
+                                "{who:?} {owner:?}"
+                            );
+                        }
+                        assert_eq!(
+                            who.lists_work(&manager, None).await,
+                            who.lists_work(&manager, Some("29990101_99999")).await,
+                            "{who:?}: work that names no chat is listed differently from work \
+                             whose chat is not there"
+                        );
+                    }
+                }
+            }
+        }
+        // The shape QA measured, spelled out.
+        let secret_only = caller(
+            ProviderTier::Public,
+            ProviderTier::Public,
+            UserActionProof::Unproven,
+        );
+        assert!(
+            secret_only
+                .lists_work(&manager, Some(public.as_str()))
+                .await
+        );
+        assert!(
+            !secret_only
+                .lists_work(&manager, Some(private.as_str()))
+                .await
+        );
+        assert!(!secret_only.lists_work(&manager, None).await);
+    }
+
+    /// The cancel's gate IS the read's: for a chat, the same call; for work
+    /// that names no chat (and a handle that names nothing), the answer the
+    /// read gives a chat that is not there — byte for byte, status and words,
+    /// for every header a caller can send.
+    #[tokio::test]
+    async fn stopping_running_work_is_refused_exactly_as_reading_its_chat_is() {
+        use crate::routes::session::diverge_tests::{
+            install_test_user_action_key, TEST_USER_ACTION_KEY,
+        };
+        install_test_user_action_key();
+        let (_dir, manager, public, private) = store_with_a_public_and_a_private_chat().await;
+        let header_sets: [&[(&str, &str)]; 4] = [
+            &[],
+            &[("X-User-Action", TEST_USER_ACTION_KEY)],
+            &[(CALLER_PROVIDER_HEADER, "versa_azure")],
+            &[(CALLER_PROVIDER_HEADER, "anthropic")],
+        ];
+        for pairs in header_sets {
+            let mut headers = HeaderMap::new();
+            for (name, value) in pairs {
+                headers.insert(
+                    axum::http::HeaderName::try_from(*name).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+            for chat in [&public, &private] {
+                assert_eq!(
+                    work_reach(&manager, Some(chat.as_str()), &headers).await,
+                    session_reach(&manager, chat, &headers).await,
+                    "{pairs:?}: stopping a chat's work is not gated exactly as reading it"
+                );
+            }
+            assert_eq!(
+                work_reach(&manager, None, &headers).await,
+                session_reach(&manager, "29990101_99999", &headers).await,
+                "{pairs:?}: work that names no chat is not refused as a chat that is not there"
+            );
+        }
+        // …which refuses a secret-only caller in the read's own words.
+        assert_eq!(
+            work_reach(&manager, None, &HeaderMap::new()).await,
+            Err(SessionOutOfReach {
+                status: StatusCode::FORBIDDEN,
+                message: SESSION_OUT_OF_REACH,
+            })
+        );
+        assert!(
+            work_reach(&manager, Some(public.as_str()), &HeaderMap::new())
+                .await
+                .is_ok()
+        );
     }
 
     /// ⚠ **The transcript gate never reads the served-operator standing**, and
@@ -3349,6 +3643,261 @@ mod bypass_tests {
         }
     }
 
+    /// A marker-carrying row in the process-wide active-work registry, with a
+    /// cancel action that records whether it fired.
+    ///
+    /// ⚠ The registry is process-global and other tests in this binary register
+    /// into it concurrently, so every assertion below is about THESE ids and
+    /// markers and never about the size or shape of the whole list.
+    struct RunningWork {
+        guard: biorouter_mcp::active_work::ActiveWorkGuard,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl RunningWork {
+        fn register(
+            kind: biorouter_mcp::active_work::ActiveWorkKind,
+            marker: &str,
+            owner: Option<&str>,
+        ) -> Self {
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = stopped.clone();
+            let guard = biorouter_mcp::active_work::ActiveWorkGuard::register(
+                kind,
+                format!("{marker}-title"),
+                Some(format!("{marker}-detail")),
+                owner.map(str::to_string),
+                Some(Arc::new(move || {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst)
+                })),
+            );
+            Self { guard, stopped }
+        }
+
+        fn id(&self) -> &str {
+            self.guard.id()
+        }
+
+        fn stopped(&self) -> bool {
+            self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// The ids `GET /active_work` hands this caller, compared EXACTLY — a
+    /// substring test would read `sub-1` as present whenever `sub-12` is.
+    fn active_work_ids(body: &str) -> std::collections::HashSet<String> {
+        let json: serde_json::Value =
+            serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"));
+        json["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no `items` array: {body}"))
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// `GET /active_work` lists every running background job, subagent,
+    /// detached turn and scheduled run, and each row carries its chat's id and a
+    /// title and detail holding the SHELL COMMAND or TASK PROMPT — the chat's
+    /// content, handed to a caller holding nothing but the daemon secret. It is
+    /// filtered now exactly as `GET /sessions` is: a row is shown to a caller
+    /// that could open its chat, omitted (never redacted) for any other.
+    ///
+    /// ⚠ **A row that names no chat is answered as a private chat's row**, and so
+    /// is one whose chat this daemon cannot read. Its command came from SOME
+    /// chat, and the registry cannot say which; showing it to a public caller
+    /// would be the one way left to read a private chat's commands.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn running_work_is_listed_only_to_a_caller_that_could_open_its_chat() {
+        use biorouter_mcp::active_work::ActiveWorkKind;
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Active work private (test fixture)").await;
+        let public = seed_chat(
+            &state,
+            "Active work public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+
+        let in_public = RunningWork::register(
+            ActiveWorkKind::BackgroundJob,
+            "awl-public-marker",
+            Some(public.id()),
+        );
+        let withheld = [
+            (
+                RunningWork::register(
+                    ActiveWorkKind::Subagent,
+                    "awl-private-marker",
+                    Some(private.id()),
+                ),
+                "awl-private-marker",
+                "a private chat's work",
+            ),
+            (
+                RunningWork::register(
+                    ActiveWorkKind::ForegroundCommand,
+                    "awl-unowned-marker",
+                    None,
+                ),
+                "awl-unowned-marker",
+                "work that names no chat",
+            ),
+            (
+                RunningWork::register(
+                    ActiveWorkKind::DetachedTurn,
+                    "awl-dangling-marker",
+                    Some("29990101_99999"),
+                ),
+                "awl-dangling-marker",
+                "work whose chat this daemon cannot read",
+            ),
+        ];
+
+        for (headers, sees_all) in [
+            (&[][..], false),
+            (&[PROOF][..], true),
+            (&[PRIVATE_CAPABILITY][..], true),
+        ] {
+            let (status, body) = call(state.clone(), "GET", "/active_work", None, headers).await;
+            assert_eq!(status, StatusCode::OK, "{headers:?}: {body}");
+            let ids = active_work_ids(&body);
+            assert!(
+                ids.contains(in_public.id()) && body.contains("awl-public-marker-detail"),
+                "{headers:?} lost a public chat's work: {body}"
+            );
+            for (work, marker, what) in &withheld {
+                assert_eq!(
+                    ids.contains(work.id()),
+                    sees_all,
+                    "{headers:?}: {what} listed = {}",
+                    ids.contains(work.id())
+                );
+                if !sees_all {
+                    assert!(
+                        !body.contains(marker),
+                        "{headers:?} leaked {what}'s command or prompt without its id: {body}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `POST /active_work/{id}/cancel` stopped any of those rows by its registry
+    /// id, for a caller holding nothing but the daemon secret. The id is
+    /// resolved to the chat that owns the work and the READ's own gate is
+    /// applied, so stopping a chat's work is never easier than reading the chat:
+    /// the same status, the same bytes — and the same answer for work that names
+    /// no chat, for a handle that names nothing, and for a schedule that is not
+    /// running, so a refusal says nothing about which it was.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn running_work_is_cancelled_only_by_a_caller_that_could_open_its_chat() {
+        use biorouter_mcp::active_work::ActiveWorkKind;
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Active work cancel private (test fixture)").await;
+        let public = seed_chat(
+            &state,
+            "Active work cancel public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+        let in_private = RunningWork::register(
+            ActiveWorkKind::Subagent,
+            "awc-private-marker",
+            Some(private.id()),
+        );
+        let unowned = RunningWork::register(
+            ActiveWorkKind::ForegroundCommand,
+            "awc-unowned-marker",
+            None,
+        );
+        let in_public = RunningWork::register(
+            ActiveWorkKind::BackgroundJob,
+            "awc-public-marker",
+            Some(public.id()),
+        );
+        let cancel = |id: &str| format!("/active_work/{id}/cancel");
+
+        // The words the read itself answers this caller with.
+        let read = call(
+            state.clone(),
+            "GET",
+            &format!("/sessions/{}", private.id()),
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(
+            read,
+            (StatusCode::FORBIDDEN, SESSION_OUT_OF_REACH.to_string())
+        );
+
+        for (id, what) in [
+            (in_private.id(), "a private chat's work"),
+            (unowned.id(), "work that names no chat"),
+            ("bg-999999999", "a handle that names nothing"),
+            (
+                "sched:awc-no-such-schedule",
+                "a schedule that is not running",
+            ),
+        ] {
+            let answer = call(state.clone(), "POST", &cancel(id), None, &[]).await;
+            assert_eq!(
+                answer, read,
+                "{what} was not refused exactly as the private chat's read is"
+            );
+        }
+        assert!(
+            !in_private.stopped(),
+            "a caller holding only the daemon secret stopped a private chat's work"
+        );
+        assert!(
+            !unowned.stopped(),
+            "a caller holding only the daemon secret stopped work that names no chat"
+        );
+
+        // A public chat's work is still anyone's to stop, as it always was.
+        let (status, body) = call(state.clone(), "POST", &cancel(in_public.id()), None, &[]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(in_public.stopped());
+
+        // The person at the keyboard, and a program on a private model, stop
+        // anything — and are told the truth about a handle that names nothing.
+        let (status, body) = call(
+            state.clone(),
+            "POST",
+            &cancel(in_private.id()),
+            None,
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(in_private.stopped());
+        let (status, body) = call(
+            state.clone(),
+            "POST",
+            &cancel(unowned.id()),
+            None,
+            &[PRIVATE_CAPABILITY],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(unowned.stopped());
+        let (status, _) = call(
+            state.clone(),
+            "POST",
+            &cancel("bg-999999999"),
+            None,
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     /// The knowledge-base layer, through the tree the daemon SERVES: nested
     /// under `/knowledge` by `configure`, beneath `gate_knowledge_active`. Every
     /// other test of it drives `knowledge::router` bare, and a layer that reads
@@ -3713,6 +4262,11 @@ mod bypass_tests {
         let state = AppState::new().await.unwrap();
         let private = seed_private_chat(&state, "SD-10 served private (test fixture)").await;
         let bases = seed_bases(&state, "sd10").await;
+        let work = RunningWork::register(
+            biorouter_mcp::active_work::ActiveWorkKind::Subagent,
+            "sd10-work-marker",
+            Some(private.id()),
+        );
         let served = [("cookie", cookie.as_str())];
         let wrong = [(
             "cookie",
@@ -3729,6 +4283,15 @@ mod bypass_tests {
             );
             let ids = sidebar_ids(&state, 50, headers).await;
             assert_eq!(ids.contains(&private.id().to_string()), operator);
+
+            // Running work is a listing, so it keeps the operator's reach too.
+            let (status, body) = call(state.clone(), "GET", "/active_work", None, headers).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                active_work_ids(&body).contains(work.id()),
+                operator,
+                "GET /active_work {headers:?}"
+            );
 
             let (status, body) =
                 call(state.clone(), "GET", "/knowledge/bases", None, headers).await;
@@ -3779,6 +4342,27 @@ mod bypass_tests {
                 .await
                 .is_ok(),
             "the served cookie deleted a private chat"
+        );
+
+        // …nor at the cancel, which names ONE chat's work: the interface is
+        // listed the private chat's work and cannot stop it, as it is listed the
+        // private chat and cannot open or delete it.
+        let (status, body) = call(
+            state.clone(),
+            "POST",
+            &format!("/active_work/{}/cancel", work.id()),
+            None,
+            &served,
+        )
+        .await;
+        assert_eq!(
+            (status, body.as_str()),
+            (StatusCode::FORBIDDEN, SESSION_OUT_OF_REACH),
+            "POST /active_work/{{id}}/cancel with the served cookie"
+        );
+        assert!(
+            !work.stopped(),
+            "the served cookie stopped a private chat's work"
         );
     }
 

@@ -317,6 +317,15 @@ const REGISTRY: &[Guard] = &[
             // handler which imported the module and never called the gate would
             // read as refs-only and stand out.
             Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(0, 3, 0),
+                kind: SiteKind::Unrelated,
+                what: "the MODULE qualifier on `session_reach::HttpCaller`, `http_caller` and \
+                       `work_reach`. `GET /active_work` filters through `lists_work` and its \
+                       cancel asks `work_reach`, which calls this function for the work's chat; \
+                       neither route calls it directly, which is what refs-only records here",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/agent.rs",
                 counts: c(6, 6, 0),
                 kind: SiteKind::Guard,
@@ -427,10 +436,12 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: SESSION_REACH,
-                counts: c(2, 0, 0),
+                counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`gate_knowledge_active`, whose GET query and POST body branches each \
-                       invoke the same reach gate",
+                       invoke the same reach gate; and `work_reach`, which asks it for the chat a \
+                       piece of running work belongs to, so stopping a chat's work is gated by \
+                       the very call that gates reading it",
             },
         ],
     },
@@ -458,14 +469,17 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(3, 0, 0),
+            counts: c(4, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach` itself, which is this predicate plus the two lookups that \
-                   feed it; and since QA's 2026-09-10 sweep `HttpCaller::lists_session` (a \
-                   listing is the rows this decision admits, one at a time) and \
-                   `HttpCaller::reach_knowledge_base` (the same decision with a knowledge \
-                   base as the target). ONE decision, three subjects: a second spelling of it \
-                   is what this census exists to stop",
+                   feed it; and since QA's 2026-09-10 sweep `HttpCaller::admits` (a listing is \
+                   the rows this decision admits, one at a time — the one spelling that both \
+                   `lists_session` and, for running work, `lists_work` are) and \
+                   `HttpCaller::reach_knowledge_base` (the same decision with a knowledge base \
+                   as the target); and `work_reach`'s arm for running work that names no chat, \
+                   whose target is `Unreadable` because there is no chat to resolve. ONE \
+                   decision, four subjects: a second spelling of it is what this census exists \
+                   to stop",
         }],
     },
     Guard {
@@ -476,6 +490,14 @@ const REGISTRY: &[Guard] = &[
                   operator's tier for a request carrying the served document's cookie",
         status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /active_work`, every running shell command and subagent prompt on \
+                       the machine, each row shown by the chat it belongs to — resolved once for \
+                       the whole list",
+            },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
                 counts: c(3, 0, 0),
@@ -537,6 +559,40 @@ const REGISTRY: &[Guard] = &[
         ],
     },
     Guard {
+        ident: "lists_work",
+        defined_in: SESSION_REACH,
+        decides: "whether a listing of RUNNING WORK may show a caller a row belonging to a given \
+                  chat — or to none. The chat is resolved metadata-only, and a row naming no \
+                  chat, or one that cannot be read, is answered as a private chat's row: its \
+                  command came from some chat and nothing says whose",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/active_work.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`visible_items`, which `GET /active_work` passes every row through — \
+                   background jobs, foreground commands, subagents, detached turns and scheduled \
+                   runs alike — after one `http_caller` for the whole list",
+        }],
+    },
+    Guard {
+        ident: "work_reach",
+        defined_in: SESSION_REACH,
+        decides: "whether an HTTP caller naming RUNNING WORK by its own handle may stop it: the \
+                  work's chat through `session_reach` itself, and work that names no chat — or a \
+                  handle that names nothing — as an unreadable target, refused in the same words",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/active_work.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`POST /active_work/{id}/cancel`, after the id is resolved to its chat (the \
+                   registry entry's, or the running schedule's) and before the registry's cancel \
+                   action or the scheduler's kill. It stopped any chat's work for a caller \
+                   holding only the daemon secret",
+        }],
+    },
+    Guard {
         ident: "reach_knowledge_base",
         defined_in: SESSION_REACH,
         decides: "whether an HTTP caller naming a knowledge base may reach it: the chat gate's \
@@ -590,10 +646,12 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(1, 0, 0),
+            counts: c(2, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach`'s tier lookup, deliberately `with_messages: false` so \
-                   resolving a tier is never the way to load the transcript being refused",
+                   resolving a tier is never the way to load the transcript being refused; and \
+                   `HttpCaller::lists_work`'s, for a row of running work that names a chat — \
+                   the same lookup, so an unreadable chat fails closed there too",
         }],
     },
     // ----------------------------------------------------- extension tiering
