@@ -117,8 +117,10 @@ print('wrote', envf, '(len', len(key), ')')
 PY
 ```
 
-The provider env vars (`AZURE_OPENAI_ENDPOINT`, deployment, api-version) are already in
-`~/.config/biorouter/config.yaml`; only the key needs supplying.
+Only the key needs supplying: `versa_azure`'s endpoint, deployment and API version are compiled
+in, and `VERSA_AZURE_ENDPOINT` / `_DEPLOYMENT_NAME` / `_API_VERSION` in
+`~/.config/biorouter/config.yaml` override them. It does not read the public Azure provider's
+`AZURE_OPENAI_*` keys, so those change nothing here.
 
 ### 1.5 Start the daemon
 
