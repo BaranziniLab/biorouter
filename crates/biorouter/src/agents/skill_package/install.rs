@@ -75,6 +75,21 @@ pub fn install_root() -> PathBuf {
     crate::agents::skills_extension::skills_root(&Paths::config_dir())
 }
 
+/// Why [`install`] would refuse `plan` into `root` as shadowing something
+/// Biorouter ships — the very verdict it reaches, from the same guard — or
+/// `None`.
+///
+/// For a caller that must decide what to tell the user before it installs
+/// anything. The CLI's "already installed — re-run with `--force`" advice ran
+/// ahead of [`refuse_shipped`], so over a shipped name it recommended a flag
+/// that [`install`] then refused (QA-D F10). Asking this instead of re-deriving
+/// the rule keeps the advice and the guard from disagreeing. Read-only: the
+/// guard itself stays the single choke point on both [`install`] and
+/// [`remove`].
+pub fn shipped_refusal(plan: &ImportPlan, root: &Path) -> Option<String> {
+    refuse_shipped(&install_root(), root, &plan.id)
+}
+
 /// Write `plan` into `root`, atomically, and refresh the catalog.
 ///
 /// Refuses a plan that still carries an unanswered [`ImportPlan::ambiguity`] —

@@ -10,23 +10,25 @@ const MAX_REASON_CHARS = 160;
  * A failed knowledge-selection read, reduced to one line for the console.
  *
  * ⚠ **The paragraph this trims is deliberate, correct, and written for somebody
- * else.** Opening a private chat while a public model is bound refuses
- * `GET /knowledge/active` with ~900 characters addressed to an AI AGENT — "Do
- * not retry as you are… If this task genuinely needs that chat, stop and ask
- * the user to open it for you." That text is privacy-critical, pinned by
- * repo-grep tests in `crates/biorouter-server/src/routes/session_reach.rs`, and
- * nothing here changes it or should.
+ * else.** A request naming a private chat on `GET /knowledge/active` with
+ * neither the user's proof nor a private model behind it is refused with ~900
+ * characters addressed to an AI AGENT — "Do not retry as you are… If this task
+ * genuinely needs that chat, stop and ask the user to open it for you." That
+ * text is privacy-critical, pinned by repo-grep tests in
+ * `crates/biorouter-server/src/routes/session_reach.rs`, and nothing here
+ * changes it or should. In a console its only reader is a person, who has no
+ * task, is not an agent and cannot open the chat "for" anybody, so the console
+ * keeps a one-line record: the read did not settle, and which one.
  *
- * What was wrong is where it landed: in the devtools console of a **desktop**
- * app, where the chat had opened correctly and rendered in full, and where the
- * only reader is a person who has no task, is not an agent, and cannot open the
- * chat "for" anybody. A normal, correct outcome printed as a wall of red-flag
- * prose reads as a crash.
- *
- * So the console keeps a one-line record — the read did not settle, and which
- * one — and the user-facing answer lives where a person will actually see it:
- * the composer's own note about the model this chat is pinned to
- * (`privacy/PinnedModelNote`).
+ * ⚠ **Until 2026-09-11 this said the refusal was "a normal, correct outcome"
+ * for a private chat opened in the desktop app while a public model was bound.
+ * It was neither.** The desktop's reads carried no proof, so the daemon refused
+ * every private chat whatever model was bound (measured with a chat on its own
+ * private model), and the renderer went on to show — and write back — the
+ * selection it had cached. The reads carry `userActionHeaders()` now, as the
+ * write always did (`KnowledgeContext.tsx`). The refusal still reaches a
+ * console from a caller that genuinely has neither: a daemon started without a
+ * user-action key, or a browser tab not running a private model.
  *
  * Trimming to the first sentence rather than to a fixed prefix is what keeps
  * this useful for the failures that are NOT the refusal: "Failed to fetch" and

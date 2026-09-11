@@ -18,10 +18,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const source = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), 'toasts.tsx'),
-  'utf8'
-);
+const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'toasts.tsx'), 'utf8');
 
 /** The shared options block every toast in the app is built from. */
 function commonToastOptionsBlock(): string {

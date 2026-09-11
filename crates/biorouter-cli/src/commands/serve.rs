@@ -25,13 +25,33 @@
 //! configuration, not a missing feature — but it does mean the daemon a `serve`
 //! session talks to is less capable than the one the desktop application
 //! starts, and anything assuming otherwise is wrong.
+//!
+//! # Why the daemon cannot outlive this command
+//!
+//! The daemon holds the port, and it answers the browser token and serves the
+//! shell carrying its secret for as long as it runs — so stopping `serve` is
+//! the only way an operator has to revoke the URL it printed. Two layers make
+//! that hold however `serve` ends:
+//!
+//! 1. Every way out of [`handle_serve`] after the spawn — SIGINT, SIGTERM, the
+//!    daemon dying, a startup that never became ready — goes through
+//!    [`stop_daemon`], which asks the daemon to stop, waits, and then kills
+//!    and reaps it.
+//! 2. On Unix the daemon is started with `--exit-with-parent <our pid>` and
+//!    stops itself once this process is gone, which covers the endings that run
+//!    no code at all: SIGKILL, a crash.
+//!
+//! Before this, the only thing that ever stopped the daemon was a terminal's
+//! Ctrl-C, which reaches the whole foreground process group and so the daemon
+//! directly. `kill <pid of serve>` from anywhere else left it running.
 
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
 use anyhow::{bail, Context, Result};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{TcpListener, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
+use tokio::process::{Child, Command};
 
 /// Not 3000. That is `biorouterd`'s own default, and the old `biorouter web`
 /// used it too — a default that collides with the daemon this command starts is
@@ -40,6 +60,14 @@ pub const DEFAULT_PORT: u16 = 8765;
 
 /// How long to wait for the daemon to answer before giving up.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long the daemon gets to shut down on its own before it is killed.
+///
+/// Its graceful shutdown waits for open connections to finish, and a browser
+/// tab that is still open holds some that never do — so without a limit,
+/// stopping `serve` with a tab open would wait forever. The daemon applies the
+/// same figure to itself when it finds itself orphaned.
+const STOP_GRACE: Duration = Duration::from_secs(10);
 
 /// Run the browser-served interface.
 #[allow(clippy::too_many_arguments)]
@@ -64,18 +92,7 @@ pub async fn handle_serve(
         );
     }
 
-    let web_dir = match web_dir {
-        Some(dir) => {
-            if !dir.join("index.html").is_file() {
-                bail!(
-                    "no web interface at {} (expected an index.html there)",
-                    dir.display()
-                );
-            }
-            dir
-        }
-        None => resolve_web_dir()?,
-    };
+    let web_dir = resolve_web_dir(web_dir)?;
 
     let browser_token = if no_token {
         None
@@ -90,9 +107,21 @@ pub async fn handle_serve(
     // child, so the pair covers the race this pre-flight cannot.
     preflight_port(&host, port)?;
 
+    // Listen for a stop request BEFORE the daemon exists. A handler replaces
+    // the default action — which for SIGTERM is to end this process on the spot
+    // and leave the daemon behind — so from here on a signal waits to be read,
+    // including one that lands during the readiness wait below.
+    let mut stop = StopSignals::install()?;
+
     let daemon = resolve_biorouterd()?;
-    let mut child = Command::new(&daemon)
-        .arg("agent")
+    let mut command = Command::new(&daemon);
+    command.arg("agent");
+    // The second layer; see the module documentation.
+    #[cfg(unix)]
+    command
+        .arg("--exit-with-parent")
+        .arg(std::process::id().to_string());
+    let mut child = command
         .env("BIOROUTER_HOST", &host)
         .env("BIOROUTER_PORT", port.to_string())
         .env("BIOROUTER_SERVER__SECRET_KEY", &secret_key)
@@ -104,22 +133,65 @@ pub async fn handle_serve(
         )
         // See the module documentation: no proof-of-user digest, on purpose.
         .stdin(Stdio::null())
+        // A backstop for a panic unwinding through here. Every ordinary path
+        // goes through `stop_daemon`, which asks before it insists.
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("could not start {}", daemon.display()))?;
 
-    if let Err(e) = wait_until_ready(&host, port, &mut child) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(e);
-    }
+    let outcome: Result<()> = async {
+        tokio::select! {
+            ready = wait_until_ready(&host, port, &mut child) => ready?,
+            _ = stop.recv() => {
+                println!("\nStopping.");
+                return Ok(());
+            }
+        }
 
-    let url = browser_url(&host, port, browser_token.as_deref());
+        let url = browser_url(&host, port, browser_token.as_deref());
+        print_banner(
+            &url,
+            &host,
+            port,
+            browser_token.as_deref(),
+            bind_is_loopback,
+        );
+        if open_browser {
+            let _ = webbrowser::open(&url);
+        }
+
+        tokio::select! {
+            _ = stop.recv() => {
+                println!("\nStopping.");
+                Ok(())
+            }
+            status = child.wait() => match status {
+                Ok(s) if s.success() => Ok(()),
+                Ok(s) => bail!("biorouterd exited with {s}"),
+                Err(e) => bail!("could not wait on biorouterd: {e}"),
+            },
+        }
+    }
+    .await;
+
+    stop_daemon(&mut child, &mut stop).await;
+    outcome
+}
+
+/// What the operator reads once the daemon is answering.
+fn print_banner(
+    url: &str,
+    host: &str,
+    port: u16,
+    browser_token: Option<&str>,
+    bind_is_loopback: bool,
+) {
     println!("\n  Biorouter is serving at\n\n      {url}\n");
     if !bind_is_loopback {
-        match reachable_address(&host) {
+        match reachable_address(host) {
             Some(addr) => println!(
                 "  From another machine on this network:\n\n      {}\n",
-                browser_url(&addr, port, browser_token.as_deref())
+                browser_url(&addr, port, browser_token)
             ),
             // The old implementation fell back to 127.0.0.1 here, which printed
             // a URL that could not possibly work from the other machine the user
@@ -138,36 +210,110 @@ pub async fn handle_serve(
     }
     println!("  The model is whichever `biorouter configure` chose; a browser cannot change it.");
     println!("  Press Ctrl-C to stop.\n");
+}
 
-    if open_browser {
-        let _ = webbrowser::open(&url);
+/// The requests to stop that `serve` honours: SIGINT and SIGTERM on Unix,
+/// Ctrl-C elsewhere.
+///
+/// SIGHUP is deliberately left alone. A terminal hanging up signals the whole
+/// foreground process group, daemon included; `nohup` exists to make both
+/// ignore it, and installing a handler here would override that. Any other
+/// SIGHUP ends `serve` the default way and the daemon's parent watch follows.
+struct StopSignals {
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn install() -> Result<Self> {
+        #[cfg(unix)]
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            #[cfg(unix)]
+            interrupt: signal(SignalKind::interrupt()).context("could not listen for SIGINT")?,
+            #[cfg(unix)]
+            terminate: signal(SignalKind::terminate()).context("could not listen for SIGTERM")?,
+        })
     }
 
-    // Hand the terminal back to the daemon and stop when it does, or when the
-    // user interrupts. Killing the child on the way out is what stops a stray
-    // daemon holding the port after Ctrl-C.
-    let result = tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            println!("\nStopping.");
-            Ok(())
+    /// Resolve on the next request to stop.
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
         }
-        status = tokio::task::spawn_blocking(move || child.wait()) => {
-            match status {
-                Ok(Ok(s)) if s.success() => Ok(()),
-                Ok(Ok(s)) => bail!("biorouterd exited with {s}"),
-                Ok(Err(e)) => bail!("could not wait on biorouterd: {e}"),
-                Err(e) => bail!("could not wait on biorouterd: {e}"),
-            }
+        // A console Ctrl-C reaches every process attached to the console, so on
+        // Windows the daemon has been told as well and is already stopping.
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
         }
-    };
-    result
+    }
 }
+
+/// Stop the daemon and reap it: ask, give it [`STOP_GRACE`], then insist.
+///
+/// A second request to stop while it is shutting down skips the rest of the
+/// wait. A daemon that has already exited is only reaped, so every path can end
+/// here without first asking whether it needs to.
+async fn stop_daemon(child: &mut Child, stop: &mut StopSignals) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    ask_to_stop(child);
+    tokio::select! {
+        waited = tokio::time::timeout(STOP_GRACE, child.wait()) => {
+            if matches!(waited, Ok(Ok(_))) {
+                return;
+            }
+            // The usual reason, measured: an open browser tab keeps the
+            // renderer's 25 s catalog long poll parked on the daemon, and its
+            // graceful shutdown waits for that request to finish.
+            eprintln!(
+                "biorouterd did not finish within {}s (an open browser tab keeps a request \
+                 waiting); killing it.",
+                STOP_GRACE.as_secs()
+            );
+        }
+        _ = stop.recv() => eprintln!("Killing biorouterd."),
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+/// Ask the daemon to shut down gracefully: SIGTERM, which it handles exactly as
+/// it handles Ctrl-C — draining connections and taking a llama-server sidecar
+/// down with it.
+#[cfg(unix)]
+fn ask_to_stop(child: &Child) {
+    let Some(pid) = child.id().and_then(|p| libc::pid_t::try_from(p).ok()) else {
+        return;
+    };
+    // SAFETY: `kill(2)` has no memory-safety preconditions. `id()` is `None`
+    // once the child has been reaped, so this pid is still our own child and
+    // cannot have been recycled for an unrelated process.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+}
+
+/// Windows has no SIGTERM to send. A console Ctrl-C has usually reached the
+/// daemon already; if nothing has, [`stop_daemon`] kills it once the grace has
+/// passed.
+#[cfg(not(unix))]
+fn ask_to_stop(_child: &Child) {}
 
 /// The URL to open, with the browser token in it.
 ///
-/// The token is spent on the first request: the daemon exchanges it for a
-/// session cookie and redirects, so it does not linger in the address bar or in
-/// the `Referer` of anything the page later loads.
+/// Opening it exchanges the token for a session cookie and redirects, so the
+/// token does not linger in the address bar or in the `Referer` of anything the
+/// page later loads. It is not *spent*, which is how this comment used to put
+/// it: the exchange works as often as the token is presented, for anyone who
+/// has it, until the daemon stops. Decision SD-9 in
+/// `docs/deployment/serve-decisions.md` records why that is deliberate.
 fn browser_url(host: &str, port: u16, token: Option<&str>) -> String {
     // A bare IPv6 address needs brackets in a URL; a hostname must not have them.
     let host = if host.contains(':') && !host.starts_with('[') {
@@ -238,7 +384,10 @@ fn preflight_port(host: &str, port: u16) -> Result<()> {
 /// reports success against *any* listener on that port — so a daemon that died
 /// on startup, next to some unrelated process holding the port, looks exactly
 /// like a healthy one.
-fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> Result<()> {
+///
+/// Asynchronous so that a request to stop can interrupt it: the wait can run
+/// for a minute, and the daemon is already running for all of it.
+async fn wait_until_ready(host: &str, port: u16, child: &mut Child) -> Result<()> {
     let connect_host = match host {
         "0.0.0.0" => "127.0.0.1",
         "::" | "[::]" => "::1",
@@ -249,9 +398,13 @@ fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> R
         if let Some(status) = child.try_wait().context("could not poll biorouterd")? {
             bail!("biorouterd exited during startup with {status}");
         }
-        if let Ok(addrs) = (connect_host, port).to_socket_addrs() {
+        if let Ok(addrs) = tokio::net::lookup_host((connect_host, port)).await {
             for addr in addrs {
-                if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+                let attempt = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    tokio::net::TcpStream::connect(addr),
+                );
+                if matches!(attempt.await, Ok(Ok(_))) {
                     return Ok(());
                 }
             }
@@ -262,7 +415,7 @@ fn wait_until_ready(host: &str, port: u16, child: &mut std::process::Child) -> R
                 READY_TIMEOUT.as_secs()
             );
         }
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -281,7 +434,70 @@ fn resolve_biorouterd() -> Result<PathBuf> {
     Ok(PathBuf::from(daemon_file_name()))
 }
 
-/// Candidate locations for the built interface, in order.
+/// Where the interface comes from: `--web-dir`, else `BIOROUTER_SERVE_UI`, else
+/// the first of [`web_dir_candidates`] that holds one.
+fn resolve_web_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
+    choose_web_dir(
+        flag,
+        std::env::var_os("BIOROUTER_SERVE_UI"),
+        web_dir_candidates,
+    )
+}
+
+/// [`resolve_web_dir`], with what it reads passed in.
+///
+/// A directory the operator names — with the flag or with the variable — is
+/// used as named or refused, never skipped. The variable used to be only the
+/// first *candidate* of the search, so one naming a directory with no
+/// `index.html` was passed over in silence and `serve` went on to serve
+/// whatever the search found next: a bundle the operator had not chosen, with
+/// nothing to say so, while the same path given as `--web-dir` was refused.
+/// The flag wins when both are set, as a command line does over the
+/// environment it runs in.
+fn choose_web_dir(
+    flag: Option<PathBuf>,
+    variable: Option<std::ffi::OsString>,
+    candidates: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<PathBuf> {
+    let named = match (flag, variable) {
+        (Some(dir), _) => Some((dir, "--web-dir")),
+        // Blank reads as unset, as it does for `BIOROUTER_PATH_ROOT`: taken
+        // literally, an empty path is the working directory.
+        (None, Some(dir)) if !dir.to_string_lossy().trim().is_empty() => {
+            Some((PathBuf::from(dir), "BIOROUTER_SERVE_UI"))
+        }
+        (None, _) => None,
+    };
+    if let Some((dir, source)) = named {
+        if !dir.join("index.html").is_file() {
+            bail!(
+                "no web interface at {} (expected an index.html there; the path came from \
+                 {source})",
+                dir.display()
+            );
+        }
+        return Ok(dir);
+    }
+
+    let candidates = candidates();
+    for candidate in &candidates {
+        if candidate.join("index.html").is_file() {
+            return Ok(normalise(candidate));
+        }
+    }
+    let tried = candidates
+        .iter()
+        .map(|p| format!("  {}", normalise(p).display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!(
+        "could not find the Biorouter web interface. Tried:\n{tried}\n\nPoint at it with \
+         --web-dir <dir>, or set BIOROUTER_SERVE_UI. In a development tree, build it with \
+         `cd ui/desktop && npm run build:web`."
+    )
+}
+
+/// Where to look for the built interface when none was named, in order.
 ///
 /// Returned as a list so the failure can name every one of them. An error that
 /// says only "not found" leaves the reader guessing which of four layouts the
@@ -307,9 +523,6 @@ fn web_dir_candidates() -> Vec<PathBuf> {
 /// location, which is a fixed path that has nothing to do with this install.
 fn web_dir_candidates_for(exe: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(dir) = std::env::var("BIOROUTER_SERVE_UI") {
-        out.push(PathBuf::from(dir));
-    }
     if let Some(dir) = exe.and_then(Path::parent) {
         // Packaged: the binaries sit in `Resources/bin`, the bundle beside
         // them in `Resources/web`.
@@ -336,25 +549,6 @@ fn web_dir_candidates_for(exe: Option<&Path>) -> Vec<PathBuf> {
     // /usr/bin, `../web` is /usr/web.
     out.push(PathBuf::from("/usr/share/biorouter/web"));
     out
-}
-
-fn resolve_web_dir() -> Result<PathBuf> {
-    let candidates = web_dir_candidates();
-    for candidate in &candidates {
-        if candidate.join("index.html").is_file() {
-            return Ok(normalise(candidate));
-        }
-    }
-    let tried = candidates
-        .iter()
-        .map(|p| format!("  {}", normalise(p).display()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    bail!(
-        "could not find the Biorouter web interface. Tried:\n{tried}\n\nPoint at it with \
-         --web-dir <dir>, or set BIOROUTER_SERVE_UI. In a development tree, build it with \
-         `cd ui/desktop && npm run build:web`."
-    )
 }
 
 /// Tidy `a/b/../c` for display without touching the filesystem.
@@ -445,9 +639,6 @@ mod tests {
     /// installation layouts they are in.
     #[test]
     fn a_missing_interface_names_every_path_it_tried() {
-        // Held because the sibling tests below set this variable, and
-        // `web_dir_candidates` reads it.
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let candidates = web_dir_candidates();
         assert!(
             candidates.len() >= 2,
@@ -459,23 +650,129 @@ mod tests {
         );
     }
 
-    /// Restated against `web_dir_candidates_for`, which takes the executable as
-    /// an argument: the previous version scanned this file's own source for the
-    /// order two string literals appear in, and would have passed against a
-    /// build that never read the variable at all.
+    /// A search that would find a bundle, so the tests below can tell a
+    /// refusal from a quiet fall-back to something else — which is exactly
+    /// what finding F8 was.
+    fn a_bundle_found_elsewhere(root: &Path) -> impl FnOnce() -> Vec<PathBuf> {
+        let web = root.join("found-elsewhere");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), b"<!doctype html>").unwrap();
+        move || vec![web]
+    }
+
+    fn an_interface_at(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("index.html"), b"<!doctype html>").unwrap();
+        dir.to_path_buf()
+    }
+
+    /// Finding F8 of the 2026-09-10 QA run: `--web-dir` naming a directory
+    /// with no interface was fatal, while `BIOROUTER_SERVE_UI` naming the same
+    /// directory was skipped and `serve` served the next bundle it found.
     #[test]
-    fn an_explicit_setting_is_looked_at_before_anything_else() {
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_SERVE_UI",
-            Some("/somewhere/explicit/web".to_string()),
-        )]);
-        let candidates =
-            web_dir_candidates_for(Some(Path::new("/opt/Biorouter/resources/bin/biorouter")));
+    fn a_named_directory_without_an_interface_is_refused_however_it_was_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let typo = tmp.path().join("wbe");
+        for (flag, variable, source) in [
+            (Some(typo.clone()), None, "--web-dir"),
+            (
+                None,
+                Some(typo.clone().into_os_string()),
+                "BIOROUTER_SERVE_UI",
+            ),
+        ] {
+            let err = choose_web_dir(flag, variable, a_bundle_found_elsewhere(tmp.path()))
+                .expect_err("a named directory with no index.html must be refused, not skipped")
+                .to_string();
+            assert!(
+                err.starts_with(&format!(
+                    "no web interface at {} (expected an index.html there",
+                    typo.display()
+                )),
+                "both spellings must fail with the same message: {err}"
+            );
+            assert!(
+                err.contains(source),
+                "the refusal must say where the path came from: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_directory_is_used_in_preference_to_anything_the_search_finds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let named = an_interface_at(&tmp.path().join("named"));
         assert_eq!(
-            candidates.first(),
-            Some(&PathBuf::from("/somewhere/explicit/web")),
-            "the explicit setting must be consulted before the packaged locations: \
-             {candidates:?}"
+            choose_web_dir(
+                None,
+                Some(named.clone().into_os_string()),
+                a_bundle_found_elsewhere(tmp.path())
+            )
+            .unwrap(),
+            named
+        );
+        assert_eq!(
+            choose_web_dir(
+                Some(named.clone()),
+                None,
+                a_bundle_found_elsewhere(tmp.path())
+            )
+            .unwrap(),
+            named
+        );
+    }
+
+    /// The flag wins, and the variable is not even checked when it does: a
+    /// stale export in a shell profile must not fail a command line that says
+    /// exactly what to serve.
+    #[test]
+    fn the_flag_takes_precedence_over_the_variable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let flag = an_interface_at(&tmp.path().join("flag"));
+        let stale = tmp.path().join("stale").into_os_string();
+        assert_eq!(
+            choose_web_dir(
+                Some(flag.clone()),
+                Some(stale),
+                a_bundle_found_elsewhere(tmp.path())
+            )
+            .unwrap(),
+            flag
+        );
+    }
+
+    #[test]
+    fn a_blank_variable_is_not_a_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        for blank in ["", "  "] {
+            let found = choose_web_dir(
+                None,
+                Some(blank.into()),
+                a_bundle_found_elsewhere(tmp.path()),
+            )
+            .unwrap();
+            assert!(
+                found.ends_with("found-elsewhere"),
+                "a blank value must fall through to the search, got {found:?}"
+            );
+        }
+    }
+
+    /// The tests above pass the variable in, so on their own they would pass
+    /// against a build that never read it. This one goes through the real
+    /// environment.
+    #[test]
+    fn serve_reads_the_variable_it_documents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-interface-here");
+        let _env =
+            env_lock::lock_env([("BIOROUTER_SERVE_UI", Some(missing.display().to_string()))]);
+        let err = resolve_web_dir(None)
+            .expect_err("a variable naming a directory with no interface must be refused")
+            .to_string();
+        assert!(
+            err.contains("the path came from BIOROUTER_SERVE_UI"),
+            "{err}"
         );
     }
 
@@ -489,7 +786,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_executable_resolves_to_the_real_installation() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
 
         let bin = tmp.path().join("Resources").join("bin");
@@ -573,7 +869,6 @@ mod tests {
     /// rule.
     #[test]
     fn the_resolved_candidates_are_never_windows_verbatim_paths() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let exe = tmp
             .path()
@@ -648,7 +943,6 @@ mod tests {
     /// `%LOCALAPPDATA%\ui\desktop\src\web`, neither of which can ever exist.
     #[test]
     fn a_windows_style_install_finds_the_bundle_through_its_breadcrumb() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let source_bin = application(&tmp.path().join("Application"));
         let exe = windows_style_install(tmp.path());
@@ -683,7 +977,6 @@ mod tests {
     /// the binary is this installation's own and must win.
     #[test]
     fn the_breadcrumb_is_consulted_after_the_locations_beside_the_binary() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let source_bin = application(&tmp.path().join("Application"));
         let exe = windows_style_install(tmp.path());
@@ -721,7 +1014,6 @@ mod tests {
     /// install that used to work no longer does.
     #[test]
     fn a_stale_breadcrumb_is_named_among_the_paths_that_were_tried() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let application_root = tmp.path().join("Application");
         let source_bin = application(&application_root);
@@ -757,7 +1049,6 @@ mod tests {
     /// at all, and a file that is empty or is not a path.
     #[test]
     fn a_missing_or_unusable_breadcrumb_falls_back_without_panicking() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let exe = windows_style_install(tmp.path());
         let install = exe.parent().unwrap().to_path_buf();
