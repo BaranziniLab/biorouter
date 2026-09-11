@@ -62,7 +62,7 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-d
 | `-p, --port <n>` | Port to listen on. | `8765` |
 | `--token <t>` | Use this access token instead of generating a fresh one. | A new random token each launch |
 | `--no-token` | Serve with no access token. Refused for a non-loopback bind, and cannot be combined with `--token`. | Off |
-| `--web-dir <dir>` | Directory holding the built interface. The directory must contain an `index.html`. | Found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
+| `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
 | `--open` | Open a browser once the server is ready. | Off |
 
 The default port is `8765` rather than `3000` deliberately: `3000` is `biorouterd`'s own default, so
@@ -251,24 +251,36 @@ serving machine first.
 
 ### When the interface cannot be found
 
-`serve` looks for the built interface in a fixed order, and names every location it tried when it
+A directory you name is used as named, or not at all. `--web-dir <dir>` wins when it is given;
+otherwise `BIOROUTER_SERVE_UI` does, if it is set to anything but blank. Whichever it is must
+contain an `index.html`. If it does not, `serve` stops with the same error for both, naming where
+the path came from:
+
+```text
+no web interface at /srv/biorouter/wbe (expected an index.html there; the path came from BIOROUTER_SERVE_UI)
+```
+
+It does not move on to a bundle it found somewhere else. Through version 1.90.3 a
+`BIOROUTER_SERVE_UI` with no `index.html` was skipped without a word, and `serve` served whichever
+bundle the search below turned up next — one you had not chosen.
+
+With neither set, `serve` searches in a fixed order, and names every location it tried when it
 finds none:
 
-1. `BIOROUTER_SERVE_UI`, or `--web-dir`, if either is set.
-2. `web/` beside the installed binaries (a packaged application).
-3. `ui/desktop/src/web/` in a development tree.
-4. `web/` beside the application a Windows install was made from.
-5. `/usr/share/biorouter/web` (where the Linux packages put it).
+1. `web/` beside the installed binaries (a packaged application).
+2. `ui/desktop/src/web/` in a development tree.
+3. `web/` beside the application a Windows install was made from.
+4. `/usr/share/biorouter/web` (where the Linux packages put it).
 
 "Beside" means beside the **real** binary. On macOS and Linux the CLI is installed on `PATH` as a
-symlink (`~/.local/bin/biorouter` → the application bundle), and steps 2 and 3 follow that link
+symlink (`~/.local/bin/biorouter` → the application bundle), and steps 1 and 2 follow that link
 before deriving anything from it — otherwise they would name directories in your home folder, which
 is what they did in v1.89.5 through v1.90.2.
 
 Windows has no symlink to follow. `biorouter setup-path` — and the in-app "Biorouter CLI Update"
 card, which runs it — *copies* `biorouter.exe` into `%LOCALAPPDATA%\Biorouter\bin`, leaving
 `biorouterd.exe` and the interface behind inside the application. So the copy also records the
-folder it came from, in a small file named `.biorouter-origin` beside itself, and step 4 reads that
+folder it came from, in a small file named `.biorouter-origin` beside itself, and step 3 reads that
 back. The same record is how `serve` and `biorouter apps` find `biorouterd.exe`. It is rewritten
 every time you install, so updating the application and running `biorouter setup-path` again is what
 points the CLI at the new one.

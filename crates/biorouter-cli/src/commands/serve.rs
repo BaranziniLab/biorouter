@@ -92,18 +92,7 @@ pub async fn handle_serve(
         );
     }
 
-    let web_dir = match web_dir {
-        Some(dir) => {
-            if !dir.join("index.html").is_file() {
-                bail!(
-                    "no web interface at {} (expected an index.html there)",
-                    dir.display()
-                );
-            }
-            dir
-        }
-        None => resolve_web_dir()?,
-    };
+    let web_dir = resolve_web_dir(web_dir)?;
 
     let browser_token = if no_token {
         None
@@ -442,7 +431,70 @@ fn resolve_biorouterd() -> Result<PathBuf> {
     Ok(PathBuf::from(daemon_file_name()))
 }
 
-/// Candidate locations for the built interface, in order.
+/// Where the interface comes from: `--web-dir`, else `BIOROUTER_SERVE_UI`, else
+/// the first of [`web_dir_candidates`] that holds one.
+fn resolve_web_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
+    choose_web_dir(
+        flag,
+        std::env::var_os("BIOROUTER_SERVE_UI"),
+        web_dir_candidates,
+    )
+}
+
+/// [`resolve_web_dir`], with what it reads passed in.
+///
+/// A directory the operator names — with the flag or with the variable — is
+/// used as named or refused, never skipped. The variable used to be only the
+/// first *candidate* of the search, so one naming a directory with no
+/// `index.html` was passed over in silence and `serve` went on to serve
+/// whatever the search found next: a bundle the operator had not chosen, with
+/// nothing to say so, while the same path given as `--web-dir` was refused.
+/// The flag wins when both are set, as a command line does over the
+/// environment it runs in.
+fn choose_web_dir(
+    flag: Option<PathBuf>,
+    variable: Option<std::ffi::OsString>,
+    candidates: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<PathBuf> {
+    let named = match (flag, variable) {
+        (Some(dir), _) => Some((dir, "--web-dir")),
+        // Blank reads as unset, as it does for `BIOROUTER_PATH_ROOT`: taken
+        // literally, an empty path is the working directory.
+        (None, Some(dir)) if !dir.to_string_lossy().trim().is_empty() => {
+            Some((PathBuf::from(dir), "BIOROUTER_SERVE_UI"))
+        }
+        (None, _) => None,
+    };
+    if let Some((dir, source)) = named {
+        if !dir.join("index.html").is_file() {
+            bail!(
+                "no web interface at {} (expected an index.html there; the path came from \
+                 {source})",
+                dir.display()
+            );
+        }
+        return Ok(dir);
+    }
+
+    let candidates = candidates();
+    for candidate in &candidates {
+        if candidate.join("index.html").is_file() {
+            return Ok(normalise(candidate));
+        }
+    }
+    let tried = candidates
+        .iter()
+        .map(|p| format!("  {}", normalise(p).display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!(
+        "could not find the Biorouter web interface. Tried:\n{tried}\n\nPoint at it with \
+         --web-dir <dir>, or set BIOROUTER_SERVE_UI. In a development tree, build it with \
+         `cd ui/desktop && npm run build:web`."
+    )
+}
+
+/// Where to look for the built interface when none was named, in order.
 ///
 /// Returned as a list so the failure can name every one of them. An error that
 /// says only "not found" leaves the reader guessing which of four layouts the
@@ -468,9 +520,6 @@ fn web_dir_candidates() -> Vec<PathBuf> {
 /// location, which is a fixed path that has nothing to do with this install.
 fn web_dir_candidates_for(exe: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(dir) = std::env::var("BIOROUTER_SERVE_UI") {
-        out.push(PathBuf::from(dir));
-    }
     if let Some(dir) = exe.and_then(Path::parent) {
         // Packaged: the binaries sit in `Resources/bin`, the bundle beside
         // them in `Resources/web`.
@@ -497,25 +546,6 @@ fn web_dir_candidates_for(exe: Option<&Path>) -> Vec<PathBuf> {
     // /usr/bin, `../web` is /usr/web.
     out.push(PathBuf::from("/usr/share/biorouter/web"));
     out
-}
-
-fn resolve_web_dir() -> Result<PathBuf> {
-    let candidates = web_dir_candidates();
-    for candidate in &candidates {
-        if candidate.join("index.html").is_file() {
-            return Ok(normalise(candidate));
-        }
-    }
-    let tried = candidates
-        .iter()
-        .map(|p| format!("  {}", normalise(p).display()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    bail!(
-        "could not find the Biorouter web interface. Tried:\n{tried}\n\nPoint at it with \
-         --web-dir <dir>, or set BIOROUTER_SERVE_UI. In a development tree, build it with \
-         `cd ui/desktop && npm run build:web`."
-    )
 }
 
 /// Tidy `a/b/../c` for display without touching the filesystem.
@@ -606,9 +636,6 @@ mod tests {
     /// installation layouts they are in.
     #[test]
     fn a_missing_interface_names_every_path_it_tried() {
-        // Held because the sibling tests below set this variable, and
-        // `web_dir_candidates` reads it.
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let candidates = web_dir_candidates();
         assert!(
             candidates.len() >= 2,
@@ -620,23 +647,129 @@ mod tests {
         );
     }
 
-    /// Restated against `web_dir_candidates_for`, which takes the executable as
-    /// an argument: the previous version scanned this file's own source for the
-    /// order two string literals appear in, and would have passed against a
-    /// build that never read the variable at all.
+    /// A search that would find a bundle, so the tests below can tell a
+    /// refusal from a quiet fall-back to something else — which is exactly
+    /// what finding F8 was.
+    fn a_bundle_found_elsewhere(root: &Path) -> impl FnOnce() -> Vec<PathBuf> {
+        let web = root.join("found-elsewhere");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), b"<!doctype html>").unwrap();
+        move || vec![web]
+    }
+
+    fn an_interface_at(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("index.html"), b"<!doctype html>").unwrap();
+        dir.to_path_buf()
+    }
+
+    /// Finding F8 of the 2026-09-10 QA run: `--web-dir` naming a directory
+    /// with no interface was fatal, while `BIOROUTER_SERVE_UI` naming the same
+    /// directory was skipped and `serve` served the next bundle it found.
     #[test]
-    fn an_explicit_setting_is_looked_at_before_anything_else() {
-        let _env = env_lock::lock_env([(
-            "BIOROUTER_SERVE_UI",
-            Some("/somewhere/explicit/web".to_string()),
-        )]);
-        let candidates =
-            web_dir_candidates_for(Some(Path::new("/opt/Biorouter/resources/bin/biorouter")));
+    fn a_named_directory_without_an_interface_is_refused_however_it_was_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let typo = tmp.path().join("wbe");
+        for (flag, variable, source) in [
+            (Some(typo.clone()), None, "--web-dir"),
+            (
+                None,
+                Some(typo.clone().into_os_string()),
+                "BIOROUTER_SERVE_UI",
+            ),
+        ] {
+            let err = choose_web_dir(flag, variable, a_bundle_found_elsewhere(tmp.path()))
+                .expect_err("a named directory with no index.html must be refused, not skipped")
+                .to_string();
+            assert!(
+                err.starts_with(&format!(
+                    "no web interface at {} (expected an index.html there",
+                    typo.display()
+                )),
+                "both spellings must fail with the same message: {err}"
+            );
+            assert!(
+                err.contains(source),
+                "the refusal must say where the path came from: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_directory_is_used_in_preference_to_anything_the_search_finds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let named = an_interface_at(&tmp.path().join("named"));
         assert_eq!(
-            candidates.first(),
-            Some(&PathBuf::from("/somewhere/explicit/web")),
-            "the explicit setting must be consulted before the packaged locations: \
-             {candidates:?}"
+            choose_web_dir(
+                None,
+                Some(named.clone().into_os_string()),
+                a_bundle_found_elsewhere(tmp.path())
+            )
+            .unwrap(),
+            named
+        );
+        assert_eq!(
+            choose_web_dir(
+                Some(named.clone()),
+                None,
+                a_bundle_found_elsewhere(tmp.path())
+            )
+            .unwrap(),
+            named
+        );
+    }
+
+    /// The flag wins, and the variable is not even checked when it does: a
+    /// stale export in a shell profile must not fail a command line that says
+    /// exactly what to serve.
+    #[test]
+    fn the_flag_takes_precedence_over_the_variable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let flag = an_interface_at(&tmp.path().join("flag"));
+        let stale = tmp.path().join("stale").into_os_string();
+        assert_eq!(
+            choose_web_dir(
+                Some(flag.clone()),
+                Some(stale),
+                a_bundle_found_elsewhere(tmp.path())
+            )
+            .unwrap(),
+            flag
+        );
+    }
+
+    #[test]
+    fn a_blank_variable_is_not_a_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        for blank in ["", "  "] {
+            let found = choose_web_dir(
+                None,
+                Some(blank.into()),
+                a_bundle_found_elsewhere(tmp.path()),
+            )
+            .unwrap();
+            assert!(
+                found.ends_with("found-elsewhere"),
+                "a blank value must fall through to the search, got {found:?}"
+            );
+        }
+    }
+
+    /// The tests above pass the variable in, so on their own they would pass
+    /// against a build that never read it. This one goes through the real
+    /// environment.
+    #[test]
+    fn serve_reads_the_variable_it_documents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-interface-here");
+        let _env =
+            env_lock::lock_env([("BIOROUTER_SERVE_UI", Some(missing.display().to_string()))]);
+        let err = resolve_web_dir(None)
+            .expect_err("a variable naming a directory with no interface must be refused")
+            .to_string();
+        assert!(
+            err.contains("the path came from BIOROUTER_SERVE_UI"),
+            "{err}"
         );
     }
 
@@ -650,7 +783,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_executable_resolves_to_the_real_installation() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
 
         let bin = tmp.path().join("Resources").join("bin");
@@ -734,7 +866,6 @@ mod tests {
     /// rule.
     #[test]
     fn the_resolved_candidates_are_never_windows_verbatim_paths() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let exe = tmp
             .path()
@@ -809,7 +940,6 @@ mod tests {
     /// `%LOCALAPPDATA%\ui\desktop\src\web`, neither of which can ever exist.
     #[test]
     fn a_windows_style_install_finds_the_bundle_through_its_breadcrumb() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let source_bin = application(&tmp.path().join("Application"));
         let exe = windows_style_install(tmp.path());
@@ -844,7 +974,6 @@ mod tests {
     /// the binary is this installation's own and must win.
     #[test]
     fn the_breadcrumb_is_consulted_after_the_locations_beside_the_binary() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let source_bin = application(&tmp.path().join("Application"));
         let exe = windows_style_install(tmp.path());
@@ -882,7 +1011,6 @@ mod tests {
     /// install that used to work no longer does.
     #[test]
     fn a_stale_breadcrumb_is_named_among_the_paths_that_were_tried() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let application_root = tmp.path().join("Application");
         let source_bin = application(&application_root);
@@ -918,7 +1046,6 @@ mod tests {
     /// at all, and a file that is empty or is not a path.
     #[test]
     fn a_missing_or_unusable_breadcrumb_falls_back_without_panicking() {
-        let _env = env_lock::lock_env([("BIOROUTER_SERVE_UI", None::<String>)]);
         let tmp = tempfile::tempdir().unwrap();
         let exe = windows_style_install(tmp.path());
         let install = exe.parent().unwrap().to_path_buf();

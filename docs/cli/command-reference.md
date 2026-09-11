@@ -738,7 +738,7 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
-- **`--web-dir <DIR>`**: Directory holding the built interface. Located automatically when unset
+- **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
 - **`--open`**: Open a browser once the server is ready
 
 **Usage:**

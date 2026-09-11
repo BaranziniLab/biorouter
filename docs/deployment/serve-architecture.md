@@ -234,9 +234,12 @@ package script so every platform's packaging can call it.
 > root base, from `vite.renderer.config.mts` directly. Reusing the packaged Electron bundle is not
 > a shortcut; it is a different artifact.
 
-The resolver looks for the directory in a fixed order — an explicit flag or environment variable,
-then a location relative to the executable, then a system-wide path for the Linux packages. When
-it finds none, the error names every path it tried.
+A directory named explicitly — `--web-dir`, or else `BIOROUTER_SERVE_UI` — is used as given or
+refused with the same error, never skipped. The variable used to be only the first candidate of
+the search, so one naming an empty directory was passed over and `serve` served whatever the
+search found next, while the same path given as `--web-dir` was fatal. With neither set, the
+resolver looks in a fixed order — locations relative to the executable, then a system-wide path
+for the Linux packages — and when it finds none, the error names every path it tried.
 
 ## Related documentation
 

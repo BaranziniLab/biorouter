@@ -1584,7 +1584,11 @@ enum Command {
         no_token: bool,
 
         /// Directory holding the built interface
-        #[arg(long, help = "Directory holding the built web interface")]
+        #[arg(
+            long,
+            help = "Directory holding the built web interface. Takes precedence over \
+                    BIOROUTER_SERVE_UI; either must contain an index.html"
+        )]
         web_dir: Option<std::path::PathBuf>,
 
         /// Open a browser once it is ready
