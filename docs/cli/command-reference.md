@@ -250,6 +250,8 @@ biorouter session remove -r ".*migration.*"
 
 > **Warning.** Session removal is permanent and cannot be undone. biorouter will show which sessions will be removed and ask for confirmation before deleting.
 
+Removing a session also removes its per-turn usage records — which model and provider answered each reply, when, and how many tokens it used — whether you remove it here or delete it from the desktop app's chat history. The tokens it spent are first added to an anonymous total, kept per day, model and provider with nothing that identifies the chat, so `biorouter usage` and the desktop app's Usage panel still match your provider's own billing meter. The Home heatmap and its token tiles count only the chats that still exist.
+
 ### session export [options]
 
 Export sessions in different formats for backup, sharing, migration, or documentation purposes.
