@@ -223,6 +223,32 @@ Allow/Deny buttons; and the agent is not offered tools whose only path runs thro
 approval — the three skill mutations and the extension manager's install and delete are withheld
 from the advertised roster when no person is reachable.
 
+**A delegated subagent's tab is the same case** (2026-09-11; SD-11 recorded it as open). A
+subagent's chat is where the proof decides everything — a message there is recorded as a person
+intervening, and the parent is told so — and the daemon refuses every write to it from a caller
+that cannot prove a person acted: `POST /reply`, the four turn-control routes SD-11 admits
+elsewhere, `POST /agent/stop`, the extension routes, and `POST /agent/resume` itself. On a `serve`
+daemon that is every caller, so the tab can do nothing but be read.
+
+It could not even be read. The renderer loaded every chat through `/agent/resume`, so a subagent's
+tab rendered *"Could not load this chat"* over the daemon's refusal — including the tab the daemon
+itself opens to show a subagent it has just spawned. Measured against a real `biorouter serve`:
+`POST /agent/resume` answered 403 for the child while `GET /sessions/{id}` and
+`GET /sessions/{id}/events` answered 200 for the same chat. In a browser the tab now loads through
+those two reads, and never asks for the agent — not `/agent/resume` again, not the rejoin (which
+re-POSTs `/reply`), and nothing that reads AGENT state, because `/agent/callable_tool_count`
+answers through `get_or_create_agent` and would mint a bare placeholder agent under the child's
+session id. A note takes the composer's place, one line takes the header Stop's, and the
+transcript's "still working" nudge stops pointing at a composer that is not there
+(`ui/desktop/src/components/subagent/subagentReadOnly.ts`).
+
+⚠ **The tab decides this at mount, from the badge the daemon's own workspace frame put on it**,
+not from either read. In a browser those reads queue behind the page's open event streams — six
+connections per origin, one stream per observed tab — and with a subagent running the refused
+resume alone took 4.8 s, with the session read still pending five seconds later. All of that is
+the running window, which is exactly when the ordinary composer was offering a Stop that could
+only be refused.
+
 **Why.** SD-1 already required that *"the interface must explain the refusal rather than appear
 broken"*, and stated it about the model picker. The same argument covers every proof-backed
 control, and an approval card is the worst case: three buttons that look live, a bare 403 on
@@ -403,10 +429,16 @@ gains is steering a turn while it runs, with text that arrives unstamped, as a `
 caller would. It is recorded rather than closed: on a daemon that cannot tell a person from a model,
 closing it means a Stop button nobody can press.
 
-**Not decided here.** A subagent's tab in a browser still offers a composer, a steer and a Stop
-that all refuse; SD-8 requires them to say so before the click, and they do not yet. The CLI's
-`session cancel` and `attach` steering still demand a user-action key from the terminal before they
-send anything, so against a keyless daemon they refuse locally a request the daemon would now admit.
+**Not decided here.** The CLI's `session cancel` and `attach` steering still demand a user-action
+key from the terminal before they send anything, so against a keyless daemon they refuse locally a
+request the daemon would now admit.
+
+**Decided since, under SD-8.** This record left a subagent's tab in a browser offering a composer,
+a steer and a Stop that all refuse, and said SD-8 required them to say so before the click.
+Measuring it found the tab worse off than that — it did not open at all — and the whole case,
+with what the interface now does instead, is written up in
+[SD-8](#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click). Nothing
+about the refusals above changed.
 
 ---
 
