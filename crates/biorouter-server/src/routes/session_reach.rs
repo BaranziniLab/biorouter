@@ -3693,12 +3693,18 @@ mod bypass_tests {
     #[serial]
     async fn a_served_interface_keeps_its_listing_reach_and_gains_no_transcript() {
         install_test_user_action_key();
-        crate::auth::install_served_operator(SERVED_TOKEN.to_string(), ProviderTier::Private);
+        // `biorouter_server::`, not `crate::`: this module is also compiled into
+        // the `biorouterd` bin, which has no `auth` module of its own and reads
+        // the library's — the same static `http_caller` reads in either binary.
+        biorouter_server::auth::install_served_operator(
+            SERVED_TOKEN.to_string(),
+            ProviderTier::Private,
+        );
         let cookie = format!("biorouter_session={SERVED_TOKEN}");
         let mut probe = HeaderMap::new();
         probe.insert(axum::http::header::COOKIE, cookie.parse().unwrap());
         assert_eq!(
-            crate::auth::served_operator_capability(&probe),
+            served_operator_capability(&probe),
             ProviderTier::Private,
             "a different serve operator was installed into this binary first; this test's \
              premise does not hold"
