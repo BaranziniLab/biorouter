@@ -832,6 +832,93 @@ async fn post_json(path: &str, body: &str, auth: &DaemonAuth) -> Result<(u16, St
     Ok((code, body.to_string()))
 }
 
+/// One request to a JSON route that takes the secret key and nothing more — the
+/// schedule routes — returning the status and the body.
+///
+/// Unlike [`post_json`] it carries no user-action proof, and it takes the port
+/// rather than reading `BIOROUTER_PORT` itself: the caller has already probed
+/// that port, and a request must go to the daemon the probe found.
+///
+/// `deadline` is `None` only for a request whose answer genuinely takes as long
+/// as it takes — `POST /schedule/{id}/run_now` answers when the run ends.
+pub(crate) async fn daemon_json_request(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    auth: &DaemonAuth,
+    port: u16,
+    deadline: Option<std::time::Duration>,
+) -> Result<(u16, String)> {
+    let body = body.unwrap_or("");
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {DAEMON_HOST}\r\n{}\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\
+         Accept: application/json\r\nConnection: close\r\n\r\n{body}",
+        auth.headers(),
+        body.len()
+    );
+    let exchange = async {
+        let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    };
+    let raw = match deadline {
+        Some(limit) => tokio::time::timeout(limit, exchange)
+            .await
+            .map_err(|_| anyhow!("the daemon did not answer {method} {path} within {limit:?}"))??,
+        None => exchange.await?,
+    };
+
+    // Split on BYTES: a chunk size counts bytes, and a lossy decode first could
+    // move them.
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| {
+            anyhow!(
+                "the daemon closed the connection before sending a complete response to {method} \
+             {path}, so it is not known whether the request was carried out"
+            )
+        })?;
+    let head = String::from_utf8_lossy(&raw[..end]).into_owned();
+    let status = head.lines().next().unwrap_or_default();
+    let code = status_code(status)
+        .ok_or_else(|| anyhow!("daemon sent a response carrying no status code: {status}"))?;
+    let body = &raw[end + 4..];
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        dechunk(body)
+    } else {
+        body.to_vec()
+    };
+    Ok((code, String::from_utf8_lossy(&body).into_owned()))
+}
+
+/// An HTTP/1.1 chunked body, joined. Malformed framing ends the body where it
+/// breaks rather than inventing bytes.
+fn dechunk(mut rest: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Some(line_end) = rest.windows(2).position(|w| w == b"\r\n") {
+        let Some(size) = std::str::from_utf8(&rest[..line_end])
+            .ok()
+            .and_then(|line| usize::from_str_radix(line.trim(), 16).ok())
+        else {
+            break;
+        };
+        let data = &rest[line_end + 2..];
+        if size == 0 || data.len() < size {
+            break;
+        }
+        out.extend_from_slice(&data[..size]);
+        rest = data[size..].strip_prefix(b"\r\n").unwrap_or(&data[size..]);
+    }
+    out
+}
+
 /// `biorouter sessions watch <id>` — read-only observation of a live session.
 pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> {
     let auth = daemon_auth().await?;

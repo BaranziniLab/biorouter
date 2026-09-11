@@ -15,7 +15,7 @@ The scheduler lets you:
 - Persist scheduled jobs across sessions
 - Manage (list, pause, delete) scheduled jobs through the Desktop UI or CLI
 
-Scheduled jobs are stored persistently in an SQLite database, so they survive application restarts.
+Scheduled jobs are stored in `schedule.json` in Biorouter's data directory, so they survive application restarts. Every Biorouter process on the machine shares that file. See [One schedule, several processes](#one-schedule-several-processes).
 
 ## Creating a scheduled job
 
@@ -106,8 +106,16 @@ The Schedule panel shows all active and paused jobs with:
 biorouter schedule list
 
 # Delete a scheduled job by ID
-biorouter schedule delete <job-id>
+biorouter schedule remove --schedule-id <job-id>
 ```
+
+### One schedule, several processes
+
+Whichever process runs a schedule keeps it in memory, but all of them share `schedule.json`. So a job added in a terminal, by a terminal session's `/schedule`, or by a second Biorouter is still one schedule:
+
+- **A running Biorouter follows the file.** It checks the file every couple of seconds. It picks up jobs other processes added or removed, and jobs they paused or re-timed, within 60 seconds at most. It checks again before every run, so it does not run a job that was deleted or paused elsewhere. Before this, a job added from a terminal while the app was running was missing from the Scheduler page and from the agent's list, could not be deleted from either, and never ran until the app restarted.
+- **`biorouter schedule` asks the running daemon first.** When this terminal can reach a daemon (`BIOROUTER_SERVER__SECRET_KEY` and `BIOROUTER_PORT` in its environment), `add`, `remove`, `list` and `run-now` go to that daemon, and the change is live at once. When it cannot, the command writes the file itself and says when a running Biorouter will pick up the change. A terminal next to the desktop app can never reach the app's own daemon, which uses a random port and secret, so it takes the second path, and the app picks the job up from the file. See the [`schedule` command reference](../cli/command-reference.md#schedule).
+- **A row the app cannot schedule** is not listed. Usually this is a row whose workflow file has been deleted. You can still remove it by ID.
 
 ## Headless (non-interactive) mode
 

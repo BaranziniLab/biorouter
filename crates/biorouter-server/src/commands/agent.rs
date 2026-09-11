@@ -217,6 +217,14 @@ pub async fn run() -> Result<()> {
     // and without it a running app needs a restart to notice them.
     biorouter::catalog::spawn_config_watcher();
 
+    // QA 2026-09-10, F2 — the same problem for `schedule.json`. A schedule
+    // another process writes (`biorouter schedule add` when it cannot reach this
+    // daemon, which from an agent's shell it never can; a terminal session's
+    // `/loop`) used to stay invisible here until a restart: absent from the
+    // Scheduler page and `manage_schedule list`, undeletable through either, and
+    // never fired — after the CLI had printed "Scheduled job added".
+    app_state.agent_manager.watch_schedule_file();
+
     // `into_make_service_with_connect_info` is what puts the real peer address
     // in request extensions, so the auth throttle can key on it instead of the
     // client-supplied `x-forwarded-for` header.
