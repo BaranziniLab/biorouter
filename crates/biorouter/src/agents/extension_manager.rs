@@ -69,6 +69,100 @@ pub(crate) fn capability_management_refusal(config: &ExtensionConfig) -> Option<
         .then(|| capability_management_error(&config.name()))
 }
 
+/// Gate F1's UNLOAD decision for `name`, given the config loaded under it in the
+/// session being changed (`None` when nothing is). `Some` is the refusal.
+///
+/// [`ExtensionManager::assert_extension_manageable`] is exactly this plus the
+/// lookup under its manager's lock. It is a free function so that a caller
+/// holding no manager can ask the SAME question instead of re-spelling it:
+/// `workspace_set_tools`' pre-flight asks it for a conversation whose agent is
+/// not running, passing `None` — which is precisely the empty manager the
+/// handler's `get_or_create_agent` would otherwise build and then ask.
+///
+/// Three refusals, in this order and for these reasons:
+///
+///  1. a bundled/platform **capability** is not an installed extension and is
+///     not managed through this door, whatever is loaded — so the sentence a
+///     user sees names that, rather than a privacy rule;
+///  2. a loaded entry whose config IS a capability (a renamed spelling that
+///     slipped past 1);
+///  3. the tier and affiliation arms, [`reachability_refusal`], on the
+///     normalized name the executor removes under.
+pub(crate) fn manageability_refusal(
+    name: &str,
+    loaded: Option<&ExtensionConfig>,
+    admitted: crate::privacy::CallCapability,
+) -> Option<ErrorData> {
+    let normalized = normalize(name);
+    if resolve_bundled_extension(&normalized).is_some() {
+        return Some(capability_management_error(name));
+    }
+    if let Some(refusal) = loaded.and_then(capability_management_refusal) {
+        return Some(refusal);
+    }
+    reachability_refusal(&normalized, loaded, admitted)
+}
+
+/// [`ExtensionManager::assert_extension_reachable`]'s decision, given the config
+/// loaded under `name` (`None` when nothing is) and the capability to judge it
+/// against. The method is this plus the lookup; see its doc comment for why an
+/// unknown name reads Private here and nowhere else.
+fn reachability_refusal(
+    name: &str,
+    loaded: Option<&ExtensionConfig>,
+    cap: crate::privacy::CallCapability,
+) -> Option<ErrorData> {
+    let class = loaded.map_or(
+        crate::privacy::ExtensionClassification {
+            tier: crate::privacy::ProviderTier::Private,
+            affiliation: crate::privacy::ExtensionAffiliation::Any,
+        },
+        |config| crate::privacy::resolve_extension(name, Some(config)),
+    );
+    // ⚠ **`private_or_absent_refusal`, NOT `privacy_refusal`, and the reason
+    // is the inverted default documented on
+    // `ExtensionManager::assert_extension_reachable`.** An unknown name arrives
+    // here already read as Private, so `privacy_refusal`'s flat *"`x` is a
+    // private extension"* asserts a fact this gate has not established — it
+    // sent a caller looking for a private model to reach an extension that
+    // does not exist (2026-09-10 test drive, finding M18). The replacement
+    // states the disjunction and answers the two cases IDENTICALLY, which is
+    // what keeps the repair from becoming an existence oracle over exactly
+    // the private names Gate E hides. The predicate underneath is unchanged:
+    // both compose `tier_refuses`.
+    match crate::privacy::refusal::private_or_absent_refusal(name, class.tier, cap.tier()) {
+        // DR-15's master opt-out, read through the capability so the tier
+        // and the toggle can never be sampled at two different instants —
+        // the same predicate Gate C asks, never a second narrower flag.
+        Some(err) if cap.enforced() => return Some(err),
+        _ => {}
+    }
+    // Task 48 (DR-26). These eight entry points reach a server without being
+    // a tool call, so they refuse exactly as Gate C does — the connector
+    // does not care which door the request came through, and three of them
+    // fan out over EVERY installed extension.
+    //
+    // ⚠ **Task 49's grant is NOT consulted here, and the reason is a missing
+    // argument rather than a decision.** A grant is keyed on the triple
+    // (session, extension, model affiliation), and this function has no
+    // session: six of its eight callers are route handlers, the apps'
+    // UI-resource sweep and `Agent::list_extension_prompts`, none of which is
+    // a tool call and none of which carries a session id today. So a user who
+    // has accepted a connector's cross-institutional flow can call its tools
+    // and still be refused a resource read on it.
+    //
+    // That is fail-CLOSED — a refusal the user meets, never a disclosure they
+    // did not accept — which is why it ships this way rather than blocking
+    // Task 49. Closing it means threading the session through all eight
+    // entries, which is Task 50/51 territory, not a line to add here.
+    //
+    // Task 57: `None`, and for the same missing argument. This path never
+    // reads a grant, so a refusal that offered an accept control here would
+    // record a real acceptance and refuse the retry anyway.
+    cap.cross_affiliation_warning(name, &class)
+        .map(|warning| crate::privacy::refusal::cross_affiliation_refusal(&warning, None))
+}
+
 /// How an extension entry came to be loaded.
 ///
 /// BR-71 decision 21: the agent loads `workspace` for ITSELF whenever a session
@@ -2340,58 +2434,17 @@ impl ExtensionManager {
             Some(cap) => cap,
             None => crate::privacy::CallCapability::sample(&self.provider).await,
         };
-        let class = self.extensions.lock().await.get(name).map_or(
-            crate::privacy::ExtensionClassification {
-                tier: crate::privacy::ProviderTier::Private,
-                affiliation: crate::privacy::ExtensionAffiliation::Any,
-            },
-            |extension| crate::privacy::resolve_extension(name, Some(&extension.config)),
-        );
-        // ⚠ **`private_or_absent_refusal`, NOT `privacy_refusal`, and the reason
-        // is the inverted default documented above.** An unknown name arrives
-        // here already read as Private, so `privacy_refusal`'s flat *"`x` is a
-        // private extension"* asserts a fact this gate has not established — it
-        // sent a caller looking for a private model to reach an extension that
-        // does not exist (2026-09-10 test drive, finding M18). The replacement
-        // states the disjunction and answers the two cases IDENTICALLY, which is
-        // what keeps the repair from becoming an existence oracle over exactly
-        // the private names Gate E hides. The predicate underneath is unchanged:
-        // both compose `tier_refuses`.
-        match crate::privacy::refusal::private_or_absent_refusal(name, class.tier, cap.tier()) {
-            // DR-15's master opt-out, read through the capability so the tier
-            // and the toggle can never be sampled at two different instants —
-            // the same predicate Gate C asks, never a second narrower flag.
-            Some(err) if cap.enforced() => return Err(err),
-            _ => {}
-        }
-        // Task 48 (DR-26). These eight entry points reach a server without being
-        // a tool call, so they refuse exactly as Gate C does — the connector
-        // does not care which door the request came through, and three of them
-        // fan out over EVERY installed extension.
-        //
-        // ⚠ **Task 49's grant is NOT consulted here, and the reason is a missing
-        // argument rather than a decision.** A grant is keyed on the triple
-        // (session, extension, model affiliation), and this function has no
-        // session: six of its eight callers are route handlers, the apps'
-        // UI-resource sweep and `Agent::list_extension_prompts`, none of which is
-        // a tool call and none of which carries a session id today. So a user who
-        // has accepted a connector's cross-institutional flow can call its tools
-        // and still be refused a resource read on it.
-        //
-        // That is fail-CLOSED — a refusal the user meets, never a disclosure they
-        // did not accept — which is why it ships this way rather than blocking
-        // Task 49. Closing it means threading the session through all eight
-        // entries, which is Task 50/51 territory, not a line to add here.
-        //
-        // Task 57: `None`, and for the same missing argument. This path never
-        // reads a grant, so a refusal that offered an accept control here would
-        // record a real acceptance and refuse the retry anyway.
-        match cap.cross_affiliation_warning(name, &class) {
-            Some(warning) => Err(crate::privacy::refusal::cross_affiliation_refusal(
-                &warning, None,
-            )),
-            None => Ok(()),
-        }
+        // Cloned out rather than resolved under the lock: `resolve_extension`
+        // may consult the install directory and the provenance store, and the
+        // decision is a pure function of the config (Task 43), so a copy taken
+        // here answers exactly what the entry would.
+        let loaded = self
+            .extensions
+            .lock()
+            .await
+            .get(name)
+            .map(|extension| extension.config.clone());
+        reachability_refusal(name, loaded.as_ref(), cap).map_or(Ok(()), Err)
     }
 
     /// Issue #56 Gate F1, the DISABLE half: may this caller take an installed
@@ -2432,26 +2485,21 @@ impl ExtensionManager {
     /// caller is a tool call, which always carries the capability it was
     /// admitted on. There is no "ask about the model bound right now" caller to
     /// serve, so there is no sampling branch to get wrong.
+    ///
+    /// The decision is [`manageability_refusal`], asked with what this manager
+    /// has loaded under the normalized name.
     pub async fn assert_extension_manageable(
         &self,
         name: &str,
         admitted: crate::privacy::CallCapability,
     ) -> Result<(), ErrorData> {
-        let normalized = normalize(name);
-        if resolve_bundled_extension(&normalized).is_some() {
-            return Err(capability_management_error(name));
-        }
-        if let Some(refusal) = self
+        let loaded = self
             .extensions
             .lock()
             .await
-            .get(&normalized)
-            .and_then(|extension| capability_management_refusal(&extension.config))
-        {
-            return Err(refusal);
-        }
-        self.assert_extension_reachable(&normalized, Some(admitted))
-            .await
+            .get(&normalize(name))
+            .map(|extension| extension.config.clone());
+        manageability_refusal(name, loaded.as_ref(), admitted).map_or(Ok(()), Err)
     }
 
     /// Function that gets executed for read_resource tool.

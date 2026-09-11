@@ -310,27 +310,61 @@ fn open_confirmation_reason_with(
     }
 }
 
-pub struct WorkspaceMutationInspector;
+/// [`WorkspaceMutationInspector`]'s `name()`. Shared with the agent loop's
+/// denied-call arm, which hands a `Deny` reason from this inspector to the model
+/// verbatim — it is Biorouter's refusal of an impossible change, and the stock
+/// "the user has declined to run this tool" would be false.
+pub(crate) const WORKSPACE_MUTATION_INSPECTOR_NAME: &str = "workspace_mutation";
 
-#[async_trait]
-impl ToolInspector for WorkspaceMutationInspector {
-    fn name(&self) -> &'static str {
-        "workspace_mutation"
+pub struct WorkspaceMutationInspector {
+    /// Sampled for the pre-flight's privacy gates when no capability is pinned,
+    /// exactly as [`WorkspaceCrossingInspector`] samples its own.
+    provider: crate::agents::types::SharedProvider,
+    /// The store the pre-flight resolves the target against — the agent's own,
+    /// which is the one its workspace handler reads.
+    session_manager: std::sync::Arc<crate::session::SessionManager>,
+    /// The operator-authored extension names, when a test supplies them. `None`
+    /// reads the real config at inspection time; see
+    /// [`set_tools_confirmation_reason_with`] for why that input is a seam.
+    operator_authored: Option<std::collections::HashSet<String>>,
+}
+
+impl WorkspaceMutationInspector {
+    pub fn new(
+        provider: crate::agents::types::SharedProvider,
+        session_manager: std::sync::Arc<crate::session::SessionManager>,
+    ) -> Self {
+        Self {
+            provider,
+            session_manager,
+            operator_authored: None,
+        }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
+    #[cfg(test)]
+    pub(crate) fn with_operator_authored(mut self, names: &[&str]) -> Self {
+        self.operator_authored = Some(names.iter().map(|n| (*n).to_string()).collect());
         self
     }
 
-    async fn inspect(
+    fn set_tools_reason(&self, args: &JsonObject) -> Option<String> {
+        match &self.operator_authored {
+            Some(names) => set_tools_confirmation_reason_with(args, add_shape_risk, names),
+            None => set_tools_confirmation_reason(args),
+        }
+    }
+
+    async fn inspect_with_pinned_capability(
         &self,
         tool_requests: &[ToolRequest],
-        _messages: &[Message],
-        _biorouter_mode: BioRouterMode,
-        _session: &Session,
+        session: &Session,
+        capability: Option<crate::privacy::CallCapability>,
     ) -> Result<Vec<InspectionResult>> {
         // NOTE: deliberately no mode gate. See the module docs.
         let mut results = Vec::new();
+        // Sampled at most once per batch, and only when a call needs it, so an
+        // ordinary tool batch never touches the provider lock here.
+        let mut sampled = capability;
         for request in tool_requests {
             let Ok(tool_call) = &request.tool_call else {
                 continue;
@@ -345,7 +379,46 @@ impl ToolInspector for WorkspaceMutationInspector {
             // this to `set_tools` alone leaves the strictly larger capability
             // reachable by the strictly easier route.
             let reason = if is_set_tools_call(&tool_call.name) {
-                set_tools_confirmation_reason(args)
+                // F4: ask whether the change CAN be made before asking the user
+                // to approve it. A card for an impossible change is a request
+                // for authority over nothing — the QA run approved "removes
+                // 'autovisualiser'" and was told, afterwards, that a built-in
+                // capability cannot be removed this way. The refusal is the
+                // handler's own (one function, `preflight_set_tools`), so the
+                // model reads the sentence it would have read after the card.
+                let cap = match sampled {
+                    Some(cap) => cap,
+                    None => {
+                        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+                        sampled = Some(cap);
+                        cap
+                    }
+                };
+                if let Some(refusal) =
+                    crate::agents::workspace_extension::WorkspaceClient::set_tools_preflight_refusal(
+                        std::sync::Arc::clone(&self.session_manager),
+                        &session.id,
+                        cap,
+                        args,
+                    )
+                    .await
+                {
+                    tracing::info!(
+                        counter.biorouter.workspace_mutation_preflight_refused = 1,
+                        tool_request_id = %request.id,
+                        "Workspace tool-set change refused before any approval (F4)"
+                    );
+                    results.push(InspectionResult {
+                        tool_request_id: request.id.clone(),
+                        action: InspectionAction::Deny,
+                        reason: format!("Error: {refusal}"),
+                        confidence: 1.0,
+                        inspector_name: self.name().to_string(),
+                        finding_id: Some(format!("WSPRE-{}", Uuid::new_v4().simple())),
+                    });
+                    continue;
+                }
+                self.set_tools_reason(args)
             } else if is_workspace_open_call(&tool_call.name) {
                 open_confirmation_reason(args)
             } else {
@@ -380,6 +453,40 @@ impl ToolInspector for WorkspaceMutationInspector {
             });
         }
         Ok(results)
+    }
+}
+
+#[async_trait]
+impl ToolInspector for WorkspaceMutationInspector {
+    fn name(&self) -> &'static str {
+        WORKSPACE_MUTATION_INSPECTOR_NAME
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn inspect(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        _biorouter_mode: BioRouterMode,
+        session: &Session,
+    ) -> Result<Vec<InspectionResult>> {
+        self.inspect_with_pinned_capability(tool_requests, session, None)
+            .await
+    }
+
+    async fn inspect_with_capability(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        _biorouter_mode: BioRouterMode,
+        session: &Session,
+        capability: Option<crate::privacy::CallCapability>,
+    ) -> Result<Vec<InspectionResult>> {
+        self.inspect_with_pinned_capability(tool_requests, session, capability)
+            .await
     }
 
     // `is_enabled` uses the trait default (always registered): there is no mode
@@ -750,6 +857,182 @@ mod tests {
         json.as_object().unwrap().clone()
     }
 
+    fn set_tools_request(id: &str, arguments: serde_json::Value) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: "workspace__workspace_set_tools".into(),
+                arguments: Some(args(arguments)),
+                task: None,
+            }),
+            // `ToolRequest` has FOUR fields (`conversation/message.rs:65-76`):
+            // `id`, `tool_call`, `metadata`, `tool_meta`. Omitting the last two
+            // is E0063. The precedents build all four —
+            // `tool_inspection.rs:352-353` and `security/sensitive_ops.rs:699+`.
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    /// The inspector as the agent registers it, over `sm` and an unbound
+    /// provider (which samples Public).
+    fn mutation_inspector(
+        sm: std::sync::Arc<crate::session::SessionManager>,
+    ) -> WorkspaceMutationInspector {
+        WorkspaceMutationInspector::new(std::sync::Arc::new(tokio::sync::Mutex::new(None)), sm)
+    }
+
+    /// A caller and a real target in one fresh store.
+    async fn caller_and_target(
+        temp: &tempfile::TempDir,
+    ) -> (
+        std::sync::Arc<crate::session::SessionManager>,
+        Session,
+        Session,
+    ) {
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let mut rows = Vec::new();
+        for name in ["caller", "target"] {
+            rows.push(
+                sm.create_session(
+                    temp.path().to_path_buf(),
+                    name.into(),
+                    crate::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        let target = rows.pop().unwrap();
+        let caller = rows.pop().unwrap();
+        (sm, caller, target)
+    }
+
+    /// **F4, the measured case: a built-in capability named for removal is
+    /// refused before any approval is raised.**
+    ///
+    /// The QA run approved the card "This change removes 'autovisualiser',
+    /// which the user configured explicitly" and was then told
+    /// ``​`autovisualiser` is a built-in Biorouter capability … cannot be enabled
+    /// or disabled through Extension Manager``. The change was never possible,
+    /// so the card must never appear, in any mode, and the model must be handed
+    /// the extension manager's own sentence instead.
+    ///
+    /// `workspace` is the machine-independent half of the proof: it is on the
+    /// compiled security-relevant list, so the OLD inspector raised a card for
+    /// it on every machine, and it is a platform capability, so the handler has
+    /// always refused it after that card. `autovisualiser` is the QA's own
+    /// name; whether the old code carded it depended on the machine's config,
+    /// which is exactly why it cannot carry the proof alone.
+    #[tokio::test]
+    async fn a_built_in_capability_is_refused_before_any_approval() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (sm, caller, target) = caller_and_target(&temp).await;
+        let inspector = mutation_inspector(sm);
+
+        for name in ["workspace", "autovisualiser", "Auto Visualiser"] {
+            let request = set_tools_request(
+                "call-builtin",
+                serde_json::json!({ "session_id": target.id, "remove_extensions": [name] }),
+            );
+            for mode in [BioRouterMode::Auto, BioRouterMode::Approve] {
+                let results = inspector
+                    .inspect(std::slice::from_ref(&request), &[], mode, &caller)
+                    .await
+                    .unwrap();
+                assert!(
+                    !results
+                        .iter()
+                        .any(|r| matches!(r.action, InspectionAction::RequireApproval(_))),
+                    "{name}: a card was raised for a change that cannot be made: {results:?}"
+                );
+                let [refusal] = results.as_slice() else {
+                    panic!("{name}: expected exactly one verdict, got {results:?}");
+                };
+                assert_eq!(refusal.action, InspectionAction::Deny, "{name}");
+                assert_eq!(refusal.inspector_name, WORKSPACE_MUTATION_INSPECTOR_NAME);
+                assert_eq!(
+                    refusal.reason,
+                    format!(
+                        "Error: {}",
+                        crate::agents::extension_manager::capability_management_error(name).message
+                    ),
+                    "{name}: not the extension manager's own sentence"
+                );
+            }
+        }
+    }
+
+    // "…and a REAL extension removal still asks first" lives in
+    // `workspace_extension`'s tests
+    // (`a_real_extension_removal_passes_the_pre_flight_and_still_asks_first`):
+    // it needs a live target agent under a process-unique session id, and only
+    // that module's `seeded_target` can mint one. A temp store's second row is
+    // `<day>_2` in every test, and the agent registry is process-wide.
+
+    /// A call the handler would refuse for any other reason is not carded
+    /// either — the pre-flight is the handler's whole resolve phase, not a
+    /// capability special case. A made-up target, and a primary knowledge base
+    /// outside the set it is meant to point into.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn any_change_the_handler_would_refuse_is_refused_before_the_card() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (sm, caller, target) = caller_and_target(&temp).await;
+        let inspector = mutation_inspector(sm);
+
+        // Absent target: the write gate's anti-oracle sentence, not a card for
+        // a skill grant into nowhere.
+        let absent = set_tools_request(
+            "call-absent",
+            serde_json::json!({ "session_id": "no-such-conversation", "add_skills": ["x"] }),
+        );
+        let results = inspector
+            .inspect(
+                std::slice::from_ref(&absent),
+                &[],
+                BioRouterMode::Auto,
+                &caller,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(results.as_slice(), [r] if r.action == InspectionAction::Deny
+                && r.reason.contains(&crate::privacy::refusal::workspace_out_of_reach())),
+            "{results:?}"
+        );
+
+        // A skill grant (carded on its own) riding with an impossible KB target.
+        crate::workspace_services::set_for_tests(Some(std::sync::Arc::new(
+            crate::workspace_services::NullServices,
+        )));
+        let mixed = set_tools_request(
+            "call-mixed",
+            serde_json::json!({
+                "session_id": target.id, "add_skills": ["single-cell"],
+                "set_knowledge_bases": ["kb-a"], "primary_knowledge_base": "kb-b",
+            }),
+        );
+        let results = inspector
+            .inspect(
+                std::slice::from_ref(&mixed),
+                &[],
+                BioRouterMode::Auto,
+                &caller,
+            )
+            .await
+            .unwrap();
+        crate::workspace_services::clear_test_override();
+        assert!(
+            matches!(results.as_slice(), [r] if r.action == InspectionAction::Deny
+                && r.reason.contains("primary_knowledge_base 'kb-b'")),
+            "{results:?}"
+        );
+    }
+
     #[test]
     fn adding_a_process_spawning_extension_always_confirms() {
         for name in ["developer", "computercontroller", "code_execution"] {
@@ -800,28 +1083,11 @@ mod tests {
     #[tokio::test]
     async fn the_inspector_requires_approval_in_every_mode() {
         use crate::config::BioRouterMode;
-        use crate::conversation::message::ToolRequest;
 
-        let request = ToolRequest {
-            id: "call-1".to_string(),
-            tool_call: Ok(rmcp::model::CallToolRequestParams {
-                meta: None,
-                name: "workspace__workspace_set_tools".into(),
-                arguments: Some(args(serde_json::json!({
-                    "session_id": "s-target",
-                    "add_extensions": ["developer"],
-                }))),
-                task: None,
-            }),
-            // `ToolRequest` has FOUR fields (`conversation/message.rs:65-76`):
-            // `id`, `tool_call`, `metadata`, `tool_meta`. Omitting the last two
-            // is E0063. The precedents build all four —
-            // `tool_inspection.rs:352-353` and `security/sensitive_ops.rs:699+`.
-            metadata: None,
-            tool_meta: None,
-        };
         let temp = tempfile::TempDir::new().unwrap();
-        let sm = crate::session::SessionManager::new(temp.path().to_path_buf());
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
         let session = sm
             .create_session(
                 temp.path().to_path_buf(),
@@ -830,19 +1096,40 @@ mod tests {
             )
             .await
             .unwrap();
+        // A REAL target: since F4 the inspector asks whether the change can be
+        // made before it raises a card, and a made-up id is refused by the
+        // write gate (the anti-oracle sentence) rather than confirmed.
+        let target = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "target".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        // A skill grant, not `add_extensions: ["developer"]`: every mode must
+        // confirm it just the same, and unlike an extension it resolves on
+        // every machine — `developer`'s entry comes from the real config, where
+        // the GUI commonly writes it `enabled: false`, and the pre-flight would
+        // then (correctly) refuse the pinned-off extension instead of asking.
+        let request = set_tools_request(
+            "call-1",
+            serde_json::json!({ "session_id": target.id, "add_skills": ["ucsf-hpc"] }),
+        );
 
         // ALL FOUR real variants (`config/biorouter_mode.rs:7-12`). Auto is the
         // one that matters most — it is where the permission inspector allows
         // everything — but Approve and SmartApprove are the modes decision 1's
         // guarantee is actually *about*, so they must be in the list, not
         // implied by an "etc".
+        let inspector = mutation_inspector(std::sync::Arc::clone(&sm));
         for mode in [
             BioRouterMode::Auto,
             BioRouterMode::Approve,
             BioRouterMode::SmartApprove,
             BioRouterMode::Chat,
         ] {
-            let results = WorkspaceMutationInspector
+            let results = inspector
                 .inspect(std::slice::from_ref(&request), &[], mode, &session)
                 .await
                 .unwrap();
