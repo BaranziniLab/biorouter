@@ -78,8 +78,64 @@ pub const CANCELLED_RESPONSE: &str = "The user cancelled this turn before decidi
 const DEFAULT_CONFIRMATION_TIMEOUT_SECS: u64 = 3600;
 
 /// Resolve the permission-prompt TTL, honoring `BIOROUTER_CONFIRMATION_TIMEOUT_SECS`.
-fn confirmation_timeout() -> Option<Duration> {
+///
+/// `pub(crate)` for [`crate::agents::script_call_gate`]: a card raised for a
+/// call inside a Code Execution script is the same question as the card for a
+/// direct call, so it stays answerable for exactly as long.
+pub(crate) fn confirmation_timeout() -> Option<Duration> {
     parse_confirmation_timeout(std::env::var("BIOROUTER_CONFIRMATION_TIMEOUT_SECS").ok())
+}
+
+/// What a denied tool call is answered with, chosen by which inspector denied it.
+///
+/// One function for both places a denial is written: the agent loop's own
+/// denied calls (`Agent::handle_denied_tools`) and a denied call inside a Code
+/// Execution script (`script_call_gate`). The two used to be one inline match,
+/// and a second inline copy is how a refusal comes to read differently
+/// depending on whether the model called a tool directly or from a script.
+pub(crate) fn denied_response_text(
+    request_id: &str,
+    inspection_results: &[crate::tool_inspection::InspectionResult],
+) -> String {
+    use crate::tool_inspection::InspectionAction;
+
+    // When an inspector denied this call, tell the model why so it can adjust
+    // instead of blindly retrying. The always-on catastrophic-command block
+    // (security inspector) and hook denials carry a reason; surface it verbatim
+    // / with context.
+    let deny_reason = inspection_results.iter().find(|result| {
+        result.tool_request_id == request_id
+            && result.action == InspectionAction::Deny
+            && !result.reason.trim().is_empty()
+    });
+    match deny_reason {
+        Some(result) if result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME => {
+            format!("{DECLINED_RESPONSE}\n\nHook feedback: {}", result.reason)
+        }
+        // Non-bypassable safety block: the user did not decline, the command is
+        // refused outright, so return the reason directly.
+        Some(result) if result.inspector_name == "security" => result.reason.clone(),
+        // BR-29/BR-31: a loop guard tripped — the call repeated itself, or the
+        // tool has been failing the same way over and over. The user did not
+        // decline anything; telling the model they did (the old
+        // DECLINED_RESPONSE) is actively misleading and leaves it unable to
+        // diagnose the stop. Return the real reason.
+        Some(result) if result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME => {
+            result.reason.clone()
+        }
+        // #63: a cross-session memory shape Biorouter refuses (the whole-store
+        // global read). Same reasoning as the loop guards above — the user
+        // declined nothing, and the reason is the only thing that tells the
+        // model the itemised call still works. `DECLINED_RESPONSE` here would be
+        // both untrue and unactionable, and would read as the feature being off.
+        Some(result)
+            if result.inspector_name
+                == crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME =>
+        {
+            result.reason.clone()
+        }
+        _ => DECLINED_RESPONSE.to_string(),
+    }
 }
 
 /// The TTL policy, split out from the env read so it can be tested without

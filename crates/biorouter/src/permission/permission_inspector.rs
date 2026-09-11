@@ -243,7 +243,11 @@ impl PermissionInspector {
     /// A tool the annotations cannot grade fails closed, unless the opt-in LLM
     /// judge is enabled, in which case it is batched for one classification whose
     /// verdict is cached as a `smart_approve` permission level.
-    fn smart_verdict(&self, tool_name: &str) -> Verdict {
+    ///
+    /// `risks` is where the grade is read from: the agent's own registry for a
+    /// direct call, a Code Execution script's catalogue for a call the script
+    /// makes (see [`Self::inspect_graded`]).
+    fn smart_verdict(&self, tool_name: &str, risks: &ToolRiskRegistry) -> Verdict {
         if !self.smart.enabled {
             // Kill switch: behave exactly like Approve.
             return Verdict::Decided(
@@ -273,7 +277,7 @@ impl PermissionInspector {
             };
         }
 
-        let risk = self.risks.risk_for(tool_name);
+        let risk = risks.risk_for(tool_name);
         if !self.smart.requires_confirmation(risk) {
             return Verdict::Decided(
                 InspectionAction::Allow,
@@ -353,6 +357,7 @@ impl PermissionInspector {
         request: &ToolRequest,
         mode: BioRouterMode,
         working_dir: &Path,
+        risks: &ToolRiskRegistry,
     ) -> Verdict {
         if let Some(verdict) = self.managed_verdict(tool_name, mode) {
             return verdict;
@@ -400,7 +405,7 @@ impl PermissionInspector {
                     );
                 }
 
-                self.smart_verdict(tool_name)
+                self.smart_verdict(tool_name, risks)
             }
         }
     }
@@ -427,24 +432,33 @@ impl PermissionInspector {
         }
         read_only
     }
-}
 
-#[async_trait]
-impl ToolInspector for PermissionInspector {
-    fn name(&self) -> &'static str {
-        "permission"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    async fn inspect(
+    /// The whole permission decision, with each tool's BR-18 risk grade read out
+    /// of `risks` instead of the registry the agent refreshes from the model's
+    /// roster.
+    ///
+    /// ⚠ The registry is the ONLY input that differs, and it differs for one
+    /// caller: a tool call a Code Execution script makes (QA finding F7). In
+    /// Code Execution mode the model's roster collapses to `code_execution__*`
+    /// and a handful of exemptions, so the agent's registry has never graded the
+    /// ~76 tools a script can reach, and every one of them would read `Unknown`
+    /// — fail-closed, so Smart mode would confirm a read-only `chatrecall` as if
+    /// it were a shell. The script's own catalogue (the exact tool list its
+    /// imports are built from, carrying each tool's own MCP annotations) is the
+    /// analogue of "the exact tool list handed to the model", so its grades are
+    /// the ones a direct call to the same tool would get.
+    ///
+    /// Everything else — the managed policy, the user's own `always_allow` /
+    /// `never_allow` entries, the extension-management gate, scoped grants, the
+    /// smart-approve kill switch and the opt-in judge — is this inspector's
+    /// ordinary sequence, keyed by the tool's own name. The direct path calls
+    /// this with `&self.risks`, so it cannot drift from it.
+    pub(crate) async fn inspect_graded(
         &self,
         tool_requests: &[ToolRequest],
-        _messages: &[Message],
         biorouter_mode: BioRouterMode,
         session: &crate::session::Session,
+        risks: &ToolRiskRegistry,
     ) -> Result<Vec<InspectionResult>> {
         // Chat mode skips tools entirely; the agent splices a canned response.
         if biorouter_mode == BioRouterMode::Chat {
@@ -462,8 +476,13 @@ impl ToolInspector for PermissionInspector {
             let Ok(tool_call) = &request.tool_call else {
                 continue;
             };
-            match self.deterministic_verdict(&tool_call.name, request, biorouter_mode, working_dir)
-            {
+            match self.deterministic_verdict(
+                &tool_call.name,
+                request,
+                biorouter_mode,
+                working_dir,
+                risks,
+            ) {
                 Verdict::Decided(action, reason) => results.push(InspectionResult {
                     tool_request_id: request.id.clone(),
                     action,
@@ -506,5 +525,27 @@ impl ToolInspector for PermissionInspector {
         }
 
         Ok(results)
+    }
+}
+
+#[async_trait]
+impl ToolInspector for PermissionInspector {
+    fn name(&self) -> &'static str {
+        "permission"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn inspect(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &crate::session::Session,
+    ) -> Result<Vec<InspectionResult>> {
+        self.inspect_graded(tool_requests, biorouter_mode, session, &self.risks)
+            .await
     }
 }

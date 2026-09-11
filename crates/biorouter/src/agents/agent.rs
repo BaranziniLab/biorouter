@@ -20,7 +20,7 @@ use super::platform_tools;
 /// a classifier that silently stops matching, and a scheduled run that stops
 /// matching is one that reports success for having done nothing.
 pub(crate) use super::tool_execution::EXPIRED_RESPONSE;
-use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
+use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE};
 use super::turn_abort::TurnAbortCode;
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
@@ -6369,51 +6369,8 @@ impl Agent {
     ) {
         for request in &permission_check_result.denied {
             if let Some(response_msg) = request_to_response_map.get(&request.id) {
-                // When an inspector denied this call, tell the model why so it
-                // can adjust instead of blindly retrying. The always-on
-                // catastrophic-command block (security inspector) and hook denials
-                // carry a reason; surface it verbatim / with context.
-                let deny_reason = inspection_results.iter().find(|result| {
-                    result.tool_request_id == request.id
-                        && result.action == InspectionAction::Deny
-                        && !result.reason.trim().is_empty()
-                });
-                let response_text = match deny_reason {
-                    Some(result)
-                        if result.inspector_name
-                            == crate::hooks::inspector::HOOK_INSPECTOR_NAME =>
-                    {
-                        format!("{DECLINED_RESPONSE}\n\nHook feedback: {}", result.reason)
-                    }
-                    // Non-bypassable safety block: the user did not decline, the
-                    // command is refused outright, so return the reason directly.
-                    Some(result) if result.inspector_name == "security" => result.reason.clone(),
-                    // BR-29/BR-31: a loop guard tripped — the call repeated
-                    // itself, or the tool has been failing the same way over and
-                    // over. The user did not decline anything; telling the model
-                    // they did (the old DECLINED_RESPONSE) is actively misleading
-                    // and leaves it unable to diagnose the stop. Return the real
-                    // reason.
-                    Some(result)
-                        if result.inspector_name
-                            == crate::tool_monitor::REPETITION_INSPECTOR_NAME =>
-                    {
-                        result.reason.clone()
-                    }
-                    // #63: a cross-session memory shape Biorouter refuses (the
-                    // whole-store global read). Same reasoning as the loop
-                    // guards above — the user declined nothing, and the reason
-                    // is the only thing that tells the model the itemised call
-                    // still works. `DECLINED_RESPONSE` here would be both untrue
-                    // and unactionable, and would read as the feature being off.
-                    Some(result)
-                        if result.inspector_name
-                            == crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME =>
-                    {
-                        result.reason.clone()
-                    }
-                    _ => DECLINED_RESPONSE.to_string(),
-                };
+                let response_text =
+                    super::tool_execution::denied_response_text(&request.id, inspection_results);
                 let mut response = response_msg.lock().await;
                 *response = response.clone().with_tool_response_with_metadata(
                     request.id.clone(),
@@ -7469,6 +7426,23 @@ impl Agent {
         let exec_tool_name = tool_call.name.to_string();
         let exec_request_id = request_id.clone();
 
+        // QA finding F7: the calls a Code Execution script makes are judged by
+        // this agent's own inspector stack, in this agent's mode, exactly as its
+        // direct calls are — see `script_call_gate`. Built here, where `self`
+        // still is, and installed below around the tool's BODY: a scope around
+        // this function alone would be gone before the script ran.
+        let script_gate = super::code_execution_extension::is_execute_code_call(
+            tool_call.name.as_ref(),
+        )
+        .then(|| {
+            Arc::new(super::script_call_gate::ScriptCallGate::new(
+                Arc::clone(&self.tool_inspection_manager),
+                self.config.biorouter_mode,
+                session.clone(),
+                Arc::clone(&self.hooks_manager),
+            ))
+        });
+
         (
             request_id,
             Ok(ToolCallResult {
@@ -7507,7 +7481,12 @@ impl Agent {
                         id = %exec_request_id,
                         "TOOL_EXEC_START"
                     );
-                    let inner_result = inner.await;
+                    let inner_result = match script_gate {
+                        Some(gate) => {
+                            super::script_call_gate::judging_script_calls(gate, inner).await
+                        }
+                        None => inner.await,
+                    };
                     let dur_ms = exec_started.elapsed().as_millis() as u64;
                     debug!(
                         name = %exec_tool_name,

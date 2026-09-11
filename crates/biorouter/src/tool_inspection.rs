@@ -159,6 +159,70 @@ impl ToolInspectionManager {
         session: &Session,
         capability: Option<CallCapability>,
     ) -> Result<Vec<InspectionResult>> {
+        self.run_inspectors(
+            excluded,
+            tool_requests,
+            messages,
+            biorouter_mode,
+            session,
+            capability,
+            None,
+        )
+        .await
+    }
+
+    /// Inspect the tool calls a Code Execution script makes (QA finding F7).
+    ///
+    /// The same inspectors, in the same order, with the same escalation-only
+    /// merge downstream, as a direct call — with two differences, both forced:
+    ///
+    /// * `capability` is required, not optional. A script's calls inherit the
+    ///   capability its `execute_code` call was ADMITTED on (issue #56), so no
+    ///   inspector on this path may sample one of its own.
+    /// * The permission inspector reads each tool's BR-18 risk grade out of
+    ///   `risks` — the script's own catalogue — rather than the registry the
+    ///   agent refreshes from the model's roster, which in Code Execution mode
+    ///   has never graded the tools a script can reach. See
+    ///   [`PermissionInspector::inspect_graded`].
+    ///
+    /// `excluded` names inspectors that must not judge a script's call; the
+    /// caller states them rather than this function assuming them.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn inspect_script_calls(
+        &self,
+        excluded: &[&str],
+        tool_requests: &[ToolRequest],
+        messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+        capability: CallCapability,
+        risks: &crate::permission::tool_risk::ToolRiskRegistry,
+    ) -> Result<Vec<InspectionResult>> {
+        self.run_inspectors(
+            excluded,
+            tool_requests,
+            messages,
+            biorouter_mode,
+            session,
+            Some(capability),
+            Some(risks),
+        )
+        .await
+    }
+
+    /// The one loop over the inspectors. `risks` overrides where the permission
+    /// inspector reads risk grades from; `None` is its own registry.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_inspectors(
+        &self,
+        excluded: &[&str],
+        tool_requests: &[ToolRequest],
+        messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+        capability: Option<CallCapability>,
+        risks: Option<&crate::permission::tool_risk::ToolRiskRegistry>,
+    ) -> Result<Vec<InspectionResult>> {
         let mut all_results = Vec::new();
 
         for inspector in &self.inspectors {
@@ -172,16 +236,31 @@ impl ToolInspectionManager {
                 "Running tool inspector"
             );
 
-            match inspector
-                .inspect_with_capability(
-                    tool_requests,
-                    messages,
-                    biorouter_mode,
-                    session,
-                    capability,
-                )
-                .await
-            {
+            let graded = risks.and_then(|risks| {
+                inspector
+                    .as_any()
+                    .downcast_ref::<PermissionInspector>()
+                    .map(|permission| (permission, risks))
+            });
+            let outcome = match graded {
+                Some((permission, risks)) => {
+                    permission
+                        .inspect_graded(tool_requests, biorouter_mode, session, risks)
+                        .await
+                }
+                None => {
+                    inspector
+                        .inspect_with_capability(
+                            tool_requests,
+                            messages,
+                            biorouter_mode,
+                            session,
+                            capability,
+                        )
+                        .await
+                }
+            };
+            match outcome {
                 Ok(results) => {
                     tracing::debug!(
                         inspector_name = inspector.name(),
