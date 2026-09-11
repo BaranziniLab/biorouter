@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Check, ChevronDown, Search } from '../../icons/app-icons';
+import { Note } from '../../ui/note';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { Switch } from '../../ui/switch';
 import { cn } from '../../../utils';
@@ -19,6 +20,8 @@ interface WorkflowResourcePickerProps {
   onSelectedIdsChange: (ids: string[]) => void;
   defaultId?: string | null;
   onDefaultIdChange?: (id: string | null) => void;
+  /** A standing condition the selection is subject to, shown under the label. */
+  notice?: string;
   emptyText: string;
   searchPlaceholder: string;
   noun: string;
@@ -38,6 +41,7 @@ export function WorkflowResourcePicker({
   onSelectedIdsChange,
   defaultId,
   onDefaultIdChange,
+  notice,
   emptyText,
   searchPlaceholder,
   noun,
@@ -182,6 +186,7 @@ export function WorkflowResourcePicker({
           </PopoverContent>
         </Popover>
       </div>
+      {notice && <Note role="status">{notice}</Note>}
     </div>
   );
 }
