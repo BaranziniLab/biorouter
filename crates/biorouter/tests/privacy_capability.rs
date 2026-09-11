@@ -140,30 +140,39 @@ const EXPECTED: &[Site] = &[
         what: "TWO inspectors in this file, each deciding for a batch it sees \
                BEFORE the dispatch that would admit a capability — that is the \
                point of an inspector — so neither has one in scope to inherit on \
-               the ordinary agent path, and the alternative to sampling is not \
+               the ordinary agent loop, and the alternative to sampling is not \
                inheriting but deciding on `Config::global()`, which is the bug \
                this type exists to prevent. \
-               (1) `WorkspaceCrossingInspector::inspect_with_pinned_capability`, \
-               the first-crossing disclosure, sampled ONCE per batch rather than \
-               per request, because two calls in one batch must not be able to \
-               gate on two different models, and only after a cheap name check \
-               has established that the batch contains a cross-session write at \
-               all: an ordinary turn must not pay a provider-mutex read for a \
-               disclosure that cannot apply to it. \
-               (2) `WorkspaceMutationInspector::inspect_with_pinned_capability`'s \
-               `workspace_set_tools` pre-flight (QA finding F4), which asks \
-               `WorkspaceClient::set_tools_preflight_refusal` whether the \
-               tool-set change CAN be made before the user is asked to approve \
-               it — a card for an impossible change is a request for authority \
-               over nothing — and therefore needs the caller's pair to ask the \
-               tier gate with. It samples LAZILY, only once a `set_tools` call \
-               has been found in the batch, and memoises the result in `sampled`, \
-               so an ordinary batch pays no provider-mutex read and two such \
-               calls in one batch still gate on one model. \
-               ⚠ Both PREFER a capability threaded in and sample only when handed \
-               `None`: a bridge grant supplies the pair it fixed at issue time, \
-               which is what keeps a bridged coding agent's calls from re-reading \
-               the flag on this side of the process boundary",
+               (1) `WorkspaceCrossingInspector`, the first-crossing disclosure, \
+               sampled ONCE per batch rather than per request, because two calls \
+               in one batch must not be able to gate on two different models, and \
+               only after a cheap name check has established that the batch \
+               contains a cross-session write at all: an ordinary turn must not \
+               pay a provider-mutex read for a disclosure that cannot apply to \
+               it. \
+               (2) `WorkspaceMutationInspector`'s `workspace_set_tools` \
+               pre-flight (QA finding F4). The pair it samples is handed to \
+               `set_tools_preflight_refusal` → `preflight_set_tools`, which asks \
+               §7's write row (`refuse_unless_writable`), Gate F reach for each \
+               ADDED extension, the manageability refusal for each REMOVED one, \
+               and `privacy::bind_allowed` for a provider switch — so the answer \
+               is either a Deny carrying the handler's own sentence or the \
+               always-confirm card, and a card for a change this caller's model \
+               may not make asks the user to authorise nothing. It is NOT the \
+               gate: `handle_set_tools` re-runs the same pre-flight against the \
+               capability the call is finally admitted on, so a model swapped \
+               between inspection and dispatch can only make this sample stale in \
+               the fail-safe direction. \
+               ⚠ Both funnel into `inspect_with_pinned_capability`, whose first \
+               act is `let mut sampled = capability` — a pinned pair is used AS \
+               IS and the provider mutex is never read. The only caller that pins \
+               one is the coding-agent bridge, which threads the pair it fixed at \
+               issue time so a bridged child's calls cannot re-read the flag \
+               across the process boundary; the agent loop and the approval relay \
+               pass `None`. (2) additionally samples LAZILY — inside the \
+               `is_set_tools_call` arm only, memoising back into `sampled` — so a \
+               batch carrying no `workspace_set_tools` call samples nothing at \
+               all, and one carrying two still gates on one model",
     },
     Site {
         needle: "CallCapability::sample(",
@@ -296,31 +305,21 @@ const EXPECTED: &[Site] = &[
     Site {
         needle: "CallCapability::public_enforced(",
         file: "crates/biorouter/src/providers/coding_agent/bridge.rs",
-        count: 2,
-        what: "NOT a production decider: the bridge's two TEST fixtures, each \
-               taking the most restrictive pair rather than a permissive one \
-               invented for a test's convenience. (1) `mod tests`' \
-               `test_capability()`, which every `BridgeGrant` the bridge's own \
-               unit tests build takes its pair from. (2) the module-level \
-               `inert_grant_for_test()` — `#[cfg(test)] pub(crate)`, a grant that \
-               dispatches nothing and needs no runtime — which tests in OTHER \
-               modules of this crate build on. They are two rather than one \
-               because a `pub(crate)` fixture cannot live inside `mod tests`, and \
-               from outside that module its private `test_capability()` is not \
-               visible; funnelling both through one helper at module level would \
-               return this row to 1 and is the bridge authors' call, not this \
-               census's. Counted for the same reason `privacy/grant.rs`'s test \
-               helper is — a line-wise grep cannot tell a `#[cfg(test)]` block \
-               from production, and a filter that tried would blind the census to \
-               production too. The production side of this bridge decides in \
-               `Agent::issue_tool_bridge`, which is a `sample(` row above. \
-               ⚠ This row read `dummy_grant()` while four inline spellings had \
-               accumulated in that file, so the census sat RED through a whole \
-               branch whose own gate list never ran this binary; it then sat RED \
-               again from `inert_grant_for_test()`'s arrival until CI began \
-               running `tests/*.rs` and anyone saw it. A new test that inlines the \
-               constructor rather than calling one of these two still moves the \
-               count and still fires here",
+        count: 1,
+        what: "NOT a production decider: `mod tests`' `test_capability()` helper, \
+               which every `BridgeGrant` the bridge's own unit tests build takes its \
+               pair from — the most restrictive one, rather than a permissive one \
+               invented for a test's convenience. Counted for the same reason \
+               `privacy/grant.rs`'s test helper is — a line-wise grep cannot tell a \
+               `#[cfg(test)]` block from production, and a filter that tried would \
+               blind the census to production too. The production side of this \
+               bridge decides in `Agent::issue_tool_bridge`, which is a `sample(` \
+               row above. ⚠ This row read `dummy_grant()` while four inline \
+               spellings had accumulated in that file, so the census sat RED \
+               through a whole branch whose own gate list never ran this binary. \
+               The single helper is what stops it drifting that way again: a new \
+               test that inlines the constructor still moves the count off 1 and \
+               still fires here",
     },
     // ---------------------------------------------------------- DR-26's third
     // axis, asked through the free function rather than off a capability. Its
