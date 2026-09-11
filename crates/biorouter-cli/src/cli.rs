@@ -668,7 +668,7 @@ enum SessionCommand {
         no_wait: bool,
         #[arg(
             long,
-            help = "Read the daemon's raw user-action key from the first line of stdin instead of prompting on the controlling terminal"
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, instead of being asked for it on the terminal once the daemon wants it"
         )]
         user_action_key_stdin: bool,
     },
@@ -699,7 +699,7 @@ enum SessionCommand {
         read_only: bool,
         #[arg(
             long,
-            help = "Read the daemon's raw user-action key from the first line of stdin instead of prompting on the controlling terminal"
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, instead of being asked for it on the terminal once the daemon wants it"
         )]
         user_action_key_stdin: bool,
     },
@@ -709,7 +709,7 @@ enum SessionCommand {
         session_id: String,
         #[arg(
             long,
-            help = "Read the daemon's raw user-action key from the first line of stdin instead of prompting on the controlling terminal"
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, instead of being asked for it on the terminal once the daemon wants it"
         )]
         user_action_key_stdin: bool,
     },

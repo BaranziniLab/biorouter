@@ -64,10 +64,15 @@ pub(crate) struct DaemonAuth {
     /// the public tier — the same answer, stated by saying nothing rather than
     /// by saying something meaningless.
     caller_provider: String,
-    /// Present only for attach/cancel routes that require proof of a live
-    /// operator: the attached event stream, interrupt, cancel, and a
-    /// provenance-less reply to a subagent.
-    /// It is never sourced from argv, environment, config, or desktop settings.
+    /// The raw user-action key, when this terminal holds it: the person supplied
+    /// it on stdin (`--user-action-key-stdin`), or a daemon refused a request for
+    /// want of it and the person then typed it (see [`key_verdict`]). `None`
+    /// otherwise, and a protected request then goes out WITHOUT the header, for
+    /// the daemon to judge.
+    ///
+    /// Sent only on the requests the proof can change: the attached event
+    /// stream, `/interrupt`, `/agent/cancel` and `/reply`. It is never sourced
+    /// from argv, environment, config, or desktop settings.
     user_action: Option<Arc<Zeroizing<String>>>,
 }
 
@@ -94,48 +99,234 @@ pub(crate) async fn daemon_auth() -> Result<DaemonAuth> {
     })
 }
 
-async fn daemon_auth_with_user_action(from_stdin: bool) -> Result<DaemonAuth> {
-    let auth = daemon_auth().await?;
-    auth_with_user_action(auth, from_stdin).await
-}
+// ──────────────────────────────────────────────────────────────────────────────
+// The user-action key: the daemon is asked before the person is.
+//
+// A daemon started with a key (the desktop app's, or one launched with its
+// digest on stdin) wants it before it lets anyone stop or steer a turn. One
+// started without (`biorouter serve`, a hand-run `biorouterd agent`) holds
+// nothing to check a key against, and admits those requests on the reach gate
+// instead (serve decision SD-11). A terminal cannot tell the two apart, and the
+// old answer to that — ask the person for a key before sending anything — asked
+// every `serve` user for a key that does not exist.
+//
+// So the request goes out without the key and the daemon's answer says which
+// kind it is (`key_verdict`). The person is asked only when the daemon wanted
+// the key, and the request is made once more with it; a refusal the key cannot
+// change is shown in the daemon's own words. None of this relaxes anything: the
+// daemon is the boundary, and every refusal read here is given before the route
+// touches the turn. A subagent's session still needs the proof, and a daemon
+// without a key still refuses it.
+// ──────────────────────────────────────────────────────────────────────────────
 
-async fn auth_with_user_action(mut auth: DaemonAuth, from_stdin: bool) -> Result<DaemonAuth> {
-    let key = tokio::task::spawn_blocking(move || read_user_action_key(from_stdin))
+/// `--user-action-key-stdin`: take the key from stdin's first line before
+/// anything is sent.
+///
+/// Read up front, unlike the terminal prompt, which waits for a daemon to ask:
+/// on `attach` every later line of stdin is a message, so the key's line must
+/// be taken before the reader that treats lines as messages starts.
+async fn with_supplied_key(auth: DaemonAuth, key_from_stdin: bool) -> Result<DaemonAuth> {
+    if !key_from_stdin {
+        return Ok(auth);
+    }
+    let key = tokio::task::spawn_blocking(read_key_from_stdin)
         .await
         .map_err(|join| anyhow!("could not read the user-action key: {join}"))??;
-    auth.user_action = Some(Arc::new(key));
-    Ok(auth)
+    Ok(auth.with_user_action(key))
 }
 
-fn read_user_action_key(from_stdin: bool) -> Result<Zeroizing<String>> {
-    let key = if from_stdin {
-        let mut key = String::new();
-        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut key)?;
-        while key.ends_with('\n') || key.ends_with('\r') {
-            key.pop();
-        }
-        Zeroizing::new(key)
-    } else {
-        if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-            return Err(anyhow!(
-                "steering and cancellation require the user-action key that was hashed into \
-                 biorouterd at startup. Run this from a controlling terminal, or pass \
-                 --user-action-key-stdin and pipe the raw key as the first line"
-            ));
-        }
-        eprintln!(
-            "Enter the user-action key supplied when this daemon was launched \
-             (input is hidden):"
-        );
-        Zeroizing::new(console::Term::stderr().read_secure_line()?)
-    };
+fn read_key_from_stdin() -> Result<Zeroizing<String>> {
+    let mut key = Zeroizing::new(String::new());
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut key)?;
+    while key.ends_with('\n') || key.ends_with('\r') {
+        key.pop();
+    }
+    non_empty_key(key)
+}
+
+/// Ask the person at the controlling terminal for the key, with echo off. Only
+/// ever called once a daemon has refused a request for want of it.
+async fn ask_terminal_for_key(key_use: KeyUse) -> Result<Zeroizing<String>> {
+    tokio::task::spawn_blocking(move || prompt_for_key(key_use))
+        .await
+        .map_err(|join| anyhow!("could not read the user-action key: {join}"))?
+}
+
+fn prompt_for_key(key_use: KeyUse) -> Result<Zeroizing<String>> {
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Err(anyhow!("{}", key_use.no_terminal()));
+    }
+    eprintln!("{}", key_use.prompt());
+    non_empty_key(Zeroizing::new(console::Term::stderr().read_secure_line()?))
+}
+
+fn non_empty_key(key: Zeroizing<String>) -> Result<Zeroizing<String>> {
     if key.is_empty() {
         return Err(anyhow!("the user-action key cannot be empty"));
     }
     Ok(key)
 }
 
+/// What the key is wanted for, in the words its prompt and its refusals use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyUse {
+    /// `session cancel` — `POST /agent/cancel`.
+    Stop,
+    /// `session attach`, asked as it joins — `POST /interrupt`.
+    Steer,
+    /// `session send` — `POST /reply`.
+    Send,
+}
+
+impl KeyUse {
+    /// What the daemon wants the key for.
+    fn act(self) -> &'static str {
+        match self {
+            KeyUse::Stop => "stopping a turn",
+            KeyUse::Steer => "steering a session",
+            KeyUse::Send => "sending to this session",
+        }
+    }
+
+    /// What the refused request left undone.
+    fn undone(self) -> &'static str {
+        match self {
+            KeyUse::Stop => "The turn was not stopped.",
+            KeyUse::Steer => "The session was not steered.",
+            KeyUse::Send => "The message was not delivered.",
+        }
+    }
+
+    fn prompt(self) -> String {
+        format!(
+            "This daemon was started with a user-action key and wants it for {}. \
+             Enter the key (input is hidden):",
+            self.act()
+        )
+    }
+
+    fn no_terminal(self) -> String {
+        let read_only = match self {
+            KeyUse::Steer => " `--read-only` follows the session without it.",
+            KeyUse::Stop | KeyUse::Send => "",
+        };
+        format!(
+            "This daemon was started with a user-action key and wants it for {}, but there is \
+             no terminal to ask for it on. Run this from a terminal, or pass \
+             --user-action-key-stdin and pipe the raw key as the first line of stdin. {}{read_only}",
+            self.act(),
+            self.undone()
+        )
+    }
+
+    fn wrong_key(self) -> String {
+        format!(
+            "the daemon refused the user-action key: it is not the key this daemon was started \
+             with. {}",
+            self.undone()
+        )
+    }
+}
+
+/// What a daemon's answer to a stop or a steer says about the user-action key.
+///
+/// ⚠ **Read only off the turn-control routes, `/agent/cancel` and
+/// `/interrupt`.** There the two kinds of daemon refuse in shapes that cannot be
+/// confused (serve decision SD-11). One that holds a key refuses a request that
+/// lacks the proof, or carries a wrong one, with an EMPTY 403
+/// (`routes::reply::authorize_turn_control`). One that holds none gates through
+/// `authorize_agent_control` instead, and every refusal of that gate carries a
+/// sentence (`SESSION_REACH_NO_KEY`, `SUBAGENT_CONTROL_NO_KEY`). `/reply`
+/// promises no such thing: its subagent refusal is an empty 403 on EITHER kind
+/// of daemon, which is why `send` asks the steer gate instead of reading its own
+/// 403.
+///
+/// Both halves are pinned from the daemon's side, by `routes::reply`'s keyed
+/// tests and by `tests/turn_control_no_user_key.rs`, because this reading
+/// decides whether a person is asked for a key at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KeyVerdict {
+    /// Not refused for want of the key; the status says what did happen.
+    NotAsked,
+    /// Refused for want of the key: this daemon holds one, and the request
+    /// carried none, or a wrong one.
+    Wanted,
+    /// Refused in the daemon's own words. No key changes this answer, so the
+    /// person is shown the words rather than asked for one.
+    Refused(String),
+}
+
+pub(crate) fn key_verdict(code: u16, body: &str) -> KeyVerdict {
+    if code != 403 {
+        return KeyVerdict::NotAsked;
+    }
+    match refusal_sentence(body) {
+        Some(sentence) => KeyVerdict::Refused(sentence),
+        None => KeyVerdict::Wanted,
+    }
+}
+
+/// The sentence a refusal carries, or `None` for an empty body.
+///
+/// `ErrorResponse` answers `{"message": …}` and the reach gate answers plain
+/// text where a route hands its refusal back directly. Both are the daemon's
+/// own words and are shown as they are.
+pub(crate) fn refusal_sentence(body: &str) -> Option<String> {
+    let text = json_object(body)
+        .and_then(|value| value.get("message")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| body.to_string());
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Make a request without the key and, only if the daemon refuses it for want
+/// of one, ask the person for the key and make the request once more with it.
+///
+/// ⚠ **The first attempt is the question, not a courtesy.** Asking the person
+/// first would ask a `biorouter serve` user for a key that does not exist; the
+/// request itself asks the daemon instead, and costs nothing when refused,
+/// because every refusal [`key_verdict`] reads is given before the route touches
+/// anything. A request that already carried a key (`--user-action-key-stdin`)
+/// is never followed by a prompt: its refusal means the key is wrong, not
+/// missing.
+///
+/// Returns the last answer, what it said about the key, and the auth it was
+/// made with — which holds the key exactly when it was supplied or wanted.
+/// `attempt`, `verdict` and `ask` are arguments so this can be driven over
+/// every answer order in a test, as `run_ladder` is.
+async fn with_key_if_wanted<T, Attempt, AttemptFut, Ask, AskFut>(
+    auth: DaemonAuth,
+    mut attempt: Attempt,
+    verdict: impl Fn(&T) -> KeyVerdict,
+    ask: Ask,
+) -> Result<(T, KeyVerdict, DaemonAuth)>
+where
+    Attempt: FnMut(DaemonAuth) -> AttemptFut,
+    AttemptFut: std::future::Future<Output = Result<T>>,
+    Ask: FnOnce() -> AskFut,
+    AskFut: std::future::Future<Output = Result<Zeroizing<String>>>,
+{
+    let answer = attempt(auth.clone()).await?;
+    let judged = verdict(&answer);
+    if judged != KeyVerdict::Wanted || auth.holds_key() {
+        return Ok((answer, judged, auth));
+    }
+    let auth = auth.with_user_action(ask().await?);
+    let answer = attempt(auth.clone()).await?;
+    let judged = verdict(&answer);
+    Ok((answer, judged, auth))
+}
+
 impl DaemonAuth {
+    fn with_user_action(mut self, key: Zeroizing<String>) -> Self {
+        self.user_action = Some(Arc::new(key));
+        self
+    }
+
+    fn holds_key(&self) -> bool {
+        self.user_action.is_some()
+    }
+
     /// The two headers every request carries, already CRLF-terminated.
     ///
     /// Composed in one place so a request cannot state its secret without also
@@ -226,23 +417,33 @@ pub(crate) fn build_get_request(path: &str, host: &str, auth: &DaemonAuth) -> St
     )
 }
 
-fn build_user_action_get_request(
-    path: &str,
-    host: &str,
-    auth: &DaemonAuth,
-) -> Result<Zeroizing<String>> {
-    let proof = auth.user_action.as_ref().ok_or_else(|| {
-        anyhow!("this action requires a user-action key from the controlling terminal")
-    })?;
+/// Put the user-action proof on a request to a route it can change, exactly
+/// when `auth` holds the key.
+///
+/// Without a key the header is left off entirely, never sent empty, and the
+/// daemon judges the request as it would any other caller's: that is how
+/// `with_key_if_wanted` learns whether this daemon wants the key at all. The
+/// buffer is zeroizing either way, since it may hold the raw key.
+fn push_proof(request: &mut Zeroizing<String>, auth: &DaemonAuth) {
+    if let Some(proof) = auth.user_action.as_ref() {
+        request.push_str(USER_ACTION_HEADER);
+        request.push_str(": ");
+        request.push_str(proof);
+        request.push_str("\r\n");
+    }
+}
+
+/// `build_get_request`, for the one GET the proof can change: attach's event
+/// stream, where it lets a person reach a private chat on a daemon that holds a
+/// key. See [`push_proof`].
+fn build_protected_get_request(path: &str, host: &str, auth: &DaemonAuth) -> Zeroizing<String> {
     let mut request = Zeroizing::new(format!(
         "GET {path} HTTP/1.1\r\nHost: {host}\r\n{}",
         auth.headers()
     ));
-    request.push_str(USER_ACTION_HEADER);
-    request.push_str(": ");
-    request.push_str(proof);
-    request.push_str("\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n");
-    Ok(request)
+    push_proof(&mut request, auth);
+    request.push_str("Accept: text/event-stream\r\nConnection: close\r\n\r\n");
+    request
 }
 
 #[cfg(test)]
@@ -256,27 +457,25 @@ pub(crate) fn build_post_request(path: &str, host: &str, auth: &DaemonAuth, body
     )
 }
 
-fn build_user_action_post_request(
+/// A POST to a route the user-action proof can change — `/interrupt`,
+/// `/agent/cancel`, `/reply` — carrying the proof exactly when `auth` holds the
+/// key. See [`push_proof`].
+fn build_protected_post_request(
     path: &str,
     host: &str,
     auth: &DaemonAuth,
     body: &str,
-) -> Result<Zeroizing<String>> {
-    let proof = auth.user_action.as_ref().ok_or_else(|| {
-        anyhow!("this action requires a user-action key from the controlling terminal")
-    })?;
+) -> Zeroizing<String> {
     let mut request = Zeroizing::new(format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\n{}",
         auth.headers()
     ));
-    request.push_str(USER_ACTION_HEADER);
-    request.push_str(": ");
-    request.push_str(proof);
-    request.push_str("\r\nContent-Type: application/json\r\nContent-Length: ");
+    push_proof(&mut request, auth);
+    request.push_str("Content-Type: application/json\r\nContent-Length: ");
     request.push_str(&body.len().to_string());
     request.push_str("\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
     request.push_str(body);
-    Ok(request)
+    request
 }
 
 /// Append `chunk` to `buffer` and drain every COMPLETE SSE frame into `out`.
@@ -619,7 +818,13 @@ async fn stream_request(
 
 /// A connection to the configured daemon, or the actionable "no daemon" error.
 async fn connect_to_daemon() -> Result<tokio::net::TcpStream> {
-    let port = configured_port();
+    connect_to_daemon_at(configured_port()).await
+}
+
+/// [`connect_to_daemon`] for a port the caller names — a test's stand-in
+/// daemon, which must not be reached by setting `BIOROUTER_PORT` in a process
+/// every test shares.
+async fn connect_to_daemon_at(port: u16) -> Result<tokio::net::TcpStream> {
     if !daemon_ok(DAEMON_HOST, port).await {
         return Err(anyhow!("{}", no_daemon_at(port)));
     }
@@ -887,11 +1092,20 @@ fn json_object(body: &str) -> Option<serde_json::Value> {
 /// request made from inside an interactive loop must not be able to hang it,
 /// hence the deadline (as in `running_session_ids`).
 async fn post_json(path: &str, body: &str, auth: &DaemonAuth) -> Result<(u16, String)> {
-    let port = configured_port();
+    post_json_to(configured_port(), path, body, auth).await
+}
+
+/// [`post_json`] to the daemon on `port`; see [`connect_to_daemon_at`].
+async fn post_json_to(
+    port: u16,
+    path: &str,
+    body: &str,
+    auth: &DaemonAuth,
+) -> Result<(u16, String)> {
     if !daemon_ok(DAEMON_HOST, port).await {
         return Err(anyhow!("{}", no_daemon_at(port)));
     }
-    let request = build_user_action_post_request(path, DAEMON_HOST, auth, body)?;
+    let request = build_protected_post_request(path, DAEMON_HOST, auth, body);
     let raw = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
         stream.write_all(request.as_bytes()).await?;
@@ -1067,6 +1281,12 @@ pub(crate) enum SendOutcome {
     /// 202: the session is a subagent still starting, and the message was kept
     /// as steering for its first turn (`routes/reply.rs`).
     Queued,
+    /// 403: refused by the reach gate or the subagent rule, both of which
+    /// `/reply` asks before it takes the turn lock or writes anything — so
+    /// nothing happened, and the request can be made again. Whether the
+    /// user-action key would change the answer is [`send_to`]'s question; the
+    /// 403 alone cannot say (see [`key_verdict`]).
+    Forbidden,
 }
 
 /// Send one `POST /reply` over `stream` and read the answer as far as `wait`
@@ -1116,11 +1336,94 @@ where
             turn_id: streamed.turn_id,
         }),
         202 => Ok(SendOutcome::Queued),
+        403 => Ok(SendOutcome::Forbidden),
         code => Err(anyhow!(
             "daemon refused the request: HTTP {code}\n\
-             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
-              403 means the user-action key does not match the daemon's configured digest)"
+             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
         )),
+    }
+}
+
+/// The empty steer [`settle_steering_key`] and [`send_to`] ask a daemon with.
+///
+/// ⚠ **A question, never a delivery.** `/interrupt` judges who may steer before
+/// it reads the text, and refuses empty text with a 400 before it touches the
+/// turn, the agent or a subagent's pending input (`routes::reply::interrupt`).
+/// So the answer is the gate's verdict and nothing else: 400 when this terminal
+/// may steer the session as it is, an empty 403 when the daemon wants the key,
+/// and a 403 in the daemon's words when no key would help. The daemon's side
+/// is pinned by `routes::reply`'s keyed tests and
+/// `tests/turn_control_no_user_key.rs`.
+fn steer_gate_question(session_id: &str) -> String {
+    serde_json::json!({ "session_id": session_id, "text": "" }).to_string()
+}
+
+/// One `/reply` attempt, and — when it was refused — the steer gate's answer
+/// to the same auth, which says whether the key would change that.
+struct ReplyAttempt {
+    outcome: SendOutcome,
+    gate: Option<(u16, String)>,
+}
+
+/// `session send` against the daemon on `port`, asking the person for the key
+/// only if the daemon wants it (see [`with_key_if_wanted`]).
+///
+/// A refused `/reply` wrote nothing (see [`SendOutcome::Forbidden`]), so making
+/// it again with the key cannot deliver the text twice.
+async fn send_to<Ask, AskFut>(
+    port: u16,
+    session_id: &str,
+    text: &str,
+    wait: bool,
+    auth: DaemonAuth,
+    ask: Ask,
+) -> Result<SendOutcome>
+where
+    Ask: FnOnce() -> AskFut,
+    AskFut: std::future::Future<Output = Result<Zeroizing<String>>>,
+{
+    let body = reply_body(session_id, text);
+    let question = steer_gate_question(session_id);
+    let (body, question) = (&body, &question);
+    let (attempt, verdict, _) = with_key_if_wanted(
+        auth,
+        |auth| async move {
+            let request = build_protected_post_request("/reply", DAEMON_HOST, &auth, body);
+            let mut stream = connect_to_daemon_at(port).await?;
+            let outcome =
+                send_turn(&mut stream, request.as_bytes(), wait, NO_WAIT_DEADLINE).await?;
+            let gate = match outcome {
+                SendOutcome::Forbidden => {
+                    Some(post_json_to(port, "/interrupt", question, &auth).await?)
+                }
+                _ => None,
+            };
+            Ok(ReplyAttempt { outcome, gate })
+        },
+        |attempt: &ReplyAttempt| {
+            attempt
+                .gate
+                .as_ref()
+                .map_or(KeyVerdict::NotAsked, |(code, answer)| {
+                    key_verdict(*code, answer)
+                })
+        },
+        ask,
+    )
+    .await?;
+    match (attempt.outcome, verdict) {
+        (SendOutcome::Forbidden, KeyVerdict::Wanted) => {
+            Err(anyhow!("{}", KeyUse::Send.wrong_key()))
+        }
+        (SendOutcome::Forbidden, KeyVerdict::Refused(sentence)) => Err(anyhow!(
+            "the daemon would not start a turn in session {session_id}: {sentence}"
+        )),
+        (SendOutcome::Forbidden, KeyVerdict::NotAsked) => Err(anyhow!(
+            "the daemon refused to start a turn in session {session_id} (HTTP 403) and gave no \
+             reason. {}",
+            KeyUse::Send.undone()
+        )),
+        (outcome, _) => Ok(outcome),
     }
 }
 
@@ -1138,16 +1441,14 @@ pub async fn handle_session_send(
     wait: bool,
     user_action_key_stdin: bool,
 ) -> Result<()> {
-    let auth = daemon_auth_with_user_action(user_action_key_stdin).await?;
-    let request = build_user_action_post_request(
-        "/reply",
-        DAEMON_HOST,
-        &auth,
-        &reply_body(session_id, text),
-    )?;
-    // `/reply` streams the turn back, so a send that waits is one request.
-    let mut stream = connect_to_daemon().await?;
-    match send_turn(&mut stream, request.as_bytes(), wait, NO_WAIT_DEADLINE).await? {
+    let auth = with_supplied_key(daemon_auth().await?, user_action_key_stdin).await?;
+    // `/reply` streams the turn back, so a send that waits is one request —
+    // two, and a question between them, only when a daemon wants the key.
+    let outcome = send_to(configured_port(), session_id, text, wait, auth, || {
+        ask_terminal_for_key(KeyUse::Send)
+    })
+    .await?;
+    match outcome {
         SendOutcome::Streamed => {}
         SendOutcome::Accepted { turn_id } => {
             match turn_id {
@@ -1165,6 +1466,13 @@ pub async fn handle_session_send(
             "[queued] session {session_id} is a subagent that is still starting; the message \
              will be part of its first turn"
         ),
+        // `send_to` turns a refusal into its reason before it gets here; this
+        // is only the wording it would fall back to.
+        SendOutcome::Forbidden => {
+            return Err(anyhow!(
+                "the daemon refused to start a turn in session {session_id} (HTTP 403)"
+            ))
+        }
     }
     Ok(())
 }
@@ -1375,12 +1683,31 @@ async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Resu
                 .to_string(),
         }),
         (409, _) => Ok(SteerOutcome::Refused),
-        (code, _) => Err(anyhow!(
+        (code, body) => Err(steer_refusal(code, &body, auth)),
+    }
+}
+
+/// Why a steer was refused, from the answer `/interrupt` gave.
+///
+/// Attach settled the key as it joined ([`settle_steering_key`]), so a refusal
+/// for want of it here means the daemon changed underneath the attach — most
+/// likely restarted with a key it did not hold before. The prompt cannot be
+/// offered now, because stdin is the steering channel, so the person is told to
+/// attach again rather than asked.
+fn steer_refusal(code: u16, body: &str, auth: &DaemonAuth) -> anyhow::Error {
+    match key_verdict(code, body) {
+        KeyVerdict::Refused(sentence) => anyhow!("the daemon refused the steer: {sentence}"),
+        KeyVerdict::Wanted if auth.holds_key() => anyhow!("{}", KeyUse::Steer.wrong_key()),
+        KeyVerdict::Wanted => anyhow!(
+            "the daemon now wants a user-action key for steering, which it did not when this \
+             attach began; it may have been restarted with one. Detach with ctrl-c and attach \
+             again to be asked for it."
+        ),
+        KeyVerdict::NotAsked => anyhow!(
             "the daemon refused the steer: HTTP {code}\n\
              (400 means the message was empty; 401 means BIOROUTER_SERVER__SECRET_KEY \
-              does not match the daemon's; 403 means the user-action key does not \
-              match the daemon's configured digest)"
-        )),
+              does not match the daemon's)"
+        ),
     }
 }
 
@@ -1410,7 +1737,7 @@ async fn post_reply_quiet(
     window: Arc<ReplyWindow>,
 ) -> Result<TurnOutcome> {
     let request =
-        build_user_action_post_request("/reply", DAEMON_HOST, auth, &reply_body(session_id, text))?;
+        build_protected_post_request("/reply", DAEMON_HOST, auth, &reply_body(session_id, text));
     let (status_tx, status_rx) = tokio::sync::oneshot::channel();
     // Opened from before the request rather than from the 200: erring towards
     // warning about a turn that does not exist is harmless, erring the other way
@@ -1451,7 +1778,7 @@ async fn post_reply_quiet(
         Ok(code) => Err(anyhow!(
             "the daemon refused to start a turn: HTTP {code}\n\
              (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
-              403 means the user-action key does not match the daemon's configured digest)"
+              403 means the daemon will not start a turn in this session for this terminal)"
         )),
         // The sender was dropped without a status: no status line was ever
         // read, so the request failed outright. The holder carries the reason.
@@ -1710,6 +2037,57 @@ fn spawn_delivery_worker(
     send_tx
 }
 
+/// Before stdin becomes the steering channel: will the daemon on `port` take a
+/// steer from this terminal, and does it want the key for one?
+///
+/// ⚠ **Asked here, once, and never at the first steer.** A daemon's refusal is
+/// the only way to learn it wants the key ([`key_verdict`]), but by the first
+/// steer the stdin reader owns stdin, holding its lock for the whole loop. A
+/// hidden prompt then would block on that lock; without the lock, the typed key
+/// would race the reader and could be delivered to the session as a message.
+/// So attach asks as it joins, with the empty steer [`steer_gate_question`]
+/// describes, and settles the key before anything reads a line.
+///
+/// Returns the auth every later attach request carries: holding the key only
+/// when the person supplied it or the daemon wanted it, because a daemon that
+/// holds none has nothing to check a key against.
+async fn settle_steering_key<Ask, AskFut>(
+    port: u16,
+    session_id: &str,
+    auth: DaemonAuth,
+    ask: Ask,
+) -> Result<DaemonAuth>
+where
+    Ask: FnOnce() -> AskFut,
+    AskFut: std::future::Future<Output = Result<Zeroizing<String>>>,
+{
+    let question = steer_gate_question(session_id);
+    let question = &question;
+    let ((code, _), verdict, auth) = with_key_if_wanted(
+        auth,
+        |auth| async move { post_json_to(port, "/interrupt", question, &auth).await },
+        |(code, answer): &(u16, String)| key_verdict(*code, answer),
+        ask,
+    )
+    .await?;
+    match verdict {
+        KeyVerdict::Wanted => Err(anyhow!("{}", KeyUse::Steer.wrong_key())),
+        KeyVerdict::Refused(sentence) => Err(anyhow!(
+            "the daemon will not take a steer from this terminal in session {session_id}: \
+             {sentence}\nTo follow the session without steering it: \
+             biorouter session attach {session_id} --read-only"
+        )),
+        KeyVerdict::NotAsked if code == 401 => Err(anyhow!(
+            "the daemon refused this terminal: HTTP 401 \
+             (BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
+        )),
+        // 400 is the answer to the question: the gate let this terminal
+        // through, and only the empty text was refused. Anything else is left to
+        // the event stream, which reports it in its own terms.
+        KeyVerdict::NotAsked => Ok(auth),
+    }
+}
+
 /// `biorouter session attach <id>` — render where the session is, follow it
 /// live, and steer it from stdin.
 ///
@@ -1729,10 +2107,16 @@ pub async fn handle_session_attach(
     // lookup.
     let auth = daemon_auth().await?;
     let session_id = resolve_attach_target(session_id, name, of).await?;
+    // Before the stdin reader starts — see `settle_steering_key` for why it
+    // cannot wait for the first steer.
     let auth = if read_only {
         auth
     } else {
-        auth_with_user_action(auth, user_action_key_stdin).await?
+        let auth = with_supplied_key(auth, user_action_key_stdin).await?;
+        settle_steering_key(configured_port(), &session_id, auth, || {
+            ask_terminal_for_key(KeyUse::Steer)
+        })
+        .await?
     };
 
     if read_only {
@@ -1760,20 +2144,13 @@ pub async fn handle_session_attach(
     // The observer stream, exactly as `watch --follow`, except that its first
     // frame is rendered as a transcript. It is READ-ONLY: its task in the daemon
     // merely returns when the channel closes and cancels nothing, so detaching
-    // can never stop the session.
-    let observer_request = if read_only {
-        Zeroizing::new(build_get_request(
-            &format!("/sessions/{session_id}/events"),
-            DAEMON_HOST,
-            &auth,
-        ))
-    } else {
-        build_user_action_get_request(
-            &format!("/sessions/{session_id}/events"),
-            DAEMON_HOST,
-            &auth,
-        )?
-    };
+    // can never stop the session. It carries the key when this attach holds one
+    // — never with `--read-only`.
+    let observer_request = build_protected_get_request(
+        &format!("/sessions/{session_id}/events"),
+        DAEMON_HOST,
+        &auth,
+    );
     let observer = stream_request_bytes(
         observer_request.as_bytes(),
         Until::Closed,
@@ -1881,21 +2258,58 @@ pub(crate) fn render_cancel(response: &serde_json::Value) -> Result<String> {
 /// `workspace_close scope:"turn"` is the agent's version of the same act, and
 /// `POST /agent/cancel` is the route the GUI's Stop button already uses.
 pub async fn handle_session_cancel(session_id: &str, user_action_key_stdin: bool) -> Result<()> {
-    let auth = daemon_auth_with_user_action(user_action_key_stdin).await?;
+    let auth = with_supplied_key(daemon_auth().await?, user_action_key_stdin).await?;
+    let line = cancel_turn(configured_port(), session_id, auth, || {
+        ask_terminal_for_key(KeyUse::Stop)
+    })
+    .await?;
+    println!("{line}");
+    Ok(())
+}
+
+/// `session cancel` against the daemon on `port`: the line to print, or why the
+/// turn was not stopped. The person is asked for the key only if the daemon
+/// wants it (see [`with_key_if_wanted`]); a refused cancel stopped nothing, so
+/// making it again with the key is safe.
+async fn cancel_turn<Ask, AskFut>(
+    port: u16,
+    session_id: &str,
+    auth: DaemonAuth,
+    ask: Ask,
+) -> Result<String>
+where
+    Ask: FnOnce() -> AskFut,
+    AskFut: std::future::Future<Output = Result<Zeroizing<String>>>,
+{
     let body = serde_json::json!({ "session_id": session_id }).to_string();
-    let (code, body) = post_json("/agent/cancel", &body, &auth).await?;
+    let body = &body;
+    let ((code, answer), verdict, _) = with_key_if_wanted(
+        auth,
+        |auth| async move { post_json_to(port, "/agent/cancel", body, &auth).await },
+        |(code, answer): &(u16, String)| key_verdict(*code, answer),
+        ask,
+    )
+    .await?;
+    match verdict {
+        KeyVerdict::Wanted => return Err(anyhow!("{}", KeyUse::Stop.wrong_key())),
+        KeyVerdict::Refused(sentence) => {
+            return Err(anyhow!("the daemon would not stop the turn: {sentence}"))
+        }
+        KeyVerdict::NotAsked => {}
+    }
     if code != 200 {
+        let said = refusal_sentence(&answer)
+            .map(|sentence| format!(": {sentence}"))
+            .unwrap_or_default();
         return Err(anyhow!(
-            "the daemon refused the cancel: HTTP {code}\n\
-             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's; \
-              403 means the user-action key does not match the daemon's configured digest)"
+            "the daemon refused the cancel: HTTP {code}{said}\n\
+             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
         ));
     }
-    let response = json_object(&body).ok_or_else(|| {
+    let response = json_object(&answer).ok_or_else(|| {
         anyhow!("the daemon answered POST /agent/cancel with a body this client could not read")
     })?;
-    println!("{}", render_cancel(&response)?);
-    Ok(())
+    render_cancel(&response)
 }
 
 #[cfg(test)]
@@ -2238,26 +2652,610 @@ mod tests {
         assert!(!ordinary.contains("proof-known-only-to-the-operator"));
 
         for path in ["/interrupt", "/agent/cancel", "/reply"] {
-            let protected = build_user_action_post_request(path, "127.0.0.1", &auth, "{}").unwrap();
+            let protected = build_protected_post_request(path, "127.0.0.1", &auth, "{}");
             assert!(protected.contains("X-User-Action: proof-known-only-to-the-operator\r\n"));
             assert!(protected.contains("X-Secret-Key: s3cret\r\n"));
             assert!(protected.contains("X-Caller-Provider: versa_azure\r\n"));
+            assert!(
+                protected.ends_with("\r\n\r\n{}"),
+                "{path}: the body must follow"
+            );
         }
 
         let protected_get =
-            build_user_action_get_request("/sessions/child/events", "127.0.0.1", &auth).unwrap();
+            build_protected_get_request("/sessions/child/events", "127.0.0.1", &auth);
         assert!(protected_get.contains("X-User-Action: proof-known-only-to-the-operator\r\n"));
         let ordinary_get = build_get_request("/sessions/child/events", "127.0.0.1", &auth);
         assert!(!ordinary_get.contains(USER_ACTION_HEADER));
         assert!(!ordinary_get.contains("proof-known-only-to-the-operator"));
     }
 
+    /// Without the key, a protected request goes out WITHOUT the header: not
+    /// refused here, and not sent with an empty one.
+    ///
+    /// This replaces a test that pinned the opposite — a builder that refused to
+    /// make the request at all, which is what made `session cancel` and attach's
+    /// steering refuse locally against a `biorouter serve` daemon that would have
+    /// admitted them (serve decision SD-11). The local refusal was never a
+    /// boundary: the daemon is, and its answer to this very request is how the
+    /// terminal learns whether it wants the key (`with_key_if_wanted`).
     #[test]
-    fn a_protected_post_without_live_operator_proof_fails_closed() {
+    fn a_protected_request_without_the_key_is_sent_without_the_header() {
         let auth = DaemonAuth::for_test("s3cret", "versa_azure");
-        let error =
-            build_user_action_post_request("/agent/cancel", "127.0.0.1", &auth, "{}").unwrap_err();
-        assert!(error.to_string().contains("user-action key"));
+        for path in ["/interrupt", "/agent/cancel", "/reply"] {
+            let request = build_protected_post_request(path, "127.0.0.1", &auth, "{\"a\":1}");
+            assert!(!request.contains(USER_ACTION_HEADER), "{path}");
+            // …and it is still a whole request.
+            assert!(request.starts_with(&format!("POST {path} HTTP/1.1\r\n")));
+            assert!(request.contains("X-Secret-Key: s3cret\r\n"));
+            assert!(request.contains("X-Caller-Provider: versa_azure\r\n"));
+            assert!(request.contains("Content-Length: 7\r\n"));
+            assert!(request.ends_with("\r\n\r\n{\"a\":1}"));
+        }
+        let get = build_protected_get_request("/sessions/child/events", "127.0.0.1", &auth);
+        assert!(!get.contains(USER_ACTION_HEADER));
+        assert!(get.ends_with("Connection: close\r\n\r\n"));
+    }
+
+    /// A daemon that holds no key refusing in its own words — the shape of
+    /// `SUBAGENT_CONTROL_NO_KEY` inside `ErrorResponse` — for the tests below.
+    const KEYLESS_REFUSAL: &str = "This daemon was started without a user-action key, so it \
+                                   cannot verify that a request came from the person at the \
+                                   keyboard. Nothing was changed. This control is unavailable \
+                                   on this daemon; use the desktop app.";
+
+    fn keyless_refusal_body() -> String {
+        serde_json::json!({ "message": KEYLESS_REFUSAL }).to_string()
+    }
+
+    /// The two kinds of daemon, told apart from the answer to a stop or a steer
+    /// sent without the key: the reading that decides whether a person is asked
+    /// for one at all.
+    #[test]
+    fn only_a_keyed_daemons_empty_refusal_asks_for_the_key() {
+        // A daemon that holds a key, refusing a request without the proof
+        // (`authorize_turn_control`'s `Unproven` arm).
+        assert_eq!(key_verdict(403, ""), KeyVerdict::Wanted);
+        assert_eq!(key_verdict(403, "\r\n"), KeyVerdict::Wanted);
+
+        // A daemon that holds none, in its own words: no key would help.
+        assert_eq!(
+            key_verdict(403, &keyless_refusal_body()),
+            KeyVerdict::Refused(KEYLESS_REFUSAL.to_string())
+        );
+        // …in plain text too, as the reach gate answers where a route hands its
+        // refusal back directly.
+        assert_eq!(
+            key_verdict(
+                403,
+                "That chat is private, or there is no chat with that id."
+            ),
+            KeyVerdict::Refused(
+                "That chat is private, or there is no chat with that id.".to_string()
+            )
+        );
+
+        // Nothing that is not a 403 is about the key — including an admitted
+        // empty steer's 400, which is the answer attach asks for.
+        for (code, body) in [
+            (200, "{\"cancelled\":false}"),
+            (202, "{\"turn_id\":\"t\"}"),
+            (400, ""),
+            (401, ""),
+            (409, "{}"),
+            (500, "{\"message\":\"Failed to get session\"}"),
+        ] {
+            assert_eq!(key_verdict(code, body), KeyVerdict::NotAsked, "HTTP {code}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_is_shown_in_the_daemons_own_words() {
+        assert_eq!(
+            refusal_sentence("{\"message\":\"  No.  \"}"),
+            Some("No.".to_string())
+        );
+        assert_eq!(
+            refusal_sentence("No, in plain text.\n"),
+            Some("No, in plain text.".to_string())
+        );
+        assert_eq!(refusal_sentence(""), None);
+        assert_eq!(refusal_sentence("  \r\n"), None);
+        // An object with no message is shown as it came rather than dropped.
+        assert_eq!(
+            refusal_sentence("{\"error\":\"x\"}"),
+            Some("{\"error\":\"x\"}".to_string())
+        );
+    }
+
+    /// The person at the terminal, typing `key` — and counting how often they
+    /// were asked.
+    fn person_types<'a>(
+        key: &'static str,
+        asked: &'a std::cell::Cell<u32>,
+    ) -> impl FnOnce() -> std::future::Ready<Result<Zeroizing<String>>> + 'a {
+        move || {
+            asked.set(asked.get() + 1);
+            std::future::ready(Ok(Zeroizing::new(key.to_string())))
+        }
+    }
+
+    /// `with_key_if_wanted` over every answer order a daemon can give, driven
+    /// through the function itself (as `run_ladder`'s test is): the first
+    /// request never carries a key the person did not supply; the person is
+    /// asked only after a refusal for want of one, and at most once; and a key
+    /// supplied up front is never followed by a prompt.
+    #[tokio::test]
+    async fn the_person_is_asked_for_the_key_only_after_the_daemon_wants_it() {
+        let refused = keyless_refusal_body();
+        let admitted = (200u16, "{}".to_string());
+        let wants_key = (403u16, String::new());
+        let in_words = (403u16, refused.clone());
+        // (daemon's answers in order, key supplied up front, key held per request,
+        //  asked, final verdict)
+        let cases: Vec<(Vec<(u16, String)>, bool, Vec<bool>, u32, KeyVerdict)> = vec![
+            // A daemon without a key admits it: one request, no key, nobody asked.
+            (
+                vec![admitted.clone()],
+                false,
+                vec![false],
+                0,
+                KeyVerdict::NotAsked,
+            ),
+            // A daemon with one wants it: asked once, and the second request carries it.
+            (
+                vec![wants_key.clone(), admitted.clone()],
+                false,
+                vec![false, true],
+                1,
+                KeyVerdict::NotAsked,
+            ),
+            // A daemon without a key refuses in words: shown, and nobody is asked.
+            (
+                vec![in_words.clone()],
+                false,
+                vec![false],
+                0,
+                KeyVerdict::Refused(KEYLESS_REFUSAL.to_string()),
+            ),
+            // A wrong key: refused again, and the person is not asked twice.
+            (
+                vec![wants_key.clone(), wants_key.clone()],
+                false,
+                vec![false, true],
+                1,
+                KeyVerdict::Wanted,
+            ),
+            // Supplied on stdin: sent at once, and never followed by a prompt —
+            // not when admitted, and not when refused either.
+            (
+                vec![admitted.clone()],
+                true,
+                vec![true],
+                0,
+                KeyVerdict::NotAsked,
+            ),
+            (
+                vec![wants_key.clone()],
+                true,
+                vec![true],
+                0,
+                KeyVerdict::Wanted,
+            ),
+        ];
+        for (answers, supplied, expected_held, expected_asked, expected_verdict) in cases {
+            let held = std::cell::RefCell::new(Vec::<bool>::new());
+            let asked = std::cell::Cell::new(0);
+            let auth = if supplied {
+                DaemonAuth::for_test_with_user_action("s3cret", "", "from-stdin")
+            } else {
+                DaemonAuth::for_test("s3cret", "")
+            };
+            let (_, verdict, auth) = with_key_if_wanted(
+                auth,
+                |auth: DaemonAuth| {
+                    let answer = answers[held.borrow().len()].clone();
+                    held.borrow_mut().push(auth.holds_key());
+                    async move { Ok(answer) }
+                },
+                |(code, body): &(u16, String)| key_verdict(*code, body),
+                person_types("typed", &asked),
+            )
+            .await
+            .unwrap();
+            assert_eq!(*held.borrow(), expected_held, "answers {answers:?}");
+            assert_eq!(asked.get(), expected_asked, "answers {answers:?}");
+            assert_eq!(verdict, expected_verdict, "answers {answers:?}");
+            assert_eq!(auth.holds_key(), expected_held.last() == Some(&true));
+        }
+    }
+
+    /// With no terminal to ask on, a daemon that wants the key gets no second
+    /// request, and the error says how to supply it.
+    #[tokio::test]
+    async fn with_no_terminal_to_ask_on_the_request_is_not_retried() {
+        let attempts = std::cell::Cell::new(0);
+        let err = with_key_if_wanted(
+            DaemonAuth::for_test("s3cret", ""),
+            |_auth: DaemonAuth| {
+                attempts.set(attempts.get() + 1);
+                async { Ok((403u16, String::new())) }
+            },
+            |(code, body): &(u16, String)| key_verdict(*code, body),
+            || async { Err(anyhow!("{}", KeyUse::Stop.no_terminal())) },
+        )
+        .await
+        // `DaemonAuth` has no `Debug`, on purpose: it holds the secret and the key.
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+        assert_eq!(attempts.get(), 1);
+        assert!(err.contains("--user-action-key-stdin"), "{err}");
+        assert!(err.contains("The turn was not stopped."), "{err}");
+    }
+
+    /// A stand-in daemon on an ephemeral port. It answers the `GET /status`
+    /// every command probes first, then each further request, in order, with the
+    /// next scripted response, and records what it was sent, so a test reads
+    /// exactly what went over the wire, key header included. Reached by port
+    /// rather than through `BIOROUTER_PORT`, which every test in this process
+    /// shares.
+    struct FakeDaemon {
+        port: u16,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl FakeDaemon {
+        async fn start(script: Vec<String>) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = requests.clone();
+            let mut script = std::collections::VecDeque::from(script);
+            tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    let request = read_one_request(&mut socket).await;
+                    let response = if request.starts_with("GET /status ") {
+                        "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_string()
+                    } else {
+                        seen.lock().unwrap().push(request);
+                        // Past the script is a 500 no flow here treats as
+                        // success, so an extra request shows up as a failure.
+                        script.pop_front().unwrap_or_else(|| {
+                            http("500 Internal Server Error", "{\"message\":\"unscripted\"}")
+                        })
+                    };
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            });
+            Self { port, requests }
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    /// One whole request: the head, then as many body bytes as it declares.
+    async fn read_one_request(socket: &mut tokio::net::TcpStream) -> String {
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = socket.read(&mut chunk).await.unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
+            if let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                let declared = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if raw.len() >= end + 4 + declared {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    fn http(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// `authorize_turn_control`'s refusal on a daemon that holds a key.
+    fn empty_403() -> String {
+        "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n".to_string()
+    }
+
+    /// The regression SD-11 left behind, end to end over a socket: on a daemon
+    /// that holds no key, `session cancel` goes out without one, the daemon
+    /// admits it, and the person is never asked for a key that does not exist.
+    #[tokio::test]
+    async fn cancel_on_a_daemon_without_a_key_never_asks_for_one() {
+        let daemon = FakeDaemon::start(vec![http(
+            "200 OK",
+            "{\"cancelled\":true,\"turn_id\":\"turn-3\"}",
+        )])
+        .await;
+        let asked = std::cell::Cell::new(0);
+        let line = cancel_turn(
+            daemon.port,
+            "20260911_4",
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("never-typed", &asked),
+        )
+        .await
+        .unwrap();
+        assert_eq!(line, "cancelled turn turn-3");
+        assert_eq!(
+            asked.get(),
+            0,
+            "a daemon that admitted the request was not asked about"
+        );
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(requests[0].starts_with("POST /agent/cancel HTTP/1.1\r\n"));
+        assert!(requests[0].ends_with("{\"session_id\":\"20260911_4\"}"));
+        assert!(!requests[0].contains(USER_ACTION_HEADER));
+    }
+
+    /// A daemon that holds a key: the first request asks it, the person is
+    /// asked once, and the key goes on the second request and nowhere else.
+    #[tokio::test]
+    async fn cancel_on_a_daemon_with_a_key_asks_once_and_sends_it() {
+        let daemon = FakeDaemon::start(vec![
+            empty_403(),
+            http("200 OK", "{\"cancelled\":false,\"turn_id\":null}"),
+        ])
+        .await;
+        let asked = std::cell::Cell::new(0);
+        let line = cancel_turn(
+            daemon.port,
+            "20260911_4",
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("the-typed-key", &asked),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            line,
+            "nothing to cancel: this session had no turn in flight"
+        );
+        assert_eq!(asked.get(), 1);
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(!requests[0].contains(USER_ACTION_HEADER));
+        assert!(!requests[0].contains("the-typed-key"));
+        assert!(requests[1].contains("X-User-Action: the-typed-key\r\n"));
+    }
+
+    /// A refusal no key can change — a subagent's session on a daemon that holds
+    /// none — is shown in the daemon's words, and nobody is asked for a key.
+    #[tokio::test]
+    async fn a_refusal_no_key_can_change_is_shown_rather_than_prompted_for() {
+        let daemon = FakeDaemon::start(vec![http("403 Forbidden", &keyless_refusal_body())]).await;
+        let asked = std::cell::Cell::new(0);
+        let err = cancel_turn(
+            daemon.port,
+            "20260911_5",
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("never-typed", &asked),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(KEYLESS_REFUSAL), "{err}");
+        assert!(
+            !err.contains("does not match"),
+            "a keyless refusal is not a key mismatch: {err}"
+        );
+        assert_eq!(asked.get(), 0);
+        assert_eq!(daemon.requests().len(), 1);
+    }
+
+    /// A key the daemon does not recognise is reported as wrong, whether it was
+    /// typed or supplied on stdin, and is never answered with another prompt.
+    #[tokio::test]
+    async fn a_wrong_key_is_reported_as_wrong_and_not_asked_for_again() {
+        let daemon = FakeDaemon::start(vec![empty_403(), empty_403()]).await;
+        let asked = std::cell::Cell::new(0);
+        let err = cancel_turn(
+            daemon.port,
+            "20260911_4",
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("a-wrong-key", &asked),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("not the key this daemon was started with"),
+            "{err}"
+        );
+        assert!(err.contains("The turn was not stopped."), "{err}");
+        assert_eq!(asked.get(), 1);
+        assert_eq!(daemon.requests().len(), 2);
+
+        let daemon = FakeDaemon::start(vec![empty_403()]).await;
+        let err = cancel_turn(
+            daemon.port,
+            "20260911_4",
+            DaemonAuth::for_test_with_user_action("s3cret", "", "a-wrong-key"),
+            person_types("never-typed", &asked),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("not the key this daemon was started with"),
+            "{err}"
+        );
+        assert_eq!(
+            asked.get(),
+            1,
+            "a supplied key is never followed by a prompt"
+        );
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains("X-User-Action: a-wrong-key\r\n"));
+    }
+
+    /// Attach asks before it reads a single line, with an empty steer, and goes
+    /// on without a key where the daemon admits it; asks for the key once where
+    /// the daemon wants it, checking the key before anything is typed; and stops
+    /// with the daemon's words, and the way to watch instead, where no key would
+    /// help.
+    #[tokio::test]
+    async fn attach_settles_the_key_with_an_empty_steer_before_it_reads_stdin() {
+        // A daemon without a key: the gate lets this terminal through and only
+        // the empty text is refused.
+        let daemon = FakeDaemon::start(vec![http("400 Bad Request", "")]).await;
+        let asked = std::cell::Cell::new(0);
+        let auth = settle_steering_key(
+            daemon.port,
+            "20260911_6",
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("never-typed", &asked),
+        )
+        .await
+        .unwrap();
+        assert!(!auth.holds_key());
+        assert_eq!(asked.get(), 0);
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(requests[0].starts_with("POST /interrupt HTTP/1.1\r\n"));
+        assert!(
+            requests[0].ends_with("{\"session_id\":\"20260911_6\",\"text\":\"\"}"),
+            "the question carries no text to deliver: {}",
+            requests[0]
+        );
+        assert!(!requests[0].contains(USER_ACTION_HEADER));
+
+        // A daemon with a key: asked once, and the key is tried on the same
+        // question before attach reads anything.
+        let daemon = FakeDaemon::start(vec![empty_403(), http("400 Bad Request", "")]).await;
+        let auth = settle_steering_key(
+            daemon.port,
+            "20260911_6",
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("the-typed-key", &asked),
+        )
+        .await
+        .unwrap();
+        assert!(auth.holds_key());
+        assert_eq!(asked.get(), 1);
+        assert!(daemon.requests()[1].contains("X-User-Action: the-typed-key\r\n"));
+
+        // A daemon without a key, and a session it will not let this terminal
+        // steer: no prompt, its words, and `--read-only`.
+        let daemon = FakeDaemon::start(vec![http("403 Forbidden", &keyless_refusal_body())]).await;
+        let err = settle_steering_key(
+            daemon.port,
+            "20260911_7",
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("never-typed", &asked),
+        )
+        .await
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(KEYLESS_REFUSAL), "{err}");
+        assert!(
+            err.contains("biorouter session attach 20260911_7 --read-only"),
+            "{err}"
+        );
+        assert_eq!(asked.get(), 1, "not asked again");
+    }
+
+    /// A turn's whole stream, as `/reply` sends it when a `send` waits.
+    fn a_whole_turn() -> String {
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n\
+         data: {\"type\":\"Finish\",\"reason\":\"stop\",\"seq\":1,\"turn_id\":\"turn-8\"}\n\n"
+            .to_string()
+    }
+
+    /// `send` makes one proof-less `/reply`, and only its refusal leads anywhere
+    /// else: to the steer gate, which says whether the key would change it, and
+    /// on to the person only when it would.
+    #[tokio::test]
+    async fn send_asks_for_the_key_only_when_a_daemon_holding_one_refuses() {
+        let asked = std::cell::Cell::new(0);
+
+        // An ordinary chat, on either kind of daemon: one request, no key.
+        let daemon = FakeDaemon::start(vec![a_whole_turn()]).await;
+        let outcome = send_to(
+            daemon.port,
+            "20260911_8",
+            "hello",
+            true,
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("never-typed", &asked),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, SendOutcome::Streamed);
+        assert_eq!(asked.get(), 0);
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(requests[0].starts_with("POST /reply HTTP/1.1\r\n"));
+        assert!(!requests[0].contains(USER_ACTION_HEADER));
+
+        // A subagent's session on a daemon that holds a key: the refusal, the
+        // question, the person, and the same text again with the key.
+        let daemon = FakeDaemon::start(vec![empty_403(), empty_403(), a_whole_turn()]).await;
+        let outcome = send_to(
+            daemon.port,
+            "20260911_9",
+            "hello",
+            true,
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("the-typed-key", &asked),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, SendOutcome::Streamed);
+        assert_eq!(asked.get(), 1);
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 3, "{requests:?}");
+        assert!(requests[0].starts_with("POST /reply "));
+        assert!(requests[1].starts_with("POST /interrupt "));
+        assert!(requests[2].starts_with("POST /reply "));
+        assert!(!requests[0].contains(USER_ACTION_HEADER));
+        assert!(!requests[1].contains(USER_ACTION_HEADER));
+        assert!(requests[2].contains("X-User-Action: the-typed-key\r\n"));
+        assert!(requests[2].contains("\"text\":\"hello\""));
+
+        // A subagent's session on a daemon that holds none: `/reply`'s empty 403
+        // cannot say which kind of daemon this is, and the gate's words can.
+        let daemon = FakeDaemon::start(vec![
+            empty_403(),
+            http("403 Forbidden", &keyless_refusal_body()),
+        ])
+        .await;
+        let err = send_to(
+            daemon.port,
+            "20260911_9",
+            "hello",
+            true,
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("never-typed", &asked),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(KEYLESS_REFUSAL), "{err}");
+        assert_eq!(
+            asked.get(),
+            1,
+            "not asked for a key no daemon here can check"
+        );
+        assert_eq!(daemon.requests().len(), 2);
     }
 
     /// Issue #56 — **every** daemon request states the capability this terminal
