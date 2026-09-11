@@ -5,11 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { mockReadConfig } = vi.hoisted(() => ({ mockReadConfig: vi.fn() }));
 vi.mock('../api', () => ({ readConfig: mockReadConfig }));
 
-import {
-  CALLER_PROVIDER_HEADER,
-  resetHostProviderForTests,
-  userActionHeaders,
-} from './userAction';
+import { CALLER_PROVIDER_HEADER, resetHostProviderForTests, userActionHeaders } from './userAction';
 import { BROWSER_SURFACE_MARKER } from './surface';
 
 /**
