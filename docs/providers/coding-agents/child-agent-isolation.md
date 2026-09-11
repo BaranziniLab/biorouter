@@ -138,7 +138,7 @@ defaults, and each is pinned by a test.
 | Parameter | Value | Why |
 | --- | --- | --- |
 | `sandbox` | `"read-only"` | The child cannot change anything on the machine. |
-| `approvalPolicy` | `"never"` | It must not try to negotiate its way out; approvals are answered by BioRouter's own policy, not by prompting. |
+| `approvalPolicy` | `{"granular": {…}}` — `mcp_elicitations: true`, and `sandbox_approval`, `rules`, `skill_approval`, `request_permissions` all `false` | Codex's own per-category form of `never`. A `false` category is rejected inside the CLI with no round trip, exactly as `never` rejects it, so the child still cannot negotiate its way out. The one category let through is the channel on which Codex asks whether it may call a **BioRouter** tool — and `"never"` itself stopped working for that on codex-cli 0.148.0; see [why the policy is not `never`](#why-the-policy-is-not-never-qa-e-f1). |
 | `ephemeral` | `true` | No Codex session files. BioRouter owns the transcript, for the same reason as `--no-session-persistence` above. |
 | `baseInstructions` | BioRouter's system prompt | Replaces Codex's own preamble, which measured ~15k input tokens on a trivial prompt. |
 | `config.mcp_servers.biorouter.url` | The bridge URL, when the turn has one | The streamable-HTTP MCP form, which needs no second process. |
@@ -149,21 +149,77 @@ defaults, and each is pinned by a test.
 ### Every child-local approval request is refused
 
 `codex app-server` routes requests back to the host as server-originated messages that block the
-turn. BioRouter accepts only the MCP elicitation used by its own gated bridge and refuses every
-child-local command, file, patch, or permission escalation in one small decision function:
+turn. BioRouter accepts exactly one kind — Codex asking whether it may call a tool on BioRouter's own
+gated bridge — and refuses every child-local command, file, patch, or permission escalation in one
+small decision function, `CodexProvider::decide`:
 
 | Server request | Answer |
 | --- | --- |
-| `mcpServer/elicitation/request` | **Accept.** This is how an MCP tool call BioRouter is itself serving gets its go-ahead, and those run in BioRouter's dispatcher behind BioRouter's gates. |
-| `item/commandExecution/requestApproval` | Denied |
-| `item/fileChange/requestApproval` | Denied |
-| `item/permissions/requestApproval` | Denied |
-| `applyPatchApproval`, `execCommandApproval` | Denied |
+| `mcpServer/elicitation/request` marked `_meta.codex_approval_kind: "mcp_tool_call"`, `serverName: "biorouter"` | **Accept, once** — `{"action":"accept","content":{}}` with no `persist` choice, which Codex reads as a one-time `Approved`. The call then runs in BioRouter's dispatcher behind BioRouter's inspectors, permission mode, `.biorouterignore`, vault and privacy Gate C, so Codex's own ask adds nothing BioRouter would refuse. |
+| The same approval for any **other** server | Declined. The child's isolated `CODEX_HOME` holds no other MCP server, so one appearing is an isolation regression. |
+| Any other elicitation — an MCP server's form, a URL flow, another Codex approval kind | Declined. There is nobody on this side to fill a form in, and an empty accept would submit one nobody saw. |
+| `item/tool/requestUserInput` | Refused in its own shape, `{"answers": {}}`. This is where Codex sends the tool-call approval when its `tool_call_mcp_elicitation` feature is off; its parameters name no server, so it cannot be scoped to the bridge and is not accepted. |
+| `item/commandExecution/requestApproval` | Denied (`decline`) |
+| `item/fileChange/requestApproval` | Denied (`decline`) |
+| `item/permissions/requestApproval` | Denied (an empty grant) |
+| `applyPatchApproval`, `execCommandApproval` | Denied (`{"denied": {…}}`) |
 | Anything unrecognised | **Denied.** An unanswered request stalls the turn forever, so refusing beats guessing. |
 
 The child is configured with a read-only sandbox and no tools of its own, so a command or
 file-change approval request means it is reaching for authority it was not given. The honest answer
 is no.
+
+### Why the policy is not `never` (QA-E F1)
+
+Until 2026-09-11 the thread ran under `approvalPolicy: "never"`, and on a current Codex that made
+**every** bridged tool fail — deterministically, on the first call — with a sentence that comes from
+the vendor binary, not from BioRouter:
+
+```text
+MCP tool call requires approval, but approval policy is never
+```
+
+The mechanism, read from the codex-cli source at the matching tags and then measured against a live
+`codex app-server` 0.153.4:
+
+- An MCP tool call asks for approval unless its server pre-approved it, or its annotations say
+  `readOnlyHint: true`. An unannotated tool counts as destructive, and most of BioRouter's are
+  unannotated.
+- `never` auto-approves that ask **only when the sandbox has full disk write**. BioRouter's child is
+  read-only, so the ask is real.
+- From **0.148.0**, an ask under `never` is answered inside the CLI with the refusal above, before
+  any request is sent. 0.147.0 has no such check; it sent the ask to the host, where the elicitation
+  arm accepted it, which is why the bridge worked when it was built.
+
+So no answer BioRouter gave could have helped: under `never` the question never arrived. The fix is
+the granular policy in the table above, and the question then arrives in this exact shape (captured
+from 0.153.4, ids shortened):
+
+```json
+{"method": "mcpServer/elicitation/request", "id": 0, "params": {
+  "threadId": "01a08f7e-…", "turnId": "01a08f7e-…", "serverName": "biorouter", "mode": "form",
+  "_meta": {"codex_approval_kind": "mcp_tool_call", "persist": ["session", "always"],
+            "tool_params": {"text": "hi"}, "tool_params_display": [ … ]},
+  "message": "Allow the biorouter MCP server to run tool \"echo\"?",
+  "requestedSchema": {"type": "object", "properties": {}}}}
+```
+
+⚠ **Two couplings to know before touching this.**
+
+- `granular` is `#[experimental("askForApproval.granular")]` in the app-server protocol, so it only
+  parses for a client that declared `capabilities.experimentalApi: true` at `initialize`. BioRouter
+  does; `initialize_declares_the_experimental_api_the_policy_needs` pins it. The variant is
+  identical in the 0.147.0 and 0.153.4 protocol, so the change does not strand an older CLI.
+- The tool-call approval arrives as an elicitation only while Codex's `tool_call_mcp_elicitation`
+  feature is on — stable and on by default, and not in `DISABLED_CHILD_FEATURES`. Disabling it would
+  route the approval to `item/tool/requestUserInput`, which is refused, and every bridged call would
+  fail again as `user cancelled MCP tool call`.
+
+Why no test caught it: the recorded Codex fixtures under `tests/fixtures/coding_agent/codex/` were
+captured with `sandbox: dangerFullAccess`, the one configuration in which `never` still auto-approves
+an MCP call, and none of them contains an MCP tool call at all. The live bridge test that drives the
+real Codex asserted only that the answer *named* the tool — which a refusal also does. It now
+requires output only a tool that really ran could produce.
 
 ## What the child still has
 

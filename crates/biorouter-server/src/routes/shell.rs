@@ -57,6 +57,16 @@
 //! * Because canonicalization resolves symbolic links, a link inside a root
 //!   that points outside one is refused: the comparison is against the link's
 //!   target, never against the requested string.
+//! * A link that does **not** resolve — its target is missing, or it is part
+//!   of a loop — is refused wherever it sits in the path. It has no target to
+//!   compare, and treating it as a name not created yet compared the link's own
+//!   location instead, which made every handler an oracle for whether its
+//!   target existed and let `fs_write` create that target (QA-D F6).
+//!
+//! The two reading routes then open the resolved path without following a
+//! link and check that the descriptor is the file the guard validated
+//! ([`open_validated_file`]), so a name flipped to a link after the check is
+//! refused rather than read.
 //!
 //! An allowlist alone is not enough, because the most sensitive things on the
 //! machine live *inside* the home directory. [`is_denied`] additionally refuses
@@ -286,7 +296,8 @@ struct ArchiveEntry {
 /// Deliberately carries no path: a refusal that echoed the resolved location
 /// would report whether `/etc/shadow` exists to a caller who is not allowed to
 /// read it. Four variants rather than one because two of them are the caller's
-/// mistake (`400`) and two are a boundary (`403`).
+/// mistake (`400`) and two are a boundary (`403`). The two boundaries share one
+/// message as well as one status; [`Refusal::message`] says why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
     /// The path was empty, or `~` with no resolvable home directory.
@@ -308,13 +319,22 @@ impl Refusal {
         }
     }
 
+    /// One sentence for both boundaries, on purpose. Which of the two applies is
+    /// decided by where a path resolves, and a caller who can plant a link
+    /// inside a root chooses that: a link to an existing file outside every
+    /// root is `Outside`, and the same link to a missing one is `Denied` (a link
+    /// that does not resolve). Two wordings would answer "does this exist" about
+    /// every path the guard refuses (QA-D F6). The variants stay distinct for
+    /// the tests, which assert which boundary held; a caller learns only that
+    /// one did. The interface never shows this text anyway: its headless bridge
+    /// reads any non-2xx as "no data".
     fn message(self) -> &'static str {
         match self {
             Refusal::Unusable => "path is empty or could not be resolved",
             Refusal::Malformed => "path escapes the filesystem root",
-            Refusal::Outside => "path is outside the directories this server is allowed to touch",
-            Refusal::Denied => {
-                "path names a credential store, or a link this server will not follow"
+            Refusal::Outside | Refusal::Denied => {
+                "path is outside the directories this server may touch, names a credential \
+                 store, or goes through a link this server will not follow"
             }
         }
     }
@@ -357,7 +377,12 @@ impl PathGuard {
             roots.push(home);
         }
         Self {
-            roots: roots.iter().map(|root| canonical_prefix(root)).collect(),
+            // A root that is itself a link to nothing names no directory, and
+            // nothing under it could be resolved anyway, so it is not a root.
+            roots: roots
+                .iter()
+                .filter_map(|root| canonical_prefix(root).ok())
+                .collect(),
             home,
             cwd,
         }
@@ -379,8 +404,9 @@ impl PathGuard {
         // `/etc/passwd`, not as a string that begins with the home directory.
         let normalized = lexical_normalize(&absolute).ok_or(Refusal::Malformed)?;
         // Then resolve symbolic links, so a link inside a root that points out
-        // of one is compared as its target.
-        let resolved = canonical_prefix(&normalized);
+        // of one is compared as its target — and a link with no target to
+        // compare is refused here, before any handler can follow it.
+        let resolved = canonical_prefix(&normalized)?;
         if !self
             .roots
             .iter()
@@ -453,7 +479,20 @@ fn lexical_normalize(path: &Path) -> Option<PathBuf> {
 /// existing ancestor gives the new path its parent's real identity — including
 /// through any symbolic link on the way — which is the property the root test
 /// needs.
-fn canonical_prefix(path: &Path) -> PathBuf {
+///
+/// **A link that does not resolve is refused, never stepped past.** Its target
+/// may be missing, or it may be one link of a loop; either way `canonicalize`
+/// fails on it exactly as it fails on a name that is not there yet, and this
+/// walk used to treat the two alike, re-appending the link's own name to its
+/// parent. What came back was then the link's location — inside a root, naming
+/// nothing denied — while every handler that acted on it followed the link to
+/// wherever it pointed: `fs_read` answered `200 {"found":false}` for a link
+/// into `~/.ssh` whose target was missing and `403` for one whose target was
+/// there (QA-D F6), and `fs_write` created the missing target. The root test and
+/// the deny list have to see a link's target, a link that does not resolve
+/// gives them none to see, and so it is [`Refusal::Denied`] — "a link this
+/// server will not follow" — wherever in the path it sits.
+fn canonical_prefix(path: &Path) -> Result<PathBuf, Refusal> {
     let mut tail: Vec<OsString> = Vec::new();
     let mut probe = path.to_path_buf();
     loop {
@@ -462,7 +501,13 @@ fn canonical_prefix(path: &Path) -> PathBuf {
             for part in tail.iter().rev() {
                 out.push(part);
             }
-            return out;
+            return Ok(out);
+        }
+        // `symlink_metadata` follows every component but the last, so a link
+        // higher up the path fails this probe as "not found" and is met here
+        // as the walk climbs to it.
+        if std::fs::symlink_metadata(&probe).is_ok_and(|named| named.file_type().is_symlink()) {
+            return Err(Refusal::Denied);
         }
         let name = probe.file_name().map(OsStr::to_os_string);
         let parent = probe.parent().map(Path::to_path_buf);
@@ -474,7 +519,7 @@ fn canonical_prefix(path: &Path) -> PathBuf {
             // Nothing along the path exists (or we reached the root). The
             // lexical form is all there is, and the root test still applies to
             // it.
-            _ => return path.to_path_buf(),
+            _ => return Ok(path.to_path_buf()),
         }
     }
 }
@@ -676,8 +721,15 @@ async fn fs_list_files(Query(query): Query<ListFilesQuery>) -> Response {
 
 async fn fs_read(Query(query): Query<PathQuery>) -> Response {
     let requested = query.path.unwrap_or_default();
-    match read_file_within(&PathGuard::current(), &requested).await {
-        Ok(response) => Json(response).into_response(),
+    into_answer(read_file_within(&PathGuard::current(), &requested).await)
+}
+
+/// A file route's result as the response its caller receives. Both reading
+/// routes answer through this one mapping, so a test that compares two answers
+/// compares what a caller actually sees rather than a copy of the mapping.
+fn into_answer<T: Serialize>(result: Result<T, Refusal>) -> Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
         Err(refusal) => refusal.into_response(),
     }
 }
@@ -1469,12 +1521,36 @@ fn unread_artifact_revision(metadata: &std::fs::Metadata, mtime_millis: u128) ->
 /// lists alike. It also needs local write access to one of the roots and, on
 /// Linux, `fs.protected_hardlinks=0`.
 fn open_validated_file(path: &Path) -> Result<(File, std::fs::Metadata), Refusal> {
-    let named = std::fs::symlink_metadata(path).map_err(|_| Refusal::Unusable)?;
+    open_validated(path).map_err(|failure| match failure {
+        OpenFailure::Io(_) => Refusal::Unusable,
+        OpenFailure::Refused(refusal) => refusal,
+    })
+}
+
+/// Why [`open_validated`] handed back no descriptor.
+///
+/// Two kinds, because the two reading routes answer them differently. An I/O
+/// failure is an ordinary answer about a path the guard already allowed — not
+/// there, not readable, not a regular file — which `/headless/fs/read` has
+/// always reported as `200 {"found":false}` and the artifact route as
+/// [`Refusal::Unusable`]. A refusal is a boundary, and both routes refuse it.
+enum OpenFailure {
+    Io(std::io::Error),
+    Refused(Refusal),
+}
+
+/// [`open_validated_file`], keeping an I/O failure's own error for the route
+/// that reports it.
+fn open_validated(path: &Path) -> Result<(File, std::fs::Metadata), OpenFailure> {
+    let named = std::fs::symlink_metadata(path).map_err(OpenFailure::Io)?;
     if named.file_type().is_symlink() {
-        return Err(Refusal::Denied);
+        return Err(OpenFailure::Refused(Refusal::Denied));
     }
     if !named.file_type().is_file() {
-        return Err(Refusal::Unusable);
+        return Err(OpenFailure::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )));
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -1483,10 +1559,10 @@ fn open_validated_file(path: &Path) -> Result<(File, std::fs::Metadata), Refusal
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    let file = options.open(path).map_err(|_| Refusal::Unusable)?;
-    let opened = file.metadata().map_err(|_| Refusal::Unusable)?;
+    let file = options.open(path).map_err(OpenFailure::Io)?;
+    let opened = file.metadata().map_err(OpenFailure::Io)?;
     if !opened.is_file() || !is_same_file(&named, &opened) {
-        return Err(Refusal::Denied);
+        return Err(OpenFailure::Refused(Refusal::Denied));
     }
     Ok((file, opened))
 }
@@ -1507,10 +1583,7 @@ fn is_same_file(_named: &std::fs::Metadata, _opened: &std::fs::Metadata) -> bool
 
 async fn fs_artifact(Query(query): Query<PathQuery>) -> Response {
     let requested = query.path.unwrap_or_default();
-    match read_artifact_within(&PathGuard::current(), &requested) {
-        Ok(value) => Json(value).into_response(),
-        Err(refusal) => refusal.into_response(),
-    }
+    into_answer(read_artifact_within(&PathGuard::current(), &requested))
 }
 
 fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json::Value, Refusal> {
@@ -1616,24 +1689,51 @@ fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json
 /// The whole of `fs_read` except for the HTTP shell, so the boundary can be
 /// exercised against a real directory instead of against the process's own
 /// home.
+///
+/// The file is opened the way the artifact route opens it, through
+/// [`open_validated`], and for the reason recorded on [`open_validated_file`]:
+/// `resolve` checked a *name*, and a plain open resolves that name again from
+/// scratch. This route returns contents, so a regular file flipped to a link
+/// between the two was a read of whatever the link pointed at, however firmly
+/// the guard had just refused it by name.
 async fn read_file_within(guard: &PathGuard, requested: &str) -> Result<ReadFileResponse, Refusal> {
     let path = guard.resolve(requested)?;
-    Ok(match tokio::fs::read_to_string(&path).await {
+    let read = tokio::task::spawn_blocking(move || read_validated_text(&path))
+        .await
+        .map_err(|_| Refusal::Unusable)??;
+    // Echo what the caller asked for, not where it landed: the renderer keys
+    // its cache on the string it sent.
+    let file_path = requested.to_string();
+    Ok(match read {
         Ok(file) => ReadFileResponse {
-            // Echo what the caller asked for, not where it landed: the renderer
-            // keys its cache on the string it sent.
-            file_path: requested.to_string(),
+            file_path,
             file,
             found: true,
             error: None,
         },
         Err(e) => ReadFileResponse {
-            file_path: requested.to_string(),
+            file_path,
             file: String::new(),
             found: false,
             error: Some(e.to_string()),
         },
     })
+}
+
+/// A resolved path's contents as text, opened without following a link and
+/// only if the descriptor is the file that was validated.
+///
+/// `Err` is a refusal. `Ok(Err(_))` is an ordinary I/O answer (no such file,
+/// not UTF-8, not a regular file), which the route reports as
+/// `200 {"found":false}` exactly as it always has.
+fn read_validated_text(path: &Path) -> Result<std::io::Result<String>, Refusal> {
+    let mut file = match open_validated(path) {
+        Ok((file, _)) => file,
+        Err(OpenFailure::Io(e)) => return Ok(Err(e)),
+        Err(OpenFailure::Refused(refusal)) => return Err(refusal),
+    };
+    let mut text = String::new();
+    Ok(file.read_to_string(&mut text).map(|_| text))
 }
 
 async fn fs_write(Json(request): Json<WriteFileRequest>) -> Response {
@@ -2223,7 +2323,8 @@ fn resolve_program(name: &str, search_path: &OsStr) -> PathBuf {
 // Router.
 // ---------------------------------------------------------------------------
 
-/// The seventeen `/headless/*` routes.
+/// The sixteen `/headless/*` paths — seventeen handlers, since
+/// `/headless/settings` answers both `GET` and `POST`.
 ///
 /// No handler reads [`AppState`]: this surface is about the machine the daemon
 /// runs on, not about its sessions. The parameter is kept so the module is
@@ -2268,9 +2369,9 @@ mod tests {
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
         PathGuard {
-            roots: vec![canonical_prefix(root)],
-            home: Some(canonical_prefix(&home)),
-            cwd: canonical_prefix(&home),
+            roots: vec![canonical_prefix(root).unwrap()],
+            home: Some(canonical_prefix(&home).unwrap()),
+            cwd: canonical_prefix(&home).unwrap(),
         }
     }
 
@@ -2341,7 +2442,7 @@ mod tests {
     fn artifact_route_honors_the_requested_projects_ignore_file() {
         let tmp = TempDir::new().unwrap();
         let mut guard = guard_over(tmp.path());
-        guard.cwd = canonical_prefix(&tmp.path().join("daemon"));
+        guard.cwd = canonical_prefix(&tmp.path().join("daemon")).unwrap();
         fs::create_dir_all(&guard.cwd).unwrap();
 
         let project = tmp.path().join("project");
@@ -2478,9 +2579,13 @@ mod tests {
         assert!(!is_same_file(&one, &fs::symlink_metadata(&two).unwrap()));
     }
 
-    /// A link the guard cannot canonicalize — its target does not exist — is
-    /// what `canonical_prefix` hands the opener verbatim, so the whole route
-    /// has to refuse it rather than reach through it.
+    /// A link the guard cannot canonicalize — its target does not exist — gives
+    /// the root test and the deny list no target to see, so the whole route has
+    /// to refuse it rather than reach through it. `canonical_prefix` used to
+    /// hand such a link to the opener verbatim, and the opener's own link check
+    /// was all that refused it here; since QA-D F6 the guard refuses it for
+    /// every route, and the opener's check stands behind it for a link swapped
+    /// in after validation.
     #[cfg(unix)]
     #[test]
     fn artifact_read_refuses_a_link_at_the_final_component() {
@@ -2798,6 +2903,246 @@ mod tests {
         );
     }
 
+    // --- Links the guard cannot resolve (QA-D F6) ---------------------------
+
+    /// What a caller of `/headless/fs/read` receives for `requested`, through
+    /// the route's own mapping: the status and the body.
+    async fn read_answer(guard: &PathGuard, requested: &Path) -> (StatusCode, String) {
+        let result = read_file_within(guard, requested.to_str().unwrap()).await;
+        answer_parts(into_answer(result)).await
+    }
+
+    /// The same, for `/headless/fs/artifact`.
+    async fn artifact_answer(guard: &PathGuard, requested: &Path) -> (StatusCode, String) {
+        answer_parts(into_answer(read_artifact_within(
+            guard,
+            requested.to_str().unwrap(),
+        )))
+        .await
+    }
+
+    async fn answer_parts(response: Response) -> (StatusCode, String) {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// QA-D F6, as reported. A link placed inside a root and aimed into a
+    /// credential store answered `403` when its target existed and
+    /// `200 {"found":false}` when it did not, so `/headless/fs/read` said
+    /// whether a file exists about exactly the paths the deny list is there to
+    /// say nothing about. `canonical_prefix` stepped past the dangling link as
+    /// if it were a name not created yet, and the guard compared the link's own
+    /// location (inside a root, naming nothing denied) instead of its target.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dangling_link_into_a_credential_store_answers_what_a_live_one_does() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(ssh.join("known_hosts"), "github.com ssh-ed25519 AAAA").unwrap();
+
+        let live = home.join("probe-live.txt");
+        std::os::unix::fs::symlink(ssh.join("known_hosts"), &live).unwrap();
+        let dangling = home.join("probe-dangling.txt");
+        std::os::unix::fs::symlink(ssh.join("nonexistent"), &dangling).unwrap();
+
+        let refused = read_answer(&guard, &live).await;
+        assert_eq!(
+            refused.0,
+            StatusCode::FORBIDDEN,
+            "a live link into .ssh is refused, as it always was"
+        );
+        assert_eq!(
+            read_answer(&guard, &dangling).await,
+            refused,
+            "whether a file in a credential store exists must not change the answer"
+        );
+        // The artifact route already gave these one answer; it must keep to it.
+        let refused = artifact_answer(&guard, &live).await;
+        assert_eq!(refused.0, StatusCode::FORBIDDEN);
+        assert_eq!(artifact_answer(&guard, &dangling).await, refused);
+    }
+
+    /// The same link aimed into a directory the guard allows is refused as a
+    /// link. That is the classification `/headless/fs/artifact` already gave it
+    /// (`artifact_read_refuses_a_link_at_the_final_component`), now given by
+    /// the guard itself, so it holds for every route. What is refused is the
+    /// link rather than its target, which is why the answer cannot depend on
+    /// whether the target exists.
+    ///
+    /// Named directly, the missing target is an answer and not a refusal —
+    /// `200 {"found":false}` — which is the contract the renderer's optional
+    /// reads (skill overrides, `SKILL.md`) are written against.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dangling_link_into_an_allowed_directory_is_refused_as_a_link() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        let missing = home.join("not-yet.txt");
+        let link = home.join("report.txt");
+        std::os::unix::fs::symlink(&missing, &link).unwrap();
+
+        assert_eq!(
+            read_file_within(&guard, link.to_str().unwrap()).await.err(),
+            Some(Refusal::Denied)
+        );
+        let direct = read_file_within(&guard, missing.to_str().unwrap())
+            .await
+            .expect("a missing file inside a root is an answer, not a refusal");
+        assert!(!direct.found);
+        assert!(direct.error.is_some());
+    }
+
+    /// One level up, the same hole had a second shape, and there the artifact
+    /// route leaked too. A directory link whose target is missing made both
+    /// routes act on the link's own location: `fs_read` answered
+    /// `200 {"found":false}` and `fs_artifact` `400`, where a link to a
+    /// credential store that exists got `403`. So whether `~/.aws` exists (does
+    /// this machine hold cloud credentials at all) could be read off either
+    /// route.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dangling_directory_link_does_not_say_whether_its_target_exists() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        let to_existing = home.join("keys");
+        std::os::unix::fs::symlink(home.join(".ssh"), &to_existing).unwrap();
+        let to_missing = home.join("cloud");
+        std::os::unix::fs::symlink(home.join(".aws"), &to_missing).unwrap();
+
+        let refused = read_answer(&guard, &to_existing.join("config")).await;
+        assert_eq!(refused.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            read_answer(&guard, &to_missing.join("credentials")).await,
+            refused
+        );
+
+        let refused = artifact_answer(&guard, &to_existing.join("config")).await;
+        assert_eq!(refused.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            artifact_answer(&guard, &to_missing.join("credentials")).await,
+            refused
+        );
+    }
+
+    /// Outside every root the trick answered "does this path exist" about the
+    /// rest of the machine: a live link to an existing file was refused
+    /// `Outside`, and a dangling one read as `200 {"found":false}`. With the
+    /// link refused the status agrees. The two boundary refusals also share one
+    /// body, because which of them applies is decided by where a link the
+    /// caller planted resolves, and two wordings would say it in words.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn outside_every_root_a_dangling_link_answers_what_a_live_one_does() {
+        let allowed = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        fs::write(elsewhere.path().join("passwd"), "root:x:0:0").unwrap();
+        let guard = guard_over(allowed.path());
+        let home = allowed.path().join("home");
+
+        let live = home.join("probe-live");
+        std::os::unix::fs::symlink(elsewhere.path().join("passwd"), &live).unwrap();
+        let dangling = home.join("probe-dangling");
+        std::os::unix::fs::symlink(elsewhere.path().join("definitely-absent"), &dangling).unwrap();
+
+        // Two different refusals underneath, which the tests can still tell
+        // apart...
+        assert_eq!(guard.resolve(live.to_str().unwrap()), Err(Refusal::Outside));
+        assert_eq!(
+            guard.resolve(dangling.to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+        // ...and one answer on the wire, which a caller cannot.
+        let refused = read_answer(&guard, &live).await;
+        assert_eq!(refused.0, StatusCode::FORBIDDEN);
+        assert_eq!(read_answer(&guard, &dangling).await, refused);
+    }
+
+    /// The write half of the same defect, and the reason the fix is in the
+    /// guard every handler resolves through rather than in `fs_read` alone.
+    /// `fs_write` acts on the path `resolve` returns, which for a dangling link
+    /// was the link, and writing to a link creates its missing target. So a
+    /// credential store could be written into through a link planted anywhere
+    /// in a root, past the deny list whose whole job is to keep this surface
+    /// out of it.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_cannot_carry_a_write_into_a_credential_store() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        let planted = home.join("notes.txt");
+        std::os::unix::fs::symlink(ssh.join("authorized_keys"), &planted).unwrap();
+
+        // The instrument first: writing to the link's own path, which is what
+        // `fs_write` did with what the guard handed it, lands inside `.ssh`.
+        fs::write(&planted, "ssh-ed25519 AAAA attacker").unwrap();
+        assert!(ssh.join("authorized_keys").is_file());
+        fs::remove_file(ssh.join("authorized_keys")).unwrap();
+
+        assert_eq!(
+            guard.resolve(planted.to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+    }
+
+    /// `fs_read` now opens the way the artifact route does. It returns
+    /// contents, so a validated file flipped to a link before the open was a
+    /// read of the link's target: `resolve` checked the name, and the plain
+    /// `read_to_string` this route did resolved it again from scratch.
+    #[cfg(unix)]
+    #[test]
+    fn fs_read_refuses_a_link_swapped_in_after_validation() {
+        let tmp = TempDir::new().unwrap();
+        let secret = tmp.path().join("secrets.yaml");
+        fs::write(&secret, "OPENAI_API_KEY: real").unwrap();
+        let requested = tmp.path().join("notes.md");
+        fs::write(&requested, "benign").unwrap();
+        assert_eq!(read_validated_text(&requested).unwrap().unwrap(), "benign");
+
+        fs::remove_file(&requested).unwrap();
+        std::os::unix::fs::symlink(&secret, &requested).unwrap();
+
+        // The instrument first: the read this route used to do hands back the
+        // credential store.
+        assert_eq!(
+            fs::read_to_string(&requested).unwrap(),
+            "OPENAI_API_KEY: real"
+        );
+        assert_eq!(read_validated_text(&requested).err(), Some(Refusal::Denied));
+    }
+
+    /// A loop has no target either. It is refused as a link, not stepped past
+    /// as a name that is not there yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_loop_is_refused_as_a_link() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        std::os::unix::fs::symlink(home.join("b"), home.join("a")).unwrap();
+        std::os::unix::fs::symlink(home.join("a"), home.join("b")).unwrap();
+
+        assert_eq!(
+            guard.resolve(home.join("a").to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+        assert_eq!(
+            guard.resolve(home.join("a").join("child").to_str().unwrap()),
+            Err(Refusal::Denied)
+        );
+    }
+
     /// Traversal is folded out before the root test, so `../../..` cannot walk
     /// out of a root by pretending to stay in it.
     ///
@@ -2865,7 +3210,10 @@ mod tests {
         let resolved = guard
             .resolve("~/a/../a")
             .expect("a path that stays inside the root must resolve");
-        assert_eq!(resolved, canonical_prefix(&tmp.path().join("home/a")));
+        assert_eq!(
+            resolved,
+            canonical_prefix(&tmp.path().join("home/a")).unwrap()
+        );
     }
 
     /// A sibling directory whose name merely starts with a root's name is not
@@ -2879,9 +3227,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&sibling).unwrap();
         let guard = PathGuard {
-            roots: vec![canonical_prefix(&root)],
-            home: Some(canonical_prefix(&root)),
-            cwd: canonical_prefix(&root),
+            roots: vec![canonical_prefix(&root).unwrap()],
+            home: Some(canonical_prefix(&root).unwrap()),
+            cwd: canonical_prefix(&root).unwrap(),
         };
         assert_eq!(
             guard.resolve(sibling.join("loot").to_str().unwrap()),
@@ -2925,7 +3273,7 @@ mod tests {
         let inside = guard
             .resolve("~/does/not/exist/yet.txt")
             .expect("a new file under the home root must resolve");
-        assert!(inside.starts_with(canonical_prefix(tmp.path())));
+        assert!(inside.starts_with(canonical_prefix(tmp.path()).unwrap()));
         assert!(!inside.exists());
 
         let elsewhere = TempDir::new().unwrap();
@@ -3029,7 +3377,7 @@ mod tests {
 
     /// Every route the retired binary served is still served, at the same path.
     #[test]
-    fn all_seventeen_routes_are_registered() {
+    fn all_sixteen_paths_are_registered() {
         let source = include_str!("shell.rs");
         for path in [
             "/headless/health",

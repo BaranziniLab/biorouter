@@ -4269,6 +4269,9 @@ impl Agent {
         // BR-18: one risk table, shared by the agent (which refreshes it from the
         // per-turn tool list) and the permission inspector (which reads it).
         let tool_risks = Arc::new(ToolRiskRegistry::new());
+        // The store `WorkspaceMutationInspector`'s pre-flight resolves targets
+        // in — this agent's own, which is the one its workspace handler reads.
+        let inspector_sessions = Arc::clone(&config.session_manager);
         Self {
             provider: provider.clone(),
             config,
@@ -4290,6 +4293,7 @@ impl Agent {
                 Arc::clone(&managed),
                 Arc::clone(&tool_risks),
                 provider.clone(),
+                inspector_sessions,
             )),
             hooks_manager,
             goals: Default::default(),
@@ -4708,6 +4712,7 @@ impl Agent {
         managed: Arc<ManagedPolicy>,
         tool_risks: Arc<ToolRiskRegistry>,
         provider: SharedProvider,
+        session_manager: Arc<SessionManager>,
     ) -> ToolInspectionManager {
         let mut tool_inspection_manager = ToolInspectionManager::new();
 
@@ -4770,9 +4775,14 @@ impl Agent {
 
         // BR-71 §5: cross-session capability changes always confirm, in every
         // mode. Inert for every tool but `workspace_set_tools` and
-        // `workspace_open`.
+        // `workspace_open`. F4: a `workspace_set_tools` change that cannot be
+        // made is refused here, before any card — hence the provider (for the
+        // pre-flight's privacy gates) and this agent's session store.
         tool_inspection_manager.add_inspector(Box::new(
-            crate::agents::workspace_inspector::WorkspaceMutationInspector,
+            crate::agents::workspace_inspector::WorkspaceMutationInspector::new(
+                Arc::clone(&provider),
+                session_manager,
+            ),
         ));
 
         // Issue #56, the first-crossing disclosure: private-capability chat
@@ -6412,6 +6422,17 @@ impl Agent {
                     {
                         result.reason.clone()
                     }
+                    // F4: a `workspace_set_tools` change that cannot be made —
+                    // a built-in capability named for removal, a knowledge base
+                    // that does not exist — refused BEFORE any card. Nobody was
+                    // asked, so "the user has declined" would be false, and the
+                    // reason is the handler's own sentence.
+                    Some(result)
+                        if result.inspector_name
+                            == crate::agents::workspace_inspector::WORKSPACE_MUTATION_INSPECTOR_NAME =>
+                    {
+                        result.reason.clone()
+                    }
                     _ => DECLINED_RESPONSE.to_string(),
                 };
                 let mut response = response_msg.lock().await;
@@ -7142,8 +7163,16 @@ impl Agent {
             // for the same reason: the value the call is granted must be fixed
             // before the call runs, not re-read while it runs.
             let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+            // The turn's token, so a Stop releases an approval card nobody has
+            // answered rather than leaving the turn parked on it.
             let result = self
-                .handle_schedule_management(arguments, request_id.clone(), &session.id, cap)
+                .handle_schedule_management(
+                    arguments,
+                    request_id.clone(),
+                    &session.id,
+                    cap,
+                    cancellation_token.clone(),
+                )
                 .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
@@ -13691,6 +13720,108 @@ mod tests {
              approval message loses the first-result-wins selection in \
              tool_execution.rs and the user sees an unexplained prompt; got {names:?}"
         );
+    }
+
+    /// **QA finding F4, end to end through the agent's own gauntlet.** A
+    /// `workspace_set_tools` that names a built-in capability for removal is
+    /// DENIED by the inspection round — never queued for approval, in Fully
+    /// Automatic or in Manual — and the model is handed the extension
+    /// manager's own sentence, not "the user has declined to run this tool".
+    ///
+    /// `workspace` is the removal that proves it on every machine: it is on the
+    /// always-confirm inspector's compiled security-relevant list, so before F4
+    /// it was queued for approval everywhere, and it is a platform capability,
+    /// so the handler refused it — after the user had approved.
+    #[tokio::test]
+    async fn an_impossible_workspace_change_is_denied_before_any_approval_is_queued() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let mut rows = Vec::new();
+        for name in ["caller", "target"] {
+            rows.push(
+                sm.create_session(
+                    temp.path().to_path_buf(),
+                    name.into(),
+                    crate::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        let (caller, target) = (&rows[0], &rows[1]);
+        let request = ToolRequest {
+            id: "call-f4".to_string(),
+            tool_call: Ok(CallToolRequestParams {
+                meta: None,
+                name: "workspace__workspace_set_tools".into(),
+                arguments: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "session_id": target.id, "remove_extensions": ["workspace"]
+                    }))
+                    .unwrap(),
+                ),
+                task: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+
+        for mode in [BioRouterMode::Auto, BioRouterMode::Approve] {
+            let agent = Agent::with_config(AgentConfig::new(
+                Arc::clone(&sm),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                mode,
+            ));
+            let results = agent
+                .tool_inspection_manager
+                .inspect_tools(std::slice::from_ref(&request), &[], mode, caller)
+                .await
+                .unwrap();
+            let verdict = agent
+                .tool_inspection_manager
+                .process_inspection_results_with_permission_inspector(
+                    std::slice::from_ref(&request),
+                    &results,
+                )
+                .expect("the agent registers a permission inspector");
+            assert!(
+                verdict.needs_approval.is_empty(),
+                "{mode:?}: an approval was queued for a change that cannot be made: {results:?}"
+            );
+            assert!(verdict.approved.is_empty(), "{mode:?}: {results:?}");
+            assert_eq!(
+                verdict
+                    .denied
+                    .iter()
+                    .map(|r| r.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["call-f4"],
+                "{mode:?}"
+            );
+
+            // …and what the model reads in place of a tool result.
+            let response = Arc::new(Mutex::new(Message::user()));
+            let map = HashMap::from([(request.id.clone(), Arc::clone(&response))]);
+            Agent::handle_denied_tools(&verdict, &map, &results).await;
+            let text = response
+                .lock()
+                .await
+                .content
+                .iter()
+                .find_map(|c| c.as_tool_response_text())
+                .expect("the denied call gets a tool response");
+            assert_eq!(
+                text,
+                format!(
+                    "Error: {}",
+                    crate::agents::extension_manager::capability_management_error("workspace")
+                        .message
+                ),
+                "{mode:?}"
+            );
+            assert!(!text.contains(DECLINED_RESPONSE), "{mode:?}: {text}");
+        }
     }
 
     /// BR-71: the soft-interrupt queue carries each injection's origin from the

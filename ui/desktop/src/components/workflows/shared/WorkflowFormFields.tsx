@@ -30,6 +30,8 @@ interface WorkflowFormFieldsProps {
   onKnowledgeBaseIdsChange?: (ids: string[]) => void;
   defaultKnowledgeBaseId?: string | null;
   onDefaultKnowledgeBaseIdChange?: (id: string | null) => void;
+  /** Shown beside the knowledge-base picker, e.g. why nothing in it is selected. */
+  knowledgeBaseNotice?: string;
   skillItems?: WorkflowResourceItem[];
   selectedSkillIds?: string[];
   onSkillIdsChange?: (ids: string[]) => void;
@@ -72,6 +74,7 @@ export function WorkflowFormFields({
   onKnowledgeBaseIdsChange,
   defaultKnowledgeBaseId,
   onDefaultKnowledgeBaseIdChange,
+  knowledgeBaseNotice,
   skillItems = [],
   selectedSkillIds = [],
   onSkillIdsChange,
@@ -686,6 +689,7 @@ export function WorkflowFormFields({
                   onSelectedIdsChange={onKnowledgeBaseIdsChange}
                   defaultId={defaultKnowledgeBaseId}
                   onDefaultIdChange={onDefaultKnowledgeBaseIdChange}
+                  notice={knowledgeBaseNotice}
                   emptyText="No knowledge bases found"
                   searchPlaceholder="Search knowledge bases..."
                   noun="KB"

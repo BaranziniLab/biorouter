@@ -307,24 +307,27 @@ mod tests {
             }
         }
 
-        /// Issue #56 (R5), the third schedule-creating surface.
+        /// QA 2026-09-10, finding F1, through the real dispatch path: a schedule
+        /// the agent creates is a standing agent run, so it waits for a person
+        /// — in Completely Autonomous mode too, which is where it used to go
+        /// straight through while saving a workflow file asked first.
         ///
-        /// `/loop` and `/schedule` record the chat that made them, so
-        /// `resolve_scheduled_provider` can run the job on that chat's model
-        /// instead of the user's commercial default. The agent's own
-        /// `schedule_management` tool did not, so a schedule an agent creates on
-        /// the user's behalf *from a private chat* still fell through to
-        /// `Config::global()` — the exact hole the rest of the task closes.
+        /// This test used to assert the opposite — that `create` returned with
+        /// the job recorded (`an_agent_created_schedule_records_the_chat_that_asked_for_it`,
+        /// issue #56 R5). That assertion sits behind a proof-backed approval
+        /// now, which an integration test cannot grant, so it moved to
+        /// `agents::schedule_tool::tests::an_approved_create_schedules_it_for_the_chat_that_asked`
+        /// with its reasoning intact. What is left to prove from out here is
+        /// the gate: a card appears, nothing is scheduled while it is
+        /// unanswered, and a Stop releases it with nothing changed.
         ///
-        /// ⚠ The id comes from `dispatch_tool_call`'s own `session` argument,
-        /// NOT from `session_context::current_session_id()`. That task-local is
-        /// scoped around a *scheduled* run (`scheduler.rs`) and a *subagent* run
-        /// (`subagent_handler.rs`) and nowhere else — in particular not around
-        /// `Agent::reply` on the ordinary chat path — so it reads `None` in
-        /// precisely the case this closes. The dispatcher has the real session
-        /// in hand; that is the honest source.
+        /// The session id is minted here rather than by `create_session`, which
+        /// numbers every test database's first chat `YYYYMMDD_1` — and the card
+        /// registry read below is process-global and keyed by that id.
         #[tokio::test]
-        async fn an_agent_created_schedule_records_the_chat_that_asked_for_it() {
+        async fn an_agent_created_schedule_waits_for_a_person() {
+            use biorouter::conversation::message::MessageContent;
+            use biorouter::pending_user_action::PendingUserActions;
             use rmcp::model::CallToolRequestParams;
 
             let temp_dir = TempDir::new().unwrap();
@@ -332,21 +335,18 @@ mod tests {
             let session_manager = Arc::new(SessionManager::new(data_dir.clone()));
             let permission_manager = Arc::new(PermissionManager::new(data_dir.clone()));
             let mock_scheduler = Arc::new(MockScheduler::new());
-            let agent = Agent::with_config(AgentConfig::new(
-                session_manager.clone(),
+            let agent = Arc::new(Agent::with_config(AgentConfig::new(
+                session_manager,
                 permission_manager,
                 Some(mock_scheduler.clone()),
                 BioRouterMode::Auto,
-            ));
-
-            let session = session_manager
-                .create_session(
-                    data_dir.clone(),
-                    "the chat that asked".to_string(),
-                    biorouter::session::session_manager::SessionType::User,
-                )
-                .await
-                .unwrap();
+            )));
+            let session = Session {
+                id: format!("schedule-create-{}", uuid::Uuid::new_v4()),
+                session_type: biorouter::session::session_manager::SessionType::User,
+                working_dir: data_dir.clone(),
+                ..Default::default()
+            };
 
             let workflow_path = data_dir.join("nightly.yaml");
             std::fs::write(
@@ -355,35 +355,72 @@ mod tests {
             )
             .unwrap();
 
-            let (_id, result) = agent
-                .dispatch_tool_call(
-                    CallToolRequestParams {
-                        task: None,
-                        meta: None,
-                        name: PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.into(),
-                        arguments: serde_json::json!({
-                            "action": "create",
-                            "workflow_path": workflow_path.to_str().unwrap(),
-                            "cron_expression": "0 0 1 * * *",
-                        })
-                        .as_object()
-                        .cloned(),
-                    },
-                    "req-1".to_string(),
-                    None,
-                    &session,
-                )
-                .await;
-            // `ToolCallResult` is not `Debug`; the error side is what matters.
-            assert!(result.is_ok(), "{:?}", result.as_ref().err());
+            let stop = tokio_util::sync::CancellationToken::new();
+            let running = tokio::spawn({
+                let agent = Arc::clone(&agent);
+                let session = session.clone();
+                let stop = stop.clone();
+                async move {
+                    let (_id, dispatched) = agent
+                        .dispatch_tool_call(
+                            CallToolRequestParams {
+                                task: None,
+                                meta: None,
+                                name: PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.into(),
+                                arguments: serde_json::json!({
+                                    "action": "create",
+                                    "workflow_path": workflow_path.to_str().unwrap(),
+                                    "cron_expression": "0 2 * * *",
+                                })
+                                .as_object()
+                                .cloned(),
+                            },
+                            "req-1".to_string(),
+                            Some(stop),
+                            &session,
+                        )
+                        .await;
+                    match dispatched {
+                        Ok(call) => call.result.await.map(|_| ()).map_err(|e| e.message),
+                        Err(e) => Err(e.message),
+                    }
+                }
+            });
 
-            let jobs = mock_scheduler.list_scheduled_jobs().await;
-            assert_eq!(jobs.len(), 1, "{jobs:?}");
-            assert_eq!(
-                jobs[0].creator_session_id.as_deref(),
-                Some(session.id.as_str()),
-                "the schedule must remember the chat it was created from, or its runs fall back \
-                 to the global default and leave a private chat's work on a public model"
+            let carded = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let cards = PendingUserActions::global().pending_cards_for_session(&session.id);
+                    if cards
+                        .iter()
+                        .flat_map(|card| card.content.iter())
+                        .any(|content| matches!(content, MessageContent::ActionRequired(_)))
+                    {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            if carded.is_err() {
+                let outcome =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), running).await;
+                panic!("no approval card within 10s; the call instead returned {outcome:?}");
+            }
+            assert!(
+                mock_scheduler.list_scheduled_jobs().await.is_empty(),
+                "nothing may be scheduled while the card is unanswered"
+            );
+
+            stop.cancel();
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), running)
+                .await
+                .expect("a Stop must release the parked call")
+                .unwrap();
+            let refused = outcome.expect_err("a create nobody approved is not a success");
+            assert!(refused.contains("Nothing was changed"), "{refused}");
+            assert!(
+                mock_scheduler.list_scheduled_jobs().await.is_empty(),
+                "a create nobody approved scheduled something"
             );
         }
     }
