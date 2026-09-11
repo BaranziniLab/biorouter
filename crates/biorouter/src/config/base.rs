@@ -201,12 +201,16 @@ pub struct Config {
     // a lock that `save_values` also needs would deadlock against `load`'s own
     // create branch, which writes.
     values_read: Mutex<()>,
-    // The last failure to write a default config file. Reported out of band —
-    // `load` stays infallible about it on purpose, because making an unwritable
-    // config directory a hard failure would turn the storm path this layer
-    // spent two PRs calming down into a start-up crash. See
-    // `record_config_write_error`.
-    last_write_error: Mutex<Option<String>>,
+    // The outstanding failure to write the config file, if any. Reported out of
+    // band — `load` stays infallible about it on purpose, because making an
+    // unwritable config directory a hard failure would turn the storm path this
+    // layer spent two PRs calming down into a start-up crash. See
+    // `record_config_write_error`, and `outstanding_write_failure` for how a
+    // record is retired.
+    //
+    // A leaf lock: taken and released with nothing else acquired while it is
+    // held, so it cannot join the `guard` → `values_read` → `values_cache` order.
+    last_write_error: Mutex<WriteFailureRecord>,
     // Test-only replacement for the OS credential store, so cache and
     // chunking behavior can be exercised without touching a real keyring
     // (which would show authorization prompts on macOS).
@@ -276,7 +280,7 @@ impl Default for Config {
             secrets_read: Mutex::new(()),
             values_cache: Mutex::new(ValuesCache::default()),
             values_read: Mutex::new(()),
-            last_write_error: Mutex::new(None),
+            last_write_error: Mutex::new(WriteFailureRecord::default()),
             #[cfg(test)]
             test_keyring_store: None,
             #[cfg(test)]
@@ -458,6 +462,44 @@ struct CachedConfig {
     values: Arc<Mapping>,
 }
 
+/// An outstanding failure to write `config.yaml`, as it stands against the file
+/// on disk right now. See [`Config::outstanding_write_failure`].
+///
+/// Two variants because one write error means two different things for the
+/// settings in use, and a report that says either one while the other is true
+/// is wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigWriteFailure {
+    /// `config.yaml` is absent or does not load, and could not be written: the
+    /// values this process runs on exist only in memory, the file on disk is
+    /// unchanged, and the next start will run the same recovery again.
+    ValuesInMemoryOnly(String),
+    /// `config.yaml` loads, so the settings in use are the file's, but a write
+    /// to it fails right now: a setting changed in this session will not be
+    /// saved.
+    NotWritable(String),
+}
+
+impl ConfigWriteFailure {
+    /// The write error, verbatim.
+    pub fn into_error(self) -> String {
+        match self {
+            Self::ValuesInMemoryOnly(error) | Self::NotWritable(error) => error,
+        }
+    }
+}
+
+/// The write failure this process has recorded and not yet retired.
+#[derive(Default)]
+struct WriteFailureRecord {
+    error: Option<String>,
+    /// How many failures have ever been recorded. A check that found the file
+    /// writable again clears the record only while this still reads what it
+    /// read before probing: a failure recorded while it probed is one it never
+    /// tested, and clearing that would be the silence M9 was about.
+    recorded: u64,
+}
+
 /// Attempts a filesystem operation gets before its failure is believed.
 ///
 /// Eight, with the 1 ms → 16 ms backoff below, is ~63 ms in the worst case —
@@ -540,6 +582,15 @@ fn retry_up_to<T>(
 struct IoFaults {
     failing_read_attempts: std::sync::atomic::AtomicUsize,
     failing_rename_attempts: std::sync::atomic::AtomicUsize,
+    /// Fails the open that creates a staging file — the step every write and
+    /// every check that a write would land share. Arming the whole budget is a
+    /// config directory that refuses new files, on every platform, which a mode
+    /// only is on unix.
+    failing_stage_attempts: std::sync::atomic::AtomicUsize,
+    /// A write failure recorded the instant a writability check's staged write
+    /// succeeds: the one interleaving in which that check would otherwise clear
+    /// a failure it never tested.
+    failure_recorded_mid_probe: Mutex<Option<String>>,
     /// Config content a "sibling" installs the instant an injected rename fault
     /// fires. That is the race the fault stands in for — our rename lost
     /// because another writer got there first — and it is the only way to reach
@@ -564,6 +615,15 @@ impl IoFaults {
     fn failing_renames(&self) -> usize {
         self.failing_rename_attempts
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn failing_stages(&self) -> usize {
+        self.failing_stage_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn take_failure_recorded_mid_probe(&self) -> Option<String> {
+        self.failure_recorded_mid_probe.lock().unwrap().take()
     }
 
     /// Land the sibling's config, once, at the moment a rename fault fires.
@@ -640,7 +700,7 @@ impl Config {
             secrets_read: Mutex::new(()),
             values_cache: Mutex::new(ValuesCache::default()),
             values_read: Mutex::new(()),
-            last_write_error: Mutex::new(None),
+            last_write_error: Mutex::new(WriteFailureRecord::default()),
             #[cfg(test)]
             test_keyring_store: None,
             #[cfg(test)]
@@ -668,7 +728,7 @@ impl Config {
             secrets_read: Mutex::new(()),
             values_cache: Mutex::new(ValuesCache::default()),
             values_read: Mutex::new(()),
-            last_write_error: Mutex::new(None),
+            last_write_error: Mutex::new(WriteFailureRecord::default()),
             #[cfg(test)]
             test_keyring_store: None,
             #[cfg(test)]
@@ -821,22 +881,54 @@ impl Config {
         *self.values_cache.lock().unwrap_or_else(|e| e.into_inner()) = ValuesCache::default();
     }
 
-    /// An **outstanding** failure to write the config file, if any.
+    /// The error of the outstanding write failure, if any — the string view of
+    /// [`Self::outstanding_write_failure`], and checked against the disk the
+    /// same way. Use that one to learn what the failure means for the values
+    /// in use.
+    pub fn last_write_error(&self) -> Option<String> {
+        self.outstanding_write_failure()
+            .map(ConfigWriteFailure::into_error)
+    }
+
+    /// An **outstanding** failure to write the config file, checked against
+    /// the file as it is now.
     ///
-    /// Every arm of the recovery in [`Self::load_uncached`] that writes reports
-    /// through here — creating a config that is missing, replacing one that
-    /// will not parse, and **restoring a backup over one that will not parse**.
-    /// The last of those is the arm a corrupted `config.yaml` with a usable
-    /// `.bak` beside it actually takes, and it was the one that said nothing:
-    /// `POST /config/recover` answered "Recovered 23 keys" for a file it had
-    /// just failed to write, while the corrupt bytes were still on disk.
+    /// Every arm of the recovery in [`Self::load_uncached`] that writes records
+    /// its failure through [`Self::record_config_write_error`] — creating a
+    /// config that is missing, replacing one that will not parse, and
+    /// **restoring a backup over one that will not parse**. The last of those
+    /// is the arm a corrupted `config.yaml` with a usable `.bak` beside it
+    /// actually takes, and it was the one that said nothing: `POST
+    /// /config/recover` answered "Recovered 23 keys" for a file it had just
+    /// failed to write, while the corrupt bytes were still on disk.
     ///
-    /// Outstanding, not historical: [`Self::save_values`] clears it the moment
-    /// a write succeeds. A record that only ever accumulated would go on
-    /// claiming that changes will not persist long after they had started
-    /// persisting again — a config directory can be unwritable at start-up (an
-    /// unmounted volume, a full disk) and fine a minute later, and a false
-    /// version of this message is worse than none.
+    /// Outstanding, not historical, and a record is retired two ways.
+    /// [`Self::save_values`] clears it the moment a write succeeds, and this
+    /// clears it once the failure has stopped being true WITHOUT anything
+    /// having written: the config loads, and a write to it would land.
+    ///
+    /// ⚠ The second way is not a refinement of the first. A config that loads
+    /// needs no recovery, so the reload `POST /config/recover` forces writes
+    /// nothing, and a record that waited for a write outlived its cause —
+    /// finding F2 of the 2026-09-10 QA run: permissions restored and the file
+    /// repaired, three consecutive recoveries still answered `persisted: false`
+    /// with the stale `Permission denied`. A config directory can be unwritable
+    /// at start-up (an unmounted volume, a full disk) and fine a minute later,
+    /// and a false version of this message is worse than none.
+    ///
+    /// What the check costs, and why it takes this shape:
+    /// - **No record, no I/O.** A healthy config answers from memory, so any
+    ///   surface may ask as often as it likes.
+    /// - **A config that does not load keeps its record, however writable its
+    ///   directory has become.** What the record says is still true — the
+    ///   values in use exist only in this process — and the next reload runs
+    ///   the recovery that is the actual fix, whose write then clears it.
+    ///   Clearing on a writable directory alone would make M9 silent again.
+    /// - **A config that loads is probed** — see [`Self::probe_config_write`],
+    ///   which does everything a write does except change the file. A probe
+    ///   that still fails re-records what failed NOW, as
+    ///   [`ConfigWriteFailure::NotWritable`]: the values in use are the file's,
+    ///   and only a change made in this session is at risk.
     ///
     /// Reported here rather than returned, because [`Self::load`] must keep
     /// answering: a config directory that cannot be written is an environment
@@ -845,11 +937,48 @@ impl Config {
     /// was that it was *silent* — the write error was logged per attempt at
     /// best and otherwise discarded, so an install running entirely on
     /// in-memory defaults looked identical to a healthy one.
-    pub fn last_write_error(&self) -> Option<String> {
-        self.last_write_error
+    pub fn outstanding_write_failure(&self) -> Option<ConfigWriteFailure> {
+        let (recorded_error, recorded) = {
+            let slot = self
+                .last_write_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (slot.error.clone()?, slot.recorded)
+        };
+
+        let Some(on_disk) = self
+            .read_config_file()
+            .ok()
+            .filter(|content| parse_yaml_content(content).is_ok())
+        else {
+            return Some(ConfigWriteFailure::ValuesInMemoryOnly(recorded_error));
+        };
+
+        if let Err(still_failing) = self.probe_config_write(on_disk.as_bytes()) {
+            let error = still_failing.to_string();
+            tracing::debug!("config.yaml loads but still cannot be written: {}", error);
+            let mut slot = self
+                .last_write_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            slot.error = Some(error.clone());
+            slot.recorded += 1;
+            return Some(ConfigWriteFailure::NotWritable(error));
+        }
+
+        // The file loads and a write to it would land, so every clause of the
+        // warning has stopped being true — but only for the failure this
+        // checked. One recorded while the probe ran was never tested, so it
+        // stands, and is reported as a failure to write a file that loads,
+        // which is what was just observed.
+        let mut slot = self
+            .last_write_error
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .unwrap_or_else(|e| e.into_inner());
+        if slot.recorded == recorded {
+            slot.error = None;
+        }
+        slot.error.clone().map(ConfigWriteFailure::NotWritable)
     }
 
     /// Record a failed config write, logging the first one loudly.
@@ -862,14 +991,16 @@ impl Config {
     ///
     /// Loud once, not per call: before the cache above this was reached on
     /// every `get_param`, and an error line per settings lookup is noise that
-    /// buries itself.
+    /// buries itself. Counted every time, so a check that found the file
+    /// writable again can tell whether the failure it would clear is still
+    /// the one it checked.
     fn record_config_write_error(&self, error: &ConfigError, what: &str) {
         let message = error.to_string();
         let mut slot = self
             .last_write_error
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if slot.is_none() {
+        if slot.error.is_none() {
             tracing::error!(
                 "Failed to write {} to {}: {}. Biorouter will run on in-memory values; \
                  settings changed in this session will not persist.",
@@ -880,7 +1011,8 @@ impl Config {
         } else {
             tracing::debug!("Failed to write {} again: {}", what, message);
         }
-        *slot = Some(message);
+        slot.error = Some(message);
+        slot.recorded += 1;
     }
 
     fn load(&self) -> Result<Mapping, ConfigError> {
@@ -1259,6 +1391,115 @@ impl Config {
         self.config_path.with_file_name(name)
     }
 
+    /// Stage `content` at `temp_path` the way every config write does: created
+    /// fresh, exclusively locked, written, and synced to disk before anything
+    /// is renamed into place.
+    ///
+    /// Shared by [`Self::save_values`] and [`Self::probe_config_write`], so the
+    /// check that decides whether a recorded write failure still holds fails
+    /// exactly where a real write would.
+    fn stage_config(&self, temp_path: &Path, content: &[u8]) -> Result<(), ConfigError> {
+        #[cfg(test)]
+        let mut faults = self.io_faults.failing_stages();
+        // Retried for the same reason the rename in `save_values` is: a virus
+        // scanner or indexer holding a freshly created file open makes this
+        // fail with the same transient "Access is denied." on Windows, and the
+        // staging name is ours alone, so a failure here is never contention
+        // with another Biorouter writer.
+        let mut file = retry_while_transiently_unavailable(|| {
+            #[cfg(test)]
+            {
+                if faults > 0 {
+                    faults -= 1;
+                    return Err(IoFaults::access_denied());
+                }
+            }
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(temp_path)
+        })?;
+
+        // Acquire an exclusive lock
+        file.lock_exclusive()
+            .map_err(|e| ConfigError::LockError(e.to_string()))?;
+
+        // Write the contents using the same file handle
+        file.write_all(content)?;
+        file.sync_all()?;
+
+        // Unlock is handled automatically when file is dropped
+        Ok(())
+    }
+
+    /// Whether a write to `config.yaml` would land right now — found out
+    /// without making one.
+    ///
+    /// Everything [`Self::save_values`] does that can fail is done for real,
+    /// up to the step that would change the file: the same staging path, the
+    /// same open, lock, write and sync, carrying the file's own bytes. Then the
+    /// staged file is REMOVED instead of renamed into place. On unix that rename
+    /// asks the directory's permission, not the file's, and staging has just
+    /// exercised exactly that. What it cannot see — an immutable flag, a sticky
+    /// directory owned by someone else — is not modelled; a write refused for
+    /// one of those still fails loudly to its own caller.
+    ///
+    /// ⚠ Never renamed, though installing a staged copy of the file's own
+    /// bytes would be the more literal test. That moves `config.yaml`'s stamp,
+    /// which `catalog::spawn_config_watcher` publishes to the app as an outside
+    /// change, and a write from another process landing between our read and
+    /// our rename would be reverted by bytes that never saw it. A check has no
+    /// business doing either.
+    ///
+    /// ⚠ On Windows the step left out CAN fail when this passes: a read-only
+    /// `config.yaml` refuses to be replaced — `MoveFileExW` answers
+    /// `ERROR_ACCESS_DENIED`, and std's `FileRenameInfoEx` fallback does not
+    /// ask to ignore the attribute — so there the attribute is checked too. Not
+    /// on unix, where a `0o444` file in a writable directory is replaced
+    /// without complaint and the check would report a failure `save_values`
+    /// does not have.
+    fn probe_config_write(&self, content: &[u8]) -> Result<(), ConfigError> {
+        #[cfg(windows)]
+        if std::fs::metadata(&self.config_path)?
+            .permissions()
+            .readonly()
+        {
+            return Err(ConfigError::FileError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "config.yaml is read-only",
+            )));
+        }
+
+        let temp_path = self.staging_path();
+        let staged = self.stage_config(&temp_path, content);
+
+        #[cfg(test)]
+        if let Some(failure) = self.io_faults.take_failure_recorded_mid_probe() {
+            self.record_config_write_error(
+                &ConfigError::DirectoryError(failure),
+                "a config (injected while a writability check probed)",
+            );
+        }
+
+        // Removed however far staging got. One that cannot be removed is litter
+        // rather than a wrong answer — the question was whether a write would
+        // land, and the part of one that can fail has already answered it.
+        let removed =
+            retry_while_transiently_unavailable(|| match std::fs::remove_file(&temp_path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                removed => removed,
+            });
+        if let Err(e) = removed {
+            tracing::warn!(
+                "Could not remove {} after checking that the config can be written: {}",
+                temp_path.display(),
+                e
+            );
+        }
+        staged
+    }
+
     fn save_values(&self, values: Mapping) -> Result<(), ConfigError> {
         #[cfg(test)]
         self.io_probe.note_config_write();
@@ -1278,30 +1519,7 @@ impl Config {
         let temp_path = self.staging_path();
 
         let staged = (|| -> Result<(), ConfigError> {
-            {
-                // Retried for the same reason the rename below is: a virus
-                // scanner or indexer holding a freshly created file open makes
-                // this fail with the same transient "Access is denied." on
-                // Windows, and the staging name is ours alone, so a failure
-                // here is never contention with another Biorouter writer.
-                let mut file = retry_while_transiently_unavailable(|| {
-                    OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .open(&temp_path)
-                })?;
-
-                // Acquire an exclusive lock
-                file.lock_exclusive()
-                    .map_err(|e| ConfigError::LockError(e.to_string()))?;
-
-                // Write the contents using the same file handle
-                file.write_all(yaml_value.as_bytes())?;
-                file.sync_all()?;
-
-                // Unlock is handled automatically when file is dropped
-            }
+            self.stage_config(&temp_path, yaml_value.as_bytes())?;
 
             // Replace the original file. Atomic on unix; on Windows the
             // destination NAME is briefly unopenable while it happens, and a
@@ -1335,16 +1553,17 @@ impl Config {
 
         if staged.is_ok() {
             // A write just succeeded, so "the config file could not be written"
-            // has stopped being true. Without this the record is permanent, and
-            // a config directory that was briefly unwritable at start-up — an
-            // unmounted volume, a full disk, a first-run permissions problem —
-            // would make `/config/recover` warn that changes will not persist
-            // for the rest of the process's life, after they had started
-            // persisting again.
-            *self
-                .last_write_error
+            // has stopped being true. One of the two ways a record is retired;
+            // `outstanding_write_failure` is the other, for a failure that stops
+            // being true with NO write — a config repaired from outside loads,
+            // needs no recovery, and so is never written by the reload
+            // `/config/recover` forces. Waiting for this clear alone is how a
+            // config directory that was briefly unwritable came to be warned
+            // about for the rest of the process's life (finding F2).
+            self.last_write_error
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = None;
+                .unwrap_or_else(|e| e.into_inner())
+                .error = None;
         }
 
         staged
@@ -3714,6 +3933,403 @@ mod tests {
         );
     }
 
+    /// A recorded write failure is cleared once the config loads and can be
+    /// written again — even though nothing has written it since.
+    ///
+    /// Finding F2 of the 2026-09-10 QA run on `7c96d796`: after one genuine
+    /// write failure the permissions were restored and the file repaired, and
+    /// three `POST /config/recover` calls on that healthy, writable, valid
+    /// config all still answered `persisted: false` with the stale
+    /// `Permission denied`. The clear lived only in `save_values`, and a config
+    /// that loads needs no recovery, so the reload the route forces writes
+    /// nothing and the record could only be cleared by an unrelated write.
+    ///
+    /// Portable on purpose: the parent directory is a FILE, as in
+    /// `a_write_that_succeeds_clears_an_earlier_recorded_failure`, rather than a
+    /// mode, which Windows does not have.
+    #[test]
+    fn a_recorded_write_failure_is_cleared_once_the_config_loads_and_can_be_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let config_path = blocked.join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let _ = config.all_values();
+        assert!(
+            config.last_write_error().is_some(),
+            "the premise: a write failure has been recorded"
+        );
+
+        // Repaired the way F2 was, from OUTSIDE this process: the directory can
+        // be written again and holds a config that loads.
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(&config_path, "A_KEY_ON_DISK: 7\n").unwrap();
+        let writes_before = config.io_probe.config_writes();
+
+        // What `POST /config/recover` does: drop the cache and reload.
+        config.invalidate_values_cache();
+        assert_eq!(
+            config.all_values().unwrap().get("A_KEY_ON_DISK"),
+            Some(&serde_json::json!(7))
+        );
+        assert_eq!(
+            config.io_probe.config_writes(),
+            writes_before,
+            "the premise of F2: a config that loads needs no recovery, so the reload writes \
+             nothing — and a clear that waits for a write never comes"
+        );
+
+        assert_eq!(
+            config.last_write_error(),
+            None,
+            "the config loads and can be written, so nothing may still claim it cannot"
+        );
+    }
+
+    /// A config whose write failed and was recorded, then was repaired from
+    /// outside the process: its directory writable again and holding a config
+    /// that loads. F2's state, reached portably — the config's parent starts
+    /// out as a FILE, which fails the write the same way on every platform.
+    fn a_config_that_could_not_be_written_and_was_repaired() -> (tempfile::TempDir, PathBuf, Config)
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let config_path = blocked.join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let _ = config.all_values();
+        assert!(
+            config.last_write_error.lock().unwrap().error.is_some(),
+            "the premise: a write failure has been recorded"
+        );
+
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(&config_path, "A_KEY_ON_DISK: 7\n").unwrap();
+        (dir, config_path, config)
+    }
+
+    /// A config that still does not load keeps its record, however writable
+    /// its directory has become.
+    ///
+    /// ⚠ The plausible wrong fix for F2 — "the directory accepts a new file
+    /// now, so clear the record" — fails here, and it would reopen M9: the
+    /// corrupt bytes are still on disk and every value in use is the backup's,
+    /// held in this process alone, which is exactly what the record says. What
+    /// retires it is the reload that retries the restore, by writing.
+    #[test]
+    fn a_config_that_still_does_not_load_keeps_its_record_however_writable_its_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "BIOROUTER_MODEL: [unclosed\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml.bak"),
+            "A_KEY_THE_BACKUP_HAS: 7\n",
+        )
+        .unwrap();
+        let mut config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        config.io_faults.failing_rename_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS);
+        let _ = config.all_values();
+
+        // The condition lifts, and nothing has retried the restore.
+        config.io_faults.failing_rename_attempts = std::sync::atomic::AtomicUsize::new(0);
+
+        let failure = config.outstanding_write_failure();
+        assert!(
+            matches!(failure, Some(ConfigWriteFailure::ValuesInMemoryOnly(_))),
+            "the corrupt bytes are still on disk, so the values in use are in memory only, \
+             whatever the directory would accept now; got {failure:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "BIOROUTER_MODEL: [unclosed\n",
+            "and checking must not have touched them"
+        );
+
+        // What does retire it: the reload `/config/recover` forces retries the
+        // restore, and this time its write lands.
+        config.invalidate_values_cache();
+        assert_eq!(
+            config.all_values().unwrap().get("A_KEY_THE_BACKUP_HAS"),
+            Some(&serde_json::json!(7))
+        );
+        assert_eq!(config.outstanding_write_failure(), None);
+    }
+
+    /// A config that loads but still cannot be written is reported as a file
+    /// that cannot be written — not as values held in memory — and the check
+    /// agrees with the write it stands in for.
+    ///
+    /// ⚠ The other plausible wrong fix — "the config loads, so clear" — fails
+    /// here: nothing about a config loading says a change to it would be saved.
+    #[test]
+    fn a_config_that_loads_but_still_cannot_be_written_is_reported_as_not_writable() {
+        let (_dir, _config_path, mut config) =
+            a_config_that_could_not_be_written_and_was_repaired();
+        // The directory still refuses new files.
+        config.io_faults.failing_stage_attempts =
+            std::sync::atomic::AtomicUsize::new(TRANSIENT_IO_ATTEMPTS);
+
+        assert_eq!(
+            config.outstanding_write_failure(),
+            Some(ConfigWriteFailure::NotWritable(
+                "Config file I/O failed: Access is denied.".to_string()
+            )),
+            "the file loads, so the values in use are the file's, and the failure reported is \
+             the one that holds NOW rather than the directory error recorded before the repair"
+        );
+        assert!(
+            config.set_param("A_KEY_SET_NOW", 1).is_err(),
+            "the check must agree with the write it stands in for"
+        );
+
+        config.io_faults.failing_stage_attempts = std::sync::atomic::AtomicUsize::new(0);
+        assert_eq!(
+            config.outstanding_write_failure(),
+            None,
+            "and once a write would land, nothing is reported"
+        );
+    }
+
+    /// Checking whether the config can be written leaves it exactly as it was.
+    ///
+    /// The check stages and removes; it never renames. A rename would move
+    /// `config.yaml`'s stamp — which the app's config watcher publishes as an
+    /// outside change — and could revert a write another process landed
+    /// between the read and the rename. So: the same bytes, the same stamp, no
+    /// backup rotated, no staging file left behind, no write counted.
+    #[test]
+    fn checking_whether_the_config_can_be_written_leaves_it_exactly_as_it_was() {
+        let (_dir, config_path, config) = a_config_that_could_not_be_written_and_was_repaired();
+        let siblings = || -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(config_path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let bytes = std::fs::read(&config_path).unwrap();
+        let stamp = FileStamp::of(&config_path);
+        let listed = siblings();
+        let writes = config.io_probe.config_writes();
+
+        assert_eq!(
+            config.outstanding_write_failure(),
+            None,
+            "the premise: the check ran, and passed"
+        );
+
+        assert_eq!(std::fs::read(&config_path).unwrap(), bytes);
+        assert_eq!(
+            FileStamp::of(&config_path),
+            stamp,
+            "the stamp must not move — the app would be told the config changed"
+        );
+        assert_eq!(siblings(), listed, "no backup rotated, no staging litter");
+        assert_eq!(
+            config.io_probe.config_writes(),
+            writes,
+            "and nothing went through save_values"
+        );
+    }
+
+    /// With nothing recorded there is nothing to check, and nothing is read.
+    ///
+    /// Every surface that reports on persistence asks this, so it has to be
+    /// free while the config is healthy: the check exists for the failure
+    /// case and must not become a cost of the success one.
+    #[test]
+    fn a_config_with_nothing_recorded_is_not_checked_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "A_KEY_THAT_IS_SET: 1\n").unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        assert_eq!(config.get_param::<i32>("A_KEY_THAT_IS_SET").unwrap(), 1);
+        let reads = config.io_probe.read_attempts();
+
+        for _ in 0..8 {
+            assert_eq!(config.outstanding_write_failure(), None);
+            assert_eq!(config.last_write_error(), None);
+        }
+
+        assert_eq!(
+            config.io_probe.read_attempts(),
+            reads,
+            "a healthy config must be answered from memory"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "and nothing staged"
+        );
+    }
+
+    /// A failure recorded while the check was probing is not the one it
+    /// clears.
+    ///
+    /// The check reads the record, probes with no lock held — probing is I/O,
+    /// and holding `last_write_error` across it would stop that being a leaf
+    /// lock — and clears afterwards. A failure recorded in between is one the
+    /// probe never tested, and clearing it would make it silent, which is M9
+    /// again. Injected, because the interleaving is microseconds wide and no
+    /// test can arrange it.
+    #[test]
+    fn a_failure_recorded_while_the_check_probed_is_not_the_one_it_clears() {
+        let (_dir, _config_path, config) = a_config_that_could_not_be_written_and_was_repaired();
+        *config.io_faults.failure_recorded_mid_probe.lock().unwrap() =
+            Some("No space left on device".to_string());
+
+        assert_eq!(
+            config.outstanding_write_failure(),
+            Some(ConfigWriteFailure::NotWritable(
+                "Failed to create config directory: No space left on device".to_string()
+            )),
+            "the failure that landed mid-probe stands, and is reported"
+        );
+        assert_eq!(
+            config.outstanding_write_failure(),
+            None,
+            "and the next check, which does test it, retires it"
+        );
+    }
+
+    /// The check agrees with the write it stands in for, in both directions,
+    /// on the platform where a mode is how a directory becomes unwritable.
+    ///
+    /// ⚠ The second half is the one a tidy-looking check gets wrong. A `0o444`
+    /// `config.yaml` in a writable directory is REPLACED by `save_values` —
+    /// the rename needs the directory, not the file — so a check that looked
+    /// at the file's own permission bits would report a failure the real write
+    /// does not have, and F2 would be back for every read-only config.
+    #[cfg(unix)]
+    #[test]
+    fn the_check_agrees_with_the_write_it_stands_in_for() {
+        use std::os::unix::fs::PermissionsExt;
+
+        /// A `TempDir` still at `0o555` cannot delete its own contents.
+        struct RestoreModes(PathBuf, PathBuf);
+        impl Drop for RestoreModes {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+                let _ = std::fs::set_permissions(&self.1, std::fs::Permissions::from_mode(0o644));
+            }
+        }
+        let mode = |path: &Path, bits: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap()
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "BIOROUTER_MODEL: [unclosed\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml.bak"),
+            "A_KEY_THE_BACKUP_HAS: 7\n",
+        )
+        .unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let _restore = RestoreModes(dir.path().to_path_buf(), config_path.clone());
+        mode(dir.path(), 0o555);
+        // Root ignores the mode, and then every premise below is false.
+        if std::fs::write(dir.path().join("writability-probe"), "x").is_ok() {
+            eprintln!("skipped: this process can write a 0o555 directory (running as root?)");
+            return;
+        }
+        let _ = config.all_values();
+
+        // Repaired in place; the directory still refuses new files.
+        std::fs::write(&config_path, "A_KEY_ON_DISK: 7\n").unwrap();
+        let failure = config.outstanding_write_failure();
+        assert!(
+            matches!(&failure, Some(ConfigWriteFailure::NotWritable(e)) if e.contains("Permission denied")),
+            "the file loads but the directory still refuses a write; got {failure:?}"
+        );
+        assert!(
+            config.set_param("A_KEY_SET_NOW", 1).is_err(),
+            "and the write it stands in for fails too"
+        );
+
+        // The directory writable again, the FILE read-only.
+        mode(dir.path(), 0o755);
+        mode(&config_path, 0o444);
+        assert_eq!(
+            config.outstanding_write_failure(),
+            None,
+            "a read-only file in a writable directory is no obstacle to the rename every write \
+             ends in"
+        );
+        config
+            .set_param("A_KEY_SET_NOW", 1)
+            .expect("and the write it stands in for lands");
+        assert_eq!(config.get_param::<i32>("A_KEY_SET_NOW").unwrap(), 1);
+    }
+
+    /// On Windows a read-only `config.yaml` is not called writable.
+    ///
+    /// The one platform where the step the check leaves out can fail when the
+    /// rest passes: the rename every write ends in refuses a read-only
+    /// destination. The premise is asserted rather than assumed, so a std that
+    /// learns to replace read-only files turns this red instead of leaving the
+    /// check reporting a failure that no longer exists.
+    #[cfg(windows)]
+    #[test]
+    // Windows only, where `set_readonly(false)` clears the read-only attribute
+    // and nothing else; the lint is about unix, where it means world-writable.
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn a_read_only_config_is_not_called_writable_on_windows() {
+        fn set_readonly(path: &Path, readonly: bool) {
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_readonly(readonly);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        /// A read-only file left behind would outlive the `TempDir` around it.
+        struct Writable(PathBuf);
+        impl Drop for Writable {
+            fn drop(&mut self) {
+                if let Ok(meta) = std::fs::metadata(&self.0) {
+                    let mut permissions = meta.permissions();
+                    permissions.set_readonly(false);
+                    let _ = std::fs::set_permissions(&self.0, permissions);
+                }
+            }
+        }
+
+        let (_dir, config_path, config) = a_config_that_could_not_be_written_and_was_repaired();
+        let _writable = Writable(config_path.clone());
+        set_readonly(&config_path, true);
+
+        let replacement = config_path.with_file_name("replacement.yaml");
+        std::fs::write(&replacement, "A_KEY_ON_DISK: 8\n").unwrap();
+        let replaced = std::fs::rename(&replacement, &config_path);
+        let _ = std::fs::remove_file(&replacement);
+        assert!(
+            replaced.is_err(),
+            "the premise of the read-only check in `probe_config_write`: a read-only config.yaml \
+             cannot be replaced here. If std can now replace one, that check reports a failure \
+             `save_values` no longer has, and it should go"
+        );
+
+        let failure = config.outstanding_write_failure();
+        assert!(
+            matches!(failure, Some(ConfigWriteFailure::NotWritable(_))),
+            "got {failure:?}"
+        );
+
+        set_readonly(&config_path, false);
+        assert_eq!(config.outstanding_write_failure(), None);
+    }
+
     /// 1,000 `get_param` lookups against a warm config file on disk.
     ///
     /// Ignored because it measures rather than asserts. Run it with
@@ -4209,7 +4825,7 @@ mod tests {
             secrets_read: Mutex::new(()),
             values_cache: Mutex::new(ValuesCache::default()),
             values_read: Mutex::new(()),
-            last_write_error: Mutex::new(None),
+            last_write_error: Mutex::new(WriteFailureRecord::default()),
             test_keyring_store: Some(std::sync::Arc::new(PanicsOnRead)),
             io_faults: IoFaults::default(),
             io_probe: IoProbe::default(),
@@ -4377,7 +4993,7 @@ mod tests {
             secrets_read: Mutex::new(()),
             values_cache: Mutex::new(ValuesCache::default()),
             values_read: Mutex::new(()),
-            last_write_error: Mutex::new(None),
+            last_write_error: Mutex::new(WriteFailureRecord::default()),
             test_keyring_store: Some(store.clone()),
             io_faults: IoFaults::default(),
             io_probe: IoProbe::default(),
@@ -4416,7 +5032,7 @@ mod tests {
             secrets_read: Mutex::new(()),
             values_cache: Mutex::new(ValuesCache::default()),
             values_read: Mutex::new(()),
-            last_write_error: Mutex::new(None),
+            last_write_error: Mutex::new(WriteFailureRecord::default()),
             test_keyring_store: Some(store.clone()),
             io_faults: IoFaults::default(),
             io_probe: IoProbe::default(),
