@@ -3052,7 +3052,7 @@ mod new_session_provider_binding_tests {
         let working_dir = "/tmp/biorouter-new-chat-private-provider";
         let mut overrides = provider_overrides(
             "versa_azure",
-            biorouter::providers::versa_azure::VERSA_AZURE_DEPLOYMENT,
+            biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL,
             None,
         );
         overrides.insert("VERSA_AZURE_API_KEY".into(), "test-api-key".into());
@@ -3062,7 +3062,11 @@ mod new_session_provider_binding_tests {
         );
         overrides.insert(
             "AZURE_OPENAI_DEPLOYMENT_NAME".into(),
-            biorouter::providers::versa_azure::VERSA_AZURE_DEPLOYMENT.into(),
+            biorouter::providers::versa_azure::deployment_for_model(
+                biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL,
+            )
+            .expect("the default model has a deployment")
+            .into(),
         );
         overrides.insert(
             "AZURE_OPENAI_API_VERSION".into(),
