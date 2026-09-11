@@ -129,11 +129,13 @@ describe('SwitchModelModal — a provider that cannot run', () => {
     mocks.currentModel = 'gpt-6-astra';
     render(<SwitchModelModal sessionId="s1" onClose={vi.fn()} setView={vi.fn()} />);
 
-    expect(await screen.findByTestId('switch-model-provider-error')).toHaveTextContent(
-      `Unavailable: ${NOT_INSTALLED}`
-    );
+    const reason = await screen.findByTestId('switch-model-provider-error');
+    expect(reason).toHaveTextContent(`Unavailable: ${NOT_INSTALLED}`);
     const confirm = screen.getByRole('button', { name: 'Select model' });
     expect(confirm).toBeDisabled();
+    // The F3 pre-flight's contract, kept for this refusal too: the reason beside
+    // the field is the disabled confirm's description, not a nearby sentence.
+    expect(confirm.getAttribute('aria-describedby')?.split(' ')).toContain(reason.id);
     fireEvent.click(confirm);
     expect(mocks.changeModel).not.toHaveBeenCalled();
   });

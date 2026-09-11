@@ -741,6 +741,214 @@ async fn the_retired_key_is_migrated_once_and_then_ignored() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// H3 (2026-09-10 security test drive): an OFF switch is announced, and says how
+// it got there.
+//
+// The record is agent-writable — DR-17's accepted risk, unchanged here. What the
+// drive measured on top of it was the SILENCE: `{"enabled": false}` written from
+// a chat's shell disabled every gate at the next launch and nothing in the app
+// said so. The config surface the renderer already reads now carries the record
+// beside the switch — where it lives and which door last wrote it — so the
+// banner can say "off, and turned off outside the app".
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The wire name, as a literal. `settings/privacy/privacyTiers.ts` mirrors it,
+/// and a literal here pins what the renderer reads rather than agreeing with a
+/// Rust constant whatever it happens to say.
+const RECORD_KEY: &str = "BIOROUTER_PRIVACY_TIERS_RECORD";
+
+/// What BOTH config read paths say about the record — asserted equal, because
+/// `ConfigContext` reads the map and a single-key reader must not be told
+/// something different.
+async fn record_on_the_surface() -> Value {
+    let from_map = read_all_config()
+        .await
+        .expect("reading the config map must not fail")
+        .0
+        .config
+        .get(RECORD_KEY)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let from_key = match read_config(Json(ConfigKeyQuery {
+        key: RECORD_KEY.to_string(),
+        is_secret: false,
+    }))
+    .await
+    .expect("reading the record must not fail")
+    .0
+    {
+        ConfigValueResponse::Value(v) => v,
+        ConfigValueResponse::MaskedValue(_) => panic!("the record is not a secret"),
+    };
+    assert_eq!(from_map, from_key, "the two config read paths disagree");
+    from_map
+}
+
+fn record_path() -> String {
+    config_dir()
+        .join("privacy-tiers.json")
+        .display()
+        .to_string()
+}
+
+/// THE MEASURED WRITE, then a restart: the surface reports OFF, where the record
+/// is, and that no door the app records wrote it.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_record_turned_off_outside_the_app_is_reported_as_such_through_the_config_surface() {
+    let _fixture = PrivacyToggleFixture::capture();
+    reset_switch_storage();
+    biorouter::privacy::load_privacy_tiers_from_config();
+
+    // Byte for byte what the drive wrote from `developer__shell`.
+    std::fs::write(
+        config_dir().join("privacy-tiers.json"),
+        r#"{"enabled":false}"#,
+    )
+    .unwrap();
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(
+        !biorouter::privacy::privacy_tiers_enabled(),
+        "the file channel is DR-17's accepted risk: the loader still obeys it"
+    );
+
+    let record = record_on_the_surface().await;
+    assert_eq!(record["enabled"], Value::Bool(false), "{record}");
+    assert_eq!(
+        record["origin"],
+        Value::String("unrecorded".to_string()),
+        "an OFF record no door recorded writing must be flagged: {record}"
+    );
+    assert_eq!(record["path"], Value::String(record_path()), "{record}");
+    assert_eq!(record["last_change"], Value::Null, "{record}");
+
+    // A copy of the key written into `config.yaml` — which `/config/upsert`
+    // will do for any key — must not be what the surface serves: the report is
+    // the daemon's, not a value the agent can pre-fill.
+    Config::global()
+        .set(
+            RECORD_KEY,
+            &serde_json::json!({"enabled": false, "origin": "settings"}),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        record_on_the_surface().await["origin"],
+        Value::String("unrecorded".to_string()),
+        "a forged copy in config.yaml reached the surface"
+    );
+    Config::global().delete(RECORD_KEY).ok();
+}
+
+/// The mirror: the deliberate path is reported as deliberate — live, the moment
+/// it lands, and again after a restart reads it back from disk. Without this,
+/// the test above would be satisfied by a surface that calls every OFF
+/// "outside the app".
+#[tokio::test]
+#[serial_test::serial]
+async fn a_deliberate_change_is_reported_as_deliberate_live_and_after_a_restart() {
+    let _env = env_lock::lock_env([("BIOROUTER_PRIVACY_TEST_AUTH", None::<&str>)]);
+    let _fixture = PrivacyToggleFixture::capture();
+    install_user_action_key_once();
+    reset_switch_storage();
+    biorouter::privacy::load_privacy_tiers_from_config();
+
+    arm_the_system_prompt(biorouter::privacy::system_auth::AuthOutcome::Approved);
+    let _ok = upsert_config(
+        user_action_headers(),
+        Json(upsert(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            "off",
+            Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE),
+        )),
+    )
+    .await
+    .expect("the confirmed, authenticated flip is the deliberate door");
+    assert!(!biorouter::privacy::privacy_tiers_enabled());
+
+    let live = record_on_the_surface().await;
+    assert_eq!(live["enabled"], Value::Bool(false), "{live}");
+    assert_eq!(
+        live["origin"],
+        Value::String("settings".to_string()),
+        "{live}"
+    );
+    assert_eq!(live["path"], Value::String(record_path()), "{live}");
+    let change = &live["last_change"];
+    assert_eq!(
+        change["via"],
+        Value::String("settings".to_string()),
+        "{live}"
+    );
+    assert_eq!(change["set_to"], Value::Bool(false), "{live}");
+    assert_eq!(change["system_authenticated"], Value::Bool(true), "{live}");
+    assert_eq!(change["user_action"], Value::Bool(true), "{live}");
+    assert!(
+        change["at"].as_str().is_some_and(|at| !at.is_empty()),
+        "the deliberate change must say when: {live}"
+    );
+
+    // THE RESTART reads the stamp back off the disk.
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(!biorouter::privacy::privacy_tiers_enabled());
+    let reloaded = record_on_the_surface().await;
+    assert_eq!(
+        reloaded["origin"],
+        Value::String("settings".to_string()),
+        "the deliberate stamp did not survive a restart: {reloaded}"
+    );
+    assert_eq!(reloaded["last_change"], live["last_change"], "{reloaded}");
+}
+
+/// The edit an agent is likeliest to make is not an overwrite but a one-field
+/// flip — `jq '.enabled = false'` — which keeps whatever else the record held.
+/// A stamp that named only its door would then vouch for a value it never
+/// wrote, so the stamp names the value too, and a disagreement is flagged.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_edit_that_flips_only_the_value_is_not_mistaken_for_a_deliberate_change() {
+    let _fixture = PrivacyToggleFixture::capture();
+    reset_switch_storage();
+    biorouter::privacy::load_privacy_tiers_from_config();
+
+    // A deliberate ON, through the door — which needs no system prompt.
+    let _ok = upsert_config(
+        HeaderMap::new(),
+        Json(upsert(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            "on",
+            Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE),
+        )),
+    )
+    .await
+    .expect("re-enabling goes through the same door");
+
+    // THE ONE-FIELD FLIP, keeping every other byte of the stamped record.
+    let path = config_dir().join("privacy-tiers.json");
+    let mut on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+        .expect("the door writes JSON");
+    on_disk["enabled"] = Value::Bool(false);
+    std::fs::write(&path, serde_json::to_string_pretty(&on_disk).unwrap()).unwrap();
+
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(!biorouter::privacy::privacy_tiers_enabled());
+    let record = record_on_the_surface().await;
+    assert_eq!(
+        record["origin"],
+        Value::String("unrecorded".to_string()),
+        "a stamp that set ON vouched for an OFF it never wrote: {record}"
+    );
+    assert_eq!(
+        record["last_change"]["set_to"],
+        Value::Bool(true),
+        "the surface keeps what the last recorded change DID set, which is the \
+         evidence of the edit: {record}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Task 52 (DR-27): the cross-institution mixing policy's WRITE DOOR.
 //
 // ⚠ **These belong here and not beside the route, for the header's reason and

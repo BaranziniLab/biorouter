@@ -202,8 +202,7 @@ describe('the built-in skill list, across every copy', () => {
    * Contexts, and made of different things: five of these nine are reachable
    * only through the bundle.
    */
-  const shippedNames = () =>
-    [...builtinSkills(), ...knowledgeSkills(), soulSkill()].sort();
+  const shippedNames = () => [...builtinSkills(), ...knowledgeSkills(), soulSkill()].sort();
 
   it('CONTEXTS names exactly what Rust offers as a Context', () => {
     expect([...CONTEXT_IDS].sort()).toEqual(rustContextIds());

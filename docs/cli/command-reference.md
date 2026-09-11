@@ -55,6 +55,12 @@ Configure biorouter settings - providers, extensions, etc.
 biorouter configure
 ```
 
+`configure` is interactive and needs a terminal. Run from a script, a pipe or
+anywhere else without one, it changes nothing and exits with status `2`, naming
+the non-interactive route instead: choose the model with
+`biorouter models set --provider <provider> --model <model>` and pass the
+provider's API key in its environment variable (for example `OPENAI_API_KEY`).
+
 ### info [options]
 
 Shows biorouter information, including the version, configuration file location, session storage, and logs.
@@ -162,7 +168,8 @@ List all saved sessions.
 - **`--ascending`**: Sort sessions by date in ascending order (oldest first)
 - **`-w, --working_dir <path>`**: Filter sessions by working directory
 - **`-l, --limit <number>`**: Limit the number of results
-- **`--subagents`**: Include subagent runs, nested under the session that spawned them
+- **`--subagents`**: Include subagent runs, nested under the session that spawned them (and sessions that have no messages)
+- **`--include-empty`**: Include sessions that have not recorded a message yet — what a `biorouter` run that exited before its first prompt, `doctor --fix` and `term init` leave behind. They are hidden by default, as they are in the desktop app's History
 
 **Usage:**
 
@@ -224,9 +231,12 @@ Remove one or more saved sessions.
 
 **Options:**
 
-- **`--session-id <session_id>`**: Remove a specific session by its session ID
-- **`-n, --name <name>`**: Remove a specific session by its name
-- **`-r, --regex <pattern>`**: Remove sessions matching a regex pattern
+- **`--session-id <session_id>`**: Remove a specific session by its session ID — any session, including a subagent run or a session with no messages
+- **`-n, --name <name>`**: Remove the one session carrying this name. When several sessions share it (every session a bare `biorouter` creates is listed as `New chat` until it is renamed), nothing is removed and the matching IDs are listed
+- **`-r, --regex <pattern>`**: Remove every session whose ID matches a regex pattern, among the sessions `session list` shows
+- **`--include-empty`**: With `--regex` or the picker, also match sessions that have not recorded a message yet
+- **`--subagents`**: With `--regex` or the picker, also match subagent runs (and sessions with no messages)
+- **`-y, --yes`**: Remove without asking for confirmation. Required when the command is not run from a terminal
 - **`--path <path>`**: Remove a specific session by its file path (legacy)
 
 **Usage:**
@@ -238,6 +248,9 @@ biorouter session remove
 # Remove a specific session by ID
 biorouter session remove --session-id 20251108_3
 
+# The same, from a script: no confirmation prompt
+biorouter session remove --session-id 20251108_3 --yes
+
 # Remove a specific session by name
 biorouter session remove -n my-project
 
@@ -248,7 +261,9 @@ biorouter session remove -r "project-.*"
 biorouter session remove -r ".*migration.*"
 ```
 
-> **Warning.** Session removal is permanent and cannot be undone. biorouter will show which sessions will be removed and ask for confirmation before deleting.
+> **Warning.** Session removal is permanent and cannot be undone. Unless you pass `--yes`, biorouter shows which sessions will be removed and asks for confirmation before deleting. Asking needs a terminal: without one — in a script or a pipe, even with `y` piped in — the command removes nothing and exits with status `2`, asking for `--yes`.
+
+Removing a session also removes its per-turn usage records — which model and provider answered each reply, when, and how many tokens it used — whether you remove it here or delete it from the desktop app's chat history. The tokens it spent are first added to an anonymous total, kept per day, model and provider with nothing that identifies the chat, so `biorouter usage` and the desktop app's Usage panel still match your provider's own billing meter. The Home heatmap and its token tiles count only the chats that still exist.
 
 ### session export [options]
 
@@ -341,7 +356,7 @@ Send a prompt into an existing session and stream the resulting turn, without op
 
 **Options:**
 
-- **`--no-wait`**: Return as soon as the turn starts, instead of streaming it to completion
+- **`--no-wait`**: Return as soon as the daemon accepts the turn, printing `[started] turn <turn_id> in session <session_id>`, instead of streaming it to completion
 
 **Usage:**
 
@@ -352,6 +367,12 @@ biorouter session send 20251108_2 "summarize what you have found so far"
 # Kick off a turn and return immediately
 biorouter session send 20251108_2 "run the full test suite" --no-wait
 ```
+
+A turn started with `--no-wait` runs on in the daemon: `biorouter session watch
+<session_id>` follows it and `biorouter session cancel <session_id>` stops it.
+The daemon stops a turn once nothing has been attached to its reply stream for
+five minutes, and `session watch` does not count as attached — so `--no-wait`
+suits turns shorter than that. Leave `--no-wait` off for a longer one.
 
 ### session attach [options]
 
@@ -674,6 +695,16 @@ biorouter schedule run-now --schedule-id daily-report
 biorouter schedule remove --schedule-id daily-report
 ```
 
+**Which process makes the change.** `add`, `remove`, `list` and `run-now` go to a running daemon when this terminal can reach one. They find it the way `session send` does: `BIOROUTER_SERVER__SECRET_KEY` and `BIOROUTER_PORT` (default 3000) from this shell, and a daemon answering there. That daemon then makes the change itself, so the schedule is live, listed and deletable in the app at once, and `run-now` runs inside the daemon, where the app's Stop button can reach it. A daemon that rejects the key is reported as an error. The command does not fall back to editing the file behind the daemon's back.
+
+When no daemon can be reached, the command writes `schedule.json` in Biorouter's data directory itself and says so. For example:
+
+```text
+No running Biorouter could be reached from this terminal (no daemon answered on 127.0.0.1:3000), so the job was written to the schedule file directly. A Biorouter that is already running — the desktop app included — picks it up from that file within 60 seconds; if none is running, it first runs the next time Biorouter starts.
+```
+
+This is always the case next to the desktop app. The app's own daemon uses a random port and a new secret every launch, so a terminal cannot reach it. It is also always the case in an agent's shell, because the daemon's secret is never passed to a tool. A running Biorouter polls the file and usually picks up the change within a couple of seconds, but the promise is 60. `sessions` reads the session store directly and never needs a daemon.
+
 ### mcp
 
 Run an enabled MCP server specified by `<name>` (e.g. `'Google Drive'`). MCP is the Model Context Protocol, the standard biorouter extensions speak.
@@ -724,6 +755,10 @@ Choose one of your projects to start working on.
 biorouter projects
 ```
 
+Both `project` and `projects` are interactive and need a terminal. Without one
+they exit with status `2` and point at the scriptable equivalent,
+`biorouter run --resume --session-id <id> --text "<prompt>"`.
+
 ## Interface
 
 ### serve
@@ -738,7 +773,7 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
-- **`--web-dir <DIR>`**: Directory holding the built interface. Located automatically when unset
+- **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
 - **`--open`**: Open a browser once the server is ready
 
 **Usage:**
@@ -757,7 +792,7 @@ biorouter serve --host 0.0.0.0
 biorouter serve --host 0.0.0.0 --token "$(openssl rand -hex 32)"
 ```
 
-The printed URL carries a one-off access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar. Use `Ctrl+C` to stop the server.
+The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar; it is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
 
 > **Note.** A browser session cannot change its model or provider, deliberately — run `biorouter configure` to choose them **before** starting `serve`. [Reaching Biorouter from a browser](../deployment/browser-access.md) explains why, and covers the access token, remote access and troubleshooting.
 

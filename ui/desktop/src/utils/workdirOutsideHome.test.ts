@@ -53,9 +53,9 @@ describe('a working directory outside the home tree', () => {
   it('is allowed once the session working directory is a root', () => {
     // ⚠ Fails without the fix: `allowedFileRoots()` took no argument, so the
     // folder the user pointed the chat at could never appear in this list.
-    expect(
-      isFilePathAllowedForPreview(file, [outside, ...rootsWithoutWorkingDir], NARROW)
-    ).toBe(true);
+    expect(isFilePathAllowedForPreview(file, [outside, ...rootsWithoutWorkingDir], NARROW)).toBe(
+      true
+    );
   });
 
   it('does not widen to a sensitive path even when it is the working directory', () => {
@@ -142,9 +142,9 @@ describe('a working directory outside the home tree', () => {
 
     it('keeps the home reading when both exist', () => {
       // Precedence: never redirect a path that already works.
-      expect(reinterpretTildeAsAbsolute('~/x', '/home-x', (p) => p === '/home-x' || p === '/x')).toBe(
-        '/home-x'
-      );
+      expect(
+        reinterpretTildeAsAbsolute('~/x', '/home-x', (p) => p === '/home-x' || p === '/x')
+      ).toBe('/home-x');
     });
 
     it('keeps the home reading when neither exists', () => {

@@ -645,13 +645,20 @@ export type ConfigRecoveryReport = {
      */
     message: string;
     /**
-     * Whether `config.yaml` on disk holds what this report describes.
+     * Whether this process's settings are persisting: `config.yaml` holds what
+     * this report describes, and a write to it lands.
      *
-     * `false` means the recovery could not write what it recovered: the keys
-     * above live only in this process, the file on disk is unchanged — still
-     * absent, or still the contents that would not load — nothing changed in
-     * this session survives exit, and the next start runs the same recovery
-     * again.
+     * `false` in one of two ways, which `message` spells out:
+     * - the recovery could not write what it recovered: the keys above live
+     * only in this process, the file on disk is unchanged — still absent, or
+     * still the contents that would not load — and the next start runs the
+     * same recovery again;
+     * - `config.yaml` loads, so the keys above are the file's, but it cannot
+     * be written right now.
+     *
+     * Either way a setting changed in this session will not be saved. Checked
+     * against the disk on every call, so a failure that has since been
+     * repaired is not reported.
      */
     persisted: boolean;
     /**
