@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { briefSelectionFailure } from './selectionWarning';
 
 /**
- * F14. Opening a private chat while a public model is bound refuses
- * `GET /knowledge/active` with a paragraph addressed to an AI agent. The
- * refusal is correct and stays exactly as it is; what was wrong is that it was
- * printed in full in the devtools console of a desktop app, where the chat had
- * opened and rendered correctly and the only reader is a person.
+ * F14. A request naming a private chat on `GET /knowledge/active` with neither
+ * the user's proof nor a private model is refused with a paragraph addressed to
+ * an AI agent. The refusal stays exactly as it is; what was wrong is that it was
+ * printed in full in a devtools console, whose only reader is a person.
+ *
+ * (F14 took the desktop app's refusal for a correct one, on a chat bound to a
+ * public model. It was not: the desktop's read carried no proof, and was refused
+ * for every private chat — see `KnowledgeContext.tsx`.)
  */
 const AGENT_REFUSAL =
   'That chat is private, or there is no chat with that id. This request was made on a public ' +

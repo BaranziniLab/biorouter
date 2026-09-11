@@ -93,8 +93,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./scripts/check-openapi-schema.sh
 
-  # ── Static gates: typecheck, lint, theme codegen freshness, WCAG contrast ──
-  # Measured at ~42s CPU (tsc) + ~32s CPU (eslint) + ~1s CPU (the two node
+  # ── Static gates: typecheck, lint, theme codegen, contrast, token mirrors ──
+  # Measured at ~42s CPU (tsc) + ~32s CPU (eslint) + ~1s CPU (the three node
   # scripts). eslint is NOT type-aware here — eslint.config.js declares no
   # parserOptions.project — so it is pure syntactic linting over 656 files.
   static:
@@ -119,8 +119,13 @@ jobs:
       # Each gate is its own step rather than a single `npm run lint:check`, and
       # each runs even if an earlier one failed. `lint:check` chains with && and
       # stops at the first failure, which means a contributor fixes one gate,
-      # pushes, waits, and discovers the next — four round trips instead of one.
+      # pushes, waits, and discovers the next — five round trips instead of one.
       # `!cancelled()` (not `always()`) still honours a cancelled run.
+      #
+      # The price: these steps copy `lint:check` from package.json BY HAND, so a
+      # gate added there runs in no CI job until it also gets a step here.
+      # check:tokens was in lint:check from 2026-08-07 and in no workflow until
+      # its step below was added.
       - name: Typecheck (tsc --noEmit)
         if: ${{ !cancelled() }}
         run: npm run typecheck
@@ -136,6 +141,10 @@ jobs:
       - name: Contrast assertions (WCAG)
         if: ${{ !cancelled() }}
         run: npm run check:contrast
+
+      - name: Token mirrors (@theme inline)
+        if: ${{ !cancelled() }}
+        run: npm run check:tokens
 
   # ── The BAAM registry generator ───────────────────────────────────────────
   # landing/scripts/build-registry.mjs writes three copies of one catalog, and

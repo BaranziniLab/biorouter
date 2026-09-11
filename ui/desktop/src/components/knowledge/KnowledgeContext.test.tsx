@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeProvider, useKnowledge } from './KnowledgeContext';
+import { reachGatedGetActive, USER_ACTION_KEY } from '../../test/reachGate';
 
 /** A promise the test resolves by hand, so "after the response settled" is a fact, not a race. */
 function deferred<T>() {
@@ -581,6 +582,93 @@ describe('KnowledgeContext', () => {
       await userEvent.click(screen.getByRole('button', { name: 'follow the default' }));
       await settle(() => {});
       expect(mocks.setActive).not.toHaveBeenCalled();
+    });
+  });
+
+  // Issue #56 Task 58. `GET /knowledge/active` naming a PRIVATE chat is on the
+  // reach gate's list, and the desktop app gets through it the way `setActive`
+  // already does: with the user's proof. The reads carried none, so the daemon
+  // refused every private chat's selection — whatever model was bound — and the
+  // chip fell back to whatever this renderer had cached, which the daemon may
+  // have moved past (the agent's `kb_set_active`, the CLI, another window).
+  describe('a private chat', () => {
+    let savedElectron: unknown;
+
+    beforeEach(() => {
+      savedElectron = (window as { electron?: unknown }).electron;
+      Object.assign(window, {
+        electron: { getUserActionKey: vi.fn(async () => USER_ACTION_KEY) },
+      });
+      mocks.getActive.mockImplementation(
+        reachGatedGetActive(['chat-1'], (sessionId) =>
+          sessionId ? daemon.session : daemon.machine
+        )
+      );
+    });
+
+    afterEach(() => {
+      Object.assign(window, { electron: savedElectron });
+    });
+
+    it('hydrates its selection from the daemon, not from what this renderer cached', async () => {
+      localStorage.setItem('knowledge_active_kb:chat-1', 'beta');
+      localStorage.setItem('knowledge_hidden_kbs:chat-1', '[]');
+
+      renderProvider();
+
+      await waitFor(() => expect(screen.getByTestId('primary').textContent).toBe('alpha'));
+      expect(screen.getByTestId('hidden').textContent).toBe('beta');
+      expect(mocks.getActive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: { session_id: 'chat-1' },
+          headers: { 'X-User-Action': USER_ACTION_KEY },
+        })
+      );
+    });
+
+    // Seeded to match the daemon, so the first read cannot be what puts the
+    // selection back: only the recovery read can.
+    it('re-reads its selection with the proof when a write does not land', async () => {
+      localStorage.setItem('knowledge_active_kb:chat-1', 'alpha');
+      localStorage.setItem('knowledge_hidden_kbs:chat-1', '["beta"]');
+      const pending = deferred<unknown>();
+      renderProvider();
+      await waitFor(() => expect(mocks.getActive).toHaveBeenCalledTimes(1));
+      await settle(() => {});
+
+      mocks.setActive.mockReturnValue(pending.promise);
+      await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+
+      await settle(() => pending.reject(new Error('network down')));
+
+      await waitFor(() => expect(mocks.getActive).toHaveBeenCalledTimes(2));
+      expect(mocks.getActive.mock.calls[1]?.[0]).toMatchObject({
+        query: { session_id: 'chat-1' },
+        headers: { 'X-User-Action': USER_ACTION_KEY },
+      });
+      await waitFor(() => expect(screen.getByTestId('primary').textContent).toBe('alpha'));
+      expect(screen.getByTestId('hidden').textContent).toBe('beta');
+    });
+
+    // What the refused read cost, measured in the running app on 2026-09-11:
+    // the chip showed a hidden base as switched on, and one click on another
+    // base wrote that stale set back — the hidden base was in the chat again.
+    // A set-only edit is only as right as the set it starts from.
+    it('toggles from the set the daemon holds, so a toggle cannot re-expose a hidden base', async () => {
+      localStorage.setItem('knowledge_hidden_kbs:chat-1', '[]');
+      renderProvider();
+      await waitFor(() => expect(mocks.getActive).toHaveBeenCalled());
+      // Let the hydrate's answer land, whichever way the daemon answered it.
+      await act(async () => {
+        await Promise.allSettled(mocks.getActive.mock.results.map((result) => result.value));
+      });
+
+      await userEvent.click(screen.getByRole('button', { name: 'toggle alpha' }));
+
+      await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
+      const calls = mocks.setActive.mock.calls;
+      expect(calls[calls.length - 1]?.[0]?.body.hidden_kbs).toEqual(['alpha', 'beta']);
     });
   });
 });

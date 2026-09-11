@@ -43,5 +43,12 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
-      - name: Run reference apps in Chromium
-        run: cargo test -p biorouter-mcp --test ui_example_apps every_example_passes_the_executing_smoke_harness -- --ignored --nocapture
+      # The whole binary, not just the Chromium harness. Its other tests bundle
+      # every example with esbuild, which is hermetic only where `npm ci` has
+      # put one in ui/desktop/node_modules — here. Anywhere else the bundler
+      # falls back to `npx --yes esbuild`, a download from the npm registry,
+      # which is why rust.yml's no-network integration step leaves this binary
+      # to this job. This line used to filter by name to the Chromium test
+      # alone, so the other five ran in no workflow at all.
+      - name: Run reference apps in Chromium, and the bundling tests
+        run: cargo test -p biorouter-mcp --test ui_example_apps -- --include-ignored --nocapture

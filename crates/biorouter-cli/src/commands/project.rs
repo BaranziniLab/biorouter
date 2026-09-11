@@ -3,8 +3,19 @@ use chrono::DateTime;
 use cliclack::{self, intro, outro};
 use std::path::Path;
 
+use crate::commands::needs_terminal;
 use crate::project_tracker::ProjectTracker;
 use biorouter::utils::safe_truncate;
+
+/// What `biorouter project` and `biorouter projects` say when there is no
+/// terminal to prompt on (QA-D F9). `{command}` is the one the user typed.
+fn needs_a_terminal(command: &str) -> String {
+    format!(
+        "`biorouter {command}` is interactive and needs a terminal; from a script, continue a \
+         chat with `biorouter run --resume --session-id <id> --text \"<prompt>\"` (`biorouter \
+         session list` shows the ids)."
+    )
+}
 
 /// Format a DateTime for display
 fn format_date(date: DateTime<chrono::Utc>) -> String {
@@ -15,8 +26,18 @@ fn format_date(date: DateTime<chrono::Utc>) -> String {
 /// Handle the default project command
 ///
 /// Offers options to resume the most recently accessed project
-#[allow(clippy::too_many_lines)]
 pub fn handle_project_default() -> Result<()> {
+    project_default(needs_terminal::prompt_can_run())
+}
+
+/// [`handle_project_default`] with the terminal answer supplied, so the refusal
+/// is testable without redirecting the test's own stdin.
+#[allow(clippy::too_many_lines)]
+fn project_default(terminal: bool) -> Result<()> {
+    // Before anything else: BOTH paths below need a person — a picker, or (with
+    // no projects yet) an interactive `biorouter session`, which under a pipe
+    // reads EOF and exits having written an empty session row.
+    needs_terminal::require(terminal, &needs_a_terminal("project"))?;
     let tracker = ProjectTracker::load()?;
     let mut projects = tracker.list_projects();
 
@@ -163,15 +184,24 @@ pub fn handle_project_default() -> Result<()> {
 /// Handle the interactive projects command
 ///
 /// Shows a list of projects and lets the user select one to resume
-#[allow(clippy::too_many_lines)]
 pub fn handle_projects_interactive() -> Result<()> {
-    let tracker = ProjectTracker::load()?;
+    projects_interactive(ProjectTracker::load()?, needs_terminal::prompt_can_run())
+}
+
+/// [`handle_projects_interactive`] with the project list and the terminal
+/// answer supplied, so the refusal is testable against a list a test owns.
+#[allow(clippy::too_many_lines)]
+fn projects_interactive(tracker: ProjectTracker, terminal: bool) -> Result<()> {
     let mut projects = tracker.list_projects();
 
     if projects.is_empty() {
         println!("No projects found.");
         return Ok(());
     }
+
+    // Before the picker. "No projects found" above needs no person, so it
+    // still answers under a pipe.
+    needs_terminal::require(terminal, &needs_a_terminal("projects"))?;
 
     // Sort projects by last_accessed (newest first)
     projects.sort_by(|a, b| b.last_accessed.cmp(&a.last_accessed));
@@ -303,4 +333,68 @@ pub fn handle_projects_interactive() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::needs_terminal::NeedsTerminal;
+
+    /// QA-D F9: `biorouter project` refuses under a pipe with a sentence
+    /// naming the scriptable route — and refuses FIRST, before it reads the
+    /// project list, because both of its paths need a person.
+    #[test]
+    fn project_refuses_without_a_terminal_before_it_reads_anything() {
+        let err = project_default(false).unwrap_err();
+        let refusal = err
+            .downcast_ref::<NeedsTerminal>()
+            .expect("the typed refusal main maps to exit 2");
+        let sentence = refusal.to_string();
+        assert!(sentence.contains("`biorouter project`"), "{sentence}");
+        assert!(sentence.contains("is interactive"), "{sentence}");
+        assert!(
+            sentence.contains("biorouter run --resume --session-id"),
+            "the refusal must name what to run instead: {sentence}"
+        );
+    }
+
+    /// `biorouter projects` refuses at its picker, and still answers "No
+    /// projects found." without a terminal — that line needs nobody.
+    #[test]
+    fn projects_refuses_at_the_picker_but_still_reports_an_empty_list() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("projects.json");
+
+        let empty = ProjectTracker::load_from(&file).unwrap();
+        assert!(
+            projects_interactive(empty, false).is_ok(),
+            "an empty list is answered without prompting"
+        );
+
+        let project_dir = dir.path().display().to_string();
+        std::fs::write(
+            &file,
+            serde_json::json!({
+                "projects": {
+                    project_dir.clone(): {
+                        "path": project_dir,
+                        "last_accessed": "2026-09-10T12:00:00Z",
+                        "last_instruction": null,
+                        "last_session_id": "20260910_1"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let one = ProjectTracker::load_from(&file).unwrap();
+        assert_eq!(one.list_projects().len(), 1, "the fixture must load");
+
+        let err = projects_interactive(one, false).unwrap_err();
+        let sentence = err
+            .downcast_ref::<NeedsTerminal>()
+            .expect("the typed refusal main maps to exit 2")
+            .to_string();
+        assert!(sentence.contains("`biorouter projects`"), "{sentence}");
+    }
 }

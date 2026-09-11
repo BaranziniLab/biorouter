@@ -152,6 +152,33 @@ fn workflow_copy_extension(original: &Path) -> String {
         .to_string()
 }
 
+/// The 6-field expression the cron engine runs, or why `expression` cannot be
+/// scheduled.
+///
+/// The ONE place both the 5→6 conversion and the validity check live.
+/// [`Scheduler::create_cron_task`] builds every job through it, and
+/// `platform__manage_schedule` calls it to refuse an unschedulable expression
+/// before asking the user to approve it — a card for a schedule that cannot be
+/// created spends their attention on nothing. The check is the engine's own
+/// parser, so "valid" means exactly what the engine will accept.
+pub fn normalize_cron(expression: &str) -> Result<String, SchedulerError> {
+    let fields = expression.split_whitespace().count();
+    let cron = match fields {
+        5 => format!("0 {expression}"),
+        6 => expression.to_string(),
+        _ => {
+            return Err(SchedulerError::CronParseError(format!(
+                "Invalid cron expression '{expression}': expected 5 or 6 fields, got {fields}"
+            )))
+        }
+    };
+    Job::new_async_tz(cron.as_str(), Local::now().timezone(), |_uuid, _lock| {
+        Box::pin(async {})
+    })
+    .map_err(|e| SchedulerError::CronParseError(e.to_string()))?;
+    Ok(cron)
+}
+
 /// Where `make_copy` will put the job's own copy of its workflow, and the check
 /// that there is something to copy.
 ///
@@ -758,25 +785,100 @@ fn unregister_running_task(tasks: &Arc<StdMutex<RunningTasksMap>>, job_id: &str)
 }
 
 // ---------------------------------------------------------------------------
-// Issue #140, the direction the modify-if-present fix does NOT cover on its own.
+// Issue #140 and QA 2026-09-10 F2: the daemon converges on the file, in BOTH
+// directions.
 //
 // `edit_job` refusing to resurrect a deleted row stops the daemon corrupting the
-// file. It does nothing about the daemon's own copy. The CLI is entirely offline
-// — every `biorouter schedule …` subcommand builds its own `Scheduler` over
-// `<data>/schedule.json` and never contacts `biorouterd` — while the daemon's map
-// is filled exactly once, at construction. So after `biorouter schedule remove`:
-// the row is off disk, and the running daemon still lists the job from
-// `/schedule/list`, still holds its cron entry, and still FIRES it, burning
-// tokens on a schedule the user deleted, until the daemon is restarted.
+// file. It does nothing about the daemon's own copy. Another process writes the
+// same `<data>/schedule.json` — `biorouter schedule …` when it cannot reach the
+// daemon (always the case from an agent's shell, whose environment never
+// carries the daemon's secret), a terminal session's own `/loop` and
+// `/schedule`, a second daemon — while this process's map used to be filled
+// exactly once, at construction.
 //
-// Before the modify-if-present fix that divergence was at least self-limiting —
-// the daemon's whole-map write put the row back, wrongly but visibly. Now it is
-// permanent and silent, which is worse. The file is the shared source of truth,
-// so the fix is the other half of the same rule: **the daemon converges on the
-// file.** A job the file no longer has is dropped from this process's map and
-// from the cron scheduler, at the two moments it matters — before a tick decides
-// to run something, and whenever the job list is served.
+// Issue #140 closed the removal half: a job the file no longer has kept being
+// listed and FIRED until a restart, burning tokens on a schedule the user had
+// deleted. F2 was the addition half, measured: a job `biorouter schedule add`
+// wrote while the desktop app ran was in the file (4 jobs) but not in
+// `/schedule/list` or `manage_schedule list` (3), could not be deleted through
+// either, and would never fire until a restart — after the CLI had printed
+// "Scheduled job added".
+//
+// So [`Scheduler::sync_with_file`] makes this process's map agree with the file
+// — jobs added elsewhere are adopted, jobs removed elsewhere are dropped, and a
+// job changed elsewhere (paused, re-timed) takes the file's fields — at every
+// moment it matters: before a tick decides to run anything, whenever the job
+// list is served, before an operation names a job this process has not seen,
+// and every couple of seconds in the daemon ([`Scheduler::spawn_file_watcher`]),
+// so a job added elsewhere fires even if nobody ever opens a list.
 // ---------------------------------------------------------------------------
+
+/// How often the daemon looks at the schedule file for a change it did not
+/// make.
+///
+/// The same shape, and the same reasoning, as `catalog::WATCH_INTERVAL` for
+/// `config.yaml` (issue #112): a `stat` every two seconds rather than a
+/// filesystem-notification API, because a `stat` costs nothing and behaves
+/// identically on macOS, Windows, Linux and the network mounts a data directory
+/// sometimes lives on.
+const FILE_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The longest the watcher goes without a full sync even when the file's size
+/// and mtime have not moved — the backstop for a filesystem whose timestamps are
+/// too coarse to tell two same-sized writes apart.
+const FILE_SYNC_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The longest a running Biorouter takes to notice a schedule another process
+/// wrote to the file. Public so a writer that cannot reach the daemon — the CLI
+/// — can tell the user exactly this, and no more.
+pub const EXTERNAL_CHANGE_PICKUP: std::time::Duration = FILE_SYNC_BACKSTOP;
+
+/// Size and mtime, as one comparable value. `None` when the file is absent,
+/// which is itself a state worth noticing.
+fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+/// A row as this process holds it: the file's fields, with none of the file's
+/// run state.
+///
+/// `currently_running`, `process_start_time` and `current_session_id` describe
+/// a run IN THIS PROCESS — the cancel-token registry that makes a run stoppable
+/// is per process — so a row read from the file must not import another
+/// process's run into this one. That is also BR-38's load-time rule: a flag
+/// left behind by a run that no longer exists would make [`claim_run_slot`]'s
+/// overlap guard skip the job forever.
+fn without_foreign_run_state(mut row: ScheduledJob) -> ScheduledJob {
+    row.currently_running = false;
+    row.process_start_time = None;
+    row.current_session_id = None;
+    row
+}
+
+/// Is a run of this job in flight in THIS process?
+///
+/// Either half is enough: `currently_running` is set by a claim under the
+/// `jobs` lock, and the cancel token stays registered until the run's
+/// completion has been recorded — so together they cover the whole run,
+/// including the window after the flag clears and before the completion reaches
+/// the file. Asked under the `jobs` lock, the same nesting `claim_run_slot` uses.
+fn runs_here(running_tasks: &Arc<StdMutex<RunningTasksMap>>, job: &ScheduledJob) -> bool {
+    job.currently_running
+        || running_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&job.id)
+}
+
+/// What [`Scheduler::sync_with_file`] remembers between runs, behind the lock
+/// that serialises it against this process's own schedule writers.
+#[derive(Default)]
+struct FileSync {
+    /// Rows the sync could not take in, and why — so a row whose workflow file
+    /// is missing is reported once, not on every sync for as long as it stays.
+    refused: HashMap<String, String>,
+}
 
 /// Drop `job_id` from this process's map and cancel its cron entry.
 ///
@@ -804,18 +906,27 @@ async fn forget_job(jobs: &Arc<Mutex<JobsMap>>, tokio_scheduler: &TokioJobSchedu
 /// [`Scheduler::create_cron_task`] because it is the whole lifecycle of a
 /// scheduled run and reads as one sequence; the closure keeps only the argument
 /// clones that a `move` closure has to make per firing.
+///
+/// `scheduler` is weak because the closure that holds it lives inside the
+/// scheduler's own cron engine; a tick that finds its scheduler gone runs
+/// nothing.
 async fn run_cron_tick(
     task_job_id: String,
+    scheduler: std::sync::Weak<Scheduler>,
     current_jobs_arc: Arc<Mutex<JobsMap>>,
     running_tasks: Arc<StdMutex<RunningTasksMap>>,
     local_storage_path: PathBuf,
     cron_handle: TokioJobScheduler,
 ) {
-    // The file is the shared source of truth, and the CLI writes it from another
-    // process. Converge BEFORE claiming a slot: a job the user deleted must not
-    // spend a single token, and the tick that discovers the deletion is the one
-    // that retires the cron entry. A read failure leaves everything alone.
-    if let Err(e) = converge_removals(&local_storage_path, &current_jobs_arc, &cron_handle).await {
+    // The file is the shared source of truth, and other processes write it.
+    // Converge BEFORE claiming a slot: a job the user deleted must not spend a
+    // single token, a job they paused elsewhere must not run, and the tick that
+    // discovers the deletion is the one that retires the cron entry. A read
+    // failure leaves everything alone.
+    let Some(owner) = scheduler.upgrade() else {
+        return;
+    };
+    if let Err(e) = owner.sync_with_file().await {
         tracing::warn!(
             "Could not reconcile {} before running '{}': {}",
             local_storage_path.display(),
@@ -823,6 +934,7 @@ async fn run_cron_tick(
             e
         );
     }
+    drop(owner);
 
     let cancel_token = CancellationToken::new();
     let job_to_execute = match claim_run_slot(
@@ -898,49 +1010,27 @@ async fn run_cron_tick(
     }
 }
 
-/// Drop every in-memory job the schedule file no longer has.
-///
-/// An error reading the file propagates and **nothing is dropped**: a read that
-/// failed is not evidence that a job was deleted, and the cost of the two
-/// mistakes is not symmetric — forgetting a job the user still has means their
-/// schedule silently stops.
-async fn converge_removals(
-    storage_path: &Path,
-    jobs: &Arc<Mutex<JobsMap>>,
-    tokio_scheduler: &TokioJobScheduler,
-) -> Result<(), SchedulerError> {
-    let on_disk: std::collections::HashSet<String> = read_jobs(storage_path)
-        .await?
-        .into_iter()
-        .map(|job| job.id)
-        .collect();
-
-    let vanished: Vec<String> = {
-        let jobs_guard = jobs.lock().await;
-        jobs_guard
-            .keys()
-            .filter(|id| !on_disk.contains(*id))
-            .cloned()
-            .collect()
-    };
-
-    for id in vanished {
-        tracing::info!(
-            "Schedule '{}' is no longer in {}; dropping it from this process",
-            id,
-            storage_path.display()
-        );
-        forget_job(jobs, tokio_scheduler, &id).await;
-    }
-    Ok(())
-}
-
 pub struct Scheduler {
     tokio_scheduler: TokioJobScheduler,
     jobs: Arc<Mutex<JobsMap>>,
     storage_path: PathBuf,
     running_tasks: Arc<StdMutex<RunningTasksMap>>,
     session_manager: Arc<SessionManager>,
+    /// Serialises [`Self::sync_with_file`] against this process's own writers of
+    /// the fields a sync would overwrite — add, remove, pause, unpause, update.
+    ///
+    /// ⚠ Without it a sync can land BETWEEN one of those writers' two halves (the
+    /// in-memory change and the file publish) and undo the change in memory:
+    /// re-adopt a job `remove_scheduled_job` has just taken out of the map but
+    /// not yet out of the file — so a schedule the user deleted fires once more —
+    /// or put back the `paused = false` a Pause is about to publish. Held across
+    /// both halves of every such writer, and across the whole of every sync.
+    file_sync: Mutex<FileSync>,
+    /// This scheduler, weakly, for the cron closures [`Self::create_cron_task`]
+    /// builds: a tick syncs with the file before it claims anything, and the
+    /// closure lives inside this scheduler's own cron engine, so a strong handle
+    /// there would be a cycle.
+    me: std::sync::Weak<Scheduler>,
 }
 
 impl Scheduler {
@@ -955,12 +1045,14 @@ impl Scheduler {
         let jobs = Arc::new(Mutex::new(HashMap::new()));
         let running_tasks = Arc::new(StdMutex::new(HashMap::new()));
 
-        let arc_self = Arc::new(Self {
+        let arc_self = Arc::new_cyclic(|me| Self {
             tokio_scheduler: internal_scheduler,
             jobs,
             storage_path,
             running_tasks,
             session_manager,
+            file_sync: Mutex::new(FileSync::default()),
+            me: me.clone(),
         });
 
         arc_self.load_jobs_from_storage().await;
@@ -973,35 +1065,296 @@ impl Scheduler {
         Ok(arc_self)
     }
 
+    /// Make this process's schedule agree with the schedule file.
+    ///
+    /// The file is the one source of truth several processes share (see the
+    /// note above [`FILE_WATCH_INTERVAL`]). This process's map is a cache of it
+    /// plus the state of the runs THIS process is making, and this is the one
+    /// place the cache is refreshed:
+    ///
+    /// - a job the file no longer has is dropped, cron entry and all (#140);
+    /// - a job the file has and this process does not is adopted, exactly as a
+    ///   job loaded at startup is — its workflow must exist and its cron must
+    ///   parse, or it is refused (and reported once, not on every sync);
+    /// - a job both have takes the file's fields, and a new cron entry when its
+    ///   schedule changed — unless this process is running it, in which case
+    ///   this process's copy is authoritative until the run has recorded its end,
+    ///   and the next sync catches up.
+    ///
+    /// An error reading the file changes NOTHING and is returned: a read that
+    /// failed is not evidence that anything was added or deleted, and the cost of
+    /// the two mistakes is not symmetric — forgetting a job the user still has
+    /// means their schedule silently stops.
+    pub async fn sync_with_file(&self) -> Result<(), SchedulerError> {
+        let mut state = self.file_sync.lock().await;
+        self.sync_with_file_locked(&mut state, false).await
+    }
+
+    /// `startup` is true only for the first sync, at construction, where a row
+    /// still carrying run state is a run the last process never finished.
+    async fn sync_with_file_locked(
+        &self,
+        state: &mut FileSync,
+        startup: bool,
+    ) -> Result<(), SchedulerError> {
+        let on_disk = read_jobs(&self.storage_path).await?;
+        let on_disk_ids: std::collections::HashSet<String> =
+            on_disk.iter().map(|job| job.id.clone()).collect();
+
+        let vanished: Vec<String> = {
+            let jobs_guard = self.jobs.lock().await;
+            jobs_guard
+                .keys()
+                .filter(|id| !on_disk_ids.contains(*id))
+                .cloned()
+                .collect()
+        };
+        for id in vanished {
+            tracing::info!(
+                "Schedule '{}' is no longer in {}; dropping it from this process",
+                id,
+                self.storage_path.display()
+            );
+            forget_job(&self.jobs, &self.tokio_scheduler, &id).await;
+        }
+        state.refused.retain(|id, _| on_disk_ids.contains(id));
+
+        for row in on_disk {
+            // BR-38: no run survives the process that made it, so at startup a
+            // row persisted mid-run is a run that is already gone. Its flags are
+            // dropped below for every row; only here are they news.
+            if startup
+                && (row.currently_running
+                    || row.current_session_id.is_some()
+                    || row.process_start_time.is_some())
+            {
+                tracing::warn!(
+                    "Resetting stale running state for scheduled job '{}' on load (session {:?} \
+                     did not survive restart)",
+                    row.id,
+                    row.current_session_id
+                );
+            }
+            self.sync_row(without_foreign_run_state(row), state, startup)
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Bring one row of the file into this process. See [`Self::sync_with_file`].
+    ///
+    /// `startup` only quiets the log: at construction every row is new to this
+    /// process, and calling each one an adoption would read as another process
+    /// having written it.
+    async fn sync_row(&self, row: ScheduledJob, state: &mut FileSync, startup: bool) {
+        // What this process holds for the id, read once.
+        let held = {
+            let jobs_guard = self.jobs.lock().await;
+            jobs_guard.get(&row.id).map(|(uuid, job)| {
+                (
+                    *uuid,
+                    job.cron != row.cron,
+                    runs_here(&self.running_tasks, job),
+                )
+            })
+        };
+
+        let old_entry = match held {
+            // A run of ours is in flight: the next sync after it ends catches up.
+            Some((_, _, true)) => return,
+            // Same schedule: adopt the file's fields, keeping the cron entry.
+            // Re-checked under the lock that `claim_run_slot` takes, so a run
+            // that started in between keeps its own state.
+            Some((uuid, false, false)) => {
+                let mut jobs_guard = self.jobs.lock().await;
+                if let Some((held_uuid, job)) = jobs_guard.get_mut(&row.id) {
+                    if *held_uuid == uuid && !runs_here(&self.running_tasks, job) {
+                        *job = row;
+                    }
+                }
+                return;
+            }
+            // Re-timed elsewhere: a new cron entry replaces this one below.
+            Some((uuid, true, false)) => Some(uuid),
+            // Added elsewhere.
+            None => None,
+        };
+
+        // The admission rule `load_jobs_from_storage` has always applied.
+        let admitted = if Path::new(&row.source).exists() {
+            self.create_cron_task(row.clone())
+                .map_err(|e| format!("its cron entry could not be built: {e}"))
+        } else {
+            Err(format!("its workflow file {} was not found", row.source))
+        };
+        let task = match admitted {
+            Ok(task) => task,
+            Err(why) => {
+                if state.refused.get(&row.id) != Some(&why) {
+                    tracing::warn!(
+                        "Not scheduling '{}' from {}: {}",
+                        row.id,
+                        self.storage_path.display(),
+                        why
+                    );
+                    state.refused.insert(row.id.clone(), why);
+                }
+                return;
+            }
+        };
+        state.refused.remove(&row.id);
+
+        let new_uuid = match self.tokio_scheduler.add(task).await {
+            Ok(uuid) => uuid,
+            Err(e) => {
+                tracing::error!("Failed to add job '{}' to the scheduler: {}", row.id, e);
+                return;
+            }
+        };
+
+        // Swap the new entry in only if nothing moved while it was being built;
+        // otherwise hand it back and let the next sync decide. Either way exactly
+        // one cron entry per job survives — a second one keyed on the same id
+        // would fire alongside it.
+        let retire = {
+            let mut jobs_guard = self.jobs.lock().await;
+            let unchanged = match (jobs_guard.get(&row.id), old_entry) {
+                (None, None) => true,
+                (Some((current, job)), Some(old)) => {
+                    *current == old && !runs_here(&self.running_tasks, job)
+                }
+                _ => false,
+            };
+            if unchanged {
+                if !startup {
+                    match old_entry {
+                        None => tracing::info!(
+                            "Adopted schedule '{}' from {}, written by another process",
+                            row.id,
+                            self.storage_path.display()
+                        ),
+                        Some(_) => tracing::info!(
+                            "Schedule '{}' was re-timed in {} by another process; it now runs \
+                             on '{}'",
+                            row.id,
+                            self.storage_path.display(),
+                            row.cron
+                        ),
+                    }
+                }
+                jobs_guard.insert(row.id.clone(), (new_uuid, row));
+                old_entry
+            } else {
+                Some(new_uuid)
+            }
+        };
+        if let Some(uuid) = retire {
+            if let Err(e) = self.tokio_scheduler.remove(&uuid).await {
+                tracing::warn!("Could not remove a superseded cron entry: {}", e);
+            }
+        }
+    }
+
+    /// Sync before looking `id` up, if this process has never heard of it.
+    ///
+    /// Every operation that names a job — delete, pause, run now, stop — used to
+    /// answer "not found" for a job another process had added, because only the
+    /// file knew it. That is how `manage_schedule delete` could not remove the
+    /// job `biorouter schedule add` had just created (QA 2026-09-10, F2).
+    async fn sync_if_unknown(&self, id: &str) {
+        if self.jobs.lock().await.contains_key(id) {
+            return;
+        }
+        if let Err(e) = self.sync_with_file().await {
+            tracing::warn!(
+                "Could not reconcile {} while looking for '{}': {}",
+                self.storage_path.display(),
+                id,
+                e
+            );
+        }
+    }
+
+    /// Keep this process in step with changes other processes make to the
+    /// schedule file, for as long as this scheduler lives.
+    ///
+    /// Started by the daemon — and only by the daemon, which is the one process
+    /// meant to run schedules for as long as it is up. It stats the file every
+    /// [`FILE_WATCH_INTERVAL`] and syncs when the file changed, or at least every
+    /// [`FILE_SYNC_BACKSTOP`]. Without it a job another process adds is adopted
+    /// only when something lists schedules or another job's tick happens to run,
+    /// so it could miss its own time entirely.
+    pub fn spawn_file_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        self.spawn_file_watcher_every(FILE_WATCH_INTERVAL, FILE_SYNC_BACKSTOP)
+    }
+
+    fn spawn_file_watcher_every(
+        self: &Arc<Self>,
+        interval: std::time::Duration,
+        backstop: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let me = Arc::downgrade(self);
+        let path = self.storage_path.clone();
+        tokio::spawn(async move {
+            // ⚠ No baseline until this watcher's own first sync. Taking the
+            // file's stamp when the task starts would adopt, as "already seen",
+            // any write that landed after this scheduler loaded the file and
+            // before the task first ran — and that write would then wait for
+            // the backstop. So the first poll always syncs.
+            let mut seen: Option<Option<(u64, std::time::SystemTime)>> = None;
+            let mut synced_at = tokio::time::Instant::now();
+            let mut reported: Option<String> = None;
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(scheduler) = me.upgrade() else {
+                    return;
+                };
+                let stamp = file_stamp(&path);
+                if seen.as_ref() == Some(&stamp) && synced_at.elapsed() < backstop {
+                    continue;
+                }
+                match scheduler.sync_with_file().await {
+                    // The stamp read BEFORE the sync is the one recorded, so a
+                    // write that lands during the sync is seen next time.
+                    Ok(()) => {
+                        seen = Some(stamp);
+                        reported = None;
+                    }
+                    // Retried on the next poll; reported once per distinct
+                    // failure, because a corrupt file would otherwise log every
+                    // two seconds until someone repairs it.
+                    Err(e) => {
+                        let text = e.to_string();
+                        if reported.as_deref() != Some(text.as_str()) {
+                            tracing::warn!("Could not sync with {}: {}", path.display(), text);
+                            reported = Some(text);
+                        }
+                    }
+                }
+                synced_at = tokio::time::Instant::now();
+            }
+        })
+    }
+
     fn create_cron_task(&self, job: ScheduledJob) -> Result<Job, SchedulerError> {
         let job_for_task = job.clone();
+        let scheduler = self.me.clone();
         let jobs_arc = self.jobs.clone();
         let storage_path = self.storage_path.clone();
         let running_tasks_arc = self.running_tasks.clone();
         // `JobsSchedulerLocked` is a handle, and cloning it clones the handle —
         // the tick needs one so it can retire its own cron entry when the file
-        // says the job is gone (see `converge_removals`).
+        // says the job is gone (see `Scheduler::sync_with_file`).
         let cron_handle = self.tokio_scheduler.clone();
 
-        let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
-        let cron = match cron_parts.len() {
-            5 => {
-                tracing::warn!(
-                    "Job '{}' has legacy 5-field cron '{}', converting to 6-field",
-                    job.id,
-                    job.cron
-                );
-                format!("0 {}", job.cron)
-            }
-            6 => job.cron.clone(),
-            _ => {
-                return Err(SchedulerError::CronParseError(format!(
-                    "Invalid cron expression '{}': expected 5 or 6 fields, got {}",
-                    job.cron,
-                    cron_parts.len()
-                )))
-            }
-        };
+        if job.cron.split_whitespace().count() == 5 {
+            tracing::warn!(
+                "Job '{}' has legacy 5-field cron '{}', converting to 6-field",
+                job.id,
+                job.cron
+            );
+        }
+        let cron = normalize_cron(&job.cron)?;
 
         let local_tz = Local::now().timezone();
 
@@ -1009,6 +1362,7 @@ impl Scheduler {
             tracing::info!("Cron task triggered for job '{}'", job_for_task.id);
             Box::pin(run_cron_tick(
                 job_for_task.id.clone(),
+                scheduler.clone(),
                 jobs_arc.clone(),
                 running_tasks_arc.clone(),
                 storage_path.clone(),
@@ -1029,6 +1383,10 @@ impl Scheduler {
         // duplicate guard, so `{"id": "/tmp/pwned"}` landed `/tmp/pwned.yaml`
         // even on the request paths that answered 400 or 409.
         validate_schedule_id(&original_job_spec.id)?;
+        // Held to the end: between the file write below and the map insert, a
+        // sync would see a row this process does not hold yet and adopt it —
+        // and the insert would then leave a second cron entry for the same job.
+        let _sync = self.file_sync.lock().await;
         {
             let jobs_guard = self.jobs.lock().await;
             if jobs_guard.contains_key(&original_job_spec.id) {
@@ -1135,6 +1493,16 @@ impl Scheduler {
     ) -> Result<(), SchedulerError> {
         let workflow_path_str = workflow_path.to_string_lossy().to_string();
 
+        // A schedule another process made for this same workflow is one this
+        // process has to find, or it adds a second schedule beside it.
+        if let Err(e) = self.sync_with_file().await {
+            tracing::warn!(
+                "Could not reconcile {} before scheduling {}: {}",
+                self.storage_path.display(),
+                workflow_path_str,
+                e
+            );
+        }
         let existing_job_id = {
             let jobs_guard = self.jobs.lock().await;
             jobs_guard
@@ -1197,9 +1565,11 @@ impl Scheduler {
         id
     }
 
-    /// Fill the in-memory map from the schedule file. The ONLY call site is
-    /// [`Scheduler::new`] — there is no re-read, no mtime check and no watcher,
-    /// which is why [`converge_removals`] exists.
+    /// Fill the in-memory map from the schedule file, at construction.
+    ///
+    /// It is the first [`Self::sync_with_file`] — with an empty map every row is
+    /// an addition — so a job loaded at startup and a job adopted from the file
+    /// later pass one admission rule rather than two copies of it.
     ///
     /// ⚠ It goes through [`read_jobs`] rather than opening the file itself. It
     /// used to be a second reader with its own policy — no [`ScheduleFileLock`],
@@ -1207,91 +1577,29 @@ impl Scheduler {
     /// copy aside — and it is the reader most likely to *meet* a corrupt file,
     /// since it runs before anything else in the process has touched it.
     async fn load_jobs_from_storage(self: &Arc<Self>) {
-        let list = match read_jobs(&self.storage_path).await {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to read {}: {}. Starting with an empty schedule list; the file has \
-                     NOT been modified.",
-                    self.storage_path.display(),
-                    e
-                );
-                return;
-            }
-        };
-
-        for mut job_to_load in list {
-            // BR-38: a scheduled run lives only in memory — no process or turn
-            // survives a daemon restart. A job persisted as `currently_running`
-            // was mid-run when we crashed, so its run is already gone. Reconcile
-            // the stale flag on load; otherwise the overlap guard in
-            // `claim_run_slot` would treat the ghost run as still in progress and
-            // skip this job forever.
-            if job_to_load.currently_running
-                || job_to_load.current_session_id.is_some()
-                || job_to_load.process_start_time.is_some()
-            {
-                tracing::warn!(
-                    "Resetting stale running state for scheduled job '{}' on load (session {:?} did not survive restart)",
-                    job_to_load.id,
-                    job_to_load.current_session_id
-                );
-                job_to_load.currently_running = false;
-                job_to_load.current_session_id = None;
-                job_to_load.process_start_time = None;
-            }
-
-            if !Path::new(&job_to_load.source).exists() {
-                tracing::warn!(
-                    "Workflow file {} not found, skipping job '{}'",
-                    job_to_load.source,
-                    job_to_load.id
-                );
-                continue;
-            }
-
-            let cron_task = match self.create_cron_task(job_to_load.clone()) {
-                Ok(task) => task,
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to create cron task for job '{}': {}. Skipping.",
-                        job_to_load.id,
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            let job_uuid = match self.tokio_scheduler.add(cron_task).await {
-                Ok(uuid) => uuid,
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to add job '{}' to scheduler: {}. Skipping.",
-                        job_to_load.id,
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            let mut jobs_guard = self.jobs.lock().await;
-            jobs_guard.insert(job_to_load.id.clone(), (job_uuid, job_to_load));
+        let mut state = self.file_sync.lock().await;
+        if let Err(e) = self.sync_with_file_locked(&mut state, true).await {
+            tracing::error!(
+                "Failed to read {}: {}. Starting with an empty schedule list; the file has \
+                 NOT been modified.",
+                self.storage_path.display(),
+                e
+            );
         }
     }
 
     /// Every schedule this process knows about, after reconciling against the
     /// file.
     ///
-    /// The reconcile is why this is not a bare map read. `/schedule/list` and
-    /// `biorouter schedule list` are the surfaces a user checks after deleting a
-    /// schedule somewhere else, and a daemon whose map was loaded once at
-    /// construction would keep listing it — see [`converge_removals`]. A read
-    /// failure is logged and the map served as-is, because failing to read the
-    /// file is not evidence that anything was deleted.
+    /// The reconcile is why this is not a bare map read. `/schedule/list`,
+    /// `platform__manage_schedule list` and `biorouter schedule list` are the
+    /// surfaces a user checks after changing a schedule somewhere else, and a map
+    /// loaded once at construction would keep listing a deleted job and never
+    /// list an added one — see [`Self::sync_with_file`]. A read failure is logged
+    /// and the map served as-is, because failing to read the file is not
+    /// evidence that anything changed.
     pub async fn list_scheduled_jobs(&self) -> Vec<ScheduledJob> {
-        if let Err(e) =
-            converge_removals(&self.storage_path, &self.jobs, &self.tokio_scheduler).await
-        {
+        if let Err(e) = self.sync_with_file().await {
             tracing::warn!(
                 "Could not reconcile {} while listing schedules: {}",
                 self.storage_path.display(),
@@ -1319,6 +1627,11 @@ impl Scheduler {
         id: &str,
         remove_owned_workflow: bool,
     ) -> Result<(), SchedulerError> {
+        self.sync_if_unknown(id).await;
+        // Held across the map removal AND the file write: a sync between the two
+        // would find the row still on disk and adopt it straight back, and a
+        // schedule the user had just deleted would fire once more.
+        let _sync = self.file_sync.lock().await;
         let (job_uuid, workflow_to_delete) = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.remove(id) {
@@ -1330,7 +1643,10 @@ impl Scheduler {
                         .then(|| job.source.clone());
                     (uuid, path)
                 }
-                None => return Err(SchedulerError::JobNotFound(id.to_string())),
+                // Not something this process can schedule — a row whose workflow
+                // file is gone is never adopted — but still a row in the file,
+                // and deleting it is the one way to clear it without an editor.
+                None => return self.remove_unscheduled_row(id).await,
             }
         };
 
@@ -1353,6 +1669,27 @@ impl Scheduler {
         })
         .await?;
         Ok(())
+    }
+
+    /// Delete a row this process holds no job for, straight from the file.
+    ///
+    /// `JobNotFound` only when the file has no such row either. The row's
+    /// workflow file is left alone: a row is left unscheduled almost always
+    /// because that file is already gone, and [`scheduler_owns_source`]'s own
+    /// rule is that a doubtful unlink costs at most an orphaned copy — which is
+    /// why the scheduler still has exactly one `remove_file`, in
+    /// [`Self::remove_scheduled_job`].
+    async fn remove_unscheduled_row(&self, id: &str) -> Result<(), SchedulerError> {
+        let removed_id = id.to_string();
+        persist_change(&self.storage_path, move |list| {
+            let position = list
+                .iter()
+                .position(|job| job.id == removed_id)
+                .ok_or_else(|| SchedulerError::JobNotFound(removed_id.clone()))?;
+            list.remove(position);
+            Ok(())
+        })
+        .await
     }
 
     pub async fn sessions(
@@ -1402,6 +1739,7 @@ impl Scheduler {
     /// registry, an eager persist) re-opens exactly the window this fixes, and
     /// nothing in the type system will say so.
     pub async fn run_now(&self, sched_id: &str) -> Result<String, SchedulerError> {
+        self.sync_if_unknown(sched_id).await;
         let cancel_token = CancellationToken::new();
         let job_to_run = {
             let mut jobs_guard = self.jobs.lock().await;
@@ -1481,6 +1819,10 @@ impl Scheduler {
     }
 
     pub async fn pause_schedule(&self, sched_id: &str) -> Result<(), SchedulerError> {
+        self.sync_if_unknown(sched_id).await;
+        // Held across the memory change and its publish, so a sync cannot land
+        // between them and put the old `paused` back from the file.
+        let _sync = self.file_sync.lock().await;
         {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
@@ -1501,6 +1843,8 @@ impl Scheduler {
     }
 
     pub async fn unpause_schedule(&self, sched_id: &str) -> Result<(), SchedulerError> {
+        self.sync_if_unknown(sched_id).await;
+        let _sync = self.file_sync.lock().await;
         {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
@@ -1540,6 +1884,10 @@ impl Scheduler {
         sched_id: &str,
         new_cron: String,
     ) -> Result<(), SchedulerError> {
+        self.sync_if_unknown(sched_id).await;
+        // Held across the swap of the cron entry and the publish: a sync in
+        // between would read the old cron from the file and build a second entry.
+        let _sync = self.file_sync.lock().await;
         let (old_uuid, updated_job) = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
@@ -1604,6 +1952,7 @@ impl Scheduler {
     /// window: reaching it means the run already finished (or that this process
     /// is not the one running it), and the caller must be told.
     pub async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError> {
+        self.sync_if_unknown(sched_id).await;
         {
             let jobs_guard = self.jobs.lock().await;
             match jobs_guard.get(sched_id) {
@@ -1647,6 +1996,7 @@ impl Scheduler {
         &self,
         sched_id: &str,
     ) -> Result<Option<(String, DateTime<Utc>)>, SchedulerError> {
+        self.sync_if_unknown(sched_id).await;
         let jobs_guard = self.jobs.lock().await;
         match jobs_guard.get(sched_id) {
             Some((_, job)) if job.currently_running => {
@@ -3308,21 +3658,33 @@ mod tests {
         }
         assert!(fired, "precondition: the job fires while it is on disk");
 
-        // The CLI, in another process, deletes it. Modelled as a direct write to
-        // the file because that is exactly what the offline CLI's own
-        // `Scheduler` does, and because writing it here proves the daemon reads
-        // the file rather than being told by an API call.
-        fs::write(&storage_path, "[]").unwrap();
-
-        // ⚠ CONVERGES, not instantaneous — and the difference is a real race, not
-        // test hygiene. This job fires every second, and a tick already in flight
-        // when the write lands will finish by persisting its own run state, which
-        // puts the row back in the file the test just emptied. The daemon then
-        // drops it on the NEXT reconcile. Asserting emptiness on the first call
-        // therefore fails whenever a tick happens to straddle the write — which
-        // it did once in a full-suite run while passing 3/3 in isolation.
+        // The CLI, in another process, deletes it — through the same locked
+        // read-modify-write its own `Scheduler` uses (`remove_scheduled_job` →
+        // `persist_change`), because that is what the CLI does, and because
+        // writing it here proves the daemon reads the file rather than being
+        // told by an API call.
         //
-        // Production's contract is convergence, so that is what this asserts.
+        // ⚠ Not a raw `fs::write(.., "[]")`, which this used to be. A raw write
+        // takes no `ScheduleFileLock`, so it can land INSIDE a firing tick's
+        // locked read-modify-write — after the tick read the row, before it
+        // renamed its edit over the file — and the tick then puts the row back
+        // for good. No real writer can do that: every one of them goes through
+        // the lock. And this test makes the collision likely, because the loop
+        // above breaks the instant a tick has claimed a run, i.e. just before
+        // that tick's writes. Measured: 1 failure in 40 full-module runs, at
+        // "must stop being served".
+        persist_change(&storage_path, |list| {
+            list.clear();
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        // ⚠ CONVERGES, not instantaneous. This job fires every second, and a tick
+        // already in flight when the delete lands still records its own
+        // completion in this process; the daemon drops the job on the NEXT
+        // reconcile. Production's contract is convergence, so that is what this
+        // asserts.
         let mut converged = false;
         for _ in 0..40 {
             if daemon.list_scheduled_jobs().await.is_empty() {
@@ -3338,8 +3700,10 @@ mod tests {
 
         // And it must stop firing — which is also a CONVERGENT property, for the
         // same reason. A tick already running when the delete landed may still
-        // record its own completion, so both the run count and the on-disk row
-        // can move once more before the next reconcile drops the job for good.
+        // record its own completion, so this process's run count can move once
+        // more before the next reconcile drops the job for good. (The on-disk row
+        // cannot come back: the tick's edit is modify-if-present, under the same
+        // lock as the delete.)
         //
         // Settle first, then assert the count is frozen. Asserting immediately
         // measures whether a tick happened to be in flight, which is a property
@@ -3900,6 +4264,157 @@ mod tests {
         );
         assert!(prompt.contains("Scheduled job:"), "{prompt}");
     }
+
+    /// Two `Scheduler`s over one file: the daemon, started first and holding
+    /// nothing, and a second process — the CLI — that adds a job to the file.
+    async fn daemon_and_cli(temp_dir: &Path) -> (PathBuf, Arc<Scheduler>, Arc<Scheduler>) {
+        let storage_path = temp_dir.join("schedule.json");
+        let session_manager = || Arc::new(SessionManager::new(temp_dir.to_path_buf()));
+        let daemon = Scheduler::new(storage_path.clone(), session_manager())
+            .await
+            .unwrap();
+        let cli = Scheduler::new(storage_path.clone(), session_manager())
+            .await
+            .unwrap();
+        (storage_path, daemon, cli)
+    }
+
+    fn ids(jobs: Vec<ScheduledJob>) -> Vec<String> {
+        let mut ids: Vec<String> = jobs.into_iter().map(|job| job.id).collect();
+        ids.sort();
+        ids
+    }
+
+    /// QA 2026-09-10, F2, measured: `biorouter schedule add` wrote a fourth job
+    /// to `schedule.json` while the desktop app ran, and `/schedule/list`,
+    /// `manage_schedule list` and the Scheduler page all showed three. The
+    /// daemon's map was filled once, at construction, and #140's reconcile only
+    /// ever REMOVED what the file had lost.
+    ///
+    /// Fails the shipped scheduler: the daemon lists nothing.
+    #[tokio::test]
+    async fn a_job_another_process_adds_is_listed_here() {
+        let temp_dir = tempdir().unwrap();
+        let (storage_path, daemon, cli) = daemon_and_cli(temp_dir.path()).await;
+        let workflow = create_test_workflow(temp_dir.path(), "qaf_run2_workflow");
+        cli.add_scheduled_job(dormant_job("qaf-run2-workflow", &workflow), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            ids_on_disk(&storage_path),
+            vec!["qaf-run2-workflow".to_string()],
+            "precondition: the other process's job reached the file"
+        );
+
+        assert_eq!(
+            ids(daemon.list_scheduled_jobs().await),
+            ids_on_disk(&storage_path),
+            "the daemon's list must agree with the file it serves"
+        );
+    }
+
+    /// The same measurement's second half: `manage_schedule delete` could not
+    /// remove the CLI's job, "because the daemon cannot see it" — it took a
+    /// second CLI call. A delete by id is the one call that never lists first
+    /// (`DELETE /schedule/delete/{id}` goes straight to the scheduler), so it
+    /// has to find a job this process has not heard of on its own.
+    ///
+    /// Fails the shipped scheduler with `JobNotFound`.
+    #[tokio::test]
+    async fn a_job_another_process_adds_can_be_deleted_here_by_id() {
+        let temp_dir = tempdir().unwrap();
+        let (storage_path, daemon, cli) = daemon_and_cli(temp_dir.path()).await;
+        let workflow = create_test_workflow(temp_dir.path(), "cli_added");
+        cli.add_scheduled_job(dormant_job("cli-added", &workflow), false)
+            .await
+            .unwrap();
+
+        daemon
+            .remove_scheduled_job("cli-added", false)
+            .await
+            .expect("a job in the file must be deletable through the daemon");
+        assert!(ids_on_disk(&storage_path).is_empty());
+        assert!(daemon.list_scheduled_jobs().await.is_empty());
+    }
+
+    /// A row this process will not schedule — its workflow file is gone, so it
+    /// is never adopted, exactly as it was never loaded — is still a row in the
+    /// file. Deleting it is the one way to clear it without an editor.
+    ///
+    /// Fails the shipped scheduler with `JobNotFound`.
+    #[tokio::test]
+    async fn a_row_that_cannot_be_scheduled_can_still_be_deleted() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let gone = temp_dir.path().join("deleted-workflow.yaml");
+        fs::write(
+            &storage_path,
+            serde_json::to_string(&vec![dormant_job("orphan", &gone)]).unwrap(),
+        )
+        .unwrap();
+        let daemon = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        assert!(
+            daemon.list_scheduled_jobs().await.is_empty(),
+            "a job whose workflow is missing is not scheduled"
+        );
+
+        daemon
+            .remove_scheduled_job("orphan", true)
+            .await
+            .expect("the row is in the file, so deleting it is not `JobNotFound`");
+        assert!(ids_on_disk(&storage_path).is_empty());
+        assert!(matches!(
+            daemon.remove_scheduled_job("orphan", true).await,
+            Err(SchedulerError::JobNotFound(_))
+        ));
+    }
+
+    /// Adoption is not only of new ids. A job both processes hold can be paused
+    /// or re-timed by the other one — a terminal session's `/schedule pause`
+    /// writes the file — and the daemon kept listing it, and FIRING it, on the
+    /// old terms: a schedule the user paused ran anyway.
+    ///
+    /// Fails the shipped scheduler: the daemon still reports it unpaused and on
+    /// its old cron.
+    #[tokio::test]
+    async fn a_job_changed_by_another_process_takes_the_files_terms_here() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let session_manager = || Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let workflow = create_test_workflow(temp_dir.path(), "shared");
+        let daemon = Scheduler::new(storage_path.clone(), session_manager())
+            .await
+            .unwrap();
+        daemon
+            .add_scheduled_job(dormant_job("shared", &workflow), false)
+            .await
+            .unwrap();
+        // The other process starts after the job exists, so it loads it.
+        let other = Scheduler::new(storage_path.clone(), session_manager())
+            .await
+            .unwrap();
+
+        other.pause_schedule("shared").await.unwrap();
+        persist_change(&storage_path, |list| {
+            assert!(edit_job(list, "shared", |job| job.cron = "0 0 9 * * *".to_string()));
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let held = daemon.list_scheduled_jobs().await;
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert!(held[0].paused, "a pause made elsewhere must hold here too");
+        assert_eq!(
+            held[0].cron, "0 0 9 * * *",
+            "a schedule re-timed elsewhere must be re-timed here"
+        );
+    }
 }
 
 /// Issue #56, Task 24 (§9.3 C2 / R5): a scheduled job created from a private
@@ -4143,5 +4658,105 @@ mod privacy_c2_tests {
             jobs[0].last_error.is_some(),
             "a failed run must leave a job-level error the schedules UI can show"
         );
+    }
+}
+
+/// The daemon's watch on the schedule file (QA 2026-09-10, F2).
+///
+/// Its own module because it is the one F2 test that needs a hook the shipped
+/// scheduler did not have, and the fail-before run for the rest of the F2 tests
+/// swaps in the old production code with this module left out.
+#[cfg(test)]
+mod file_watch_tests {
+    use super::*;
+    use tempfile::tempdir;
+    use tokio::time::{sleep, Duration};
+
+    /// A job another process adds must FIRE, not merely be listed. Listing is
+    /// not something the daemon can wait for: nobody may open the Scheduler page
+    /// before 02:00. So nothing here lists — the only thing that can find the
+    /// job is the watcher.
+    ///
+    /// The job is born at its run cap (`max_runs: Some(0)`), so its first tick
+    /// runs no agent: it auto-pauses and publishes `paused: true` to the file.
+    /// That write is the proof a tick of THIS daemon fired for a job only the
+    /// file knew about, observed without asking the daemon anything.
+    #[serial_test::serial]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_job_another_process_adds_fires_without_anyone_listing() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = temp_dir.path().join("added-elsewhere.yaml");
+        fs::write(&workflow, "prompt: test\n").unwrap();
+
+        let daemon = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let _watch =
+            daemon.spawn_file_watcher_every(Duration::from_millis(50), Duration::from_secs(30));
+
+        // Another process's write — and, deliberately, a SYNCHRONOUS one, made
+        // before this test first yields. On this current-thread runtime the
+        // watcher task cannot run until then, so the write lands before its
+        // first poll every time: the ordering that a watcher taking its baseline
+        // stamp at startup would swallow as "already seen" (it did, once in six
+        // runs, before the first poll was made to always sync).
+        let job = ScheduledJob {
+            id: "added-elsewhere".to_string(),
+            source: workflow.to_string_lossy().into_owned(),
+            cron: "* * * * * *".to_string(),
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 0,
+            max_runs: Some(0),
+            creator_session_id: None,
+            last_error: None,
+            owns_source: Some(false),
+        };
+        write_jobs_file(&storage_path, &[job]).unwrap();
+
+        let mut fired = false;
+        for _ in 0..80 {
+            sleep(Duration::from_millis(100)).await;
+            let on_disk: Vec<ScheduledJob> =
+                serde_json::from_str(&fs::read_to_string(&storage_path).unwrap()).unwrap();
+            if on_disk
+                .iter()
+                .any(|job| job.id == "added-elsewhere" && job.paused)
+            {
+                fired = true;
+                break;
+            }
+        }
+        assert!(
+            fired,
+            "a job only the file knew about never fired in this daemon: it would never run"
+        );
+    }
+
+    /// The watcher belongs to the scheduler it watches: once that is gone, the
+    /// task ends rather than polling a file nobody is scheduling from.
+    #[tokio::test]
+    async fn the_watch_ends_with_its_scheduler() {
+        let temp_dir = tempdir().unwrap();
+        let daemon = Scheduler::new(
+            temp_dir.path().join("schedule.json"),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let watch =
+            daemon.spawn_file_watcher_every(Duration::from_millis(20), Duration::from_secs(30));
+        drop(daemon);
+        tokio::time::timeout(Duration::from_secs(5), watch)
+            .await
+            .expect("the watch must end once its scheduler is dropped")
+            .unwrap();
     }
 }
