@@ -778,6 +778,7 @@ impl Agent {
                 .map(|tool| tool.name.as_ref()),
         );
         if !enforced {
+            tracing::debug!(session_id = %session.id, "planning gate: not in scope for this turn");
             self.planning.begin(&session.id, None);
             return;
         }
@@ -791,6 +792,23 @@ impl Agent {
             ),
             Err(_) => (false, fingerprint(None)),
         };
+        // The one line that says, from outside, whether this turn is gated:
+        // a private provider's request log is metadata-only, so neither the
+        // reminder nor the prompt clause can be read back from it. Carries the
+        // signal's kind and counts, never the prompt.
+        match signal.filter(|_| list_was_empty) {
+            Some(signal) => tracing::info!(
+                session_id = %session.id,
+                ?signal,
+                "planning gate: multi-step turn with an empty checklist; reminder and redirect armed"
+            ),
+            None => tracing::debug!(
+                session_id = %session.id,
+                ?signal,
+                list_was_empty,
+                "planning gate: in scope, not armed (stop check only)"
+            ),
+        }
         self.planning.begin(
             &session.id,
             Some(TurnPlan {
@@ -811,8 +829,16 @@ impl Agent {
         let signal = self.planning.armed(session_id)?;
         if self.checklist_exists(session_id).await {
             self.planning.note_list_exists(session_id);
+            tracing::debug!(
+                session_id,
+                "planning gate: checklist exists; reminder and redirect disarmed"
+            );
             return None;
         }
+        tracing::debug!(
+            session_id,
+            "planning gate: reminder added to this call's context"
+        );
         Some(reminder_text(signal))
     }
 
