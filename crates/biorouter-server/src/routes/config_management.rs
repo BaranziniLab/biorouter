@@ -9,7 +9,7 @@ use axum::{
 use biorouter::config::declarative_providers::LoadedProvider;
 use biorouter::config::paths::Paths;
 use biorouter::config::ExtensionEntry;
-use biorouter::config::{Config, ConfigError};
+use biorouter::config::{Config, ConfigError, ConfigWriteFailure};
 use biorouter::model::ModelConfig;
 use biorouter::privacy::ProviderTier;
 use biorouter::providers::auto_detect::{detect_provider_from_api_key, detectable_providers};
@@ -1296,13 +1296,20 @@ pub struct ConfigRecoveryReport {
     pub message: String,
     /// The config keys this process is now running on.
     pub recovered_keys: Vec<String>,
-    /// Whether `config.yaml` on disk holds what this report describes.
+    /// Whether this process's settings are persisting: `config.yaml` holds what
+    /// this report describes, and a write to it lands.
     ///
-    /// `false` means the recovery could not write what it recovered: the keys
-    /// above live only in this process, the file on disk is unchanged — still
-    /// absent, or still the contents that would not load — nothing changed in
-    /// this session survives exit, and the next start runs the same recovery
-    /// again.
+    /// `false` in one of two ways, which `message` spells out:
+    /// - the recovery could not write what it recovered: the keys above live
+    ///   only in this process, the file on disk is unchanged — still absent, or
+    ///   still the contents that would not load — and the next start runs the
+    ///   same recovery again;
+    /// - `config.yaml` loads, so the keys above are the file's, but it cannot
+    ///   be written right now.
+    ///
+    /// Either way a setting changed in this session will not be saved. Checked
+    /// against the disk on every call, so a failure that has since been
+    /// repaired is not reported.
     pub persisted: bool,
     /// The write error, verbatim, whenever `persisted` is false.
     pub write_error: Option<String>,
@@ -1318,7 +1325,7 @@ pub struct ConfigRecoveryReport {
 /// user's own config directory.
 fn recovery_report(
     recovered_keys: Vec<String>,
-    write_error: Option<String>,
+    failure: Option<ConfigWriteFailure>,
 ) -> ConfigRecoveryReport {
     let recovered = if recovered_keys.is_empty() {
         "Config recovery completed, but no data was recoverable. Starting with empty \
@@ -1332,25 +1339,33 @@ fn recovery_report(
         )
     };
 
-    // A recovery that could not WRITE what it recovered leaves the app running
-    // on values that vanish at exit. That was silent on the arm a corrupted
-    // config with a usable backup actually takes, so this route answered
-    // "Recovered 23 keys" for a file it had just failed to write, while the
-    // corrupt bytes were still on disk.
-    let message = match write_error.as_deref() {
+    let message = match &failure {
         None => recovered,
-        Some(err) => format!(
+        // A recovery that could not WRITE what it recovered leaves the app
+        // running on values that vanish at exit. That was silent on the arm a
+        // corrupted config with a usable backup actually takes, so this route
+        // answered "Recovered 23 keys" for a file it had just failed to write,
+        // while the corrupt bytes were still on disk.
+        Some(ConfigWriteFailure::ValuesInMemoryOnly(err)) => format!(
             "{recovered} ⚠ These values are in memory only — the config file could not be \
              written ({err}). config.yaml on disk is unchanged, so nothing changed in this \
              session will persist and the next start will recover again."
+        ),
+        // ⚠ Not the sentence above. The file loads, so the values in use ARE
+        // on disk and the next start will not recover anything; only a change
+        // made now is at risk. Saying "in memory only" here would be the same
+        // kind of false note F2 was.
+        Some(ConfigWriteFailure::NotWritable(err)) => format!(
+            "{recovered} ⚠ config.yaml loads, but it cannot be written right now ({err}), so \
+             a setting changed in this session will not be saved."
         ),
     };
 
     ConfigRecoveryReport {
         message,
         recovered_keys,
-        persisted: write_error.is_none(),
-        write_error,
+        persisted: failure.is_none(),
+        write_error: failure.map(ConfigWriteFailure::into_error),
     }
 }
 
@@ -1363,8 +1378,24 @@ fn recovery_report(
     )
 )]
 pub async fn recover_config() -> Result<Json<ConfigRecoveryReport>, StatusCode> {
-    let config = Config::global();
+    match run_recovery(Config::global()) {
+        Ok(report) => Ok(Json(report)),
+        Err(e) => {
+            tracing::error!("Config recovery failed: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
 
+/// The recovery itself, against whichever config it is handed.
+///
+/// A seam, and the reason it exists is the one `recovery_report` gives for
+/// being pure: the route reads `Config::global()`, which is the user's real
+/// `~/.config/biorouter`. What this adds over `recovery_report` is the part
+/// that depends on the DISK — the reload, and what the config layer says about
+/// writing afterwards — and a test can only reach that against a config of its
+/// own.
+fn run_recovery(config: &Config) -> Result<ConfigRecoveryReport, ConfigError> {
     // This endpoint IS a forced re-read, so it has to force one: the config
     // layer serves a parsed `config.yaml` until the file's stamp moves, and a
     // caller who reaches for "recover" is asking to go back to the disk
@@ -1372,20 +1403,17 @@ pub async fn recover_config() -> Result<Json<ConfigRecoveryReport>, StatusCode> 
     config.invalidate_values_cache();
 
     // Force a reload which will trigger recovery if needed
-    match config.all_values() {
-        Ok(values) => {
-            // Read AFTER the reload, never before: the write this reports on is
-            // one the reload itself has just attempted.
-            Ok(Json(recovery_report(
-                values.keys().cloned().collect(),
-                config.last_write_error(),
-            )))
-        }
-        Err(e) => {
-            tracing::error!("Config recovery failed: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    let values = config.all_values()?;
+
+    // Asked AFTER the reload, never before: the write this reports on may be
+    // one the reload itself has just attempted. And asked of the disk, not of
+    // a record — a config that loads needs no recovery, so this reload writes
+    // nothing, and a failure recorded by an earlier one would otherwise be
+    // reported for a file that has since been repaired (finding F2).
+    Ok(recovery_report(
+        values.keys().cloned().collect(),
+        config.outstanding_write_failure(),
+    ))
 }
 
 #[utoipa::path(
@@ -1720,7 +1748,9 @@ mod tests {
                 "BIOROUTER_MODEL".to_string(),
                 "BIOROUTER_PROVIDER".to_string(),
             ],
-            Some("Config file I/O failed: Permission denied (os error 13)".to_string()),
+            Some(ConfigWriteFailure::ValuesInMemoryOnly(
+                "Config file I/O failed: Permission denied (os error 13)".to_string(),
+            )),
         );
 
         assert!(
@@ -1761,8 +1791,9 @@ mod tests {
     /// The other half of the requirement, and the one that is easy to lose: a
     /// note that outlives its cause tells the user their settings are being
     /// lost while they are being saved, which is worse than saying nothing.
-    /// `Config::save_values` clears the record on success; this pins that the
-    /// route says nothing once it is clear.
+    /// The config layer retires a failure once it stops being true (a write
+    /// succeeds, or the file loads and a write would land); this pins that the
+    /// route says nothing once it has.
     #[test]
     fn a_recovery_that_persisted_carries_no_warning() {
         let report = recovery_report(vec!["BIOROUTER_MODEL".to_string()], None);
@@ -1782,7 +1813,12 @@ mod tests {
     /// which is exactly how one of two branches comes to lose a later edit.
     #[test]
     fn a_recovery_with_nothing_to_recover_still_reports_that_it_could_not_write() {
-        let report = recovery_report(vec![], Some("No space left on device".to_string()));
+        let report = recovery_report(
+            vec![],
+            Some(ConfigWriteFailure::ValuesInMemoryOnly(
+                "No space left on device".to_string(),
+            )),
+        );
 
         assert!(!report.persisted);
         assert!(report.recovered_keys.is_empty());
@@ -1801,16 +1837,221 @@ mod tests {
         );
     }
 
-    /// The flag and the error are one fact, and cannot disagree.
+    /// The flag and the error are one fact, and cannot disagree — for either
+    /// shape a failure can take.
     #[test]
     fn persisted_is_exactly_the_absence_of_a_write_error() {
-        for write_error in [None, Some("any failure at all".to_string())] {
-            let expected = write_error.is_none();
-            let report = recovery_report(vec!["K".to_string()], write_error);
+        for failure in [
+            None,
+            Some(ConfigWriteFailure::ValuesInMemoryOnly(
+                "any failure at all".to_string(),
+            )),
+            Some(ConfigWriteFailure::NotWritable(
+                "any failure at all".to_string(),
+            )),
+        ] {
+            let expected = failure.is_none();
+            let report = recovery_report(vec!["K".to_string()], failure);
             assert_eq!(
                 report.persisted, expected,
                 "a report may never claim to have persisted while carrying the error that \
                  says it did not, nor the reverse"
+            );
+            assert_eq!(report.write_error.is_none(), expected);
+        }
+    }
+
+    /// A config that loads but cannot be written is NOT "in memory only".
+    ///
+    /// The file loads, so the values in use are the ones on disk and the next
+    /// start will not recover anything — M9's sentence would be false in three
+    /// clauses out of four. What is true is narrower: a setting changed now
+    /// will not be saved. Reached when a corrupt config is repaired but its
+    /// directory is left unwritable; before F2's fix this state carried the
+    /// stale M9 note instead.
+    #[test]
+    fn a_config_that_loads_but_cannot_be_written_is_not_called_in_memory_only() {
+        let report = recovery_report(
+            vec!["BIOROUTER_MODEL".to_string()],
+            Some(ConfigWriteFailure::NotWritable(
+                "Config file I/O failed: Permission denied (os error 13)".to_string(),
+            )),
+        );
+
+        assert!(!report.persisted, "a change made now will not be saved");
+        assert_eq!(
+            report.write_error.as_deref(),
+            Some("Config file I/O failed: Permission denied (os error 13)")
+        );
+        assert_eq!(
+            report.message,
+            "Config recovery completed. Recovered 1 keys: BIOROUTER_MODEL ⚠ config.yaml loads, \
+             but it cannot be written right now (Config file I/O failed: Permission denied (os \
+             error 13)), so a setting changed in this session will not be saved."
+        );
+        for false_here in ["in memory only", "on disk is unchanged", "recover again"] {
+            assert!(
+                !report.message.contains(false_here),
+                "{false_here:?} is not true of a config that loads; got {:?}",
+                report.message
+            );
+        }
+    }
+
+    /// Finding F2: once the config is healed, recovery stops warning.
+    ///
+    /// Measured on `7c96d796`: after one genuine write failure the permissions
+    /// were restored and the file repaired, and three consecutive `POST
+    /// /config/recover` calls on the healthy, writable, valid config all
+    /// answered `persisted: false` with the stale `Permission denied` — a
+    /// config that loads needs no recovery, so the reload wrote nothing, and a
+    /// write was the only thing that cleared the record. Three calls here
+    /// because three is what was measured.
+    ///
+    /// Portable: the config's parent is a FILE, which fails the write the same
+    /// way on every platform. `each_recovery_describes_the_config_as_it_is_now`
+    /// below is the literal `chmod` sequence.
+    #[test]
+    fn a_recovery_after_the_config_was_healed_reports_persisted_with_no_note() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let config_path = blocked.join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let refused =
+            run_recovery(&config).expect("an unwritable config still recovers into memory");
+        assert!(
+            !refused.persisted && refused.write_error.is_some(),
+            "the premise: the first recovery could not write, and said so; got {:?}",
+            refused.message
+        );
+
+        // Healed from outside this process: writable, and holding a valid config.
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(&config_path, "BIOROUTER_MODEL: gpt-5.5\n").unwrap();
+
+        for call in 1..=3 {
+            let report = run_recovery(&config).expect("a healthy config recovers");
+            assert!(
+                report.persisted,
+                "call {call}: the config loads and can be written, so the recovery persisted; \
+                 got {:?}",
+                report.message
+            );
+            assert_eq!(report.write_error, None, "call {call}");
+            assert_eq!(
+                report.message, "Config recovery completed. Recovered 1 keys: BIOROUTER_MODEL",
+                "call {call}: no note, byte-identical to the healthy answer"
+            );
+        }
+    }
+
+    /// The F2 measurement, step for step, with the step between the two ends
+    /// that neither the finding nor #217 measured.
+    ///
+    /// 1. A corrupt `config.yaml` beside a usable `.bak`, the file `0o444` and
+    ///    the directory `0o555`: the recovery cannot write what it recovered
+    ///    (M9, fixed by #217).
+    /// 2. The file repaired, the directory still `0o555`: the config loads, so
+    ///    the values are the file's, but a change still cannot be saved. Both
+    ///    halves of that have to be said, and "in memory only" would be false.
+    /// 3. The directory restored: nothing to warn about, three times over.
+    ///
+    /// unix-only because a mode is how the finding made the directory
+    /// unwritable; the portable assertion of step 3 is the test above.
+    #[cfg(unix)]
+    #[test]
+    fn each_recovery_describes_the_config_as_it_is_now() {
+        use std::os::unix::fs::PermissionsExt;
+
+        /// A `TempDir` still at `0o555` cannot delete its own contents, so the
+        /// modes are restored whatever happens.
+        struct RestoreModes(std::path::PathBuf, std::path::PathBuf);
+        impl Drop for RestoreModes {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+                let _ = std::fs::set_permissions(&self.1, std::fs::Permissions::from_mode(0o644));
+            }
+        }
+        let mode = |path: &std::path::Path, bits: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap()
+        };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        // The exact 27 bytes of the measurement.
+        std::fs::write(&config_path, "BIOROUTER_MODEL: [unclosed\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml.bak"),
+            "BIOROUTER_MODEL: gpt-5.5\n",
+        )
+        .unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let _restore = RestoreModes(dir.path().to_path_buf(), config_path.clone());
+        mode(&config_path, 0o444);
+        mode(dir.path(), 0o555);
+        // Root ignores the mode, and then every premise below is false.
+        if std::fs::write(dir.path().join("writability-probe"), "x").is_ok() {
+            eprintln!("skipped: this process can write a 0o555 directory (running as root?)");
+            return;
+        }
+
+        // 1. M9 — #217's half, re-asserted so the steps after it mean something.
+        let unwritable = run_recovery(&config).unwrap();
+        assert!(!unwritable.persisted, "{:?}", unwritable.message);
+        assert!(
+            unwritable.message.contains("in memory only"),
+            "the corrupt bytes are still on disk, so the values really are in memory only; \
+             got {:?}",
+            unwritable.message
+        );
+
+        // 2. The file repaired in place; the directory still refuses writes.
+        mode(&config_path, 0o644);
+        std::fs::write(&config_path, "BIOROUTER_MODEL: gpt-5.5\n").unwrap();
+        let read_only = run_recovery(&config).unwrap();
+        assert!(
+            !read_only.persisted,
+            "a change made now still cannot be saved; got {:?}",
+            read_only.message
+        );
+        assert!(
+            read_only
+                .write_error
+                .as_deref()
+                .is_some_and(|e| e.contains("Permission denied")),
+            "and the reason is the one that holds NOW; got {:?}",
+            read_only.write_error
+        );
+        assert!(
+            !read_only.message.contains("in memory only")
+                && !read_only.message.contains("recover again"),
+            "the file loads and holds these values, so neither \"in memory only\" nor \"the \
+             next start will recover again\" is true any more; got {:?}",
+            read_only.message
+        );
+        assert!(
+            read_only
+                .message
+                .contains("config.yaml loads, but it cannot be written right now"),
+            "what IS true has to be said instead of nothing; got {:?}",
+            read_only.message
+        );
+
+        // 3. The directory restored: F2.
+        mode(dir.path(), 0o755);
+        for call in 1..=3 {
+            let healed = run_recovery(&config).unwrap();
+            assert!(healed.persisted, "call {call}: got {:?}", healed.message);
+            assert_eq!(healed.write_error, None, "call {call}");
+            assert_eq!(
+                healed.message, "Config recovery completed. Recovered 1 keys: BIOROUTER_MODEL",
+                "call {call}"
             );
         }
     }
