@@ -903,6 +903,17 @@ mod tests {
             .expect("the script task completes")
     }
 
+    /// `text` as a JavaScript string literal, for splicing a path into a script.
+    ///
+    /// ⚠ Not `"{path}"`. A Windows path's backslashes are escape sequences in a
+    /// JS string — `\r` becomes a carriage return, `\U` loses its backslash — so
+    /// the call the script makes would name a path that is not the one the
+    /// test means, and a boundary check keyed on that path would silently miss.
+    /// A JSON string literal is a valid JS one, with every backslash escaped.
+    fn js_string(text: &str) -> String {
+        serde_json::to_string(text).expect("a string always serialises")
+    }
+
     /// The value the script handed `record_result`, out of `execute_code`'s
     /// `Result: <json>` text.
     fn recorded(output: &str) -> serde_json::Value {
@@ -971,13 +982,13 @@ mod tests {
     async fn a_denied_card_is_a_catchable_tool_error_and_the_script_goes_on() {
         let f = fixture(BioRouterMode::Approve).await;
         let marker = f.dir.path().join("denied-marker");
+        let command = js_string(&format!("touch '{}'", marker.display()));
         let code = format!(
             r#"import {{ shell }} from "developer";
                let caught = null;
-               try {{ shell({{ command: "touch '{marker}'" }}); }}
+               try {{ shell({{ command: {command} }}); }}
                catch (e) {{ caught = String(e); }}
-               record_result({{ caught, continued: true }});"#,
-            marker = marker.display()
+               record_result({{ caught, continued: true }});"#
         );
         let mut script = run_script(&f, &code, CancellationToken::new()).await;
 
@@ -1021,17 +1032,17 @@ mod tests {
         f.permissions
             .update_user_permission("developer__text_editor", PermissionLevel::AlwaysAllow);
         let marker = f.dir.path().join("never-marker");
+        let command = js_string(&format!("touch '{}'", marker.display()));
         // The developer server's path jail is the process working directory
         // here, which `cargo test` sets to this crate's root — so the next call
         // reads a file that is certainly inside it.
         let code = format!(
             r#"import {{ shell, text_editor }} from "developer";
                let caught = null;
-               try {{ shell({{ command: "touch '{marker}'" }}); }}
+               try {{ shell({{ command: {command} }}); }}
                catch (e) {{ caught = String(e); }}
                const after = text_editor({{ command: "view", path: "Cargo.toml" }});
-               record_result({{ caught, after }});"#,
-            marker = marker.display(),
+               record_result({{ caught, after }});"#
         );
         let mut script = run_script(&f, &code, CancellationToken::new()).await;
 
@@ -1260,13 +1271,13 @@ mod tests {
 
         let f = fixture(BioRouterMode::Approve).await;
         let store = biorouter_mcp::global_memory_dir().join("probe.txt");
+        let command = js_string(&format!("cat '{}'", store.display()));
         let code = format!(
             r#"import {{ shell }} from "developer";
                let caught = null;
-               try {{ shell({{ command: "cat '{store}'" }}); }}
+               try {{ shell({{ command: {command} }}); }}
                catch (e) {{ caught = String(e); }}
-               record_result({{ caught }});"#,
-            store = store.display()
+               record_result({{ caught }});"#
         );
         let mut script = run_script(&f, &code, CancellationToken::new()).await;
 
