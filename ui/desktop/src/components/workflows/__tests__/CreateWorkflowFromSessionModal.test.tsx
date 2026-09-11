@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CreateWorkflowFromSessionModal from '../CreateWorkflowFromSessionModal';
 import { createWorkflow, getActive, listBases, skillCatalogHandler } from '../../../api/sdk.gen';
-import type { CreateWorkflowResponse } from '../../../api/types.gen';
+import type { CreateWorkflowResponse, WorkflowKnowledgeBases } from '../../../api/types.gen';
 import { saveWorkflow } from '../../../workflow/workflow_management';
 import { reachGatedGetActive, USER_ACTION_KEY } from '../../../test/reachGate';
 
@@ -84,6 +84,28 @@ const mockGetActive = vi.mocked(getActive);
 const mockListBases = vi.mocked(listBases);
 const mockSkillCatalog = vi.mocked(skillCatalogHandler);
 const mockSaveWorkflow = vi.mocked(saveWorkflow);
+
+/** Cross a macrotask boundary, so every `.then` already queued has run. */
+async function settleReads() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** Wait for the form, press "Create workflow", and return what was saved. */
+async function saveTheWorkflow(user: ReturnType<typeof userEvent.setup>) {
+  await waitFor(
+    () => {
+      expect(screen.getByTestId('create-workflow-button')).toBeEnabled();
+    },
+    { timeout: 2000 }
+  );
+  await user.click(screen.getByTestId('create-workflow-button'));
+  await waitFor(() => {
+    expect(mockSaveWorkflow).toHaveBeenCalled();
+  });
+  return mockSaveWorkflow.mock.calls[0]?.[0];
+}
 
 describe('CreateWorkflowFromSessionModal', () => {
   const defaultProps = {
@@ -627,27 +649,6 @@ describe('CreateWorkflowFromSessionModal', () => {
         warn.mockRestore();
       });
 
-      /** Cross a macrotask boundary, so every `.then` already queued has run. */
-      async function settleReads() {
-        await act(async () => {
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        });
-      }
-
-      async function saveTheWorkflow(user: ReturnType<typeof userEvent.setup>) {
-        await waitFor(
-          () => {
-            expect(screen.getByTestId('create-workflow-button')).toBeEnabled();
-          },
-          { timeout: 2000 }
-        );
-        await user.click(screen.getByTestId('create-workflow-button'));
-        await waitFor(() => {
-          expect(mockSaveWorkflow).toHaveBeenCalled();
-        });
-        return mockSaveWorkflow.mock.calls[0]?.[0];
-      }
-
       it('captures no knowledge bases rather than every base', async () => {
         const user = userEvent.setup();
         render(<CreateWorkflowFromSessionModal {...defaultProps} sessionId={PRIVATE_CHAT} />);
@@ -720,6 +721,145 @@ describe('CreateWorkflowFromSessionModal', () => {
           default: 'lab-notes',
           visible: ['lab-notes', 'soul'],
         });
+      });
+    });
+  });
+
+  /**
+   * A chat with no primary knowledge base gives a workflow with no primary.
+   *
+   * The modal filled the gap with the first visible base, on the read path and
+   * the generation path alike, and `apply_knowledge_selection`
+   * (`crates/biorouter/src/workflow/runtime.rs`) turns a saved `default` into
+   * `PrimaryUpdate::Set`. So every chat the workflow started got a write target
+   * the chat it was captured from never had. The daemon's rule is the opposite
+   * (`plan_knowledge_selection`): the primary comes only from `default`, and is
+   * never inferred from `visible`.
+   */
+  describe("the workflow's primary knowledge base", () => {
+    const kb = (id: string) => ({ id, name: id, color: '#cf6d47', created_at: '' });
+    /** What the daemon answers for this chat: two bases, and neither is primary. */
+    const NO_PRIMARY = {
+      kb_ids: ['lab-notes', 'soul'],
+      primary_kb: null,
+      active_kb: null,
+      hidden_kbs: ['grant-drafts'],
+    };
+    const generation = (knowledgeBases?: WorkflowKnowledgeBases) => ({
+      data: {
+        workflow: {
+          title: 'Analyzed Workflow Title',
+          description: 'Analyzed description',
+          instructions: 'Analyzed instructions',
+          ...(knowledgeBases ? { knowledge_bases: knowledgeBases } : {}),
+        },
+        error: undefined,
+      },
+      error: undefined,
+      request: new globalThis.Request('http://localhost/test'),
+      response: new globalThis.Response(),
+    });
+    /** Leave the generation's block as the only statement of the chat's selection. */
+    const failTheSelectionRead = () =>
+      mockGetActive.mockResolvedValue({ data: undefined, error: 'Failed to fetch' } as never);
+    let warn: MockInstance;
+
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockListBases.mockResolvedValue({
+        data: [kb('soul'), kb('lab-notes'), kb('grant-drafts')],
+        error: undefined,
+      } as never);
+      mockGetActive.mockResolvedValue({ data: NO_PRIMARY, error: undefined } as never);
+      // No block of its own, so the chat's selection as the modal read it is the
+      // only place the saved workflow can take its bases from.
+      mockCreateWorkflow.mockResolvedValue(generation());
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+      mockListBases.mockResolvedValue({ data: [], error: undefined } as never);
+      mockGetActive.mockResolvedValue({
+        data: { active_kb: null, hidden_kbs: [] },
+        error: undefined,
+      } as never);
+    });
+
+    it('saves no primary when the chat has none', async () => {
+      const user = userEvent.setup();
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+      const saved = await saveTheWorkflow(user);
+
+      expect(mockGetActive).toHaveBeenCalledWith(
+        expect.objectContaining({ query: { session_id: defaultProps.sessionId } })
+      );
+      expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['soul', 'lab-notes'] });
+    });
+
+    // The daemon never sends `default: null` itself: the field is
+    // `skip_serializing_if = "Option::is_none"`, so its own block for a chat
+    // with no primary has no `default` at all. The two mean the same thing.
+    it.each<[string, WorkflowKnowledgeBases]>([
+      ['null', { default: null, visible: ['lab-notes', 'soul'] }],
+      ['absent', { visible: ['lab-notes', 'soul'] }],
+    ])('saves no primary when the generated block has none (default %s)', async (_, block) => {
+      const user = userEvent.setup();
+      failTheSelectionRead();
+      mockCreateWorkflow.mockResolvedValue(generation(block));
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+      const saved = await saveTheWorkflow(user);
+
+      expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['lab-notes', 'soul'] });
+    });
+
+    /**
+     * A primary that is not among the bases the workflow will see is dropped,
+     * not unioned into them the way `plan_knowledge_selection` unions a
+     * `default` missing from `visible`. The daemon does that for a workflow
+     * somebody wrote, whose author plainly meant that `default`. Nobody wrote
+     * this one: a captured primary outside its own set is an inconsistent read.
+     */
+    describe('a primary outside the visible bases', () => {
+      // The modal reads the base list and the selection as two requests, which
+      // can answer in either order, so a base created or deleted between them
+      // leaves the selection naming a primary the list does not hold. Unioning it
+      // in could save a base that no longer exists as the default, and
+      // `set_visible_kbs` refuses a primary outside the set, so every chat the
+      // workflow starts would then fail.
+      it("is not saved from the chat's selection", async () => {
+        const user = userEvent.setup();
+        mockGetActive.mockResolvedValue({
+          data: {
+            kb_ids: ['lab-notes', 'new-notes', 'soul'],
+            primary_kb: 'new-notes',
+            active_kb: 'new-notes',
+            hidden_kbs: ['grant-drafts'],
+          },
+          error: undefined,
+        } as never);
+        render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+        const saved = await saveTheWorkflow(user);
+
+        expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['soul', 'lab-notes'] });
+      });
+
+      // The daemon's block is one locked snapshot whose primary is always a
+      // member of its set (`selection_unlocked`), so this guards against a block
+      // that breaks that; today's daemon never sends one.
+      it('is not saved from the generated block', async () => {
+        const user = userEvent.setup();
+        failTheSelectionRead();
+        mockCreateWorkflow.mockResolvedValue(
+          generation({ default: 'grant-drafts', visible: ['lab-notes', 'soul'] })
+        );
+        render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+        const saved = await saveTheWorkflow(user);
+
+        expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['lab-notes', 'soul'] });
       });
     });
   });

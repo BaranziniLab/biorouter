@@ -26,6 +26,35 @@ interface CreateWorkflowFromSessionModalProps {
 const KNOWLEDGE_SELECTION_UNREAD =
   "Could not load this chat's knowledge bases, so none were selected automatically.";
 
+/**
+ * The primary a captured selection keeps: the one it names, if that base is
+ * among the ones the workflow will see, and otherwise none.
+ *
+ * ⚠ **Never the first visible base.** A saved `default` becomes the primary of
+ * every chat the workflow starts (`apply_knowledge_selection`), and the primary
+ * is where KB-less writes go. The daemon never infers it from `visible`
+ * (`plan_knowledge_selection` in `crates/biorouter/src/workflow/runtime.rs`),
+ * so a chat with no primary gives a workflow with no primary. Falling back to
+ * `visible[0]` gave each of those chats a write target the chat it was captured
+ * from never had.
+ *
+ * A primary outside `visible` is dropped, where the daemon would union it in.
+ * The daemon unions a `default` because somebody wrote that workflow and meant
+ * it; a captured primary outside its own set is an inconsistent read instead.
+ * The generated block is one locked snapshot and never is one, but this
+ * modal's own read is two requests, and a base created or deleted between their
+ * answers leaves the selection naming a base the list lacks. Unioning it could
+ * save a deleted base as the default, which `set_visible_kbs` refuses, so every
+ * chat the workflow starts would fail; after a failed list, it would save the
+ * primary as the only visible base and hide every other one.
+ */
+function primaryAmong(
+  primary: string | null | undefined,
+  visible: readonly string[]
+): string | null {
+  return primary && visible.includes(primary) ? primary : null;
+}
+
 export default function CreateWorkflowFromSessionModal({
   isOpen,
   onClose,
@@ -143,10 +172,8 @@ export default function CreateWorkflowFromSessionModal({
         const visible = bases
           .filter((base) => !selection.hiddenKbIds.has(base.id))
           .map((base) => base.id);
-        const primary = selection.primaryKbId;
-        const defaultId = primary && visible.includes(primary) ? primary : (visible[0] ?? null);
         setWorkflowKnowledgeBaseIds(visible);
-        setDefaultKnowledgeBaseId(defaultId);
+        setDefaultKnowledgeBaseId(primaryAmong(selection.primaryKbId, visible));
       });
 
       // The daemon's catalog, so a skill bundled inside an installed extension
@@ -233,21 +260,11 @@ export default function CreateWorkflowFromSessionModal({
               // modal's own read said, the selection is known now.
               setKnowledgeSelectionUnread(false);
               const visible = workflow.knowledge_bases.visible ?? [];
-              generatedResourcesRef.current.knowledgeBases = {
-                default:
-                  workflow.knowledge_bases.default &&
-                  visible.includes(workflow.knowledge_bases.default)
-                    ? workflow.knowledge_bases.default
-                    : (visible[0] ?? null),
-                visible,
-              };
+              // The daemon sends no `default` at all for a chat with no primary.
+              const defaultId = primaryAmong(workflow.knowledge_bases.default, visible);
+              generatedResourcesRef.current.knowledgeBases = { default: defaultId, visible };
               setWorkflowKnowledgeBaseIds(visible);
-              setDefaultKnowledgeBaseId(
-                workflow.knowledge_bases.default &&
-                  visible.includes(workflow.knowledge_bases.default)
-                  ? workflow.knowledge_bases.default
-                  : (visible[0] ?? null)
-              );
+              setDefaultKnowledgeBaseId(defaultId);
             }
 
             if (workflow.skills && workflow.skills.length > 0) {
