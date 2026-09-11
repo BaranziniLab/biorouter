@@ -57,6 +57,8 @@ describe('startChatFailureNotice', () => {
     expect(startChatFailureNotice(body, { kept: false })).toEqual({
       title: START_CHAT_FAILED_TITLE,
       msg: body.message,
+      // Always copyable: the troubleshooting guide sends people to "Copy error".
+      traceback: body.message,
     });
     expect(startChatFailureNotice(body, { kept: true }).msg).toBe(
       `${body.message} Your message was kept.`

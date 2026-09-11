@@ -21,8 +21,8 @@ import { USER_ACTION_REFUSAL_MARKER } from './userAction';
 export type StartChatFailureNotice = {
   title: string;
   msg: string;
-  /** The daemon's own words, behind "Copy error", when `msg` replaced them. */
-  traceback?: string;
+  /** The daemon's own words, behind the toast's "Copy error". */
+  traceback: string;
 };
 
 export const START_CHAT_FAILED_TITLE = 'Failed to start chat';
@@ -87,6 +87,11 @@ export function startChatFailureNotice(
   }
   // Every other refusal on this route is already written for a person —
   // "Failed to configure the selected provider for the new chat: …" — so it is
-  // shown as it came, rather than replaced by something vaguer.
-  return { title: START_CHAT_FAILED_TITLE, msg: `${daemonText}${keptSentence}` };
+  // shown as it came, rather than replaced by something vaguer. It is still the
+  // traceback too, which is what puts "Copy error" on the toast.
+  return {
+    title: START_CHAT_FAILED_TITLE,
+    msg: `${daemonText}${keptSentence}`,
+    traceback: daemonText,
+  };
 }
