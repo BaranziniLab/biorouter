@@ -70,17 +70,37 @@ pub struct UpdateFromSessionRequest {
 const SUBAGENT_USER_ACTION_REQUIRED: &str =
     "Changing or resuming a subagent from its tab requires proof that the request came from the person at the keyboard.";
 
+/// …and when the daemon holds no user-action key at all.
+///
+/// A separate sentence, per Task 18A's open question 23 and SD-8: telling a
+/// person at a `biorouter serve` page that their request "requires proof" sends
+/// them hunting for a permission this daemon can never grant anyone. It names
+/// the daemon as the reason, in the register `CROSS_AFFILIATION_GRANT_NO_KEY`
+/// and `session_reach::SESSION_REACH_NO_KEY` already use. Since SD-11 this is
+/// also what a keyless daemon answers a Stop or a steer aimed at a subagent's
+/// turn, because those routes gate through [`authorize_agent_control`] there.
+const SUBAGENT_CONTROL_NO_KEY: &str =
+    "This daemon was started without a user-action key, so it cannot verify that a request came \
+     from the person at the keyboard, and changing, resuming, stopping or steering a subagent from \
+     its tab requires that proof. Nothing was changed. This control is unavailable on this \
+     daemon; use the desktop app.";
+
 fn refuse_subagent_unless_user(
     session: &Session,
     headers: &HeaderMap,
 ) -> Result<(), ErrorResponse> {
-    if session.session_type == SessionType::SubAgent && !is_user_action(headers) {
-        return Err(ErrorResponse {
-            message: SUBAGENT_USER_ACTION_REQUIRED.to_string(),
-            status: StatusCode::FORBIDDEN,
-        });
+    if session.session_type != SessionType::SubAgent {
+        return Ok(());
     }
-    Ok(())
+    let message = match user_action_proof(headers) {
+        UserActionProof::Proven => return Ok(()),
+        UserActionProof::Unproven => SUBAGENT_USER_ACTION_REQUIRED,
+        UserActionProof::NoKeyInstalled => SUBAGENT_CONTROL_NO_KEY,
+    };
+    Err(ErrorResponse {
+        message: message.to_string(),
+        status: StatusCode::FORBIDDEN,
+    })
 }
 
 #[async_trait::async_trait]
@@ -146,7 +166,14 @@ async fn read_update_session(
 /// Authorize an HTTP control-plane operation before it can touch an agent or a
 /// queued child handle. The daemon bearer proves only that the caller reached
 /// this process; it does not prove that a person chose to mutate a subagent.
-async fn authorize_agent_control(
+///
+/// ⚠ **Also the turn-control gate on a daemon with no user-action key** (SD-11):
+/// `routes::reply`'s `authorize_turn_control` calls this for `/agent/cancel`,
+/// `/interrupt` and the two continuation routes there, so that stopping a turn
+/// admits exactly the callers `/agent/stop` admits. Tightening this therefore
+/// tightens those four too, which is the point — but it is a change to who may
+/// press Stop in a browser, and `tests/turn_control_no_user_key.rs` will say so.
+pub(crate) async fn authorize_agent_control(
     state: &AppState,
     session_id: &str,
     headers: &HeaderMap,

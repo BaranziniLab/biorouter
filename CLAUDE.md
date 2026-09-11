@@ -1211,6 +1211,14 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   operator-pinned-off extension and its ordinary path needs none. ⚠ Not a security change:
   nothing that was refused becomes permitted. The availability flag is sampled ONCE per roster
   and threaded, so a roster can never half-believe a person is reachable.
+- **Stop and steering answer to the reach gate on a keyless daemon** (SD-11). `/agent/cancel`,
+  `/interrupt` and the two `/agent/continuation/*` routes take the proof on a daemon that holds
+  a key, and on one that holds none gate through `authorize_agent_control` — the *same call*
+  `/agent/stop` makes — via `reply.rs::authorize_turn_control`. Tightening that gate tightens
+  who may press Stop in a browser. A keyless steer is recorded unstamped (never `UserDirect`),
+  and a subagent's tab stays refused. ⚠ Keyless behaviour can only be tested in its own binary
+  (the digest is a process-global `OnceLock`): `cargo test -p biorouter-server --test
+  turn_control_no_user_key`.
 - **Proof of a person is checked at the resolution choke point, not at one route.** Every door
   that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
   CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into

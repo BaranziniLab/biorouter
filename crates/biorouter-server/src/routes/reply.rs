@@ -16,6 +16,10 @@ use biorouter::conversation::Conversation;
 use biorouter::privacy::SessionClassification;
 use biorouter::session::session_manager::ReplaceOutcome;
 use biorouter::session::SessionManager;
+// Through the LIB path, as every route names the user-action digest: `src/routes/`
+// is compiled into the `biorouterd` binary too, where `crate::auth` does not
+// exist, and the digest must be the lib's one static.
+use biorouter_server::auth::{user_action_proof, UserActionProof};
 use bytes::Bytes;
 use futures::Stream;
 use rmcp::model::ServerNotification;
@@ -1753,6 +1757,66 @@ pub struct InterruptAccepted {
     pub turn_id: String,
 }
 
+/// On whose authority a turn-control request was admitted — the answer
+/// [`authorize_turn_control`] gives its four routes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnControlAuthority {
+    /// The request carried the user-action proof: a person acted. The only
+    /// authority a daemon that holds a key accepts, and the only one under which
+    /// a steer is stamped as typed by a person.
+    Person,
+    /// A daemon that holds no key admitted the caller by the gate `/agent/stop`
+    /// already applies there (SD-11). Nothing establishes who the caller is, so
+    /// nothing it sends is attributed to a person.
+    Reach,
+}
+
+/// May this request stop, steer or settle a turn in the chat it names?
+///
+/// The gate of `POST /agent/cancel`, `POST /interrupt`,
+/// `POST /agent/continuation/abandon` and `POST /agent/continuation/recover`,
+/// asked before any of them touches the turn.
+///
+/// * **A daemon that holds a user-action key** — the desktop application's —
+///   takes the proof and nothing else, exactly as before; `Unproven` is the
+///   empty 403 these routes have always answered.
+/// * **A daemon that holds none** — the one `biorouter serve` starts (SD-7), or
+///   a `biorouterd` started by hand — asks what `/agent/stop` asks there:
+///   `routes::agent::authorize_agent_control`, the reach gate and then the
+///   subagent rule. The same call, not a copy of it, so the two routes can never
+///   disagree about who may stop a turn.
+///
+/// ⚠ **Why the keyless arm no longer refuses** (serve decision SD-11). On such a
+/// daemon the proof can only refuse everyone, the person at the browser
+/// included: measured 2026-09-11, the Stop button answered 403 on every chat of
+/// a `serve` host. And the refusal protected nothing. The proof is here so that
+/// a model holding the daemon secret, which AR-11 found recoverable, cannot stop
+/// another chat's turn or put words in a person's mouth; on a keyless daemon the
+/// same caller already stops that turn through `/agent/stop` (this very gate) or,
+/// as a model, `workspace_close { scope: "turn" }`, and already puts text in
+/// front of that chat's model through `/reply`. Admitting it here gives no caller
+/// a capability it lacked.
+///
+/// ⚠ **Why a daemon that holds a key is not relaxed with it.** There the proof
+/// costs the person nothing — the renderer attaches it to every request — and it
+/// is what licenses the `UserDirect` stamp a steer carries.
+async fn authorize_turn_control(
+    state: &AppState,
+    session_id: &str,
+    headers: &HeaderMap,
+) -> Result<TurnControlAuthority, axum::response::Response> {
+    match user_action_proof(headers) {
+        UserActionProof::Proven => Ok(TurnControlAuthority::Person),
+        UserActionProof::Unproven => Err(StatusCode::FORBIDDEN.into_response()),
+        UserActionProof::NoKeyInstalled => {
+            crate::routes::agent::authorize_agent_control(state, session_id, headers)
+                .await
+                .map(|_| TurnControlAuthority::Reach)
+                .map_err(IntoResponse::into_response)
+        }
+    }
+}
+
 /// Soft interrupt: queue a user message to be injected into the session's
 /// running turn at the next safe loop boundary, instead of cancelling the turn
 /// and re-sending the whole context. Returns 202 Accepted; the message surfaces
@@ -1779,7 +1843,9 @@ pub struct InterruptAccepted {
     responses(
         (status = 202, description = "Message queued for injection into the running turn", body = InterruptAccepted),
         (status = 400, description = "Empty message text"),
-        (status = 403, description = "The request was not proven to come from the user"),
+        (status = 403, description = "The request was not proven to come from the user; on a daemon \
+                                      that holds no user-action key, the chat is out of the caller's \
+                                      reach or is a subagent's (SD-11)"),
         (status = 409, description = "No turn is accepting interrupts for this session"),
         (status = 500, description = "Internal server error")
     )
@@ -1788,14 +1854,17 @@ pub async fn interrupt(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<InterruptRequest>,
-) -> Result<(StatusCode, Json<InterruptAccepted>), StatusCode> {
-    if !biorouter_server::auth::is_user_action(&headers) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+) -> Result<(StatusCode, Json<InterruptAccepted>), axum::response::Response> {
+    let authority = authorize_turn_control(&state, &req.session_id, &headers).await?;
     if req.text.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
-    if let Some(turn_id) = req.turn_id.clone() {
+    // Only a person's steer is held for a delegated child that has not started:
+    // the queue stamps it `UserDirect`, which tells that child's parent a human
+    // intervened. A keyless daemon's caller never gets here — a child's chat is
+    // outside its reach (SD-11) — and the condition says so locally rather than
+    // leaving it to be re-derived from the gate.
+    if let (TurnControlAuthority::Person, Some(turn_id)) = (authority, req.turn_id.clone()) {
         let queued_message = crate::workspace::turn::stamp_user_direct_if_subagent(
             Message::user()
                 .with_id(turn_id.clone())
@@ -1817,18 +1886,28 @@ pub async fn interrupt(
     // Cheap early-out only: it avoids constructing an agent for an idle session.
     // It is no longer the guard — see `try_queue_soft_interrupt` below.
     if !state.is_turn_active(&req.session_id) {
-        return Err(StatusCode::CONFLICT);
+        return Err(StatusCode::CONFLICT.into_response());
     }
-    // User-action authentication above is the authority for this attribution.
-    // Keep it independent of the session store: a live agent can legitimately
-    // outlast or race its durable row, but an accepted human steer must never
-    // lose its provenance because that auxiliary lookup failed.
-    let provenance = Some(biorouter::conversation::message::MessageProvenance {
-        kind: biorouter::conversation::message::ProvenanceKind::UserDirect,
-        from_session_id: None,
-        from_session_name: None,
-    });
-    let agent = state.get_agent_for_route(req.session_id).await?;
+    let provenance = match authority {
+        // User-action authentication above is the authority for this
+        // attribution. Keep it independent of the session store: a live agent
+        // can legitimately outlast or race its durable row, but an accepted human
+        // steer must never lose its provenance because that auxiliary lookup
+        // failed.
+        TurnControlAuthority::Person => Some(biorouter::conversation::message::MessageProvenance {
+            kind: biorouter::conversation::message::ProvenanceKind::UserDirect,
+            from_session_id: None,
+            from_session_name: None,
+        }),
+        // SD-11: nothing on a keyless daemon establishes that a person typed
+        // this, so it claims nothing — which is also how `/reply` records the
+        // same caller's message in the same chat.
+        TurnControlAuthority::Reach => None,
+    };
+    let agent = state
+        .get_agent_for_route(req.session_id)
+        .await
+        .map_err(IntoResponse::into_response)?;
     match agent.try_queue_soft_interrupt(req.text, provenance) {
         Ok(turn_id) => Ok((
             StatusCode::ACCEPTED,
@@ -1838,7 +1917,7 @@ pub async fn interrupt(
         )),
         // #69: the turn the caller addressed has ended. Refusing is the honest
         // answer — queueing for whatever runs next is the bug this replaces.
-        Err(InterruptRefused::TurnEnded) => Err(StatusCode::CONFLICT),
+        Err(InterruptRefused::TurnEnded) => Err(StatusCode::CONFLICT.into_response()),
     }
 }
 
@@ -2052,7 +2131,9 @@ const CANCEL_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
         (status = 200, description = "Cancel processed; `cancelled` reports whether a turn was running", body = CancelTurnResponse),
         (status = 400, description = "Stop-and-Send requires an exact turn id and a valid stable continuation owner id"),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "The request was not proven to come from the user"),
+        (status = 403, description = "The request was not proven to come from the user; on a daemon \
+                                      that holds no user-action key, the chat is out of the caller's \
+                                      reach or is a subagent's (SD-11)"),
         (status = 409, description = "A different turn generation is active, another client owns the continuation, or its admission is still settling", body = CancelTurnConflict),
         (status = 504, description = "The cancelled turn did not release the session lock before the safety bound"),
         (status = 500, description = "Internal server error")
@@ -2063,8 +2144,8 @@ pub async fn cancel_turn(
     headers: HeaderMap,
     Json(req): Json<CancelTurnRequest>,
 ) -> axum::response::Response {
-    if !biorouter_server::auth::is_user_action(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(refusal) = authorize_turn_control(&state, &req.session_id, &headers).await {
+        return refusal;
     }
     match cancel_turn_bounded(&state, &req, CANCEL_SETTLEMENT_TIMEOUT).await {
         Ok(response) => Json(response).into_response(),
@@ -2079,7 +2160,9 @@ pub async fn cancel_turn(
     request_body = AbandonContinuationLeaseRequest,
     responses(
         (status = 200, description = "The continuation lease is abandoned or was already resolved", body = AbandonContinuationLeaseResponse),
-        (status = 403, description = "The request was not proven to come from the user"),
+        (status = 403, description = "The request was not proven to come from the user; on a daemon \
+                                      that holds no user-action key, the chat is out of the caller's \
+                                      reach or is a subagent's (SD-11)"),
         (status = 409, description = "The lease is invalid or belongs to another session", body = ContinuationLeaseErrorResponse)
     )
 )]
@@ -2088,8 +2171,8 @@ pub async fn abandon_continuation_lease(
     headers: HeaderMap,
     Json(req): Json<AbandonContinuationLeaseRequest>,
 ) -> axum::response::Response {
-    if !biorouter_server::auth::is_user_action(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(refusal) = authorize_turn_control(&state, &req.session_id, &headers).await {
+        return refusal;
     }
     match state.abandon_continuation_lease(&req.session_id, &req.continuation_lease) {
         Ok(resolution) => {
@@ -2123,7 +2206,9 @@ fn valid_continuation_owner_id(owner_id: &str) -> bool {
     responses(
         (status = 200, description = "The exact pending continuation was taken over or its whole claim group was abandoned", body = RecoverContinuationResponse),
         (status = 400, description = "The continuation owner id is missing or invalid"),
-        (status = 403, description = "The session is out of reach or the request was not proven to come from the user"),
+        (status = 403, description = "The session is out of reach or the request was not proven to \
+                                      come from the user; on a daemon that holds no user-action key, \
+                                      the chat is out of the caller's reach or is a subagent's (SD-11)"),
         (status = 409, description = "The exact continuation generation was already resolved", body = ContinuationLeaseErrorResponse)
     )
 )]
@@ -2132,12 +2217,16 @@ pub async fn recover_continuation(
     headers: HeaderMap,
     Json(req): Json<RecoverContinuationRequest>,
 ) -> axum::response::Response {
-    if !biorouter_server::auth::is_user_action(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(refusal) = authorize_turn_control(&state, &req.session_id, &headers).await {
+        return refusal;
     }
     if !valid_continuation_owner_id(&req.continuation_owner_id) {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    // Asked again on a keyless daemon, where `authorize_turn_control` has already
+    // asked it: this is the route's own reach gate on EVERY daemon, and a second
+    // answer to the same question is the same answer. It stays where the
+    // ordering census (`session_reach::every_gated_route_resolves_…`) pins it.
     if let Err(refusal) = crate::routes::session_reach::session_reach(
         state.session_manager(),
         &req.session_id,

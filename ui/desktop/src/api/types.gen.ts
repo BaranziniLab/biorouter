@@ -4420,7 +4420,7 @@ export type CancelTurnErrors = {
      */
     401: unknown;
     /**
-     * The request was not proven to come from the user
+     * The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
      */
     403: unknown;
     /**
@@ -4457,7 +4457,7 @@ export type AbandonContinuationLeaseData = {
 
 export type AbandonContinuationLeaseErrors = {
     /**
-     * The request was not proven to come from the user
+     * The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
      */
     403: unknown;
     /**
@@ -4490,7 +4490,7 @@ export type RecoverContinuationErrors = {
      */
     400: unknown;
     /**
-     * The session is out of reach or the request was not proven to come from the user
+     * The session is out of reach or the request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
      */
     403: unknown;
     /**
@@ -5652,7 +5652,7 @@ export type InterruptErrors = {
      */
     400: unknown;
     /**
-     * The request was not proven to come from the user
+     * The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
      */
     403: unknown;
     /**

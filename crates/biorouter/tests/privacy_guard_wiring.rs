@@ -322,7 +322,11 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "`POST /agent/resume`, `POST /agent/update_from_session`, and `POST \
                        /agent/update_working_dir`, plus the shared `authorize_agent_control` \
-                       gate used by provider, extension, stop, and restart mutations",
+                       gate used by provider, extension, stop, and restart mutations. On a \
+                       daemon that holds no user-action key that same gate is also the \
+                       turn-control gate of `/agent/cancel`, `/interrupt` and the two \
+                       continuation routes (SD-11), reached from `routes::reply`'s \
+                       `authorize_turn_control` by name — so SD-11 added no call here",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/mod.rs",
@@ -337,7 +341,9 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "`POST /reply`, which runs an agent turn with tools inside the named \
                        session, plus the explicit continuation takeover and group-abandon \
-                       recovery mutation",
+                       recovery mutation. The other turn-control routes in this file reach the \
+                       gate only on a keyless daemon, and through `authorize_agent_control` \
+                       in `routes/agent.rs` (SD-11), which is why they add nothing to this count",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
