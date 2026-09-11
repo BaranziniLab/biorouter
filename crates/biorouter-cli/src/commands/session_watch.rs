@@ -169,7 +169,7 @@ fn non_empty_key(key: Zeroizing<String>) -> Result<Zeroizing<String>> {
 
 /// What the key is wanted for, in the words its prompt and its refusals use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KeyUse {
+enum KeyUse {
     /// `session cancel` — `POST /agent/cancel`.
     Stop,
     /// `session attach`, asked as it joins — `POST /interrupt`.
@@ -245,7 +245,7 @@ impl KeyUse {
 /// tests and by `tests/turn_control_no_user_key.rs`, because this reading
 /// decides whether a person is asked for a key at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum KeyVerdict {
+enum KeyVerdict {
     /// Not refused for want of the key; the status says what did happen.
     NotAsked,
     /// Refused for want of the key: this daemon holds one, and the request
@@ -256,7 +256,7 @@ pub(crate) enum KeyVerdict {
     Refused(String),
 }
 
-pub(crate) fn key_verdict(code: u16, body: &str) -> KeyVerdict {
+fn key_verdict(code: u16, body: &str) -> KeyVerdict {
     if code != 403 {
         return KeyVerdict::NotAsked;
     }
@@ -271,7 +271,7 @@ pub(crate) fn key_verdict(code: u16, body: &str) -> KeyVerdict {
 /// `ErrorResponse` answers `{"message": …}` and the reach gate answers plain
 /// text where a route hands its refusal back directly. Both are the daemon's
 /// own words and are shown as they are.
-pub(crate) fn refusal_sentence(body: &str) -> Option<String> {
+fn refusal_sentence(body: &str) -> Option<String> {
     let text = json_object(body)
         .and_then(|value| value.get("message")?.as_str().map(str::to_string))
         .unwrap_or_else(|| body.to_string());
@@ -2795,70 +2795,81 @@ mod tests {
     /// supplied up front is never followed by a prompt.
     #[tokio::test]
     async fn the_person_is_asked_for_the_key_only_after_the_daemon_wants_it() {
-        let refused = keyless_refusal_body();
+        /// One daemon's answers, and what the terminal must do with them.
+        struct Case {
+            /// What the daemon answers, one per request, in order.
+            answers: Vec<(u16, String)>,
+            /// `--user-action-key-stdin` supplied the key before anything was sent.
+            supplied: bool,
+            /// Whether each request in turn carried the key.
+            held: Vec<bool>,
+            /// How often the person was asked for it.
+            asked: u32,
+            verdict: KeyVerdict,
+        }
+
         let admitted = (200u16, "{}".to_string());
         let wants_key = (403u16, String::new());
-        let in_words = (403u16, refused.clone());
-        // (daemon's answers in order, key supplied up front, key held per request,
-        //  asked, final verdict)
-        let cases: Vec<(Vec<(u16, String)>, bool, Vec<bool>, u32, KeyVerdict)> = vec![
+        let in_words = (403u16, keyless_refusal_body());
+        let cases = vec![
             // A daemon without a key admits it: one request, no key, nobody asked.
-            (
-                vec![admitted.clone()],
-                false,
-                vec![false],
-                0,
-                KeyVerdict::NotAsked,
-            ),
+            Case {
+                answers: vec![admitted.clone()],
+                supplied: false,
+                held: vec![false],
+                asked: 0,
+                verdict: KeyVerdict::NotAsked,
+            },
             // A daemon with one wants it: asked once, and the second request carries it.
-            (
-                vec![wants_key.clone(), admitted.clone()],
-                false,
-                vec![false, true],
-                1,
-                KeyVerdict::NotAsked,
-            ),
+            Case {
+                answers: vec![wants_key.clone(), admitted.clone()],
+                supplied: false,
+                held: vec![false, true],
+                asked: 1,
+                verdict: KeyVerdict::NotAsked,
+            },
             // A daemon without a key refuses in words: shown, and nobody is asked.
-            (
-                vec![in_words.clone()],
-                false,
-                vec![false],
-                0,
-                KeyVerdict::Refused(KEYLESS_REFUSAL.to_string()),
-            ),
+            Case {
+                answers: vec![in_words],
+                supplied: false,
+                held: vec![false],
+                asked: 0,
+                verdict: KeyVerdict::Refused(KEYLESS_REFUSAL.to_string()),
+            },
             // A wrong key: refused again, and the person is not asked twice.
-            (
-                vec![wants_key.clone(), wants_key.clone()],
-                false,
-                vec![false, true],
-                1,
-                KeyVerdict::Wanted,
-            ),
+            Case {
+                answers: vec![wants_key.clone(), wants_key.clone()],
+                supplied: false,
+                held: vec![false, true],
+                asked: 1,
+                verdict: KeyVerdict::Wanted,
+            },
             // Supplied on stdin: sent at once, and never followed by a prompt —
             // not when admitted, and not when refused either.
-            (
-                vec![admitted.clone()],
-                true,
-                vec![true],
-                0,
-                KeyVerdict::NotAsked,
-            ),
-            (
-                vec![wants_key.clone()],
-                true,
-                vec![true],
-                0,
-                KeyVerdict::Wanted,
-            ),
+            Case {
+                answers: vec![admitted],
+                supplied: true,
+                held: vec![true],
+                asked: 0,
+                verdict: KeyVerdict::NotAsked,
+            },
+            Case {
+                answers: vec![wants_key],
+                supplied: true,
+                held: vec![true],
+                asked: 0,
+                verdict: KeyVerdict::Wanted,
+            },
         ];
-        for (answers, supplied, expected_held, expected_asked, expected_verdict) in cases {
+        for case in cases {
             let held = std::cell::RefCell::new(Vec::<bool>::new());
             let asked = std::cell::Cell::new(0);
-            let auth = if supplied {
+            let auth = if case.supplied {
                 DaemonAuth::for_test_with_user_action("s3cret", "", "from-stdin")
             } else {
                 DaemonAuth::for_test("s3cret", "")
             };
+            let answers = &case.answers;
             let (_, verdict, auth) = with_key_if_wanted(
                 auth,
                 |auth: DaemonAuth| {
@@ -2871,10 +2882,10 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(*held.borrow(), expected_held, "answers {answers:?}");
-            assert_eq!(asked.get(), expected_asked, "answers {answers:?}");
-            assert_eq!(verdict, expected_verdict, "answers {answers:?}");
-            assert_eq!(auth.holds_key(), expected_held.last() == Some(&true));
+            assert_eq!(*held.borrow(), case.held, "answers {answers:?}");
+            assert_eq!(asked.get(), case.asked, "answers {answers:?}");
+            assert_eq!(verdict, case.verdict, "answers {answers:?}");
+            assert_eq!(auth.holds_key(), case.held.last() == Some(&true));
         }
     }
 
