@@ -1,8 +1,9 @@
 //! Free-text search over a catalog of named entries — the ONE matcher behind
-//! `skills__searchMarketplaceSkills` and
-//! `extensionmanager__search_marketplace_extensions`. A new catalog search
-//! should call [`rank`] with its own fields rather than grow a matcher of its
-//! own: every copy of this logic so far has drifted into the failure below.
+//! `skills__searchMarketplaceSkills`,
+//! `extensionmanager__search_marketplace_extensions` and the installed-skill
+//! `skills__searchSkills`. A new catalog search should call [`rank`] with its
+//! own fields rather than grow a matcher of its own: every copy of this logic
+//! so far has drifted into the failure below.
 //!
 //! ⚠ **A query is a set of words, not a substring.** The matcher this replaced
 //! asked whether the WHOLE lowercased query occurred inside a single field, so a
@@ -11,27 +12,37 @@
 //! `R scripting ggplot visualization` → `total: 0`, while `ggplot` → 2 and
 //! `r-scripting` → 1. A model composes exactly that phrase on a user's behalf,
 //! so the shape that failed was the common one, and the model went on to tell
-//! the user the marketplace had nothing.
+//! the user the marketplace had nothing. The installed-skill search failed the
+//! same phrase through code of its own — it kept a skill only when EVERY word
+//! was in it — and answered `total: 0` with a ggplot skill and an R-scripting
+//! skill installed.
 //!
 //! So a query is split into terms and an entry is a hit when it matches ANY of
 //! them. The union is deliberate: no single entry has to contain every word a
 //! user happened to say, and an AND over a phrase is the same empty answer with
 //! a different cause. Precision comes from the ranking instead, best first:
 //!
-//! 1. an entry containing the query **verbatim** — what the old matcher found,
-//!    so nothing it returned is lost;
+//! 1. an entry holding the query **as written** — its words, in that order, as
+//!    whole words — which no scatter of the same words outranks;
 //! 2. then by **how many terms** it matched, so an entry matching every term
 //!    precedes one matching some;
 //! 3. then by **where** each term matched — the id or name outweighs a tag,
 //!    which outweighs the description — and how exactly (the whole word, the
 //!    start of one, or inside one);
-//! 4. then registry order, which is by id, so a result never reshuffles.
+//! 4. then the order the entries were given in — the registry's is by id, the
+//!    installed skills' by name — so a result never reshuffles.
 //!
 //! Two rules keep the union from drowning the useful hits, and both were needed
 //! by the measured query itself:
 //!
 //! * **A term under three characters matches whole words only.** `r` has to
-//!   find the R language; as a substring it matched nearly every entry.
+//!   find the R language; as a substring it matched nearly every entry. The
+//!   query as written is held to the same edges — it counts only where it
+//!   starts and ends at a word boundary. Tested as a plain substring it let a
+//!   query that IS one short term back in through every word containing it:
+//!   `R` alone still returned all five fixture skills of the installed-skill
+//!   search, three of them with no matched term at all, and `R scripting`
+//!   ranked "for scripting" above an entry that said both words.
 //! * **Filler words are dropped** ("a skill about R" is `r`), because in a union
 //!   a word like `for` or `about` inflates the term count of every entry whose
 //!   prose happens to use it, which ranked noise above the real hit.
@@ -41,9 +52,9 @@
 pub(crate) enum Weight {
     /// Free prose: a description.
     Prose = 1,
-    /// Curated labels: tags, keywords, a category, an organization.
+    /// Curated labels: tags, keywords, a category, an organization, a bundle.
     Label = 2,
-    /// What the entry is called: its registry id and names.
+    /// What the entry is called: its id and names.
     Name = 3,
 }
 
@@ -111,13 +122,15 @@ const MIN_PARTIAL_CHARS: usize = 3;
 #[derive(Debug)]
 pub struct CatalogSearchHit<'a, T> {
     pub entry: &'a T,
-    /// The terms this entry matched, in query order. Empty only for an entry
-    /// that nothing but the verbatim query found.
+    /// The terms this entry matched, in query order. Empty only when the query
+    /// holds no word at all (`++`), so that nothing but the query as written
+    /// could have found the entry.
     pub matched_terms: Vec<String>,
 }
 
 /// A ranked search: the terms the query was split into, and every entry that
-/// matched at least one of them (or the whole query verbatim), best first.
+/// matched at least one of them (or holds the whole query as written), best
+/// first.
 #[derive(Debug)]
 pub struct CatalogSearch<'a, T> {
     /// What the query was read as, after filler words were dropped. Reported
@@ -214,11 +227,45 @@ fn term_strength(term: &str, word: &str) -> u32 {
     }
 }
 
+/// Does `text` hold `phrase` as written — starting and ending at a word
+/// boundary, not inside a longer word? `r scripting` is in "R scripting" but
+/// not in "for scripting", where its `r` is the tail of `for`. Both are
+/// lowercase already.
+///
+/// An edge of `phrase` that is not a letter or digit needs no boundary: it is
+/// one, so `++` is written in "c++".
+///
+/// Every character position is tried, not only the occurrences `find` would
+/// step through, because a refused occurrence can overlap an accepted one:
+/// `a a` in "ba a a" is written only from the second `a`.
+fn written_in(text: &str, phrase: &str) -> bool {
+    let starts_word = phrase.chars().next().is_some_and(char::is_alphanumeric);
+    let ends_word = phrase
+        .chars()
+        .next_back()
+        .is_some_and(char::is_alphanumeric);
+    let mut before = None;
+    for (start, current) in text.char_indices() {
+        if let Some(rest) = text.get(start..).filter(|rest| rest.starts_with(phrase)) {
+            let after = rest
+                .get(phrase.len()..)
+                .and_then(|tail| tail.chars().next());
+            let opens = !starts_word || !before.is_some_and(char::is_alphanumeric);
+            let closes = !ends_word || !after.is_some_and(char::is_alphanumeric);
+            if opens && closes {
+                return true;
+            }
+        }
+        before = Some(current);
+    }
+    false
+}
+
 /// Rank `entries` against `query`. `fields` names the text of one entry that
 /// is searched, and how much a match there counts.
 ///
-/// An empty (or all-whitespace) query is the browse case: every entry, in
-/// registry order.
+/// An empty (or all-whitespace) query is the browse case: every entry, in the
+/// order given.
 pub(crate) fn rank<'a, T>(
     query: &str,
     noise: &[&str],
@@ -243,9 +290,9 @@ pub(crate) fn rank<'a, T>(
     let mut ranked = Vec::new();
     for entry in entries {
         let fields = fields(entry);
-        let verbatim = fields
+        let written = fields
             .iter()
-            .any(|(text, _)| text.to_lowercase().contains(&phrase));
+            .any(|(text, _)| written_in(&text.to_lowercase(), &phrase));
         let entry_words: Vec<(String, u32)> = fields
             .iter()
             .flat_map(|(text, weight)| words(text).map(move |word| (word, *weight as u32)))
@@ -264,9 +311,9 @@ pub(crate) fn rank<'a, T>(
                 score += best;
             }
         }
-        if verbatim || !matched_terms.is_empty() {
+        if written || !matched_terms.is_empty() {
             ranked.push((
-                (verbatim, matched_terms.len(), score),
+                (written, matched_terms.len(), score),
                 CatalogSearchHit {
                     entry,
                     matched_terms,
@@ -274,7 +321,7 @@ pub(crate) fn rank<'a, T>(
             ));
         }
     }
-    // Stable, and descending on the key: equal ranks keep registry order.
+    // Stable, and descending on the key: equal ranks keep the order given.
     ranked.sort_by(|(left, _), (right, _)| right.cmp(left));
     CatalogSearch {
         terms,
@@ -377,6 +424,44 @@ mod tests {
         );
     }
 
+    /// The same rule for a query that IS one short term. The whole-query check
+    /// used to be a plain substring test, so `r` alone found every entry with
+    /// the letter anywhere — `complex-plots` through "Draws", `prose-only`
+    /// through its own name — and the rule above held only inside a longer
+    /// phrase.
+    #[test]
+    fn a_one_letter_query_matches_whole_words_only() {
+        let search = rank("R", &[], ENTRIES, fields);
+        assert_eq!(ids(&search), ["r-scripting"]);
+        assert_eq!(search.hits[0].matched_terms, ["r"]);
+    }
+
+    /// The query as written outranks any count of separate words, so it has to
+    /// be written there: `r scripting` inside "for scripting" is the tail of
+    /// `for` and then a word. Read as a substring it ranked an entry matching
+    /// one of the two words above one matching both.
+    #[test]
+    fn a_phrase_found_only_inside_other_words_is_not_the_query_as_written() {
+        let entries = [
+            Entry {
+                id: "shell-snippets",
+                name: "Shell Snippets",
+                description: "Snippets for scripting the shell.",
+                tags: &[],
+            },
+            Entry {
+                id: "tidy-style",
+                name: "Tidy Style",
+                description: "Scripting conventions for R.",
+                tags: &["R"],
+            },
+        ];
+        let search = rank("R scripting", &[], &entries, fields);
+        assert_eq!(ids(&search), ["tidy-style", "shell-snippets"]);
+        assert_eq!(search.hits[0].matched_terms, ["r", "scripting"]);
+        assert_eq!(search.hits[1].matched_terms, ["scripting"]);
+    }
+
     #[test]
     fn a_long_term_matches_inside_a_word_and_a_plural_finds_its_singular() {
         assert_eq!(
@@ -413,17 +498,56 @@ mod tests {
         );
     }
 
-    /// Everything the substring matcher found is still found: a query that
-    /// occurs verbatim in a field is a hit even when its terms are too short
-    /// to match on their own.
     #[test]
-    fn a_verbatim_occurrence_is_still_a_hit() {
-        let search = rank("s p", &[], ENTRIES, fields);
-        assert!(search.is_empty(), "neither `s` nor `p` is a whole word");
+    fn a_phrase_is_written_only_between_word_boundaries() {
+        assert!(written_in("r scripting", "r scripting"));
+        assert!(written_in("tidy code for r.", "r"), "the second `r`");
+        assert!(!written_in("snippets for scripting", "r scripting"));
+        assert!(!written_in("tidyverse", "dy"));
+        assert!(
+            written_in("ba a a", "a a"),
+            "written at the second `a`, which overlaps the refused first occurrence"
+        );
+        assert!(
+            written_in("c++ code", "++"),
+            "an edge that is not a letter or digit is a boundary itself"
+        );
+    }
 
-        let search = rank("dy", &[], ENTRIES, fields);
-        assert_eq!(ids(&search), ["r-scripting"], "`dy` inside `Tidyverse`");
-        assert!(search.hits[0].matched_terms.is_empty());
+    /// The query as written — its words, in order, as words — outranks any
+    /// scatter of the same words, even one in a weightier field. A fragment of
+    /// a word is not the query as written, though: `dy` inside `Tidyverse` is
+    /// exactly the substring the short-term rule refuses.
+    #[test]
+    fn the_query_as_written_ranks_first_but_only_as_whole_words() {
+        let entries = [
+            Entry {
+                id: "code-tidy",
+                name: "Code Tidy",
+                description: "Formatting rules.",
+                tags: &[],
+            },
+            Entry {
+                id: "styler",
+                name: "Styler",
+                description: "Writes tidy code.",
+                tags: &[],
+            },
+        ];
+        assert_eq!(
+            ids(&rank("tidy code", &[], &entries, fields)),
+            ["styler", "code-tidy"],
+            "both hold both words, in the name or the prose; only one says `tidy code`"
+        );
+
+        assert!(
+            rank("dy", &[], ENTRIES, fields).is_empty(),
+            "`dy` is inside `Tidyverse`, not a word of it"
+        );
+        assert!(
+            rank("s p", &[], ENTRIES, fields).is_empty(),
+            "neither `s` nor `p` is a whole word"
+        );
     }
 
     #[test]

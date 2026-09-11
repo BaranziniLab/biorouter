@@ -4162,6 +4162,23 @@ Content
         assert_eq!(page_names(&second), ["r-scripting"]);
     }
 
+    /// `r` has to mean the R language, and as a substring it is in nearly every
+    /// word. Two measurements against these fixtures, both returning all five
+    /// skills: the AND-of-substrings search, and then the shared matcher
+    /// itself, whose whole-query check was a substring test — the three extra
+    /// rows came back with `matchedTerms: []`, found by the letter alone.
+    #[tokio::test]
+    async fn a_one_letter_installed_skill_query_matches_whole_words_only() {
+        let (_root, client) = client_over_installed(F5_INSTALLED);
+
+        let page = search_installed(&client, serde_json::json!({ "query": "R" })).await;
+        assert_eq!(
+            page_names(&page),
+            ["r-scripting", "ggplot"],
+            "the name says R, then the description does; nothing else says R: {page:#}"
+        );
+    }
+
     /// A search that matches nothing explains itself instead of returning the
     /// bare `total: 0` that let a model tell the user no skill was installed
     /// for the job, and says how many skills the conversation could have
