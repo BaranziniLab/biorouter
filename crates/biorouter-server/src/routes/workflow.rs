@@ -150,8 +150,13 @@ pub struct WorkflowToYamlResponse {
     path = "/workflows/create",
     request_body = CreateWorkflowRequest,
     responses(
-        (status = 200, description = "Workflow created successfully", body = CreateWorkflowResponse),
+        (status = 200, description = "Workflow created successfully. Its `knowledge_bases` names \
+                                      only the bases this caller may open", body = CreateWorkflowResponse),
         (status = 400, description = "Bad request"),
+        (status = 403, description = "Refused by a privacy boundary: `session_id` names a chat \
+                                      this caller may not reach, answered with the same refusal, \
+                                      word for word, that `GET /sessions/{session_id}` gives \
+                                      (body = plain text)"),
         (status = 412, description = "Precondition failed - Agent not available"),
         (status = 500, description = "Internal server error")
     ),
@@ -159,7 +164,58 @@ pub struct WorkflowToYamlResponse {
 )]
 async fn create_workflow(
     State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<CreateWorkflowRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // Issue #56, QA 2026-09-10 (F0's sweep). This loads the named chat's WHOLE
+    // transcript and hands back a workflow a model wrote from it — the
+    // transcript again, summarised — so it asks the read's gate first, before
+    // the chat is loaded or an agent is built for it.
+    if let Err(refusal) = crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &request.session_id,
+        &headers,
+    )
+    .await
+    {
+        return refusal.into_response();
+    }
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    match workflow_from_session(&state, request).await {
+        Ok(Json(mut response)) => {
+            // The enrichment records the chat's visible knowledge bases, which
+            // can include a private base even for a public chat. Named only as
+            // far as this caller may open them — the rule `GET
+            // /knowledge/active` applies to the same list.
+            if let Some(bases) = response
+                .workflow
+                .as_mut()
+                .and_then(|workflow| workflow.knowledge_bases.as_mut())
+            {
+                let root = state.knowledge_service.root();
+                bases
+                    .visible
+                    .retain(|id| caller.reach_knowledge_base(root, id).is_ok());
+                if bases
+                    .default
+                    .as_deref()
+                    .is_some_and(|id| caller.reach_knowledge_base(root, id).is_err())
+                {
+                    bases.default = None;
+                }
+            }
+            Json(response).into_response()
+        }
+        Err(status) => status.into_response(),
+    }
+}
+
+/// The body of [`create_workflow`], once the caller may address the chat.
+async fn workflow_from_session(
+    state: &Arc<AppState>,
+    request: CreateWorkflowRequest,
 ) -> Result<Json<CreateWorkflowResponse>, StatusCode> {
     tracing::info!(
         "Workflow creation request received for session_id: {}",

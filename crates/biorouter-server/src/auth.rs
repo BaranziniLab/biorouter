@@ -127,6 +127,78 @@ pub fn is_user_action(headers: &axum::http::HeaderMap) -> bool {
     matches!(user_action_proof(headers), UserActionProof::Proven)
 }
 
+/// The standing a `biorouter serve` daemon gives its OWN web interface (issue
+/// #56, the QA follow-up of 2026-09-10 that closed H2 and M1).
+///
+/// A serve daemon holds no user-action digest (SD-7) and pins the provider for
+/// every session it runs (SD-1), so the tier the operator's configured provider
+/// implies is the only capability its interface can be said to have. This keeps
+/// that tier beside the browser token whose cookie marks a request as coming
+/// from the document this daemon served — which is how a request from the
+/// operator's browser is told from one that merely holds the secret.
+///
+/// ⚠ **It widens nothing that was refused.** It is read only by the listing and
+/// knowledge-base gates in `routes::session_reach`, which were open to this
+/// interface before they existed; the transcript gate, `session_reach` itself,
+/// never reads it. A serve daemon's browser therefore keeps exactly the reach it
+/// had, and a caller holding only the secret loses it.
+///
+/// ⚠ **Not authentication, and not a proof of a person.** `biorouter serve`
+/// hands this daemon the token in its environment, beside the secret, so a
+/// caller that can read one can read the other — the residual `X-Caller-Provider`
+/// already carries (#47). It never satisfies a proof-of-user check: SD-1 and
+/// SD-8 stand exactly as they were.
+struct ServedOperator {
+    browser_token: String,
+    capability: biorouter::privacy::ProviderTier,
+}
+
+static SERVED_OPERATOR: OnceLock<ServedOperator> = OnceLock::new();
+
+/// Record a serve daemon's operator standing. Called once, from
+/// `commands::agent::run`, and only when the web interface is served behind a
+/// browser token: a `--no-token` daemon cannot tell its own interface from any
+/// other local caller, so it gives none.
+pub fn install_served_operator(
+    browser_token: String,
+    capability: biorouter::privacy::ProviderTier,
+) {
+    let _ = SERVED_OPERATOR.set(ServedOperator {
+        browser_token,
+        capability,
+    });
+}
+
+/// The capability a request earns by presenting the served document's cookie:
+/// the operator's tier on a serve daemon, `Public` for every other request on
+/// every other daemon.
+pub fn served_operator_capability(
+    headers: &axum::http::HeaderMap,
+) -> biorouter::privacy::ProviderTier {
+    match SERVED_OPERATOR.get() {
+        Some(operator)
+            if served_document_matches(
+                crate::routes::web_ui::session_cookie(headers),
+                &operator.browser_token,
+            ) =>
+        {
+            operator.capability
+        }
+        _ => biorouter::privacy::ProviderTier::Public,
+    }
+}
+
+/// Does the presented cookie carry the served document's token?
+///
+/// Pure, so the rule is testable without the process global; compared without
+/// an early return, the same way the secret is. An empty token matches nothing.
+pub fn served_document_matches(presented: Option<&str>, browser_token: &str) -> bool {
+    match presented {
+        Some(presented) if !browser_token.is_empty() => secret_matches(presented, browser_token),
+        _ => false,
+    }
+}
+
 fn get_failed_attempts() -> &'static Mutex<HashMap<String, Vec<Instant>>> {
     FAILED_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -702,6 +774,21 @@ mod tests {
         assert!(!is_unauthenticated_path("/tool_bridge"));
         // A prefix that merely looks similar is not exempt.
         assert!(!is_unauthenticated_path("/tool_bridgeX/abc"));
+    }
+
+    /// The serve daemon's operator standing is earned by the served document's
+    /// cookie and by nothing else: the whole token, not a prefix; not an empty
+    /// one; not an absent one.
+    #[test]
+    fn only_the_served_documents_cookie_earns_the_operator_standing() {
+        use super::served_document_matches;
+        assert!(served_document_matches(Some("0123abcd"), "0123abcd"));
+        assert!(!served_document_matches(Some("0123abc"), "0123abcd"));
+        assert!(!served_document_matches(Some(""), "0123abcd"));
+        assert!(!served_document_matches(None, "0123abcd"));
+        // An empty token is "no token", and "no token" earns nothing — never
+        // the equality of two empty strings.
+        assert!(!served_document_matches(Some(""), ""));
     }
 
     #[test]

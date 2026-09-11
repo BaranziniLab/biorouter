@@ -34,15 +34,16 @@ use utoipa::ToSchema;
 
 /// Build the knowledge router.  The router owns an `Arc<KnowledgeService>` directly so
 /// it can be tested without constructing a full `AppState`.
+///
+/// ⚠ **Every route that names a base by `{id}` lives in `base_routes`, and
+/// nothing else does.** That sub-router carries
+/// `session_reach::gate_knowledge_base` as a `route_layer`, so each of its
+/// routes — and any added to it later — answers a caller who may not reach the
+/// named base with the same refusal before its handler runs (issue #56, QA
+/// 2026-09-10 H2). A route that names a base and is registered on the outer
+/// router instead is ungated: put it here.
 pub fn router(svc: Arc<KnowledgeService>) -> Router {
-    Router::new()
-        .route("/bases", get(list_bases).post(create_base))
-        .route(
-            "/bases/import",
-            post(import_brkb).layer(DefaultBodyLimit::max(
-                biorouter_mcp::knowledge::brkb::MAX_ARCHIVE_HTTP_BODY_BYTES,
-            )),
-        )
+    let base_routes = Router::new()
         .route(
             "/bases/{id}",
             get(get_base).put(update_base).delete(delete_base),
@@ -60,7 +61,6 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/{id}/history", get(list_history))
         .route("/bases/{id}/preview", post(preview_state))
         .route("/bases/{id}/restore", post(restore_state))
-        .route("/expand-path", post(expand_path))
         .route("/bases/{id}/raw", post(add_raw_source))
         .route("/bases/{id}/ingest", post(ingest))
         .route("/bases/{id}/ingest-conversation", post(ingest_conversation))
@@ -73,8 +73,23 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             "/bases/{id}/sources/{sid}/credibility",
             put(override_credibility),
         )
+        .route_layer(axum::middleware::from_fn_with_state(
+            svc.clone(),
+            crate::routes::session_reach::gate_knowledge_base,
+        ));
+
+    Router::new()
+        .route("/bases", get(list_bases).post(create_base))
+        .route(
+            "/bases/import",
+            post(import_brkb).layer(DefaultBodyLimit::max(
+                biorouter_mcp::knowledge::brkb::MAX_ARCHIVE_HTTP_BODY_BYTES,
+            )),
+        )
+        .route("/expand-path", post(expand_path))
         .route("/active", get(get_active).post(set_active))
         .route("/check-model", post(check_model))
+        .merge(base_routes)
         .with_state(svc)
 }
 
@@ -440,8 +455,13 @@ pub struct LintBody {
 /// store already answers — and it would also appear on `kb_list_bases`, a
 /// model-facing tool whose payload Task 10D's metadata register governs.
 ///
-/// This route is user-facing: the renderer is the only caller, and Task 10C
-/// already removes private bases from the model's own listing entirely.
+/// ⚠ **"The renderer is the only caller" was this doc's premise, and QA
+/// measured it false on 2026-09-10 (H2):** a public chat's shell recovered the
+/// daemon secret and read this list, private bases included. So the rows are
+/// now the bases the caller could open — the desktop app, which sends the
+/// user's proof, still sees every one, with its tier — and a private base is
+/// OMITTED for anyone else, as Task 10C already omits it from the model's own
+/// listing: a base's id and name are user-authored content.
 #[derive(Serialize, ToSchema)]
 pub struct KbListEntry {
     #[serde(flatten)]
@@ -451,17 +471,28 @@ pub struct KbListEntry {
 
 #[utoipa::path(
     get, path = "/knowledge/bases",
-    responses((status = 200, description = "List of knowledge bases", body = Vec<KbListEntry>))
+    responses((status = 200, description = "The knowledge bases this caller may open: every base \
+                                            for the desktop app (the user-action proof) or a \
+                                            caller stating a private provider, the public ones \
+                                            for anyone else. A private base is omitted, never \
+                                            redacted.", body = Vec<KbListEntry>))
 )]
 pub async fn list_bases(
     State(svc): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<KbListEntry>>, (StatusCode, String)> {
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
     let bases = svc
         .list_bases()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(
         bases
             .into_iter()
+            .filter(|manifest| {
+                caller
+                    .reach_knowledge_base(svc.root(), &manifest.id)
+                    .is_ok()
+            })
             .map(|manifest| KbListEntry {
                 tier: tier::entry(svc.root(), &manifest.id).tier,
                 manifest,
@@ -1115,19 +1146,28 @@ pub struct GetActiveQuery {
     pub session_id: Option<String>,
 }
 
-fn selection_response(
-    svc: &KnowledgeService,
-    session_id: Option<&str>,
-) -> Result<ActiveKbResponse, (StatusCode, String)> {
-    let selection = svc
-        .selection(session_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    Ok(ActiveKbResponse {
-        kb_ids: selection.kb_ids,
-        active_kb: selection.primary_kb.clone(),
-        primary_kb: selection.primary_kb,
-        hidden_kbs: selection.hidden_kbs,
-    })
+/// A selection as THIS caller may see it (issue #56, QA 2026-09-10 H2).
+///
+/// The second listing of base ids beside `GET /knowledge/bases`, and filtered
+/// by the same gate: a base the caller cannot reach is dropped from the set and
+/// from the hidden list, and a primary on one reads `null`. The result is the
+/// selection the Knowledge view would hold if those bases did not exist — which
+/// is exactly what the list it was given says — so nothing in it points at a
+/// base the caller would then be refused. For the desktop app, which sends the
+/// user's proof, nothing is dropped.
+fn active_response(
+    selection: biorouter_mcp::knowledge::service::KbSelection,
+    root: &std::path::Path,
+    caller: &crate::routes::session_reach::HttpCaller,
+) -> ActiveKbResponse {
+    let reachable = |id: &String| caller.reach_knowledge_base(root, id).is_ok();
+    let primary_kb = selection.primary_kb.filter(reachable);
+    ActiveKbResponse {
+        kb_ids: selection.kb_ids.into_iter().filter(reachable).collect(),
+        active_kb: primary_kb.clone(),
+        primary_kb,
+        hidden_kbs: selection.hidden_kbs.into_iter().filter(reachable).collect(),
+    }
 }
 
 #[utoipa::path(
@@ -1136,15 +1176,23 @@ fn selection_response(
         ("session_id" = Option<String>, Query, description = "Optional chat session id for the session-scoped selection"),
     ),
     responses(
-        (status = 200, description = "The session's knowledge bases and its primary", body = ActiveKbResponse),
+        (status = 200, description = "The session's knowledge bases and its primary, showing only \
+                                      the bases this caller may open: a private base is omitted \
+                                      from both lists, and a private primary reads null, for a \
+                                      caller without the user's proof or a private capability", body = ActiveKbResponse),
         (status = 403, description = "The named session is outside the caller's privacy reach")
     )
 )]
 pub async fn get_active(
     State(svc): State<Arc<KnowledgeService>>,
     Query(q): Query<GetActiveQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    Ok(Json(selection_response(&svc, q.session_id.as_deref())?))
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    let selection = svc
+        .selection(q.session_id.as_deref())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(active_response(selection, svc.root(), &caller)))
 }
 
 #[utoipa::path(
@@ -1160,30 +1208,42 @@ pub async fn get_active(
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
                                       `session_id` names a private chat (or an absent one, and an \
                                       unproven caller is told the same thing for both) and the \
-                                      request carried no proof it came from the user \
+                                      request carried no proof it came from the user; or \
+                                      `primary_kb` names a knowledge base this caller may not \
+                                      reach, answered exactly as a base that does not exist \
                                       (body = plain text)"),
     )
 )]
 pub async fn set_active(
     State(svc): State<Arc<KnowledgeService>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: HeaderMap,
     Json(body): Json<SetActiveBody>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
     let primary = body
         .primary_update()
         .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    // Naming a base the caller may not reach is answered by the gate, in the
+    // gate's words, before the service sees it — the same refusal a base that
+    // does not exist gets, so pinning is not a way to ask which ids are private.
+    if let PrimaryUpdate::Set(id) = primary {
+        caller
+            .reach_knowledge_base(svc.root(), id)
+            .map_err(|refusal| (refusal.status, refusal.message.to_string()))?;
+    }
+    // A caller changes only what it can see: see `set_selection_within`. For a
+    // caller that reaches every base this is exactly `set_selection`.
+    let reachable = |id: &str| caller.reach_knowledge_base(svc.root(), id).is_ok();
     let selection = svc
-        .set_selection(
+        .set_selection_within(
             body.session_id.as_deref(),
             body.hidden_kbs.as_deref(),
             primary,
+            &reachable,
         )
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    Ok(Json(ActiveKbResponse {
-        kb_ids: selection.kb_ids,
-        active_kb: selection.primary_kb.clone(),
-        primary_kb: selection.primary_kb,
-        hidden_kbs: selection.hidden_kbs,
-    }))
+    Ok(Json(active_response(selection, svc.root(), &caller)))
 }
 
 #[utoipa::path(
@@ -1716,6 +1776,8 @@ pub async fn ingest(
 pub async fn ingest_conversation(
     State(svc): State<Arc<KnowledgeService>>,
     Path(id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: HeaderMap,
     Json(body): Json<IngestConversationBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     if body.session_ids.is_empty() {
@@ -1734,6 +1796,21 @@ pub async fn ingest_conversation(
     // and one binding is what makes that visible instead of argued.
     let session_manager =
         std::sync::Arc::new(biorouter::session::session_manager::SessionManager::instance());
+
+    // Issue #56, QA 2026-09-10 H2. This route NAMES chats, and streams what the
+    // macro makes of them back to whoever asked — so the caller must be able to
+    // reach each one, by the gate `GET /sessions/{id}` uses and in its words,
+    // before a single transcript is read. Gate G below is a different question
+    // (may the MODEL read them), and a caller holding only the daemon secret can
+    // name a private model: without this it read a private chat through one.
+    // Every id is checked before any is loaded, so the refusal cannot say which
+    // of several named chats exist.
+    for sid in &body.session_ids {
+        crate::routes::session_reach::session_reach(&session_manager, sid, &headers)
+            .await
+            .map_err(|refusal| (refusal.status, refusal.message.to_string()))?;
+    }
+
     let mut sessions = Vec::new();
     for sid in &body.session_ids {
         match session_manager.get_session(sid, true).await {

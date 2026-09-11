@@ -1114,6 +1114,10 @@ async fn update_from_session(
     responses(
         (status = 200, description = "Tools retrieved successfully", body = Vec<ToolInfo>),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary: `session_id` names a chat \
+                                      this caller may not reach, answered with the same refusal, \
+                                      word for word, that `GET /sessions/{session_id}` gives \
+                                      (body = plain text)"),
         (status = 408, description = "Extension timed out while loading for settings"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
@@ -1122,6 +1126,34 @@ async fn update_from_session(
 async fn get_tools(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetToolsQuery>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    // Issue #56, QA 2026-09-10 M2. Naming a private chat here handed a caller
+    // holding only the daemon secret that chat's private-extension tool names,
+    // while `add_extension` on the same chat refused it — and, worse, `get_agent`
+    // below MINTS an agent for the named chat, loading its extensions, on that
+    // caller's say-so. So the read's own gate runs first. The comment further
+    // down, about Gate E, is about which tools a MODEL is shown; this is about
+    // whether the CALLER may address the chat at all, and the empty id — the
+    // settings page's one global extension — names no chat and is not gated.
+    if !query.session_id.is_empty() {
+        if let Err(refusal) = crate::routes::session_reach::session_reach(
+            state.session_manager(),
+            &query.session_id,
+            &headers,
+        )
+        .await
+        {
+            return refusal.into_response();
+        }
+    }
+    permission_editor_tools(state, query).await.into_response()
+}
+
+/// The body of [`get_tools`], once the caller may address the named chat.
+async fn permission_editor_tools(
+    state: Arc<AppState>,
+    query: GetToolsQuery,
 ) -> Result<Json<Vec<ToolInfo>>, StatusCode> {
     let config = Config::global();
     let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
@@ -1248,12 +1280,35 @@ async fn get_tools(
     responses(
         (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
+                                      word, that `GET /sessions/{session_id}` gives (body = plain \
+                                      text)"),
         (status = 424, description = "Agent not initialized")
     )
 )]
 async fn get_callable_tool_count(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CallableToolCountQuery>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    // Issue #56, QA 2026-09-10 — M2's sibling: the same named chat, and the
+    // same agent minted for it below, so the same gate before either.
+    if let Err(refusal) = crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &query.session_id,
+        &headers,
+    )
+    .await
+    {
+        return refusal.into_response();
+    }
+    model_visible_tool_count(state, query).await.into_response()
+}
+
+/// The body of [`get_callable_tool_count`], once the caller may address the chat.
+async fn model_visible_tool_count(
+    state: Arc<AppState>,
+    query: CallableToolCountQuery,
 ) -> Result<Json<CallableToolCountResponse>, StatusCode> {
     let session_id = query.session_id;
     let child_initializing = biorouter::agents::subagent_handle::is_child_initializing(&session_id);

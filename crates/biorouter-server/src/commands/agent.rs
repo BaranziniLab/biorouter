@@ -70,6 +70,34 @@ async fn read_user_action_digest() -> Option<[u8; 32]> {
     <[u8; 32]>::try_from(bytes.as_slice()).ok()
 }
 
+/// The tier SD-1 pins for every session a serve daemon runs: the DECLARED tier
+/// of the provider the operator configured, reduced with `least` over the lead
+/// provider when a lead model is configured — the reduction a bound lead/worker
+/// pair gets, since its transcript reaches both.
+///
+/// Read ONCE, at launch. The operator made this choice at the terminal before
+/// anyone opened a tab (SD-1), and `config.yaml` is agent-writable (DR-17), so a
+/// value re-read per request would be one a model could raise by editing a file.
+/// Unconfigured, and a name this install does not publish, both read Public —
+/// the fail-safe side, and the reach this interface had for every private chat
+/// before it had any.
+async fn served_operator_capability() -> biorouter::privacy::ProviderTier {
+    use biorouter::privacy::ProviderTier;
+    use biorouter::workflow::privacy::declared_provider_tier;
+    let config = biorouter::config::Config::global();
+    let Ok(provider) = config.get_biorouter_provider() else {
+        return ProviderTier::Public;
+    };
+    let mut capability = declared_provider_tier(&provider).await;
+    if config.get_param::<String>("BIOROUTER_LEAD_MODEL").is_ok() {
+        let lead = config
+            .get_param::<String>("BIOROUTER_LEAD_PROVIDER")
+            .unwrap_or_else(|_| provider.clone());
+        capability = ProviderTier::least(capability, declared_provider_tier(&lead).await);
+    }
+    capability
+}
+
 pub async fn run() -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
 
@@ -173,6 +201,21 @@ pub async fn run() -> Result<()> {
             // there, so its absence here means a loopback bind whose launcher
             // chose not to require one.
             let browser_token = std::env::var("BIOROUTER_BROWSER_TOKEN").ok();
+            // Issue #56, QA 2026-09-10 (SD-9): the interface this daemon serves is
+            // the operator's, and SD-1 pins the provider every session here runs
+            // on — so that provider's tier is the reach the listing and
+            // knowledge-base gates give a request carrying the served document's
+            // cookie. Without a token there is no such cookie, and the interface
+            // cannot be told from any other local caller, so it gets none.
+            if let Some(token) = browser_token.as_deref().filter(|t| !t.is_empty()) {
+                let capability = served_operator_capability().await;
+                info!(
+                    ?capability,
+                    "the served interface is given the configured provider's tier on listings \
+                     and knowledge bases"
+                );
+                biorouter_server::auth::install_served_operator(token.to_string(), capability);
+            }
             let ui = crate::routes::web_ui::WebUi::new(&web_dir, &secret_key, browser_token)
                 .map_err(|e| {
                     anyhow::anyhow!(

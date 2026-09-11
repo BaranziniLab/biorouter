@@ -318,11 +318,28 @@ const REGISTRY: &[Guard] = &[
             // read as refs-only and stand out.
             Site {
                 file: "crates/biorouter-server/src/routes/agent.rs",
-                counts: c(4, 4, 0),
+                counts: c(6, 6, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /agent/resume`, `POST /agent/update_from_session`, and `POST \
                        /agent/update_working_dir`, plus the shared `authorize_agent_control` \
-                       gate used by provider, extension, stop, and restart mutations",
+                       gate used by provider, extension, stop, and restart mutations — and, \
+                       since QA's 2026-09-10 M2, `GET /agent/tools` (a private chat's \
+                       private-extension tool names, handed to a secret-only caller while \
+                       `add_extension` on the same chat refused) and `GET \
+                       /agent/callable_tool_count`, both of which mint an agent for the chat \
+                       they name",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/knowledge.rs",
+                counts: c(1, 6, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /knowledge/bases/{id}/ingest-conversation`, one call inside the \
+                       loop over the chats the request names, before any transcript is read: \
+                       the route streams what a model makes of those chats back to its caller, \
+                       and a caller holding only the daemon secret could name a private model \
+                       (QA 2026-09-10 H2). The other five refs are the MODULE qualifier on \
+                       `session_reach::gate_knowledge_base`, `http_caller` (three handlers) and \
+                       `HttpCaller` — names that live beside the gate, not the gate",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/mod.rs",
@@ -340,12 +357,41 @@ const REGISTRY: &[Guard] = &[
                        recovery mutation",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(0, 1, 0),
+                kind: SiteKind::Unrelated,
+                what: "the MODULE qualifier on `session_reach::http_caller`, which filters \
+                       `GET /schedule/{id}/sessions` — a listing, gated by `lists_session`, not \
+                       by this function",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
-                counts: c(2, 2, 0),
+                counts: c(8, 10, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions/{id}` (the transcript) and `GET /sessions/{id}/export` \
-                       (the same transcript, `to_string_pretty`); the export sibling was \
-                       ungated until this sweep",
+                       (the same transcript, `to_string_pretty`), and — QA 2026-09-10 F0 and \
+                       the sweep it asked for — every other route that names a chat: `DELETE \
+                       /sessions/{id}` (measured deleting a private chat the read refused, four \
+                       of four), `PUT …/name`, `PUT …/user_workflow_values`, the in-place arm \
+                       of `POST …/edit_message` (it truncates), `GET …/extensions` and `GET \
+                       …/usage`. Ten refs: the module qualifier on each of the eight calls, \
+                       and on `http_caller` for the two listings",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/skills.rs",
+                counts: c(1, 1, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /skills/session`, which writes a skill's instructions into the \
+                       named chat's next turn (QA 2026-09-10, F0's sweep)",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/workflow.rs",
+                counts: c(1, 2, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /workflows/create`, which loads the named chat's whole transcript \
+                       and returns a workflow a model wrote from it (QA 2026-09-10, F0's \
+                       sweep). The second ref is the module qualifier on `http_caller`, which \
+                       filters the knowledge bases the workflow names",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_events.rs",
@@ -412,10 +458,129 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(1, 0, 0),
+            counts: c(3, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach` itself, which is this predicate plus the two lookups that \
-                   feed it",
+                   feed it; and since QA's 2026-09-10 sweep `HttpCaller::lists_session` (a \
+                   listing is the rows this decision admits, one at a time) and \
+                   `HttpCaller::reach_knowledge_base` (the same decision with a knowledge \
+                   base as the target). ONE decision, three subjects: a second spelling of it \
+                   is what this census exists to stop",
+        }],
+    },
+    Guard {
+        ident: "http_caller",
+        defined_in: SESSION_REACH,
+        decides: "who is asking, resolved ONCE per request: the stated capability, the \
+                  user-action proof, DR-15's switch, and — on a serve daemon only — the \
+                  operator's tier for a request carrying the served document's cookie",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/knowledge.rs",
+                counts: c(3, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /knowledge/bases` (a private base omitted from a caller that \
+                       cannot open it) and both halves of `/knowledge/active` (the selection \
+                       filtered, and a write unable to move what its caller cannot see)",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /schedule/{id}/sessions`, a schedule's runs by name and directory",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions` and `GET /sessions/sidebar` — QA 2026-09-10 M1, every \
+                       chat on the machine, titled, to a secret-only caller",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`gate_knowledge_base`, the layer on every `/knowledge/bases/{id}` route",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/workflow.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /workflows/create`, whose workflow names the chat's knowledge \
+                       bases — filtered to the ones its caller may open",
+            },
+        ],
+    },
+    Guard {
+        ident: "lists_session",
+        defined_in: SESSION_REACH,
+        decides: "whether a listing may show a caller a chat of a given classification: \
+                  exactly the singular gate's answer for that row, so omission and never \
+                  redaction",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /schedule/{id}/sessions`, filtered BEFORE its limit",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session.rs",
+                counts: c(3, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions`, and `GET /sessions/sidebar` twice: once to take the \
+                       one-query fast path for a caller shown every row, once per row of the \
+                       scan that pages a filtered view without ragged pages or a count oracle",
+            },
+        ],
+    },
+    Guard {
+        ident: "reach_knowledge_base",
+        defined_in: SESSION_REACH,
+        decides: "whether an HTTP caller naming a knowledge base may reach it: the chat gate's \
+                  decision with the base's tier as the target, an absent or malformed id \
+                  answered as a private one",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/knowledge.rs",
+                counts: c(4, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the bases listing's filter, the selection response's filter, and \
+                       `POST /knowledge/active`'s two uses: the refusal for pinning a base the \
+                       caller cannot reach, and the predicate `set_selection_within` merges by",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`gate_knowledge_base`, which asks it for every `/knowledge/bases/{id}` \
+                       route before the handler runs",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/workflow.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /workflows/create`: a generated workflow's visible bases, and its \
+                       default one",
+            },
+        ],
+    },
+    Guard {
+        ident: "gate_knowledge_base",
+        defined_in: SESSION_REACH,
+        decides: "the knowledge-base reach gate, as ONE route layer on the sub-router holding \
+                  exactly the routes that name a base by `{id}`",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/knowledge.rs",
+            counts: c(0, 1, 0),
+            kind: SiteKind::Guard,
+            what: "`route_layer(from_fn_with_state(svc, session_reach::gate_knowledge_base))` \
+                   in `knowledge::router`. A REFERENCE, as `gate_knowledge_active`'s is: a \
+                   middleware never appears with parentheses",
         }],
     },
     Guard {

@@ -337,7 +337,10 @@ fn is_valid_session_id(id: &str) -> bool {
         ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
     ),
     responses(
-        (status = 200, description = "List of available sessions retrieved successfully", body = SessionListResponse),
+        (status = 200, description = "The sessions this caller could open. A private session is \
+                                      omitted — never redacted — for a caller that carries neither \
+                                      the user-action proof nor a private capability, exactly as \
+                                      `GET /sessions/{session_id}` would refuse it", body = SessionListResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 500, description = "Internal server error")
     ),
@@ -349,12 +352,18 @@ fn is_valid_session_id(id: &str) -> bool {
 async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListSessionsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<SessionListResponse>, StatusCode> {
-    let sessions = state
+    // Issue #56, QA 2026-09-10 M1: this returned every row on the machine —
+    // title, working directory, privacy reason — to a caller the singular read
+    // refuses. It now returns the rows that read would admit, and nothing else.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    let mut sessions = state
         .session_manager()
         .list_sessions_by_types(listed_session_types(query.include_subagents))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sessions.retain(|session| caller.lists_session(session.privacy_tier));
 
     Ok(Json(SessionListResponse { sessions }))
 }
@@ -368,7 +377,13 @@ async fn list_sessions(
         ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
     ),
     responses(
-        (status = 200, description = "Paginated lightweight session summaries for the sidebar", body = SidebarSessionListResponse),
+        (status = 200, description = "Paginated lightweight session summaries for the sidebar, \
+                                      holding only the sessions this caller could open (see \
+                                      `GET /sessions`). `next_offset` is where the next page \
+                                      starts; for a caller shown every session it is `offset + \
+                                      limit` as before, and for one shown a filtered view it is a \
+                                      position in the underlying ordering, so pass it back as \
+                                      given rather than computing it", body = SidebarSessionListResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 500, description = "Internal server error")
     ),
@@ -380,26 +395,88 @@ async fn list_sessions(
 async fn list_sidebar_sessions(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SidebarSessionsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<SidebarSessionListResponse>, StatusCode> {
     let limit = query.limit.clamp(1, MAX_SIDEBAR_SESSION_LIMIT);
-    let mut sessions = state
-        .session_manager()
-        .list_session_summaries(
-            limit.saturating_add(1),
-            query.offset,
-            query.include_subagents,
-            false,
-        )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
 
-    let has_more = sessions.len() > limit as usize;
-    sessions.truncate(limit as usize);
-    let next_offset = has_more.then(|| query.offset.saturating_add(limit));
+    // A caller shown every row — the desktop app, a private-capability program,
+    // or any caller with tiers switched off — pages exactly as it always did,
+    // one query per page.
+    if caller.lists_session(SessionClassification::Private) {
+        let mut sessions = state
+            .session_manager()
+            .list_session_summaries(
+                limit.saturating_add(1),
+                query.offset,
+                query.include_subagents,
+                false,
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let has_more = sessions.len() > limit as usize;
+        sessions.truncate(limit as usize);
+        let next_offset = has_more.then(|| query.offset.saturating_add(limit));
+
+        return Ok(Json(SidebarSessionListResponse {
+            sessions,
+            has_more,
+            next_offset,
+        }));
+    }
+
+    // Issue #56, QA 2026-09-10 M1: every other caller is shown the public rows
+    // only, so the page is assembled by SCANNING the ordering rather than by
+    // filtering one `LIMIT` window — a window filtered after the fact hands back
+    // short, ragged pages, and a `has_more` counted before the filter would
+    // report the private rows it hid, which is the count oracle omission exists
+    // to close. `workspace_list` pages a filtered view the same way.
+    //
+    // `offset` and `next_offset` are therefore positions in the UNFILTERED
+    // ordering: the next page starts exactly where this one stopped, so a walk
+    // that passes `next_offset` back sees every visible row once.
+    //
+    // The scan is bounded per request. Hitting the bound is not the end of the
+    // list: the page says where to resume, so a machine whose history is mostly
+    // private is walked in several requests rather than silently cut short.
+    const SCAN_CHUNK: u32 = 200;
+    const MAX_SCANNED_ROWS: u32 = 20_000;
+    let manager = state.session_manager();
+    let mut sessions = Vec::with_capacity(limit as usize);
+    let mut next_offset = None;
+    let mut position = query.offset;
+    'scan: loop {
+        if position.saturating_sub(query.offset) >= MAX_SCANNED_ROWS {
+            next_offset = Some(position);
+            break;
+        }
+        let chunk = manager
+            .list_session_summaries(SCAN_CHUNK, position, query.include_subagents, false)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let fetched = chunk.len() as u32;
+        for (index, summary) in chunk.into_iter().enumerate() {
+            if !caller.lists_session(summary.privacy_tier) {
+                continue;
+            }
+            if sessions.len() == limit as usize {
+                // A visible row beyond this page exists, so there is a next
+                // page, and it starts at this row.
+                next_offset = Some(position.saturating_add(index as u32));
+                break 'scan;
+            }
+            sessions.push(summary);
+        }
+        if fetched < SCAN_CHUNK {
+            break;
+        }
+        position = position.saturating_add(fetched);
+    }
 
     Ok(Json(SidebarSessionListResponse {
         sessions,
-        has_more,
+        has_more: next_offset.is_some(),
         next_offset,
     }))
 }
@@ -548,6 +625,9 @@ pub struct SessionModelUsageResponse {
         (status = 200, description = "Per-model usage for the session", body = SessionModelUsageResponse),
         (status = 400, description = "Invalid session id"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
+                                      word, that `GET /sessions/{session_id}` gives (body = plain \
+                                      text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -559,22 +639,30 @@ pub struct SessionModelUsageResponse {
 async fn get_session_usage(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<Json<SessionModelUsageResponse>, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> Response {
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
-    let models = state
+    // Issue #56, QA 2026-09-10: a named chat's metadata, and a 200/404 that told
+    // an unproven caller whether the id existed. The read's own gate, first.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    match state
         .session_manager()
         .get_session_model_usage(&session_id)
         .await
-        .map_err(|error| {
-            if error.to_string().contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        })?;
-    Ok(Json(SessionModelUsageResponse { models }))
+    {
+        Ok(models) => Json(SessionModelUsageResponse { models }).into_response(),
+        Err(error) if error.to_string().contains("not found") => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 #[utoipa::path(
@@ -588,6 +676,9 @@ async fn get_session_usage(
         (status = 200, description = "Session name updated successfully"),
         (status = 400, description = "Bad request - Name too long (max 200 characters)"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
+                                      word, that `GET /sessions/{session_id}` gives (body = plain \
+                                      text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -599,28 +690,36 @@ async fn get_session_usage(
 async fn update_session_name(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<UpdateSessionNameRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Response {
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    // Issue #56, QA 2026-09-10 (F0's sweep): renaming a chat is a write into it,
+    // and a write may never be cheaper than the read.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
     }
     let name = request.name.trim();
-    if name.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    if name.len() > MAX_NAME_LENGTH {
-        return Err(StatusCode::BAD_REQUEST);
+    if name.is_empty() || name.len() > MAX_NAME_LENGTH {
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    state
+    match state
         .session_manager()
         .update(&session_id)
         .user_provided_name(name.to_string())
         .apply()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    Ok(StatusCode::OK)
+    {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 #[utoipa::path(
@@ -633,6 +732,9 @@ async fn update_session_name(
     responses(
         (status = 200, description = "Session user workflow values updated successfully", body = UpdateSessionUserWorkflowValuesResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
+                                      word, that `GET /sessions/{session_id}` gives (body = plain \
+                                      text)"),
         (status = 404, description = "Session not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
@@ -645,14 +747,41 @@ async fn update_session_name(
 async fn update_session_user_workflow_values(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<UpdateSessionUserWorkflowValuesRequest>,
-) -> Result<Json<UpdateSessionUserWorkflowValuesResponse>, ErrorResponse> {
+) -> Response {
     if !is_valid_session_id(&session_id) {
-        return Err(ErrorResponse {
+        return ErrorResponse {
             message: "Invalid session ID".to_string(),
             status: StatusCode::BAD_REQUEST,
-        });
+        }
+        .into_response();
     }
+    // Issue #56, QA 2026-09-10 (F0's sweep): this rewrites the chat's workflow
+    // values and re-applies the workflow to its live agent — a write into the
+    // chat — so it asks the read's gate before it touches the row or the agent.
+    // The refusal is the read's plain text, not this route's JSON envelope, so
+    // a client recognises one boundary by one body.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    apply_user_workflow_values(&state, &session_id, request)
+        .await
+        .into_response()
+}
+
+/// The body of [`update_session_user_workflow_values`] once the caller may
+/// address the chat.
+async fn apply_user_workflow_values(
+    state: &Arc<AppState>,
+    session_id: &str,
+    request: UpdateSessionUserWorkflowValuesRequest,
+) -> Result<Json<UpdateSessionUserWorkflowValuesResponse>, ErrorResponse> {
+    let session_id = session_id.to_string();
     state
         .session_manager()
         .update(&session_id)
@@ -730,6 +859,10 @@ async fn update_session_user_workflow_values(
     responses(
         (status = 200, description = "Session deleted successfully"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56, QA 2026-09-10 \
+                                      F0): the same refusal, word for word, that `GET \
+                                      /sessions/{session_id}` gives — including for a chat that \
+                                      does not exist (body = plain text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -741,9 +874,23 @@ async fn update_session_user_workflow_values(
 async fn delete_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> Response {
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    // Issue #56, QA 2026-09-10 F0. A caller holding nothing but the daemon
+    // secret was refused this chat's transcript and could delete it — four of
+    // four, measured — so the delete now asks the read's own gate, FIRST: before
+    // the turn is cancelled and before anything parked on a person is released,
+    // because each of those is itself an effect on the chat. The refusal is the
+    // read's, byte for byte, so it no more confirms the chat exists than the read
+    // does — where the old 200/404 pair confirmed it and then destroyed it.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
     }
 
     // Deleting a chat stops its turn. This used to happen by accident and the
@@ -778,19 +925,11 @@ async fn delete_session(
         );
     }
 
-    state
-        .session_manager()
-        .delete_session(&session_id)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        })?;
-
-    Ok(StatusCode::OK)
+    match state.session_manager().delete_session(&session_id).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) if e.to_string().contains("not found") => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 #[utoipa::path(
@@ -971,7 +1110,27 @@ async fn edit_message(
                 }
             }
         }
-        EditType::Edit => edit_in_place(&state, &session_id, &request).await,
+        EditType::Edit => {
+            // Issue #56, QA 2026-09-10 (F0's sweep). The in-place arm TRUNCATES
+            // this chat's history, and it asked nothing of the caller — so a
+            // caller the read refuses could cut a private transcript it could
+            // not see. It asks the read's gate now, before the turn lock (whose
+            // 409 would say the chat is busy) and before the snapshot.
+            //
+            // The `Diverge` arm is left on DR-19's gate above, which is strictly
+            // stronger for a private source (the proof, not merely reach) and
+            // already answers an unreadable one as private.
+            if let Err(refusal) = crate::routes::session_reach::session_reach(
+                state.session_manager(),
+                &session_id,
+                &headers,
+            )
+            .await
+            {
+                return refusal.into_response();
+            }
+            edit_in_place(&state, &session_id, &request).await
+        }
     }
 }
 
@@ -1486,6 +1645,9 @@ pub struct SessionExtensionsResponse {
     responses(
         (status = 200, description = "Session extensions retrieved successfully", body = SessionExtensionsResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
+                                      word, that `GET /sessions/{session_id}` gives (body = plain \
+                                      text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -1497,13 +1659,35 @@ pub struct SessionExtensionsResponse {
 async fn get_session_extensions(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<Json<SessionExtensionsResponse>, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> Response {
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
+    // Issue #56, QA 2026-09-10 — M2's sibling. A private chat's enabled
+    // extensions name, by name, the private connectors Gate E hides from a
+    // public model's own tool list (`cdwagent`, `ucsfomopagent`), so this asks
+    // the read's gate before it reads the row.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    match session_extensions(&state, &session_id).await {
+        Ok(extensions) => Json(SessionExtensionsResponse { extensions }).into_response(),
+        Err(status) => status.into_response(),
+    }
+}
+
+/// The enabled extension list of a chat the caller may address.
+async fn session_extensions(
+    state: &Arc<AppState>,
+    session_id: &str,
+) -> Result<Vec<ExtensionConfig>, StatusCode> {
     let session = state
         .session_manager()
-        .get_session(&session_id, false)
+        .get_session(session_id, false)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
@@ -1521,7 +1705,7 @@ async fn get_session_extensions(
             .unwrap_or_else(biorouter::config::get_enabled_extensions)
     };
 
-    Ok(Json(SessionExtensionsResponse { extensions }))
+    Ok(extensions)
 }
 
 /// BR-71: the sessions holding a turn right now.
@@ -1998,12 +2182,30 @@ pub(crate) mod diverge_tests {
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 
+    /// The person at the keyboard is told a missing chat is missing. A caller
+    /// holding only the daemon secret is told what the read tells it — the same
+    /// refusal it gets for a private chat — since QA measured this route's
+    /// 200/404 pair to be an oracle for which ids exist (2026-09-10).
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn usage_route_returns_not_found_for_missing_session() {
+        install_test_user_action_key();
         let state = AppState::new().await.unwrap();
+        let res = routes(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/sessions/29990101_99999/usage")
+                    .header("X-User-Action", TEST_USER_ACTION_KEY)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
+
         let (status, _) = get_usage(state, "29990101_99999").await;
-        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
     }
 
     /// `days` is attacker-controlled; the server clamps it rather than building a

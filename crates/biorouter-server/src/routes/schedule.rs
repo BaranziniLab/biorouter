@@ -373,7 +373,10 @@ fn classify_run_now_error(id: &str, error: &biorouter::scheduler::SchedulerError
         SessionsQuery // This will automatically pick up 'limit' as a query parameter
     ),
     responses(
-        (status = 200, description = "A list of session display info", body = Vec<SessionDisplayInfo>),
+        (status = 200, description = "A list of session display info, holding only the runs this \
+                                      caller could open: a private run is omitted for a caller \
+                                      with neither the user-action proof nor a private capability, \
+                                      as it is from `GET /sessions`", body = Vec<SessionDisplayInfo>),
         (status = 500, description = "Internal server error")
     ),
     tag = "schedule"
@@ -383,16 +386,23 @@ async fn sessions_handler(
     State(state): State<Arc<AppState>>,
     Path(schedule_id_param): Path<String>, // Renamed to avoid confusion with session_id
     Query(query_params): Query<SessionsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<SessionDisplayInfo>>, StatusCode> {
     let scheduler = state.scheduler();
+    // Issue #56, QA 2026-09-10 M1: a schedule's runs, by name and working
+    // directory — the rows `GET /sessions` lists, through another door. Filtered
+    // by the same rule, and BEFORE the limit, so a page of private runs does not
+    // leave a caller with an empty page and the impression there were none.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
 
-    match scheduler
-        .sessions(&schedule_id_param, query_params.limit)
-        .await
-    {
+    match scheduler.sessions(&schedule_id_param, usize::MAX).await {
         Ok(session_tuples) => {
             let mut display_infos = Vec::new();
-            for (session_name, session) in session_tuples {
+            for (session_name, session) in session_tuples
+                .into_iter()
+                .filter(|(_, session)| caller.lists_session(session.privacy_tier))
+                .take(query_params.limit)
+            {
                 display_infos.push(SessionDisplayInfo {
                     id: session_name.clone(),
                     name: session.name,

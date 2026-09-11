@@ -20,7 +20,15 @@ fn build_test_router() -> (tempfile::TempDir, Router) {
     (dir, router)
 }
 
+/// `POST /active` as the Knowledge view sends it — carrying the user's proof.
+///
+/// ⚠ Since QA's 2026-09-10 H2 sweep the selection is filtered for a caller
+/// WITHOUT that proof (private and absent bases dropped, a write unable to move
+/// what it cannot see), so these mechanics tests speak as the user, which is who
+/// the renderer is. What an unproven caller sees and may change is
+/// `h2_http_barrier`'s subject.
 async fn post_active(app: &Router, body: serde_json::Value) -> (u16, serde_json::Value) {
+    tier_route::install_test_user_action_key();
     let res = app
         .clone()
         .oneshot(
@@ -28,6 +36,7 @@ async fn post_active(app: &Router, body: serde_json::Value) -> (u16, serde_json:
                 .method("POST")
                 .uri("/active")
                 .header("content-type", "application/json")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
         )
@@ -43,14 +52,22 @@ async fn post_active(app: &Router, body: serde_json::Value) -> (u16, serde_json:
     )
 }
 
+/// `GET /active`, with the user's proof — see [`post_active`].
 async fn get_active(app: &Router, session_id: Option<&str>) -> serde_json::Value {
+    tier_route::install_test_user_action_key();
     let uri = match session_id {
         Some(sid) => format!("/active?session_id={sid}"),
         None => "/active".to_string(),
     };
     let res = app
         .clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
@@ -115,7 +132,23 @@ async fn get_location_returns_kb_path() {
 
 #[tokio::test]
 async fn get_location_404_for_unknown_kb() {
+    // The person at the keyboard is told the base is not there. A caller
+    // without the proof is told what it is told for a private base (403) —
+    // QA 2026-09-10 H2 — so the 404 is not an oracle for which ids exist.
+    tier_route::install_test_user_action_key();
     let (_d, app) = build_test_router();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/bases/nope/location")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
     let res = app
         .oneshot(
             Request::builder()
@@ -125,7 +158,7 @@ async fn get_location_404_for_unknown_kb() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), 404);
+    assert_eq!(res.status(), 403);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -302,10 +335,14 @@ async fn update_base_metadata_roundtrip() {
     assert_eq!(manifest["name"], "Renamed Knowledge Base");
     assert_eq!(manifest["color"], "#123456");
 
+    // Asked as the user: an unproven caller is told nothing about an id that
+    // names no base (QA 2026-09-10 H2), so only the user can see the 404.
+    tier_route::install_test_user_action_key();
     let res = app
         .oneshot(
             Request::builder()
                 .uri("/bases/rename")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1752,10 +1789,18 @@ async fn read_page_rejects_invalid_kb_id_with_400() {
 
     // "INVALID--KB" violates both the lowercase rule and the `--` rule. We do
     // not need to create the KB; validation fires before any filesystem touch.
+    //
+    // Asked as the user, who is owed the handler's 400. A caller without the
+    // proof never reaches the handler: a malformed id is answered as a private
+    // one is (QA 2026-09-10 H2), which also keeps a `..` out of every path
+    // join below the gate for that caller.
+    tier_route::install_test_user_action_key();
     let res = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/bases/INVALID--KB/page?path=knowledge/x.md")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1766,6 +1811,16 @@ async fn read_page_rejects_invalid_kb_id_with_400() {
         400,
         "invalid kb-id must return 400, not 500 (regression test)"
     );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/INVALID--KB/page?path=knowledge/x.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
 }
 
 #[tokio::test]
@@ -1825,6 +1880,8 @@ async fn fresh_selection_reports_soul_as_the_default_primary_when_bootstrapped()
 
 #[tokio::test]
 async fn active_kb_roundtrip() {
+    // The Knowledge view, which sends the user's proof; see `post_active`.
+    tier_route::install_test_user_action_key();
     let (_d, app) = build_test_router();
 
     // Empty initially.
@@ -1833,6 +1890,7 @@ async fn active_kb_roundtrip() {
         .oneshot(
             Request::builder()
                 .uri("/active")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1881,6 +1939,7 @@ async fn active_kb_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/active")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(set_body))
                 .unwrap(),
@@ -1899,6 +1958,7 @@ async fn active_kb_roundtrip() {
         .oneshot(
             Request::builder()
                 .uri("/active")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1930,6 +1990,7 @@ async fn active_kb_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/active")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(clear_body))
                 .unwrap(),
@@ -1943,6 +2004,7 @@ async fn active_kb_roundtrip() {
         .oneshot(
             Request::builder()
                 .uri("/active")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1969,6 +2031,7 @@ async fn active_kb_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/active")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(bad_body))
                 .unwrap(),
@@ -2385,10 +2448,16 @@ async fn hiding_the_primary_promotes_for_an_inheriting_chat_too() {
 /// down, in `KnowledgeService::export_brkb`, would change this route too — the
 /// user would stop being able to download a private base from their own
 /// Knowledge view. So assert the bytes come back.
+///
+/// ⚠ "The user" is the request carrying the user's proof, which the desktop's
+/// Knowledge view sends. Until QA's 2026-09-10 H2 sweep this test's export
+/// carried nothing and was served — the same request a public chat's shell makes
+/// with a recovered daemon secret, which is now refused (`h2_http_barrier`).
 #[tokio::test]
 async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule() {
     use axum::http::header;
 
+    tier_route::install_test_user_action_key();
     let (_d, root, app) = build_test_router_with_root();
     let create_body =
         serde_json::to_vec(&serde_json::json!({"id": "omop", "name": "Omop"})).unwrap();
@@ -2415,6 +2484,7 @@ async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule()
         .oneshot(
             Request::builder()
                 .uri("/bases/omop/export")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2614,7 +2684,15 @@ mod privacy_ratchet {
 
     // ── Issue #56, Task 10C: the barrier at CP2, over HTTP ───────────────────
 
+    /// A macro run as the Knowledge view starts one: with the user's proof.
+    ///
+    /// ⚠ Since QA's 2026-09-10 H2 sweep a private base answers a caller WITHOUT
+    /// that proof before the macro route runs at all (`gate_knowledge_base`),
+    /// so the tests below — which are about CP2, the MODEL's capability — speak
+    /// as the user in order to reach it. The two gates ask different questions:
+    /// may this caller address the base, and may this model read it.
     async fn post_json_raw(app: &Router, uri: &str, body: serde_json::Value) -> (u16, String) {
+        super::tier_route::install_test_user_action_key();
         let res = app
             .clone()
             .oneshot(
@@ -2622,6 +2700,7 @@ mod privacy_ratchet {
                     .method("POST")
                     .uri(uri)
                     .header("content-type", "application/json")
+                    .header("X-User-Action", super::tier_route::TEST_USER_ACTION_KEY)
                     .body(Body::from(serde_json::to_vec(&body).unwrap()))
                     .unwrap(),
             )
@@ -2668,12 +2747,17 @@ mod privacy_ratchet {
         );
         assert!(body.contains("private"), "{body}");
 
-        // And the GUI's own read routes are untouched: the user is not a model.
+        // And the Knowledge view still reads the page: the user is not a model.
+        // ⚠ "The user" is now the request carrying the user's proof, which is
+        // what the desktop sends. Until QA's 2026-09-10 H2 sweep this read
+        // carried nothing at all and was served anyway — which is the same
+        // request a public chat's shell makes with a recovered daemon secret.
         let res = app
             .clone()
             .oneshot(
                 Request::builder()
                     .uri("/bases/omop/page?path=knowledge/x.md")
+                    .header("X-User-Action", super::tier_route::TEST_USER_ACTION_KEY)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2997,12 +3081,15 @@ mod tier_route {
         let (_d, root, app) = guarded_router();
         seed(&root, &app).await;
 
+        // The Knowledge view's listing — with the user's proof, which is what
+        // lists a private base at all since QA's 2026-09-10 H2 sweep.
         let res = app
             .clone()
             .oneshot(
                 Request::builder()
                     .uri("/bases")
                     .header("X-Secret-Key", TEST_SECRET)
+                    .header("X-User-Action", TEST_USER_ACTION_KEY)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3042,12 +3129,15 @@ mod tier_route {
         )
         .unwrap();
 
+        // As the publicize dialog asks it: with the user's proof. A caller
+        // without it is refused this private base's tier and counts outright.
         let res = app
             .clone()
             .oneshot(
                 Request::builder()
                     .uri("/bases/omop/tier")
                     .header("X-Secret-Key", TEST_SECRET)
+                    .header("X-User-Action", TEST_USER_ACTION_KEY)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3225,8 +3315,21 @@ mod okf_surface {
             !root.join("lit").exists(),
             "a refused create must not leave a half-scaffolded base on disk"
         );
-        let (status, _) = get_json(&app, "/bases/lit").await;
-        assert_eq!(status, 404, "and the base must not be readable");
+        // Asked as the user, who is told it is not there; a caller without the
+        // proof gets the refusal it gets for a private base (QA 2026-09-10 H2).
+        super::tier_route::install_test_user_action_key();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/bases/lit")
+                    .header("X-User-Action", super::tier_route::TEST_USER_ACTION_KEY)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 404, "and the base must not be readable");
     }
 
     /// The typed graph, on the wire.
@@ -3622,5 +3725,547 @@ mod merge_route {
             tier::is_private(&root, "pubdst"),
             "a public base absorbed a private base's pages and stayed public"
         );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// QA 2026-09-10, H2 — a private knowledge base over HTTP
+//
+// The tool path refused a public caller (`kb_read_page`, `kb_search`,
+// `kb_list_pages`, `kb_export`; `kb_list_bases` omits the base), while every
+// `/knowledge/bases/{id}/…` route handed the same base's pages, graph, history
+// and a `.brkb` of the whole tree to a caller holding nothing but the daemon
+// secret — which a public chat's own shell recovered with `ps eww`. These tests
+// are that caller, and the person at the keyboard beside it.
+// ──────────────────────────────────────────────────────────────────────────────
+mod h2_http_barrier {
+    use super::tier_route::{install_test_user_action_key, TEST_USER_ACTION_KEY};
+    use super::*;
+    use biorouter_mcp::knowledge::tier;
+
+    /// Appears in the seeded pages and nowhere else, so "the content came
+    /// back" is an assertion rather than an impression.
+    const SENTINEL: &str = "qa-h2-private-page-marker-not-real-data";
+    const PRIVATE_KB: &str = "omop";
+    const PUBLIC_KB: &str = "notes";
+    /// A well-formed id that names no base on this machine.
+    const ABSENT_KB: &str = "no-such-base";
+
+    async fn call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+        proof: bool,
+    ) -> (u16, String) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if proof {
+            builder = builder.header("X-User-Action", TEST_USER_ACTION_KEY);
+        }
+        let body = match body {
+            Some(json) => {
+                builder = builder.header("content-type", "application/json");
+                Body::from(serde_json::to_vec(&json).unwrap())
+            }
+            None => Body::empty(),
+        };
+        let res = app
+            .clone()
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Two bases through the real routes, each with one page and one commit;
+    /// the first is then ratcheted private the way a private chat's ingest
+    /// leaves it. Returns that base's commit for the history-shaped routes.
+    async fn seed(app: &Router, root: &std::path::Path) -> String {
+        for (id, name) in [(PRIVATE_KB, "OMOP"), (PUBLIC_KB, "Notes")] {
+            create_kb(app.clone(), id, name).await;
+            let (status, body) = call(
+                app,
+                "PUT",
+                &format!("/bases/{id}/pages/knowledge/x.md"),
+                Some(serde_json::json!({
+                    "content": valid_page("note", "X", &format!("# X\n\n{SENTINEL} in {id}")),
+                    "commit_message": "seed",
+                })),
+                false,
+            )
+            .await;
+            assert_eq!(status, 200, "seeding {id}: {body}");
+        }
+        tier::raise_unlocked(root, PRIVATE_KB, true).unwrap();
+        let (status, body) = call(
+            app,
+            "GET",
+            &format!("/bases/{PRIVATE_KB}/history"),
+            None,
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let history: serde_json::Value = serde_json::from_str(&body).unwrap();
+        history[0]["commit_sha"].as_str().unwrap().to_string()
+    }
+
+    fn model() -> serde_json::Value {
+        // Unknown to the registry: an admitted macro stops at `build_completer`
+        // with a 400, long before any model is reached.
+        serde_json::json!({ "provider": "qa-h2-no-such-provider", "model": "m" })
+    }
+
+    /// Every route under `/bases/{id}`, as `(method, uri, body)`.
+    ///
+    /// ⚠ **Destructive last**, for the reason the chat sweep gives: before this
+    /// change `DELETE` removed the base outright, and every row after it would
+    /// then have been probing an absent id.
+    fn base_addressing_routes(
+        id: &str,
+        sha: &str,
+    ) -> Vec<(&'static str, String, Option<serde_json::Value>)> {
+        vec![
+            ("GET", format!("/bases/{id}"), None),
+            ("GET", format!("/bases/{id}/tier"), None),
+            ("GET", format!("/bases/{id}/graph"), None),
+            ("GET", format!("/bases/{id}/location"), None),
+            ("GET", format!("/bases/{id}/page?path=knowledge/x.md"), None),
+            ("GET", format!("/bases/{id}/pages"), None),
+            ("GET", format!("/bases/{id}/pages/knowledge/x.md"), None),
+            ("GET", format!("/bases/{id}/history"), None),
+            (
+                "POST",
+                format!("/bases/{id}/preview"),
+                Some(serde_json::json!({ "commit_sha": sha, "path": "knowledge/x.md" })),
+            ),
+            ("GET", format!("/bases/{id}/export"), None),
+            (
+                "POST",
+                format!("/bases/{id}/query"),
+                Some(serde_json::json!({ "question": "what is in it?", "model": model() })),
+            ),
+            (
+                "POST",
+                format!("/bases/{id}/lint"),
+                Some(serde_json::json!({ "model": model() })),
+            ),
+            ("POST", format!("/bases/{id}/sources/s1/reclassify"), None),
+            (
+                "POST",
+                format!("/bases/{id}/tier"),
+                Some(serde_json::json!({ "tier": "public" })),
+            ),
+            (
+                "POST",
+                format!("/bases/{id}/merge"),
+                Some(serde_json::json!({ "source_kb_id": PUBLIC_KB })),
+            ),
+            (
+                "PUT",
+                format!("/bases/{id}"),
+                Some(serde_json::json!({ "name": "renamed by an unproven caller" })),
+            ),
+            (
+                "PUT",
+                format!("/bases/{id}/default-model"),
+                Some(serde_json::json!({ "model": model() })),
+            ),
+            (
+                "PUT",
+                format!("/bases/{id}/pages/knowledge/x.md"),
+                Some(serde_json::json!({
+                    "content": valid_page("note", "X", "overwritten by an unproven caller"),
+                    "commit_message": "overwrite",
+                })),
+            ),
+            (
+                "POST",
+                format!("/bases/{id}/raw"),
+                Some(serde_json::json!({ "text": "an unproven raw source", "title": "t" })),
+            ),
+            (
+                "POST",
+                format!("/bases/{id}/ingest"),
+                Some(serde_json::json!({ "source": { "text": "t" }, "model": model() })),
+            ),
+            (
+                "POST",
+                format!("/bases/{id}/ingest-conversation"),
+                Some(serde_json::json!({ "session_ids": ["29990101_1"], "model": model() })),
+            ),
+            (
+                "POST",
+                format!("/bases/{id}/restore"),
+                Some(serde_json::json!({ "commit_sha": sha })),
+            ),
+            ("DELETE", format!("/bases/{id}"), None),
+        ]
+    }
+
+    /// **H2.** Every route under `/bases/{id}` answers an unproven caller on a
+    /// private base exactly as the page read does — the same status and the
+    /// same bytes — and answers a base that does not exist the same way, so the
+    /// refusal is not an oracle for which ids name a private base.
+    ///
+    /// Collected rather than asserted row by row, so a regression names every
+    /// door it reopened.
+    #[tokio::test]
+    async fn every_route_that_names_a_private_base_refuses_an_unproven_caller_as_the_read_does() {
+        install_test_user_action_key();
+        let (_d, root, app) = build_test_router_with_root();
+        let sha = seed(&app, &root).await;
+
+        let (read_status, read_body) = call(
+            &app,
+            "GET",
+            &format!("/bases/{PRIVATE_KB}/page?path=knowledge/x.md"),
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(read_status, 403, "the private page was served: {read_body}");
+        assert!(
+            !read_body.contains(SENTINEL),
+            "the refusal carried the page"
+        );
+
+        let mut leaks = Vec::new();
+        for id in [PRIVATE_KB, ABSENT_KB] {
+            for (method, uri, body) in base_addressing_routes(id, &sha) {
+                let (status, got) = call(&app, method, &uri, body, false).await;
+                if status != read_status || got != read_body {
+                    leaks.push(format!("{method} {uri} -> {status}: {got:.160}"));
+                }
+            }
+        }
+        assert!(
+            leaks.is_empty(),
+            "a caller holding nothing but the daemon secret was answered differently from the \
+             page read by {} route(s):\n  {}",
+            leaks.len(),
+            leaks.join("\n  ")
+        );
+
+        // …and nothing moved: the base is still there, still private, and its
+        // page still says what it said.
+        assert!(root.join(PRIVATE_KB).join("knowledge/x.md").exists());
+        assert!(tier::is_private(&root, PRIVATE_KB));
+        let page = std::fs::read_to_string(root.join(PRIVATE_KB).join("knowledge/x.md")).unwrap();
+        assert!(
+            page.contains(SENTINEL),
+            "an unproven caller rewrote a private page"
+        );
+    }
+
+    /// The other half — "refuse the unproven caller" is satisfied by "refuse
+    /// everyone", and the Knowledge view must keep working. The person at the
+    /// keyboard reads the private base in full, and gets the honest 404 for a
+    /// base that is not there.
+    #[tokio::test]
+    async fn the_person_at_the_keyboard_still_reads_their_own_private_base() {
+        install_test_user_action_key();
+        let (_d, root, app) = build_test_router_with_root();
+        let sha = seed(&app, &root).await;
+
+        for uri in [
+            format!("/bases/{PRIVATE_KB}/page?path=knowledge/x.md"),
+            format!("/bases/{PRIVATE_KB}/pages/knowledge/x.md"),
+        ] {
+            let (status, body) = call(&app, "GET", &uri, None, true).await;
+            assert_eq!(status, 200, "{uri}: {body}");
+            assert!(
+                body.contains(SENTINEL),
+                "{uri} came back without the page: {body}"
+            );
+        }
+        for uri in [
+            format!("/bases/{PRIVATE_KB}"),
+            format!("/bases/{PRIVATE_KB}/tier"),
+            format!("/bases/{PRIVATE_KB}/graph"),
+            format!("/bases/{PRIVATE_KB}/location"),
+            format!("/bases/{PRIVATE_KB}/pages"),
+            format!("/bases/{PRIVATE_KB}/history"),
+            format!("/bases/{PRIVATE_KB}/export"),
+        ] {
+            let (status, body) = call(&app, "GET", &uri, None, true).await;
+            assert_eq!(status, 200, "{uri}: {body:.200}");
+        }
+        let (status, body) = call(
+            &app,
+            "POST",
+            &format!("/bases/{PRIVATE_KB}/preview"),
+            Some(serde_json::json!({ "commit_sha": sha, "path": "knowledge/x.md" })),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains(SENTINEL));
+
+        let (status, _) = call(&app, "GET", &format!("/bases/{ABSENT_KB}"), None, true).await;
+        assert_eq!(
+            status, 404,
+            "the user is entitled to know the base is not there"
+        );
+    }
+
+    /// A public base is untouched for a caller that proves nothing.
+    #[tokio::test]
+    async fn a_public_base_is_untouched_for_an_unproven_caller() {
+        install_test_user_action_key();
+        let (_d, root, app) = build_test_router_with_root();
+        seed(&app, &root).await;
+        let (status, body) = call(
+            &app,
+            "GET",
+            &format!("/bases/{PUBLIC_KB}/page?path=knowledge/x.md"),
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains(SENTINEL));
+        let (status, body) = call(
+            &app,
+            "GET",
+            &format!("/bases/{PUBLIC_KB}/export"),
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(status, 200, "{body:.200}");
+    }
+
+    /// `GET /knowledge/bases` OMITS a private base from an unproven caller —
+    /// omission, not a 404 for the list and not a redacted row, because a
+    /// base's id and name are user-authored content (the tool path's
+    /// `kb_list_bases` makes the same choice).
+    #[tokio::test]
+    async fn the_bases_listing_omits_a_private_base_from_an_unproven_caller() {
+        install_test_user_action_key();
+        let (_d, root, app) = build_test_router_with_root();
+        seed(&app, &root).await;
+
+        let (status, body) = call(&app, "GET", "/bases", None, false).await;
+        assert_eq!(status, 200, "{body}");
+        let ids: Vec<String> = serde_json::from_str::<serde_json::Value>(&body)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(ids.contains(&PUBLIC_KB.to_string()), "{ids:?}");
+        assert!(
+            !ids.contains(&PRIVATE_KB.to_string()),
+            "an unproven caller was listed a private base: {ids:?}"
+        );
+        assert!(
+            !body.contains("OMOP"),
+            "the private base's name leaked: {body}"
+        );
+
+        let (status, body) = call(&app, "GET", "/bases", None, true).await;
+        assert_eq!(status, 200);
+        assert!(
+            body.contains(PRIVATE_KB) && body.contains(PUBLIC_KB),
+            "{body}"
+        );
+    }
+
+    /// `/knowledge/active` is the second listing of base ids, and the one the
+    /// Knowledge view hydrates from. An unproven caller sees only what it can
+    /// reach — and may not change what it cannot see: its writes leave a
+    /// private base's hidden state and a private primary exactly where they
+    /// were. Without that, a renderer that prunes ids missing from its
+    /// (filtered) list would silently rewrite the machine-wide selection.
+    #[tokio::test]
+    async fn the_selection_shows_and_changes_only_what_an_unproven_caller_can_reach() {
+        install_test_user_action_key();
+        let (_d, root, app) = build_test_router_with_root();
+        seed(&app, &root).await;
+
+        // The user pins the private base as the machine-wide primary.
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/active",
+            Some(serde_json::json!({ "primary_kb": PRIVATE_KB, "hidden_kbs": [] })),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+
+        // An unproven reader is told nothing about it.
+        let (status, body) = call(&app, "GET", "/active", None, false).await;
+        assert_eq!(status, 200, "{body}");
+        let seen: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            !body.contains(PRIVATE_KB),
+            "an unproven caller was shown a private base: {body}"
+        );
+        assert_eq!(seen["primary_kb"], serde_json::Value::Null);
+
+        // It cannot clear what it cannot see…
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/active",
+            Some(serde_json::json!({ "clear_primary": true })),
+            false,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        // …cannot name it…
+        let (named, named_body) = call(
+            &app,
+            "POST",
+            "/active",
+            Some(serde_json::json!({ "primary_kb": PRIVATE_KB })),
+            false,
+        )
+        .await;
+        let (absent, absent_body) = call(
+            &app,
+            "POST",
+            "/active",
+            Some(serde_json::json!({ "primary_kb": ABSENT_KB })),
+            false,
+        )
+        .await;
+        assert_eq!(named, 403, "{named_body}");
+        assert_eq!(
+            (named, named_body.as_str()),
+            (absent, absent_body.as_str()),
+            "naming a private base and naming no base answered differently"
+        );
+        assert!(
+            !absent_body.contains(PRIVATE_KB),
+            "the refusal enumerated a private id: {absent_body}"
+        );
+
+        // …and cannot hide it: an id it cannot reach is not its to move.
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/active",
+            Some(serde_json::json!({ "hidden_kbs": [PRIVATE_KB] })),
+            false,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+
+        let (status, body) = call(&app, "GET", "/active", None, true).await;
+        assert_eq!(status, 200, "{body}");
+        let truth: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(truth["primary_kb"], serde_json::json!(PRIVATE_KB), "{body}");
+        assert!(
+            !truth["hidden_kbs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| id == PRIVATE_KB),
+            "an unproven caller hid a private base: {body}"
+        );
+
+        // The user hides it; an unproven caller that rewrites the set cannot
+        // bring it back.
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/active",
+            Some(serde_json::json!({ "hidden_kbs": [PRIVATE_KB], "clear_primary": true })),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/active",
+            Some(serde_json::json!({ "hidden_kbs": [] })),
+            false,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(!body.contains(PRIVATE_KB), "{body}");
+        let (_, body) = call(&app, "GET", "/active", None, true).await;
+        let truth: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            truth["hidden_kbs"],
+            serde_json::json!([PRIVATE_KB]),
+            "an unproven caller un-hid a private base it could not see: {body}"
+        );
+    }
+
+    /// `POST /bases/{id}/ingest-conversation` names chats as well as a base,
+    /// and streams what the macro makes of them back to the caller. So the
+    /// caller must be able to reach every chat it names — the same gate, with
+    /// the same refusal, as `GET /sessions/{id}` — before a transcript is read.
+    #[tokio::test]
+    async fn conversation_ingest_refuses_a_private_chat_to_an_unproven_caller() {
+        use biorouter::session::session_manager::{SessionManager, SessionType};
+        install_test_user_action_key();
+        let (_d, root, app) = build_test_router_with_root();
+        seed(&app, &root).await;
+
+        let manager = SessionManager::instance();
+        let chat = manager
+            .create_session(
+                std::path::PathBuf::from("/tmp/qa_h2_ingest"),
+                "QA H2 ingest (test fixture)".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .add_message(
+                &chat.id,
+                &biorouter::conversation::message::Message::user().with_text(SENTINEL),
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&chat.id)
+            .provider_name("versa_azure")
+            .model_config(biorouter::model::ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(
+                biorouter::privacy::SessionClassification::Private,
+                "turn:versa_azure",
+            )
+            .apply()
+            .await
+            .unwrap();
+
+        let ingest = |id: String| serde_json::json!({ "session_ids": [id], "model": model() });
+        let uri = format!("/bases/{PUBLIC_KB}/ingest-conversation");
+        let (private_status, private_body) =
+            call(&app, "POST", &uri, Some(ingest(chat.id.clone())), false).await;
+        let (absent_status, absent_body) = call(
+            &app,
+            "POST",
+            &uri,
+            Some(ingest("29990101_424242".into())),
+            false,
+        )
+        .await;
+        assert_eq!(private_status, 403, "{private_body}");
+        assert_eq!(
+            (private_status, private_body.as_str()),
+            (absent_status, absent_body.as_str()),
+            "a private chat and an absent one answered differently"
+        );
+        assert!(!private_body.contains(SENTINEL));
+
+        // The person at the keyboard gets past the gate to the handler's own
+        // answer — the unknown provider's 400.
+        let (status, body) = call(&app, "POST", &uri, Some(ingest(chat.id.clone())), true).await;
+        assert_eq!(status, 400, "{body}");
+
+        manager.delete_session(&chat.id).await.unwrap();
     }
 }
