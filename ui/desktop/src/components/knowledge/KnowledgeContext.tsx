@@ -186,6 +186,8 @@ export function KnowledgeProvider({
       try {
         const res = await getActive({
           query: sessionId ? { session_id: sessionId } : undefined,
+          // The same proof the hydrate below sends, for the same reason.
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
         if (generation !== selectionGenerationRef.current) return;
@@ -455,6 +457,12 @@ export function KnowledgeProvider({
       try {
         const res = await getActive({
           query: sessionId ? { session_id: sessionId } : undefined,
+          // Issue #56 Task 58: a GET naming a PRIVATE chat is on the reach
+          // gate's list exactly as the POST in `syncSelection` is, and the
+          // desktop gets through it the same way — by proving the person. This
+          // selection is a strict subset of what `getSession` already reads
+          // with that proof.
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
         if (cancelled || generation !== selectionGenerationRef.current) return;
@@ -462,12 +470,21 @@ export function KnowledgeProvider({
         applyHidden(readHidden(res.data) ?? []);
       } catch (err) {
         if (cancelled) return;
-        // ⚠ One quiet line, deliberately. A private chat opened while a
-        // public model is bound refuses this read with a ~900-character
-        // paragraph addressed to an AI agent, and printing it here made a
-        // correct outcome — the chat opened and rendered in full — look like a
-        // crash. The person's answer is the composer's pinned-model note; see
-        // `selectionWarning.ts` for the full reasoning.
+        // ⚠ One quiet line, deliberately: the gate's refusal is ~900
+        // characters addressed to an AI agent, and its first sentence is all a
+        // person reading the console needs (`selectionWarning.ts`).
+        //
+        // ⚠ Until 2026-09-11 this comment called that refusal "a correct
+        // outcome" for "a private chat opened while a public model is bound".
+        // Neither half held. This read carried no proof, so the daemon refused
+        // it for EVERY private chat, whatever model was bound — measured with a
+        // chat on its own private model — and what followed was not correct:
+        // the chip showed this renderer's cache instead of the daemon's
+        // selection, and the next toggle wrote that stale set back over it. A
+        // refusal still lands here for a caller that genuinely has neither the
+        // proof nor a private model (a daemon started without a user-action
+        // key, a browser tab not running a private model), and only there is
+        // it the right answer.
         console.warn('Knowledge selection not hydrated:', briefSelectionFailure(err));
         setPrimaryKbIdState(local);
         setHiddenKbIdsState(localHidden);
