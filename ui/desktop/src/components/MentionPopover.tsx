@@ -12,6 +12,7 @@ import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
 import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBases } from '../api';
 import type { CatalogView } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { IMAGE_EXTENSIONS } from '../utils/imageFormats';
 import { labelledRefTag, refTag, type RefKind } from '../utils/resourceRefs';
@@ -549,10 +550,17 @@ const MentionPopover = forwardRef<
               ? getSlashCommands({ throwOnError: true })
               : Promise.resolve({ data: { commands: [] } }),
             listBases({ throwOnError: false }),
-            getActive({
-              query: sessionId ? { session_id: sessionId } : undefined,
-              throwOnError: false,
-            }),
+            // Issue #56 Task 58: a GET naming a PRIVATE chat needs the user's
+            // proof, as `setActive` sends it. Refused, the rows below fell back
+            // to "nothing hidden, nothing primary" and offered every base as
+            // one this chat has.
+            userActionHeaders().then((headers) =>
+              getActive({
+                query: sessionId ? { session_id: sessionId } : undefined,
+                headers,
+                throwOnError: false,
+              })
+            ),
             // The daemon's catalog, not a renderer scan: a skill bundled inside
             // an installed extension was loadable by the model and absent from
             // this list, so `@skill:word` completed to nothing (#113).

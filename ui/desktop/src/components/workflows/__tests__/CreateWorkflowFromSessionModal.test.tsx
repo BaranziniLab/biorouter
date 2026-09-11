@@ -1,10 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CreateWorkflowFromSessionModal from '../CreateWorkflowFromSessionModal';
-import { createWorkflow, skillCatalogHandler } from '../../../api/sdk.gen';
+import { createWorkflow, getActive, listBases, skillCatalogHandler } from '../../../api/sdk.gen';
 import type { CreateWorkflowResponse } from '../../../api/types.gen';
 import { saveWorkflow } from '../../../workflow/workflow_management';
+import { reachGatedGetActive, USER_ACTION_KEY } from '../../../test/reachGate';
 
 vi.mock('../../../api/sdk.gen', () => ({
   createWorkflow: vi.fn(),
@@ -70,6 +71,8 @@ vi.mock('../../../workflow/workflow_management', () => ({
 }));
 
 const mockCreateWorkflow = vi.mocked(createWorkflow);
+const mockGetActive = vi.mocked(getActive);
+const mockListBases = vi.mocked(listBases);
 const mockSkillCatalog = vi.mocked(skillCatalogHandler);
 const mockSaveWorkflow = vi.mocked(saveWorkflow);
 
@@ -481,6 +484,93 @@ describe('CreateWorkflowFromSessionModal', () => {
 
       const createButton = screen.getByTestId('create-workflow-button');
       expect(createButton).toBeDisabled();
+    });
+  });
+
+  /**
+   * Issue #56 Task 58: the modal reads the chat's knowledge-base selection with
+   * `GET /knowledge/active`, and naming a PRIVATE chat there is on the daemon's
+   * reach gate. The read carried no proof, was refused, and the modal fell back
+   * to "nothing is hidden, nothing is primary" — so a workflow captured from a
+   * private chat took EVERY base, with whichever came first as its default.
+   */
+  describe('from a private chat', () => {
+    const PRIVATE_CHAT = 'private-session-id';
+    const kb = (id: string) => ({ id, name: id, color: '#cf6d47', created_at: '' });
+
+    beforeEach(() => {
+      Object.assign(window, {
+        electron: {
+          listSkillDirs: vi.fn().mockResolvedValue([]),
+          getUserActionKey: vi.fn(async () => USER_ACTION_KEY),
+        },
+      });
+      mockListBases.mockResolvedValue({
+        data: [kb('soul'), kb('lab-notes'), kb('grant-drafts')],
+        error: undefined,
+      } as never);
+      mockGetActive.mockImplementation(
+        reachGatedGetActive([PRIVATE_CHAT], () => ({
+          kb_ids: ['lab-notes', 'soul'],
+          primary_kb: 'lab-notes',
+          active_kb: 'lab-notes',
+          hidden_kbs: ['grant-drafts'],
+        })) as never
+      );
+      // A generation with no knowledge-base block of its own, so the chat's
+      // selection is the only place the saved workflow can take its bases from.
+      mockCreateWorkflow.mockResolvedValue({
+        data: {
+          workflow: {
+            title: 'Analyzed Workflow Title',
+            description: 'Analyzed description',
+            instructions: 'Analyzed instructions',
+          },
+          error: undefined,
+        },
+        error: undefined,
+        request: new globalThis.Request('http://localhost/test'),
+        response: new globalThis.Response(),
+      });
+    });
+
+    afterEach(() => {
+      // `clearAllMocks` keeps implementations, so put back what the rest of the
+      // file expects rather than leak this chat's gate into it.
+      mockListBases.mockResolvedValue({ data: [], error: undefined } as never);
+      mockGetActive.mockResolvedValue({
+        data: { active_kb: null, hidden_kbs: [] },
+        error: undefined,
+      } as never);
+    });
+
+    it("captures the chat's knowledge bases and its primary, not every base", async () => {
+      const user = userEvent.setup();
+      render(<CreateWorkflowFromSessionModal {...defaultProps} sessionId={PRIVATE_CHAT} />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByTestId('create-workflow-button')).toBeEnabled();
+        },
+        { timeout: 2000 }
+      );
+      await user.click(screen.getByTestId('create-workflow-button'));
+      await waitFor(() => {
+        expect(mockSaveWorkflow).toHaveBeenCalled();
+      });
+
+      expect(mockSaveWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          knowledge_bases: { default: 'lab-notes', visible: ['soul', 'lab-notes'] },
+        }),
+        null
+      );
+      expect(mockGetActive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: { session_id: PRIVATE_CHAT },
+          headers: { 'X-User-Action': USER_ACTION_KEY },
+        })
+      );
     });
   });
 });

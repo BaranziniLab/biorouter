@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
 import { createWorkflow, getActive, getSessionExtensions, listBases } from '../../api/sdk.gen';
+import { userActionHeaders } from '../../utils/userAction';
 import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
@@ -107,7 +108,12 @@ export default function CreateWorkflowFromSessionModal({
 
       Promise.all([
         listBases({ throwOnError: false }),
-        getActive({ query: { session_id: sessionId }, throwOnError: false }),
+        // Issue #56 Task 58: this modal opens from the chat it names, and a GET
+        // naming a PRIVATE chat needs the user's proof. Refused, the capture
+        // took every base, with whichever came first as its default.
+        userActionHeaders().then((headers) =>
+          getActive({ query: { session_id: sessionId }, headers, throwOnError: false })
+        ),
       ]).then(([basesRes, activeRes]) => {
         if (cancelled) return;
         const bases: Manifest[] = basesRes.data ?? [];
