@@ -1800,6 +1800,18 @@ enum TurnControlAuthority {
 /// ⚠ **Why a daemon that holds a key is not relaxed with it.** There the proof
 /// costs the person nothing — the renderer attaches it to every request — and it
 /// is what licenses the `UserDirect` stamp a steer carries.
+///
+/// ⚠ **The two refusals' SHAPES are read by the terminal.** `biorouter session`
+/// cannot ask a daemon whether it holds a key, so it sends a stop or a steer
+/// without the proof and reads the answer (`commands/session_watch.rs`,
+/// `key_verdict`): the `Unproven` arm's EMPTY 403 is the only thing that makes it
+/// ask the person for the key, and a refusal carrying a sentence — every one the
+/// keyless arm can give — is shown instead, because no key would change it. So
+/// a sentence added to `Unproven` would stop the terminal asking for the key on
+/// the desktop's daemon, and an empty refusal on the keyless arm would make it
+/// ask a `serve` user for a key that does not exist. Both are pinned: the keyed
+/// side here in `integration_tests`, the keyless side in
+/// `tests/turn_control_no_user_key.rs`.
 async fn authorize_turn_control(
     state: &AppState,
     session_id: &str,
@@ -4702,6 +4714,58 @@ mod tests {
             assert!(
                 !agent.has_soft_interrupts(),
                 "an unproven caller must not enqueue text attributed to the user"
+            );
+        }
+
+        /// The keyed half of what `biorouter session` reads before it asks a
+        /// person for the key (`commands/session_watch.rs::key_verdict`). On a
+        /// daemon that holds one, turn control refuses a request without the
+        /// proof with an EMPTY 403 — the one refusal a daemon without a key
+        /// never gives (`tests/turn_control_no_user_key.rs`) — and refuses it
+        /// before it reads the text, so the empty steer the terminal asks with
+        /// is answered by the gate, not by the text check. With the proof, the
+        /// same empty steer is the 400 the terminal takes as "this key opens
+        /// the gate". None of it touches the turn or the queue.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_unproven_stop_or_steer_is_refused_empty_before_its_text_is_read() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let _guard = state
+                .try_begin_turn_idempotent("keyed-question", token.clone(), None)
+                .expect("turn lock acquired");
+            let agent = state.get_agent("keyed-question".to_string()).await.unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("agent-turn-keyed-question"));
+
+            for mut request in [
+                interrupt_request("keyed-question", ""),
+                interrupt_request("keyed-question", "pretend the user said this"),
+                cancel_request("keyed-question"),
+            ] {
+                let route = request.uri().path().to_string();
+                request.headers_mut().remove("X-User-Action");
+                let response = routes(Arc::clone(&state)).oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route}");
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                assert!(
+                    body.is_empty(),
+                    "{route}: a sentence here reads to the terminal as a refusal no key can \
+                     change, so it would never ask for the key: {}",
+                    String::from_utf8_lossy(&body)
+                );
+            }
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(interrupt_request("keyed-question", ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(!token.is_cancelled(), "a refused Stop reached the turn");
+            assert!(
+                !agent.has_soft_interrupts(),
+                "the terminal's question reached the agent's queue"
             );
         }
 
