@@ -28,12 +28,14 @@ async function connectVersaAzure() {
 }
 
 async function connectVersaBedrock() {
-  render(<InstitutionalSetupCard onSuccess={vi.fn()} />);
+  const onSuccess = vi.fn();
+  render(<InstitutionalSetupCard onSuccess={onSuccess} />);
   fireEvent.click(screen.getByRole('tab', { name: /Bedrock/i }));
   fireEvent.change(screen.getByLabelText(/Access Key ID/i), { target: { value: 'an-id' } });
   fireEvent.change(screen.getByLabelText(/Secret Access Key/i), { target: { value: 'a-secret' } });
   fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Bedrock/i }));
-  await waitFor(() => expect(mockCheckProvider).toHaveBeenCalled());
+  // Past `checkProvider`, so every write the connect makes has been recorded.
+  await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('versa_bedrock'));
 }
 
 describe('InstitutionalSetupCard', () => {
@@ -77,12 +79,14 @@ describe('InstitutionalSetupCard', () => {
     expect(written.filter((key) => key.startsWith('AWS_'))).toEqual([]);
   });
 
-  it('writes the Versa Bedrock credentials and its namespaced overrides', async () => {
+  it('writes the Versa Bedrock credentials and overrides, then selects the provider', async () => {
     await connectVersaBedrock();
-    const written = mockUpsert.mock.calls.map((c) => c[0] as string);
-    expect(written).toContain('VERSA_BEDROCK_ACCESS_KEY_ID');
-    expect(written).toContain('VERSA_BEDROCK_SECRET_ACCESS_KEY');
-    expect(written).toContain('VERSA_BEDROCK_ENDPOINT');
-    expect(written).toContain('VERSA_BEDROCK_REGION');
+    expect(mockUpsert.mock.calls).toEqual([
+      ['VERSA_BEDROCK_ACCESS_KEY_ID', 'an-id', true],
+      ['VERSA_BEDROCK_SECRET_ACCESS_KEY', 'a-secret', true],
+      ['VERSA_BEDROCK_ENDPOINT', 'https://unified-api.ucsf.edu/general/awsai', false],
+      ['VERSA_BEDROCK_REGION', 'us-west-2', false],
+      ['BIOROUTER_PROVIDER', 'versa_bedrock', false],
+    ]);
   });
 });
