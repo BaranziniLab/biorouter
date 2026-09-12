@@ -200,11 +200,22 @@ export default function ToolConfirmation({
   // a blank prompt used to paint an empty warning band *and* take the user's
   // "Always Allow" away.
   //
-  // ⚠ It is also why nothing but an inspector may write that field. The
-  // coding-agent bridge used to put its own framing there ("<child> asked to run
-  // this through Biorouter"), which put every bridged call behind a warning
-  // banner with no way to grant a lasting permission. The card was reading the
-  // field correctly; the producer was misusing it. See `bridge.rs::await_approval`.
+  // ⚠ The coding-agent bridge used to put its own framing there ("<child> asked
+  // to run this through Biorouter"), which put every bridged call behind a
+  // warning banner with no way to grant a lasting permission. The card was
+  // reading the field correctly; the producer was misusing it. Fixed in
+  // `bridge.rs::await_approval` and pinned by `bridgeApprovalPrompt.test.ts`.
+  //
+  // ⚠ That guard covers `bridge.rs` and ONLY `bridge.rs` — it string-matches that
+  // one file. Do NOT read it as "nothing but an inspector writes `prompt`": five
+  // other production sites still put framing there, so their cards still draw the
+  // banner and still withhold "Always Allow" —
+  // `extension_manager_extension.rs` (install, delete), `platform_approval.rs`,
+  // `skills_extension.rs` and `bug_report/mod.rs`. Withholding the grant is
+  // arguably wanted for the destructive ones (they carry `requires_user_proof`),
+  // but the *banner* is not: one of them reads "install … from the trusted BAAM
+  // registry" under a warning triangle. Closing that needs a field distinct from
+  // `prompt`, which is a protocol change, so it is a known gap rather than a fix.
   const securityFinding = typeof prompt === 'string' && prompt.trim().length > 0;
 
   // One cohesive, bordered "permission request" card. A single border wraps the
