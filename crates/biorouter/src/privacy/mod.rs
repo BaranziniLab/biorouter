@@ -47,7 +47,7 @@ pub mod system_auth_windows;
 pub mod visibility;
 
 pub use affiliation::{CrossAffiliation, ExtensionAffiliation, ModelAffiliation};
-pub use alt_provider::assert_alt_provider_allowed;
+pub use alt_provider::{assert_alt_provider_allowed, assert_alt_provider_matches_session};
 pub use capability::CallCapability;
 pub use config_keys::is_capability_key;
 pub use extensions::{

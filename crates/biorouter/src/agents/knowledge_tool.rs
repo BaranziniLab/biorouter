@@ -414,7 +414,7 @@ async fn build_model_ref_completer(
     Ok((Box::new(completer), tier, affiliation))
 }
 
-/// The provider behind a [`ModelRef`], past **Gate H**.
+/// The provider behind a [`ModelRef`], past **Gate H's ratcheting half**.
 ///
 /// Split out of [`build_model_ref_completer`] so a caller that needs the
 /// provider itself — a batch, which mints one completer per source from one
@@ -427,6 +427,27 @@ async fn build_model_ref_completer(
 /// to consult. `what` and `env_key_to_name` are Gate H's own two strings — the
 /// feature named in the refusal and the knob that fixes it — and they differ per
 /// caller, which is why they are arguments rather than constants here.
+///
+/// ⚠ **It asks [`crate::privacy::assert_alt_provider_matches_session`], not its
+/// laxer sibling, and that is the whole of the fix for the Gate H finding.** The
+/// tier of the provider built here does not stay in this process: it becomes
+/// `SourceIngestArgs::caller_capability` / `ConversationIngestArgs::caller_capability`,
+/// which crosses to `caller_is_private` and lands in
+/// `knowledge::tier::raise_unlocked` — a permanent, monotone ratchet on a
+/// knowledge base. So the upward choice `bind_allowed` waves through (a PRIVATE
+/// provider named by a PUBLIC chat) is not harmless here: it privatises that
+/// chat's own base for good, after which every KB read choke point refuses the
+/// chat with `tier::KB_PRIVATE_REFUSAL`. Measured before the fix: the tool
+/// returned an ordinary report (*"Curated 0 of 1 source(s) … on ollama/qwen3"*)
+/// while `tier::is_private` flipped to `true` and the public caller's
+/// `can_reach` to `false` — a base lost to a failed ingest.
+///
+/// This is the choke point rather than the tool's own handler because both
+/// knowledge paths reach an alternate provider through here: the `model`
+/// argument of `platform__ingest_source` (a name the MODEL wrote) and a base's
+/// stored `default_model` on a scheduled digest. Both end in the same ratchet,
+/// so both take the same rule, and a third knowledge path cannot be added
+/// without passing it.
 pub(crate) async fn build_model_ref_provider(
     model: &ModelRef,
     session: crate::privacy::SessionClassification,
@@ -437,7 +458,12 @@ pub(crate) async fn build_model_ref_provider(
     let provider = crate::providers::create(&model.provider, model_config).await?;
     // AFTER `create`: the tier belongs to the instance that was resolved, not to
     // the name the manifest asked for. Constructing it discloses nothing.
-    crate::privacy::assert_alt_provider_allowed(what, provider.as_ref(), session, env_key_to_name)?;
+    crate::privacy::assert_alt_provider_matches_session(
+        what,
+        provider.as_ref(),
+        session,
+        env_key_to_name,
+    )?;
     Ok(provider)
 }
 
@@ -887,6 +913,26 @@ mod tests {
         )
         .await
         .is_ok());
+
+        // The fourth cell, and the one this path needs the STRICTER half of Gate
+        // H for: a PUBLIC session on a PRIVATE default model. `bind_allowed`
+        // permits it — nothing leaks upward — but the tier that comes back is
+        // what ratchets the target base, so permitting it hands a public
+        // scheduled digest the power to privatise the base it writes into. It is
+        // refused here and the refusal names the base's own knob.
+        let raise = crate::config::with_config_overrides(
+            ollama_at("http://localhost:11434"),
+            build_model_ref_completer(&model, SessionClassification::Public, None),
+        )
+        .await
+        .err()
+        .expect("a public chat may not digest itself on the base's private default model")
+        .to_string();
+        assert!(raise.contains("private model"), "{raise}");
+        assert!(
+            raise.contains("knowledge base's default model"),
+            "the refusal must name the knob that fixes it: {raise}"
+        );
     }
 
     /// Issue #56 Gate H, the *wiring*. The test above proves
