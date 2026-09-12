@@ -334,6 +334,42 @@ describe('ToolCallConfirmation (BR-63)', () => {
     expect(screen.queryByRole('button', { name: /Always Allow/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Deny/i })).toBeInTheDocument();
   });
+
+  /**
+   * The other half of the same rule, and the one that was wrong in practice.
+   *
+   * `prompt` is `approval_prompt_for_request` — an inspector's reason for
+   * escalating — so a card with none is an ordinary permission ask and the user
+   * may grant a lasting permission from it. The coding-agent bridge used to fill
+   * that field with its own framing ("<child> asked to run this through
+   * Biorouter"), so every bridged call arrived under a warning banner with
+   * "Always Allow" withheld: a security verdict the daemon never reached.
+   * `bridge.rs` no longer writes it, and `bridgeApprovalPrompt.test.ts` keeps it
+   * that way.
+   */
+  it('offers "Always Allow" for an ordinary ask, with no warning banner', () => {
+    renderCard({
+      prompt: null,
+      preview: { kind: 'shell', command: 'ls -la', truncated: false },
+    });
+
+    expect(screen.getByRole('button', { name: /Always Allow/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('tool-security-finding')).not.toBeInTheDocument();
+  });
+
+  /**
+   * A blank prompt is not a finding. A daemon sending `" "` — or a future
+   * producer trimming a message to nothing — used to paint an empty warning band
+   * AND take the user's "Always Allow" away, which is the worst of both: a
+   * warning that says nothing, and a permission that cannot be granted because
+   * of it.
+   */
+  it('treats a blank prompt as no finding at all', () => {
+    renderCard({ prompt: '   ' });
+
+    expect(screen.getByRole('button', { name: /Always Allow/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('tool-security-finding')).not.toBeInTheDocument();
+  });
 });
 
 /**

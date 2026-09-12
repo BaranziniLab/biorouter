@@ -196,9 +196,32 @@ export function AppTooltipLayer() {
     }
   }, [horizontalShift, tooltip]);
 
+  // A tooltip outlives its target when the target LEAVES rather than when the
+  // pointer does: hover a row control, change route without moving the pointer,
+  // and no `pointerout` is ever delivered — the element the pointer was over is
+  // simply gone, and the tooltip stays on screen describing nothing.
+  //
+  // ⚠ This used to be `useEffect(… , [tooltip])`, which is a check that runs
+  // only when the tooltip STATE changes — never for the one case it was written
+  // for. Adding `tooltip.target` to the deps does not fix it either: a node
+  // reference does not change when the node is removed. The removal is a DOM
+  // event, so it takes a DOM observer.
+  const tooltipTarget = tooltip?.target ?? null;
   useEffect(() => {
-    if (tooltip && !tooltip.target.isConnected) setTooltip(null);
-  }, [tooltip]);
+    if (!tooltipTarget) return;
+    if (!tooltipTarget.isConnected) {
+      setTooltip(null);
+      return;
+    }
+    const dismissWhenTargetLeaves = () => {
+      if (!tooltipTarget.isConnected) setTooltip(null);
+    };
+    // Only while a tooltip is open, and only an `isConnected` read per batch —
+    // the observer is torn down the moment the tooltip closes.
+    const observer = new MutationObserver(dismissWhenTargetLeaves);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [tooltipTarget]);
 
   if (!tooltip) return null;
 

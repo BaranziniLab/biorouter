@@ -108,6 +108,34 @@ describe('AppTooltipLayer', () => {
     expect(tooltip).toHaveClass('w-max', 'max-w-[min(20rem,calc(100vw-16px))]', 'break-words');
   });
 
+  /**
+   * The stranded tooltip. Hover a row control, then change route without moving
+   * the pointer: the target unmounts, so no `pointerout` is ever delivered and
+   * the tooltip is left on screen describing an element that no longer exists.
+   *
+   * The check for this was `useEffect(…, [tooltip])` — it ran when the tooltip
+   * STATE changed, which is never the case here.
+   */
+  it('dismisses a tooltip whose target leaves the page', async () => {
+    const { rerender } = render(
+      <>
+        <AppTooltipLayer />
+        <NativeTitleTarget title="Native action" />
+      </>
+    );
+
+    const target = screen.getByTestId('native-title-target');
+    await waitFor(() => expect(target).toHaveAttribute('data-biorouter-tooltip', 'Native action'));
+    fireEvent.pointerOver(target);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Native action');
+
+    // The route change. The pointer never moves, so the only signal is the
+    // removal itself.
+    rerender(<AppTooltipLayer />);
+
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+  });
+
   it('does not open after the pointer leaves during the delay', async () => {
     render(
       <>

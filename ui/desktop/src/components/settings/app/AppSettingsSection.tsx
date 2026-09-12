@@ -179,6 +179,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               checked={menuBarIconEnabled}
               onCheckedChange={handleMenuBarIconToggle}
               variant="mono"
+              aria-label="Menu bar icon"
             />
           </div>
 
@@ -195,6 +196,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 checked={dockIconEnabled}
                 onCheckedChange={handleDockIconToggle}
                 variant="mono"
+                aria-label="Dock icon"
               />
             </div>
           )}
@@ -210,6 +212,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               checked={wakelockEnabled}
               onCheckedChange={handleWakelockToggle}
               variant="mono"
+              aria-label="Prevent sleep"
             />
           </div>
 
@@ -225,6 +228,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 checked={showPricing}
                 onCheckedChange={handleShowPricingToggle}
                 variant="mono"
+                aria-label="Cost tracking"
               />
             </div>
           )}

@@ -11,12 +11,34 @@ import { cn } from '../../utils';
  * under a page title. The OS control has no idea the app has themes, and no
  * amount of surrounding styling can reach inside it.
  *
- * Built exactly like {@link CustomRadio}, its sibling in the same spec section:
- * a `peer sr-only` native input driving styled siblings. That keeps every native
- * behaviour — keyboard, focus, form participation, the label's `htmlFor`
- * association, indeterminate state — without adding a Radix package for one
- * control, and it is why the ring and the tick can both respond to
- * `peer-checked`.
+ * Built like {@link CustomRadio}, its sibling in the same spec section: a `peer`
+ * native input driving styled siblings. That keeps every native behaviour —
+ * keyboard, focus, form participation, the label's `htmlFor` association,
+ * indeterminate state — without adding a Radix package for one control, and it
+ * is why the ring and the tick can both respond to `peer-checked`.
+ *
+ * ⚠ **The input is the hit target, not an `sr-only` sliver.** It used to be
+ * `peer sr-only` — a 1px clipped box in the corner — which made the 22px square
+ * everybody can see a picture rather than a control: the only way to toggle it
+ * was the keyboard, or a `<label>` that a call site had to remember to provide.
+ * Two shipped screens did not (measured 2026-09-11: `ResetPanel`'s per-category
+ * boxes toggled on nothing at all, and `ExportAppDialog`'s toggled only on their
+ * text, because the label sat beside the box rather than around it).
+ *
+ * So the fix is here rather than at the call sites: an `appearance-none
+ * opacity-0` input stretched over the whole 24px target. It is the topmost
+ * thing in the box and every sibling is `pointer-events-none`, so a click
+ * anywhere on the square lands on the real input. `appearance-none` plus
+ * `opacity-0` is what keeps the OS from drawing its own un-themeable box on top
+ * of ours — the reason the original reached for `sr-only`. Wrapping it in a
+ * `<label>` still works exactly as before: the browser does not forward a label
+ * activation whose target is already the labelled control, so there is no
+ * double toggle.
+ *
+ * The visible square also carries the focus ring now. The global
+ * `input[type='checkbox']:focus-visible` rule in `main.css` paints a background
+ * and removes the outline, which on a transparent input is no indication at all,
+ * so keyboard focus was invisible whichever way the input was hidden.
  *
  * Geometry is the radio's, so a checkbox and a radio stacked in one list agree
  * on their optical axis: a 22px visual box inside a 24px hit target. The outer
@@ -62,7 +84,10 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
             else if (forwardedRef) forwardedRef.current = node;
           }}
           disabled={disabled}
-          className={cn('peer sr-only', !disabled && 'cursor-pointer')}
+          className={cn(
+            'peer absolute inset-0 m-0 h-full w-full appearance-none opacity-0',
+            !disabled && 'cursor-pointer'
+          )}
           {...props}
         />
         {/* `--border-emphasized` is the interactive-border token (§3.2) — ink at
@@ -72,7 +97,8 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
           className="pointer-events-none absolute inset-[1px] rounded-inner border-[1.5px] border-border-emphasized
                      transition-colors
                      peer-checked:border-border-accent peer-checked:bg-background-accent
-                     peer-indeterminate:border-border-accent peer-indeterminate:bg-background-accent"
+                     peer-indeterminate:border-border-accent peer-indeterminate:bg-background-accent
+                     peer-focus-visible:ring-2 peer-focus-visible:ring-border-focus"
         />
         {/* The mark is `--text-on-accent`, not `white`: that is the one token
             whose contract is "legible on the accent fill", which is exactly the

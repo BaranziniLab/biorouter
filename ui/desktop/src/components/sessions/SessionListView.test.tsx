@@ -713,10 +713,13 @@ describe('SessionListView subagent toggle', () => {
     );
 
     const input = await screen.findByLabelText(/show subagent runs/i);
-    // `sr-only` is what hands the painting to the app's own box. A revert to the
-    // native control fails here, and the label association below keeps the
-    // accessible control from being replaced by a decorative div.
-    expect(input).toHaveClass('sr-only');
+    // `appearance-none opacity-0` is what hands the painting to the app's own
+    // box. A revert to the native control fails here, and the label association
+    // below keeps the accessible control from being replaced by a decorative div.
+    // (It read `sr-only` until the primitive stopped hiding its input in a 1px
+    // corner — see `Checkbox.tsx`: that shape made the visible square a picture
+    // unless a call site remembered to wrap it in a label.)
+    expect(input).toHaveClass('appearance-none', 'opacity-0');
     expect(input).toHaveAttribute('type', 'checkbox');
 
     fireEvent.click(input);
