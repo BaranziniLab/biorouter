@@ -26,6 +26,11 @@
  *   * Filler words are dropped ("a skill about R" is `r`), because in a union a
  *     word like `for` or `about` inflates the term count of every card whose
  *     prose happens to use it.
+ *   * An unanchored match has to be worth something — see `substantialInfix`.
+ *     Three characters is enough to search FROM THE START of a word and not
+ *     enough to search inside a long one: measured on this page against the live
+ *     registry, `lab` showed 37 of 37 extension cards through `BaranziniLab` and
+ *     `gen` and `age` 36 each through `…Agent`.
  *
  * **License is deliberately NOT searched**, matching the Rust matcher's field
  * list. That is why the callers build a weighted field list out of the card's
@@ -73,6 +78,10 @@
   /* Below this many characters a term matches whole words only. */
   var MIN_PARTIAL_CHARS = 3;
 
+  /* At or above this many characters a term may match anywhere inside a word,
+     however long the word. Below it, `substantialInfix` asks for half. */
+  var MIN_INFIX_CHARS = 4;
+
   /* Split at every character that is not a letter or digit — whitespace and
      punctuation alike, so `r-scripting` is `r` + `scripting` and `ggplot2`
      stays one word. The Unicode classes stand in for Rust's
@@ -103,14 +112,42 @@
     return meaningful.length > 0 ? meaningful : all;
   }
 
+  /* Is `term`, found inside `word` without touching its start, enough of that
+     word to be a search rather than a morpheme?
+
+     The matcher already grades an anchored match above an unanchored one — a
+     prefix scores 2, an infix 1 — and MIN_PARTIAL_CHARS was the only admission
+     gate, so three characters bought a match anywhere inside any word. Measured
+     on this page against the live 37-entry extensions shelf: `lab` -> 37 of 37,
+     `gen` -> 36, `age` -> 36, through an infix of `baranzinilab` in the org line
+     and of `…Agent` in each card's own heading. So it is a rule, not a field:
+     dropping the org line fixes one of the three and nothing can drop a heading.
+
+     An unanchored match therefore needs either MIN_INFIX_CHARS characters or half
+     the word it sits in. Two arms, because each closes a case the other gets
+     wrong, and both were measured over the registry's own vocabulary (807 words):
+     a flat four-character floor loses `rna` inside `scRNA`/`rRNA`/`miRNA` and
+     `sem` inside `RSEM`; a flat half-the-word ratio loses `omics` inside
+     `transcriptomics` and `flow` inside `workflows`. Half is the proportion the
+     infix rule's own documented case sits at — `heatmap` is 7 of
+     `complexheatmap`'s 14.
+
+     `substantial_infix` in catalog_search.rs; a change here is a change there and
+     in ui/desktop/src/components/baam/search.ts. */
+  function substantialInfix(term, word) {
+    var termChars = Array.from(term).length;
+    return termChars >= MIN_INFIX_CHARS || termChars * 2 >= Array.from(word).length;
+  }
+
   /* How well `term` matches one field word: 3 for the whole word, 2 for its
      start, 1 for anywhere inside it (`heatmap` in `complexheatmap`), 0 for no
-     match. A short term matches whole words only. */
+     match. A short term matches whole words only, and a term that is short
+     relative to the word matches only at its start — see `substantialInfix`. */
   function strength(term, word) {
     if (word === term) return 3;
     if (Array.from(term).length < MIN_PARTIAL_CHARS) return 0;
     if (word.indexOf(term) === 0) return 2;
-    if (word.indexOf(term) !== -1) return 1;
+    if (word.indexOf(term) !== -1) return substantialInfix(term, word) ? 1 : 0;
     return 0;
   }
 
@@ -264,6 +301,7 @@
     words: words,
     terms: terms,
     writtenIn: writtenIn,
+    substantialInfix: substantialInfix,
     rank: rank,
     matching: matching
   };

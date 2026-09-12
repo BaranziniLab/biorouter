@@ -32,8 +32,11 @@
 //! 4. then the order the entries were given in — the registry's is by id, the
 //!    installed skills' by name — so a result never reshuffles.
 //!
-//! Two rules keep the union from drowning the useful hits, and both were needed
-//! by the measured query itself:
+//! Three rules keep the union from drowning the useful hits, and the first two
+//! were needed by the measured query itself. The third — an unanchored match has
+//! to be worth something, see [`substantial_infix`] — closes the same failure one
+//! step further in: a query that finds everything says nothing, whether it got
+//! there through a repeated field or through a three-letter morpheme.
 //!
 //! * **A term under three characters matches whole words only.** `r` has to
 //!   find the R language; as a substring it matched nearly every entry. The
@@ -52,7 +55,19 @@
 pub(crate) enum Weight {
     /// Free prose: a description.
     Prose = 1,
-    /// Curated labels: tags, keywords, a category, an organization, a bundle.
+    /// Curated labels: tags, keywords, an organization, a bundle.
+    ///
+    /// ⚠ **Not a curation bucket a surface also offers as a filter control.** A
+    /// skill's `category` was here, and it is the licence's defect again: `Core`
+    /// names 57 of the shipped registry's 129 skills and `Biomedical` 63, so
+    /// `core` returned 59 and `biomedical` 65 — half the catalog, ranked by a
+    /// word the user did not mean. Every surface that shows the category answers
+    /// it with a control instead — the desktop Browse-skills modal's own category
+    /// filter (`All` / `Core skills` / `Developer & authoring` /
+    /// `Biomedical analysis`, measured showing exactly the 9 Developer rows that
+    /// `developer` used to return), and three `data-facet="category"` chips on the
+    /// website shelf — and the website never searched it, so dropping it is also
+    /// what brings the three matchers into step. See `MarketplaceCatalog::search_skills`.
     Label = 2,
     /// What the entry is called: its id and names.
     Name = 3,
@@ -117,6 +132,10 @@ pub(crate) const EXTENSION_NOISE: &[&str] = &["extension", "extensions"];
 
 /// Below this many characters a term matches whole words only.
 const MIN_PARTIAL_CHARS: usize = 3;
+
+/// At or above this many characters a term may match anywhere inside a word,
+/// however long the word. Below it, [`substantial_infix`] asks for half.
+const MIN_INFIX_CHARS: usize = 4;
 
 /// One entry a search returned, with the query terms it matched.
 #[derive(Debug)]
@@ -240,9 +259,52 @@ fn terms(query: &str, noise: &[&str]) -> Vec<String> {
     }
 }
 
+/// Is `term`, found inside `word` without touching its start, enough of that
+/// word to be a search rather than a morpheme?
+///
+/// The matcher already grades an anchored match above an unanchored one — a
+/// prefix scores 2, an infix 1 — and [`MIN_PARTIAL_CHARS`] was the only
+/// admission gate, so three characters bought a match anywhere inside any word.
+/// Measured on the 37-entry extension shelf of the shipped registry, that is
+/// what made three-letter queries return it whole: `lab` → **37 of 37**, `gen` →
+/// 36, `age` → 36. Per hit, 32 of `lab`'s were an infix of `baranzinilab` — the
+/// organization — and 33 each of `gen`'s and `age`'s an infix of `…Agent` in the
+/// extension's own NAME. So this is not a field that can be dropped, the way the
+/// licence and the version were: `lab` alone would be fixed by dropping
+/// `organization`, and nothing can drop a name. What all three share is a
+/// three-letter term with no boundary on either side. On the skills shelf the
+/// same rule had `ing` matching 88 of 129, `ion` 84 and `ica` 33.
+///
+/// So an unanchored match needs either [`MIN_INFIX_CHARS`] characters, or half
+/// the word it sits in. Two arms rather than one number, because each closes a
+/// case the other gets wrong, and both were measured over the shipped registry's
+/// own vocabulary (807 distinct catalog words, every query a visitor could be
+/// echoing back):
+///
+/// * A flat four-character floor drops the hits a short term earns inside a
+///   SHORT word: `rna` in `scRNA`, `rRNA`, `miRNA`, `piRNA` and `sem` in `RSEM`
+///   are the search, not a morpheme. It cost `rna` `single-cell` and
+///   `microbiome`, and `sem` `rna-quantification` — 87 hits removed in total.
+/// * A flat half-the-word ratio drops the hits a LONG term earns inside a longer
+///   compound, which is most of a biomedical vocabulary: `omics` stopped finding
+///   `transcriptomics`, `metabolomics` and `epigenomics`, and `flow` stopped
+///   finding `workflows`. 143 hits removed, 30 queries touched.
+///
+/// Together: 73 hits removed over 15 of the 807, of which 34 are the `lab`
+/// flood; the rest are `pro` inside "reproducible"/"improving", `logs` inside
+/// "pathology", `end` inside "frontend"/"appendix". Half is also the proportion
+/// this rule's own documented case sits at — `heatmap` is 7 of
+/// `complexheatmap`'s 14 — so the arm that admits a short term is calibrated to
+/// the example the infix rule exists for, rather than to the queries it refuses.
+fn substantial_infix(term: &str, word: &str) -> bool {
+    let term_chars = term.chars().count();
+    term_chars >= MIN_INFIX_CHARS || term_chars * 2 >= word.chars().count()
+}
+
 /// How well `term` matches one field word: 3 for the whole word, 2 for its
 /// start, 1 for anywhere inside it (`heatmap` in `complexheatmap`), 0 for no
-/// match. A short term matches whole words only.
+/// match. A short term matches whole words only, and a term that is short
+/// relative to the word matches only at its start — see [`substantial_infix`].
 fn strength(term: &str, word: &str) -> u32 {
     if word == term {
         3
@@ -250,7 +312,7 @@ fn strength(term: &str, word: &str) -> u32 {
         0
     } else if word.starts_with(term) {
         2
-    } else if word.contains(term) {
+    } else if word.contains(term) && substantial_infix(term, word) {
         1
     } else {
         0
@@ -506,6 +568,41 @@ mod tests {
         assert_eq!(ids(&search), ["tidy-style", "shell-snippets"]);
         assert_eq!(search.hits[0].matched_terms, ["r", "scripting"]);
         assert_eq!(search.hits[1].matched_terms, ["scripting"]);
+    }
+
+    /// An unanchored match has to be worth something. Three characters is enough
+    /// to search from the START of a word — `gen` really does find `genomics` —
+    /// and, inside a long one, is a morpheme: `lab` inside `BaranziniLab` and
+    /// `gen` inside `…Agent` returned the whole 37-entry extension shelf.
+    ///
+    /// Asserted against [`strength`] directly, one word at a time, because at
+    /// catalog level the same query reaches the same entry through several words
+    /// and a count hides which rule admitted it.
+    #[test]
+    fn a_short_term_matches_inside_a_word_only_when_it_is_half_of_it() {
+        // The three measured floods, at the word each of them came through.
+        assert_eq!(strength("lab", "baranzinilab"), 0, "3 of 12");
+        assert_eq!(strength("gen", "cdwagent"), 0, "3 of 8");
+        assert_eq!(strength("age", "language"), 0, "3 of 8");
+        // Unanchored is the only thing refused. The start of a word still counts
+        // at three characters, and the whole word always counts.
+        assert_eq!(strength("gen", "genomics"), 2);
+        assert_eq!(strength("lab", "labarchives"), 2);
+        assert_eq!(strength("lab", "lab"), 3);
+        // A short term inside a SHORT word is the search, not a morpheme — and
+        // these are the hits a flat four-character floor would have cost.
+        assert_eq!(strength("rna", "scrna"), 1, "3 of 5");
+        assert_eq!(strength("rna", "rrna"), 1, "3 of 4");
+        assert_eq!(strength("sem", "rsem"), 1, "3 of 4");
+        assert_eq!(strength("age", "image"), 1, "3 of 5");
+        // At four characters a term is unanchored anywhere, however long the
+        // word — which is what keeps a compound biomedical vocabulary findable.
+        assert_eq!(strength("omics", "transcriptomics"), 1);
+        assert_eq!(strength("flow", "workflows"), 1);
+        // The case the infix rule was written for sits exactly on the boundary
+        // the short arm draws, so it would pass on either arm.
+        assert_eq!(strength("heatmap", "complexheatmap"), 1, "7 of 14");
+        assert!(substantial_infix("heatmap", "complexheatmap"));
     }
 
     #[test]
