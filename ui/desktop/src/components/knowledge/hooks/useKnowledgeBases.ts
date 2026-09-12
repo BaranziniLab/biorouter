@@ -3,6 +3,7 @@ import { createBase as apiCreate, deleteBase as apiDelete } from '../../../api';
 import { useKnowledge } from '../KnowledgeContext';
 import type { KbFormat, Manifest } from '../../../api/types.gen';
 import { knowledgeFetch } from './knowledgeRequest';
+import { userActionHeaders } from '../../../utils/userAction';
 
 export function useKnowledgeBases() {
   const { refresh, setPrimaryKbId } = useKnowledge();
@@ -74,7 +75,7 @@ export function useKnowledgeBases() {
    */
   const remove = useCallback(
     async (id: string): Promise<void> => {
-      await apiDelete({ throwOnError: true, path: { id } });
+      await apiDelete({ throwOnError: true, path: { id }, headers: await userActionHeaders() });
       await refresh();
     },
     [refresh]

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getCallableToolCount } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 import {
   SESSION_TOOLS_CHANGED_EVENT,
@@ -35,8 +36,11 @@ export const useToolCount = (sessionId: string, agentReady: boolean = true) => {
       controller?.abort();
       controller = new AbortController();
       try {
+        // With the user's proof: a private chat refuses this read to a caller
+        // without it (issue #56, QA 2026-09-10 M2).
         const response = await getCallableToolCount({
           query: { session_id: sessionId },
+          headers: await userActionHeaders(),
           signal: controller.signal,
         });
         if (cancelled || requestRevision !== revision) return;

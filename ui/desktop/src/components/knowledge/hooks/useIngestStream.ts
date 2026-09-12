@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { buildKnowledgeUrl, getSecretKey } from './knowledgeRequest';
+import { userActionHeaders } from '../../../utils/userAction';
 
 export type SubAgentEvent =
   | { kind: 'step'; index: number; assistant_text: string }
@@ -74,12 +75,17 @@ export function useIngestStream() {
       // `cfg.headers as Record<string,string>` is unreliable because
       // HeadersInit can be a Headers instance or a [string,string][] array.
       const xSecretKey = await getSecretKey();
+      // The user-action proof, as `knowledgeFetch` sends it: a macro names a
+      // base, and since issue #56's QA sweep (2026-09-10) a request without
+      // the proof is answered as a public model, which a private base refuses.
+      const proof = await userActionHeaders();
 
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: {
             'X-Secret-Key': xSecretKey,
+            ...proof,
             ...(requestInit.headers ?? {}),
           },
           body: requestInit.body,

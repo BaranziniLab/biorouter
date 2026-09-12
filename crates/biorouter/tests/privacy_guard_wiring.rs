@@ -336,25 +336,50 @@ const REGISTRY: &[Guard] = &[
             // handler which imported the module and never called the gate would
             // read as refs-only and stand out.
             Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(0, 3, 0),
+                kind: SiteKind::Unrelated,
+                what: "the MODULE qualifier on `session_reach::HttpCaller`, `http_caller` and \
+                       `work_reach`. `GET /active_work` filters through `lists_work` and its \
+                       cancel asks `work_reach`, which calls this function for the work's chat; \
+                       neither route calls it directly, which is what refs-only records here",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/agent.rs",
-                counts: c(5, 5, 0),
+                counts: c(6, 6, 0),
                 kind: SiteKind::Guard,
-                what: "`POST /agent/resume`, `POST /agent/update_from_session`, `POST \
-                       /agent/update_working_dir` and `GET /agent/callable_tool_count`, plus \
-                       the shared `authorize_agent_control` gate used by provider, extension, \
-                       stop, and restart mutations. On a \
-                       daemon that holds no user-action key that same gate is also the \
-                       turn-control gate of `/agent/cancel` and the two continuation routes \
-                       (SD-11), reached from `routes::reply`'s `authorize_turn_control` by \
-                       name — so SD-11 added no call here. `/interrupt` keeps the proof on \
-                       every daemon and reaches neither gate. \
-                       ⚠ The count went 4 → 5 on 2026-09-12, and the justification is a \
-                       ROUTE that had no gate at all rather than a second gate on a guarded \
-                       one: an SD-8 review of #260 found `callable_tool_count` answering any \
-                       caller that could name a chat, through `get_or_create_agent`, which \
-                       CREATES an agent for a session that has none — so the fix is the same \
-                       reach gate, placed before the fetch for the reason \
-                       `agent_add_extension` states at its own",
+                what: "`POST /agent/resume`, `POST /agent/update_from_session`, and `POST \
+                       /agent/update_working_dir`, plus the shared `authorize_agent_control` \
+                       gate used by provider, extension, stop, and restart mutations — and, \
+                       since QA's 2026-09-10 M2, `GET /agent/tools` (a private chat's \
+                       private-extension tool names, handed to a secret-only caller while \
+                       `add_extension` on the same chat refused) and `GET \
+                       /agent/callable_tool_count`, both of which mint an agent for the chat \
+                       they name. \
+                       ⚠ The count went 4 → 6, and BOTH justifications are routes that had no \
+                       gate at all rather than second gates on guarded ones: `/agent/tools` \
+                       answered any caller that could name a chat, and the SD-8 review of #260 \
+                       found `callable_tool_count` doing the same through `get_or_create_agent`, \
+                       which CREATES an agent for a session that has none — so each fix is the \
+                       same reach gate, placed before the fetch for the reason \
+                       `agent_add_extension` states at its own. \
+                       On a daemon that holds no user-action key `authorize_agent_control` is \
+                       also the turn-control gate of `/agent/cancel` and the two continuation \
+                       routes (SD-11), reached from `routes::reply`'s `authorize_turn_control` \
+                       by name — so SD-11 added no call here. `/interrupt` keeps the proof on \
+                       every daemon and reaches neither gate",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/knowledge.rs",
+                counts: c(1, 6, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /knowledge/bases/{id}/ingest-conversation`, one call inside the \
+                       loop over the chats the request names, before any transcript is read: \
+                       the route streams what a model makes of those chats back to its caller, \
+                       and a caller holding only the daemon secret could name a private model \
+                       (QA 2026-09-10 H2). The other five refs are the MODULE qualifier on \
+                       `session_reach::gate_knowledge_base`, `http_caller` (three handlers) and \
+                       `HttpCaller` — names that live beside the gate, not the gate",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/mod.rs",
@@ -376,12 +401,49 @@ const REGISTRY: &[Guard] = &[
                        reach gate at all",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(0, 5, 0),
+                kind: SiteKind::Unrelated,
+                what: "the MODULE qualifier five times, on no occasion this function. Once on \
+                       `session_reach::http_caller`, which filters `GET /schedule/{id}/sessions` \
+                       — a listing, gated by `lists_session`. Once on \
+                       `session_reach::work_reach` for `POST /schedule/{id}/kill`: the stop \
+                       resolves the run to its chat and asks THAT function, exactly as `POST \
+                       /active_work/{id}/cancel` does for the same kill, so neither route is \
+                       the easier way to stop a private chat's run. Once more on the same \
+                       function for `GET /schedule/{id}/inspect`, which hands back the chat a \
+                       run is in. The last two are `GET /schedule/list`'s redaction: the \
+                       qualifier on `http_caller`, and on the `HttpCaller` TYPE in \
+                       `redact_unreachable_chats`'s signature — a type, not a decision",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
-                counts: c(2, 2, 0),
+                counts: c(8, 10, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions/{id}` (the transcript) and `GET /sessions/{id}/export` \
-                       (the same transcript, `to_string_pretty`); the export sibling was \
-                       ungated until this sweep",
+                       (the same transcript, `to_string_pretty`), and — QA 2026-09-10 F0 and \
+                       the sweep it asked for — every other route that names a chat: `DELETE \
+                       /sessions/{id}` (measured deleting a private chat the read refused, four \
+                       of four), `PUT …/name`, `PUT …/user_workflow_values`, the in-place arm \
+                       of `POST …/edit_message` (it truncates), `GET …/extensions` and `GET \
+                       …/usage`. Ten refs: the module qualifier on each of the eight calls, \
+                       and on `http_caller` for the two listings",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/skills.rs",
+                counts: c(1, 1, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /skills/session`, which writes a skill's instructions into the \
+                       named chat's next turn (QA 2026-09-10, F0's sweep)",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/workflow.rs",
+                counts: c(1, 2, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /workflows/create`, which loads the named chat's whole transcript \
+                       and returns a workflow a model wrote from it (QA 2026-09-10, F0's \
+                       sweep). The second ref is the module qualifier on `http_caller`, which \
+                       filters the knowledge bases the workflow names",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_events.rs",
@@ -417,10 +479,12 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: SESSION_REACH,
-                counts: c(2, 0, 0),
+                counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`gate_knowledge_active`, whose GET query and POST body branches each \
-                       invoke the same reach gate",
+                       invoke the same reach gate; and `work_reach`, which asks it for the chat a \
+                       piece of running work belongs to, so stopping a chat's work is gated by \
+                       the very call that gates reading it",
             },
         ],
     },
@@ -448,10 +512,209 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(1, 0, 0),
+            counts: c(4, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach` itself, which is this predicate plus the two lookups that \
-                   feed it",
+                   feed it; and since QA's 2026-09-10 sweep `HttpCaller::admits` (a listing is \
+                   the rows this decision admits, one at a time — the one spelling that both \
+                   `lists_session` and, for running work, `lists_work` are) and \
+                   `HttpCaller::reach_knowledge_base` (the same decision with a knowledge base \
+                   as the target); and `work_reach`'s arm for running work that names no chat, \
+                   whose target is `Unreadable` because there is no chat to resolve. ONE \
+                   decision, four subjects: a second spelling of it is what this census exists \
+                   to stop",
+        }],
+    },
+    Guard {
+        ident: "http_caller",
+        defined_in: SESSION_REACH,
+        decides: "who is asking, resolved ONCE per request: the stated capability, the \
+                  user-action proof, DR-15's switch, and — on a serve daemon only — the \
+                  operator's tier for a request carrying the served document's cookie",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /active_work`, every running shell command and subagent prompt on \
+                       the machine, each row shown by the chat it belongs to — resolved once for \
+                       the whole list",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/knowledge.rs",
+                counts: c(3, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /knowledge/bases` (a private base omitted from a caller that \
+                       cannot open it) and both halves of `/knowledge/active` (the selection \
+                       filtered, and a write unable to move what its caller cannot see)",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /schedule/{id}/sessions`, a schedule's runs by name and directory; \
+                       and `GET /schedule/list`, which resolves the caller ONCE for the whole \
+                       listing and then redacts each row's chat-naming fields",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions` and `GET /sessions/sidebar` — QA 2026-09-10 M1, every \
+                       chat on the machine, titled, to a secret-only caller",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`gate_knowledge_base`, the layer on every `/knowledge/bases/{id}` route",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/workflow.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /workflows/create`, whose workflow names the chat's knowledge \
+                       bases — filtered to the ones its caller may open",
+            },
+        ],
+    },
+    Guard {
+        ident: "lists_session",
+        defined_in: SESSION_REACH,
+        decides: "whether a listing may show a caller a chat of a given classification: \
+                  exactly the singular gate's answer for that row, so omission and never \
+                  redaction",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /schedule/{id}/sessions`, filtered BEFORE its limit",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session.rs",
+                counts: c(3, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions`, and `GET /sessions/sidebar` twice: once to take the \
+                       one-query fast path for a caller shown every row, once per row of the \
+                       scan that pages a filtered view without ragged pages or a count oracle",
+            },
+        ],
+    },
+    Guard {
+        ident: "lists_work",
+        defined_in: SESSION_REACH,
+        decides: "whether a listing of RUNNING WORK may show a caller a row belonging to a given \
+                  chat — or to none. The chat is resolved metadata-only, and a row naming no \
+                  chat, or one that cannot be read, is answered as a private chat's row: its \
+                  command came from some chat and nothing says whose",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`visible_items`, which `GET /active_work` passes every row through — \
+                   background jobs, foreground commands, subagents, detached turns and scheduled \
+                   runs alike — after one `http_caller` for the whole list",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`redact_unreachable_chats`, twice: `GET /schedule/list` asks once for a \
+                       row's `current_session_id` and once for its `creator_session_id`, \
+                       because the two can name DIFFERENT chats. ⚠ Reusing this predicate \
+                       rather than writing a `may_name_chat` beside it is the point — 'may this \
+                       caller be told this chat exists' must have ONE spelling, and a second \
+                       one is the drift this census exists to catch. What differs is only what \
+                       a `false` does: `/active_work` drops the row, this drops the field, \
+                       because a schedule is not a chat and an idle one names none",
+            },
+        ],
+    },
+    Guard {
+        ident: "work_reach",
+        defined_in: SESSION_REACH,
+        decides: "whether an HTTP caller naming RUNNING WORK by its own handle may stop it: the \
+                  work's chat through `session_reach` itself, and work that names no chat — or a \
+                  handle that names nothing — as an unreadable target, refused in the same words",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /active_work/{id}/cancel`, after the id is resolved to its chat \
+                       (the registry entry's, or the running schedule's) and before the \
+                       registry's cancel action or the scheduler's kill. It stopped any chat's \
+                       work for a caller holding only the daemon secret",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /schedule/{id}/kill`, which stops the SAME run as the cancel route \
+                       above, reached by the schedule id instead of the work handle. ⚠ This \
+                       second call site is not redundancy: while it was missing, the gate on \
+                       the row above protected nothing for its `sched:` arm, because a caller \
+                       refused there re-issued the request one URL over and stopped the run \
+                       anyway. Both now resolve the run to its chat first, and both pass that \
+                       chat to `kill_running_job_in_session` so a run that changed under the \
+                       decision is refused rather than stopped. The second call is `GET \
+                       /schedule/{id}/inspect`, which answered any secret-holder with the chat \
+                       a schedule is running in — the association the listing beside it \
+                       redacts, handed over whole one route away",
+            },
+        ],
+    },
+    Guard {
+        ident: "reach_knowledge_base",
+        defined_in: SESSION_REACH,
+        decides: "whether an HTTP caller naming a knowledge base may reach it: the chat gate's \
+                  decision with the base's tier as the target, an absent or malformed id \
+                  answered as a private one",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/knowledge.rs",
+                counts: c(4, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the bases listing's filter, the selection response's filter, and \
+                       `POST /knowledge/active`'s two uses: the refusal for pinning a base the \
+                       caller cannot reach, and the predicate `set_selection_within` merges by",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`gate_knowledge_base`, which asks it for every `/knowledge/bases/{id}` \
+                       route before the handler runs",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/workflow.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /workflows/create`: a generated workflow's visible bases, and its \
+                       default one",
+            },
+        ],
+    },
+    Guard {
+        ident: "gate_knowledge_base",
+        defined_in: SESSION_REACH,
+        decides: "the knowledge-base reach gate, as ONE route layer on the sub-router holding \
+                  exactly the routes that name a base by `{id}`",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/knowledge.rs",
+            counts: c(0, 1, 0),
+            kind: SiteKind::Guard,
+            what: "`route_layer(from_fn_with_state(svc, session_reach::gate_knowledge_base))` \
+                   in `knowledge::router`. A REFERENCE, as `gate_knowledge_active`'s is: a \
+                   middleware never appears with parentheses",
         }],
     },
     Guard {
@@ -461,10 +724,12 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(1, 0, 0),
+            counts: c(2, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach`'s tier lookup, deliberately `with_messages: false` so \
-                   resolving a tier is never the way to load the transcript being refused",
+                   resolving a tier is never the way to load the transcript being refused; and \
+                   `HttpCaller::lists_work`'s, for a row of running work that names a chat — \
+                   the same lookup, so an unreadable chat fails closed there too",
         }],
     },
     // ----------------------------------------------------- extension tiering

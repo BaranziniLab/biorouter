@@ -4091,7 +4091,80 @@ impl KnowledgeService {
         primary: PrimaryUpdate<'_>,
     ) -> anyhow::Result<KbSelection> {
         let _lock = self.lock_root()?;
-        self.apply_selection_unlocked(session_id, hidden, primary)
+        self.apply_selection_unlocked(session_id, hidden, primary, &|_| true)
+    }
+
+    /// [`Self::set_selection`] for a caller that cannot reach every base (issue
+    /// #56, QA 2026-09-10 H2): **a caller changes only what it can see.**
+    ///
+    /// `reachable` is the caller's reach, decided by the daemon's HTTP gate.
+    /// For a caller that reaches everything it admits every id and this is
+    /// exactly [`Self::set_selection`]. For one that does not:
+    ///
+    /// * `hidden` is taken literally for the bases `reachable` admits, and every
+    ///   base it does not admit keeps the state it already had in this scope —
+    ///   neither hidden nor revealed by a list its caller was never shown. That
+    ///   is the case that matters: a renderer prunes ids missing from the list
+    ///   it was given, and a filtered list would otherwise un-hide every private
+    ///   base on the machine as a side effect of one click.
+    /// * `Clear` is a no-op when the scope's effective primary is a base the
+    ///   caller cannot reach. It was shown no primary, so it asked to clear none.
+    ///   `Inherit` likewise leaves a pin this scope holds on such a base: it
+    ///   would drop a choice the caller was never shown.
+    /// * `Set(id)` naming a base the caller cannot reach is refused. The route
+    ///   answers that case first, with the gate's own refusal; this is the
+    ///   backstop, and it names nothing.
+    /// * A refusal's list of available bases names only reachable ones.
+    ///
+    /// One root lock across the read of the stored state and the write, so the
+    /// merge cannot interleave with another writer (see [`Self::hide_kb`] for
+    /// why a read-modify-write across two calls loses an edit).
+    pub fn set_selection_within(
+        &self,
+        session_id: Option<&str>,
+        hidden: Option<&[String]>,
+        primary: PrimaryUpdate<'_>,
+        reachable: &dyn Fn(&str) -> bool,
+    ) -> anyhow::Result<KbSelection> {
+        let _lock = self.lock_root()?;
+        let hidden = match hidden {
+            None => None,
+            Some(submitted) => {
+                let mut next = Self::sanitize_kb_id_list(submitted)?
+                    .into_iter()
+                    .filter(|id| reachable(id))
+                    .collect::<Vec<_>>();
+                next.extend(
+                    self.hidden_for_scope_unlocked(session_id)?
+                        .into_iter()
+                        .filter(|id| !reachable(id)),
+                );
+                Some(next)
+            }
+        };
+        let primary = match primary {
+            PrimaryUpdate::Set(id) if !reachable(id) => {
+                anyhow::bail!("knowledge base '{id}' is not available")
+            }
+            PrimaryUpdate::Clear | PrimaryUpdate::Inherit => {
+                let own =
+                    self.read_primary_file_unlocked(&self.primary_path_for_scope(session_id))?;
+                // `Clear` is judged against the pointer the scope is USING and
+                // `Inherit` against the one it HOLDS: clearing hides what is
+                // shown, and inheriting drops only this scope's own pin.
+                let judged = match primary {
+                    PrimaryUpdate::Clear => self.effective_primary_unlocked(&own, session_id)?,
+                    _ => own,
+                };
+                if judged.pinned().is_some_and(|id| !reachable(id)) {
+                    PrimaryUpdate::Unchanged
+                } else {
+                    primary
+                }
+            }
+            other => other,
+        };
+        self.apply_selection_unlocked(session_id, hidden.as_deref(), primary, reachable)
     }
 
     /// Drop one base from this scope's set, in one root-locked step.
@@ -4118,7 +4191,7 @@ impl KnowledgeService {
         if !hidden.iter().any(|id| id == kb_id) {
             hidden.push(kb_id.to_string());
         }
-        self.apply_selection_unlocked(session_id, Some(&hidden), primary)
+        self.apply_selection_unlocked(session_id, Some(&hidden), primary, &|_| true)
     }
 
     /// Add one base to this scope's set (un-hide it), in one root-locked step.
@@ -4151,7 +4224,7 @@ impl KnowledgeService {
             .into_iter()
             .filter(|id| id != kb_id)
             .collect::<Vec<_>>();
-        self.apply_selection_unlocked(session_id, Some(&hidden), primary)
+        self.apply_selection_unlocked(session_id, Some(&hidden), primary, &|_| true)
     }
 
     /// Set this scope's set from the ids that should be **visible** — the
@@ -4176,7 +4249,7 @@ impl KnowledgeService {
             .into_iter()
             .filter(|id| !visible.contains(id))
             .collect::<Vec<_>>();
-        self.apply_selection_unlocked(session_id, Some(&hidden), primary)
+        self.apply_selection_unlocked(session_id, Some(&hidden), primary, &|_| true)
     }
 
     /// The engine behind every selection write: decide, validate, *then* write.
@@ -4190,11 +4263,18 @@ impl KnowledgeService {
     /// "commit" line can fail on anything but I/O.
     ///
     /// Callers must already hold the root lock.
+    ///
+    /// `listed` decides which bases a refusal may NAME when it lists what is
+    /// available: every base for the in-process callers, the reachable ones for
+    /// an HTTP caller that cannot reach them all (see
+    /// [`Self::set_selection_within`]). A refusal that enumerated the rest would
+    /// hand over the ids the caller was just refused.
     fn apply_selection_unlocked(
         &self,
         session_id: Option<&str>,
         hidden: Option<&[String]>,
         primary: PrimaryUpdate<'_>,
+        listed: &dyn Fn(&str) -> bool,
     ) -> anyhow::Result<KbSelection> {
         // ---- decide: touch nothing on disk until every branch has succeeded ----
         let installed = self.installed_kb_ids_unlocked()?;
@@ -4225,10 +4305,15 @@ impl KnowledgeService {
             PrimaryUpdate::Inherit => Some(StoredPrimary::Inherit),
             PrimaryUpdate::Set(id) => {
                 if !next_ids.iter().any(|known| known == id) {
-                    let available = if next_ids.is_empty() {
+                    let named = next_ids
+                        .iter()
+                        .filter(|known| listed(known))
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    let available = if named.is_empty() {
                         "none".to_string()
                     } else {
-                        next_ids.join(", ")
+                        named.join(", ")
                     };
                     // Scope-appropriate vocabulary: the CLI and scheduled jobs
                     // pass `None` and have no session concept at all (D11), so
@@ -7316,6 +7401,104 @@ mod tests {
         );
 
         let sel = svc.set_selection(Some("session-a"), None, PrimaryUpdate::Clear)?;
+        assert_eq!(sel.primary_kb, None);
+        Ok(())
+    }
+
+    /// Issue #56, QA 2026-09-10 H2: a caller that cannot reach every base
+    /// changes only the bases it can. Each rule is driven against the one a
+    /// plausible wrong implementation would break — taking the submitted set
+    /// literally, clearing a primary it was never shown, dropping a pin it could
+    /// not see, and naming the rest of the machine's bases in a refusal.
+    #[test]
+    fn a_limited_caller_changes_only_what_it_can_see() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "secret"] {
+            svc.create_base(id, id, None)?;
+        }
+        let sees = |id: &str| id != "secret";
+
+        // The user pins `secret` as this chat's primary, with nothing hidden.
+        svc.set_selection(Some("s1"), Some(&[]), PrimaryUpdate::Set("secret"))?;
+
+        // A limited caller rewrites the set naming only what it saw: `secret`
+        // stays visible (it was not hidden) and `beta` is hidden as asked.
+        let sel = svc.set_selection_within(
+            Some("s1"),
+            Some(&["beta".to_string()]),
+            PrimaryUpdate::Unchanged,
+            &sees,
+        )?;
+        assert_eq!(sel.hidden_kbs, vec!["beta".to_string()]);
+        assert_eq!(sel.primary_kb.as_deref(), Some("secret"));
+
+        // It asks to clear the primary it was shown as none: `secret` stays.
+        let sel = svc.set_selection_within(Some("s1"), None, PrimaryUpdate::Clear, &sees)?;
+        assert_eq!(
+            sel.primary_kb.as_deref(),
+            Some("secret"),
+            "cleared a hidden primary"
+        );
+        // …and to inherit, which would drop this chat's pin on `secret`: stays.
+        let sel = svc.set_selection_within(Some("s1"), None, PrimaryUpdate::Inherit, &sees)?;
+        assert_eq!(
+            sel.primary_kb.as_deref(),
+            Some("secret"),
+            "dropped a hidden pin"
+        );
+
+        // It may not hide `secret` by naming it, nor pin it.
+        let sel = svc.set_selection_within(
+            Some("s1"),
+            Some(&["secret".to_string()]),
+            PrimaryUpdate::Unchanged,
+            &sees,
+        )?;
+        assert!(
+            sel.hidden_kbs.is_empty(),
+            "hid a base it could not see: {sel:?}"
+        );
+        let err = svc
+            .set_selection_within(Some("s1"), None, PrimaryUpdate::Set("secret"), &sees)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("alpha") && !err.contains("beta"), "{err}");
+
+        // The user hides `secret`; a limited caller that "un-hides everything"
+        // leaves it hidden.
+        svc.set_selection(
+            Some("s1"),
+            Some(&["secret".to_string()]),
+            PrimaryUpdate::Set("alpha"),
+        )?;
+        let sel =
+            svc.set_selection_within(Some("s1"), Some(&[]), PrimaryUpdate::Unchanged, &sees)?;
+        assert_eq!(sel.hidden_kbs, vec!["secret".to_string()]);
+
+        // A refusal names only what the caller can see: hiding `beta` while
+        // pinning it fails, and the list of what IS available omits `secret`
+        // even though `secret` is not hidden from the set at this point.
+        svc.set_selection(Some("s1"), Some(&[]), PrimaryUpdate::Set("alpha"))?;
+        let err = svc
+            .set_selection_within(
+                Some("s1"),
+                Some(&["beta".to_string()]),
+                PrimaryUpdate::Set("beta"),
+                &sees,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("alpha"), "{err}");
+        assert!(
+            !err.contains("secret"),
+            "a refusal named a base the caller cannot see: {err}"
+        );
+
+        // A caller that sees everything is `set_selection`, byte for byte.
+        let everything = |_: &str| true;
+        let sel =
+            svc.set_selection_within(Some("s1"), Some(&[]), PrimaryUpdate::Clear, &everything)?;
         assert_eq!(sel.primary_kb, None);
         Ok(())
     }

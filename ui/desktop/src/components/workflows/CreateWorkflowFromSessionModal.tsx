@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
 import { createWorkflow, getSessionExtensions, listBases } from '../../api/sdk.gen';
+import { userActionHeaders } from '../../utils/userAction';
 import { readKnowledgeSelection } from '../knowledge/knowledgeSelection';
 import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
@@ -133,16 +134,29 @@ export default function CreateWorkflowFromSessionModal({
         setAnalysisStage(stages[currentStageIndex]);
       }, 800);
 
+      // The user's proof, on every request below that names this chat or its
+      // knowledge bases: since issue #56's QA sweep (2026-09-10) a request
+      // without it is answered as a public model, and a private chat — the
+      // chat this modal is opened from — would refuse all four.
+      const proof = userActionHeaders();
+
       // Pre-select session extensions immediately — independent of workflow analysis
-      getSessionExtensions({ path: { session_id: sessionId }, throwOnError: false }).then((res) => {
-        if (cancelled) return;
-        if (res.data?.extensions) {
-          setWorkflowExtensions(res.data.extensions);
-        }
-      });
+      void proof
+        .then((headers) =>
+          getSessionExtensions({ path: { session_id: sessionId }, headers, throwOnError: false })
+        )
+        .then((res) => {
+          if (cancelled) return;
+          if (res.data?.extensions) {
+            setWorkflowExtensions(res.data.extensions);
+          }
+        });
 
       Promise.all([
-        listBases({ throwOnError: false }),
+        // With the user's proof: since issue #56's QA sweep (2026-09-10) the
+        // daemon omits a private base from a caller without it, and a base
+        // missing from this list would be missing from the workflow saved here.
+        proof.then((headers) => listBases({ headers, throwOnError: false })),
         // Issue #56 Task 58: this modal opens from the chat it names, and the
         // read carries the user's proof, which a GET naming a PRIVATE chat
         // needs. `null` when the read failed anyway.
@@ -201,10 +215,14 @@ export default function CreateWorkflowFromSessionModal({
         });
 
       // Analyze the conversation to generate a suggested workflow
-      createWorkflow({
-        body: { session_id: sessionId },
-        throwOnError: true,
-      })
+      proof
+        .then((headers) =>
+          createWorkflow({
+            body: { session_id: sessionId },
+            headers,
+            throwOnError: true,
+          })
+        )
         .then((response) => {
           if (cancelled) return;
           clearInterval(stageInterval);

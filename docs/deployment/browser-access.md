@@ -114,9 +114,12 @@ carries a credential instead.
   discarded the cookie can all open the same address. Anyone holding the address can do the same,
   and stopping `serve` is how you revoke it ([decision SD-9](serve-decisions.md#sd-9--the-launch-token-works-until-the-daemon-stops-it-is-not-single-use)
   records why it is not single-use).
-- **The cookie gates the document and nothing else.** It is not accepted as authentication on any
-  API route. From the moment the page loads, the interface presents the daemon's secret key as a
-  header, exactly as the desktop application does.
+- **The cookie gates the document, and authenticates nothing else.** It is not accepted as
+  authentication on any API route. From the moment the page loads, the interface presents the
+  daemon's secret key as a header, exactly as the desktop application does. Its one other effect
+  narrows rather than admits: it tells the daemon a request came from the page it served, which
+  decides whether private chats and knowledge bases are listed there
+  ([decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else)).
 - **Opening the address without the token** returns a short page saying the link needs its access
   token. Open the full address the command printed, `?t=` included.
 
@@ -235,7 +238,7 @@ differs:
 
 | Area | In a browser |
 |---|---|
-| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application, with two differences that follow from the fixed model: a new chat starts on the host's configured model, and a private chat opens only on a host whose configured model is private. See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
+| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application, for everything public, with two differences that follow from the fixed model. A new chat starts on the host's configured model, and a private chat opens only on a host whose configured model is private — see [The model is fixed before you start](#the-model-is-fixed-before-you-start) and [decision SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does). **Private** chats and knowledge bases appear in History and the Knowledge view only when the provider you configured is private, and being listed does not by itself make a private chat openable — see [decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else). |
 | Workspace control, several conversations at once, live app agents | Work — these are WebSocket-backed daemon routes, reached on the same origin. |
 | Stopping a response, Stop and send | Work in an ordinary chat ([SD-11](serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)). |
 | Steering a response while it runs | **Not available.** Injecting text into a turn that is already running needs proof that a person acted, which only the desktop application holds. What you type is queued instead and sent when the turn ends, so nothing is lost — it simply does not redirect the answer in flight. |
@@ -290,6 +293,15 @@ origin it was given.
 **A file path the agent uses does not exist.** Paths are resolved on the serving machine. When the
 browser is on a different computer, its local files are not visible to the agent; copy them to the
 serving machine first.
+
+**A private chat or knowledge base you can see in the desktop app is missing from the browser.**
+Private chats and knowledge bases are shown in the browser only when the provider `serve` was
+started with is itself private, meaning institution-hosted or running on this machine, and only
+when `serve` was started with its access token (the default). The desktop app proves a person is at
+the keyboard; a browser cannot, so it is given the reach of the model its daemon runs on and no
+more. On a private provider the chat is listed, but being listed does not by itself let the
+browser open, rename or delete it; when it cannot, open the chat in the desktop app. The reasoning is
+[decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
 
 ### When the interface cannot be found
 

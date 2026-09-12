@@ -5,6 +5,7 @@ import { Message } from '../api';
 
 import { substituteParameters } from '../utils/providerUtils';
 import { updateSessionUserWorkflowValues } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import { useChatContext } from '../contexts/ChatContext';
 import { ChatType } from '../types/chat';
 import { toastError, toastSuccess } from '../toasts';
@@ -198,6 +199,9 @@ export const useWorkflowManager = (chat: ChatType, workflow?: Workflow | null) =
         body: {
           userWorkflowValues: inputValues,
         },
+        // With the user's proof: a private chat refuses this write to a caller
+        // without it (issue #56, QA 2026-09-10).
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       let resolvedWorkflow = response.data?.workflow;

@@ -64,6 +64,51 @@ this section is the ledger.
   written to it, the ratchet fires at four write choke points, the barrier refuses at the read ones,
   and a refusal names what it refused rather than returning a silently short answer. The user can
   publicize or privatize a base themselves, graded and audited.
+
+  ⚠ **"The read ones" were the tool path's until 2026-09-11.** Every `/knowledge/bases/{id}/…` HTTP
+  route was left ungated. The plan's scope note gave the reason: *"the Knowledge view is the user,
+  not a model"*. That premise was that holding the daemon secret meant being the user, and QA
+  measured it false on merged `main` at `7c96d796` (H2). A public chat's own shell recovered the
+  secret with `ps eww`, then read a private base's page, graph, history and `.brkb` export over
+  HTTP, while `kb_read_page` refused the same chat. The same run found three siblings. `GET
+  /sessions` listed every private chat with its title and directory (M1). `GET /agent/tools` named
+  a private chat's private-connector tools (M2). `DELETE /sessions/{id}` deleted a private chat the
+  read refused, four times out of four (F0).
+
+  They now share **one gate**, `routes::session_reach`'s pure decision: a private target needs the
+  caller's stated private capability or the user-action proof. It is applied as follows.
+
+  - **Chats.** Every route that names one chat asks `session_reach`: delete, rename, workflow values,
+    the in-place edit arm, extensions, usage, `/agent/tools`, `/agent/callable_tool_count`,
+    `/workflows/create`, `/skills/session`, and each chat `ingest-conversation` names. Each refuses
+    with `GET /sessions/{id}`'s own words, and answers a chat that does not exist the same way.
+  - **Chat listings.** `GET /sessions`, `/sessions/sidebar` and `/schedule/{id}/sessions` omit the
+    rows that gate would refuse.
+  - **Knowledge bases.** One route layer covers every route that names a base by `{id}`, reads and
+    writes alike. An absent or malformed id is answered as a private one.
+  - **Knowledge-base listings.** `GET /knowledge/bases` and `/knowledge/active` omit what the
+    caller cannot reach, and a selection write cannot move a base its caller cannot see.
+  - **Running work.** `GET /active_work` omits every row whose chat the caller could not open. A
+    row is a background job's or a foreground command's shell text, or a subagent's task prompt,
+    which is content rather than metadata. `POST /active_work/{id}/cancel` resolves its id to the
+    chat that owns the work and asks that chat's read gate before it stops anything, refusing in
+    the read's own words. A row that names no chat is answered as a private chat's row, because
+    its command came from some chat and nothing says whose. The shell now records the chat that
+    ran each command, which leaves that arm to work that genuinely has no chat. Open question 10
+    below was this.
+
+  The desktop app sends the proof on each of these calls and sees exactly what it saw before. A
+  `biorouter serve` browser keeps its operator's reach on listings and knowledge bases and gains
+  no transcript ([SD-10](../deployment/serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else)).
+  Nothing refused before is permitted now.
+
+  ⚠ **What it does not change**, stated so it is not over-read. Privacy remains a safety boundary
+  for a cooperating agent, not a security boundary. A public chat with a shell can still read the
+  knowledge base's files and `sessions.db` directly (DR-17 left the filesystem open; see *Did not
+  ship*), and a caller holding the secret can still state a private provider in `X-Caller-Provider`
+  (issue #47). What closed is the path through Biorouter's own API. The routes still open are
+  listed in `routes/session_reach.rs`'s module header and
+  [Reaching a private chat from a script](../deployment/programmatic-session-access.md#what-the-header-does-not-cover).
 - **Declassification (§12), graded** — a `turn:*` chat keeps its single click; every other
   provenance owes both the typed phrase and R18 / DR-20's operating-system authentication, and one
   predicate decides both so they cannot drift apart. In the desktop app, and as
@@ -3050,6 +3095,14 @@ prediction stands for whatever the next narrowest reading of it turns out to be.
     applied to it, but it is exposed only via `GET /active_work` for the GUI (the model-facing
     `workspace_read_conversation` / `workspace_watch` are session-scoped), so it may deserve its own
     fix rather than riding this one.
+    ✅ **Answered 2026-09-11, with its own fix.** It was wider than the title: `detail` carries
+    every running shell command verbatim, and `POST /active_work/{id}/cancel` stopped any of them.
+    Both routes now ask the HTTP reach gate about the chat that owns each row. The listing omits a
+    row its caller could not open, and the cancel refuses in the chat read's own words. A row that
+    names no chat is treated as a private chat's. The instrument is `routes::session_reach` rather
+    than `appears_in_list`, because an HTTP caller has no `CallCapability`; its capability is the
+    one it states, or the user's proof. The rule it applies is the same one. See
+    [Reaching a private chat from a script](../deployment/programmatic-session-access.md).
 11. **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because
     the barrier is in the extension manager, but the route is a standing hazard for every *future*
     inspector-based control, including BR-71's.

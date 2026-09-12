@@ -1304,6 +1304,10 @@ async fn update_from_session(
     responses(
         (status = 200, description = "Tools retrieved successfully", body = Vec<ToolInfo>),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary: `session_id` names a chat \
+                                      this caller may not reach, answered with the same refusal, \
+                                      word for word, that `GET /sessions/{session_id}` gives \
+                                      (body = plain text)"),
         (status = 408, description = "Extension timed out while loading for settings"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
@@ -1312,6 +1316,34 @@ async fn update_from_session(
 async fn get_tools(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetToolsQuery>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    // Issue #56, QA 2026-09-10 M2. Naming a private chat here handed a caller
+    // holding only the daemon secret that chat's private-extension tool names,
+    // while `add_extension` on the same chat refused it — and, worse, `get_agent`
+    // below MINTS an agent for the named chat, loading its extensions, on that
+    // caller's say-so. So the read's own gate runs first. The comment further
+    // down, about Gate E, is about which tools a MODEL is shown; this is about
+    // whether the CALLER may address the chat at all, and the empty id — the
+    // settings page's one global extension — names no chat and is not gated.
+    if !query.session_id.is_empty() {
+        if let Err(refusal) = crate::routes::session_reach::session_reach(
+            state.session_manager(),
+            &query.session_id,
+            &headers,
+        )
+        .await
+        {
+            return refusal.into_response();
+        }
+    }
+    permission_editor_tools(state, query).await.into_response()
+}
+
+/// The body of [`get_tools`], once the caller may address the named chat.
+async fn permission_editor_tools(
+    state: Arc<AppState>,
+    query: GetToolsQuery,
 ) -> Result<Json<Vec<ToolInfo>>, StatusCode> {
     let config = Config::global();
     let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
@@ -1438,11 +1470,9 @@ async fn get_tools(
     responses(
         (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      the named chat is private (or absent, and an unproven caller \
-                                      is told the same thing for both) and the request carried \
-                                      neither a capability that covers it nor proof it came from \
-                                      the user"),
+        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
+                                      word, that `GET /sessions/{session_id}` gives (body = plain \
+                                      text)"),
         (status = 424, description = "Agent not initialized")
     )
 )]
@@ -1452,20 +1482,44 @@ async fn get_callable_tool_count(
     // order the rest of this file uses.
     headers: axum::http::HeaderMap,
     Query(query): Query<CallableToolCountQuery>,
-) -> Result<Json<CallableToolCountResponse>, ErrorResponse> {
-    let session_id = query.session_id;
-    // Issue #56 Task 58 / #47. FIRST, before the agent is fetched, for the reason
-    // `agent_add_extension` states at length: `get_agent_for_route` CREATES an
-    // agent for a session that has none, so a gate below it would let an unproven
-    // caller materialise one for a chat it may not address — and this route's own
-    // 424 would then tell it what it had found. `session_id` is a request
-    // parameter, not a credential; see `routes::session_reach`.
+) -> axum::response::Response {
+    // Issue #56 Task 58 / #47, and QA 2026-09-10 M2's sibling. FIRST, before the
+    // agent is fetched, for the reason `agent_add_extension` states at length:
+    // `get_agent_for_route` CREATES an agent for a session that has none, so a
+    // gate below it would let an unproven caller materialise one for a chat it may
+    // not address — and this route's own 424 would then tell it what it had found.
+    // `session_id` is a request parameter, not a credential; see
+    // `routes::session_reach`.
     //
     // ⚠ This route had NO gate of any kind, and PR #260's renderer merely stopped
     // calling it for a subagent's chat, which left the route exactly as open as
     // it was. Routing a client around an ungated route does not gate it.
-    crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
-        .await?;
+    //
+    // ⚠ **The refusal is returned through `SessionOutOfReach`'s own
+    // `IntoResponse` — PLAIN TEXT, the bytes `GET /sessions/{session_id}`
+    // returns — and deliberately NOT with `?` through this route's
+    // `ErrorResponse`, which would wrap the same words in a JSON envelope.** One
+    // boundary has one body (see the module header of `routes::session_reach`),
+    // and that is the only reason the gate lives in this wrapper and the work
+    // lives in the function below rather than all in one body.
+    if let Err(refusal) = crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &query.session_id,
+        &headers,
+    )
+    .await
+    {
+        return refusal.into_response();
+    }
+    model_visible_tool_count(state, query).await.into_response()
+}
+
+/// The body of [`get_callable_tool_count`], once the caller may address the chat.
+async fn model_visible_tool_count(
+    state: Arc<AppState>,
+    query: CallableToolCountQuery,
+) -> Result<Json<CallableToolCountResponse>, ErrorResponse> {
+    let session_id = query.session_id;
     let child_initializing = biorouter::agents::subagent_handle::is_child_initializing(&session_id);
     let agent = if child_initializing {
         state

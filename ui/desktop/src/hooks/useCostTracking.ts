@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchModelPricing } from '../utils/pricing';
 import { getSessionUsage, ModelUsageRow, Session } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import { billedTokens } from '../utils/usageAccounting';
 
 export interface ModelCostRow {
@@ -166,8 +167,11 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
         return;
       }
       try {
+        // With the user's proof: a private chat's usage is refused to a caller
+        // without it (issue #56, QA 2026-09-10).
         const response = await getSessionUsage({
           path: { session_id: sessionId },
+          headers: await userActionHeaders(),
           throwOnError: false,
         });
         const rows = response.data?.models ?? [];

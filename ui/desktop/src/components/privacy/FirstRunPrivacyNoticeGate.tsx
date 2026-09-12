@@ -8,6 +8,7 @@ import {
   type NoticeCounts,
 } from './FirstRunPrivacyNotice';
 import { listSessions, type Session } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 
 /**
  * Where "this machine has already been told" is recorded.
@@ -83,7 +84,12 @@ export function FirstRunPrivacyNoticeGate() {
   useEffect(() => {
     if (dismissed) return;
     let cancelled = false;
-    listSessions<true>({ throwOnError: true, query: { include_subagents: false } })
+    // With the user's proof: without it the daemon omits every private chat,
+    // and the notice would count none (issue #56, QA 2026-09-10 M1).
+    userActionHeaders()
+      .then((headers) =>
+        listSessions<true>({ throwOnError: true, headers, query: { include_subagents: false } })
+      )
       .then((response) => {
         if (!cancelled) setCounts(computeNoticeCounts(response.data.sessions as Session[]));
       })

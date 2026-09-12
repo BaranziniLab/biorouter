@@ -1,4 +1,5 @@
 import { listSessions, type Session } from '../api';
+import { userActionHeaders } from './userAction';
 import { subscribeSessionNameChanges } from './sessionNameSync';
 
 let cachedSessions: Session[] | null = null;
@@ -158,12 +159,22 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
   if (inFlightRequest) return inFlightRequest;
 
   const generation = requestGeneration;
-  inFlightRequest = listSessions<true>({
-    throwOnError: true,
-    // `cachedIncludeSubagents`, not the parameter: a keyless call must send the
-    // identity the cache is holding, not `undefined`.
-    query: { include_subagents: cachedIncludeSubagents },
-  })
+  // With the user's proof: since issue #56's QA sweep (2026-09-10) a listing
+  // omits every private chat from a caller without it, as the singular read
+  // refuses one — and this app is the person at the keyboard.
+  // `cachedIncludeSubagents`, not the parameter: a keyless call must send the
+  // identity the cache is holding, not `undefined`. Read NOW, before the
+  // proof's async hop: a flag change in that gap orphans this request, and
+  // an orphan must still ask for the list it was issued for.
+  const issuedFor = cachedIncludeSubagents;
+  inFlightRequest = userActionHeaders()
+    .then((headers) =>
+      listSessions<true>({
+        throwOnError: true,
+        headers,
+        query: { include_subagents: issuedFor },
+      })
+    )
     .then((response) => {
       // Superseded while in flight: hand the answer back to whoever awaited
       // this exact call, but publish nothing — the cache and its subscribers

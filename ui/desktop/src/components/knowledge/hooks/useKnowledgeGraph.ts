@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getGraph } from '../../../api';
+import { userActionHeaders } from '../../../utils/userAction';
 import type { Graph } from '../../../api/types.gen';
 
 export interface UseKnowledgeGraphResult {
@@ -22,7 +23,13 @@ export function useKnowledgeGraph(kbId: string | null): UseKnowledgeGraphResult 
     setLoading(true);
     setError(null);
     try {
-      const res = await getGraph({ path: { id: kbId }, throwOnError: true });
+      // With the user's proof: a private base is refused to any caller without
+      // it (issue #56, QA 2026-09-10 H2), and this view is the user.
+      const res = await getGraph({
+        path: { id: kbId },
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
       setGraph(res.data ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

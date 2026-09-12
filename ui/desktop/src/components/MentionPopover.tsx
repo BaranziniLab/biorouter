@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom';
 import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
 import { CommandType, getSessionExtensions, getSlashCommands, listBases } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import type { CatalogView } from '../api';
 import { readKnowledgeSelection, type KnowledgeSelection } from './knowledge/knowledgeSelection';
 import { getInitialWorkingDir } from '../utils/workingDir';
@@ -558,12 +559,17 @@ const MentionPopover = forwardRef<
 
     const loadReferenceItems = useCallback(
       async (includeCommands: boolean) => {
+        // The user's proof on the reads below that name a chat or its knowledge
+        // bases: since issue #56's QA sweep (2026-09-10) a request without it is
+        // answered as a public model, and would be shown no private base and no
+        // private chat's extensions. The selection read carries it itself.
+        const headers = await userActionHeaders();
         const [commandsResponse, basesResponse, selection, skillsResult, sessionExtensions] =
           await Promise.all([
             includeCommands
               ? getSlashCommands({ throwOnError: true })
               : Promise.resolve({ data: { commands: [] } }),
-            listBases({ throwOnError: false }),
+            listBases({ headers, throwOnError: false }),
             // Issue #56 Task 58: sent with the user's proof, which a GET naming
             // a PRIVATE chat needs. `null` when the read failed anyway, and
             // `knowledgeBaseRole` then claims nothing about the chat.
@@ -575,7 +581,7 @@ const MentionPopover = forwardRef<
               () => ({ generation: 0, roots: [], skills: [], bundles: [] }) as CatalogView
             ),
             sessionId
-              ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
+              ? getSessionExtensions({ path: { session_id: sessionId }, headers }).catch(() => null)
               : Promise.resolve(null),
           ]);
         const commandItems: DisplayItem[] = (commandsResponse.data?.commands || [])

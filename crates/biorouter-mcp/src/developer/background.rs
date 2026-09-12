@@ -112,11 +112,17 @@ impl BackgroundJobs {
     /// Spawn `command` as a background job in its own process group, wire up
     /// output capture and a supervisor that records the terminal status, and
     /// register the job. Returns the new job id.
+    ///
+    /// `session_id` is the chat that started the job, carried onto its
+    /// active-work row: the listing shows a row only to a caller that could open
+    /// its chat, and answers a row that names no chat as a private chat's
+    /// (issue #56).
     pub async fn spawn(
         &self,
         command: &str,
         label: Option<String>,
         working_dir: Option<PathBuf>,
+        session_id: Option<String>,
     ) -> Result<String, String> {
         let id = format!("job-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let label = label.unwrap_or_else(|| command.chars().take(40).collect());
@@ -173,7 +179,7 @@ impl BackgroundJobs {
                 ActiveWorkKind::BackgroundJob,
                 format!("{id}: {label}"),
                 Some(command.to_string()),
-                None,
+                session_id,
                 Some(Arc::new(move || {
                     killed_for_cancel.store(true, Ordering::SeqCst);
                     kill_process_group(pid_for_cancel, identity_for_cancel.clone());
@@ -943,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn start_lists_and_completes_with_output() {
         let jobs = new_jobs();
-        let id = jobs.spawn("echo hello-bg", None, None).await.unwrap();
+        let id = jobs.spawn("echo hello-bg", None, None, None).await.unwrap();
         assert!(jobs.list().await.contains(&id));
         assert_eq!(
             wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
@@ -956,7 +962,7 @@ mod tests {
     #[tokio::test]
     async fn list_reports_command_status_and_unread_output() {
         let jobs = new_jobs();
-        let id = jobs.spawn("echo listme", None, None).await.unwrap();
+        let id = jobs.spawn("echo listme", None, None, None).await.unwrap();
         assert_eq!(
             wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
             JobStatus::Exited(0)
@@ -998,7 +1004,7 @@ mod tests {
     #[tokio::test]
     async fn nonzero_exit_code_is_surfaced() {
         let jobs = new_jobs();
-        let id = jobs.spawn("exit 3", None, None).await.unwrap();
+        let id = jobs.spawn("exit 3", None, None, None).await.unwrap();
         assert_eq!(
             wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
             JobStatus::Exited(3)
@@ -1013,7 +1019,7 @@ mod tests {
         } else {
             "echo first; sleep 2; echo second"
         };
-        let id = jobs.spawn(command, None, None).await.unwrap();
+        let id = jobs.spawn(command, None, None, None).await.unwrap();
         let first = collect_output_until(&jobs, &id, "first", JOB_WAIT_MS).await;
         assert!(first.contains("first"), "first read: {first}");
         assert!(!first.contains("second"), "second leaked early: {first}");
@@ -1029,7 +1035,7 @@ mod tests {
     #[tokio::test]
     async fn wait_returns_early_on_completion() {
         let jobs = new_jobs();
-        let id = jobs.spawn("echo done", None, None).await.unwrap();
+        let id = jobs.spawn("echo done", None, None, None).await.unwrap();
         let started = Instant::now();
         let out = jobs.wait(&id, 30).await.unwrap();
         assert!(out.contains("finished"), "wait result: {out}");
@@ -1039,7 +1045,7 @@ mod tests {
     #[tokio::test]
     async fn wait_times_out_without_killing_then_kill_works() {
         let jobs = new_jobs();
-        let id = jobs.spawn("sleep 30", None, None).await.unwrap();
+        let id = jobs.spawn("sleep 30", None, None, None).await.unwrap();
         let out = jobs.wait(&id, 1).await.unwrap();
         assert!(out.contains("Still running"), "wait result: {out}");
         assert_eq!(
@@ -1215,7 +1221,7 @@ mod tests {
     #[tokio::test]
     async fn recorded_identity_matches_the_live_child_of_a_real_spawn() {
         let jobs = new_jobs();
-        let id = jobs.spawn("sleep 30", None, None).await.unwrap();
+        let id = jobs.spawn("sleep 30", None, None, None).await.unwrap();
         let job = jobs.job(&id).await.unwrap();
         let pid = job.pid.unwrap();
 
@@ -1419,7 +1425,7 @@ mod tests {
     async fn spawn_records_pidfile_and_terminal_removes_it() {
         let dir = ensure_test_run_dir().to_path_buf();
         let jobs = new_jobs();
-        let id = jobs.spawn("sleep 30", None, None).await.unwrap();
+        let id = jobs.spawn("sleep 30", None, None, None).await.unwrap();
         let pid = jobs.job(&id).await.unwrap().pid.unwrap();
 
         let pidfile = dir.join(pidfile_name(std::process::id(), pid));

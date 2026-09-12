@@ -11,6 +11,7 @@ import {
   inspectRunningJob as apiInspectRunningJob,
   SessionDisplayInfo,
 } from './api';
+import { userActionHeaders } from './utils/userAction';
 
 export interface ScheduledJob {
   id: string;
@@ -142,9 +143,12 @@ export async function getScheduleSessions(
   scheduleId: string,
   limit: number
 ): Promise<Array<SessionDisplayInfo>> {
+  // With the user's proof: a schedule's private runs are omitted from a caller
+  // without it (issue #56, QA 2026-09-10 M1).
   const response = await apiGetScheduleSessions<true>({
     path: { id: scheduleId },
     query: { limit },
+    headers: await userActionHeaders(),
     throwOnError: true,
   });
 

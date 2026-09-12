@@ -1952,18 +1952,68 @@ impl Scheduler {
     /// window: reaching it means the run already finished (or that this process
     /// is not the one running it), and the caller must be told.
     pub async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError> {
+        self.kill_running_job_inner(sched_id, None).await
+    }
+
+    /// [`kill_running_job`](Self::kill_running_job), but it stops the run ONLY
+    /// while that run is still the one in `expected_session_id`.
+    ///
+    /// Issue #56. A stop of a scheduled run is gated on the chat the run is in
+    /// (`routes::session_reach::work_reach`), and the gate has to read that chat
+    /// out of the scheduler before it can decide — so between the decision and
+    /// the kill there is a gap, and a **schedule id is stable across runs while
+    /// `current_session_id` is not**. Run N in a public chat can therefore end
+    /// and run N+1 in a *private* chat begin inside that gap, and an unchecked
+    /// kill would land on the run nobody authorized.
+    ///
+    /// Passing the chat the caller was actually admitted to closes it: if the
+    /// run has changed under the decision, this refuses instead of stopping the
+    /// wrong one. `None` means "do not check" and is what the unchecked
+    /// [`kill_running_job`](Self::kill_running_job) passes.
+    pub async fn kill_running_job_in_session(
+        &self,
+        sched_id: &str,
+        expected_session_id: Option<&str>,
+    ) -> Result<(), SchedulerError> {
+        self.kill_running_job_inner(sched_id, Some(expected_session_id))
+            .await
+    }
+
+    /// ⚠ **`jobs` is acquired ONCE and held across the check AND the cancel.**
+    /// The two used to be separate acquisitions — the running check released the
+    /// lock and `running_tasks` was taken afterwards — which is the window the
+    /// doc on [`kill_running_job_in_session`](Self::kill_running_job_in_session)
+    /// describes. There is deliberately **no `.await` between the lock and the
+    /// `token.cancel()`**; adding one re-opens it and nothing in the type system
+    /// will say so. `running_tasks` is a std mutex taken inside the `jobs`
+    /// guard, which is the same order [`claim_run_slot`] and
+    /// [`Scheduler::run_now`] use, so the nesting cannot deadlock.
+    async fn kill_running_job_inner(
+        &self,
+        sched_id: &str,
+        expected_session_id: Option<Option<&str>>,
+    ) -> Result<(), SchedulerError> {
         self.sync_if_unknown(sched_id).await;
-        {
-            let jobs_guard = self.jobs.lock().await;
-            match jobs_guard.get(sched_id) {
-                Some((_, job)) if !job.currently_running => {
-                    return Err(SchedulerError::AnyhowError(anyhow!(
-                        "Schedule '{}' is not running",
-                        sched_id
-                    )));
+        let jobs_guard = self.jobs.lock().await;
+        match jobs_guard.get(sched_id) {
+            None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
+            Some((_, job)) if !job.currently_running => {
+                return Err(SchedulerError::AnyhowError(anyhow!(
+                    "Schedule '{}' is not running",
+                    sched_id
+                )));
+            }
+            Some((_, job)) => {
+                if let Some(expected) = expected_session_id {
+                    if job.current_session_id.as_deref() != expected {
+                        return Err(SchedulerError::AnyhowError(anyhow!(
+                            "Schedule '{}' is no longer running the run this request was \
+                             authorized against: it has started a new run since. Nothing was \
+                             cancelled.",
+                            sched_id
+                        )));
+                    }
                 }
-                None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
-                _ => {}
             }
         }
 
@@ -1980,6 +2030,7 @@ impl Scheduler {
                 None => false,
             }
         };
+        drop(jobs_guard);
 
         if !cancelled {
             return Err(SchedulerError::AnyhowError(anyhow!(
@@ -2503,6 +2554,15 @@ impl SchedulerTrait for Scheduler {
 
     async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError> {
         self.kill_running_job(sched_id).await
+    }
+
+    async fn kill_running_job_in_session(
+        &self,
+        sched_id: &str,
+        expected_session_id: Option<&str>,
+    ) -> Result<(), SchedulerError> {
+        self.kill_running_job_in_session(sched_id, expected_session_id)
+            .await
     }
 
     async fn get_running_job_info(

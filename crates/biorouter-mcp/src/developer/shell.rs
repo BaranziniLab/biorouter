@@ -546,12 +546,16 @@ impl Drop for AbortOnDrop {
 ///
 /// RAII, so an early return, an error or a panic can never leave a phantom
 /// "still running" entry behind.
+///
+/// `session_id` is the chat that ran the command. The entry carries it because
+/// the listing shows a row only to a caller that could open its chat, and
+/// answers a row that names no chat as a private chat's (issue #56).
 pub struct ForegroundWorkGuard {
     _guard: crate::active_work::ActiveWorkGuard,
 }
 
 impl ForegroundWorkGuard {
-    pub fn register(command: &str, pid: Option<u32>) -> Self {
+    pub fn register(command: &str, pid: Option<u32>, session_id: Option<String>) -> Self {
         let cancel: Option<std::sync::Arc<dyn Fn() + Send + Sync>> = pid.map(|pid| {
             std::sync::Arc::new(move || kill_process_group_now(pid))
                 as std::sync::Arc<dyn Fn() + Send + Sync>
@@ -561,7 +565,7 @@ impl ForegroundWorkGuard {
                 crate::active_work::ActiveWorkKind::ForegroundCommand,
                 first_line(command),
                 Some(command.to_string()),
-                None,
+                session_id,
                 cancel,
             ),
         }

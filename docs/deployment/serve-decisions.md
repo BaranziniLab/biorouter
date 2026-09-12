@@ -385,6 +385,75 @@ behaviour, so changing it means revisiting this record, not making a quiet fix.
 
 ---
 
+## SD-10 — The served interface keeps its operator's reach on listings and knowledge bases, and gains nothing else
+
+**Ruling (2026-09-11).** Since the privacy fix for QA findings H2 and M1 (2026-09-10), every
+daemon route that lists chats, or names, lists or reads a knowledge base, answers a caller that
+holds only the daemon secret as a **public model**: private chats are left out of lists, and a
+private knowledge base is refused. The desktop application is told apart by the proof-of-user
+header it sends. A `serve` daemon holds no such proof (SD-7), so it recognises its **own
+interface** another way. A request that carries the served document's session cookie, on a daemon
+started with a browser token, is given the tier implied by the provider the operator configured
+(SD-1). That tier is read once at launch: the declared tier of the configured provider, reduced with
+`least` over a configured lead provider, which is the reduction a bound lead/worker pair gets.
+
+- On a **private** provider (institution-hosted, or local), the History list and the Knowledge
+  view show private chats and knowledge bases, as they did before the fix.
+- On a **public** provider they show public ones only. That is also what any caller holding just
+  the secret sees.
+
+**Why.** SD-1 already makes every session in a `serve` daemon run on the operator's provider, so
+that provider's tier is the only capability the interface can be said to have. The cookie is what
+separates the interface from anything else holding the secret. Without it the fix would have had
+to go one of two ways, and both are wrong. One strips an operator on a private provider of their
+own history and knowledge, which is a hard regression. The other hands every holder of the secret
+the operator's reach, which reopens H2 on every `serve` daemon.
+
+**What it does not do.**
+
+- **It reaches no private transcript.** The transcript gate, and every route that names one chat
+  (open, export, the live event stream, delete, rename, and the rest), never read this standing.
+  They judge a `serve` browser exactly as they judged it before this ruling: on the proof it
+  carries, which is none (SD-7), and on the capability it states with `X-Caller-Provider`, which
+  they judge as they judge any caller's. An interface that states no capability — the case this
+  ruling was written against — sees private chats in its History list that it cannot open, delete
+  or rename. That is SD-7's limitation, left where this ruling found it, and it keeps deleting a
+  chat from ever being easier than reading it. Letting the transcript gate honour the cookie
+  itself would be the first time a gate widened. It is an **open decision**, recorded here and not
+  taken.
+- **It is not authentication, and not a proof of a person.** `biorouter serve` passes both the
+  secret and the browser token in the daemon's environment. A caller that can read one can read
+  the other, which is the residual the `X-Caller-Provider` header already carries
+  ([issue #47](https://github.com/BaranziniLab/biorouter/issues/47)). It never satisfies a
+  proof-of-user check, so SD-1 and SD-8 stand exactly as they were.
+- **It follows the address, not a person.** The token is not single-use (SD-9), so every browser
+  that opens the address `serve` printed gets this standing: a second browser, a colleague on a
+  shared host, a bookmark of an address fixed with `--token`. That is no more than the address
+  gave before this ruling, when these listings and knowledge-base routes were open to any caller
+  holding the secret the served document carries. Revoking the standing means what revoking the
+  address means: stopping `serve`.
+- **A `--no-token` daemon gives it to nobody.** Without a token there is no cookie, and the
+  interface cannot be told apart from any other local caller. Such a daemon shows public chats and
+  knowledge bases only.
+- **It creates no cross-site request forgery surface.** The cookie is `SameSite=Strict`, so no
+  cross-site request carries it, and every API request still needs `X-Secret-Key` to reach this
+  standing at all. It can only narrow a caller that already holds the secret, never admit one that
+  does not.
+
+**Consequence to accept.** Two `serve` daemons on one machine, configured with providers of
+different tiers, show different subsets of one shared history and knowledge store. That follows
+from SD-1, which already made the provider a property of the daemon rather than of the tab.
+
+Implemented in `crates/biorouter-server/src/auth.rs` (`install_served_operator`,
+`served_operator_capability`) and `routes::session_reach::HttpCaller`. Pinned in two places,
+each asserting both halves — the interface keeps its listing and knowledge-base reach, and the
+cookie gains it no transcript: `a_served_interface_keeps_its_listing_reach_and_gains_no_transcript`
+in `routes::session_reach`'s lib tests, which is the copy CI runs, and
+`crates/biorouter-server/tests/serve_operator_reach.rs`, which adds the keyless arm — a daemon with
+no user-action key, as `serve` really starts it.
+
+---
+
 ## SD-11 — Stop works on a daemon with no key; steering does not, and a subagent's tab stays the person's
 
 **Ruling.** On a daemon that holds no user-action key — the one `biorouter serve` starts (SD-7), or

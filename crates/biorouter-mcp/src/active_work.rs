@@ -80,6 +80,20 @@ struct Entry {
     cancel: Option<CancelFn>,
 }
 
+impl Entry {
+    fn snapshot(&self, id: &str) -> ActiveWorkItem {
+        ActiveWorkItem {
+            id: id.to_string(),
+            kind: self.kind,
+            title: self.title.clone(),
+            detail: self.detail.clone(),
+            session_id: self.session_id.clone(),
+            started_at_epoch_ms: self.started_at_epoch_ms,
+            cancellable: self.cancel.is_some(),
+        }
+    }
+}
+
 /// A closure-free snapshot of one active-work entry, safe to hand to the HTTP
 /// layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +104,15 @@ pub struct ActiveWorkItem {
     pub kind: ActiveWorkKind,
     pub title: String,
     pub detail: Option<String>,
+    /// The chat this work belongs to, when the subsystem that registered it
+    /// knows.
+    ///
+    /// ⚠ **Not decoration** (issue #56): `GET /active_work` shows a row only to
+    /// a caller that could open this chat, and a row with `None` only to a
+    /// caller that could open a PRIVATE chat, because its title and detail are
+    /// some chat's command or prompt and nothing says whose. A registrant that
+    /// knows its chat and leaves this `None` hides its own row from that chat's
+    /// client.
     pub session_id: Option<String>,
     pub started_at_epoch_ms: u128,
     /// Whether this entry carries a cancel action.
@@ -146,18 +169,16 @@ impl ActiveWorkRegistry {
 
     /// Snapshot every live entry, sorted by id (creation order within a kind).
     pub fn list(&self) -> Vec<ActiveWorkItem> {
-        self.lock()
-            .iter()
-            .map(|(id, e)| ActiveWorkItem {
-                id: id.clone(),
-                kind: e.kind,
-                title: e.title.clone(),
-                detail: e.detail.clone(),
-                session_id: e.session_id.clone(),
-                started_at_epoch_ms: e.started_at_epoch_ms,
-                cancellable: e.cancel.is_some(),
-            })
-            .collect()
+        self.lock().iter().map(|(id, e)| e.snapshot(id)).collect()
+    }
+
+    /// Snapshot the one live entry `id` names, if it still names one.
+    ///
+    /// `POST /active_work/{id}/cancel` reads the owning chat off this before it
+    /// fires anything (issue #56): the id names work, not a chat, and the reach
+    /// gate is a question about the chat.
+    pub fn get(&self, id: &str) -> Option<ActiveWorkItem> {
+        self.lock().get(id).map(|e| e.snapshot(id))
     }
 
     /// Fire an entry's cancel action. Returns `false` if no such entry exists.
@@ -318,6 +339,35 @@ mod tests {
         // Cancelling keeps the entry listed until the owner deregisters it.
         assert_eq!(reg.list().len(), 1);
         assert!(!reg.cancel("sub-999"), "unknown id should report failure");
+    }
+
+    /// `get` is `list` narrowed to one id — the same snapshot, including the
+    /// owning chat the cancel route gates on — and `None` once the id names
+    /// nothing, including after the owner deregistered it.
+    #[test]
+    fn get_is_the_listed_snapshot_of_one_entry() {
+        let reg = fresh();
+        let owned = reg.register(
+            ActiveWorkKind::Subagent,
+            "task",
+            Some("child session c".to_string()),
+            Some("s-parent".to_string()),
+            Some(Arc::new(|| {})),
+        );
+        let unowned = reg.register(ActiveWorkKind::ForegroundCommand, "cmd", None, None, None);
+
+        for id in [&owned, &unowned] {
+            let listed = reg.list().into_iter().find(|i| &i.id == id);
+            assert_eq!(reg.get(id), listed, "{id}");
+        }
+        assert_eq!(
+            reg.get(&owned).and_then(|i| i.session_id).as_deref(),
+            Some("s-parent")
+        );
+        assert_eq!(reg.get(&unowned).map(|i| i.session_id), Some(None));
+        assert_eq!(reg.get("sub-999"), None);
+        reg.deregister(&owned);
+        assert_eq!(reg.get(&owned), None);
     }
 
     #[test]

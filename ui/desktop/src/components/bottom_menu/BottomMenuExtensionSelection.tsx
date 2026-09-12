@@ -19,6 +19,7 @@ import {
   isBuiltInExtension,
 } from '../settings/extensions/subcomponents/ExtensionList';
 import { ExtensionConfig, getSessionExtensions } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import type { SessionClassification } from '../../api/types.gen';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
@@ -140,8 +141,11 @@ export const BottomMenuExtensionSelection = ({
       }
 
       try {
+        // With the user's proof: a private chat's extensions are refused to a
+        // caller without it (issue #56, QA 2026-09-10).
         const response = await getSessionExtensions({
           path: { session_id: sessionId },
+          headers: await userActionHeaders(),
         });
 
         if (current && response.data?.extensions) {
@@ -214,7 +218,10 @@ export const BottomMenuExtensionSelection = ({
         if (sessionToggleChainsRef.current.get(name) !== operation) return;
 
         try {
-          const response = await getSessionExtensions({ path: { session_id: sessionId } });
+          const response = await getSessionExtensions({
+            path: { session_id: sessionId },
+            headers: await userActionHeaders(),
+          });
           if (sessionToggleChainsRef.current.get(name) !== operation) return;
           if (response.data?.extensions) {
             setSessionExtensions(response.data.extensions);
@@ -425,7 +432,10 @@ export const BottomMenuExtensionSelection = ({
             : removeFromAgent(ext.name, sessionId, true)
         )
       );
-      const response = await getSessionExtensions({ path: { session_id: sessionId } });
+      const response = await getSessionExtensions({
+        path: { session_id: sessionId },
+        headers: await userActionHeaders(),
+      });
       if (response.data?.extensions) {
         setSessionExtensions(response.data.extensions);
         setSessionExtensionsLoaded(true);
