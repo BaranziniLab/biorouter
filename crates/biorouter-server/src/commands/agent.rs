@@ -109,6 +109,89 @@ fn watch_parent(expected: u32) -> CancellationToken {
     CancellationToken::new()
 }
 
+/// Why this daemon came up holding no user-action digest.
+///
+/// Four causes, kept apart because they mean very different things and only one
+/// [`read_user_action_digest`] returns is a *mistake*. Before SD-11 they were one
+/// `None`, which was survivable while a keyless daemon simply refused every
+/// control that needed the proof: the failure was loud at the first click. Now
+/// three of the four turn-control routes fall back to the reach gate there
+/// (`routes::reply::authorize_turn_control`), so a desktop launcher that misses
+/// the 2 s window comes up **quietly** weaker than the one the user installed
+/// rather than visibly broken. Naming the cause is what keeps that from being a
+/// silent degradation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoUserActionKey {
+    /// stdin is a terminal: a person started this daemon at a prompt
+    /// (`just run-server`, `biorouterd agent` by hand). Expected.
+    HandStarted,
+    /// stdin closed with nothing on it. `biorouter serve` spawns its daemon with
+    /// `Stdio::null()` precisely so that this happens (SD-7). Expected.
+    NoneOffered,
+    /// ⚠ A writer held the pipe open and put no digest on it inside the bound.
+    /// Nothing Biorouter ships does that on purpose, so this is the arm that
+    /// means a launcher is broken or the machine was too loaded to make the
+    /// window — the one case where a keyless daemon is an accident.
+    TimedOut,
+    /// ⚠ A line arrived and was not 32 bytes of hex. Also a launcher fault.
+    Malformed,
+}
+
+impl NoUserActionKey {
+    /// One sentence saying what happened and, always, what it costs.
+    ///
+    /// Every arm names **both** consequences, because a reader who has just
+    /// learnt their daemon is keyless needs to know what that daemon now does
+    /// differently, not only what it refuses. `unit_tests` below asserts it of
+    /// each arm rather than leaving it to whoever edits one of them.
+    fn warning(self) -> String {
+        let cause = match self {
+            Self::HandStarted => {
+                "no user-action key: stdin is a terminal, so this daemon was started by hand"
+            }
+            Self::NoneOffered => {
+                "no user-action key: stdin closed without one, which is how `biorouter serve` \
+                 starts its daemon"
+            }
+            Self::TimedOut => {
+                "no user-action key: something held stdin open and wrote no digest within 2s. \
+                 If this is the desktop application's daemon, its launcher FAILED to hand the \
+                 key over and this daemon is weaker than the one you installed — restart it"
+            }
+            Self::Malformed => {
+                "no user-action key: the line on stdin was not a 32-byte hex digest. If this is \
+                 the desktop application's daemon, its launcher is broken — restart it"
+            }
+        };
+        format!(
+            "{cause}. This daemon cannot verify that a request came from the person at the \
+             keyboard, so it will refuse every request that raises a session's privacy \
+             capability, including one made by that person; and Stop, Stop-and-Send and the \
+             continuation routes answer to the reach gate instead of to the proof (serve \
+             decision SD-11), which admits any caller holding the daemon secret to the chats \
+             that gate admits. Mid-turn steering stays refused."
+        )
+    }
+}
+
+/// The digest, or why there is none, from the line stdin produced — `None` for a
+/// read that did not finish inside the bound.
+///
+/// Split out from the I/O so the mapping is testable: the whole point of the
+/// four arms is that they are told apart, and a classification that lives inside
+/// an `async fn` reading real stdin is one nothing can check.
+fn classify_digest_line(line: Option<String>) -> Result<[u8; 32], NoUserActionKey> {
+    let Some(line) = line else {
+        return Err(NoUserActionKey::TimedOut);
+    };
+    let line = line.trim();
+    if line.is_empty() {
+        return Err(NoUserActionKey::NoneOffered);
+    }
+    let bytes = hex::decode(line).map_err(|_| NoUserActionKey::Malformed)?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| NoUserActionKey::Malformed)
+}
+
 /// Read the launcher's SHA-256 user-action digest off stdin, as one hex line
 /// (issue #56, DR-16).
 ///
@@ -117,12 +200,16 @@ fn watch_parent(expected: u32) -> CancellationToken {
 /// by a child, and the raw key was never there to begin with.
 ///
 /// It must **never block a hand-started daemon**, so it is guarded twice.
-async fn read_user_action_digest() -> Option<[u8; 32]> {
+///
+/// ⚠ The 2 s bound is unchanged. It is not raised here because nothing measured
+/// says the desktop launcher misses it; what changed is that missing it is now
+/// *reported* rather than folded into the three expected ways of holding no key.
+async fn read_user_action_digest() -> Result<[u8; 32], NoUserActionKey> {
     use std::io::IsTerminal;
     // (1) A terminal is a human at a prompt, not a launcher with a key. Reading
     //     it would hang `just run-server` forever waiting for a line.
     if std::io::stdin().is_terminal() {
-        return None;
+        return Err(NoUserActionKey::HandStarted);
     }
     // (2) And a pipe whose writer never closes would hang just as hard, so the
     //     read is bounded. 2s is far longer than a local `write` + `end`.
@@ -144,12 +231,15 @@ async fn read_user_action_digest() -> Option<[u8; 32]> {
         // The receiver is gone on the timeout path; nothing to report to.
         let _ = tx.send(read);
     });
+    // A timeout, a dropped sender and a failed `read_line` are all "no line
+    // arrived inside the bound", which is the one arm that means a launcher
+    // wrote nothing it promised.
     let line = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
         .await
-        .ok()?
-        .ok()??;
-    let bytes = hex::decode(line.trim()).ok()?;
-    <[u8; 32]>::try_from(bytes.as_slice()).ok()
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    classify_digest_line(line)
 }
 
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
@@ -209,13 +299,18 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // tool that reads a caller-named path (`/proc/self/environ`) or, on macOS,
     // by `sysctl(KERN_PROCARGS2)`, which is not a path at all and which no
     // sandbox profile can gate.
-    let user_action_digest = read_user_action_digest().await;
-    if user_action_digest.is_none() {
-        tracing::warn!(
-            "no user-action key on stdin: this daemon will refuse every request that raises a \
-             session's privacy capability, including one made by the person at the keyboard"
-        );
-    }
+    let user_action_digest = match read_user_action_digest().await {
+        Ok(digest) => Some(digest),
+        Err(reason) => {
+            // ⚠ One WARN, and it names the SD-11 consequence as well as the
+            // privacy one. Before SD-11 a keyless desktop daemon announced
+            // itself at the first click — Stop answered 403 and the user
+            // complained. Now Stop works there, so the same misconfiguration is
+            // silent unless this line says so.
+            tracing::warn!("{}", reason.warning());
+            None
+        }
+    };
     // A tool whose approval can never be granted must not be offered. `serve`
     // spawns this daemon with `Stdio::null()`, so it holds no key and every
     // proof-backed approval refuses forever — the install and delete tools take
@@ -342,6 +437,86 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
 
     info!("server shutdown complete");
     Ok(())
+}
+
+/// The keyless-startup report, on every platform (unlike the `unix`-only module
+/// below).
+#[cfg(test)]
+mod keyless_report_tests {
+    use super::{classify_digest_line, NoUserActionKey};
+
+    /// The four causes are told apart. They were one `None` until SD-11 made a
+    /// keyless daemon behave differently rather than merely refuse more, at
+    /// which point a launcher that misses the window stops being visible.
+    #[test]
+    fn the_four_ways_of_holding_no_key_are_distinguishable() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            classify_digest_line(Some(format!("{digest}\n"))),
+            Ok([0xaa; 32])
+        );
+        // Nothing arrived inside the bound: a writer held the pipe open. The
+        // only arm that means something is wrong.
+        assert_eq!(classify_digest_line(None), Err(NoUserActionKey::TimedOut));
+        // `Stdio::null()`, which is how `biorouter serve` starts its daemon: the
+        // read succeeds at EOF and yields nothing.
+        for empty in ["", "\n", "   \n"] {
+            assert_eq!(
+                classify_digest_line(Some(empty.to_string())),
+                Err(NoUserActionKey::NoneOffered),
+                "{empty:?}"
+            );
+        }
+        // Present and wrong, which a launcher fault also looks like.
+        for bad in ["not-hex", "abcd", &digest[..62], &format!("{digest}aa")] {
+            assert_eq!(
+                classify_digest_line(Some(bad.to_string())),
+                Err(NoUserActionKey::Malformed),
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// Every arm names BOTH consequences — what this daemon refuses, and what it
+    /// now admits instead (SD-11) — and the two launcher faults say they are
+    /// faults. A reader who has just learnt their daemon is keyless needs the
+    /// second half as much as the first.
+    #[test]
+    fn every_warning_names_what_a_keyless_daemon_does_differently() {
+        for reason in [
+            NoUserActionKey::HandStarted,
+            NoUserActionKey::NoneOffered,
+            NoUserActionKey::TimedOut,
+            NoUserActionKey::Malformed,
+        ] {
+            let warning = reason.warning();
+            assert!(
+                warning.contains("privacy capability"),
+                "{reason:?} does not name what it refuses: {warning}"
+            );
+            assert!(
+                warning.contains("SD-11") && warning.contains("reach gate"),
+                "{reason:?} does not name what it admits instead: {warning}"
+            );
+            assert!(
+                warning.contains("Mid-turn steering stays refused"),
+                "{reason:?} does not say steering is still refused: {warning}"
+            );
+        }
+        // The two that mean a launcher is broken say so, and say what to do.
+        for fault in [NoUserActionKey::TimedOut, NoUserActionKey::Malformed] {
+            let warning = fault.warning();
+            assert!(
+                warning.contains("restart it"),
+                "{fault:?} is a misconfiguration and must be actionable: {warning}"
+            );
+        }
+        // …and the two expected ones do not, so the WARN cannot cry wolf on
+        // every `biorouter serve` start.
+        for expected in [NoUserActionKey::HandStarted, NoUserActionKey::NoneOffered] {
+            assert!(!expected.warning().contains("restart it"), "{expected:?}");
+        }
+    }
 }
 
 /// Only [`until_orphaned`], never [`watch_parent`]: the latter arms a

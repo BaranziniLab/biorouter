@@ -266,6 +266,9 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried neither a capability that covers it nor proof it came from the user"
+          },
           "424": {
             "description": "Agent not initialized"
           }
@@ -308,7 +311,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "The request was not proven to come from the user"
+            "description": "The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)"
           },
           "409": {
             "description": "A different turn generation is active, another client owns the continuation, or its admission is still settling",
@@ -357,7 +360,7 @@
             }
           },
           "403": {
-            "description": "The request was not proven to come from the user"
+            "description": "The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)"
           },
           "409": {
             "description": "The lease is invalid or belongs to another session",
@@ -403,7 +406,7 @@
             "description": "The continuation owner id is missing or invalid"
           },
           "403": {
-            "description": "The session is out of reach or the request was not proven to come from the user"
+            "description": "The session is out of reach or the request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)"
           },
           "409": {
             "description": "The exact continuation generation was already resolved",
@@ -926,7 +929,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user; or the named chat is a delegated subagent's, whose working directory only the person at the keyboard may repoint (SD-8)"
           },
           "404": {
             "description": "Session not found"
@@ -1864,7 +1867,7 @@
             "description": "Empty message text"
           },
           "403": {
-            "description": "The request was not proven to come from the user"
+            "description": "The request was not proven to come from the user; on a daemon that holds no user-action key, steering is unavailable and the refusal says so (SD-11)"
           },
           "409": {
             "description": "No turn is accepting interrupts for this session"

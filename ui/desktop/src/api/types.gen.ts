@@ -4404,6 +4404,10 @@ export type GetCallableToolCountErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried neither a capability that covers it nor proof it came from the user
+     */
+    403: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -4435,7 +4439,7 @@ export type CancelTurnErrors = {
      */
     401: unknown;
     /**
-     * The request was not proven to come from the user
+     * The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
      */
     403: unknown;
     /**
@@ -4472,7 +4476,7 @@ export type AbandonContinuationLeaseData = {
 
 export type AbandonContinuationLeaseErrors = {
     /**
-     * The request was not proven to come from the user
+     * The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
      */
     403: unknown;
     /**
@@ -4505,7 +4509,7 @@ export type RecoverContinuationErrors = {
      */
     400: unknown;
     /**
-     * The session is out of reach or the request was not proven to come from the user
+     * The session is out of reach or the request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
      */
     403: unknown;
     /**
@@ -4935,7 +4939,7 @@ export type UpdateWorkingDirErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user; or the named chat is a delegated subagent's, whose working directory only the person at the keyboard may repoint (SD-8)
      */
     403: unknown;
     /**
@@ -5667,7 +5671,7 @@ export type InterruptErrors = {
      */
     400: unknown;
     /**
-     * The request was not proven to come from the user
+     * The request was not proven to come from the user; on a daemon that holds no user-action key, steering is unavailable and the refusal says so (SD-11)
      */
     403: unknown;
     /**
