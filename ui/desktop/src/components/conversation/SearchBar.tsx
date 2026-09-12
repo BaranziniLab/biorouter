@@ -24,7 +24,32 @@ interface SearchBarProps {
   initialSearchTerm?: string;
   /** Placeholder text for the search input */
   placeholder?: string;
+  /**
+   * How many characters this surface needs before it will search. Below it the
+   * bar reports an EMPTY term and says so in as many words — see
+   * {@link DEFAULT_MIN_SEARCH_LENGTH}.
+   */
+  minSearchLength?: number;
 }
+
+/**
+ * The floor the HIGHLIGHTING surfaces keep — the chat and a saved transcript.
+ *
+ * ⚠ **It is a measured cost, not a taste.** `SearchView` answers a term by
+ * walking its container's text nodes and creating a positioned overlay element
+ * per match, and every match costs a `range.getClientRects()`, which is a forced
+ * layout. Measured 2026-09-12 by replaying that loop in the running app over a
+ * SHORT chat (2,170 characters of transcript): `e` found 217 matches and took
+ * 432 ms to build the overlay and `a` 115 matches / 223 ms, against 40 ms for
+ * the two-character `er` and 31 ms for `the`. The work is linear in matches at
+ * ~2 ms each and a real transcript is two orders of magnitude longer, so a
+ * one-character find there is seconds of blocked layout.
+ *
+ * A surface that only FILTERS A LIST pays none of that — its rows are filtered
+ * before the highlighter ever sees them — so it passes `minSearchLength={1}`
+ * and a one-character query reaches its matcher.
+ */
+export const DEFAULT_MIN_SEARCH_LENGTH = 2;
 
 /**
  * SearchBar provides a search input with case-sensitive toggle and result navigation.
@@ -37,6 +62,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   inputRef: externalInputRef,
   initialSearchTerm = '',
   placeholder = 'Search chat...',
+  minSearchLength = DEFAULT_MIN_SEARCH_LENGTH,
 }: SearchBarProps) => {
   const [searchTerm, setSearchTerm] = useState(initialSearchTerm);
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -73,11 +99,11 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   useEffect(() => {
     if (initialSearchTerm) {
       setSearchTerm(initialSearchTerm);
-      if (initialSearchTerm.length >= 2) {
+      if (initialSearchTerm.length >= minSearchLength) {
         debouncedSearchRef.current?.(initialSearchTerm, caseSensitive);
       }
     }
-  }, [initialSearchTerm, caseSensitive, debouncedSearchRef]);
+  }, [initialSearchTerm, caseSensitive, debouncedSearchRef, minSearchLength]);
 
   const [localSearchResults, setLocalSearchResults] = useState<typeof searchResults>(undefined);
 
@@ -102,11 +128,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     // Update display term immediately for UI feedback
     setSearchTerm(value);
 
-    // Only trigger search if we have 2 or more characters
-    if (value.length >= 2) {
+    // Only trigger a search once the surface's minimum is reached. Below it the
+    // term reported is EMPTY, which every list consumer reads as "no filter" —
+    // so the bar owes the user the sentence below rather than a list that looks
+    // filtered and is not.
+    if (value.length >= minSearchLength) {
       debouncedSearchRef.current?.(value, caseSensitive);
     } else {
-      // Clear results if less than 2 characters
       onSearch('', caseSensitive);
     }
   };
@@ -133,8 +161,10 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const toggleCaseSensitive = () => {
     const newCaseSensitive = !caseSensitive;
     setCaseSensitive(newCaseSensitive);
-    // Immediately trigger a new search with updated case sensitivity
-    if (searchTerm) {
+    // Immediately trigger a new search with updated case sensitivity. Guarded on
+    // the SAME floor as typing: on `if (searchTerm)` a below-minimum term that
+    // `handleSearch` had refused was searched anyway the moment `Aa` was clicked.
+    if (searchTerm.length >= minSearchLength) {
       debouncedSearchRef.current?.(searchTerm, newCaseSensitive);
     }
     inputRef.current?.focus();
@@ -181,85 +211,107 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
   const hasResults = searchResults && searchResults.count > 0;
 
+  // The typed term is short of this surface's floor, so nothing was searched.
+  // An empty box is not short of it: that is browsing, and the full list is the
+  // honest answer there.
+  const belowMinimum = searchTerm.length > 0 && searchTerm.length < minSearchLength;
+
   return (
     <div
-      className={`pointer-events-none sticky top-0 z-[60] mb-4 flex justify-center px-3 pt-2 ${isExiting ? 'search-bar-exit' : 'search-bar-enter'}`}
+      className={`pointer-events-none sticky top-0 z-[60] mb-4 flex justify-center px-3 pt-2 ${isExiting ? 'search-bar-exit' : 'search-bar-enter'}${belowMinimum ? ' search-bar-has-note' : ''}`}
     >
       <div
         data-testid="conversation-search-bar"
-        className="pointer-events-auto flex w-full max-w-[720px] items-center overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-popover"
+        className="pointer-events-auto flex w-full max-w-[720px] flex-col overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-popover"
       >
-        <div className="relative flex flex-1 items-center h-full min-w-0">
-          <SearchIcon className="no-drag h-4 w-4 text-text-muted absolute left-3" />
-          <div className="w-full">
-            <input
-              ref={inputRef}
-              id="search-input"
-              type="text"
-              value={searchTerm}
-              onChange={handleSearch}
-              onKeyDown={handleKeyDown}
-              onFocus={cancelClose}
-              placeholder={placeholder}
-              className="no-drag w-full text-sm pl-9 pr-24 py-3 bg-background-default text-text-default placeholder:text-text-muted"
-            />
-          </div>
+        <div className="flex w-full items-center">
+          <div className="relative flex flex-1 items-center h-full min-w-0">
+            <SearchIcon className="no-drag h-4 w-4 text-text-muted absolute left-3" />
+            <div className="w-full">
+              <input
+                ref={inputRef}
+                id="search-input"
+                type="text"
+                value={searchTerm}
+                onChange={handleSearch}
+                onKeyDown={handleKeyDown}
+                onFocus={cancelClose}
+                placeholder={placeholder}
+                className="no-drag w-full text-sm pl-9 pr-24 py-3 bg-background-default text-text-default placeholder:text-text-muted"
+              />
+            </div>
 
-          <div className="absolute right-3 flex h-full items-center justify-end">
-            <div className="flex items-center gap-1">
-              <div className="w-16 text-right text-sm text-text-muted flex items-center justify-end">
-                {(() => {
-                  return localSearchResults?.count && localSearchResults.count > 0 && searchTerm
-                    ? `${localSearchResults.currentIndex}/${localSearchResults.count}`
-                    : null;
-                })()}
+            <div className="absolute right-3 flex h-full items-center justify-end">
+              <div className="flex items-center gap-1">
+                <div className="w-16 text-right text-sm text-text-muted flex items-center justify-end">
+                  {(() => {
+                    return localSearchResults?.count && localSearchResults.count > 0 && searchTerm
+                      ? `${localSearchResults.currentIndex}/${localSearchResults.count}`
+                      : null;
+                  })()}
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <div className="flex items-center justify-center h-auto px-3 gap-1.5 flex-shrink-0">
-          <Button
-            onClick={toggleCaseSensitive}
-            variant="ghost"
-            className={`no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] ${caseSensitive ? 'bg-background-medium text-text-default hover:bg-background-strong' : 'text-text-muted hover:text-text-default hover:bg-background-medium'}`}
-            title="Case sensitive"
-          >
-            <span className="text-sm font-normal">Aa</span>
-          </Button>
-
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-center h-auto px-3 gap-1.5 flex-shrink-0">
             <Button
-              onClick={(e) => handleNavigate('prev', e)}
+              onClick={toggleCaseSensitive}
               variant="ghost"
-              className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] text-text-muted hover:text-text-default hover:bg-background-medium"
-              title="Previous (↑)"
+              className={`no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] ${caseSensitive ? 'bg-background-medium text-text-default hover:bg-background-strong' : 'text-text-muted hover:text-text-default hover:bg-background-medium'}`}
+              title="Case sensitive"
             >
-              <ArrowUp
-                className={`h-5 w-5 transition-opacity ${!hasResults ? 'opacity-30' : ''}`}
-              />
+              <span className="text-sm font-normal">Aa</span>
             </Button>
+
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={(e) => handleNavigate('prev', e)}
+                variant="ghost"
+                className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] text-text-muted hover:text-text-default hover:bg-background-medium"
+                title="Previous (↑)"
+              >
+                <ArrowUp
+                  className={`h-5 w-5 transition-opacity ${!hasResults ? 'opacity-30' : ''}`}
+                />
+              </Button>
+              <Button
+                onClick={(e) => handleNavigate('next', e)}
+                variant="ghost"
+                className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] text-text-muted hover:text-text-default hover:bg-background-medium"
+                title="Next (↓ or Enter)"
+              >
+                <ArrowDown
+                  className={`h-5 w-5 transition-opacity ${!hasResults ? 'opacity-30' : ''}`}
+                />
+              </Button>
+            </div>
+
             <Button
-              onClick={(e) => handleNavigate('next', e)}
+              onClick={handleClose}
               variant="ghost"
               className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] text-text-muted hover:text-text-default hover:bg-background-medium"
-              title="Next (↓ or Enter)"
+              title="Close (Esc)"
             >
-              <ArrowDown
-                className={`h-5 w-5 transition-opacity ${!hasResults ? 'opacity-30' : ''}`}
-              />
+              <X className="h-5 w-5" />
             </Button>
           </div>
-
-          <Button
-            onClick={handleClose}
-            variant="ghost"
-            className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] text-text-muted hover:text-text-default hover:bg-background-medium"
-            title="Close (Esc)"
-          >
-            <X className="h-5 w-5" />
-          </Button>
         </div>
+
+        {/* ⚠ **A control that looks like it filtered and did not is the
+            defect.** Below the floor the bar reports an empty term, so a list
+            surface renders its WHOLE catalog under its browse headings — which
+            reads as "your filter matched everything". This line is the surface
+            saying, in as many words, that it has not filtered yet. */}
+        {belowMinimum && (
+          <div
+            data-testid="conversation-search-bar-minimum"
+            role="status"
+            className="border-t border-border-subtle px-4 py-2 text-supporting text-text-muted"
+          >
+            {`Type at least ${minSearchLength} characters to search — everything is still showing.`}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -31,6 +31,18 @@
   transition: max-height 150ms ease-out;
 }
 
+/* ⚠ **The ceiling has to clear what the bar actually renders.** The reveal is
+   a `max-height` transition, and `overflow: hidden` is what makes it one — so a
+   bar that is TALLER than the ceiling is silently cut off rather than scrolled.
+   When the bar is saying it has not searched yet it is two rows, and at the
+   one-row 72px the sentence was clipped through its middle (measured in the app
+   on Settings → Extensions, 2026-09-12). Raised only while that row is there,
+   so the ordinary open/close keeps the travel it was tuned for. */
+.search-bar-enter.search-bar-has-note,
+.search-bar-exit.search-bar-has-note {
+  --search-bar-height: 132px;
+}
+
 .search-bar-enter {
   max-height: var(--search-bar-height);
 }
