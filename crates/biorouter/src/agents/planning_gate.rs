@@ -1555,6 +1555,19 @@ mod agent_loop_tests {
             .collect()
     }
 
+    /// The notices the DURABLE transcript holds — what a reload, History and a
+    /// shared session show, as opposed to what the live stream yielded.
+    async fn persisted_notices(fixture: &Fixture) -> Vec<String> {
+        let session = fixture
+            .agent
+            .config
+            .session_manager
+            .get_session(&fixture.session_id, true)
+            .await
+            .unwrap();
+        notices(session.conversation.unwrap_or_default().messages())
+    }
+
     async fn checklist(fixture: &Fixture) -> TodoState {
         let session = fixture
             .agent
@@ -1745,6 +1758,66 @@ mod agent_loop_tests {
                 .iter()
                 .any(|notice| notice.contains("finishing anyway")),
             "{shown:?}"
+        );
+    }
+
+    /// **The stop check's notice survives a reload.**
+    ///
+    /// It is the gate's only visible output in practice — the live drive measured
+    /// the redirect half never firing against real models (16 turns armed, 0
+    /// redirected, across eight prompt shapes on two models) while the stop check
+    /// does fire — so a notice that exists only in the live stream means a turn
+    /// that was sent back to finish its checklist leaves no trace at all in
+    /// History or after a reload.
+    #[tokio::test]
+    async fn the_stop_check_notices_are_in_the_durable_transcript() {
+        let mut script = vec![call(
+            "plan",
+            "todo__todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two"}),
+        )];
+        // Stop unnamed until the cap lets the turn go, so BOTH notices are
+        // produced in one run: the blocks, then the give-up.
+        for n in 0..(crate::hooks::STOP_HOOK_BLOCK_CAP + 1) {
+            script.push(call(
+                &format!("work-{n}"),
+                "fixture__step",
+                serde_json::json!({"n": n}),
+            ));
+            script.push(Message::assistant().with_text("All finished."));
+        }
+        let fixture = fixture(true, ScriptedProvider::new(script)).await;
+
+        let yielded = notices(&turn(&fixture, FOUR_STEPS).await);
+        let stored = persisted_notices(&fixture).await;
+
+        let planning = |notices: &[String]| -> Vec<String> {
+            notices
+                .iter()
+                .filter(|notice| notice.contains("📋"))
+                .cloned()
+                .collect()
+        };
+        assert!(
+            !planning(&yielded).is_empty(),
+            "the run must produce the notices in the first place: {yielded:?}"
+        );
+        assert_eq!(
+            planning(&stored),
+            planning(&yielded),
+            "every 📋 notice the stream showed must also be in the stored transcript"
+        );
+        assert!(
+            planning(&stored)
+                .iter()
+                .any(|notice| notice.contains("asking the agent to finish")),
+            "{stored:?}"
+        );
+        assert!(
+            planning(&stored)
+                .iter()
+                .any(|notice| notice.contains("finishing anyway")),
+            "{stored:?}"
         );
     }
 }
