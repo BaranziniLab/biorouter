@@ -452,6 +452,162 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Gate H: the alternate provider a MODEL names
+    // -----------------------------------------------------------------------
+
+    fn public_session(id: &str) -> Session {
+        use crate::session::session_manager::SessionType;
+        Session {
+            id: id.to_string(),
+            working_dir: PathBuf::from("."),
+            name: "Gate H".to_string(),
+            user_set_name: false,
+            session_type: SessionType::User,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            extension_data: Default::default(),
+            total_tokens: None,
+            input_tokens: None,
+            output_tokens: None,
+            accumulated_total_tokens: None,
+            accumulated_input_tokens: None,
+            accumulated_output_tokens: None,
+            schedule_id: None,
+            workflow: None,
+            user_workflow_values: None,
+            conversation: None,
+            message_count: 0,
+            provider_name: None,
+            model_config: None,
+            diverged_from: None,
+            branch_point_msg_uid: None,
+            parent_session_id: None,
+            privacy_tier: crate::privacy::SessionClassification::Public,
+            privacy_reason: None,
+        }
+    }
+
+    /// `ollama` resolved against a host, so `providers::create` builds a REAL
+    /// provider whose `tier()` is the production implementation reading the
+    /// resolved base URL. 127.0.0.1 is loopback, so it reads PRIVATE; port 1
+    /// refuses instantly, so nothing here waits on a model.
+    fn ollama_at(host: &str) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::from([("OLLAMA_HOST".to_string(), host.to_string())])
+    }
+    const A_PRIVATE_HOST: &str = "http://127.0.0.1:1";
+    const A_PUBLIC_HOST: &str = "https://api.example-saas.invalid";
+
+    async fn ingest_on(kb: &str, session: &Session, host: &str) -> ToolResult<Vec<Content>> {
+        crate::config::with_config_overrides(
+            ollama_at(host),
+            handle_ingest_source_with_provider(
+                serde_json::json!({
+                    "kb_id": kb,
+                    "text": "Ordinary public notes, ingested from a public chat.",
+                    "title": "note",
+                    "model": {"provider": "ollama", "model": "qwen3"},
+                }),
+                session,
+                None,
+                crate::privacy::CallCapability::for_test(ProviderTier::Public, true),
+                None,
+            ),
+        )
+        .await
+    }
+
+    /// **The finding, driven through the real handler.** A PUBLIC chat names a
+    /// PRIVATE model in `platform__ingest_source`'s `model` argument. The chosen
+    /// provider's tier — not the session's classification — is what
+    /// `SourceIngestArgs::caller_capability` carries into the knowledge base's
+    /// permanent ratchet, so before the fix this call privatised the base and
+    /// locked the chat that owns it out of its own notes.
+    ///
+    /// Measured on this branch before the gate changed, with exactly this test:
+    ///
+    /// ```text
+    /// --- handler outcome: Ok([… "Curated 0 of 1 source(s) into knowledge base
+    ///     'gate-h-exploit' on ollama/qwen3. …"])
+    /// --- tier::is_private after the call: true
+    /// --- a public caller can still reach it: false
+    /// ```
+    ///
+    /// i.e. the tool answered with an ordinary per-source report — not an error —
+    /// and the base was gone. Note the ratchet fires in `prepare_ingest_base`,
+    /// **before** the sub-agent runs, so a curation that failed outright still
+    /// cost the user the base.
+    #[tokio::test]
+    async fn a_public_chat_may_not_privatise_a_base_by_naming_a_private_model() {
+        use biorouter_mcp::knowledge::caller::KbCaller;
+        use biorouter_mcp::knowledge::tier;
+
+        let svc = KnowledgeService::new_default().expect("the lib binary's sandboxed root");
+        let kb = "gate-h-private-model-from-public-chat";
+        svc.create_base(kb, "Gate H", None).expect("create");
+        assert!(
+            !tier::is_private(svc.root(), kb) && KbCaller::restricted().can_reach(svc.root(), kb),
+            "precondition: the base starts public and its public owner can reach it"
+        );
+
+        let session = public_session("gate-h-public");
+        let err = ingest_on(kb, &session, A_PRIVATE_HOST)
+            .await
+            .expect_err("a public chat may not run an ingest on a private model")
+            .message
+            .to_string();
+        assert!(err.contains("private model"), "{err}");
+        assert!(
+            err.contains("`model` argument"),
+            "the refusal must name the knob that fixes it: {err}"
+        );
+        assert!(
+            err.contains("ollama"),
+            "a refusal names what it refused: {err}"
+        );
+
+        // The ratchet is permanent, so a refusal that had already written would be
+        // unrecoverable. It did not write, and the owner still has its base.
+        assert!(
+            !tier::is_private(svc.root(), kb),
+            "a refused ingest ratcheted the base to PRIVATE anyway"
+        );
+        assert!(
+            KbCaller::restricted().can_reach(svc.root(), kb),
+            "the public chat that owns this base can no longer read it"
+        );
+    }
+
+    /// The other direction, or the gate is not a barrier but an outage: the same
+    /// public chat naming a PUBLIC alternate model still runs, and the base stays
+    /// public.
+    ///
+    /// The ingest itself fails — the endpoint is unroutable — and that is the
+    /// point: it fails *past* the gate, with the per-source report the tool
+    /// answers with, having reached `prepare_ingest_base` and left the base
+    /// public.
+    #[tokio::test]
+    async fn the_same_chat_may_still_name_a_public_alternate_model() {
+        use biorouter_mcp::knowledge::caller::KbCaller;
+        use biorouter_mcp::knowledge::tier;
+
+        let svc = KnowledgeService::new_default().expect("the lib binary's sandboxed root");
+        let kb = "gate-h-public-model-from-public-chat";
+        svc.create_base(kb, "Gate H", None).expect("create");
+
+        let session = public_session("gate-h-public-sideways");
+        let report = ingest_on(kb, &session, A_PUBLIC_HOST)
+            .await
+            .expect("a public chat on a public alternate model is a sideways choice");
+        let text = format!("{report:?}");
+        assert!(
+            text.contains("ollama/qwen3"),
+            "the report must name the model that ran it: {text}"
+        );
+        assert!(!tier::is_private(svc.root(), kb));
+        assert!(KbCaller::restricted().can_reach(svc.root(), kb));
+    }
+
     /// Half a model reference is not a choice, so the chat's own model runs the
     /// ingest — never a partially-resolved provider.
     #[test]

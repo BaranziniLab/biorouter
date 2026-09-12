@@ -881,6 +881,39 @@ const REGISTRY: &[Guard] = &[
         ],
     },
     Guard {
+        ident: "assert_alt_provider_matches_session",
+        defined_in: "crates/biorouter/src/privacy/alt_provider.rs",
+        decides: "Gate H's RATCHETING half: whether a provider named for a knowledge ingest may \
+                  differ in tier from the session whose content it will fold into a base",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter/src/agents/knowledge_tool.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`build_model_ref_provider`, the ONE Gate H site both knowledge paths \
+                       share — `platform__ingest_source`'s `model` argument (a provider name \
+                       the MODEL wrote) and a base's stored `default_model` on a scheduled \
+                       digest. Its laxer sibling `assert_alt_provider_allowed` is what used to \
+                       be here, and it refuses only the DOWNWARD choice: the tier that comes \
+                       back becomes `caller_capability`, crosses to `caller_is_private` and \
+                       lands in `knowledge::tier::raise_unlocked`, a permanent monotone \
+                       ratchet — so the upward choice Gate A calls harmless let a PUBLIC chat \
+                       privatise its own base for good and then be refused at every KB read \
+                       choke point. If this row ever reads ZERO calls, that hole is open again \
+                       and no behavioural test elsewhere will say so, because the sibling \
+                       predicate is still correct for the two paths that keep it",
+            },
+            Site {
+                file: "crates/biorouter/src/privacy/mod.rs",
+                counts: c(0, 0, 1),
+                kind: SiteKind::Guard,
+                what: "the `pub use` beside its sibling's, so `crate::privacy::` is the one \
+                       path both halves of Gate H are called through",
+            },
+        ],
+    },
+    Guard {
         ident: "bind_allowed",
         defined_in: "crates/biorouter/src/privacy/mod.rs",
         decides: "Gate A: whether a provider of tier P may be bound to a session classified T",
@@ -950,20 +983,37 @@ const REGISTRY: &[Guard] = &[
         decides: "Gate A's rule PLUS DR-16's, for the surface a MODEL asks the bind on: it may \
                   LOWER a conversation's capability, never RAISE it",
         status: Status::Wired,
-        sites: &[Site {
-            file: "crates/biorouter/src/agents/workspace_extension.rs",
-            counts: c(1, 0, 0),
-            kind: SiteKind::Guard,
-            what: "`workspace_set_tools`' pre-flight, beside its `bind_allowed` sibling and \
-                   after it, so the more specific refusal owns the downward case. This is the \
-                   predicate's ONLY caller by design and not by accident: `bind_allowed` \
-                   permits every bind onto a public conversation (Gate A refuses only the \
-                   downward one), which let a public-tier model hand any conversation it \
-                   could write to a private provider — Private capability, and a permanent \
-                   ratchet of that conversation's stored `privacy_tier` on its next turn. If \
-                   this row ever reads ZERO calls, that hole is open again and no behavioural \
-                   test elsewhere will say so, because the predicate itself is still correct",
-        }],
+        sites: &[
+            Site {
+                file: "crates/biorouter/src/agents/workspace_extension.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`workspace_set_tools`' pre-flight, beside its `bind_allowed` sibling and \
+                       after it, so the more specific refusal owns the downward case. \
+                       `bind_allowed` permits every bind onto a public conversation (Gate A \
+                       refuses only the downward one), which let a public-tier model hand any \
+                       conversation it could write to a private provider — Private capability, \
+                       and a permanent ratchet of that conversation's stored `privacy_tier` on \
+                       its next turn. If this row ever reads ZERO calls, that hole is open \
+                       again and no behavioural test elsewhere will say so, because the \
+                       predicate itself is still correct",
+            },
+            Site {
+                file: "crates/biorouter/src/privacy/alt_provider.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`assert_alt_provider_matches_session`, Gate H's ratcheting half, plus \
+                       its import. ⚠ This row is why the sibling row above no longer claims to \
+                       be this predicate's only caller: DR-16's rule now has TWO model-facing \
+                       surfaces, a bind (`workspace_set_tools`' provider switch) and a \
+                       construction that binds nothing (a knowledge ingest's `model` argument, \
+                       whose tier ratchets a knowledge base instead of a session). Both CALL \
+                       this predicate rather than re-spelling `is_private() == is_private()`, \
+                       so the two can never answer the raise cell differently. A new site that \
+                       inlines the comparison would satisfy every behavioural test and be \
+                       invisible here, which is exactly the drift this census exists to see",
+            },
+        ],
     },
     Guard {
         ident: "privacy_refusal",
