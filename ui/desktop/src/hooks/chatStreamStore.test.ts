@@ -276,6 +276,9 @@ describe('ChatStreamRegistry', () => {
       path: { session_id: '20260716_27' },
       // Issue #56 Task 58: reading a private chat's transcript needs this.
       headers: { 'X-User-Action': 'test-key' },
+      // The poll reads a name and a flag, up to eight times per turn, and must
+      // not drag the conversation across with them.
+      query: { metadata_only: true },
       throwOnError: true,
     });
     // …and so does running a turn in one. `/reply` is the route that dominates

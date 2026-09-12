@@ -75,6 +75,76 @@ describe('sessionListCache', () => {
     expect(getCachedSessionList()?.[0]).toMatchObject({ name: 'New name', user_set_name: true });
   });
 
+  /**
+   * A list response describes the moment it was ISSUED. A rename announced after
+   * that is the LATER fact, and replacing the whole array would undo it — the
+   * snap-back `sessionNameSync`'s header describes.
+   *
+   * It stopped being cosmetic when the tab strip started reconciling its titles
+   * against this cache: a clobbered name is written onto a tab and persisted
+   * there. And the window is the common one — a new chat's first turn issues a
+   * list refresh (`refreshSessionBinding` → `notifySessionListChanged`) and,
+   * ~800 ms later, announces the name the daemon generated.
+   */
+  it('keeps a rename announced while the list request was still in flight', async () => {
+    let finishRequest: ((value: { data: { sessions: unknown[] } }) => void) | undefined;
+    mocks.listSessions.mockReturnValue(
+      new Promise((resolve) => {
+        finishRequest = resolve;
+      })
+    );
+
+    const inFlight = refreshSessionList();
+    await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(1));
+
+    // The daemon's auto-name lands while the (slow) list read is still open.
+    announceSessionName({
+      sessionId: 's1',
+      name: 'Penguin prompt test',
+      userSetName: false,
+      origin: 'llm',
+    });
+
+    // …and the response, which was issued before it, still says the old name.
+    finishRequest?.({
+      data: {
+        sessions: [{ id: 's1', name: 'New chat', user_set_name: false, working_dir: '/x' }],
+      },
+    });
+    await inFlight;
+
+    expect(getCachedSessionList()?.[0]).toMatchObject({
+      name: 'Penguin prompt test',
+      user_set_name: false,
+    });
+  });
+
+  /** Only for the request it raced. The NEXT read is the later fact and wins. */
+  it('lets a later list read overwrite a name it raced once', async () => {
+    let finishRequest: ((value: { data: { sessions: unknown[] } }) => void) | undefined;
+    mocks.listSessions.mockReturnValue(
+      new Promise((resolve) => {
+        finishRequest = resolve;
+      })
+    );
+    const inFlight = refreshSessionList();
+    await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(1));
+    announceSessionName({ sessionId: 's1', name: 'Raced', userSetName: false, origin: 'llm' });
+    finishRequest?.({
+      data: { sessions: [{ id: 's1', name: 'Stale', user_set_name: false, working_dir: '/x' }] },
+    });
+    await inFlight;
+
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [{ id: 's1', name: 'Renamed elsewhere', user_set_name: true, working_dir: '/x' }],
+      },
+    });
+    await refreshSessionList();
+
+    expect(getCachedSessionList()?.[0]).toMatchObject({ name: 'Renamed elsewhere' });
+  });
+
   it('a keyless refresh keeps the flagged identity instead of clobbering it', async () => {
     mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
     await refreshSessionList(true);

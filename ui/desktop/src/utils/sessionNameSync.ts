@@ -32,6 +32,20 @@ import { userActionHeaders } from './userAction';
 
 export const DEFAULT_SESSION_NAME = 'New chat';
 
+/**
+ * How many user-role messages a chat may hold and still be auto-renamed —
+ * `MSG_COUNT_FOR_SESSION_NAME_GENERATION` in
+ * `crates/biorouter/src/providers/base.rs`, mirrored.
+ *
+ * The daemon re-generates a chat's name after EVERY turn until this many user
+ * messages have accumulated, and keeps trying forever while the chat is still on
+ * the placeholder (`SessionManager::maybe_update_name`). It does so after the
+ * reply stream has closed and announces nothing, so the renderer's post-turn
+ * poll is the only thing that can notice — and this is the bound on how long
+ * that poll is worth running.
+ */
+export const AUTO_RENAME_USER_MESSAGE_LIMIT = 3;
+
 const DEFAULT_NAME_PATTERNS: RegExp[] = [
   /^New chat$/i,
   /^New Session$/i,

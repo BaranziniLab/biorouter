@@ -21,6 +21,7 @@ import { DropTarget } from './dropZones';
 import { groupCountOf } from './chatGroupsLayout';
 import { GroupLayoutSnapshot, snapshotGroupLayout } from './chatGroupsReducer';
 import { firstLeaf, leafGroupIds, GroupLayout, ChatGroupId } from './chatGroupsTypes';
+import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { splitSnapshotIsStale, splitYieldAction, splitYieldSample } from '../Layout/yieldLadder';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
@@ -173,10 +174,119 @@ function useSessionPrivacyTiers(): Record<string, SessionClassification> {
   return useMemo(() => mergeSessionTiers(cachedTiers, liveTiers), [cachedTiers, liveTiers]);
 }
 
+/**
+ * Reconcile every tab's title against the session list — INCLUDING the tabs
+ * that are not active.
+ *
+ * # What was broken
+ *
+ * A tab title is the only name in the app that is PERSISTED by the renderer
+ * (`chatGroupsStorage`), and until now only two things could correct one: the
+ * name channel (`subscribeSessionNameChanges`, mirrored into every tab by
+ * `ChatGroupsContext`) and `handleSessionLoaded` below — which fires from
+ * BaseChat, and only the ACTIVE tab mounts a BaseChat. So a name this window
+ * never heard announced stayed wrong on a background tab across reload after
+ * reload, while the sidebar — which re-reads the server on every load — showed
+ * the right one. Measured on 2026-09-12: the sidebar read "Instruction-following
+ * tests" while the same chat's background tab read "Penguin prompt test" — on one
+ * screen, at the same moment, unchanged across three reloads, and correcting
+ * instantly the moment that tab was made active.
+ *
+ * The daemon auto-renames a chat after EVERY one of its first few turns
+ * (`SessionManager::maybe_update_name`), after the reply stream has already
+ * closed, and emits no signal for it — so "a name this window never heard
+ * announced" is the normal case, not an exotic one. The poll in
+ * `chatStreamStore.finishTurn` announces what it catches; this closes the
+ * general hole, including a rename made by the CLI, a schedule, or another
+ * window while this one was shut.
+ *
+ * # Why the session list, and why it cannot go stale again
+ *
+ * This is the SAME cache `useSessionPrivacyTiers` above already reads and warms
+ * — no new request, no polling. It is re-read on mount and on every emit, so a
+ * tab's title is checked against the server's row every time this window loads
+ * and every time that list changes. A title can therefore be wrong only for as
+ * long as this cache is, and never across a load.
+ *
+ * # The two things it must not do
+ *
+ *   1. **Overwrite a name the user typed.** A user rename sets `userSetName` on
+ *      the tab (optimistically, in `BaseChat.handleRename`) and `user_set_name`
+ *      on the row, and the daemon never auto-renames such a session again. A
+ *      user-named tab is therefore skipped outright rather than compared: the
+ *      name channel already carries every user rename to every tab
+ *      synchronously, so there is nothing here for this hook to add, and
+ *      skipping makes the snap-back structurally impossible rather than merely
+ *      unlikely. (`sessionListCache` guards the other half of that race — a list
+ *      response that was issued BEFORE the rename it would undo.)
+ *   2. **Downgrade a named tab to the placeholder.** A row still reading "New
+ *      chat" is a lower bound, never a correction, so it is never adopted over a
+ *      title that already has a real name.
+ */
+function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): void {
+  const dispatch = groups?.dispatch;
+  // Read through a ref so the effect depends on the SIGNATURE below and not on
+  // state identity — the shell re-renders on every streamed token, and this
+  // effect resubscribes each time it re-runs.
+  const stateRef = useRef(groups?.state);
+  stateRef.current = groups?.state;
+
+  // The (session, title) pairs this hook compares, and nothing else. A tab
+  // opened, closed, bound or renamed changes it; a reorder, a split or a token
+  // does not.
+  const tabTitleSignature = useMemo(() => {
+    const parts: string[] = [];
+    for (const group of Object.values(groups?.state.groups ?? {})) {
+      for (const tab of group.tabs) {
+        if (!tab.sessionId) continue;
+        parts.push(`${tab.sessionId}\u241F${tab.title}\u241F${tab.userSetName ? 1 : 0}`);
+      }
+    }
+    return parts.sort().join('\u241E');
+  }, [groups?.state]);
+
+  useEffect(() => {
+    if (!dispatch) return;
+    const reconcile = () => {
+      const rows = getCachedSessionList();
+      const state = stateRef.current;
+      if (!rows || !state) return;
+      const rowById = new Map(rows.map((row) => [row.id, row]));
+      // One dispatch per SESSION, not per tab: `renameTab` already mirrors into
+      // every tab bound to that session, so a chat open twice must not dispatch
+      // twice.
+      const dispatched = new Set<string>();
+      for (const group of Object.values(state.groups)) {
+        for (const tab of group.tabs) {
+          if (!tab.sessionId || tab.userSetName || dispatched.has(tab.sessionId)) continue;
+          const row = rowById.get(tab.sessionId);
+          if (!row?.name || row.name === tab.title) continue;
+          // Rule 2: the placeholder is a lower bound, never a correction.
+          if (isDefaultSessionName(row.name) && !isDefaultSessionName(tab.title)) continue;
+          dispatched.add(tab.sessionId);
+          dispatch({
+            type: 'renameTab',
+            sessionId: tab.sessionId,
+            title: row.name,
+            userSetName: row.user_set_name ?? false,
+          });
+        }
+      }
+    };
+    reconcile();
+    // Subscribe BEFORE asking for the fetch, for the reason `useSessionPrivacyTiers`
+    // gives: a cache that resolved in between would emit to nobody.
+    const unsubscribe = subscribeSessionList(reconcile);
+    preloadSessionList();
+    return unsubscribe;
+  }, [dispatch, tabTitleSignature]);
+}
+
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
   const terminalDock = useTerminalDock();
   const privacyTiers = useSessionPrivacyTiers();
+  useTabTitlesFromSessionList(groups);
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
