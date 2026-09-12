@@ -551,10 +551,16 @@ mod tests {
         assert_eq!(plan.commands, vec!["first incarnation".to_string()]);
 
         sm.clear_all_sessions().await.unwrap();
+        // The allocator no longer restarts once the table is empty — `N` comes
+        // from `session_id_high_water`, which a reset does not lower. The cut's
+        // refusal still has to hold when an id IS recycled, because a build
+        // without the mark sharing the file, or a restored backup, can do it;
+        // the seam reproduces exactly that state.
+        sm.forget_minted_session_ids_for_test().await.unwrap();
         let recycled = term_session(&sm).await;
         assert_eq!(
             recycled, id,
-            "the id allocator restarts once the table is empty"
+            "the fixture must reproduce the id reuse, or this test proves nothing"
         );
         sm.add_message(&id, &logged(2, "second incarnation"))
             .await

@@ -265,26 +265,18 @@ async fn agent_ws(
     // frames, so whoever reaches it can prompt the agent and then approve the
     // agent's own tool calls. It is exempt from the secret-key middleware (a
     // browser-opened app cannot set request headers), so authority comes from
-    // two checks here: the loopback-origin check (CORS does not govern WS
+    // two checks here: the same-origin check (CORS does not govern WS
     // handshakes) AND the per-app socket token minted in `serve_index`.
     //
     // Compat: an already-built bundle is rebuilt on sdk_hash drift before being
     // served (see `serve_index`), so every page THIS daemon serves gets the
     // current sdk.ts and this run's token. A page held open from a *previous*
     // daemon run reconnects with a stale token → 403 and must reload.
-    let origin = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|o| o.to_str().ok());
+    let upgrade = super::UpgradeOrigin::from_headers(&headers);
+    let origin = upgrade.origin;
     let expected = ws_token_for(&id);
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|h| h.to_str().ok());
-    if let Err(reason) = check_ws_auth(
-        origin,
-        host,
-        params.get("token").map(String::as_str),
-        &expected,
-    ) {
+    if let Err(reason) = check_ws_auth(&upgrade, params.get("token").map(String::as_str), &expected)
+    {
         tracing::warn!(origin = origin.unwrap_or("<none>"), app = %id, "rejected app agent WebSocket: {reason}");
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
@@ -538,28 +530,37 @@ fn ws_token_for(app_id: &str) -> String {
 ///
 /// 1. **Origin (defense in depth).** CORS does not govern WS handshakes and any
 ///    web page can open a cross-origin WebSocket, so a browser-set `Origin` must
-///    be a loopback origin this daemon serves — otherwise a page on any web
-///    origin could drive the loopback agent (CSWSH). A non-browser client sends
-///    no `Origin`; it is allowed past this gate (the token still guards it).
+///    be this daemon's own — the app page it served, same scheme, host and port
+///    — otherwise a page on any other origin could drive the agent (CSWSH). This
+///    is the Apps SDK v2 design's "exact-origin pinning", landed in QA-D F7; it
+///    replaced "any loopback port", which admitted every local page. A
+///    non-browser client sends no `Origin`; it is allowed past this gate (the
+///    token still guards it).
 /// 2. **Per-app socket token.** `?token=…` must equal this daemon's token for the
 ///    app. This is what upgrades the socket from "same machine" to "served by
 ///    this daemon", now that the socket carries real authority.
 fn check_ws_auth(
-    origin: Option<&str>,
-    host: Option<&str>,
+    upgrade: &super::UpgradeOrigin<'_>,
     token: Option<&str>,
     expected: &str,
 ) -> Result<(), &'static str> {
-    if let Some(origin) = origin {
-        // `origin_matches_host` admits a browser that reached this daemon at a
-        // LAN address or a hostname, which became possible when the daemon
-        // started serving its own interface (`routes::web_ui`). It compares the
-        // origin against this request's own `Host`, so it is a same-origin test
-        // rather than a widening: a page on any other origin cannot match, and
-        // an opaque `null` origin still fails because it strips no scheme.
-        if !super::is_local_origin(origin) && !super::origin_matches_host(origin, host) {
-            return Err("cross-origin connect rejected");
-        }
+    // `is_this_daemons` compares the origin against this request's own `Host`,
+    // which is what admits a browser that reached this daemon at a LAN address
+    // or a hostname (the daemon serves its own interface, `routes::web_ui`), and
+    // what refuses a page on any other origin, another loopback port included.
+    // An exported app's `serve.mjs` forwards the browser's `Host` verbatim, so
+    // its page is same-origin with its socket too.
+    // An `Origin` that was SENT and cannot be read is refused, not treated as
+    // absent. The `is_some()` below admits an upgrade with no `Origin` because a
+    // client that is not a browser has none and the token guards it — and
+    // degrading "present and unparseable" into that case skips this gate
+    // entirely, which is what it did until the security review of QA-D F7.
+    // `Host` fails closed in the same situation.
+    if upgrade.origin_unreadable {
+        return Err("unreadable Origin header rejected");
+    }
+    if upgrade.origin.is_some() && !upgrade.is_this_daemons() {
+        return Err("cross-origin connect rejected");
     }
     if token != Some(expected) {
         return Err("missing or invalid app socket token");
@@ -7835,32 +7836,87 @@ mod tests {
 
     // --- WS auth (origin + per-app socket token) --------------------------
 
+    /// **Finding 3.** An `Origin` that was SENT and cannot be read must refuse,
+    /// not degrade into the no-`Origin` case this gate deliberately admits — the
+    /// same reading `routes::workspace` depends on, asserted here too because the
+    /// two gates share `UpgradeOrigin::from_headers` and must not disagree.
+    #[test]
+    fn an_unreadable_origin_refuses_where_an_absent_one_is_admitted() {
+        use super::check_ws_auth;
+        let mut headers = axum::http::HeaderMap::new();
+        // Valid as a header value (obs-text permits 0x80..=0xFF), not UTF-8.
+        headers.insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"http://\xff.example").unwrap(),
+        );
+        headers.insert(axum::http::header::HOST, "127.0.0.1:9380".parse().unwrap());
+        let unreadable = super::super::UpgradeOrigin::from_headers(&headers);
+        assert!(
+            check_ws_auth(&unreadable, Some("tok"), "tok").is_err(),
+            "a present-but-unreadable Origin must refuse rather than skip the gate"
+        );
+
+        let mut absent = axum::http::HeaderMap::new();
+        absent.insert(axum::http::header::HOST, "127.0.0.1:9380".parse().unwrap());
+        let absent = super::super::UpgradeOrigin::from_headers(&absent);
+        assert!(check_ws_auth(&absent, Some("tok"), "tok").is_ok());
+    }
+
+    /// An app-socket upgrade as the gate sees it: plain HTTP, no declared
+    /// renderer.
+    fn upgrade<'a>(
+        origin: Option<&'a str>,
+        host: Option<&'a str>,
+    ) -> super::super::UpgradeOrigin<'a> {
+        super::super::UpgradeOrigin {
+            origin,
+            origin_unreadable: false,
+            host,
+            scheme: "http",
+            renderer: None,
+        }
+    }
+
     #[test]
     fn check_ws_auth_enforces_origin_and_token() {
         use super::check_ws_auth;
         let expected = "deadbeefcafef00d0123456789abcdef";
+        // The app page this daemon served, and the socket it opens: both at the
+        // daemon's own address, which is where `sdk.ts` points the socket.
+        let daemon = Some("127.0.0.1:8080");
 
         // A cross-origin page is rejected before the token even matters.
         assert_eq!(
-            check_ws_auth(Some("https://evil.com"), None, Some(expected), expected),
+            check_ws_auth(
+                &upgrade(Some("https://evil.com"), daemon),
+                Some(expected),
+                expected
+            ),
             Err("cross-origin connect rejected")
         );
 
-        // A loopback page with no/ wrong token is rejected.
+        // The app's own page with no / a wrong token is rejected.
         assert_eq!(
-            check_ws_auth(Some("http://localhost:8080"), None, None, expected),
+            check_ws_auth(
+                &upgrade(Some("http://127.0.0.1:8080"), daemon),
+                None,
+                expected
+            ),
             Err("missing or invalid app socket token")
         );
         assert_eq!(
-            check_ws_auth(Some("http://127.0.0.1"), None, Some("nope"), expected),
+            check_ws_auth(
+                &upgrade(Some("http://127.0.0.1:8080"), daemon),
+                Some("nope"),
+                expected
+            ),
             Err("missing or invalid app socket token")
         );
 
-        // Correct token + a loopback origin is accepted.
+        // Correct token + the app's own origin is accepted.
         assert_eq!(
             check_ws_auth(
-                Some("http://localhost:8080"),
-                None,
+                &upgrade(Some("http://127.0.0.1:8080"), daemon),
                 Some(expected),
                 expected
             ),
@@ -7869,18 +7925,48 @@ mod tests {
 
         // Correct token + NO Origin header (a non-browser client) is accepted —
         // the token is the authority there.
-        assert_eq!(check_ws_auth(None, None, Some(expected), expected), Ok(()));
+        assert_eq!(
+            check_ws_auth(&upgrade(None, daemon), Some(expected), expected),
+            Ok(())
+        );
 
         // A missing token still fails even without an Origin header.
         assert_eq!(
-            check_ws_auth(None, None, None, expected),
+            check_ws_auth(&upgrade(None, daemon), None, expected),
             Err("missing or invalid app socket token")
         );
     }
 
+    /// The Apps SDK v2 design's exact-origin pinning, landed in QA-D F7. Every
+    /// other local page used to reach an app's agent socket as though it were
+    /// the app, because the gate asked "is this loopback" rather than "is this
+    /// the page I served". Each of these is a loopback origin that is not the
+    /// daemon's, and each was admitted until then.
+    #[test]
+    fn an_app_socket_refuses_every_origin_but_the_page_that_opened_it() {
+        use super::check_ws_auth;
+        let expected = "app-token";
+        for origin in [
+            "http://127.0.0.1:1",
+            "http://localhost:8080",
+            "https://127.0.0.1:8080",
+            "http://LOCALHOST:8080",
+        ] {
+            assert_eq!(
+                check_ws_auth(
+                    &upgrade(Some(origin), Some("127.0.0.1:8080")),
+                    Some(expected),
+                    expected
+                ),
+                Err("cross-origin connect rejected"),
+                "{origin} is not the origin this daemon served the app from"
+            );
+        }
+    }
+
     /// An app opened in a browser that reached this daemon at a LAN address is
-    /// same-origin with it, even though `is_local_origin` has never heard of
-    /// that address. Without this an app's agent socket is dead in browser mode
+    /// same-origin with it, even though the daemon never enumerated that
+    /// address. Without this an app's agent socket is dead in browser mode
     /// exactly when the daemon is reached remotely -- and it fails silently,
     /// because the client retries with backoff rather than reporting.
     #[test]
@@ -7889,8 +7975,7 @@ mod tests {
         let expected = "app-token";
         assert_eq!(
             check_ws_auth(
-                Some("http://192.168.1.42:8765"),
-                Some("192.168.1.42:8765"),
+                &upgrade(Some("http://192.168.1.42:8765"), Some("192.168.1.42:8765")),
                 Some(expected),
                 expected,
             ),
@@ -7906,8 +7991,7 @@ mod tests {
         let expected = "app-token";
         assert_eq!(
             check_ws_auth(
-                Some("https://evil.com"),
-                Some("192.168.1.42:8765"),
+                &upgrade(Some("https://evil.com"), Some("192.168.1.42:8765")),
                 Some(expected),
                 expected,
             ),
@@ -7915,8 +7999,10 @@ mod tests {
         );
         assert_eq!(
             check_ws_auth(
-                Some("http://192.168.1.42:8765.evil.com"),
-                Some("192.168.1.42:8765"),
+                &upgrade(
+                    Some("http://192.168.1.42:8765.evil.com"),
+                    Some("192.168.1.42:8765")
+                ),
                 Some(expected),
                 expected,
             ),
@@ -7925,8 +8011,7 @@ mod tests {
         // The per-app token is still required on the same-origin path.
         assert_eq!(
             check_ws_auth(
-                Some("http://192.168.1.42:8765"),
-                Some("192.168.1.42:8765"),
+                &upgrade(Some("http://192.168.1.42:8765"), Some("192.168.1.42:8765")),
                 Some("nope"),
                 expected,
             ),

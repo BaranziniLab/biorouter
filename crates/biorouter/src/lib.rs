@@ -18,6 +18,7 @@ compile_error!(
 pub mod action_required_manager;
 pub mod agents;
 pub mod catalog;
+pub mod catalog_search;
 pub mod checkpoint;
 pub mod config;
 pub mod context_budget;

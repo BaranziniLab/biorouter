@@ -52,6 +52,8 @@ Three things you can do from that tab:
 - **Steer.** Type into the tab's ordinary composer. While the child's turn is running your message is injected as a mid-turn correction ("stop at step 3 and summarise"); between turns it starts a new turn or leaves a note. Either way it is labelled in the transcript as a **direct user message**, permanently.
 - **Stop.** The header's Stop control cancels the child's turn. The parent's tool call then resolves promptly, carrying whatever the child had produced — it is not left hanging. What it resolves *as* depends on how far the child got: a child stopped mid-tool-call, with no text to show for it, comes back `incomplete`; a child that had already written a summary returns that summary and can still be labelled `completed`, because the envelope is classified from the transcript rather than from the fact of the cancellation. Do not read `completed` as proof the child finished on its own.
 
+> **Watch is the only one of the three in a browser.** On a page served by `biorouter serve` the tab has no composer and no Stop: steering and stopping a subagent need proof that a person acted, which only the desktop application holds. The tab says so in place of both controls rather than refusing on click — see [Browser access](../deployment/browser-access.md#what-a-browser-can-and-cannot-do).
+
 **Closing the tab never kills the child.** That is the same rule as every other tab in BioRouter: closing is a view operation. Stop is the only kill switch, and a child whose tab you closed is still reachable from History.
 
 If you typed into the tab, the parent is told. Its tool result carries `human_intervened` and gains a line — *"Note: the user intervened directly in this subagent's tab during the run."* — so it weighs the child's self-report accordingly instead of assuming an untouched run. Nothing is said when you did not: silence there would read as a claim that someone checked.
@@ -279,6 +281,8 @@ The architecture follows a modular design with clear separation between the core
 ## Lifecycle and cleanup
 
 Subagents are temporary instances that exist only for task execution. After the task is completed, no manual intervention is needed for cleanup.
+
+A subagent run is still recorded as its own session, and deleting the chat that started it does **not** delete the run: its transcript stays, and it moves to the top level of History (visible with **Show subagent runs** on) and of `biorouter session list --subagents`. A run can hold text you typed into it, so it is removed only when you remove it — from History, or with `biorouter session remove --session-id <id>`. The deleted chat's id is never given to a later chat, so no other chat can come to own the run.
 
 ## Subagent configuration
 

@@ -504,12 +504,18 @@ pub async fn declassify(
     // proof is the only construction site, and it is behind the user-action
     // header. Writing a fabricated username here would be worse than writing
     // none.
-    sqlx::query(
+    // `session_incarnation` names the ROW declassified, not just its id: the
+    // ledger outlives the chat, and the backfill's declassification guard must
+    // not read this entry as a later chat's under the same id
+    // (`SessionStorage::NOT_DECLASSIFIED_BY_USER`).
+    sqlx::query(&format!(
         "INSERT INTO classification_audit ( \
             session_id, from_classification, to_classification, reason, actor, actor_kind, \
-            app_version, provider_name_at_change, privacy_reason_before, message_count_at_change \
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-    )
+            app_version, provider_name_at_change, privacy_reason_before, message_count_at_change, \
+            session_incarnation \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, {})",
+        crate::session::session_manager::LEDGER_SESSION_INCARNATION
+    ))
     .bind(session_id)
     .bind(from.as_sql())
     .bind(SessionClassification::Public.as_sql())

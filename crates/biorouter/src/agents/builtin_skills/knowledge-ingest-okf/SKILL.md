@@ -70,7 +70,7 @@ carry them are still read, permanently, and must not be rewritten, but do not wr
 ones. (BioOKF has its own `[[predicate:: Object | key=value]]` inline edge form. That is
 a different grammar and belongs only in a BioOKF base.)
 
-**8 — Bookkeep.** Update `index.md` so the new pages are catalogued, then
+**8 — Bookkeep.** Update `index.md` so the new pages are cataloged, then
 `kb_append_log` with `kind: "ingest"` and a one-line summary plus a `delta` like
 `+3 pages, +7 links`.
 

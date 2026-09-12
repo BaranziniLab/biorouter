@@ -229,7 +229,7 @@ describe('BottomMenuExtensionSelection', () => {
     // Five attached, three of them shipped capabilities → 2. Counting the whole
     // session would say 5.
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument()
     );
 
     // …and the menu lists every user extension, attached or not, so the chip is
@@ -261,7 +261,7 @@ describe('BottomMenuExtensionSelection', () => {
 
     // 1, not 2 (the capability counted) and not 0 (the unknown swallowed).
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument()
     );
   });
 
@@ -279,7 +279,7 @@ describe('BottomMenuExtensionSelection', () => {
     // Four extensions are enabled in the fixture. Two are capabilities
     // (autovisualiser, code_execution) and do not count; two are the user's own
     // (spoke, workspace) and do.
-    expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument();
   });
 
   it('moves the chip the moment a row is toggled, before the refetch', async () => {
@@ -301,7 +301,7 @@ describe('BottomMenuExtensionSelection', () => {
 
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument()
     );
 
     fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
@@ -311,7 +311,7 @@ describe('BottomMenuExtensionSelection', () => {
     fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'example' }));
 
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument()
     );
     await act(async () => {
       resolveEnable?.();
@@ -332,9 +332,9 @@ describe('BottomMenuExtensionSelection', () => {
     } as never);
     render(<BottomMenuExtensionSelection sessionId="catalog-still-loading" />);
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument()
     );
-    expect(screen.queryByLabelText('Manage extensions (4 enabled)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Manage extensions (4 added)')).not.toBeInTheDocument();
   });
 
   it('refetches and refreshes this chat when the catalog changes', async () => {
@@ -365,7 +365,7 @@ describe('BottomMenuExtensionSelection', () => {
       headers: { 'X-User-Action': 'test-proof' },
     });
     await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'true'));
-    expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument();
 
     const callsBeforeDetach = mocks.getSessionExtensions.mock.calls.length;
     mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
@@ -376,7 +376,7 @@ describe('BottomMenuExtensionSelection', () => {
       { timeout: 1_500 }
     );
     await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'false'));
-    expect(screen.getByLabelText('Manage extensions (0 enabled)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Manage extensions (0 added)')).toBeInTheDocument();
   });
 
   /**
@@ -392,7 +392,7 @@ describe('BottomMenuExtensionSelection', () => {
 
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (0 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (0 added)')).toBeInTheDocument()
     );
     expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument();
     const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
@@ -411,7 +411,7 @@ describe('BottomMenuExtensionSelection', () => {
       headers: { 'X-User-Action': 'test-proof' },
     });
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument()
     );
   });
 
@@ -434,7 +434,7 @@ describe('BottomMenuExtensionSelection', () => {
     rerender(<BottomMenuExtensionSelection sessionId="current-chat" />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument()
     );
 
     await act(async () => {
@@ -449,7 +449,7 @@ describe('BottomMenuExtensionSelection', () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument();
   });
 
   /**
@@ -499,7 +499,7 @@ describe('BottomMenuExtensionSelection', () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
 
     // Four extensions enabled in the config, two of them capabilities → 2.
-    const trigger = screen.getByLabelText('Manage extensions (2 enabled)');
+    const trigger = screen.getByLabelText('Manage extensions (2 added)');
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
     expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(3);

@@ -26,9 +26,13 @@ on:
 # free on a public repo and keeps the check safe to mark required.
 
 concurrency:
-  group: frontend-${{ github.ref }}
-  # Cancel superseded PR runs, but never cancel a main run — a cancelled push
-  # leaves that commit with no status at all, which matters when bisecting.
+  # A group holds at most ONE pending run by default: a newly queued run cancels
+  # the pending one, whatever cancel-in-progress says (that governs only the
+  # running one). Keyed by ref, a merge burst to main on 2026-09-09 thus lost 12
+  # of its 14 runs before they started, leaving those commits with no status.
+  # So only a PR's runs share a group, where the newest should win. Any other
+  # run is keyed by run_id, not sha, which repeat dispatches of a commit share.
+  group: frontend-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:

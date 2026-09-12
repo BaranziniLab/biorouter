@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { listSidebarSessions, type SessionSummary } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
-import { subscribeSessionListChanges } from '../../utils/sessionListCache';
+import { subscribeSessionListChanges, subscribeSessionRemoved } from '../../utils/sessionListCache';
 
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
 
@@ -114,12 +114,34 @@ export default function useSidebarSessions(): SidebarSessionsState {
     // unrelated turn happened to finish. Now every list change re-reads.
     const unsubscribeList = subscribeSessionListChanges(scheduleRefresh);
 
+    // M11. A removal is the one membership change the nudge above cannot carry:
+    // `appendSessionPage` merges a re-read INTO what we hold and has no removal
+    // branch, so a deleted chat survived every refresh and cleared only on a
+    // renderer reload. Splice it out by id instead — exact, and with no risk of
+    // evicting a live chat that merely fell out of the first page.
+    //
+    // ⚠ **Nothing is adjusted alongside it, and that is the keyset's doing.**
+    // This handler arrived while the page resumed from an OFFSET, and it had to
+    // decrement that offset by one: the server's list had lost the same row, so
+    // a position left alone would make the next `loadMore` skip a chat. A
+    // cursor names the sort key of the last row a page RETURNED, so it is a
+    // boundary compared against values, not a count of rows — the row it names
+    // does not have to exist for the comparison to put the next page in the
+    // right place, including when the deleted row is that very one.
+    const unsubscribeRemoved = subscribeSessionRemoved((sessionId) => {
+      const remaining = sessionsRef.current.filter((session) => session.id !== sessionId);
+      if (remaining.length === sessionsRef.current.length) return;
+      sessionsRef.current = remaining;
+      setSessions(remaining);
+    });
+
     window.addEventListener('session-created', scheduleRefresh);
     window.addEventListener('message-stream-finished', scheduleRefresh);
 
     return () => {
       unsubscribeNames();
       unsubscribeList();
+      unsubscribeRemoved();
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
       window.removeEventListener('session-created', scheduleRefresh);
       window.removeEventListener('message-stream-finished', scheduleRefresh);

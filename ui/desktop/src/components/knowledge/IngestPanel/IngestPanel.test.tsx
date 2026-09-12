@@ -444,18 +444,21 @@ describe('IngestPanel paste box visibility', () => {
    * that is where its Stage button sits.
    */
   it('scrolls the summoned box into view', () => {
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      configurable: true,
-      writable: true,
-      value: scrollIntoView,
-    });
+    // SPY on the polyfill src/test/setup.ts installs, rather than redefining the
+    // property: `mockRestore` puts the no-op back, where a redefinition leaves
+    // whatever the last test wrote. The polyfill itself is process-wide on
+    // purpose — the scroll runs from an effect React can flush after the test
+    // has returned, so a per-test lifetime is a race. See setup.ts.
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      render(<IngestPanel />);
+      fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
 
-    render(<IngestPanel />);
-    fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
-
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'end' }));
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'end' }));
+    } finally {
+      scrollIntoView.mockRestore();
+    }
   });
 
   /**

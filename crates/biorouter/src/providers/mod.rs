@@ -3,6 +3,8 @@ mod affiliation_tests;
 pub mod anthropic;
 pub mod api_client;
 pub mod auto_detect;
+#[cfg(feature = "aws-providers")]
+pub mod aws_stored_settings;
 pub mod azure;
 pub mod azureauth;
 pub mod base;
@@ -55,6 +57,8 @@ pub mod xai;
 pub mod xiaomi_mimo;
 pub mod zai;
 
+#[cfg(test)]
+pub(crate) use factory::builtin_provider_metadata;
 pub(crate) use factory::create_from_persisted;
 pub use factory::{
     create, create_with_default_model, create_with_named_model, providers, refresh_custom_providers,

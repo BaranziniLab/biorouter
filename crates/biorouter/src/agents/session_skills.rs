@@ -459,6 +459,11 @@ mod tests {
 
         // What `/reset` History does: empty `sessions`, then create afresh.
         sm.clear_all_sessions().await.unwrap();
+        // A reset does not lower `session_id_high_water`, so this build alone
+        // would give the new chat a fresh id. The override guard still has to
+        // hold without that — a build without the mark sharing the file, or a
+        // restored backup, can hand the id back — so the reuse is reproduced.
+        sm.forget_minted_session_ids_for_test().await.unwrap();
         let recreated = sm
             .create_session(
                 temp.path().to_path_buf(),

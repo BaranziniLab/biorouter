@@ -375,6 +375,43 @@ pub fn bind_allowed(incoming: ProviderTier, target: SessionClassification) -> bo
     }
 }
 
+/// Gate A's predicate **plus DR-16's**, for the surface where a MODEL asks for
+/// the bind: it may LOWER a conversation's capability, never RAISE it.
+///
+/// [`bind_allowed`] is deliberately asymmetric — it refuses only the *downward*
+/// bind, because putting a MORE private model in front of a conversation can
+/// never leak that conversation's contents. That reasoning is sound for the
+/// user's own act and incomplete for a model's: the raise is not dangerous to
+/// the conversation's *contents*, it is dangerous because of what the raised
+/// conversation may then **reach**. A session bound to a private provider has
+/// Private capability, which unlocks `chatrecall` over private conversations,
+/// private knowledge bases and an unfiltered Gate E roster — and, on its next
+/// turn, ratchets `sessions.privacy_tier` to Private permanently, locking the
+/// user's conversation out of every public model for good.
+///
+/// DR-16 rules that the raise "is the user's decision, not yours"
+/// ([`refusal::raise_needs_user_action`]). The three sites that enforce it are
+/// all HTTP routes, where `X-User-Action` can carry proof that a person asked;
+/// a model-facing tool has no person on the other end to supply that proof, so
+/// it gets the refusal rather than the question. See
+/// [`refusal::PrivacyRefusal::ToolTierRaise`].
+///
+/// What is left is the *sideways* bind, in both directions of the pair: the
+/// provider's tier must equal the target's classification. That is the two
+/// rules composed, not a third one — `capability(S) >= classification(S)` is
+/// the invariant, [`bind_allowed`] forbids dropping below the floor, and this
+/// forbids a model raising the ceiling above it.
+///
+/// ⚠ The baseline is the target's **stored classification**, not its currently
+/// bound provider's tier (which is what the HTTP sites compare). Two reasons:
+/// the classification is the value that ratchets, and is therefore the one a
+/// concurrent turn cannot move in the unsafe direction; and the pre-flight
+/// already holds it, where reading the target's live provider would mean
+/// reaching for its agent, which the pre-flight must not create.
+pub fn tool_bind_allowed(incoming: ProviderTier, target: SessionClassification) -> bool {
+    bind_allowed(incoming, target) && incoming.is_private() == target.is_private()
+}
+
 /// Gate D / the §7 matrix's VIS rule: a caller sees a target only when the
 /// target's classification does not exceed the caller's capability.
 pub fn visible_to(caller: ProviderTier, target: SessionClassification) -> bool {
@@ -384,6 +421,60 @@ pub fn visible_to(caller: ProviderTier, target: SessionClassification) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DR-16 at the model-facing surface, as the predicate: all four
+    /// combinations, and the asymmetry `bind_allowed` carries on its own spelled
+    /// out beside the one this adds.
+    ///
+    /// The `Private → Public` row is the whole finding: `bind_allowed` answers
+    /// `true` there, because putting a MORE private model in front of a public
+    /// chat leaks nothing — and `tool_bind_allowed` answers `false`, because a
+    /// MODEL asking for it is granting that chat reach it did not have and
+    /// ratcheting it permanently. Both answers are correct for their own
+    /// caller; the bug was having only the first one on the tool path.
+    #[test]
+    fn a_model_may_lower_a_capability_but_never_raise_one() {
+        use ProviderTier::{Private, Public};
+        use SessionClassification as C;
+
+        // Sideways, both directions of the pair: the only binds a model may ask
+        // for, and the ones that must keep working.
+        assert!(tool_bind_allowed(Public, C::Public));
+        assert!(tool_bind_allowed(Private, C::Private));
+
+        // Downward. Gate A already refuses it, and this must not disagree —
+        // two predicates over the same four cells that differ anywhere except
+        // the raise cell would be two policies.
+        assert!(!bind_allowed(Public, C::Private));
+        assert!(!tool_bind_allowed(Public, C::Private));
+
+        // The raise. `bind_allowed` permits it on purpose; the model-facing
+        // surface must not.
+        assert!(
+            bind_allowed(Private, C::Public),
+            "Gate A's asymmetry is deliberate — if this flipped, `tool_bind_allowed` is now \
+             redundant and the change that flipped it needs a much harder look than this test"
+        );
+        assert!(
+            !tool_bind_allowed(Private, C::Public),
+            "a model just raised a public conversation's capability to Private"
+        );
+
+        // Stated as a rule rather than as four cells, so a fifth cell (a third
+        // tier) cannot be added while satisfying the cells above.
+        for (incoming, target) in [
+            (Public, C::Public),
+            (Public, C::Private),
+            (Private, C::Public),
+            (Private, C::Private),
+        ] {
+            assert_eq!(
+                tool_bind_allowed(incoming, target),
+                incoming.is_private() == target.is_private(),
+                "a model-facing bind is exactly the sideways one ({incoming:?} → {target:?})"
+            );
+        }
+    }
 
     #[test]
     fn capability_is_a_least_and_classification_is_a_max() {
