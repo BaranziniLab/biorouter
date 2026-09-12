@@ -1076,6 +1076,11 @@ impl BridgeToolDispatch for InertDispatch {
 }
 
 /// A grant that dispatches nothing and needs no runtime to build.
+///
+/// Its capability comes from [`tests::test_capability`], not an inline
+/// constructor: `tests/privacy_capability.rs` counts this file's spellings of
+/// that constructor line by line, `#[cfg(test)]` code included, and its row for
+/// this file allows exactly the one in that helper.
 #[cfg(test)]
 pub(crate) fn inert_grant_for_test() -> BridgeGrant {
     BridgeGrant::new(
@@ -1083,7 +1088,7 @@ pub(crate) fn inert_grant_for_test() -> BridgeGrant {
         BioRouterMode::Auto,
         Arc::new(InertDispatch),
         Arc::new(ToolInspectionManager::new()),
-        CallCapability::public_enforced(),
+        tests::test_capability(),
         Vec::new(),
         Conversation::new_unvalidated(vec![]),
         None,
@@ -2498,7 +2503,13 @@ mod tests {
     /// genuinely new decider in this file — or a new test that inlines the
     /// constructor instead of calling this — still moves the count off 1 and
     /// still fires.
-    fn test_capability() -> CallCapability {
+    ///
+    /// `pub(super)` because the census counts the whole file, not this module:
+    /// `inert_grant_for_test`, which the claude_code and codex mirror tests build
+    /// their leases from, sits outside `mod tests` and takes its pair from here
+    /// too. It inlined the constructor when it landed with #228 and turned this
+    /// census red again, which is how it came to call this instead.
+    pub(super) fn test_capability() -> CallCapability {
         CallCapability::public_enforced()
     }
 
