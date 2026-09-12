@@ -24,7 +24,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing::error;
 use webbrowser;
 
@@ -163,7 +163,16 @@ fn token_matches(candidate: &str, expected: &str) -> bool {
     diff == 0
 }
 
+/// ⚠ **An empty `--auth-token` is not a token, and must not satisfy this guard.**
+/// `Some("")` used to pass it, so `--host 0.0.0.0 --auth-token ""` bound to every
+/// interface while `auth_middleware` would admit anyone who sent
+/// `Authorization: Bearer ` with nothing after it — no protection at all, past
+/// the one check whose whole job is to insist on protection. `cli.rs` now refuses
+/// an empty value at argument-parse time, which is the real fix; this treats it
+/// as absent as well, because `handle_web` is a public function and the guard
+/// must not depend on its one caller having been careful.
 fn validate_network_auth(host: &str, auth_token: &Option<String>) {
+    let auth_token = auth_token.as_deref().filter(|token| !token.is_empty());
     if !is_loopback_address(host) && auth_token.is_none() {
         eprintln!(
             "Error: --auth-token is required when the server is exposed on the network ({}).",
@@ -230,23 +239,37 @@ async fn create_agent(provider_name: &str, model: &str) -> Result<(Agent, Provid
     Ok((agent, server_tier))
 }
 
-fn build_cors_layer(auth_token: &Option<String>, host: &str, port: u16) -> CorsLayer {
-    if auth_token.is_none() {
-        let allowed_origins = [
-            "http://localhost:3000".parse().unwrap(),
-            "http://127.0.0.1:3000".parse().unwrap(),
-            format!("http://{}:{}", host, port).parse().unwrap(),
-        ];
-        CorsLayer::new()
-            .allow_origin(AllowOrigin::list(allowed_origins))
-            .allow_methods(Any)
-            .allow_headers(Any)
-    } else {
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any)
-    }
+/// No origin but this server's own may read anything this server serves, and
+/// nothing needs to.
+///
+/// ⚠ **This layer used to hand the WebSocket token to another origin, which is
+/// the same capability the reflected XSS gave** (see [`serve_session`]). Without
+/// `--auth-token` — the default — `auth_middleware` lets every request through,
+/// so a cross-origin `fetch` of `/session/…` that the browser permits *reads the
+/// page*, and `data-ws-token` is in it. From there: open `/ws` with the token,
+/// which is not subject to the same-origin policy, and send a message to an
+/// agent holding `developer__shell`. Escaping the reflection while leaving this
+/// open would have closed the sink and left the outcome.
+///
+/// The allow-list was `localhost:3000`, `127.0.0.1:3000` and this server's own
+/// origin. `--port` **defaults to 3000**, so on a default run all three are this
+/// server; the grant only starts meaning something on any other port, where it
+/// hands `http://…:3000` — a frontend dev server, or a page the operator was
+/// talked into opening — read access to a chat page on, say, `:8080`. The
+/// documented invocations include `--port 8080`.
+///
+/// ⚠ **There is deliberately no flag to turn this back on.** The two routes a
+/// cross-origin browser client could have wanted, `/api/sessions` and
+/// `/api/sessions/{id}`, are the ones SD-13 deleted; what is left is the page
+/// itself, `/static/*`, a static `/api/health` and the WebSocket, which CORS
+/// does not govern. Nothing in this repository reads any of it from another
+/// origin — `scripts/test_web.sh` uses `curl`, which ignores CORS entirely. An
+/// opt-in would therefore be an opt-in to the token leak and to nothing else.
+///
+/// The layer is kept rather than removed so that a preflight gets a definite
+/// answer from code that says why, instead of a 405 from the router.
+fn build_cors_layer() -> CorsLayer {
+    CorsLayer::new()
 }
 
 /// ⚠ **There is no `/api/sessions` route, and there must not be one again.**
@@ -295,11 +318,11 @@ pub async fn handle_web(
     let (provider_name, model) = get_provider_and_model();
     let (agent, server_tier) = create_agent(&provider_name, &model).await?;
 
-    let ws_token = if auth_token.is_none() {
-        uuid::Uuid::new_v4().to_string()
-    } else {
-        String::new()
-    };
+    // Unconditional. It used to be empty whenever `--auth-token` was set, which
+    // was only safe because [`websocket_handler`] then skipped the check
+    // altogether — and `token_matches("", "")` is `true`, so the pair was one
+    // careless edit away from an open socket. See that handler's doc comment.
+    let ws_token = uuid::Uuid::new_v4().to_string();
 
     let state = AppState {
         agent: Arc::new(agent),
@@ -310,7 +333,7 @@ pub async fn handle_web(
         server_tier,
     };
 
-    let cors_layer = build_cors_layer(&auth_token, &host, port);
+    let cors_layer = build_cors_layer();
     let app = build_router(state, cors_layer);
 
     let addr = (host.as_str(), port)
@@ -600,17 +623,93 @@ struct WsQuery {
     token: Option<String>,
 }
 
+/// Is this `Origin` this very server?
+///
+/// A mirror of the daemon's `routes::origin_matches_host`, in the same spirit as
+/// [`token_matches`] mirroring its `secret_matches`: `biorouter-cli` does not
+/// depend on `biorouter-server` and must not start — SD-7 is why `serve` spawns
+/// `biorouterd` as a subprocess rather than linking it — so the rule is
+/// duplicated rather than imported. If the two ever need to be one symbol, the
+/// move is into the `biorouter` core library that both already depend on, never
+/// a new command-line-interface-to-server dependency. ⚠ PR #233 is editing the
+/// daemon's copy; the shape below is that PR's, not the older one.
+///
+/// It is the **strict core of that rule and neither of its exceptions**, and
+/// deliberately so:
+///
+/// - No `is_local_origin` widening. #233 removes exactly that from the daemon's
+///   socket gates — "`is_local_origin` is the CORS rule now and nothing else; do
+///   not hand it back to a socket" — and here it would re-open the hole
+///   [`build_cors_layer`] just closed, by admitting a page on `localhost:3000`.
+/// - No `file://` and no declared-renderer origin. Those exist for the Electron
+///   renderer, which reaches the daemon from another local origin. This server
+///   serves its own page from its own origin and has no such client, so an
+///   opaque origin is refused like any other.
+fn origin_is_this_server(origin: &str, host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        // Nothing to compare against. Refuse rather than guess.
+        return false;
+    };
+    // `null`, `file://` and anything else opaque strip no scheme and so can
+    // never match.
+    let Some(authority) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    !authority.is_empty() && !host.is_empty() && authority.eq_ignore_ascii_case(host)
+}
+
+/// The socket is the chat, so it carries both locks the rest of this file
+/// assumes: it is this server's own page asking, and it holds this process's
+/// token.
+///
+/// ⚠ **The token check used to be skipped entirely whenever `--auth-token` was
+/// set**, on the reasoning that `auth_middleware` had already authenticated the
+/// handshake. That is defensible and it left a landmine, because `handle_web`
+/// also made `ws_token` the empty string in that mode: `token_matches("", "")`
+/// is `true`, so deleting the `if` without touching the generation would have
+/// admitted *every* socket while reading like a tightening. The generation is
+/// unconditional now, the check is unconditional, and an empty expected token is
+/// refused outright so the landmine cannot be re-armed.
+///
+/// ⚠ **And there was no `Origin` check on any path**, while the tree's other two
+/// upgrade sites (`routes/workspace.rs`, `routes/apps.rs`) both have one. CORS
+/// does not govern a WebSocket handshake, so a page on any origin that had the
+/// token could drive an agent holding `developer__shell` (CSWSH). The token is no
+/// longer readable cross-origin either ([`build_cors_layer`]), which is the point
+/// of having both: the two locks fail independently.
+///
+/// A client that sends no `Origin` at all is let past this gate, as the daemon's
+/// gates let one past: that is a non-browser client, and the token still guards
+/// it. A local process reading the token off this port is issue #47 and unchanged.
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Query(query): Query<WsQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if state.auth_token.is_none() {
-        let provided_token = query.token.as_deref().unwrap_or("");
-        if !token_matches(provided_token, &state.ws_token) {
-            tracing::warn!("WebSocket connection rejected: invalid token");
+    if let Some(origin) = headers.get(axum::http::header::ORIGIN) {
+        let host = headers
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok());
+        if !origin_is_this_server(origin.to_str().unwrap_or(""), host) {
+            tracing::warn!("WebSocket connection rejected: cross-origin handshake");
             return Err(StatusCode::FORBIDDEN);
         }
+    }
+
+    if state.ws_token.is_empty() {
+        // Unreachable through `handle_web`, which always generates one. A
+        // refusal rather than a `debug_assert`, because the cost of being wrong
+        // is an open socket.
+        tracing::error!("WebSocket connection rejected: this server has no socket token");
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !token_matches(query.token.as_deref().unwrap_or(""), &state.ws_token) {
+        tracing::warn!("WebSocket connection rejected: invalid token");
+        return Err(StatusCode::FORBIDDEN);
     }
 
     Ok(ws.on_upgrade(|socket| handle_socket(socket, state)))
@@ -1194,13 +1293,7 @@ mod tests {
     async fn the_page_is_served_under_a_policy_that_refuses_inline_script() {
         let server = TestServer::start(ProviderTier::Public).await;
         let response = server.raw_get("/session/20260911_120000").await;
-        let policy = response
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-security-policy")
-                    .then(|| value.trim().to_string())
-            })
+        let policy = TestServer::header(&response, "content-security-policy")
             .unwrap_or_else(|| panic!("no content-security-policy header in {response:?}"));
         assert!(
             policy.contains("script-src 'self'") && !policy.contains("unsafe-inline"),
@@ -1212,6 +1305,189 @@ mod tests {
             !template.contains("onclick="),
             "the template carries an inline handler the policy above would refuse"
         );
+    }
+
+    /// The origin rule, at every corner. The strict core of the daemon's
+    /// `origin_matches_host` with neither of its exceptions — see
+    /// [`origin_is_this_server`] for why each is deliberately absent.
+    #[test]
+    fn an_origin_is_this_server_only_when_it_matches_this_request_s_host() {
+        let host = Some("127.0.0.1:8080");
+        assert!(origin_is_this_server("http://127.0.0.1:8080", host));
+        // Case-insensitive on the authority, as the daemon's copy is.
+        assert!(origin_is_this_server(
+            "http://LOCALHOST:8080",
+            Some("localhost:8080")
+        ));
+        // The scheme prefix is matched literally, so an odd spelling of it is a
+        // refusal rather than a match.
+        assert!(!origin_is_this_server("HTTP://127.0.0.1:8080", host));
+        // A different port is a different origin. This is the whole point: the
+        // CORS allow-list this replaces named `localhost:3000` by hand.
+        assert!(!origin_is_this_server("http://127.0.0.1:3000", host));
+        assert!(!origin_is_this_server("http://localhost:8080", host));
+        assert!(!origin_is_this_server("http://evil.example", host));
+        // Opaque origins strip no scheme, so they can never match — and unlike
+        // the daemon's gates, `file://` gets no exception here.
+        for opaque in ["null", "file://", "", "ws://127.0.0.1:8080"] {
+            assert!(!origin_is_this_server(opaque, host), "{opaque} admitted");
+        }
+        // Nothing to compare against is a refusal, not a guess.
+        assert!(!origin_is_this_server("http://127.0.0.1:8080", None));
+        assert!(!origin_is_this_server("http://", Some("")));
+    }
+
+    /// ⚠ **The socket is the chat, and it had no `Origin` check on any path**
+    /// while the tree's other two upgrade sites both have one. CORS does not
+    /// govern a handshake, so a page on any origin holding the token could drive
+    /// an agent with `developer__shell` (CSWSH). Driven as a real handshake
+    /// because `WebSocketUpgrade` is extracted before the handler body runs: a
+    /// request without the upgrade headers is rejected with 400 by the extractor
+    /// and would never reach the rule under test.
+    #[tokio::test]
+    async fn a_handshake_from_another_origin_is_refused_even_with_the_right_token() {
+        let server = TestServer::start(ProviderTier::Public).await;
+
+        assert_eq!(server.handshake(Some(WS_TOKEN), None).await, 101);
+        let own = format!("http://{}", server.addr);
+        assert_eq!(server.handshake(Some(WS_TOKEN), Some(&own)).await, 101);
+
+        for origin in [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://evil.example",
+            "null",
+            "file://",
+        ] {
+            assert_eq!(
+                server.handshake(Some(WS_TOKEN), Some(origin)).await,
+                403,
+                "{origin} opened the socket"
+            );
+        }
+    }
+
+    /// The token gate, now that it runs on every path rather than only when
+    /// `--auth-token` is absent.
+    ///
+    /// ⚠ **This is the landmine under "just make the check unconditional".**
+    /// `ws_token` used to be the empty string whenever `--auth-token` was set,
+    /// precisely because the check was skipped in that mode — and
+    /// `token_matches("", "")` is `true`, so deleting the `if` without also
+    /// changing the generation would have admitted *every* socket while reading
+    /// like a tightening. Both halves are pinned: an empty expected token is
+    /// refused by the handler, and `handle_web` never produces one.
+    #[tokio::test]
+    async fn the_socket_token_is_required_on_every_path_and_never_empty() {
+        assert!(
+            token_matches("", ""),
+            "the reason an empty expected token must never reach the handler"
+        );
+
+        let server = TestServer::start(ProviderTier::Public).await;
+        assert_eq!(server.handshake(Some(WS_TOKEN), None).await, 101);
+        assert_eq!(server.handshake(None, None).await, 403);
+        assert_eq!(server.handshake(Some("wrong"), None).await, 403);
+
+        // A server whose token is empty refuses everything, including the empty
+        // token that `token_matches` would otherwise accept.
+        let tokenless = TestServer::start_with_ws_token(ProviderTier::Public, "").await;
+        assert_eq!(tokenless.handshake(None, None).await, 403);
+        assert_eq!(tokenless.handshake(Some(""), None).await, 403);
+    }
+
+    /// `--host 0.0.0.0 --auth-token ""` used to bind to every interface behind a
+    /// token that `Authorization: Bearer ` satisfies. Pinned at both layers: the
+    /// argument parser refuses the value, and the guard treats it as absent even
+    /// if a programmatic caller hands it one.
+    #[test]
+    fn an_empty_auth_token_is_refused_and_does_not_satisfy_the_network_guard() {
+        assert!(crate::cli::parse_auth_token("").is_err());
+        assert!(crate::cli::parse_auth_token("   ").is_err());
+        assert_eq!(
+            crate::cli::parse_auth_token("secret").as_deref(),
+            Ok("secret")
+        );
+        // `validate_network_auth` exits the process when it refuses, so the
+        // normalisation it applies is asserted rather than the exit: an empty
+        // token must reduce to `None`, which is the refusing branch.
+        for token in [None, Some(String::new()), Some("  ".to_string())] {
+            assert!(
+                token.as_deref().filter(|t| !t.trim().is_empty()).is_none(),
+                "{token:?} must not read as a token"
+            );
+        }
+    }
+
+    /// ⚠ **The other route to the same capability as the reflected XSS.** The
+    /// allow-list held `http://localhost:3000`, so a page there could `fetch`
+    /// `/session/…` on any other port, read `data-ws-token` out of the reply, and
+    /// open `/ws` with it — WebSockets are not subject to the same-origin policy —
+    /// reaching an agent that holds `developer__shell`. Escaping the reflection
+    /// and leaving this would have closed the sink and left the outcome.
+    ///
+    /// Asserted on the **header**, not on the body: the token is still in the
+    /// page, because the page needs it. What must not happen is a browser being
+    /// told another origin may read that page.
+    #[tokio::test]
+    async fn no_other_origin_may_read_the_page_that_carries_the_ws_token() {
+        let server = TestServer::start(ProviderTier::Public).await;
+        let path = "/session/20260911_120000";
+
+        for origin in [
+            // Both spellings the allow-list named, on the port it hard-coded,
+            // which is also `--port`'s default — so on any other port these are
+            // a foreign origin, and `--port 8080` is a documented invocation.
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://evil.example",
+        ] {
+            let response = server.raw_request("GET", path, &[("Origin", origin)]).await;
+            assert!(
+                response.contains("data-ws-token=\""),
+                "this test is meaningless if the page stopped carrying the token:\n{response}"
+            );
+            assert_eq!(
+                TestServer::header(&response, "access-control-allow-origin"),
+                None,
+                "{origin} is told it may read the page holding the token"
+            );
+
+            // And the preflight, which is what a browser actually asks first
+            // for anything beyond a simple request.
+            let preflight = server
+                .raw_request(
+                    "OPTIONS",
+                    path,
+                    &[("Origin", origin), ("Access-Control-Request-Method", "GET")],
+                )
+                .await;
+            assert_eq!(
+                TestServer::header(&preflight, "access-control-allow-origin"),
+                None,
+                "the preflight grants {origin} what the response above refused"
+            );
+        }
+    }
+
+    /// Same-origin still works, which is the only case the page needs — a
+    /// cross-origin refusal is worthless if it also broke the page itself.
+    #[tokio::test]
+    async fn the_page_still_serves_the_origin_it_is_served_from() {
+        let server = TestServer::start(ProviderTier::Public).await;
+        let own_origin = format!("http://{}", server.addr);
+        let response = server
+            .raw_request(
+                "GET",
+                "/session/20260911_120000",
+                &[("Origin", &own_origin)],
+            )
+            .await;
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "the server's own origin is refused its own page:\n{response}"
+        );
+        assert!(response.contains("data-ws-token=\"test-ws-token\""));
     }
 
     /// The page reads its boot values from attributes, not from globals an
@@ -1259,6 +1535,10 @@ mod tests {
 
     impl TestServer {
         async fn start(server_tier: ProviderTier) -> Self {
+            Self::start_with_ws_token(server_tier, WS_TOKEN).await
+        }
+
+        async fn start_with_ws_token(server_tier: ProviderTier, ws_token: &str) -> Self {
             assert!(
                 biorouter::privacy::privacy_tiers_enabled(),
                 "these tests drive the enforced gate, and something in this binary turned the \
@@ -1276,13 +1556,13 @@ mod tests {
                 agent: Arc::new(agent),
                 cancellations: Arc::default(),
                 auth_token: None,
-                ws_token: WS_TOKEN.to_string(),
+                ws_token: ws_token.to_string(),
                 started_here: Arc::default(),
                 server_tier,
             };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            let app = build_router(state, build_cors_layer(&None, "127.0.0.1", addr.port()));
+            let app = build_router(state, build_cors_layer());
             tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
             Self {
                 addr,
@@ -1295,15 +1575,76 @@ mod tests {
         /// Hand-rolled, as this crate's other HTTP clients are
         /// (`session_watch.rs`).
         async fn raw_get(&self, path: &str) -> String {
+            self.raw_request("GET", path, &[]).await
+        }
+
+        /// One request with whatever extra headers the caller needs, so a test
+        /// can put an `Origin` on it and read what the CORS layer answers.
+        async fn raw_request(&self, method: &str, path: &str, extra: &[(&str, &str)]) -> String {
             let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-            let request = format!(
-                "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            let mut request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
                 self.addr
             );
+            for (name, value) in extra {
+                request.push_str(&format!("{name}: {value}\r\n"));
+            }
+            request.push_str("\r\n");
             stream.write_all(request.as_bytes()).await.unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).await.unwrap();
             response
+        }
+
+        /// A real WebSocket handshake, hand-rolled so the `Origin` can be set (or
+        /// left off) freely, and so the reply's status is visible rather than
+        /// folded into a client library's error. Returns the status code: 101 if
+        /// the socket opened, 403 if a gate refused it.
+        /// Not built on [`Self::raw_request`], which sends `Connection: close`
+        /// and reads to EOF: a handshake needs `Connection: Upgrade`, and a
+        /// successful one leaves the connection open, so reading to EOF would
+        /// hang. One bounded read is enough — the status line and headers arrive
+        /// together for both 101 and 403.
+        async fn handshake(&self, token: Option<&str>, origin: Option<&str>) -> u16 {
+            let path = match token {
+                Some(token) => format!("/ws?token={}", urlencoding::encode(token)),
+                None => "/ws".to_string(),
+            };
+            let mut request = format!(
+                "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+                 Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
+                self.addr
+            );
+            if let Some(origin) = origin {
+                request.push_str(&format!("Origin: {origin}\r\n"));
+            }
+            request.push_str("\r\n");
+
+            let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut buffer = [0u8; 1024];
+            let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
+                .await
+                .expect("the server answers a handshake")
+                .unwrap();
+            let response = String::from_utf8_lossy(&buffer[..read]);
+            response
+                .split(' ')
+                .nth(1)
+                .and_then(|code| code.parse().ok())
+                .unwrap_or_else(|| panic!("no status line in {response:?}"))
+        }
+
+        /// The value of one response header, if it is there at all.
+        fn header(response: &str, wanted: &str) -> Option<String> {
+            // Headers only: a body can contain anything, including a line that
+            // looks like the header being searched for.
+            let head = response.split("\r\n\r\n").next().unwrap_or(response);
+            head.lines().skip(1).find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case(wanted)
+                    .then(|| value.trim().to_string())
+            })
         }
 
         /// The status code and any `Location`, for the routes these tests only

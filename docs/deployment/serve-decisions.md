@@ -405,11 +405,85 @@ into `innerHTML` unescaped: a tool's name (twice) and a tool call's arguments th
 escaped now; `escapeHtml` is adequate for them and only because every one sits in element content
 rather than in an attribute value, which it does not escape for.
 
-**Not closed, and a maintainer's call.** `build_cors_layer` allow-lists `http://localhost:3000`
-and `http://127.0.0.1:3000` whenever no `--auth-token` is passed, so a page served from port 3000
-of the same machine can read `/session/…` cross-origin and lift the WebSocket token out of it.
-That is a far higher bar than clicking a link, and removing it may break a frontend-dev workflow
-this command was once used for, so it is recorded rather than changed here.
+**Also closed: no other origin may read the page the token is in.** `build_cors_layer`
+allow-listed `http://localhost:3000`, `http://127.0.0.1:3000` and this server's own origin
+whenever no `--auth-token` was passed. Without a token the auth middleware lets every request
+through, so a cross-origin `fetch` of `/session/…` that the browser permits *reads the page* — and
+`data-ws-token` is in it. From there: open `/ws` with the token, which CORS does not govern, and
+send a message to an agent holding `developer__shell`. **That is the same capability the
+reflection above gave, by a different route**, so escaping one and leaving the other would have
+closed the sink and left the outcome. No origin but the server's own is granted a read now.
+
+The grant's shape is worth recording, because it looks harmless until the port moves. `--port`
+**defaults to 3000**, so on a default run all three entries are this server and the allowance
+means nothing. On any other port it hands `http://…:3000` — a frontend dev server, or a page the
+operator was talked into opening — read access to a chat page on, say, `:8080`. `--port 8080` is
+one of this command's documented invocations.
+
+**Displaced alternative: keep the allowance behind an opt-in flag.** Rejected, and the reason is
+this record's own first half. The two routes a cross-origin browser client could have wanted,
+`/api/sessions` and `/api/sessions/{id}`, are the ones deleted above; what is left is the page,
+`/static/*`, a static `/api/health` and the WebSocket, which CORS does not govern. Nothing in the
+repository reads any of it from another origin — `scripts/test_web.sh` uses `curl`, which ignores
+CORS entirely. An opt-in would therefore be an opt-in to the token leak and to nothing else.
+
+**What this leaves.** The token is still in the page, because the page needs it; what changed is
+that no other origin is told it may read that page. The remaining ways to it are same-origin
+(where the question does not arise) and local process inspection, which is issue #47 and unchanged.
+
+### The socket itself gets an origin check, and its token is no longer optional
+
+**Ruling (2026-09-11).** `websocket_handler` refuses a handshake whose `Origin` is not this very
+server, and checks the socket token on **every** path rather than only when `--auth-token` is
+absent. `handle_web` always generates that token, and an empty expected token is refused outright.
+An empty `--auth-token` is rejected at argument-parse time.
+
+**Why the origin check.** `/ws` is the chat: a message on it runs a turn and streams the reply.
+CORS does not govern a WebSocket handshake, so a page on *any* origin that held the token could
+drive an agent carrying `developer__shell` — classic cross-site WebSocket hijacking. The tree's
+other two upgrade sites, `routes/workspace.rs` and `routes/apps.rs`, have had such a check all
+along; this one had none on any path. Closing the reflected XSS above on the grounds that the
+injected script could read the token and drive the socket, while leaving the socket reachable from
+any origin, would have closed the sink and left the capability.
+
+The rule is the **strict core** of the daemon's `routes::origin_matches_host` — the `Origin` must
+match this request's own `Host` — with neither of that helper's exceptions:
+
+- **No `is_local_origin` widening.** PR #233 is removing exactly that from the daemon's socket
+  gates ("`is_local_origin` is the CORS rule now and nothing else; do not hand it back to a
+  socket"), and here it would re-open the allowance closed immediately above, by admitting a page
+  on `localhost:3000`.
+- **No `file://` and no declared-renderer origin.** Those exist for the Electron renderer, which
+  reaches the daemon from another local origin. This server serves its own page from its own
+  origin and has no such client, so an opaque origin is refused like any other.
+
+⚠ **It is a duplicate of that rule, not a call to it, and that is a crate boundary rather than a
+preference.** `biorouter-cli` does not depend on `biorouter-server` — SD-7 is why `serve` *spawns*
+`biorouterd` instead of linking it — so the rule is mirrored, exactly as `token_matches` already
+mirrors the daemon's `secret_matches` in this same file. If the two ever need to be one symbol, the
+move is into the `biorouter` core library that both already depend on; adding a
+command-line-interface-to-server dependency to share a six-line comparison would undo SD-7.
+
+A client that sends no `Origin` is still let past this gate, as the daemon's gates let one past: it
+is a non-browser client, and the token guards it.
+
+⚠ **Why "make the token check unconditional" is a trap on its own.** The check was skipped whenever
+`--auth-token` was set, and `handle_web` made `ws_token` the empty string in exactly that mode —
+so the skip was load-bearing. `token_matches("", "")` is `true`, which means deleting the `if`
+without also changing the generation would have admitted **every** socket while reading like a
+tightening. The generation is unconditional now, the check is unconditional, and an empty expected
+token is refused, so the pair cannot be half-fixed.
+
+**And an empty `--auth-token` is not a token.** `Some("")` satisfied the network-exposure guard, so
+`--host 0.0.0.0 --auth-token ""` bound to every interface; `auth_middleware` would then admit
+anyone who sent `Authorization: Bearer ` with nothing after it. The one check whose entire job is
+to insist on protection was satisfied by its absence. `cli.rs` refuses an empty or whitespace-only
+value at parse time, and `validate_network_auth` treats one as absent as well, because
+`handle_web` is a public function and the guard must not rely on its caller having been careful.
+
+**Sequencing.** This record's reach gate keys on a session **id**. PR #264 establishes that ids
+were being reissued after a delete and adds a high-water allocator; until it lands, a reissued id
+defeats the gate. #264 merges first.
 
 **The standing recommendation.** This command is deprecated in favour of `biorouter serve`, which
 serves the real interface. Every hole above lives in a page nothing else uses, and deleting the
