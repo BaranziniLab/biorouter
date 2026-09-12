@@ -3625,26 +3625,43 @@ impl WorkspaceClient {
         // `target_mode_requires_approval` documents at length. A skills-only or
         // KB-only call must not pay that price for a target the user has not
         // opened.
-        let needs_agent =
-            !add_configs.is_empty() || !args.remove_extensions.is_empty() || new_provider.is_some();
-        let agent = if needs_agent {
+        //
+        // ⚠ **The EXTENSION dimension must not pay it either, which is why the
+        // peek comes first.** A bare agent's manager holds nothing, and
+        // `persist_extension_state` was a whole-key REPLACE of that snapshot —
+        // so a change to a conversation with no live agent wrote the one change
+        // as its ENTIRE roster and reported success. Measured on a cold chat
+        // holding three extensions: one `add_extensions` left it holding one,
+        // and one `remove_extensions` left it holding none. Data loss,
+        // announced as a change applied. A conversation with no live agent is
+        // now changed where its roster actually lives — the session row — and
+        // an agent is minted only for the provider switch, which genuinely
+        // needs one.
+        let touches_extensions = !add_configs.is_empty() || !args.remove_extensions.is_empty();
+        let (live, agent) = if touches_extensions || new_provider.is_some() {
             let agent_manager = crate::execution::manager::AgentManager::instance()
                 .await
                 .map_err(|e| e.to_string())?;
-            Some(
-                agent_manager
-                    .get_or_create_agent(args.session_id.clone())
-                    .await
-                    .map_err(|e| e.to_string())?,
-            )
+            let live = agent_manager.peek_agent(&args.session_id).await;
+            let agent = match (&live, new_provider.is_some()) {
+                (Some(live), _) => Some(std::sync::Arc::clone(live)),
+                (None, true) => Some(
+                    agent_manager
+                        .get_or_create_agent(args.session_id.clone())
+                        .await
+                        .map_err(|e| e.to_string())?,
+                ),
+                (None, false) => None,
+            };
+            (live, agent)
         } else {
-            None
+            (None, None)
         };
 
-        if let Some(agent) = &agent {
+        if touches_extensions {
             applied.extend(
-                Self::apply_extension_changes_gated(
-                    agent,
+                self.apply_extension_changes_gated(
+                    live.as_ref(),
                     cap,
                     &args.session_id,
                     add_configs,
@@ -3822,7 +3839,13 @@ impl WorkspaceClient {
         // F4: removals are judged HERE, before any approval — they used to be
         // judged only once the handler had fetched the target's agent, which is
         // after the card the user had already been asked to approve.
-        Self::preflight_extension_removals(cap, &args.session_id, &args.remove_extensions).await?;
+        Self::preflight_extension_removals(
+            self.context.session_manager.as_ref(),
+            cap,
+            &args.session_id,
+            &args.remove_extensions,
+        )
+        .await?;
         // Model/provider (decision b): resolve and validate here; apply later.
         let new_provider = Self::resolve_provider_switch(&args.provider, &args.model).await?;
         if let (Some((_, _, provider)), Some(classification)) = (&new_provider, write_target) {
@@ -3899,7 +3922,21 @@ impl WorkspaceClient {
     /// "loaded" and "not loaded" stay the one sentence finding 13 requires.
     ///
     /// [`manageability_refusal`]: crate::agents::extension_manager::manageability_refusal
+    /// The one sentence for "that conversation has nothing under this name".
+    ///
+    /// Two branches answer it — a live conversation's loaded manager and a cold
+    /// one's saved roster — and two copies of one refusal is how the two
+    /// extension doors in this file drifted apart the last time.
+    fn nothing_to_remove(name: &str, target_session_id: &str) -> String {
+        format!(
+            "`{name}` is not enabled in conversation {target_session_id}, so there is \
+             nothing to remove. Nothing was changed; check the conversation's extensions \
+             with workspace_list."
+        )
+    }
+
     async fn preflight_extension_removals(
+        session_manager: &crate::session::SessionManager,
         cap: crate::privacy::CallCapability,
         target_session_id: &str,
         names: &[String],
@@ -3911,12 +3948,35 @@ impl WorkspaceClient {
             Ok(manager) => manager.peek_agent(target_session_id).await,
             Err(_) => None,
         };
+        // A conversation with no live agent still HAS a roster — in its session
+        // row — and this used to skip the existence half entirely for one,
+        // so a cold removal of a name the chat never had came back as `-name`.
+        // Read once, before anything is applied, so an unreadable roster refuses
+        // the call here rather than at the write (`saved_roster_of`).
+        let saved = match &live {
+            Some(_) => Vec::new(),
+            None => {
+                crate::agents::session_extensions::saved_roster(session_manager, target_session_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
+        };
         for name in names {
             let Some(agent) = &live else {
                 if let Some(refusal) =
                     crate::agents::extension_manager::manageability_refusal(name, None, cap)
                 {
                     return Err(refusal.message.to_string());
+                }
+                // The same sentence the live branch answers with — by name, not a
+                // second copy of it — and BELOW the privacy arm for the same
+                // reason: reachable only by a caller already entitled to see what
+                // that conversation has loaded.
+                if !saved.iter().any(|config| {
+                    crate::agents::extension_manager::normalize(&config.name())
+                        == crate::agents::extension_manager::normalize(name)
+                }) {
+                    return Err(Self::nothing_to_remove(name, target_session_id));
                 }
                 continue;
             };
@@ -3934,11 +3994,7 @@ impl WorkspaceClient {
                 .is_extension_enabled(&crate::agents::extension_manager::normalize(name))
                 .await
             {
-                return Err(format!(
-                    "`{name}` is not enabled in conversation {target_session_id}, so there is \
-                     nothing to remove. Nothing was changed; check the conversation's extensions \
-                     with workspace_list."
-                ));
+                return Err(Self::nothing_to_remove(name, target_session_id));
             }
         }
         Ok(())
@@ -3996,7 +4052,8 @@ impl WorkspaceClient {
     /// order it encodes (every removal entitled BEFORE anything is applied) is
     /// the part that must not be rearranged, and it is argued for inline.
     async fn apply_extension_changes_gated(
-        agent: &std::sync::Arc<crate::agents::Agent>,
+        &self,
+        live: Option<&std::sync::Arc<crate::agents::Agent>>,
         cap: crate::privacy::CallCapability,
         session_id: &str,
         add_configs: Vec<crate::agents::ExtensionConfig>,
@@ -4037,14 +4094,33 @@ impl WorkspaceClient {
         // so a refused removal cannot land after that function has already
         // applied the adds — the "resolve everything before mutating
         // anything" rule the add half states above, held across both halves.
+        //
+        // ⚠ **`live: None` asks the SAME predicate with the same `None`** the
+        // pre-flight's cold branch asks it with. A conversation with no live
+        // agent has nothing loaded, and judging its removals against the SAVED
+        // roster here would LOOSEN this gate rather than tighten it: an unknown
+        // name reads Private, and that inverted default is what stops the
+        // refusal being an existence oracle over exactly the private names
+        // Gate E hides. Existence is answered separately, below both privacy
+        // arms, in `preflight_extension_removals`.
         for name in remove_extensions {
-            agent
-                .extension_manager
-                .assert_extension_manageable(name, cap)
-                .await
-                .map_err(|e| e.message.to_string())?;
+            match live {
+                Some(agent) => agent
+                    .extension_manager
+                    .assert_extension_manageable(name, cap)
+                    .await
+                    .map_err(|e| e.message.to_string())?,
+                None => {
+                    if let Some(refusal) =
+                        crate::agents::extension_manager::manageability_refusal(name, None, cap)
+                    {
+                        return Err(refusal.message.to_string());
+                    }
+                }
+            }
         }
-        Self::apply_extension_changes(agent, session_id, add_configs, remove_extensions).await
+        self.apply_extension_changes(live, session_id, add_configs, remove_extensions)
+            .await
     }
 
     /// **Gate F1, at the workspace's own two enable doors** (issue #56,
@@ -4290,9 +4366,14 @@ impl WorkspaceClient {
         }
     }
 
-    /// The exact /agent/add_extension handler path (routes/agent.rs:744-767):
-    /// add on the live agent, persist only after a successful load. Returns the
-    /// `applied` labels for the extensions that changed.
+    /// Change the live agent's loaded set when there IS one, and the
+    /// conversation's saved roster either way. Returns the `applied` labels for
+    /// the extensions that changed.
+    ///
+    /// The live half is /agent/add_extension's handler path (routes/agent.rs):
+    /// add or remove on the agent, persist only after a successful load. The
+    /// persist half is deliberately NOT that handler's — see the delta note
+    /// below.
     ///
     /// ⚠ **This function decides nothing about privacy, and it has exactly one
     /// caller for that reason.** Both of its halves are gated at
@@ -4306,35 +4387,57 @@ impl WorkspaceClient {
     /// how this one came to be one. If you need this here, carry both gates with
     /// it or move them inside.
     async fn apply_extension_changes(
-        agent: &crate::agents::Agent,
+        &self,
+        live: Option<&std::sync::Arc<crate::agents::Agent>>,
         session_id: &str,
         add_configs: Vec<crate::agents::ExtensionConfig>,
         remove_extensions: &[String],
     ) -> Result<Vec<String>, String> {
         let mut applied = Vec::new();
         let mut extensions_changed = false;
-        for config in add_configs {
-            let name = config.name().to_string();
-            agent
-                .add_extension(config)
-                .await
-                .map_err(|e| format!("failed to add '{name}': {e}"))?;
-            applied.push(format!("+{name}"));
+        // The live half: only a conversation that is actually open has a
+        // manager to change. A cold one is changed on disk alone, below — it
+        // has no tool surface to keep in step, and `load_extensions_from_session`
+        // spawns the roster it finds the next time it is opened.
+        if let Some(agent) = live {
+            for config in &add_configs {
+                let name = config.name();
+                agent
+                    .add_extension(config.clone())
+                    .await
+                    .map_err(|e| format!("failed to add '{name}': {e}"))?;
+            }
+            for name in remove_extensions {
+                agent
+                    .remove_extension(name)
+                    .await
+                    .map_err(|e| format!("failed to remove '{name}': {e}"))?;
+            }
+        }
+        for config in &add_configs {
+            applied.push(format!("+{}", config.name()));
             extensions_changed = true;
         }
         for name in remove_extensions {
-            agent
-                .remove_extension(name)
-                .await
-                .map_err(|e| format!("failed to remove '{name}': {e}"))?;
             applied.push(format!("-{name}"));
             extensions_changed = true;
         }
         if extensions_changed {
-            agent
-                .persist_extension_state(session_id)
-                .await
-                .map_err(|e| format!("failed to persist extension state: {e}"))?;
+            // ⚠ **A DELTA on the saved roster, never a snapshot of the live
+            // manager.** `Agent::persist_extension_state` snapshots the manager,
+            // which is right for the reply loop and wrong here: this tool writes
+            // into conversations that are not open, whose manager is whatever
+            // bare agent happens to be cached under their id. See
+            // `session_extensions::apply_saved_roster_delta`, which also refuses
+            // loudly rather than replacing a roster it cannot read.
+            crate::agents::session_extensions::apply_saved_roster_delta(
+                self.context.session_manager.as_ref(),
+                session_id,
+                &add_configs,
+                remove_extensions,
+            )
+            .await
+            .map_err(|e| format!("failed to persist extension state: {e}"))?;
             // `workspace__workspace_set_tools` is NOT in `tool_catalog_mutation`,
             // so the reply loop's post-batch refresh never covered it: this tool
             // changes ANOTHER chat's extension set, and until now no consumer of
@@ -12247,6 +12350,186 @@ pub(crate) mod tests {
                 .is_extension_enabled("realfixture")
                 .await,
             "resolution is atomic: the real removal in the same call must not have landed"
+        );
+    }
+
+    /// A conversation with a SAVED extension roster and no live agent — the
+    /// state every chat the user has not opened this session is in, and the one
+    /// `live_target` cannot produce (its `add_inprocess_server` fixtures are
+    /// filtered out of `get_extension_configs`, so they never reach a row).
+    async fn cold_target_with_roster(c: &WorkspaceClient, label: &str, names: &[&str]) -> String {
+        let target = seeded_target(c, label).await;
+        let configs: Vec<crate::agents::ExtensionConfig> = names
+            .iter()
+            .map(|name| crate::agents::ExtensionConfig::Stdio {
+                name: (*name).to_string(),
+                description: String::new(),
+                cmd: "true".to_string(),
+                args: Vec::new(),
+                envs: Default::default(),
+                env_keys: Vec::new(),
+                timeout: None,
+                bundled: None,
+                available_tools: Vec::new(),
+            })
+            .collect();
+        let value = serde_json::to_value(
+            crate::session::extension_data::EnabledExtensionsState::new(configs),
+        )
+        .unwrap();
+        c.context
+            .session_manager
+            .update_extension_state(&target, "enabled_extensions", "v0", move |_| Ok(value))
+            .await
+            .unwrap()
+            .expect("the seeded session exists");
+        assert!(
+            crate::execution::manager::AgentManager::instance()
+                .await
+                .unwrap()
+                .peek_agent(&target)
+                .await
+                .is_none(),
+            "the premise of every test below: this conversation has no live agent"
+        );
+        target
+    }
+
+    async fn saved_names(c: &WorkspaceClient, target: &str) -> Vec<String> {
+        let mut names: Vec<String> =
+            crate::agents::session_extensions::saved_roster(&c.context.session_manager, target)
+                .await
+                .unwrap()
+                .iter()
+                .map(|config| config.name())
+                .collect();
+        names.sort();
+        names
+    }
+
+    /// **A conversation the user has not opened keeps the extensions the call
+    /// did not name.**
+    ///
+    /// The handler fetched the target's agent with `get_or_create_agent`, whose
+    /// miss path mints a BARE one, and then persisted that empty manager's
+    /// snapshot as the conversation's entire roster —
+    /// `Agent::persist_extension_state` is a whole-key REPLACE by design.
+    /// Measured on `main`: a cold chat holding three extensions, one
+    /// `remove_extensions` naming one of them, and the saved roster came back
+    /// holding NONE. The two untouched extensions were gone and the call
+    /// answered `Applied to session …: -roster-beta.` — data loss reported as
+    /// success, which is why this is the worst shape in the batch: nothing at
+    /// the call site can tell.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_on_a_cold_conversation_keeps_the_extensions_it_did_not_name() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = cold_target_with_roster(
+            &c,
+            "cold-roster",
+            &["roster-alpha", "roster-beta", "roster-gamma"],
+        )
+        .await;
+
+        let result = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target, "remove_extensions": ["roster-beta"] }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&result);
+        crate::workspace_services::clear_test_override();
+        assert_ne!(result.is_error, Some(true), "{text}");
+
+        assert_eq!(
+            saved_names(&c, &target).await,
+            vec!["roster-alpha".to_string(), "roster-gamma".to_string()],
+            "one named removal replaced the whole saved roster"
+        );
+    }
+
+    /// The same door, the other direction: a cold removal of a name the
+    /// conversation does not have is refused, and nothing is written.
+    ///
+    /// The live branch has answered this since F4; the cold branch used to
+    /// `continue` past it, so the phantom came back as `-name` — and then took
+    /// the rest of the roster with it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_a_cold_conversation_a_removal_it_has_nothing_for() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = cold_target_with_roster(&c, "cold-phantom", &["roster-alpha"]).await;
+
+        let refused = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target, "remove_extensions": ["ghost-fixture"] }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("`ghost-fixture` is not enabled in conversation"),
+            "{text}"
+        );
+        assert_eq!(
+            saved_names(&c, &target).await,
+            vec!["roster-alpha".to_string()],
+            "a refused call still wrote"
+        );
+    }
+
+    /// A saved roster this build cannot parse is refused, not replaced.
+    ///
+    /// `EnabledExtensionsState::from_extension_data` ends in `.ok()`, so an
+    /// unreadable roster and an absent one are the same `None` to every reader
+    /// — and to a writer about to REPLACE the key they are opposites. A write
+    /// that destroys state must never report success.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_saved_roster_this_build_cannot_read_is_refused_rather_than_replaced() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = seeded_target(&c, "cold-unreadable").await;
+        let unreadable = serde_json::json!({ "extensions": "written by a newer build" });
+        let stored = unreadable.clone();
+        c.context
+            .session_manager
+            .update_extension_state(&target, "enabled_extensions", "v0", move |_| Ok(stored))
+            .await
+            .unwrap()
+            .expect("the seeded session exists");
+
+        let refused = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target, "remove_extensions": ["roster-alpha"] }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains("cannot read"), "{text}");
+        let session = c
+            .context
+            .session_manager
+            .get_session(&target, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .extension_data
+                .get_extension_state("enabled_extensions", "v0"),
+            Some(&unreadable),
+            "the roster it could not read was overwritten anyway"
         );
     }
 

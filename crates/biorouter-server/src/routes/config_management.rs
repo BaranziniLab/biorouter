@@ -679,20 +679,25 @@ pub async fn remove_config(
     }
 }
 
-const SECRET_MASK_SHOW_LEN: usize = 8;
+/// The one string `POST /config/read` serves in place of a secret.
+///
+/// Fixed, and carrying **none** of the secret's own bytes. It used to reveal
+/// the first `min(len / 2, 8)` characters, so a 40-character key came back as
+/// eight real characters followed by asterisks — a partial credential inside
+/// the one response whose entire purpose is not to contain one, and a prefix
+/// long enough to identify the key and to narrow a search for the rest.
+///
+/// The LENGTH is fixed for the same reason the bytes are: how long a stored
+/// credential is fingerprints which kind it is. Nothing renders this as
+/// anything but placeholder text — `DefaultProviderSetupForm.tsx` puts it
+/// straight into a field — so there is no caller that needs it to resemble
+/// the value.
+const SECRET_MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
 
-fn mask_secret(secret: Value) -> String {
-    let as_string = match secret {
-        Value::String(s) => s,
-        _ => serde_json::to_string(&secret).unwrap_or_else(|_| secret.to_string()),
-    };
-
-    let chars: Vec<_> = as_string.chars().collect();
-    let show_len = std::cmp::min(chars.len() / 2, SECRET_MASK_SHOW_LEN);
-    let visible: String = chars.iter().take(show_len).collect();
-    let mask = "*".repeat(chars.len() - show_len);
-
-    format!("{}{}", visible, mask)
+/// See [`SECRET_MASK`]. The secret is taken and deliberately not looked at:
+/// this is the shape a masking helper has to have to be one.
+fn mask_secret(_secret: &Value) -> String {
+    SECRET_MASK.to_string()
 }
 
 #[utoipa::path(
@@ -741,7 +746,7 @@ pub async fn read_config(
         Ok(value) => {
             if query.is_secret {
                 ConfigValueResponse::MaskedValue(MaskedSecret {
-                    masked_value: mask_secret(value),
+                    masked_value: mask_secret(&value),
                 })
             } else {
                 ConfigValueResponse::Value(value)
@@ -1670,10 +1675,15 @@ pub async fn set_config_provider(
     create_with_default_model(&provider)
         .await
         .and_then(|_| {
-            let config = Config::global();
-            config
-                .set_biorouter_provider(provider)
-                .and_then(|_| config.set_biorouter_model(model))
+            // ⚠ ONE write, not two. `set_biorouter_provider` followed by
+            // `set_biorouter_model` left `config.yaml` holding the new provider
+            // beside the old model — measured at ~55 ms of `versa_azure` next
+            // to `gpt-6-astra` — and a chat started in that window binds a pair
+            // that was never chosen. The provider decides the session's privacy
+            // capability, so a mismatched pair is a privacy-relevant outcome,
+            // not only a cosmetic one.
+            Config::global()
+                .set_biorouter_provider_and_model(provider, model)
                 .map_err(|e| anyhow::anyhow!(e))
         })
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
@@ -1804,6 +1814,57 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
+    /// **A masked secret carries none of the secret.**
+    ///
+    /// `POST /config/read` with `is_secret: true` answered
+    /// `{"maskedValue":"Y2EzNTgy********…"}` — `min(len / 2, 8)` real
+    /// characters of the credential, in the one response whose whole purpose is
+    /// not to contain one. Eight characters is enough to identify which key is
+    /// stored and to narrow a search for the rest.
+    ///
+    /// The prefix loop is the fail-before: a `!= secret` assertion passes
+    /// against the old helper, and so does "contains asterisks".
+    #[test]
+    fn a_masked_secret_reveals_nothing_of_it() {
+        for secret in [
+            "ca3582deadbeefcafe0123456789abcdef01234567",
+            "sk-proj-AAAABBBBCCCCDDDDEEEEFFFF",
+            "short",
+            "x",
+        ] {
+            let masked = super::mask_secret(&serde_json::json!(secret));
+            // `chars().take(n)`, not `&secret[..n]`: a byte slice of a string is
+            // `clippy::string_slice`, and the property under test is about
+            // characters anyway.
+            for n in 1..=secret.chars().count() {
+                let prefix: String = secret.chars().take(n).collect();
+                assert!(
+                    !masked.contains(&prefix),
+                    "the mask carries the first {n} characters of the secret: {masked}"
+                );
+            }
+            assert!(
+                !masked.chars().any(|c| secret.contains(c)),
+                "the mask shares characters with the secret: {masked}"
+            );
+        }
+
+        // …and it is the same length whatever it hides: how long a stored
+        // credential is fingerprints which kind it is.
+        assert_eq!(
+            super::mask_secret(&serde_json::json!("x")),
+            super::mask_secret(&serde_json::json!(
+                "ca3582deadbeefcafe0123456789abcdef01234567"
+            )),
+            "the mask's length still leaks the secret's"
+        );
+        // A non-string secret is masked too, not serialized into the response.
+        assert_eq!(
+            super::mask_secret(&serde_json::json!({ "token": "abc123" })),
+            super::SECRET_MASK
+        );
+    }
+
     use http::HeaderMap;
 
     use super::*;
