@@ -213,6 +213,11 @@ describe('KnowledgeView empty states', () => {
     // The subject band names the same absence, so scope to the EmptyState's own
     // heading rather than to the words.
     expect(screen.getByRole('heading', { name: 'No primary knowledge base' })).toBeInTheDocument();
+    // D13: the EmptyState replaces the WHOLE body, the Sources rail and its
+    // ingest panel included. That is why `IngestPanel` carries no blocked reason
+    // for a missing primary — it can never be mounted in that state, and this
+    // EmptyState is the better answer anyway, because it carries the action.
+    expect(screen.queryByText('Digest workspace')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Choose a base' }));
     expect(screen.getByRole('dialog', { name: 'Knowledge bases' })).toBeInTheDocument();
   });

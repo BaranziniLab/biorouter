@@ -553,12 +553,14 @@ pub fn screen_or_control_call(
 /// A sensitive **write** in a shell command line: any redirect target (`>` /
 /// `>>`), or the path argument of a mutating binary. Returns the finding phrase,
 /// or `None` for a read.
-fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<String> {
+fn command_writes_sensitively(command: &str, env: &EnvFacts, found: &mut Findings) {
     // Redirects are unconditional writes, wherever in the line they appear.
     for rt in redirect_targets(command) {
         let tp = normalize_for(env.platform, &rt, env);
         if let Some(reason) = sensitivity_reason(&tp, env) {
-            return Some(write_finding(&tp.norm, reason));
+            if found.push(write_finding(&tp.norm, reason)) {
+                return;
+            }
         }
     }
     // Mutating binaries: their (already classified) path/redirect targets.
@@ -569,11 +571,12 @@ fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<String> {
         }
         for hit in &seg.targets {
             if let Some(reason) = sensitivity_reason(&hit.path, env) {
-                return Some(write_finding(&hit.path.norm, reason));
+                if found.push(write_finding(&hit.path.norm, reason)) {
+                    return;
+                }
             }
         }
     }
-    None
 }
 
 /// The finding phrase for criteria 1-4, which all describe a write to a
@@ -581,6 +584,115 @@ fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<String> {
 /// be destroyed, not which rule matched).
 fn write_finding(path: &str, reason: &str) -> String {
     format!("writes to {path} ({reason})")
+}
+
+/// How many sensitive operations one tool call is graded for.
+///
+/// Not a display limit — [`Findings::describe`] shows fewer than this. It is the
+/// **work** limit: criterion 5 spends a bounded directory walk per target, so a
+/// script naming a thousand deletes would otherwise put a thousand walks on the
+/// agent's critical path. At the cap the card says "at least N", which is the
+/// honest thing to say about a list that was not finished.
+const MAX_GRADED_FINDINGS: usize = 32;
+
+/// How many of them the approval card names.
+///
+/// A card the user cannot read is not consent either, so the list is short and
+/// the remainder is counted rather than printed.
+const SHOWN_FINDINGS: usize = 6;
+
+/// The sensitive operations found in one tool call.
+///
+/// ⚠ **Ordered and de-duplicated, and both matter.** The order is the order the
+/// call would perform them, so the first entry is still the one the old
+/// single-finding card named — that is what keeps every existing expectation
+/// about *which* operation is reported intact. De-duplication is not cosmetic:
+/// an `execute_code` body is scanned twice (string literals as command lines,
+/// then inner tool calls), so the same write can be reached down both paths and
+/// would otherwise be counted twice in a number the user is asked to trust.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Findings {
+    reasons: Vec<String>,
+    /// The grading stopped at [`MAX_GRADED_FINDINGS`], so `reasons.len()` is a
+    /// lower bound on how many operations the call really performs.
+    capped: bool,
+}
+
+impl Findings {
+    /// Record one finding. Returns `true` once the budget is spent, so a scanning
+    /// loop can stop rather than keep paying for probes it will not report.
+    fn push(&mut self, reason: String) -> bool {
+        if self.capped {
+            return true;
+        }
+        if !self.reasons.contains(&reason) {
+            self.reasons.push(reason);
+        }
+        if self.reasons.len() >= MAX_GRADED_FINDINGS {
+            self.capped = true;
+        }
+        self.capped
+    }
+
+    fn is_full(&self) -> bool {
+        self.capped
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reasons.is_empty()
+    }
+
+    pub fn into_reasons(self) -> Vec<String> {
+        self.reasons
+    }
+
+    /// The clause naming what the call would affect, for the approval card and
+    /// for the [`InspectionResult::reason`] beside it.
+    ///
+    /// One finding reads as a sentence, because that is the overwhelmingly common
+    /// case and a one-item bulleted list is worse prose than a clause. Several
+    /// read as a counted list: the count first, so the user learns the blast
+    /// radius before the paths, and the tail summarised rather than printed.
+    pub fn describe(&self) -> String {
+        match self.reasons.as_slice() {
+            [] => String::new(),
+            [only] => format!("This tool call {only}."),
+            many => {
+                let at_least = if self.capped { "at least " } else { "" };
+                let mut out = format!(
+                    "This tool call affects {at_least}{} places on this machine:",
+                    many.len()
+                );
+                for reason in many.iter().take(SHOWN_FINDINGS) {
+                    out.push_str("\n  • it ");
+                    out.push_str(reason);
+                }
+                if many.len() > SHOWN_FINDINGS {
+                    out.push_str(&format!(
+                        "\n  • …and {} more, not listed here.",
+                        many.len() - SHOWN_FINDINGS
+                    ));
+                }
+                out
+            }
+        }
+    }
+
+    /// The short form for logs and for the finding's own `reason` field.
+    fn summary(&self) -> String {
+        match self.reasons.as_slice() {
+            [] => String::new(),
+            [only] => format!("Sensitive file operation ({only})"),
+            many => {
+                let at_least = if self.capped { "at least " } else { "" };
+                format!(
+                    "Sensitive file operations at {at_least}{} paths (first: {})",
+                    many.len(),
+                    many[0]
+                )
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,30 +1392,42 @@ fn established_directory_probe(
     Some(probe)
 }
 
-/// A recursive delete in `command` that criterion 5 escalates, if any.
+/// Every recursive delete in `command` that criterion 5 escalates.
+///
+/// ⚠ **All of them, not the first.** The approval card names what it found, and a
+/// script that clears six established directories must not be described by one of
+/// them — the user would approve five deletions the card never mentioned. That is
+/// what makes each target worth its own bounded probe; [`Findings`] caps how many
+/// probes one call can cost.
 fn command_deletes_established_directory(
     command: &str,
     env: &EnvFacts,
     session: &CallSession<'_>,
-) -> Option<String> {
-    let targets = recursive_delete_targets(command, env);
-    if targets.is_empty() {
-        return None;
+    found: &mut Findings,
+) {
+    for target in recursive_delete_targets(command, env) {
+        if let Some(reason) = established_directory_reason(&target, session, env) {
+            if found.push(reason) {
+                return;
+            }
+        }
     }
-    targets
-        .iter()
-        .find_map(|target| established_directory_reason(target, session, env))
 }
 
 /// Every criterion a shell command line can trip: the four path-classification
-/// ones (via [`command_writes_sensitively`]) and criterion 5.
-fn command_is_sensitive(
+/// ones (via [`command_writes_sensitively`]) and criterion 5 — and every hit of
+/// each, not the first.
+fn command_findings(
     command: &str,
     env: &EnvFacts,
     session: &CallSession<'_>,
-) -> Option<String> {
-    command_writes_sensitively(command, env)
-        .or_else(|| command_deletes_established_directory(command, env, session))
+    found: &mut Findings,
+) {
+    command_writes_sensitively(command, env, found);
+    if found.is_full() {
+        return;
+    }
+    command_deletes_established_directory(command, env, session, found);
 }
 
 /// Read the JS string / template literal that opens at `chars[start]` (a `"`,
@@ -1550,13 +1674,14 @@ fn extract_inner_calls(code: &str) -> Vec<InnerCall> {
 /// inner calls recovered from an `execute_code` body, so an inner call is graded
 /// **exactly** as the same call made directly would be, and the two can never
 /// drift apart.
-fn mutating_path_write(
+fn mutating_path_writes(
     tool_name: &str,
     args: &Map<String, Value>,
     env: &EnvFacts,
-) -> Option<String> {
+    found: &mut Findings,
+) {
     if !operation_is_mutating(tool_name, args) {
-        return None;
+        return;
     }
     for raw in path_values(args) {
         if raw.trim().is_empty() {
@@ -1564,10 +1689,11 @@ fn mutating_path_write(
         }
         let tp = normalize_for(env.platform, &raw, env);
         if let Some(reason) = sensitivity_reason(&tp, env) {
-            return Some(write_finding(&tp.norm, reason));
+            if found.push(write_finding(&tp.norm, reason)) {
+                return;
+            }
         }
     }
-    None
 }
 
 /// Scan an `execute_code` JS body for a sensitive operation. Two independent
@@ -1582,7 +1708,7 @@ fn mutating_path_write(
 ///     (`const cmd = "… >> ~/.ssh/config"; shell({command: cmd})`) and would
 ///     escape a call-scoped scan.
 ///  2. *Inner tool calls.* Each `callee({…})` site is graded by
-///     [`mutating_path_write`], i.e. exactly as the same tool call made directly
+///     [`mutating_path_writes`], i.e. exactly as the same tool call made directly
 ///     would be: the callee must read as a mutation, and only its own
 ///     path-keyed arguments are candidate targets.
 ///
@@ -1592,18 +1718,19 @@ fn mutating_path_write(
 /// target. A KB page write (`kb_write_page`, whose name contains "write") beside
 /// an unrelated `page.path.split("/")` therefore normalized the utility literal
 /// `"/"` to the filesystem root and parked Auto mode on an approval prompt.
-fn code_is_sensitive(code: &str, env: &EnvFacts, session: &CallSession<'_>) -> Option<String> {
+fn code_findings(code: &str, env: &EnvFacts, session: &CallSession<'_>, found: &mut Findings) {
     for lit in extract_string_literals(code) {
-        if let Some(hit) = command_is_sensitive(&lit, env, session) {
-            return Some(hit);
+        command_findings(&lit, env, session, found);
+        if found.is_full() {
+            return;
         }
     }
     for call in extract_inner_calls(code) {
-        if let Some(hit) = mutating_path_write(&call.callee, &call.args, env) {
-            return Some(hit);
+        mutating_path_writes(&call.callee, &call.args, env, found);
+        if found.is_full() {
+            return;
         }
     }
-    None
 }
 
 /// Classify a tool call: `Some(reason)` when it is an extremely sensitive
@@ -1624,31 +1751,45 @@ pub fn sensitive_file_operation(
     args: &Map<String, Value>,
     session: &CallSession<'_>,
 ) -> Option<String> {
+    sensitive_file_operations(tool_name, args, session)
+        .into_reasons()
+        .into_iter()
+        .next()
+}
+
+/// [`sensitive_file_operation`], but EVERY sensitive operation the call would
+/// perform, in the order the call performs them.
+///
+/// This is what the approval card is built from. The singular form above is the
+/// yes/no question — "must this call be approved at all" — and stays because
+/// dozens of tests, and the criteria's own documentation, are phrased that way.
+pub fn sensitive_file_operations(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    session: &CallSession<'_>,
+) -> Findings {
     let env = EnvFacts::host(&session.working_dir().to_string_lossy());
+    let mut found = Findings::default();
 
     // 1. File-editor / file-tool path arguments (mutations only).
-    if let Some(finding) = mutating_path_write(tool_name, args, &env) {
-        return Some(finding);
-    }
+    mutating_path_writes(tool_name, args, &env, &mut found);
 
     // 2. Shell command lines (developer/shell and any command-bearing tool).
-    if let Some(command) = command_text_from(tool_name, args) {
-        if let Some(finding) = command_is_sensitive(&command, &env, session) {
-            return Some(finding);
+    if !found.is_full() {
+        if let Some(command) = command_text_from(tool_name, args) {
+            command_findings(&command, &env, session, &mut found);
         }
     }
 
     // 3. code_execution/execute_code JS body — its inner tool calls bypass every
     //    agent-layer inspector, so scan the script itself.
-    if is_execute_code(tool_name) {
+    if !found.is_full() && is_execute_code(tool_name) {
         if let Some(code) = args.get("code").and_then(Value::as_str) {
-            if let Some(finding) = code_is_sensitive(code, &env, session) {
-                return Some(finding);
-            }
+            code_findings(code, &env, session, &mut found);
         }
     }
 
-    None
+    found
 }
 
 /// This inspector's name, as it appears on an [`InspectionResult`]. Named so
@@ -1785,22 +1926,31 @@ impl SensitiveOpsInspector {
             let Some(args) = tool_call.arguments.as_ref() else {
                 continue;
             };
-            if let Some(reason) = sensitive_file_operation(&tool_call.name, args, &call_session) {
+            let found = sensitive_file_operations(&tool_call.name, args, &call_session);
+            if !found.is_empty() {
+                let summary = found.summary();
                 tracing::warn!(
                     counter.biorouter.sensitive_op_escalated = 1,
                     tool_name = %tool_call.name,
                     tool_request_id = %request.id,
+                    %summary,
                     "Sensitive file operation escalated to approval in Auto mode"
                 );
+                // The card names EVERY operation it found, not the first. A script
+                // that recursively deletes six directories used to be described by
+                // one of them, so the user approved five deletions the card had not
+                // mentioned — an approval that does not describe its own blast
+                // radius is not consent.
+                let affected = found.describe();
                 results.push(InspectionResult {
                     tool_request_id: request.id.clone(),
                     action: InspectionAction::RequireApproval(Some(format!(
                         "🔒 Sensitive system operation in Fully-Automatic mode.\n\
-                         This tool call {reason}.\n\
+                         {affected}\n\
                          Approve it to continue, or deny it. Ordinary file changes \
                          run without a prompt in this mode."
                     ))),
-                    reason: format!("Sensitive file operation ({reason})"),
+                    reason: summary,
                     confidence: 1.0,
                     inspector_name: self.name().to_string(),
                     finding_id: Some(format!("SENS-{}", Uuid::new_v4().simple())),
@@ -3070,10 +3220,45 @@ record_result("ok");"#;
         SystemTime::now() + Duration::from_secs(600)
     }
 
+    /// The single-finding forms these tests are written against. Production reads
+    /// [`Findings`] so an approval card can name every operation a call performs;
+    /// the yes/no question — "does this call have to be approved at all" — is what
+    /// almost every test below is really asking, and it stays spelled that way.
+    fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<String> {
+        let mut found = Findings::default();
+        super::command_writes_sensitively(command, env, &mut found);
+        found.into_reasons().into_iter().next()
+    }
+
+    fn code_is_sensitive(code: &str, env: &EnvFacts, session: &CallSession<'_>) -> Option<String> {
+        code_findings_of(code, env, session)
+            .into_reasons()
+            .into_iter()
+            .next()
+    }
+
+    /// [`code_is_sensitive`], keeping every hit.
+    fn code_findings_of(code: &str, env: &EnvFacts, session: &CallSession<'_>) -> Findings {
+        let mut found = Findings::default();
+        code_findings(code, env, session, &mut found);
+        found
+    }
+
     /// Run the shell-command half of the classifier against the host filesystem.
     fn shell_finding(command: &str, session: &CallSession<'_>) -> Option<String> {
+        shell_findings(command, session)
+            .into_reasons()
+            .into_iter()
+            .next()
+    }
+
+    /// [`shell_finding`], keeping every hit — what the approval card is built
+    /// from.
+    fn shell_findings(command: &str, session: &CallSession<'_>) -> Findings {
         let env = EnvFacts::host(&session.working_dir().to_string_lossy());
-        command_is_sensitive(command, &env, session)
+        let mut found = Findings::default();
+        command_findings(command, &env, session, &mut found);
+        found
     }
 
     /// A session that began *before* the fixtures were written — the shape a
@@ -3862,6 +4047,156 @@ record_result("ok");"#;
         );
     }
 
+    // --- D8: the card names its whole blast radius -------------------------
+
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
+    /// **The card must name every directory the script destroys, not the first.**
+    ///
+    /// A script that clears six established trees used to produce a card naming
+    /// one of them, so a user who read the card and approved it approved five
+    /// deletions it never mentioned. An approval that does not describe its own
+    /// blast radius is not consent.
+    #[test]
+    fn a_script_deleting_many_directories_names_all_of_them() {
+        let scratch = Scratch::new();
+        let victims: Vec<PathBuf> = ["alpha", "beta", "gamma"]
+            .iter()
+            .map(|name| scratch.populated(name, 2))
+            .collect();
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        let env = EnvFacts::host(&scratch.path().to_string_lossy());
+        let code = victims
+            .iter()
+            .map(|v| format!("shell({{ command: `rm -rf {}` }});", v.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let found = code_findings_of(&code, &env, &session);
+        let reasons = found.clone().into_reasons();
+        assert_eq!(
+            reasons.len(),
+            3,
+            "every established directory the script clears is a finding: {reasons:?}"
+        );
+        let described = found.describe();
+        for victim in &victims {
+            assert!(
+                described.contains(&victim.to_string_lossy().to_string()),
+                "the card must name {}, got: {described}",
+                victim.display()
+            );
+        }
+        assert!(
+            described.contains("affects 3 places"),
+            "the card must lead with how many, got: {described}"
+        );
+    }
+
+    /// The same rule for one shell command line naming several targets — the
+    /// shape `rm -rf a b c` arrives in.
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
+    #[test]
+    fn one_delete_command_with_several_operands_names_all_of_them() {
+        let scratch = Scratch::new();
+        let a = scratch.populated("one", 2);
+        let b = scratch.repo("two");
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+
+        let found = shell_findings(&format!("rm -rf {} {}", a.display(), b.display()), &session);
+        let described = found.describe();
+        assert!(
+            described.contains(&a.to_string_lossy().to_string())
+                && described.contains(&b.to_string_lossy().to_string()),
+            "both operands must be named, got: {described}"
+        );
+        // The repository clause still rides its own entry, so the more serious of
+        // the two is not flattened into a count.
+        assert!(
+            described.contains("contains a git repository"),
+            "the card must keep what makes each target serious, got: {described}"
+        );
+    }
+
+    /// A long list is summarised rather than dumped: the user is told how many,
+    /// shown enough to recognise a mistake, and told what was left out. A card
+    /// nobody can read is not consent either.
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
+    #[test]
+    fn a_very_long_list_is_counted_and_truncated_rather_than_dumped() {
+        let scratch = Scratch::new();
+        let victims: Vec<PathBuf> = (0..10)
+            .map(|i| scratch.populated(&format!("v{i}"), 1))
+            .collect();
+        let session = CallSession::new(scratch.path(), started_after_fixtures(), &[], &[]);
+        let command = format!(
+            "rm -rf {}",
+            victims
+                .iter()
+                .map(|v| v.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+
+        let described = shell_findings(&command, &session).describe();
+        assert!(
+            described.contains("affects 10 places"),
+            "the count is the part the user needs first, got: {described}"
+        );
+        assert_eq!(
+            described.matches("  • ").count(),
+            SHOWN_FINDINGS + 1,
+            "six findings plus the one line accounting for the rest: {described}"
+        );
+        assert!(
+            described.contains("…and 4 more, not listed here."),
+            "the tail must be accounted for, not dropped, got: {described}"
+        );
+    }
+
+    /// One finding still reads as the sentence it always was. The overwhelming
+    /// majority of these calls trip exactly one criterion, and a one-item bullet
+    /// list is worse prose than a clause.
+    #[test]
+    fn a_single_finding_still_reads_as_one_sentence() {
+        let mut found = Findings::default();
+        found.push("writes to /etc/passwd (a protected system directory)".into());
+        assert_eq!(
+            found.describe(),
+            "This tool call writes to /etc/passwd (a protected system directory)."
+        );
+    }
+
+    /// An `execute_code` body is scanned twice — string literals as command
+    /// lines, then inner tool calls — so the same write is reachable down both
+    /// paths. Counting it twice would put a number in front of the user that the
+    /// script does not support.
+    #[test]
+    fn the_same_operation_found_twice_is_counted_once() {
+        let mut found = Findings::default();
+        assert!(!found.push("writes to /etc/hosts (a protected system directory)".into()));
+        assert!(!found.push("writes to /etc/hosts (a protected system directory)".into()));
+        assert_eq!(found.into_reasons().len(), 1);
+    }
+
+    /// The grading budget is a work limit, and at it the card says "at least" —
+    /// a number that stopped counting must not be presented as a total.
+    #[test]
+    fn a_capped_scan_says_at_least_rather_than_an_exact_count() {
+        let mut found = Findings::default();
+        for i in 0..MAX_GRADED_FINDINGS {
+            let full = found.push(format!(
+                "writes to /etc/f{i} (a protected system directory)"
+            ));
+            assert_eq!(full, i + 1 == MAX_GRADED_FINDINGS);
+        }
+        assert!(found.is_full());
+        let described = found.describe();
+        assert!(
+            described.contains(&format!("affects at least {MAX_GRADED_FINDINGS} places")),
+            "got: {described}"
+        );
+    }
+
     // --- the inspector, end to end ----------------------------------------
 
     fn shell_request(id: &str, command: &str) -> ToolRequest {
@@ -3884,6 +4219,75 @@ record_result("ok");"#;
             created_at,
             ..Session::default()
         }
+    }
+
+    #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.
+    /// D8, end to end: the card an `execute_code` script gets is the card that
+    /// names what the script does — all of it.
+    ///
+    /// The same run is the regression test for the defect: on the single-finding
+    /// card only `first` appeared, and approving it also approved `second` and
+    /// `third` without their ever being shown.
+    #[tokio::test]
+    async fn an_execute_code_card_names_every_directory_the_script_clears() {
+        let scratch = Scratch::new();
+        let workspace = scratch.dir("workspace");
+        let victims: Vec<PathBuf> = ["first", "second", "third"]
+            .iter()
+            .map(|name| scratch.populated(name, 2))
+            .collect();
+        let code = victims
+            .iter()
+            .map(|v| format!("shell({{ command: `rm -rf {}` }});", v.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let results = SensitiveOpsInspector::unbound()
+            .inspect(
+                &[ToolRequest {
+                    id: "req_code".into(),
+                    tool_call: Ok(CallToolRequestParams {
+                        task: None,
+                        name: "code_execution__execute_code".into(),
+                        arguments: Some(args(json!({ "code": code }))),
+                        meta: None,
+                    }),
+                    metadata: None,
+                    tool_meta: None,
+                }],
+                &[],
+                BioRouterMode::Auto,
+                &session_at(
+                    &workspace,
+                    chrono::Utc::now() + chrono::Duration::seconds(600),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let result = results
+            .iter()
+            .find(|r| r.tool_request_id == "req_code")
+            .expect("the script must be escalated");
+        let InspectionAction::RequireApproval(Some(prompt)) = &result.action else {
+            panic!("expected an approval prompt, got {:?}", result.action);
+        };
+        for victim in &victims {
+            assert!(
+                prompt.contains(&victim.to_string_lossy().to_string()),
+                "the card must name {}, got: {prompt}",
+                victim.display()
+            );
+        }
+        assert!(
+            prompt.contains("affects 3 places"),
+            "the card must lead with the blast radius, got: {prompt}"
+        );
+        assert!(
+            result.reason.contains("at 3 paths"),
+            "the logged reason must carry the count too, got: {}",
+            result.reason
+        );
     }
 
     #[cfg(not(target_os = "windows"))] // POSIX-dialect fixture; see the note above the module.

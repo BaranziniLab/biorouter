@@ -712,10 +712,15 @@ fn skill_already_loaded_pointer() -> &'static str {
 /// [`Agent::decide_turn_stop`], acted on by the reply loop.
 enum TurnStop {
     /// Let the turn end, after showing the user `notices`.
-    Finish { notices: Vec<String> },
+    Finish { notices: Vec<Message> },
     /// Keep working: `feedback` goes to the model as a hidden steer, `notice`
     /// to the user.
-    KeepWorking { feedback: String, notice: String },
+    ///
+    /// Rows rather than strings, because whether a notice is written to the
+    /// transcript is decided per notice by [`Agent::decide_turn_stop`] — see
+    /// [`Agent::durable_notice`] — and the generator that yields them should not
+    /// have to know which kind it is holding.
+    KeepWorking { feedback: String, notice: Message },
 }
 
 /// Context needed for the reply function
@@ -9245,6 +9250,43 @@ impl Agent {
         }
     }
 
+    /// A user-visible notice that OUTLIVES the stream it was yielded on.
+    ///
+    /// ⚠ **Most inline notices in this loop are deliberately live-only, and stay
+    /// that way.** They narrate something the user is watching happen —
+    /// "Compacting to continue the chat…", "Retrying (2/3)…", "Hook denied
+    /// permission for X" — and replaying them on every reload would be noise
+    /// about a moment that has passed.
+    ///
+    /// A turn-level VERDICT is not narration. "The checklist still has 2
+    /// unfinished item(s); asking the agent to finish them or say why not" is the
+    /// only record that the turn was sent back at all: the feedback it produced is
+    /// model-only, so without this row a reload, History and a shared session all
+    /// show a turn with an extra unexplained round-trip and no reason for it. The
+    /// planning gate's stop check is also the half that fires in practice — a live
+    /// drive measured its redirect never firing against real models — so this is
+    /// in effect the gate's only visible output.
+    ///
+    /// The row that comes back carries the uid it was stored under (#41), so the
+    /// copy the caller yields and the stored row are the same message rather than
+    /// two.
+    ///
+    /// A failed write degrades to the live-only notice instead of failing the
+    /// turn: the user still sees it now, which is strictly better than losing a
+    /// turn's work over a notice.
+    async fn durable_notice(&self, session_id: &str, text: String) -> Message {
+        let mut notice = inline_notice_user_only(text);
+        if let Err(e) = self
+            .config
+            .session_manager
+            .add_message_adopting_uid(session_id, &mut notice)
+            .await
+        {
+            warn!("could not persist a turn notice; it stays live-only this turn: {e}");
+        }
+        notice
+    }
+
     /// Everything that decides whether a turn may end, in order: the planning
     /// gate's checklist check, then the Stop hooks (a `/goal` judge is one).
     ///
@@ -9264,14 +9306,17 @@ impl Agent {
         conversation: &Conversation,
         active_goal: Option<crate::agents::goal::GoalState>,
     ) -> TurnStop {
-        let mut notices = Vec::new();
+        let mut notices: Vec<Message> = Vec::new();
         if active_goal.is_none() {
             match self.checklist_stop(session_id, conversation).await {
                 crate::agents::planning_gate::ChecklistStop::Block { feedback, notice } => {
-                    return TurnStop::KeepWorking { feedback, notice };
+                    return TurnStop::KeepWorking {
+                        feedback,
+                        notice: self.durable_notice(session_id, notice).await,
+                    };
                 }
                 crate::agents::planning_gate::ChecklistStop::GiveUp { notice } => {
-                    notices.push(notice);
+                    notices.push(self.durable_notice(session_id, notice).await);
                 }
                 crate::agents::planning_gate::ChecklistStop::Clear => {}
             }
@@ -9288,10 +9333,10 @@ impl Agent {
                 // clear it and tell the user.
                 if let Some(goal) = active_goal {
                     self.clear_goal(session_id).await;
-                    notices.push(format!(
+                    notices.push(inline_notice_user_only(format!(
                         "🎯 Goal met and cleared: {}",
                         crate::agents::goal::ellipsize(&goal.condition, 200)
-                    ));
+                    )));
                 }
                 TurnStop::Finish { notices }
             }
@@ -9301,11 +9346,11 @@ impl Agent {
                 } else {
                     ""
                 };
-                notices.push(format!(
+                notices.push(inline_notice_user_only(format!(
                     "Stop hook block limit ({}) reached; finishing anyway.{}",
                     crate::hooks::STOP_HOOK_BLOCK_CAP,
                     goal_hint
-                ));
+                )));
                 TurnStop::Finish { notices }
             }
             crate::hooks::StopHookVerdict::Blocked { reason } => {
@@ -9313,7 +9358,10 @@ impl Agent {
                 let (feedback, notice) = self
                     .stop_hook_block_feedback(session_id, &reason, active_goal.is_some())
                     .await;
-                TurnStop::KeepWorking { feedback, notice }
+                TurnStop::KeepWorking {
+                    feedback,
+                    notice: inline_notice_user_only(notice),
+                }
             }
         }
     }
@@ -11430,7 +11478,7 @@ impl Agent {
                     ).await {
                         TurnStop::Finish { notices } => {
                             for notice in notices {
-                                yield AgentEvent::Message(inline_notice_user_only(notice));
+                                yield AgentEvent::Message(notice);
                             }
                             break;
                         }
@@ -11446,7 +11494,7 @@ impl Agent {
                                 yield published;
                             }
                             conversation.push(feedback);
-                            yield AgentEvent::Message(inline_notice_user_only(notice));
+                            yield AgentEvent::Message(notice);
                             // Keep looping: the model sees the feedback next turn.
                             // After a goal gives up it is cleared, so the next stop
                             // proceeds once the agent delivers its wrap-up.

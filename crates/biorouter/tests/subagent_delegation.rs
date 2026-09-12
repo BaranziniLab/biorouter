@@ -52,31 +52,112 @@ fn shared_session_manager() -> Arc<SessionManager> {
         .clone()
 }
 
-struct PausedParentProvider {
-    inner: Arc<ScriptedSubagentProvider>,
-    parent_calls: AtomicUsize,
-    pause: Duration,
+/// The steer `steering_mid_delegation_costs_no_subagent_results` sends. A const
+/// because both the test and the provider watching for it in context have to
+/// spell it the same way.
+const STEER: &str = "also summarise what each of them found";
+
+/// The rendezvous a [`ParkedParentProvider`] gives the test driving it: the
+/// parent announces that it has reached the boundary after its spawn batch, and
+/// does not proceed until the test releases it.
+///
+/// ⚠ **This replaces a wall-clock `sleep`, and the difference is the whole
+/// point.** A steer is only accepted while the turn's interrupt queue is open,
+/// and the loop closes that queue in `close_and_drain` the moment it commits to
+/// exiting — which is BEFORE it waits for its children. So a test that wants to
+/// steer mid-delegation has to establish two things at once: the children are in
+/// flight, and the parent has not yet reached its exit check. The old harness
+/// tried to buy that window by sleeping 250 ms inside the parent's second
+/// provider call, i.e. by out-running the loop. Under load the two detached
+/// child tasks are not scheduled inside 250 ms, the parent reaches
+/// `close_and_drain` first, and `try_queue_soft_interrupt` answers `TurnEnded`
+/// — a failure that is about scheduler luck and not about the product.
+/// Measured on `origin/main` at `1b199445`: 7 failures in 18 runs of this binary
+/// with six copies of it running at once.
+///
+/// A `Notify` permit is stored when nothing is waiting yet, so neither half of
+/// the handshake depends on which side arrives first.
+struct ParentRendezvous {
+    /// Signalled once, when the parent parks after its spawn batch.
+    parked: tokio::sync::Notify,
+    /// Awaited by that parked call; the test signals it after queueing a steer.
+    release: tokio::sync::Notify,
 }
 
-impl PausedParentProvider {
-    async fn pause_after_spawn(&self, system_prompt: &str) {
-        if !system_prompt.contains("You are a specialized subagent")
-            && self.parent_calls.fetch_add(1, Ordering::SeqCst) > 0
-        {
-            tokio::time::sleep(self.pause).await;
+impl ParentRendezvous {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            parked: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Wait for the parent to reach the post-spawn boundary. The timeout is a
+    /// liveness guard for a hung turn, never the thing that makes the ordering
+    /// hold — that is the handshake itself.
+    async fn await_parked(&self) {
+        tokio::time::timeout(Duration::from_secs(30), self.parked.notified())
+            .await
+            .expect("the parent reaches the boundary after its spawn batch");
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+/// A parent provider that PARKS at the boundary after the spawn batch instead of
+/// sleeping there. See [`ParentRendezvous`].
+struct ParkedParentProvider {
+    inner: Arc<ScriptedSubagentProvider>,
+    parent_calls: AtomicUsize,
+    rendezvous: Arc<ParentRendezvous>,
+    /// Set once a PARENT call is shown [`STEER`] in its context.
+    ///
+    /// Recorded here rather than counted as "one extra parent call", because the
+    /// number of calls a turn makes after a steer is not a property of the steer:
+    /// native supervision adds one of its own when the children report. What the
+    /// test actually claims is that the model SAW the steer during this turn, and
+    /// that is exactly what this observes.
+    saw_steer: std::sync::atomic::AtomicBool,
+}
+
+impl ParkedParentProvider {
+    /// Park the parent's FIRST post-spawn call, and only that one: the loop makes
+    /// further calls once it consumes the steer and once the children report, and
+    /// parking either would hang the turn on a release nobody sends.
+    async fn park_after_spawn(&self, system_prompt: &str) {
+        if system_prompt.contains("You are a specialized subagent") {
+            return;
         }
+        if self.parent_calls.fetch_add(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+        self.rendezvous.parked.notify_one();
+        self.rendezvous.release.notified().await;
+    }
+
+    fn saw_steer(&self) -> bool {
+        self.saw_steer.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait]
-impl Provider for PausedParentProvider {
+impl Provider for ParkedParentProvider {
     async fn complete(
         &self,
         system_prompt: &str,
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
-        self.pause_after_spawn(system_prompt).await;
+        if !system_prompt.contains("You are a specialized subagent")
+            && messages
+                .iter()
+                .any(|message| message.as_concat_text().contains(STEER))
+        {
+            self.saw_steer.store(true, Ordering::SeqCst);
+        }
+        self.park_after_spawn(system_prompt).await;
         self.inner.complete(system_prompt, messages, tools).await
     }
 
@@ -99,18 +180,29 @@ impl Provider for PausedParentProvider {
     }
 
     fn get_name(&self) -> &str {
-        "paused-parent-scripted-subagent"
+        "parked-parent-scripted-subagent"
     }
 }
 
 async fn harness(batch: Vec<(String, Call)>) -> Harness {
-    harness_with_parent_pause(batch, None).await
+    let (harness, parked) = build_harness(batch, false).await;
+    assert!(parked.is_none(), "a plain harness parks nothing");
+    harness
 }
 
-async fn harness_with_parent_pause(
+/// A harness whose parent parks at the boundary after its spawn batch, plus the
+/// handle that releases it and counts its calls.
+async fn harness_with_parked_parent(
     batch: Vec<(String, Call)>,
-    parent_pause: Option<Duration>,
-) -> Harness {
+) -> (Harness, Arc<ParkedParentProvider>) {
+    let (harness, parked) = build_harness(batch, true).await;
+    (harness, parked.expect("the parked parent was requested"))
+}
+
+async fn build_harness(
+    batch: Vec<(String, Call)>,
+    park_parent: bool,
+) -> (Harness, Option<Arc<ParkedParentProvider>>) {
     std::env::set_var("BIOROUTER_SUBAGENT_MAX_TURNS", "3");
 
     let work_dir = TempDir::new().expect("test working directory");
@@ -132,12 +224,16 @@ async fn harness_with_parent_pause(
         .expect("parent session is created");
     let scripted = Arc::new(ScriptedSubagentProvider::new(batch));
     let ledger = scripted.ledger.clone();
-    let provider: Arc<dyn Provider> = match parent_pause {
-        Some(pause) => Arc::new(PausedParentProvider {
-            inner: scripted,
+    let parked = park_parent.then(|| {
+        Arc::new(ParkedParentProvider {
+            inner: Arc::clone(&scripted),
             parent_calls: AtomicUsize::new(0),
-            pause,
-        }),
+            rendezvous: ParentRendezvous::new(),
+            saw_steer: std::sync::atomic::AtomicBool::new(false),
+        })
+    });
+    let provider: Arc<dyn Provider> = match parked.clone() {
+        Some(parked) => parked,
         None => scripted,
     };
     agent
@@ -156,12 +252,15 @@ async fn harness_with_parent_pause(
         .await
         .expect("developer extension registers");
 
-    Harness {
-        agent: Arc::new(agent),
-        session_id: session.id,
-        ledger,
-        work_dir,
-    }
+    (
+        Harness {
+            agent: Arc::new(agent),
+            session_id: session.id,
+            ledger,
+            work_dir,
+        },
+        parked,
+    )
 }
 
 #[derive(Debug)]
@@ -657,33 +756,43 @@ async fn subagents_and_ordinary_tools_share_a_batch() {
 /// SUB: the user steers while subagents are in flight. A soft interrupt must
 /// not cost the delegated work — every child still reports, and the steer lands
 /// in the same turn.
+///
+/// ⚠ **Both preconditions are established by a handshake, never by a sleep.**
+/// See [`ParentRendezvous`] for what the wall-clock version measured instead
+/// (scheduler luck) and how often it was wrong. The parent is parked inside its
+/// post-spawn provider call for the whole middle of this test, which is what
+/// makes "the children are in flight" and "the turn's steer window is still
+/// open" simultaneously true rather than merely likely.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn steering_mid_delegation_costs_no_subagent_results() {
-    let h = harness_with_parent_pause(
-        vec![
-            call("left", Call::sub("left", "slow:left:600")),
-            call("right", Call::sub("right", "slow:right:600")),
-        ],
-        Some(Duration::from_millis(250)),
-    )
+    let (h, parked) = harness_with_parked_parent(vec![
+        call("left", Call::sub("left", "slow:left:600")),
+        call("right", Call::sub("right", "slow:right:600")),
+    ])
     .await;
 
     let agent = h.agent.clone();
     let session_id = h.session_id.clone();
     let turn = tokio::spawn(async move { drain(&agent, &session_id).await });
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if h.ledger.distinct_started().len() == 2 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+    // 1. The spawn batch has dispatched and the parent is parked, so the loop
+    //    cannot reach the exit check that closes the interrupt queue.
+    parked.rendezvous.await_parked().await;
+    // 2. Both children really are inside the provider. Bounded only as a hung-run
+    //    guard: the parent is parked, so nothing is racing this.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while h.ledger.distinct_started().len() != 2 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .expect("both children must be in flight before steering");
+    .expect("both children reach the provider while the parent is parked");
+    // 3. Steer, with the window provably open.
     h.agent
-        .try_queue_soft_interrupt("also summarise what each of them found".to_string(), None)
+        .try_queue_soft_interrupt(STEER.to_string(), None)
         .expect("the parent turn is still accepting a steer while its children run");
+    parked.rendezvous.release();
+
     let messages = turn
         .await
         .expect("turn task joins")
@@ -704,15 +813,24 @@ async fn steering_mid_delegation_costs_no_subagent_results() {
         .filter(|m| m.role == rmcp::model::Role::User)
         .flat_map(|m| m.content.iter())
         .any(|c| match c {
-            biorouter::conversation::message::MessageContent::Text(t) => {
-                t.text.contains("also summarise what each of them found")
-            }
+            biorouter::conversation::message::MessageContent::Text(t) => t.text.contains(STEER),
             _ => false,
         });
     assert!(steer_landed, "the steer reached the conversation");
     assert!(
         !h.agent.has_soft_interrupts(),
         "the queued steer was consumed, not left pending"
+    );
+    // The claim in this test's name that the old timing could not check: the steer
+    // was answered INSIDE this turn. `close_and_drain` finds it at the exit check,
+    // reopens the loop for one more step, and that step puts it in the model's
+    // context. A turn that merely persisted it on the way out — which is what
+    // happens whenever the steer lands after the exit check — would still satisfy
+    // every assertion above, because `settle_soft_interrupts_for_turn` persists
+    // and yields it either way.
+    assert!(
+        parked.saw_steer(),
+        "the steer must reach the model in this turn, not be carried over past its end"
     );
 }
 

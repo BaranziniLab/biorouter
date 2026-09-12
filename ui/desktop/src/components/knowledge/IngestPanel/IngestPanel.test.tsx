@@ -6,7 +6,11 @@ import { IngestPanel } from './IngestPanel';
 const mocks = vi.hoisted(() => ({
   knowledge: {
     primaryKbId: 'kb-1' as string | null,
-    primaryKb: { id: 'kb-1', name: 'Notes', default_model: null as ModelRef | null },
+    primaryKb: { id: 'kb-1', name: 'Notes', default_model: null as ModelRef | null } as {
+      id: string;
+      name: string;
+      default_model: ModelRef | null;
+    } | null,
     loading: false,
     basesError: null as string | null,
     refresh: vi.fn(),
@@ -481,6 +485,27 @@ describe('IngestPanel paste box visibility', () => {
     render(<IngestPanel />);
     fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
     expect(screen.getByPlaceholderText(/Paste knowledge/i)).toHaveFocus();
+  });
+});
+
+/**
+ * D13: a string nothing can display is worse than none, because it reads as
+ * covered behaviour.
+ *
+ * `IngestPanel` carried a blocked reason for "no primary knowledge base" that no
+ * render could ever reach: `KnowledgeView` swaps its whole body — this panel with
+ * it — for the `No primary knowledge base` EmptyState the moment `primaryKbId` is
+ * null, and that view is the only place this component is mounted. The rung is
+ * gone; `KnowledgeView.test.tsx` holds the other half of the invariant (the view
+ * really does withhold the panel in that state).
+ */
+describe('IngestPanel with no primary knowledge base', () => {
+  it('never claims a missing primary, because it cannot be mounted without one', () => {
+    mocks.knowledge.primaryKbId = null;
+    mocks.knowledge.primaryKb = null;
+    render(<IngestPanel />);
+
+    expect(screen.queryByText(/primary knowledge base/i)).toBeNull();
   });
 });
 
