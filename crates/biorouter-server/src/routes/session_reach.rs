@@ -715,8 +715,16 @@ impl HttpCaller {
         self.admits(TargetTier::from(classification))
     }
 
-    /// May this caller be shown a row of RUNNING WORK — `GET /active_work` —
-    /// that belongs to the chat `owner`?
+    /// May this caller be shown a chat's id that a row merely NAMES — the chat a
+    /// row of running work belongs to (`GET /active_work`), or the chat a
+    /// schedule was created from or is running in (`GET /schedule/list`)?
+    ///
+    /// Two subjects, ONE decision, deliberately: a second predicate for "may
+    /// this caller be told this chat exists" is exactly the drift the census
+    /// exists to stop. What differs between the two callers is what they do with
+    /// a `false` — `/active_work` drops the row, because the row is the chat's
+    /// own command; `/schedule/list` keeps the row and drops the field, because
+    /// a schedule is not a chat and an idle one names none.
     ///
     /// [`lists_session`](Self::lists_session) for a row the listing does not
     /// hold a chat for. A row of running work carries its chat's id and a title
@@ -1672,6 +1680,10 @@ mod tests {
             (events_rs, "pub fn routes("),
             (status_rs, "async fn system_info("),
             (status_rs, "pub fn routes("),
+            // BOTH sides in `schedule.rs` too: `pause_schedule` sits before its
+            // two gated handlers and `routes` after them.
+            (schedule_rs, "async fn pause_schedule("),
+            (schedule_rs, "pub fn routes("),
         ] {
             assert!(
                 !body_of(src, control).contains("session_reach("),
@@ -3621,6 +3633,133 @@ mod bypass_tests {
                 }
             );
         }
+    }
+
+    /// `GET /schedule/list` named, for every schedule on the machine, the chat
+    /// that created it and the chat each running one is running in — to any
+    /// holder of the daemon secret.
+    ///
+    /// ⚠ **Redaction, not omission, and this is the one listing where that is
+    /// right.** Everywhere else a row IS its chat's content, so the row goes.
+    /// A schedule is not a chat: it is a cron line and a workflow path that
+    /// merely *name* chats, and an idle or paused schedule names none at all.
+    /// Dropping rows here by the "names no chat is unreadable" rule the sibling
+    /// routes use would therefore hide every non-running schedule from every
+    /// ordinary caller — emptying the Schedules interface in order to close an
+    /// association. So the rows all stay and the two chat-naming FIELDS go.
+    ///
+    /// The decision is exercised here rather than over HTTP because seeding a
+    /// schedule needs `add_scheduled_job`, which registers a task on the
+    /// process-global tokio-cron-scheduler while every `#[tokio::test]` brings
+    /// its own runtime: it succeeds alone and fails with `CantAdd` in the suite
+    /// — measured, not assumed. The chats, their tiers and the caller are all
+    /// real; only the rows are hand-built. The route's wiring to the function
+    /// under test is asserted separately, below.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_schedule_listing_names_only_the_chats_the_caller_could_open() {
+        use biorouter::scheduler::ScheduledJob;
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Schedule list private (test fixture)").await;
+        let public = seed_chat(
+            &state,
+            "Schedule list public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+
+        let row = |id: &str, chat: Option<&str>, running: bool| ScheduledJob {
+            id: id.to_string(),
+            source: format!("/tmp/{id}.yaml"),
+            cron: "0 0 0 1 1 *".to_string(),
+            last_run: None,
+            currently_running: running,
+            paused: false,
+            current_session_id: running.then(|| chat.unwrap().to_string()),
+            process_start_time: running.then(chrono::Utc::now),
+            run_count: 0,
+            max_runs: None,
+            creator_session_id: chat.map(str::to_owned),
+            last_error: None,
+            owns_source: None,
+        };
+
+        for (headers, sees_private) in [(Vec::new(), false), (vec![PROOF], true)] {
+            let mut map = HeaderMap::new();
+            for (name, value) in &headers {
+                map.insert(
+                    axum::http::HeaderName::from_static("x-user-action"),
+                    value.parse().unwrap(),
+                );
+                let _ = name;
+            }
+            let caller = http_caller(&map).await;
+            let mut jobs = vec![
+                row("sched-in-private", Some(private.id()), true),
+                row("sched-in-public", Some(public.id()), true),
+                row("sched-made-by-private", Some(private.id()), false),
+                // The row my objection to a row-level rule was about: it names
+                // no chat at all, and it must survive for EVERY caller.
+                row("sched-idle-nameless", None, false),
+            ];
+            crate::routes::schedule::redact_unreachable_chats(
+                &caller,
+                state.session_manager(),
+                &mut jobs,
+            )
+            .await;
+
+            assert_eq!(jobs.len(), 4, "a row was dropped; rows must never be");
+            assert!(
+                jobs.iter().any(|j| j.id == "sched-idle-nameless"),
+                "the idle schedule that names no chat was dropped — the exact regression \
+                 redaction exists to avoid"
+            );
+
+            let private_named = jobs.iter().any(|j| {
+                j.current_session_id.as_deref() == Some(private.id())
+                    || j.creator_session_id.as_deref() == Some(private.id())
+            });
+            assert_eq!(
+                private_named,
+                sees_private,
+                "a private chat was {} the schedule listing (proof: {sees_private})",
+                if private_named {
+                    "named in"
+                } else {
+                    "missing from"
+                }
+            );
+
+            // The gate is inert on public chats, here as everywhere.
+            assert!(
+                jobs.iter().any(|j| {
+                    j.current_session_id.as_deref() == Some(public.id())
+                        && j.creator_session_id.as_deref() == Some(public.id())
+                }),
+                "a public chat's schedule stopped naming it"
+            );
+        }
+    }
+
+    /// The route is actually wired to the redaction the test above exercises.
+    /// Without this, that test would keep passing while `list_schedules` handed
+    /// the unredacted rows straight out.
+    #[test]
+    fn the_schedule_listing_route_redacts_before_it_answers() {
+        let schedule_rs = include_str!("schedule.rs");
+        let handler = crate::routes::body_of(schedule_rs, "async fn list_schedules(");
+        let redact = handler
+            .find("redact_unreachable_chats(")
+            .expect("`GET /schedule/list` does not redact the chats it names");
+        let answer = handler
+            .find("Ok(Json(ListSchedulesResponse")
+            .expect("`list_schedules` no longer answers with ListSchedulesResponse");
+        assert!(
+            redact < answer,
+            "`list_schedules` answers before it redacts the chat-naming fields"
+        );
     }
 
     /// `GET /schedule/{id}/sessions` lists a schedule's runs by name and

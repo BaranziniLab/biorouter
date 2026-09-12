@@ -191,12 +191,63 @@ fn create_schedule_error(
 #[axum::debug_handler]
 async fn list_schedules(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<ListSchedulesResponse>, StatusCode> {
     let scheduler = state.scheduler();
 
     tracing::info!("Server: Calling scheduler.list_scheduled_jobs()");
-    let jobs = scheduler.list_scheduled_jobs().await;
+    let mut jobs = scheduler.list_scheduled_jobs().await;
+
+    // Issue #56: every row named the chat that created the schedule and, for a
+    // running one, the chat the run is in — to any holder of the daemon secret.
+    //
+    // ⚠ **REDACTION here, not the omission every other listing uses, and the
+    // difference is the subject.** Elsewhere a row IS its chat's content, so the
+    // row goes. A schedule is not a chat: it is a cron line and a workflow path
+    // that merely *name* chats, and an idle or paused schedule names none at
+    // all. Applying the sibling routes' "names no chat is unreadable" rule row
+    // by row would therefore drop every non-running schedule for every caller
+    // without a private capability — emptying the Schedules interface in order
+    // to close an association. So every row stays and the two chat-naming
+    // fields go.
+    //
+    // The two fields are asked about separately because they can name different
+    // chats: a schedule created from a public chat can be running in a private
+    // one, and the reverse.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    redact_unreachable_chats(&caller, state.session_manager(), &mut jobs).await;
     Ok(Json(ListSchedulesResponse { jobs }))
+}
+
+/// Blank the chat-naming fields of every row whose chat this caller could not
+/// open. See [`list_schedules`] for why this redacts rather than omits.
+///
+/// Split out of the handler so the decision can be tested against real seeded
+/// chats without going through the cron scheduler: `add_scheduled_job` registers
+/// a task on the tokio-cron-scheduler, which is process-global while each
+/// `#[tokio::test]` brings its own runtime, so seeding a schedule from one test
+/// and listing it from another fails with `CantAdd` — measured. The route's own
+/// wiring to this function is asserted by a body scan instead.
+pub(crate) async fn redact_unreachable_chats(
+    caller: &crate::routes::session_reach::HttpCaller,
+    manager: &biorouter::session::session_manager::SessionManager,
+    jobs: &mut [ScheduledJob],
+) {
+    for job in jobs.iter_mut() {
+        // Asked separately because the two can name DIFFERENT chats: a schedule
+        // created from a public chat can be running in a private one, and the
+        // reverse.
+        if let Some(chat) = job.current_session_id.clone() {
+            if !caller.lists_work(manager, Some(&chat)).await {
+                job.current_session_id = None;
+            }
+        }
+        if let Some(chat) = job.creator_session_id.clone() {
+            if !caller.lists_work(manager, Some(&chat)).await {
+                job.creator_session_id = None;
+            }
+        }
+    }
 }
 
 #[utoipa::path(

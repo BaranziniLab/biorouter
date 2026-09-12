@@ -367,9 +367,9 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
-                counts: c(0, 3, 0),
+                counts: c(0, 5, 0),
                 kind: SiteKind::Unrelated,
-                what: "the MODULE qualifier three times, on no occasion this function. Once on \
+                what: "the MODULE qualifier five times, on no occasion this function. Once on \
                        `session_reach::http_caller`, which filters `GET /schedule/{id}/sessions` \
                        — a listing, gated by `lists_session`. Once on \
                        `session_reach::work_reach` for `POST /schedule/{id}/kill`: the stop \
@@ -377,7 +377,9 @@ const REGISTRY: &[Guard] = &[
                        /active_work/{id}/cancel` does for the same kill, so neither route is \
                        the easier way to stop a private chat's run. Once more on the same \
                        function for `GET /schedule/{id}/inspect`, which hands back the chat a \
-                       run is in",
+                       run is in. The last two are `GET /schedule/list`'s redaction: the \
+                       qualifier on `http_caller`, and on the `HttpCaller` TYPE in \
+                       `redact_unreachable_chats`'s signature — a type, not a decision",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -514,9 +516,11 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`GET /schedule/{id}/sessions`, a schedule's runs by name and directory",
+                what: "`GET /schedule/{id}/sessions`, a schedule's runs by name and directory; \
+                       and `GET /schedule/list`, which resolves the caller ONCE for the whole \
+                       listing and then redacts each row's chat-naming fields",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -572,14 +576,29 @@ const REGISTRY: &[Guard] = &[
                   chat, or one that cannot be read, is answered as a private chat's row: its \
                   command came from some chat and nothing says whose",
         status: Status::Wired,
-        sites: &[Site {
-            file: "crates/biorouter-server/src/routes/active_work.rs",
-            counts: c(1, 0, 0),
-            kind: SiteKind::Guard,
-            what: "`visible_items`, which `GET /active_work` passes every row through — \
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`visible_items`, which `GET /active_work` passes every row through — \
                    background jobs, foreground commands, subagents, detached turns and scheduled \
                    runs alike — after one `http_caller` for the whole list",
-        }],
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`redact_unreachable_chats`, twice: `GET /schedule/list` asks once for a \
+                       row's `current_session_id` and once for its `creator_session_id`, \
+                       because the two can name DIFFERENT chats. ⚠ Reusing this predicate \
+                       rather than writing a `may_name_chat` beside it is the point — 'may this \
+                       caller be told this chat exists' must have ONE spelling, and a second \
+                       one is the drift this census exists to catch. What differs is only what \
+                       a `false` does: `/active_work` drops the row, this drops the field, \
+                       because a schedule is not a chat and an idle one names none",
+            },
+        ],
     },
     Guard {
         ident: "work_reach",
