@@ -1427,11 +1427,16 @@ mod tests {
     /// routes, with the same reasoning.
     ///
     /// A source scan because `handle_session_export` is bound to the
-    /// `SessionManager::instance()` singleton — it opens the developer's REAL
-    /// session database — so it cannot be driven from a unit test at all. What
-    /// *is* driven for real is the decision itself, over in
-    /// `session_manager.rs`'s `export_gate` module; this holds the wiring and
-    /// the order, which that module cannot see.
+    /// `SessionManager::instance()` singleton — one process-wide store that a
+    /// unit test cannot point at a fixture of its own — so it cannot be driven
+    /// from a unit test at all. (Until `src/test_sandbox.rs` that singleton
+    /// opened the developer's REAL session database, which is why this comment
+    /// stood while the sweep corrected 24 stale copies of the claim elsewhere.
+    /// The `#[ctor]` now pins it inside a throwaway root: that changes *where*
+    /// it writes, not that it is a singleton, so the reason this is a source
+    /// scan is unchanged.) What *is* driven for real is the decision itself,
+    /// over in `session_manager.rs`'s `export_gate` module; this holds the
+    /// wiring and the order, which that module cannot see.
     #[test]
     fn the_export_gate_is_called_before_the_transcript_is_read() {
         let src = include_str!("session.rs");
