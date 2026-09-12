@@ -48,13 +48,19 @@ function renderStrip(over: Partial<ChatTabStripProps> = {}) {
 }
 
 let resizeCallbacks: Array<() => void> = [];
-let scrollIntoView: ReturnType<typeof vi.fn>;
+let scrollIntoView: ReturnType<typeof vi.spyOn>;
 const originalResizeObserver = globalThis.ResizeObserver;
 
 beforeEach(() => {
   resizeCallbacks = [];
-  scrollIntoView = vi.fn();
-  (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+  // ⚠ A SPY, not a redefinition. `src/test/setup.ts` installs
+  // `Element.prototype.scrollIntoView` once for the whole process, and says why
+  // a per-test install-and-delete is a race the polyfill cannot win: the strip
+  // calls it from a PASSIVE effect, and vitest runs this file's `afterEach`
+  // BEFORE the shared `cleanup()` whose unmount flushes that effect. Spying
+  // leaves the shared no-op in place and `mockRestore` puts it back, so nothing
+  // here can strip the polyfill for the rest of the process.
+  scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {});
   class FakeResizeObserver {
     constructor(callback: () => void) {
       resizeCallbacks.push(callback);
@@ -68,7 +74,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.ResizeObserver = originalResizeObserver;
-  delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+  scrollIntoView.mockRestore();
 });
 
 describe('the active tab is brought back into view', () => {
