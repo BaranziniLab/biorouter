@@ -978,6 +978,22 @@ mod tests {
             None,
             mode,
         )));
+        // State the working directory rather than inheriting it. Left unset,
+        // `ExtensionManager::resolve_working_dir` falls back to the PROCESS
+        // working directory, and the developer server it spawns roots its file
+        // jail (and its shell) there — ambient state no test owns
+        // (`docs/testing/process-global-state.md`). `cargo test` happens to set
+        // it to this crate's root, so a script reading a relative path read
+        // this crate's files; the same test binary run any other way — from
+        // `target/debug/deps` at the workspace root, under a debugger, from a
+        // stress harness — read the workspace's instead, and the assertion
+        // about what came back changed under the test. Bound to the fixture's
+        // own scratch directory, every file a script below reads is one this
+        // fixture created.
+        agent
+            .extension_manager
+            .set_working_dir(dir.path().to_path_buf())
+            .await;
         agent
             .add_extension(ExtensionConfig::Builtin {
                 name: "developer".into(),
@@ -1405,15 +1421,22 @@ mod tests {
             .update_user_permission("developer__text_editor", PermissionLevel::AlwaysAllow);
         let marker = f.dir.path().join("never-marker");
         let command = js_string(&format!("touch '{}'", marker.display()));
-        // The developer server's path jail is the process working directory
-        // here, which `cargo test` sets to this crate's root — so the next call
-        // reads a file that is certainly inside it.
+        // A file this test wrote, at an absolute path inside the jail the
+        // fixture bound — NOT a relative `"Cargo.toml"`, which the developer
+        // server resolves against its jail base and so, before the fixture
+        // stated one, against the process working directory: this crate's
+        // manifest under `cargo test` and the WORKSPACE manifest when the same
+        // test binary is run from the workspace root, where the assertion below
+        // then failed on `[workspace]`.
+        let readable = f.dir.path().join("after-the-refusal.txt");
+        std::fs::write(&readable, "AFTER-THE-REFUSAL\n").expect("a file to read back");
+        let readable_path = js_string(&readable.display().to_string());
         let code = format!(
             r#"import {{ shell, text_editor }} from "developer";
                let caught = null;
                try {{ shell({{ command: {command} }}); }}
                catch (e) {{ caught = String(e); }}
-               const after = text_editor({{ command: "view", path: "Cargo.toml" }});
+               const after = text_editor({{ command: "view", path: {readable_path} }});
                record_result({{ caught, after }});"#
         );
         let mut script = run_script(&f, &code, CancellationToken::new()).await;
@@ -1438,7 +1461,7 @@ mod tests {
         assert!(
             result["after"]
                 .as_str()
-                .is_some_and(|text| text.contains("[package]")),
+                .is_some_and(|text| text.contains("AFTER-THE-REFUSAL")),
             "the script's next call must still run: {output}"
         );
         assert!(
