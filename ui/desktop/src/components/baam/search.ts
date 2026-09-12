@@ -2,13 +2,17 @@
  * Free-text search over the marketplace catalog — the matcher behind the Browse
  * skills and Browse extensions modals.
  *
- * A port of the model-facing matcher, `crates/biorouter/src/marketplace/search.rs`
- * (PR #242), and it has to stay one: a user typing into the modal and a model
- * calling `skills__searchMarketplaceSkills` on that user's behalf read the same
- * catalog, and the same words must find the same entries, ranked the same way.
- * Only a tie can fall differently, because each side breaks ties by its own
- * registry order — the document's here, the id's in Rust. A change to a rule
- * below is a change to both files.
+ * A port of the model-facing matcher, `crates/biorouter/src/catalog_search.rs`
+ * (PR #242, moved there from `marketplace/search.rs` by PR #266 when the
+ * installed-skill search became its second caller), and it has to stay one: a
+ * user typing into the modal and a model calling
+ * `skills__searchMarketplaceSkills` on that user's behalf read the same catalog,
+ * and the same words must find the same entries, ranked the same way. Only a tie
+ * can fall differently, because each side breaks ties by its own registry order —
+ * the document's here, the id's in Rust. **A change to a rule below is a change
+ * to both files**, which is how the word-boundary rule PR #266 added arrived
+ * here; the types it returns are `CatalogSearch` / `CatalogSearchHit` there and
+ * {@link SearchResult} / {@link SearchHit} here.
  *
  * ⚠ **A query is a set of words, not a substring.** The matcher this replaced
  * asked whether the WHOLE lowercased query occurred inside a single field — the

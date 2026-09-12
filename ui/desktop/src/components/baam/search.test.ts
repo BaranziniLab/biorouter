@@ -15,10 +15,11 @@ import {
 } from './search';
 
 /**
- * The marketplace matcher, ported from `crates/biorouter/src/marketplace/search.rs`
- * (PR #242). The first half ports that file's own tests against the same three
- * synthetic entries, so the two languages are pinned by one set of cases; the
- * second half runs finding F5's queries against real registry rows.
+ * The marketplace matcher, ported from `crates/biorouter/src/catalog_search.rs`
+ * (PR #242; moved there from `marketplace/search.rs`, and given the word-boundary
+ * rule, by PR #266). The first half ports that file's own tests against the same
+ * three synthetic entries, so the two languages are pinned by one set of cases;
+ * the second half runs finding F5's queries against real registry rows.
  */
 
 interface Entry {
