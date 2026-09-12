@@ -941,6 +941,39 @@ fn npx_cache_dir() -> PathBuf {
     std::env::temp_dir().join(format!("biorouter-npx-cache-{}", std::process::id()))
 }
 
+/// The `ui/desktop/node_modules/.bin/esbuild` of the checkout `start` sits in,
+/// if that checkout has one.
+///
+/// ⚠ **The ascent stops at the checkout root** — the nearest ancestor holding a
+/// `.git` entry — and that bound is why this is a named function rather than a
+/// loop inside `find_esbuild`. It used to walk a flat six ancestors, and six is
+/// exactly far enough to leave a worktree: from
+/// `<repo>/.claude/worktrees/<name>/crates/biorouter-mcp` the sixth step is
+/// `<repo>` itself, so a worktree with no install of its own silently borrowed
+/// the MAIN checkout's bundler. Every esbuild-dependent test then passed locally
+/// for a reason CI can never have, which is the shape of "works on my machine"
+/// that is hardest to see: the tool was real, it was just not in the tree under
+/// test.
+///
+/// ⚠ A git worktree's `.git` is a FILE, not a directory, so the bound tests for
+/// the ENTRY. Asking `is_dir()` would look right and stop at nothing.
+fn esbuild_in_checkout(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        let candidate = d.join("ui/desktop/node_modules/.bin/esbuild");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        // Checked after the candidate, so the root's own install still counts —
+        // an ordinary checkout keeps `.git` and `ui/` in the same directory.
+        if d.join(".git").exists() {
+            return None;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 /// Locate an esbuild executable. Returns `(program, leading_args)` so the caller
 /// can support both a direct binary and `npx esbuild`.
 fn find_esbuild() -> Option<(String, Vec<String>)> {
@@ -949,17 +982,11 @@ fn find_esbuild() -> Option<(String, Vec<String>)> {
             return Some((bin, vec![]));
         }
     }
-    // Dev tree: ui/desktop/node_modules/.bin/esbuild, discovered relative to CWD
-    // and a couple of ancestors (tests/CLI may run from a subdir).
+    // Dev tree: the install belonging to THIS checkout, found from the CWD
+    // upwards because a test or the CLI may run from a subdirectory.
     if let Ok(cwd) = std::env::current_dir() {
-        let mut dir: Option<&Path> = Some(cwd.as_path());
-        for _ in 0..6 {
-            let Some(d) = dir else { break };
-            let cand = d.join("ui/desktop/node_modules/.bin/esbuild");
-            if cand.exists() {
-                return Some((cand.to_string_lossy().to_string(), vec![]));
-            }
-            dir = d.parent();
+        if let Some(found) = esbuild_in_checkout(&cwd) {
+            return Some((found.to_string_lossy().to_string(), vec![]));
         }
     }
     if which("esbuild") {
@@ -2643,6 +2670,83 @@ document.getElementById("edit")!.addEventListener("click", () => {
                      environment the bundler needs:\n{child_env}"
                 );
             }
+        }
+    }
+
+    /// The bundler discovery is confined to the checkout it is run from.
+    ///
+    /// ⚠ This is the "passes locally, for a reason CI never has" defect, in the
+    /// shape that is hardest to see: the tool the tests found was real and
+    /// working, it was simply not in the tree under test. `find_esbuild` walked a
+    /// flat six ancestors, and six is exactly far enough to leave a worktree —
+    /// from `<repo>/.claude/worktrees/<name>/crates/biorouter-mcp` the sixth step
+    /// is `<repo>` itself. So every esbuild-dependent test in a worktree with no
+    /// install of its own quietly borrowed the main checkout's bundler, and no
+    /// failure anywhere said so.
+    ///
+    /// Tested through `esbuild_in_checkout` rather than `find_esbuild`, because
+    /// the latter reads `current_dir()` — process-global state that a parallel
+    /// test run cannot set without racing every other test in this binary.
+    mod esbuild_discovery {
+        use super::super::esbuild_in_checkout;
+        use tempfile::TempDir;
+
+        /// An outer checkout that HAS an install, and a worktree inside it that
+        /// does not — the real layout, with `.claude/worktrees/<name>` two levels
+        /// down and a `.git` FILE rather than a directory.
+        fn nested_checkouts() -> (TempDir, std::path::PathBuf) {
+            let root = TempDir::new().unwrap();
+            let outer = root.path().join("BioRouter");
+            let bin = outer.join("ui/desktop/node_modules/.bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("esbuild"), "#!/bin/sh\n").unwrap();
+            std::fs::write(outer.join(".git"), "gitdir: elsewhere\n").unwrap();
+
+            let worktree = outer.join(".claude/worktrees/a-worktree");
+            std::fs::create_dir_all(worktree.join("crates/biorouter-mcp")).unwrap();
+            std::fs::write(worktree.join(".git"), "gitdir: elsewhere\n").unwrap();
+            (root, worktree)
+        }
+
+        #[test]
+        fn a_worktree_without_its_own_install_finds_nothing() {
+            let (_root, worktree) = nested_checkouts();
+            assert_eq!(
+                esbuild_in_checkout(&worktree.join("crates/biorouter-mcp")),
+                None,
+                "a worktree borrowed the outer checkout's bundler"
+            );
+        }
+
+        #[test]
+        fn a_checkouts_own_install_is_found_from_a_subdirectory() {
+            let (_root, worktree) = nested_checkouts();
+            let bin = worktree.join("ui/desktop/node_modules/.bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("esbuild"), "#!/bin/sh\n").unwrap();
+            assert_eq!(
+                esbuild_in_checkout(&worktree.join("crates/biorouter-mcp")),
+                Some(bin.join("esbuild")),
+                "the worktree's own install must still be found from a crate directory"
+            );
+        }
+
+        #[test]
+        fn the_root_of_a_checkout_is_searched_before_the_boundary_stops_it() {
+            // An ordinary clone keeps `.git` and `ui/` in the same directory, so
+            // a bound that fired before testing the candidate would find nothing
+            // anywhere — which would look like "esbuild is missing" on every
+            // developer machine.
+            let (_root, worktree) = nested_checkouts();
+            let outer = worktree
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .unwrap();
+            assert_eq!(
+                esbuild_in_checkout(outer),
+                Some(outer.join("ui/desktop/node_modules/.bin/esbuild"))
+            );
         }
     }
 }
