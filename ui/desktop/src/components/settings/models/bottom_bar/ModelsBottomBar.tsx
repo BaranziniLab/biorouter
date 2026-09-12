@@ -11,7 +11,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../../ui/dropdown-menu';
-import { useCurrentModelInfo } from '../../../BaseChat';
 import { useConfig } from '../../../ConfigContext';
 import { getProviderMetadata } from '../modelInterface';
 import { Alert } from '../../../alerts';
@@ -32,6 +31,13 @@ import { isBrowserSurface } from '../../../../utils/surface';
 import type { ProviderTier, SessionClassification } from '../../../../api/types.gen';
 import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
 import { subscribeAppModelSelectionChanges } from '../../../../utils/sessionBindingSync';
+import {
+  DEFAULT_LEAD_TURNS,
+  leadWorkerChip,
+  leadWorkerHandoverNote,
+  readLeadTurns,
+  type LeadWorkerChip,
+} from './leadWorkerLabel';
 
 /**
  * Round 3 / N1 — the one line explaining why the chip may not name the model the
@@ -124,13 +130,11 @@ export default function ModelsBottomBar({
     getCurrentModelDisplayName,
     getCurrentProviderDisplayName,
   } = useModelAndProvider();
-  const currentModelInfo = useCurrentModelInfo();
   const { read, getProviders } = useConfig();
   const [displayProvider, setDisplayProvider] = useState<string | null>(null);
   const [displayModelName, setDisplayModelName] = useState<string>('Select Model');
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
   const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
-  const [isLeadWorkerActive, setIsLeadWorkerActive] = useState(false);
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
   /**
    * Task 30A (issue #56, DR-17 requirement 3). Does the model bound to this
@@ -192,46 +196,45 @@ export default function ModelsBottomBar({
    */
   const hostManaged = isBrowserSurface();
 
-  /**
-   * Issue #56 Gate B. What actually runs in THIS chat: the pin when there is
-   * one, the app's global selection otherwise.
-   *
-   * ⚠ The chat's own binding outranks lead/worker below. Such a chat runs the
-   * single provider its session row names, so a lead/worker pair configured
-   * globally is not what answers here, and labelling the chip `(lead)` would
-   * name a mechanism that is not in play.
-   */
-  const effectiveProvider = effectiveModel?.provider ?? currentProvider;
-
-  // Which half of a lead/worker pair the app-wide selection names.
-  // `BIOROUTER_MODEL` IS the worker while the pair is on, so the role has to be
-  // derived by comparing it against `BIOROUTER_LEAD_MODEL` — there is no
-  // "which half" key to read.
+  // The app-wide lead/worker selection, as its three config keys state it.
+  // `BIOROUTER_MODEL` IS the worker while a pair is on, so there is no
+  // "which half is live" key to read — see `leadWorkerLabel.ts` for what that
+  // leaves knowable, and for the false `(worker)` it used to produce.
   const [leadModelName, setLeadModelName] = useState<string>('');
+  const [leadProviderName, setLeadProviderName] = useState<string>('');
   const [currentActiveModel, setCurrentActiveModel] = useState<string>('');
+  const [leadTurns, setLeadTurns] = useState<number>(DEFAULT_LEAD_TURNS);
 
   /**
-   * One read for the whole lead/worker question: is a pair configured, what is
-   * the lead, and which of the two does `BIOROUTER_MODEL` currently name.
+   * One read for the whole lead/worker question: is a pair configured, what are
+   * the lead's model and provider, what does `BIOROUTER_MODEL` name, and how many
+   * turns the lead opens with.
    *
-   * ⚠ **The three answers move together or not at all.** They used to be three
-   * reads across two effects and a modal-close handler, so `isLeadWorkerActive`
-   * could be refreshed while `currentActiveModel` stayed behind — and that
-   * comparison is the whole of `modelMode`. A half-refreshed chip puts the
-   * wrong role on the right model, which is worse than carrying no role.
+   * ⚠ **The answers move together or not at all.** They used to be three reads
+   * across two effects and a modal-close handler, so "is a pair configured" could
+   * be refreshed while `currentActiveModel` stayed behind — and a half-refreshed
+   * chip puts the wrong role on the right model, which is worse than carrying no
+   * role. D7's two new answers joined the same `Promise.all` for that reason
+   * rather than taking reads of their own.
    */
   const refreshLeadWorker = useCallback(async () => {
     try {
-      const [leadModel, activeModel] = await Promise.all([
+      const [leadModel, leadProvider, activeModel, turns] = await Promise.all([
         read('BIOROUTER_LEAD_MODEL', false),
+        read('BIOROUTER_LEAD_PROVIDER', false),
         read('BIOROUTER_MODEL', false),
+        read('BIOROUTER_LEAD_TURNS', false),
       ]);
-      setIsLeadWorkerActive(!!leadModel);
       setLeadModelName((leadModel as string) || '');
+      setLeadProviderName((leadProvider as string) || '');
       setCurrentActiveModel((activeModel as string) || '');
+      setLeadTurns(readLeadTurns(turns));
     } catch (error) {
       console.error('Error reading the lead/worker selection:', error);
-      setIsLeadWorkerActive(false);
+      // A selection we could not read is not a pair, and must not leave a stale
+      // `(lead)` on a name from the last successful read.
+      setLeadModelName('');
+      setLeadProviderName('');
     }
   }, [read]);
 
@@ -275,23 +278,59 @@ export default function ModelsBottomBar({
     void refreshLeadWorker();
   };
 
-  // Determine the mode based on which model is currently active
-  const modelMode = isLeadWorkerActive
-    ? currentActiveModel === leadModelName
-      ? 'lead'
-      : 'worker'
-    : undefined;
+  /**
+   * D7 — the name and role a lead/worker pair earns on THIS surface. `sessionId`
+   * is the whole input: with no chat the next message opens a new session and the
+   * lead answers it, so the chip names the lead; inside a chat the live half
+   * depends on a turn count the renderer is never served, so no role is claimed.
+   * `leadWorkerLabel.ts` carries the measurement and the reasoning.
+   *
+   * A chat with its own binding runs a single provider, so the pair is not in
+   * play at all and is not asked about — the rule {@link effectiveProvider}
+   * below also records.
+   */
+  const pair = {
+    leadModel: leadModelName,
+    // `create_lead_worker_from_env` falls back to the default provider for an
+    // unset `BIOROUTER_LEAD_PROVIDER`, so the fallback is resolved here and
+    // nothing downstream has to know about it.
+    leadProvider: leadProviderName || currentProvider || '',
+    workerModel: currentActiveModel,
+    leadTurns,
+  };
+  const chipPair: LeadWorkerChip = effectiveModel ? {} : leadWorkerChip(pair, !!sessionId);
+  const handoverNote = effectiveModel ? null : leadWorkerHandoverNote(pair);
 
-  // Determine which model to display - activeModel takes priority when lead/worker is active
+  /**
+   * Issue #56 Gate B. What actually runs in THIS chat: the pin when there is
+   * one, then the half of a lead/worker pair the chip is naming, then the app's
+   * global selection.
+   *
+   * ⚠ The chat's own binding outranks lead/worker. Such a chat runs the single
+   * provider its session row names, so a lead/worker pair configured globally is
+   * not what answers here, and labelling the chip `(lead)` would name a mechanism
+   * that is not in play.
+   *
+   * ⚠ **It must follow the name the chip prints, not the app-wide selection.**
+   * Every other fact below — the tier padlock, the affiliation glyph, the
+   * disclosure line — is read off ONE catalog row for this provider. When the chip
+   * names the lead (D7, no chat) and this still named the worker's provider, the
+   * chip hung the worker's tier on the lead's name: a public lead wore the
+   * worker's Private padlock over turns that really go to a public endpoint.
+   */
+  const effectiveProvider = effectiveModel?.provider ?? chipPair.provider ?? currentProvider;
+
+  // Determine which model to display. The pair's own answer outranks the app-wide
+  // selection; a chat's own binding outranks both.
+  //
+  // ⚠ `useCurrentModelInfo()` is NOT consulted: `CurrentModelContext` is created
+  // and read in `BaseChat.tsx` and never provided, so the branch that used to sit
+  // here could not run on any surface. See `leadWorkerLabel.ts`.
   const displayModel =
     effectiveModel?.model ??
-    (isLeadWorkerActive && currentModelInfo?.model
-      ? currentModelInfo.model
-      : currentModel || providerDefaultModel || displayModelName);
-  const fullModelLabel =
-    !effectiveModel && isLeadWorkerActive && modelMode
-      ? `${displayModel} (${modelMode})`
-      : displayModel;
+    chipPair.model ??
+    (currentModel || providerDefaultModel || displayModelName);
+  const fullModelLabel = chipPair.role ? `${displayModel} (${chipPair.role})` : displayModel;
   const inlineModelLabel =
     fullModelLabel.length > MAX_INLINE_MODEL_LABEL_CHARS
       ? `${fullModelLabel.slice(0, MAX_INLINE_MODEL_LABEL_CHARS - 3)}...`
@@ -423,18 +462,23 @@ export default function ModelsBottomBar({
   const affiliationWords = affiliationPresentation(affiliation);
 
   /**
-   * The two names in the dropdown's "Current model" block, pinned binding first.
+   * The two names in the dropdown's "Current model" block, pinned binding first,
+   * then the lead the chip above is naming, then the app's global selection.
    *
    * Layered here rather than inside the effects that fill `displayModelName` /
    * `displayProvider`: those two describe the app's GLOBAL selection, which is
    * still the right answer for every chat that is not pinned, and having two
    * effects race to own one state was how the earlier drafts of this went
    * wrong.
+   *
+   * ⚠ **The same model as the chip, always.** The note under these names says
+   * "New chats in every window start on this model" — so with a pair configured
+   * it had to name the lead too, or that sentence pointed at the worker, which
+   * is not what a new chat starts on.
    */
-  const shownModelName = effectiveModel?.model ?? displayModelName;
-  const shownProviderName = effectiveModel
-    ? (pinnedProviderName ?? effectiveModel.provider)
-    : displayProvider;
+  const shownModelName = effectiveModel?.model ?? chipPair.model ?? displayModelName;
+  const shownProviderName =
+    effectiveModel || chipPair.model ? (pinnedProviderName ?? effectiveProvider) : displayProvider;
 
   // What is true of the MODEL, as one clause: its tier, then who covers it.
   // Both axes come off one sample of one endpoint, so they can be said in one
@@ -566,6 +610,23 @@ export default function ModelsBottomBar({
                 {NEW_CHATS_MODEL_NOTE}
               </div>
             )}
+            {/*
+              D7 — the pair's whole truth, in the one surface with room for a
+              sentence. The chip above can name one half and (off Home) cannot
+              even say which half is live, because the turn count that decides it
+              is daemon state the renderer is never served. This line states the
+              HANDOVER instead of claiming a side of it, so it is true of every
+              chat and every surface — the same split this block already uses for
+              the tier word, the affiliation word and `CHAT_KEEPS_ITS_MODEL_NOTE`.
+            */}
+            {handoverNote && (
+              <div
+                data-testid="lead-worker-handover-note"
+                className="mt-1 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
+              >
+                {handoverNote}
+              </div>
+            )}
             {/* Under the heading "Current model", so it must be about the
                 model. It used to be `privacyLine`. */}
             {modelTierWords && (
@@ -666,9 +727,32 @@ export default function ModelsBottomBar({
       </DropdownMenu>
 
       {isAddModelModalOpen ? (
+        /*
+          D6 — the dialog is headed "Select a provider and model for this chat",
+          so it must OPEN on that chat's own binding. Left to its own fallback it
+          pre-fills `ModelAndProviderContext`'s app-wide selection, and pressing
+          "Select model" without touching anything then moved the chat to a model
+          the user never chose.
+
+          Measured (dev GUI, 2026-09-12): chat `20260610_28`, row
+          `provider_name = versa_azure`, `model_name = gpt-5.2-2025-12-11`,
+          `privacy_tier = private`; `BIOROUTER_MODEL = gpt-5.5-2026-04-24`. The
+          chip read `gpt-5.2-2025-12-11`, the dialog opened on
+          `gpt-5.5-2026-04-24`. Model identity decides the privacy tier, so a
+          silent move is a correctness bug, not a cosmetic one.
+
+          ⚠ `effectiveModel` is the right source and `undefined` is the right
+          pass-through. `usePinnedModel` sets it exactly when the chat's binding
+          DIFFERS from the selection; where it is unset the two agree (or the chat
+          has no binding of its own and genuinely runs the selection), and the
+          modal's own fallback to `currentProvider`/`currentModel` is then the
+          same pair.
+        */
         <SwitchModelModal
           sessionId={sessionId}
           privacyTier={privacyTier}
+          initialProvider={effectiveModel?.provider}
+          initialModel={effectiveModel?.model}
           setView={setView}
           onClose={() => setIsAddModelModalOpen(false)}
         />
