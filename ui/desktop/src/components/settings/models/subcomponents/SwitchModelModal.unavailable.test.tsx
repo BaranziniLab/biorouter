@@ -139,4 +139,41 @@ describe('SwitchModelModal — a provider that cannot run', () => {
     fireEvent.click(confirm);
     expect(mocks.changeModel).not.toHaveBeenCalled();
   });
+
+  /**
+   * D6's consequence (2026-09-12). Since the dialog OPENS on the chat's own
+   * binding, `initialProvider` can name a provider that is not set up here at
+   * all — a session bound to `xiaomi_mimo` on a machine that has never configured
+   * it, which the sandbox measured on 2026-09-12 (`GET /config/providers` served
+   * `xiaomi_mimo | is_configured=False | unavailable_reason=None`, and eight
+   * sessions' rows named it).
+   *
+   * Such a provider is deliberately absent from the list — `is_configured ||
+   * unavailable_reason` keeps out what was never set up — so without a row of its
+   * own the provider field sat BLANK beside a real model name, and `validation`
+   * found no reason to refuse: the confirm stayed live and would attempt the bind.
+   */
+  it('offers the provider it opened on even when the catalog would not list it', async () => {
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+        initialProvider="xiaomi_mimo"
+        initialModel="mimo-v2.5-pro"
+      />
+    );
+
+    const reason = await screen.findByTestId('switch-model-provider-error');
+    expect(reason).toHaveTextContent('Unavailable: this provider is not set up in Biorouter');
+    const confirm = screen.getByRole('button', { name: 'Select model' });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(mocks.changeModel).not.toHaveBeenCalled();
+
+    // And it is a real row in the menu, not only a sentence beside the field.
+    fireEvent.keyDown(screen.getAllByRole('combobox')[0], { key: 'ArrowDown', code: 'ArrowDown' });
+    const row = await screen.findByRole('option', { name: /xiaomi_mimo/ });
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+  });
 });

@@ -61,7 +61,9 @@ fn sandbox_config_root_for_this_test_binary() {
 /// the two documents below therefore came from the capture path, which is
 /// exactly the fault being tested for.
 #[derive(Clone)]
-struct FixedWorkflowProvider;
+struct FixedWorkflowProvider {
+    json: &'static str,
+}
 
 const GENERATED_JSON: &str = r#"{
   "title": "Gene association summary",
@@ -98,7 +100,7 @@ impl Provider for FixedWorkflowProvider {
         _tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         Ok((
-            Message::assistant().with_text(GENERATED_JSON),
+            Message::assistant().with_text(self.json),
             ProviderUsage::new("fixed-model".to_string(), Usage::default()),
         ))
     }
@@ -115,6 +117,10 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
+    harness_generating(GENERATED_JSON).await
+}
+
+async fn harness_generating(json: &'static str) -> Harness {
     let dir = TempDir::new().unwrap();
     let data_dir = dir.path().to_path_buf();
     let session_manager = Arc::new(SessionManager::new(data_dir.clone()));
@@ -136,7 +142,7 @@ async fn harness() -> Harness {
         .unwrap();
 
     agent
-        .update_provider(Arc::new(FixedWorkflowProvider), &session.id)
+        .update_provider(Arc::new(FixedWorkflowProvider { json }), &session.id)
         .await
         .expect("bind the fixed provider");
 
@@ -352,4 +358,164 @@ async fn the_settings_pin_names_the_bound_provider_and_never_panics() {
         "the pin must name the provider this session is BOUND to"
     );
     assert_eq!(settings.biorouter_model.as_deref(), Some("fixed-model"));
+}
+
+/// A generation whose optional parameter the document never refers to.
+///
+/// Models emit these constantly — `workflow.md` asks for parameters and for
+/// `{{ key }}` references separately, and a model that obeys the first half and
+/// forgets the second produces exactly this. `output_format` below is declared
+/// and then never used.
+const GENERATED_JSON_WITH_AN_UNREFERENCED_PARAMETER: &str = r#"{
+  "title": "Gene association summary",
+  "description": "Looks a gene up and summarises its disease associations.",
+  "instructions": "Query the graph and report the strongest associations first.",
+  "activities": ["Summarise APOE"],
+  "prompt": "Summarise the disease associations for {{ gene_symbol }}.",
+  "parameters": [
+    {
+      "key": "gene_symbol",
+      "input_type": "string",
+      "requirement": "user_prompt",
+      "description": "HGNC gene symbol"
+    },
+    {
+      "key": "output_format",
+      "input_type": "select",
+      "requirement": "optional",
+      "description": "How to format the summary",
+      "default": "markdown",
+      "options": ["markdown", "table"]
+    }
+  ],
+  "skills": []
+}"#;
+
+/// A workflow captured from a chat must be SAVABLE.
+///
+/// The two parameter validators are individually reasonable and jointly closed
+/// over a parameter the document never refers to:
+///
+///   * `optional` with no `default` → "Optional parameters missing default
+///     values in the workflow: output_format."
+///   * any requirement, referenced nowhere → "Unnecessary parameter
+///     definitions: output_format."
+///
+/// So there was no `default` — present or absent — for which `POST
+/// /workflows/save` accepted the generated document, and "Create workflow from
+/// this chat" could not complete at all.
+///
+/// Measured 2026-09-12. The refusal below, run against `origin/main`'s
+/// validator, read exactly `\nUnnecessary parameter definitions:
+/// output_format.` and nothing else; posting the same two documents to a
+/// running daemon answered **400** both times.
+///
+/// The generator is the half that is wrong. A parameter nothing refers to is a
+/// question the run would ask and then discard, so it is dropped at capture
+/// time — next to the existing rule that a parameter list which does not even
+/// parse is dropped rather than losing the whole document.
+#[tokio::test]
+async fn a_captured_workflow_never_declares_a_parameter_the_document_does_not_use() {
+    let h = harness_generating(GENERATED_JSON_WITH_AN_UNREFERENCED_PARAMETER).await;
+    let knowledge = biorouter_mcp::knowledge::service::KnowledgeService::new_default()
+        .expect("a knowledge service in the sandboxed root");
+    let session = h
+        .agent
+        .config
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap();
+
+    let mut workflow = h
+        .agent
+        .create_workflow(session.conversation.clone().unwrap())
+        .await
+        .expect("the capture");
+    // The save path validates the ENRICHED document — the same one the modal
+    // posts — so the enrichment runs here too.
+    let enrichment = service::session_enrichment(&h.agent, &knowledge, &h.session_id, None)
+        .await
+        .expect("the route's enrichment");
+    service::apply_session_enrichment(&mut workflow, enrichment);
+
+    let keys: Vec<String> = workflow
+        .parameters
+        .iter()
+        .flatten()
+        .map(|parameter| parameter.key.clone())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["gene_symbol".to_string()],
+        "the referenced parameter is kept and the unreferenced one dropped"
+    );
+
+    // The whole point: what the capture produced is what `POST /workflows/save`
+    // will accept. `service::validate` is the function that route calls.
+    service::validate(&workflow).unwrap_or_else(|err| {
+        panic!(
+            "a workflow captured from a chat must save: {err}\n\n{}",
+            workflow.to_yaml().unwrap_or_default()
+        )
+    });
+}
+
+/// The two messages that closed the gap, pinned as a pair.
+///
+/// Read together they are the specification the generator now satisfies: a
+/// parameter must be referenced, and an `optional` one must also carry a
+/// default. Neither is relaxed — the "unnecessary" arm is the only thing that
+/// catches a key typo (`{{ gene }}` in the prompt beside a parameter keyed
+/// `gene_symbol` reports both halves of the mismatch), and a parameter nothing
+/// reads is dead weight in a document meant to be shared. What changed is that
+/// the message now says what to do about it.
+#[test]
+fn an_unreferenced_parameter_is_still_refused_and_the_refusal_says_why() {
+    let unreferenced_with_a_default = r#"
+version: 1.0.0
+title: Test
+description: Test
+instructions: Nothing refers to the parameter below.
+parameters:
+  - key: output_format
+    input_type: string
+    requirement: optional
+    description: How to format the summary
+    default: markdown
+"#;
+    let err = service::validate(
+        &biorouter::workflow::Workflow::from_content(unreferenced_with_a_default).unwrap(),
+    )
+    .expect_err("a parameter the document never refers to is refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("Unnecessary parameter definitions: output_format."),
+        "the refusal still names the parameter: {message}"
+    );
+    assert!(
+        message.contains("{{ output_format }}"),
+        "and now says how to fix it, naming the key: {message}"
+    );
+
+    let unreferenced_without_a_default = r#"
+version: 1.0.0
+title: Test
+description: Test
+instructions: Nothing refers to the parameter below.
+parameters:
+  - key: output_format
+    input_type: string
+    requirement: optional
+    description: How to format the summary
+"#;
+    let message = service::validate(
+        &biorouter::workflow::Workflow::from_content(unreferenced_without_a_default).unwrap(),
+    )
+    .expect_err("dropping the default does not help")
+    .to_string();
+    assert!(
+        message.contains("Optional parameters missing default values"),
+        "the other half of the pair, unchanged: {message}"
+    );
 }

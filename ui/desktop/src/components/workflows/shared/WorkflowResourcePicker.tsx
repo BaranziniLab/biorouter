@@ -20,6 +20,19 @@ interface WorkflowResourcePickerProps {
   onSelectedIdsChange: (ids: string[]) => void;
   defaultId?: string | null;
   onDefaultIdChange?: (id: string | null) => void;
+  /**
+   * What "no default" MEANS here, shown on the card whenever a default could be
+   * named and none is.
+   *
+   * The rows — and with them the only mark of which item is the default — live
+   * inside a closed popover, so a card with a default and a card with none read
+   * identically from outside it. That is fine for a control whose unset state is
+   * obvious and wrong for one whose description promises a default: the reader
+   * cannot tell a captured "this chat has no primary base" from a bug. The
+   * wording belongs to the caller because what the absence costs is
+   * domain-specific.
+   */
+  noDefaultText?: string;
   /** A standing condition the selection is subject to, shown under the label. */
   notice?: string;
   emptyText: string;
@@ -41,6 +54,7 @@ export function WorkflowResourcePicker({
   onSelectedIdsChange,
   defaultId,
   onDefaultIdChange,
+  noDefaultText,
   notice,
   emptyText,
   searchPlaceholder,
@@ -49,6 +63,20 @@ export function WorkflowResourcePicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  // Named by id, labelled by label: the id is what is saved, and a picker whose
+  // items have not loaded yet must still be able to say a default is set.
+  const defaultLabel = defaultId
+    ? (items.find((item) => item.id === defaultId)?.label ?? defaultId)
+    : null;
+  // Nothing selected already says its own thing on the trigger ("No KBs
+  // selected"), and "no default" on top of it is noise about a set that is empty.
+  const defaultSummary =
+    !onDefaultIdChange || selectedIds.length === 0
+      ? null
+      : defaultLabel
+        ? `Default: ${defaultLabel}`
+        : (noDefaultText ?? null);
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -91,6 +119,14 @@ export function WorkflowResourcePicker({
         <div>
           <label className="text-label text-text-default">{label}</label>
           {description && <p className="mt-0.5 text-supporting text-text-muted">{description}</p>}
+          {defaultSummary && (
+            <p
+              className="mt-0.5 text-supporting text-text-muted"
+              data-testid="resource-picker-default-summary"
+            >
+              {defaultSummary}
+            </p>
+          )}
         </div>
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>

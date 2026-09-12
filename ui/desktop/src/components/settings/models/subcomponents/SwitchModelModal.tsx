@@ -149,6 +149,22 @@ const PUBLIC_MODEL_IN_PRIVATE_CHAT =
 type ProviderOption = { value: string; label: string; unavailableReason?: string };
 
 /**
+ * The one reason this dialog writes itself rather than quoting the daemon, for
+ * the one row that can arrive from outside the catalog.
+ *
+ * A chat's own binding may name a provider that is not set up here at all — a
+ * session bound to `xiaomi_mimo` on a machine that has never configured it — and
+ * since D6 the dialog OPENS on that binding. Such a provider is deliberately
+ * absent from the list (`is_configured || unavailable_reason` keeps out what was
+ * never set up), so without this row the field would sit blank while the model
+ * beside it named a real model, and the confirm would happily attempt the bind.
+ *
+ * It is written for a person, like every other sentence on this surface, and it
+ * names the repair that exists: the "Use other provider" row directly below.
+ */
+const PROVIDER_NOT_SET_UP = 'this provider is not set up in Biorouter';
+
+/**
  * F3 / privacy-tiers §14.3 P4 — what a switch from THIS dialog changes, said in
  * the dialog, before the user commits.
  *
@@ -612,14 +628,26 @@ export const SwitchModelModal = ({
         // a disabled row sits where it always sat instead of sinking to the
         // bottom — then "Use other provider". A provider that is simply not set
         // up stays out, as before.
+        const offered = providersResponse
+          .filter((provider) => provider.is_configured || provider.unavailable_reason)
+          .map(({ metadata, name, is_configured, unavailable_reason }) => ({
+            value: name,
+            label: metadata.display_name,
+            unavailableReason: is_configured ? undefined : (unavailable_reason ?? undefined),
+          }));
+        // D6's consequence: the provider this dialog OPENED on is always offered,
+        // even when the catalog would not list it. See `PROVIDER_NOT_SET_UP`.
+        if (initialProvider && !offered.some((option) => option.value === initialProvider)) {
+          offered.unshift({
+            value: initialProvider,
+            label:
+              providersResponse.find((row) => row.name === initialProvider)?.metadata
+                .display_name ?? initialProvider,
+            unavailableReason: PROVIDER_NOT_SET_UP,
+          });
+        }
         setProviderOptions([
-          ...providersResponse
-            .filter((provider) => provider.is_configured || provider.unavailable_reason)
-            .map(({ metadata, name, is_configured, unavailable_reason }) => ({
-              value: name,
-              label: metadata.display_name,
-              unavailableReason: is_configured ? undefined : (unavailable_reason ?? undefined),
-            })),
+          ...offered,
           {
             value: 'configure_providers',
             label: 'Use other provider',
