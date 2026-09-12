@@ -153,12 +153,24 @@ impl MarketplaceCatalog {
 
     /// Rank every skill against a free-text query, matched as documented in
     /// `catalog_search.rs`.
+    ///
+    /// ⚠ **`category` is not among the fields, and that is the licence's argument
+    /// one field further on.** A curation bucket names most of the catalog —
+    /// measured over the shipped registry, `Core` is 57 of 129 skills and
+    /// `Biomedical` 63 — so searching it turned a short query into the shelf:
+    /// `core` → 59 of 129, `cor` → 59, `ore` → 61, `biomedical` → 65. None of
+    /// those answers was about a topic the user named. Every surface that shows
+    /// the category offers it as a CONTROL instead — `Filter` chips in the
+    /// desktop Browse-skills modal (`BrowseSkillsModal.tsx`), three
+    /// `data-facet="category"` chips on the website shelf — and the website's
+    /// matcher never searched the field at all, so leaving it out is also what
+    /// puts the three copies of this matcher in step. `skill_type` is absent for
+    /// the same reason and always has been: it is the `data-type` facet.
     pub fn search_skills(&self, query: &str) -> CatalogSearch<'_, MarketplaceSkillDescriptor> {
         rank(query, SKILL_NOISE, self.skills.values(), |entry| {
             let mut fields = vec![
                 (entry.registry_id.as_str(), Weight::Name),
                 (entry.name.as_str(), Weight::Name),
-                (entry.category.as_str(), Weight::Label),
                 (entry.description.as_str(), Weight::Prose),
             ];
             fields.extend(
@@ -1171,6 +1183,132 @@ mod tests {
             catalog.search_extensions(ProviderTier::Private, "").len(),
             catalog.browse_extensions(ProviderTier::Private).len()
         );
+    }
+
+    /// A three-letter query is not the whole shelf. Measured in the
+    /// Browse-extensions modal on 2026-09-12 against the shipped 37-entry
+    /// registry, and reproduced here before the fix: `lab` → **37 of 37**, `gen`
+    /// → 36, `age` → 36. Per hit, 32 of `lab`'s matched only as an infix of
+    /// `baranzinilab` (the organization) and 33 each of `gen`'s and `age`'s only
+    /// as an infix of `…Agent` in the extension's own NAME — so this is a rule,
+    /// not a field: dropping `organization` fixes one of the three and no
+    /// catalog can drop a name. See `catalog_search::substantial_infix`.
+    ///
+    /// The counts below are upper bounds rather than equalities: a new extension
+    /// whose prose says "lab" must not fail this test. What it pins is that the
+    /// answer is a handful and not the shelf, and that the three names the shelf
+    /// is browsed BY survive intact.
+    #[test]
+    fn a_three_letter_query_does_not_return_the_whole_extension_shelf() {
+        let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
+        let shelf = catalog.browse_extensions(ProviderTier::Private).len();
+        assert!(shelf >= 30, "measured against 37 entries; now {shelf}");
+
+        // Guard: the words the flood came through are still in the catalog, so a
+        // pass here means the rule refused them rather than the registry having
+        // stopped saying them.
+        let names = catalog
+            .browse_extensions(ProviderTier::Private)
+            .iter()
+            .filter(|entry| entry.name.to_lowercase().contains("agent"))
+            .count();
+        let orgs = catalog
+            .browse_extensions(ProviderTier::Private)
+            .iter()
+            .filter(|entry| entry.organization.to_lowercase().contains("baranzinilab"))
+            .count();
+        assert!(
+            names >= 20 && orgs >= 20,
+            "the shelf no longer says `Agent` ({names}) or `BaranziniLab` ({orgs}), so this test \
+             would pass vacuously"
+        );
+
+        for (query, was) in [("lab", 37), ("gen", 36), ("age", 36)] {
+            let now = catalog
+                .search_extensions(ProviderTier::Private, query)
+                .len();
+            assert!(
+                now <= 8,
+                "`{query}` returned {now} of {shelf}; it returned {was} before an unanchored \
+                 match had to be four characters or half its word"
+            );
+        }
+
+        // What a visitor actually browses this shelf by, all three of which
+        // reach their entries as WHOLE words and so are untouched.
+        let ids = |query: &str| -> Vec<String> {
+            catalog
+                .search_extensions(ProviderTier::Private, query)
+                .hits
+                .iter()
+                .map(|hit| hit.entry.registry_id.clone())
+                .collect()
+        };
+        assert_eq!(ids("SPOKEAgent"), ["spokeagent"]);
+        assert_eq!(ids("BaranziniLab").len(), orgs, "the lab, by its own name");
+        let ucsf = ids("UCSF");
+        assert!(
+            ucsf.len() >= 5 && ucsf.contains(&"ucsfhpcagent".to_owned()),
+            "UCSF by name: {ucsf:?}"
+        );
+    }
+
+    /// A curation bucket is not a search term. Measured on the shipped registry
+    /// before the fix: `core` → 59 of 129 skills, `cor` → 59, `ore` → 61,
+    /// `biomedical` → 65, because `Core` is the category of 57 rows and
+    /// `Biomedical` of 63. It is the licence's defect one field on, and it is
+    /// also where the three copies of this matcher had drifted: the website never
+    /// searched the field, so the desktop modal and the model's tool answered a
+    /// query the website did not. Every surface offers the category as a control
+    /// instead.
+    #[test]
+    fn a_skills_category_is_a_filter_control_and_not_a_searched_field() {
+        let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
+        let shelf = catalog.browse_skills().len();
+
+        // Guard, again: the buckets have to be big for the refusal to mean
+        // anything, and these are the counts the numbers above were measured at.
+        for bucket in ["Core", "Biomedical"] {
+            let rows = catalog
+                .browse_skills()
+                .iter()
+                .filter(|entry| entry.category == bucket)
+                .count();
+            assert!(
+                rows * 3 >= shelf,
+                "`{bucket}` names only {rows} of {shelf} skills, so searching it would no longer \
+                 return most of the shelf and this test would pass vacuously"
+            );
+        }
+
+        // Every skill the bucket's own name still finds says that word itself.
+        for (query, was) in [("core", 59), ("biomedical", 65), ("developer", 9)] {
+            let hits = skill_ids(&catalog.search_skills(query));
+            assert!(
+                hits.len() * 4 < shelf,
+                "`{query}` returned {} of {shelf} (was {was})",
+                hits.len()
+            );
+            for id in &hits {
+                let entry = catalog.resolve_skill_for_install(id).unwrap();
+                let said_elsewhere = [
+                    entry.registry_id.as_str(),
+                    entry.name.as_str(),
+                    entry.description.as_str(),
+                ]
+                .into_iter()
+                .chain(entry.tags.iter().map(String::as_str))
+                .chain(entry.keywords.iter().map(String::as_str))
+                .any(|text| text.to_lowercase().contains(query));
+                assert!(
+                    said_elsewhere,
+                    "`{id}` matched `{query}` through nothing but its category"
+                );
+            }
+        }
+        // Browsing is untouched: the category is dropped from what is SEARCHED,
+        // not from the catalog — it is still what the modal groups by.
+        assert_eq!(catalog.search_skills("").len(), shelf);
     }
 
     /// The extension catalog shares the matcher, and the caller filter runs

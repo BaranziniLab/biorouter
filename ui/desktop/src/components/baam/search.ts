@@ -9,10 +9,16 @@
  * `skills__searchMarketplaceSkills` on that user's behalf read the same catalog,
  * and the same words must find the same entries, ranked the same way. Only a tie
  * can fall differently, because each side breaks ties by its own registry order —
- * the document's here, the id's in Rust. **A change to a rule below is a change
- * to both files**, which is how the word-boundary rule PR #266 added arrived
- * here; the types it returns are `CatalogSearch` / `CatalogSearchHit` there and
- * {@link SearchResult} / {@link SearchHit} here.
+ * the document's here, the id's in Rust. The types it returns are `CatalogSearch`
+ * / `CatalogSearchHit` there and {@link SearchResult} / {@link SearchHit} here.
+ *
+ * ⚠ **A change to a rule below is a change to THREE files, not two.** The third
+ * is the website's own copy, `landing/marketplace-search.js`, which the BAAM
+ * shelves at biorouter.ucsf.edu call — and it is the copy that drifts, because
+ * nothing imports it from here and its callers assemble their fields out of the
+ * DOM. This header said "both files" while the three had already diverged over
+ * which fields they search; the divergence is recorded where the fields are
+ * chosen, in `registry.ts`.
  *
  * ⚠ **A query is a set of words, not a substring.** The matcher this replaced
  * asked whether the WHOLE lowercased query occurred inside a single field — the
@@ -37,8 +43,11 @@
  *    start of one, or inside one);
  * 4. then registry order, so a result never reshuffles.
  *
- * Two rules keep the union from drowning the useful hits, both needed by the
- * measured query itself:
+ * Three rules keep the union from drowning the useful hits; the first two were
+ * needed by the measured query itself, and the third — {@link substantialInfix} —
+ * closes the same failure one step further in: a query that finds everything
+ * says nothing, whether it got there through a repeated field or through a
+ * three-letter morpheme.
  *
  * - **A term under three characters matches whole words only.** `r` has to find
  *   the R language; as a substring it matched nearly every entry. The query as
@@ -59,7 +68,20 @@
 export const Weight = {
   /** Free prose: a description. */
   Prose: 1,
-  /** Curated labels: tags, keywords, a category, an organization. */
+  /**
+   * Curated labels: tags, keywords, an organization.
+   *
+   * ⚠ **Not a curation bucket the surface also offers as a filter control.** A
+   * skill's `category` was here, and it is the licence's defect one field on:
+   * `Core` names 57 of the registry's 129 skills and `Biomedical` 63, so `core`
+   * listed 59 and `biomedical` 65 — half the modal, under a word the user did
+   * not mean. The modal already answers the category with its own filter —
+   * `All` / `Core skills` / `Developer & authoring` / `Biomedical analysis`, and
+   * the Developer chip was measured showing exactly the 9 rows `developer` used to
+   * return — the website shelf with three `data-facet="category"` chips, and the
+   * website's matcher never searched the field at all. See `rankSkills` in
+   * `registry.ts`.
+   */
   Label: 2,
   /** What the entry is called: its registry id and names. */
   Name: 3,
@@ -132,6 +154,12 @@ export const EXTENSION_NOISE: readonly string[] = ['extension', 'extensions'];
 
 /** Below this many characters a term matches whole words only. */
 const MIN_PARTIAL_CHARS = 3;
+
+/**
+ * At or above this many characters a term may match anywhere inside a word,
+ * however long the word. Below it, {@link substantialInfix} asks for half.
+ */
+const MIN_INFIX_CHARS = 4;
 
 /** The best a single term can score: a whole-word match (3) in a name (3). */
 const MAX_TERM_QUALITY = 3 * Weight.Name;
@@ -271,15 +299,63 @@ export function searchTerms(query: string, noise: readonly string[] = []): strin
 }
 
 /**
+ * Is `term`, found inside `word` without touching its start, enough of that word
+ * to be a search rather than a morpheme?
+ *
+ * The matcher already grades an anchored match above an unanchored one — a prefix
+ * scores 2, an infix 1 — and {@link MIN_PARTIAL_CHARS} was the only admission
+ * gate, so three characters bought a match anywhere inside any word. Measured in
+ * the Browse-extensions modal against the shipped 37-entry registry: `lab` → **37
+ * of 37**, `gen` → 36, `age` → 36. Per hit, 32 of `lab`'s matched only as an
+ * infix of `baranzinilab` (the organization) and 33 each of `gen`'s and `age`'s
+ * only as an infix of `…Agent` in the extension's own NAME — so this is a rule,
+ * not a field: dropping `organization` fixes one of the three, and nothing can
+ * drop a name. In Browse skills the same rule had `ing` matching 88 of 129
+ * skills, `ica` 85, `ion` 84, `cal` 80 and `tio` 77 — every one of them a
+ * morpheme.
+ *
+ * So an unanchored match needs either {@link MIN_INFIX_CHARS} characters or half
+ * the word it sits in. Two arms rather than one number, because each closes a
+ * case the other gets wrong, and each was checked against the registry's own
+ * vocabulary.
+ *
+ * ⚠ The counts that used to sit here were NOT reproducible and are gone.
+ * Measured 2026-09-12 from `landing/registry.json`, over exactly the fields
+ * these matchers search: 1,445 distinct words with the prose descriptions, 773
+ * without. No field combination yields the 807 this comment claimed. Quote a
+ * corpus size only with the field set that produces it.
+ *
+ * - A flat four-character floor drops what a short term earns inside a SHORT
+ *   word — `rna` in `scRNA`/`rRNA`/`miRNA`/`piRNA`, `sem` in `RSEM` — costing
+ *   `rna` the `single-cell` and `microbiome` skills.
+ * - A flat half-the-word ratio drops what a LONG term earns inside a longer
+ *   compound, which is most of a biomedical vocabulary: `omics` stopped finding
+ *   `transcriptomics`, `flow` stopped finding `workflows`.
+ *
+ * What the two arms remove together is dominated by the `lab` flood. Half is
+ * also the proportion this rule's own documented case sits at —
+ * `heatmap` is 7 of `complexheatmap`'s 14 — so the arm that admits a short term
+ * is calibrated to the example the infix rule exists for.
+ *
+ * Exported so the two arms can be asserted directly, the way Rust asserts them
+ * from inside the module.
+ */
+export function substantialInfix(term: string, word: string): boolean {
+  const termChars = charCount(term);
+  return termChars >= MIN_INFIX_CHARS || termChars * 2 >= charCount(word);
+}
+
+/**
  * How well `term` matches one field word: 3 for the whole word, 2 for its
  * start, 1 for anywhere inside it (`heatmap` in `complexheatmap`), 0 for no
- * match. A short term matches whole words only.
+ * match. A short term matches whole words only, and a term that is short
+ * relative to the word matches only at its start — see {@link substantialInfix}.
  */
 function strength(term: string, word: string): number {
   if (word === term) return 3;
   if (charCount(term) < MIN_PARTIAL_CHARS) return 0;
   if (word.startsWith(term)) return 2;
-  if (word.includes(term)) return 1;
+  if (word.includes(term)) return substantialInfix(term, word) ? 1 : 0;
   return 0;
 }
 

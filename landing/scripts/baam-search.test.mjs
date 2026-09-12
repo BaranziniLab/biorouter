@@ -27,6 +27,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createReadStream, existsSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -167,6 +168,36 @@ test('the verbatim bonus respects word boundaries, as the canonical matcher does
     true,
     'a non-alphanumeric edge imposes no boundary on that side'
   );
+});
+
+// An unanchored match has to be worth something. `substantial_infix` in
+// catalog_search.rs and `substantialInfix` in the desktop port assert the same
+// words; this is the third copy of that rule and so the third copy of the test.
+test('a short term matches inside a word only when it is half of it', () => {
+  const { substantialInfix } = Search;
+  // The three floods measured on this page, at the word each came through.
+  assert.equal(substantialInfix('lab', 'baranzinilab'), false, '3 of 12');
+  assert.equal(substantialInfix('gen', 'cdwagent'), false, '3 of 8');
+  assert.equal(substantialInfix('age', 'language'), false, '3 of 8');
+  // A short term inside a SHORT word is the search, not a morpheme — the hits a
+  // flat four-character floor would have cost.
+  assert.equal(substantialInfix('rna', 'scrna'), true, '3 of 5');
+  assert.equal(substantialInfix('sem', 'rsem'), true, '3 of 4');
+  // At four characters a term is unanchored anywhere, however long the word,
+  // which is what keeps a compound biomedical vocabulary findable.
+  assert.equal(substantialInfix('omics', 'transcriptomics'), true);
+  assert.equal(substantialInfix('flow', 'workflows'), true);
+  // The case the infix rule was written for sits exactly on the short arm's
+  // boundary, so it would pass on either arm.
+  assert.equal(substantialInfix('heatmap', 'complexheatmap'), true, '7 of 14');
+  // And only the UNANCHORED match is refused: the start of a word still counts
+  // at three characters, and the whole word always counts.
+  const strengthOf = (term, word) =>
+    Search.rank(term, [], [{ id: 'x', name: word, description: '', tags: [] }], entryFields).hits
+      .length;
+  assert.equal(strengthOf('gen', 'genomics'), 1, 'a prefix still matches');
+  assert.equal(strengthOf('lab', 'lab'), 1, 'a whole word still matches');
+  assert.equal(strengthOf('gen', 'cdwagent'), 0, 'an infix of a long word does not');
 });
 
 test('license is not a searched field', () => {
@@ -319,6 +350,249 @@ if (!existsSync(PLAYWRIGHT)) {
       !shown.includes('R Scripting'),
       'a card matched on its license alone, which is not a searched field'
     );
+    await page.close();
+  });
+
+  /* ── The three matchers, differentially ─────────────────────────────────
+     The rule lives in three places — `crates/biorouter/src/catalog_search.rs`,
+     `ui/desktop/src/components/baam/search.ts` and `marketplace-search.js` — and
+     what each one SEARCHES lives in a fourth: the field list its caller hands
+     over. That is where the three had drifted. `catalog_search.rs` and the
+     desktop port searched a skill's `category`; this page never did, so a
+     visitor and a model reading the same catalog got different answers to
+     `core` — 59 of 129 there against 2 of 132 here.
+
+     A unit test of any one matcher cannot see that, so the contract is restated
+     HERE, independently, as `expectedFields` below, and every card the real page
+     shows is compared against it over the whole catalog vocabulary. A fourth
+     copy is the point: if any implementation drifts from the contract, this
+     fails, and it fails whichever of the four moved. */
+
+  /** The canonical searched fields, per `MarketplaceCatalog::search_extensions`. */
+  const extensionFields = (entry) => [
+    [entry.id, Search.Weight.Name],
+    [entry.extension_name, Search.Weight.Name],
+    [entry.name, Search.Weight.Name],
+    [entry.organization, Search.Weight.Label],
+    [entry.description, Search.Weight.Prose],
+    ...(entry.tags || [])
+      .filter((tag) => !namesOnlyTheLicense(tag, entry.license))
+      .map((tag) => [tag, Search.Weight.Label]),
+  ];
+
+  /**
+   * The canonical searched fields, per `MarketplaceCatalog::search_skills`.
+   * Neither `category` nor `type` is here: each is a curation value the page
+   * answers with a facet chip, and each named most of the shelf.
+   */
+  const skillFields = (entry) => [
+    [entry.id, Search.Weight.Name],
+    [entry.name, Search.Weight.Name],
+    [entry.description, Search.Weight.Prose],
+    ...(entry.tags || [])
+      .filter((tag) => !namesOnlyTheLicense(tag, entry.license))
+      .map((tag) => [tag, Search.Weight.Label]),
+    ...(entry.keywords || [])
+      .filter((kw) => !namesOnlyTheLicense(kw, entry.license))
+      .map((kw) => [kw, Search.Weight.Label]),
+  ];
+
+  /** A label that says nothing its entry's own licence does not. */
+  function namesOnlyTheLicense(label, license) {
+    const labelWords = Search.words(label);
+    if (labelWords.length === 0) return false;
+    const licenseWords = Search.words(license || '');
+    return labelWords.every((word) => licenseWords.includes(word));
+  }
+
+  /**
+   * What a visitor might type: every distinct word the catalog itself uses, plus
+   * the queries that measured each defect this file guards. Derived from the
+   * registry rather than listed, so a new entry widens the comparison.
+   */
+  function corpus(registry) {
+    const words = new Set([
+      'lab', 'gen', 'age', 'core', 'cor', 'ore', 'biomedical', 'developer',
+      'invocable', 'auto', 'user', 'applied', 'apache', 'Apache-2.0', 'PACS',
+      'rna', 'omics', 'flow', 'heatmap', 'UCSF', 'BaranziniLab', 'SPOKEAgent',
+      'single cell', 'variant calling', 'R scripting ggplot visualization',
+    ]);
+    const add = (value) => {
+      if (typeof value === 'string') for (const word of Search.words(value)) words.add(word);
+      else if (Array.isArray(value)) value.forEach(add);
+    };
+    for (const entry of registry.extensions) {
+      [entry.id, entry.name, entry.organization, entry.tags].forEach(add);
+    }
+    for (const entry of registry.skills) {
+      [entry.id, entry.name, entry.tags, entry.keywords].forEach(add);
+    }
+    return [...words].sort();
+  }
+
+  /**
+   * Every query's visible cards, keyed by download URL, read out of the real page
+   * in ONE round trip. `oninput="runFilter()"` is the shelf's own entry point, so
+   * this drives exactly what typing drives; doing it per query over Playwright
+   * would be ~800 round trips.
+   */
+  async function shelfAnswers(page, cardSelector, queries) {
+    return page.evaluate(
+      ({ cardSelector, queries }) => {
+        const box = document.getElementById('baam-search');
+        const cards = [...document.querySelectorAll(cardSelector)];
+        const urlOf = (card) => {
+          const link = card.querySelector('.skill-dl-btn, .brxt-chip');
+          return link ? link.getAttribute('href') : '';
+        };
+        const out = { '': cards.map(urlOf) };
+        for (const query of queries) {
+          box.value = query;
+          box.dispatchEvent(new Event('input', { bubbles: true }));
+          // A filtered shelf un-collapses, so every card it kept is displayed;
+          // `.skill-grid.collapsed > .skill-card:nth-child(n+9)` is the same
+          // `display: none` a refused card gets, which is why the browse case is
+          // read off the DOM above rather than asked for here.
+          out[query] = cards
+            .filter((card) => getComputedStyle(card).display !== 'none')
+            .map(urlOf);
+        }
+        box.value = '';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        return out;
+      },
+      { cardSelector, queries }
+    );
+  }
+
+  /**
+   * ⚠ The skills comparison reads the three GRIDS, not the whole shelf.
+   * `build-registry.mjs` derives every registry row from `#core-skill-grid`,
+   * `#dev-skill-grid` and `#bio-skill-grid`, so those cards stand one-to-one
+   * against the rows. The `#skills-featured` strip above them repeats three of
+   * those skills as hand-written cards, and the copies have DRIFTED — measured on
+   * the live page, the featured `ggplot2 Visualization` reads "Publication-quality
+   * ggplot2 figures in R — font sizing, palettes, themes" where its grid twin
+   * reads "Applies ggplot2 best-practice style", and carries a `Figures` tag and
+   * seven `data-tags` the grid card has none of. That is prose the registry does
+   * not describe, so a differential against the registry cannot speak about it: it
+   * is a content divergence on the page, not a matcher one.
+   */
+  for (const [label, shelf, selector, key, fields, noise] of [
+    ['extensions', 'extensions', '#extensions-section .ext-card', 'extensions', extensionFields, Search.EXTENSION_NOISE],
+    ['skills', 'skills', '#skills-section .skill-grid .skill-card', 'skills', skillFields, Search.SKILL_NOISE],
+  ]) {
+    test(`the ${label} shelf answers every catalog query the canonical field list does`, async () => {
+      const registry = JSON.parse(await readFile(join(LANDING, 'registry.json'), 'utf8'));
+      const entries = registry[key];
+      const page = await shelfPage(shelf === 'extensions' ? null : shelf);
+      const queries = corpus(registry);
+      assert.ok(queries.length > 300, `the corpus is only ${queries.length} queries`);
+
+      // A card is identified by the download link the registry row carries, so the
+      // comparison is between two sets of ROWS and never depends on DOM order.
+      const answers = await shelfAnswers(page, selector, queries);
+      const cards = new Set(answers['']);
+      assert.ok(!cards.has(''), 'a card was not identified by its download link');
+      assert.equal(cards.size, answers[''].length, `${label}: two cards share a download link`);
+      assert.equal(cards.size, entries.length, `${label}: cards drawn vs registry rows`);
+
+      const slug = (url) => url.split('/').pop();
+      const mismatches = [];
+      for (const query of queries) {
+        const want = Search.rank(query, noise, entries, fields).hits.map((hit) => hit.entry.download);
+        const got = answers[query];
+        const extra = got.filter((url) => !want.includes(url)).map(slug);
+        const missing = want.filter((url) => !got.includes(url)).map(slug);
+        if (extra.length || missing.length) {
+          mismatches.push(
+            `${query}: page ${got.length}, canonical ${want.length}` +
+              (extra.length ? `; page only ${extra.join(',')}` : '') +
+              (missing.length ? `; canonical only ${missing.join(',')}` : '')
+          );
+        }
+      }
+      assert.deepEqual(
+        mismatches,
+        [],
+        `${mismatches.length} of ${queries.length} ${label} queries disagree with the canonical ` +
+          `field list:\n  ${mismatches.slice(0, 25).join('\n  ')}`
+      );
+      await page.close();
+    });
+  }
+
+  test('a three-letter query does not return the whole extensions shelf', async () => {
+    // Measured on this page against the live 37-entry registry before the fix:
+    // `lab` 37 of 37 (through an infix of `BaranziniLab` in the org line), `gen`
+    // and `age` 36 each (through an infix of `…Agent` in the heading).
+    const page = await shelfPage();
+    const total = await page.$$eval('#extensions-section .ext-card', (els) => els.length);
+    assert.ok(total >= 30, `measured against 37 cards; now ${total}`);
+    for (const [query, was] of [['lab', 37], ['gen', 36], ['age', 36]]) {
+      const shown = await search(page, query, EXTS);
+      assert.ok(
+        shown.length <= 8,
+        `"${query}" showed ${shown.length} of ${total} cards (${was} before): ${shown.join(', ')}`
+      );
+    }
+    // What a visitor browses this shelf BY has to survive, and all three reach
+    // their cards as whole words.
+    const lab = await search(page, 'BaranziniLab', EXTS);
+    assert.ok(lab.length >= 20, `the lab by its own name: ${lab.length} of ${total}`);
+    const ucsf = await search(page, 'UCSF', EXTS);
+    assert.ok(ucsf.length >= 5 && ucsf.length < total, `UCSF: ${ucsf.length} of ${total}`);
+    assert.deepEqual(await search(page, 'SPOKEAgent', EXTS), ['spokeagent']);
+    await page.close();
+  });
+
+  test('the invocation mode is a facet, and the slug beside it is still searched', async () => {
+    // `.skill-type` is "User-invocable · /scientific-research" — a MODE, which
+    // `initSkills` reads into `card._type` for the two chips to filter on, and a
+    // SLUG, which is the skill's registry id. The whole line went in at Name
+    // weight, so the mode — an administrative label on 100% of cards — was
+    // searched: measured here, `invocable` showed 62 of 132 and `auto` 74, while
+    // the app answered 0 and 4. `auto` is a real topical query (autoimmune,
+    // automation, autoencoder), so that one cost a search a visitor makes.
+    const page = await shelfPage('skills');
+    const total = await page.$$eval('#skills-section .skill-card', (els) => els.length);
+    for (const [query, was] of [['invocable', 62], ['auto', 74], ['user', 62], ['applied', 70]]) {
+      const shown = await search(page, query, SKILLS);
+      assert.ok(
+        shown.length * 4 < total,
+        `"${query}" showed ${shown.length} of ${total} cards (${was} before the mode was dropped)`
+      );
+    }
+    // The slug is the half worth keeping: it is the only place a skill's id is
+    // rendered, and two of these skills say their id nowhere else on the card.
+    for (const slug of ['ucsf-hpc', 'scientific-machine-learning', 'gpu-compute-optimization']) {
+      const shown = await search(page, slug, SKILLS);
+      assert.ok(shown.length >= 1, `the slug /${slug} found nothing`);
+    }
+    await page.close();
+  });
+
+  test('a skills category is a filter chip, not a searched word', async () => {
+    // This page was already right, and is pinned so it stays the side the other
+    // two were brought to: `Core` names 57 of the registry's 129 skills and
+    // `Biomedical` 63, so searching the bucket returned half the shelf — which
+    // is what `catalog_search.rs` and the desktop modal were doing (59 and 65).
+    const page = await shelfPage('skills');
+    const total = await page.$$eval('#skills-section .skill-card', (els) => els.length);
+    for (const query of ['core', 'biomedical', 'developer']) {
+      const shown = await search(page, query, SKILLS);
+      assert.ok(
+        shown.length * 4 < total,
+        `"${query}" showed ${shown.length} of ${total} cards, i.e. its whole bucket`
+      );
+    }
+    // The bucket is still reachable — by its chip, which is where it belongs.
+    await page.fill('#baam-search', '');
+    await page.click('.fchip[data-facet="category"][data-match="developer"]');
+    const chipped = await page.$$eval(SKILLS, (els) =>
+      els.filter((e) => getComputedStyle(e).display !== 'none').length
+    );
+    assert.ok(chipped > 0 && chipped * 4 < total, `the Developer chip showed ${chipped}`);
     await page.close();
   });
 

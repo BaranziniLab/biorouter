@@ -3805,9 +3805,41 @@ extensions: []</pre>
     var W = window.MarketplaceSearch.Weight;
     var fields = [];
     var push = function (el, weight) { if (el) fields.push([el.textContent, weight]); };
+    // The catalog's own ID and manifest name, at Name weight — the two fields
+    // `catalog_search.rs` searches and this page renders nowhere. An extension
+    // whose id is one word and whose heading is two was therefore unfindable by
+    // the id a visitor would have read off the marketplace: measured over the
+    // registry's whole vocabulary, `codegraphagent` and `playwrightagent` each
+    // found their extension in the app and nothing here, while the headings say
+    // "CodeGraph Agent" and "Playwright Agent". Read from the attribute rather
+    // than derived from the download filename, because `spokeagent-0.4.1.brxt`
+    // is exactly why `data-registry-id` exists — deriving it would put the
+    // version's digits back into the searched text.
+    if (card.dataset.registryId) fields.push([card.dataset.registryId, W.Name]);
+    if (card.dataset.extensionName) fields.push([card.dataset.extensionName, W.Name]);
     push(card.querySelector('h3'), W.Name);
-    // "User-invocable · /scientific-research" — carries the skill's slug.
-    push(card.querySelector('.skill-type'), W.Name);
+    // ⚠ The `.skill-type` line, but only its SLUG. The line is
+    // "User-invocable · /scientific-research", or "5 skills · auto-applied", or
+    // "Auto-applied · R plotting" — the slug is the skill's registry id, which
+    // `catalog_search.rs` and the desktop port both search at Name weight, and
+    // everything else in it is the invocation MODE, which is a facet. `initSkills`
+    // reads that same text into `card._type` for the User-invocable /
+    // Auto-applied chips to filter on, so searching its words is a weaker second
+    // copy of a control the page already has — and the mode is on 100% of cards,
+    // so it answered with most of the shelf: measured on the live page,
+    // `invocable` showed 62 of 132 skill cards and `auto` 74, against 0 and 4 in
+    // the app. `auto` is a real topical query here (autoimmune, automation,
+    // autoencoder), so that one cost a search a visitor was actually making.
+    // Dropping the element outright would have lost the slug, which is the one
+    // part worth Name weight; the mode's own words are not searched anywhere else,
+    // and the app never searched the registry's `type` field at all.
+    var typeLine = card.querySelector('.skill-type');
+    if (typeLine) {
+      String(typeLine.textContent).split('·').forEach(function (part) {
+        var text = part.trim();
+        if (text.charAt(0) === '/') fields.push([text, W.Name]);
+      });
+    }
     push(card.querySelector('.ext-desc, .skill-desc, .wf-desc'), W.Prose);
     // The organization, WITHOUT the version. "BaranziniLab · UCSF · v0.2.0"
     // splits into the words `v0`, `2`, `0`, so a bare query token of `2` or `0`
@@ -3817,7 +3849,13 @@ extensions: []</pre>
     // desktop port searches one, so stripping it is also what keeps the three
     // matchers in step.
     var org = card.querySelector('.ext-org');
-    if (org) fields.push([String(org.textContent).replace(/[·|]\s*v[\d.]+\s*$/, ''), W.Label]);
+    var version = '';
+    if (org) {
+      var orgText = String(org.textContent);
+      var tail = /[·|]\s*(v[\d.]+)\s*$/.exec(orgText);
+      if (tail) version = tail[1];
+      fields.push([orgText.replace(/[·|]\s*v[\d.]+\s*$/, ''), W.Label]);
+    }
     // ⚠ Not `data-tags` as it stands. That blob is
     // `name + organization + version + description + tags`, so it carries two
     // things a catalog is not searched by, and BOTH were measured matching
@@ -3831,12 +3869,20 @@ extensions: []</pre>
     // dropping them here is what keeps the three matchers in step. Separators
     // are preserved and only the offending token is blanked, so a phrase
     // spanning two keywords still matches as it did.
+    //
+    // ⚠ Both are dropped by the card's OWN value, never by a pattern. Blanking
+    // "anything shaped like a version" — which is what `/^v?\d+(\.\d+)*$/` did —
+    // reads a bare number as a version wherever it appears, and a skill card's
+    // `data-tags` carries no version at all: `13485` (ISO 13485, a keyword of
+    // `regulatory-quality-systems`) was the one query in 795 where this page and
+    // the canonical matcher still disagreed, and the page was the wrong one.
     var licenceWords = wordsOf(card.dataset.license);
+    var versionWords = wordsOf(version);
     if (card.dataset.tags) {
       fields.push([
         String(card.dataset.tags).replace(/[^\s,]+/g, function (t) {
-          if (namesOnlyTheLicense(t, licenceWords)) return '';
-          return /^v?\d+(?:\.\d+)*$/.test(t) ? '' : t;
+          if (saysOnly(t, licenceWords)) return '';
+          return saysOnly(t, versionWords) ? '' : t;
         }),
         W.Label,
       ]);
@@ -3848,7 +3894,7 @@ extensions: []</pre>
       if (chip.hasAttribute('data-privacy-badge') || chip.hasAttribute('data-affiliation-badge')) return;
       // By WORDS, not by equality: `apache` and `Apache-2.0` are the same licence
       // spelled two ways, and equality drops only the second.
-      if (namesOnlyTheLicense(chip.textContent, licenceWords)) return;
+      if (saysOnly(chip.textContent, licenceWords)) return;
       fields.push([chip.textContent, W.Label]);
     });
     return fields;
@@ -4048,6 +4094,11 @@ extensions: []</pre>
     const orgToken = /BRXT/i.test(orgStr) ? 'brxt' : /UCSF/i.test(orgStr) ? 'ucsf' : '';
     const keywords = escapeHtml([extension.name, extension.organization, extension.version, extension.description, ...(extension.tags || [])].join(' '));
     const extName = escapeHtml(extension.extension_name || '');
+    // The catalog's own id, which `cardFields` searches at Name weight because
+    // `catalog_search.rs` does and nothing on the card renders it. Declared here
+    // rather than derived from the download filename for the reason the static
+    // cards declare it: `spokeagent-0.4.1.brxt` is not the id `spokeagent`.
+    const registryId = escapeHtml(extension.id || '');
     const featCls = featured ? ' is-feat' : '';
     const eyebrow = featured ? '<div class="feat-eyebrow">Featured</div>' : '';
     // The authored cards carry `data-affiliation` and this renderer did not, so
@@ -4060,7 +4111,7 @@ extensions: []</pre>
     const affAttr = affiliation.length
       ? ` data-affiliation="${escapeHtml(affiliation.join(' '))}"`
       : '';
-    return `<div class="ext-card${featCls}" data-tags="${keywords}" data-license="${license}" data-org="${orgToken}" data-privacy="${privacy}" data-extension-name="${extName}"${affAttr}>
+    return `<div class="ext-card${featCls}" data-registry-id="${registryId}" data-tags="${keywords}" data-license="${license}" data-org="${orgToken}" data-privacy="${privacy}" data-extension-name="${extName}"${affAttr}>
       ${eyebrow}
       <div class="ext-card-header">
         <div class="icon-tile"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div>
@@ -4201,9 +4252,17 @@ extensions: []</pre>
     return String(text == null ? '' : text).toLowerCase().split(WORD_BREAK).filter(Boolean);
   }
 
-  function namesOnlyTheLicense(label, licenseWords) {
-    const words = wordsOf(label);
-    return words.length > 0 && words.every(w => licenseWords.indexOf(w) !== -1);
+  /* Does `label` say nothing that `words` does not?
+     By WORDS, not by equality: `apache` and `Apache-2.0` are one licence spelled
+     two ways, and equality drops only the second. Two administrative values reach
+     the searched text as labels and both are dropped through here — the licence
+     (`card.dataset.license`) and the version (the `· v0.2.0` tail of `.ext-org`)
+     — which is why it is named for the test rather than for the licence.
+     An empty label says nothing at all, which is not the same as saying only
+     these words, so it is kept. */
+  function saysOnly(label, words) {
+    const labelWords = wordsOf(label);
+    return labelWords.length > 0 && labelWords.every(w => words.indexOf(w) !== -1);
   }
 
   function searchHaystack(card) {
@@ -4214,13 +4273,13 @@ extensions: []</pre>
     if (licenseWords.length) {
       card.querySelectorAll('.tag').forEach(chip => {
         const label = chip.textContent;
-        if (label && namesOnlyTheLicense(label, licenseWords)) text = text.split(label).join(' ');
+        if (label && saysOnly(label, licenseWords)) text = text.split(label).join(' ');
       });
     }
     // Separators are preserved and only a licence token is blanked, so a phrase
     // spanning two keywords still matches as it did.
     const tags = String(card.dataset.tags || '')
-      .replace(/[^\s,]+/g, t => (namesOnlyTheLicense(t, licenseWords) ? '' : t));
+      .replace(/[^\s,]+/g, t => (saysOnly(t, licenseWords) ? '' : t));
     return (text + ' ' + tags).toLowerCase();
   }
 

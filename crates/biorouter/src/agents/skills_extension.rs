@@ -599,9 +599,16 @@ struct RemoveSkillPackageParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SearchMarketplaceSkillsParams {
-    /// Match a registry id, name, category, description, tag or keyword. Omit
-    /// to list every entry in the registry. See `SearchSkillsParams::query` for
-    /// why this doc comment is load-bearing.
+    /// Match a registry id, name, description, tag or keyword. Omit to list
+    /// every entry in the registry. See `SearchSkillsParams::query` for why this
+    /// doc comment is load-bearing.
+    ///
+    /// ⚠ **Not the `category`.** It names most of the catalog — `Core` 57 of 129
+    /// entries, `Biomedical` 63 — so searching it answered half the registry
+    /// under a word the caller meant as a topic, and
+    /// `MarketplaceCatalog::search_skills` stopped reading it. Every row still
+    /// reports its `category`, so omit the query and read the buckets off the
+    /// listing rather than querying one by name.
     #[serde(default)]
     query: Option<String>,
     offset: Option<usize>,

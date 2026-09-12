@@ -238,6 +238,12 @@ query it **ranks** the skills this conversation has enabled, through
 - A word under three characters matches whole words only, so `r` finds the R
   language rather than every word with an r in it. Filler (`for`, `about`,
   `skill`) is dropped, and a plural falls back to its singular.
+- A word matches **inside** a longer word only when it is four characters or
+  half that word: `omics` finds `transcriptomics` and `rna` finds `scRNA`, but
+  `gen` no longer finds `…Agent` and `lab` no longer finds `BaranziniLab`. Three
+  characters buried in a long word is a morpheme rather than a search, and on the
+  marketplace catalog it returned nearly everything — `lab` matched 37 of 37
+  extensions, `ing` 88 of 129 skills.
 - The conversation's switches apply **first**: a skill turned off here is never
   scored, returned or counted.
 

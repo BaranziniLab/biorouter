@@ -16,6 +16,7 @@ import {
   scoreEntry,
   searchTerms,
   SKILL_NOISE,
+  substantialInfix,
   Weight,
   writtenIn,
   type SearchField,
@@ -139,6 +140,42 @@ describe('marketplace search — matching and ranking', () => {
     expect(ids(rank('heatmaps'))).toEqual(['complex-plots']);
     // `scripts` is not in `scripting`, but `script` starts it.
     expect(ids(rank('scripts'))).toEqual(['r-scripting', 'prose-only']);
+  });
+
+  /// An unanchored match has to be worth something. Three characters is enough to
+  /// search from the START of a word — `gen` really does find `genomics` — and,
+  /// inside a long one, is a morpheme: measured in Browse extensions against the
+  /// shipped 37-entry registry, `lab` listed **37 of 37** through an infix of
+  /// `baranzinilab`, and `gen` and `age` 36 each through an infix of `…Agent` in
+  /// each extension's own name. `substantial_infix` in `catalog_search.rs` asserts
+  /// these same words.
+  it('matches a short term inside a word only when it is half of it', () => {
+    // The three measured floods, at the word each of them came through.
+    expect(substantialInfix('lab', 'baranzinilab'), '3 of 12').toBe(false);
+    expect(substantialInfix('gen', 'cdwagent'), '3 of 8').toBe(false);
+    expect(substantialInfix('age', 'language'), '3 of 8').toBe(false);
+    // A short term inside a SHORT word is the search, not a morpheme — the hits a
+    // flat four-character floor would have cost.
+    expect(substantialInfix('rna', 'scrna'), '3 of 5').toBe(true);
+    expect(substantialInfix('rna', 'rrna'), '3 of 4').toBe(true);
+    expect(substantialInfix('sem', 'rsem'), '3 of 4').toBe(true);
+    expect(substantialInfix('age', 'image'), '3 of 5').toBe(true);
+    // At four characters a term is unanchored anywhere, however long the word,
+    // which is what keeps a compound biomedical vocabulary findable.
+    expect(substantialInfix('omics', 'transcriptomics')).toBe(true);
+    expect(substantialInfix('flow', 'workflows')).toBe(true);
+    // The case the infix rule was written for sits exactly on the short arm's
+    // boundary, so it would pass on either arm.
+    expect(substantialInfix('heatmap', 'complexheatmap'), '7 of 14').toBe(true);
+
+    // And through the matcher: only the UNANCHORED match is refused.
+    const entry = (name: string): Entry => ({ id: 'x', name, description: '', tags: [] });
+    const found = (term: string, name: string) =>
+      rankEntries(term, [], [entry(name)], fields).hits.length;
+    expect(found('gen', 'Genomics'), 'a prefix still matches').toBe(1);
+    expect(found('lab', 'Lab'), 'a whole word still matches').toBe(1);
+    expect(found('gen', 'CDWAgent'), 'an infix of a long word does not').toBe(0);
+    expect(found('rna', 'scRNA-seq'), 'an infix of a short word does').toBe(1);
   });
 
   it('returns the union, ranked by terms matched and then by where they matched', () => {
@@ -421,7 +458,6 @@ describe('the fields each catalog searches, and what a match in each is worth', 
     // The matcher this replaced never searched the id.
     ['id', { id: 'zebrafish-imaging' }, 'zebrafish'],
     ['name', { name: 'Zebrafish Imaging' }, 'zebrafish'],
-    ['category', { category: 'Biomedical' }, 'biomedical'],
     ['description', { description: 'Segments zebrafish embryos.' }, 'zebrafish'],
     ['tag', { tags: ['Zebrafish'] }, 'zebrafish'],
     ['keyword', { keywords: ['zebrafish'] }, 'zebrafish'],
@@ -473,6 +509,37 @@ describe('the fields each catalog searches, and what a match in each is worth', 
     // An entry with no licence has no licence label to drop.
     expect(
       rankExtensions([{ ...blankExtension, tags: ['Apache-2.0'] }], 'apache').hits
+    ).toHaveLength(1);
+  });
+
+  /// ⚠ **The category is a filter CONTROL, not a searched field.** It was one, and
+  /// it is the licence's defect one field further on: `Core` names 57 of the
+  /// registry's 129 skills and `Biomedical` 63, so `core` listed 59 of them here
+  /// and `biomedical` 65 — half the modal, under a word nobody typed for a topic.
+  /// This modal already answers the question with its own filter — `All` /
+  /// `Core skills` / `Developer & authoring` / `Biomedical analysis`, whose
+  /// Developer chip was measured showing exactly the 9 rows `developer` returned —
+  /// and the website's copy of this matcher never searched the field at all, so
+  /// the three were not in step.
+  /// `type` is the same shape — the `Auto-applied` / `User-invocable` facet — and
+  /// was never searched here.
+  it('does not search a skill category or type, in either spelling', () => {
+    for (const query of ['core', 'cor', 'ore', 'biomedical', 'developer']) {
+      expect(
+        rankSkills([{ ...blankSkill, category: 'Biomedical' }], query).hits,
+        `category, ${query}`
+      ).toEqual([]);
+    }
+    expect(
+      rankSkills([{ ...blankSkill, type: 'User-invocable · /blank' }], 'invocable').hits
+    ).toEqual([]);
+    // Neither is dropped from the CATALOG: the modal still groups by category and
+    // the card still shows the type. Only the matcher stops reading them.
+    expect(
+      rankSkills(
+        [{ ...blankSkill, category: 'Biomedical', description: 'Biomedical imaging.' }],
+        'biomedical'
+      ).hits
     ).toHaveLength(1);
   });
 
@@ -709,5 +776,93 @@ describe('a licence republished as a label is not searchable through it', () => 
     // The browse query alone contributes 166, so a run that read no entry at all
     // cannot pass this by matching empty against empty.
     expect(matched).toBeGreaterThan(166);
+  });
+});
+
+/**
+ * The two modals against the catalog the app actually ships — `registry.fallback.json`,
+ * the snapshot `build-registry.mjs` writes from `landing/baam.html` beside
+ * `landing/registry.json`, so these are the counts a user sees offline and (bar a
+ * newer fetch) online.
+ *
+ * Bounds rather than equalities: a new entry whose prose says "lab" must not fail
+ * this. What it pins is that a short query answers with a handful and not the
+ * shelf, and that what the shelf is browsed BY still answers in full.
+ */
+describe('the shipped catalog: a short query is not the whole shelf', () => {
+  const { extensions, skills } = FALLBACK_REGISTRY;
+
+  it('answers a three-letter extensions query with a handful, not all 37', () => {
+    // Guard: the words the flood came through are still in the catalog, so a pass
+    // here means the rule refused them and not that the registry stopped saying
+    // them.
+    expect(
+      extensions.filter((entry) => /agent/i.test(entry.name ?? '')).length,
+      'cards whose name says Agent'
+    ).toBeGreaterThan(19);
+    expect(
+      extensions.filter((entry) => /baranzinilab/i.test(entry.organization ?? '')).length,
+      'cards whose organization says BaranziniLab'
+    ).toBeGreaterThan(19);
+
+    // Measured on this registry before the rule: 37 of 37, 36, 36.
+    for (const [query, was] of [
+      ['lab', 37],
+      ['gen', 36],
+      ['age', 36],
+    ] as const) {
+      const hits = rankExtensions(extensions, query).hits;
+      expect(hits.length, `${query} (was ${was} of ${extensions.length})`).toBeLessThan(9);
+    }
+
+    // What the shelf is browsed BY: all three reach their rows as whole words.
+    expect(ids(rankExtensions(extensions, 'SPOKEAgent'))).toEqual(['spokeagent']);
+    expect(rankExtensions(extensions, 'BaranziniLab').hits.length).toBeGreaterThan(19);
+    const ucsf = rankExtensions(extensions, 'UCSF').hits;
+    expect(ucsf.length).toBeGreaterThan(4);
+    expect(ucsf.length).toBeLessThan(extensions.length);
+    expect(ids(rankExtensions(extensions, 'UCSF'))).toContain('ucsfhpcagent');
+  });
+
+  it('answers a curation-bucket query with the skills that say the word, not the bucket', () => {
+    // Guard: the buckets are still most of the catalog, which is what made
+    // searching them return most of it.
+    for (const bucket of ['Core', 'Biomedical']) {
+      const rows = skills.filter((entry) => entry.category === bucket).length;
+      expect(rows * 3, `${bucket} names ${rows} of ${skills.length} skills`).toBeGreaterThan(
+        skills.length
+      );
+    }
+
+    // Measured on this registry before the field was dropped: 59, 59, 61, 65, 9.
+    for (const [query, was] of [
+      ['core', 59],
+      ['cor', 59],
+      ['ore', 61],
+      ['biomedical', 65],
+      ['developer', 9],
+    ] as const) {
+      const hits = rankSkills(skills, query).hits;
+      expect(hits.length * 4, `${query} (was ${was} of ${skills.length})`).toBeLessThan(
+        skills.length
+      );
+      // Every row still returned says the word itself, somewhere the matcher reads.
+      for (const hit of hits) {
+        const said = [
+          hit.entry.id,
+          hit.entry.name,
+          hit.entry.description,
+          ...(hit.entry.tags ?? []),
+          ...(hit.entry.keywords ?? []),
+        ].some((text) => String(text).toLowerCase().includes(query));
+        expect(said, `${hit.entry.id} matched ${query} through nothing but its category`).toBe(
+          true
+        );
+      }
+    }
+
+    // Browsing is untouched: the category is dropped from what is SEARCHED, not
+    // from the catalog, and it is still what the modal groups by.
+    expect(rankSkills(skills, '').hits.length).toBe(skills.length);
   });
 });

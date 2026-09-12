@@ -414,6 +414,19 @@ function labelFields(
  * ⚠ Excluding the FIELD was not enough, because the registry publishes the
  * licence again as a tag and a keyword, and those are searched — see
  * {@link namesOnlyTheLicense}, which is what {@link labelFields} applies.
+ *
+ * ⚠ **It also excludes `category`, and the three matchers are three.** The claim
+ * above is about Rust; the website's `landing/baam.html` assembles its own field
+ * list out of the DOM and is the copy that drifts. It never searched the category
+ * — measured on the live shelf, `core` → 2 of 132 cards and `biomedical` → 2,
+ * against 59 and 65 here — so this modal and the model answered a query the
+ * website did not. The website is the one that was right: `Core` names 57 of 129
+ * skills and `Biomedical` 63, and every surface showing the category offers it as
+ * a control (this modal's own `All` / `Core skills` / `Developer & authoring` /
+ * `Biomedical analysis` filter, the shelf's three `data-facet="category"` chips),
+ * so searching it turned a short query into the shelf under a word nobody meant. `type` is absent for the same
+ * reason and always was here: it is the `data-type` facet, and the website
+ * searched its rendered text until this change.
  */
 export function rankSkills(
   skills: readonly RegistrySkill[],
@@ -422,7 +435,6 @@ export function rankSkills(
   return rankEntries(query, SKILL_NOISE, skills, (skill) => [
     [skill.id, Weight.Name],
     [skill.name, Weight.Name],
-    [skill.category, Weight.Label],
     [skill.description, Weight.Prose],
     ...labelFields(skill.tags, skill.license),
     ...labelFields(skill.keywords, skill.license),
