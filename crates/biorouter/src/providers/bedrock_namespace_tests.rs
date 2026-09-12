@@ -1,0 +1,544 @@
+//! The public `aws_bedrock` provider and UCSF's private `versa_bedrock` must not
+//! steer each other. The Bedrock twin of `versa_azure`'s `routing_tests`.
+//!
+//! Declared in `providers/mod.rs` as
+//! `#[cfg(all(test, feature = "aws-providers"))] mod bedrock_namespace_tests;`.
+//! `aws-providers` is a default feature, so a plain `cargo test -p biorouter
+//! --lib` runs every row here. A `--no-default-features` build compiles neither
+//! provider, and this module goes with them.
+//!
+//! **What they shared.** Versa declared the public card's `AWS_REGION` and an
+//! `AWS_ENDPOINT_URL_BEDROCK` key as its own, read both (and then the process
+//! environment) as overrides, and its setup surfaces wrote both. `bedrock.rs`
+//! exports every `AWS_*` config value and secret into the process environment
+//! and promoted `AWS_ENDPOINT_URL_BEDROCK` to the variable the AWS SDK reads, so
+//! the UCSF gateway Versa persisted became the public provider's endpoint. And
+//! the SDK reads `AWS_BEARER_TOKEN_BEDROCK` from the environment on its own, and
+//! authenticates with it instead of signing whenever it is there.
+//!
+//! **How each row measures.** Every provider is built the way production builds
+//! it, through `from_env`, and only its HTTP transport is then swapped for the
+//! SDK's own capture client (`with_http_client`). So every assertion is on the
+//! request production would have sent: its host, its path, its `Authorization`
+//! header. Nothing leaves the process, even on the rows whose bug aims a request
+//! at public AWS. The stand-in is the capture client rather than wiremock
+//! because the thing under test is the host the SDK resolved, and aiming the
+//! endpoint at a local server would overwrite exactly that.
+//!
+//! The config rows pin their inputs with `with_config_overrides`, which
+//! `get_param` consults before the environment and the file. The environment
+//! rows cannot: the SDK reads the environment through its own shim, and the
+//! public provider's `std::env::set_var` is part of what is under test. Calling
+//! it in this multi-threaded binary is unsound, and its writes would leak into
+//! every test running beside it. So those rows re-execute this test binary and
+//! run in a child process that STARTS with the environment the scenario
+//! describes and a config root of its own, as
+//! `workflow::local_workflows::tests::listing_workflows_survives_a_deleted_working_directory`
+//! does for a deleted working directory.
+
+use super::base::Provider;
+use super::bedrock::{BedrockProvider, BEDROCK_DEFAULT_MODEL};
+use super::versa_bedrock::{
+    VersaBedrockProvider, VERSA_BEDROCK_DEFAULT_ENDPOINT, VERSA_BEDROCK_DEFAULT_MODEL,
+    VERSA_BEDROCK_DEFAULT_REGION,
+};
+use crate::conversation::message::Message;
+use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
+use aws_smithy_http_client::test_util::capture_request;
+use std::collections::HashMap;
+
+const VERSA_ACCESS_KEY: &str = "VERSATESTACCESSKEY";
+const VERSA_SECRET_KEY: &str = "versa-test-secret-key";
+const PUBLIC_ACCESS_KEY: &str = "PUBLICTESTACCESSKEY";
+const PUBLIC_SECRET_KEY: &str = "public-test-secret-key";
+/// The public card's Bedrock API key, in the variable the AWS SDK reads it from.
+const PUBLIC_BEARER_TOKEN: &str = "public-bedrock-api-key";
+/// What the public card could point at: its user's own AWS region.
+const PUBLIC_ENDPOINT: &str = "https://bedrock-runtime.eu-central-1.amazonaws.com";
+const PUBLIC_REGION: &str = "eu-central-1";
+const UCSF_GATEWAY_HOST: &str = "unified-api.ucsf.edu";
+
+/// One request, as it would have left the machine.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Sent {
+    host: String,
+    path: String,
+    authorization: String,
+}
+
+impl Sent {
+    fn of(request: &aws_smithy_runtime_api::client::orchestrator::HttpRequest) -> Self {
+        let url = url::Url::parse(request.uri()).expect("the SDK sends an absolute URI");
+        Self {
+            host: url.host_str().unwrap_or_default().to_string(),
+            path: url.path().to_string(),
+            authorization: request
+                .headers()
+                .get("authorization")
+                .unwrap_or_default()
+                .to_string(),
+        }
+    }
+
+    /// `(access key id, signing region)`, if the request was SigV4-signed.
+    fn signed_by(&self) -> Option<(&str, &str)> {
+        let credential = self
+            .authorization
+            .strip_prefix("AWS4-HMAC-SHA256 Credential=")?;
+        let mut scope = credential.split(',').next()?.split('/');
+        let key = scope.next()?;
+        let _date = scope.next()?;
+        let region = scope.next()?;
+        Some((key, region))
+    }
+}
+
+/// What a row observed: for Versa, the endpoint, region and tier the instance
+/// resolved; for either provider, the request it sent.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Observed {
+    resolved: Option<(String, String, String)>,
+    sent: Sent,
+}
+
+/// Send one turn and return the request it made. The stand-in answers 200 with
+/// an empty body, which does not parse, so the turn fails AFTER the request is
+/// made — and the request is what is measured. Every row builds with
+/// `BEDROCK_MAX_RETRIES=0`, because the stand-in answers once.
+async fn turn(provider: &dyn Provider) {
+    let _ = provider
+        .complete("system", &[Message::user().with_text("hello")], &[])
+        .await;
+}
+
+async fn versa_sent(provider: VersaBedrockProvider) -> Sent {
+    let (http, captured) = capture_request(None);
+    let provider = provider.with_http_client(http);
+    turn(&provider).await;
+    Sent::of(&captured.expect_request())
+}
+
+async fn public_sent(provider: BedrockProvider) -> Sent {
+    let (http, captured) = capture_request(None);
+    let provider = provider.with_http_client(http);
+    turn(&provider).await;
+    Sent::of(&captured.expect_request())
+}
+
+/// Versa's credentials and Versa's own two overrides as given, blank meaning
+/// absent, so the machine running the suite cannot leak its own configuration
+/// into what is measured.
+fn versa_config(endpoint: &str, region: &str) -> HashMap<String, String> {
+    HashMap::from([
+        (
+            "VERSA_BEDROCK_ACCESS_KEY_ID".into(),
+            VERSA_ACCESS_KEY.into(),
+        ),
+        (
+            "VERSA_BEDROCK_SECRET_ACCESS_KEY".into(),
+            VERSA_SECRET_KEY.into(),
+        ),
+        ("VERSA_BEDROCK_ENDPOINT".into(), endpoint.into()),
+        ("VERSA_BEDROCK_REGION".into(), region.into()),
+        ("BEDROCK_MAX_RETRIES".into(), "0".into()),
+    ])
+}
+
+async fn versa_bound(overrides: HashMap<String, String>) -> VersaBedrockProvider {
+    crate::config::with_config_overrides(
+        overrides,
+        VersaBedrockProvider::from_env(ModelConfig::new_or_fail(VERSA_BEDROCK_DEFAULT_MODEL)),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("Versa Bedrock must construct from its credentials alone: {e}"))
+}
+
+/// The endpoint and region a bound instance will be restored with, and its tier.
+fn resolved(provider: &VersaBedrockProvider) -> (String, String, String) {
+    let binding = serde_json::to_value(provider.restore_binding()).unwrap();
+    (
+        binding["endpoint"].as_str().unwrap_or_default().to_string(),
+        binding["region"].as_str().unwrap_or_default().to_string(),
+        format!("{:?}", provider.tier()),
+    )
+}
+
+fn shipped() -> (String, String, String) {
+    (
+        VERSA_BEDROCK_DEFAULT_ENDPOINT.to_string(),
+        VERSA_BEDROCK_DEFAULT_REGION.to_string(),
+        format!("{:?}", ProviderTier::Private),
+    )
+}
+
+// ------------------------------------------------------------------ the rule
+
+/// Configuring UCSF's PRIVATE Versa Bedrock must not configure the PUBLIC
+/// Amazon Bedrock card, or hand it a value.
+///
+/// `aws_bedrock` declares two keys, both required and both defaulted, and for
+/// such a provider `check_provider_configured` says Configured as soon as EITHER
+/// is in `config.yaml`. Versa declared one of them, `AWS_REGION`, and its setup
+/// surfaces persisted it: the Settings form seeds a declared key's default and
+/// `DefaultSubmitHandler` submits it, and the onboarding card wrote it on every
+/// connect. Every other `AWS_*` key belongs to the public side as well, declared
+/// or not: `bedrock.rs` and `sagemaker_tgi.rs` export each one into the process
+/// environment, where the AWS SDK reads them. So this asserts the namespace, not
+/// the one key that happened to leak.
+#[test]
+fn versa_declares_no_key_the_public_bedrock_provider_reads() {
+    let versa = VersaBedrockProvider::metadata();
+    let public = BedrockProvider::metadata();
+    let public_keys: Vec<&str> = public
+        .config_keys
+        .iter()
+        .map(|key| key.name.as_str())
+        .collect();
+    assert!(
+        public.config_keys.iter().any(|key| key.required),
+        "if the public provider stops having a key its configured-check turns on, \
+         this test is vacuous; re-derive it rather than deleting it"
+    );
+
+    let versa_keys = versa.config_keys.iter().map(|key| key.name.as_str());
+    let shared: Vec<&str> = versa_keys
+        .clone()
+        .filter(|name| public_keys.contains(name))
+        .collect();
+    let outside: Vec<&str> = versa_keys
+        .filter(|name| !name.starts_with("VERSA_BEDROCK_"))
+        .collect();
+    assert!(
+        shared.is_empty() && outside.is_empty(),
+        "versa_bedrock declares {shared:?}, which the PUBLIC aws_bedrock provider \
+         declares too, so a Versa setup marks that card Configured and hands it the \
+         value. It declares {outside:?} outside its own namespace, and every \
+         `AWS_*` key is the public providers' too: `bedrock.rs` exports each one \
+         into the process environment, where the AWS SDK reads it. Two providers \
+         of different privacy tiers must not share a config key."
+    );
+}
+
+// ------------------------------------------------------ public card → Versa
+
+/// What the public Amazon Bedrock card, or `bedrock.rs`'s export of it, leaves
+/// where Versa used to look: its user's own AWS region, and an endpoint in it.
+/// Versa read both whenever its own were unset. Its requests, signed with
+/// UCSF-issued keys, then went to that user's AWS region, which refused the
+/// keys, and the instance turned Public. The region alone was enough to sign
+/// every request for a region other than the gateway's.
+#[tokio::test]
+async fn the_public_cards_endpoint_and_region_never_reach_versa() {
+    let mut public_card = versa_config("", "");
+    public_card.insert("AWS_ENDPOINT_URL_BEDROCK".into(), PUBLIC_ENDPOINT.into());
+    public_card.insert("AWS_REGION".into(), PUBLIC_REGION.into());
+
+    let versa = versa_bound(public_card).await;
+    assert_eq!(
+        resolved(&versa),
+        shipped(),
+        "the public Amazon Bedrock card's endpoint or region reached a Versa chat"
+    );
+
+    let sent = versa_sent(versa).await;
+    assert_eq!(sent.host, UCSF_GATEWAY_HOST, "{sent:?}");
+    assert!(sent.path.starts_with("/general/awsai/model/"), "{sent:?}");
+    assert_eq!(
+        sent.signed_by(),
+        Some((VERSA_ACCESS_KEY, VERSA_BEDROCK_DEFAULT_REGION)),
+        "{sent:?}"
+    );
+}
+
+/// The escape hatch survives, in Versa's own namespace. An operator can still
+/// repoint the endpoint or the region, a blank value still means the shipped
+/// default, and an endpoint off the gateway still demotes the instance: the
+/// demotion guards a key anyone can write, not only the public card.
+#[tokio::test]
+async fn versas_own_overrides_still_steer_it() {
+    let blank = versa_bound(versa_config("  ", "")).await;
+    assert_eq!(resolved(&blank), shipped(), "blank must mean the default");
+
+    let repointed = "https://unified-api.ucsf.edu/general/awsai-v2";
+    let custom = versa_bound(versa_config(repointed, "us-east-2")).await;
+    assert_eq!(
+        resolved(&custom),
+        (
+            repointed.to_string(),
+            "us-east-2".to_string(),
+            format!("{:?}", ProviderTier::Private)
+        )
+    );
+    let sent = versa_sent(custom).await;
+    assert_eq!(sent.host, UCSF_GATEWAY_HOST, "{sent:?}");
+    assert!(
+        sent.path.starts_with("/general/awsai-v2/model/"),
+        "{sent:?}"
+    );
+    assert_eq!(
+        sent.signed_by(),
+        Some((VERSA_ACCESS_KEY, "us-east-2")),
+        "{sent:?}"
+    );
+
+    let off_site = versa_bound(versa_config(PUBLIC_ENDPOINT, "")).await;
+    assert_eq!(
+        resolved(&off_site).2,
+        format!("{:?}", ProviderTier::Public),
+        "an endpoint off the UCSF gateway must demote the instance"
+    );
+}
+
+/// The public card's Bedrock API key, alone in the environment, where the AWS
+/// SDK's own documentation tells its user to put it.
+///
+/// This one reaches past Versa's own code. `AWS_BEARER_TOKEN_BEDROCK` is the
+/// SDK's variable for a Bedrock API key; the SDK reads it itself and, finding
+/// it, authenticates with that bearer token instead of signing. So a Versa chat
+/// that looked entirely right, with the UCSF gateway, the gateway's region and a
+/// Private tier, sent the public card's API key to UCSF in its `Authorization`
+/// header, and Versa's own keys signed nothing.
+#[tokio::test]
+async fn the_public_cards_api_key_never_rides_on_a_versa_request() {
+    const SCENARIO: &str = "versa-beside-a-bedrock-api-key";
+    if child_scenario().as_deref() == Some(SCENARIO) {
+        report_versa().await;
+        return;
+    }
+
+    let observed = run_child(
+        "the_public_cards_api_key_never_rides_on_a_versa_request",
+        SCENARIO,
+        "{}\n",
+        &[("AWS_BEARER_TOKEN_BEDROCK", PUBLIC_BEARER_TOKEN)],
+    );
+    assert_signed_by_versa_for_the_gateway(&observed);
+}
+
+/// Everything the environment can hold for the PUBLIC side, all at once, and
+/// none of it may steer a Versa request: what `bedrock.rs` exports and promotes,
+/// what a shell holds for the AWS CLI, and the public card's own credentials.
+#[tokio::test]
+async fn nothing_in_the_process_environment_steers_versa() {
+    const SCENARIO: &str = "versa-in-a-public-environment";
+    if child_scenario().as_deref() == Some(SCENARIO) {
+        report_versa().await;
+        return;
+    }
+
+    let observed = run_child(
+        "nothing_in_the_process_environment_steers_versa",
+        SCENARIO,
+        "{}\n",
+        &[
+            ("AWS_ENDPOINT_URL_BEDROCK", PUBLIC_ENDPOINT),
+            ("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", PUBLIC_ENDPOINT),
+            ("AWS_REGION", PUBLIC_REGION),
+            ("AWS_BEARER_TOKEN_BEDROCK", PUBLIC_BEARER_TOKEN),
+            ("AWS_ACCESS_KEY_ID", PUBLIC_ACCESS_KEY),
+            ("AWS_SECRET_ACCESS_KEY", PUBLIC_SECRET_KEY),
+        ],
+    );
+    assert_signed_by_versa_for_the_gateway(&observed);
+}
+
+/// The child half of the two rows above: a Versa chat bound with its
+/// credentials and nothing else, reported with the one request it sent.
+async fn report_versa() {
+    let versa = versa_bound(versa_config("", "")).await;
+    report(Observed {
+        resolved: Some(resolved(&versa)),
+        sent: versa_sent(versa).await,
+    });
+}
+
+/// The shipped endpoint, region and tier, and a request to the gateway signed
+/// with Versa's own keys for the gateway's region, carrying no bearer token. One
+/// comparison, so a failure shows every part of the request at once.
+fn assert_signed_by_versa_for_the_gateway(observed: &Observed) {
+    let sent = &observed.sent;
+    assert_eq!(
+        (
+            observed.resolved.clone(),
+            sent.host.as_str(),
+            sent.signed_by(),
+        ),
+        (
+            Some(shipped()),
+            UCSF_GATEWAY_HOST,
+            Some((VERSA_ACCESS_KEY, VERSA_BEDROCK_DEFAULT_REGION)),
+        ),
+        "the process environment steered a Versa request: {sent:?}"
+    );
+    assert!(
+        !sent.authorization.contains(PUBLIC_BEARER_TOKEN),
+        "the public card's API key rode along on a Versa request: {sent:?}"
+    );
+}
+
+// ------------------------------------------------------ Versa → public card
+
+/// The other direction. Versa's setup persisted `AWS_ENDPOINT_URL_BEDROCK`
+/// pointing at the UCSF gateway, and `bedrock.rs` promoted that key to the
+/// variable the SDK reads. So once the PUBLIC provider was built, it sent the
+/// user's own AWS-signed requests to UCSF's gateway, which refused them.
+/// Existing installs keep that key, so the public provider has to ignore it; it
+/// is not enough to stop writing it.
+#[tokio::test]
+async fn versas_persisted_endpoint_never_becomes_the_public_providers() {
+    const SCENARIO: &str = "public-after-a-versa-setup";
+    if child_scenario().as_deref() == Some(SCENARIO) {
+        report(Observed {
+            resolved: None,
+            sent: public_sent(public_bound().await).await,
+        });
+        return;
+    }
+
+    // Exactly what the Versa Bedrock onboarding card wrote on every connect.
+    let config_yaml = format!(
+        "AWS_ENDPOINT_URL_BEDROCK: {VERSA_BEDROCK_DEFAULT_ENDPOINT}\n\
+         AWS_REGION: {VERSA_BEDROCK_DEFAULT_REGION}\n"
+    );
+    let observed = run_child(
+        "versas_persisted_endpoint_never_becomes_the_public_providers",
+        SCENARIO,
+        &config_yaml,
+        &[
+            ("AWS_ACCESS_KEY_ID", PUBLIC_ACCESS_KEY),
+            ("AWS_SECRET_ACCESS_KEY", PUBLIC_SECRET_KEY),
+        ],
+    );
+    let sent = &observed.sent;
+    assert_eq!(
+        sent.host, "bedrock-runtime.us-west-2.amazonaws.com",
+        "Versa's persisted endpoint became the public provider's: {sent:?}"
+    );
+    assert_eq!(
+        sent.signed_by(),
+        Some((PUBLIC_ACCESS_KEY, "us-west-2")),
+        "{sent:?}"
+    );
+}
+
+/// …while the public provider still follows the AWS SDK's own variable for
+/// this service, which is how a VPC endpoint or a proxy is meant to be set.
+#[tokio::test]
+async fn the_public_provider_still_follows_the_sdks_endpoint_variable() {
+    const SCENARIO: &str = "public-with-its-own-endpoint";
+    if child_scenario().as_deref() == Some(SCENARIO) {
+        report(Observed {
+            resolved: None,
+            sent: public_sent(public_bound().await).await,
+        });
+        return;
+    }
+
+    let vpc_endpoint =
+        "https://vpce-0123456789abcdef0-abcdefgh.bedrock-runtime.us-west-2.vpce.amazonaws.com";
+    let observed = run_child(
+        "the_public_provider_still_follows_the_sdks_endpoint_variable",
+        SCENARIO,
+        "AWS_REGION: us-west-2\n",
+        &[
+            ("AWS_ACCESS_KEY_ID", PUBLIC_ACCESS_KEY),
+            ("AWS_SECRET_ACCESS_KEY", PUBLIC_SECRET_KEY),
+            ("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", vpc_endpoint),
+        ],
+    );
+    assert_eq!(
+        observed.sent.host,
+        url::Url::parse(vpc_endpoint).unwrap().host_str().unwrap(),
+        "{:?}",
+        observed.sent
+    );
+}
+
+async fn public_bound() -> BedrockProvider {
+    crate::config::with_config_overrides(
+        HashMap::from([("BEDROCK_MAX_RETRIES".into(), "0".into())]),
+        BedrockProvider::from_env(ModelConfig::new_or_fail(BEDROCK_DEFAULT_MODEL)),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the public provider must construct from env credentials: {e}"))
+}
+
+// ------------------------------------------------------------ child process
+
+/// Names the scenario a re-executed copy of this binary is to run. A
+/// test-private key: no production reader resolves it.
+const CHILD: &str = "BIOROUTER_TEST_BEDROCK_NAMESPACE_CHILD";
+const REPORT: &str = "BEDROCK_NAMESPACE_OBSERVED ";
+
+fn child_scenario() -> Option<String> {
+    std::env::var(CHILD).ok()
+}
+
+fn report(observed: Observed) {
+    println!("{REPORT}{}", serde_json::to_string(&observed).unwrap());
+}
+
+/// Re-run `test`, a test in this module, as a child process whose half of the
+/// test runs `scenario`. It starts with `env` and with none of the AWS, Versa or
+/// Bedrock settings this process inherited, over a config root of its own that
+/// holds `config_yaml`, with no AWS profile files and no instance metadata.
+fn run_child(test: &str, scenario: &str, config_yaml: &str, env: &[(&str, &str)]) -> Observed {
+    // A child that reached a parent half would spawn its own child, and so on:
+    // stop at the first one rather than fork without end.
+    assert!(
+        child_scenario().is_none(),
+        "the child half of `{test}` did not claim scenario `{scenario}`"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let config_dir = root.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.yaml"), config_yaml).unwrap();
+
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "--exact",
+        "--nocapture",
+        &format!("providers::bedrock_namespace_tests::{test}"),
+    ]);
+    for (name, _) in std::env::vars_os() {
+        let name = name.to_string_lossy();
+        if ["AWS_", "VERSA_", "BEDROCK_"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            command.env_remove(name.as_ref());
+        }
+    }
+    let output = command
+        .env(CHILD, scenario)
+        .env("BIOROUTER_PATH_ROOT", root.path())
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env("AWS_CONFIG_FILE", root.path().join("aws-config"))
+        .env(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            root.path().join("aws-credentials"),
+        )
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let line = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(REPORT))
+        .unwrap_or_else(|| {
+            panic!(
+                "the child half of `{test}` reported nothing.\n\
+                 --- child stdout ---\n{stdout}\n--- child stderr ---\n{stderr}"
+            )
+        });
+    assert!(
+        output.status.success(),
+        "the child half of `{test}` failed.\n--- child stdout ---\n{stdout}\n\
+         --- child stderr ---\n{stderr}"
+    );
+    serde_json::from_str(line).unwrap()
+}
