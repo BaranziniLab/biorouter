@@ -1997,55 +1997,128 @@ mod tests {
         let entry = dir.path().join("main.ts");
         let out = dir.path().join("app.js");
         std::fs::write(&entry, "const ok = true;").unwrap();
+
+        /// The compiler's own limit, so the reaper runs about a second in.
+        const TIMEOUT: Duration = Duration::from_secs(1);
+        /// How long the whole attempt gets -- the pid being recorded, and the
+        /// call returning after its limit expired. This BOUNDS the call rather
+        /// than waiting on it, which is what lets the descendant be inspected
+        /// while it is still held; see the comment on the spawn below.
+        const BUDGET: Duration = Duration::from_secs(3);
+        /// How long after that the descendant gets to stop being a live
+        /// process.
+        const DEADLINE: Duration = Duration::from_secs(2);
         // Under load the shim can be killed before it reaches its
         // `echo "$!" > "$pidfile"`, leaving that file absent or truncated. Such
         // an attempt established no descendant at all, so it proves nothing in
         // either direction -- it is a harness miss, not a reaper failure. Retry
         // it instead of reading a pid that was never written.
         const ATTEMPTS: usize = 5;
-        let mut descendant = None;
+        let mut attempt = None;
         for _ in 0..ATTEMPTS {
             let _ = std::fs::remove_file(&descendant_pid);
-            let started = Instant::now();
-            let error = run_esbuild_with_timeout(
-                shim.to_str().unwrap(),
-                &[descendant_pid.to_string_lossy().into_owned()],
-                &entry,
-                &out,
-                Duration::from_secs(1),
-            )
-            .expect_err("the hung compiler must time out");
+            // The call runs on its own thread and the descendant is watched
+            // from this one, because a descendant that SURVIVES holds the
+            // call open: it inherited the shim's piped stdout/stderr, so
+            // `join_output`'s `read_to_end` cannot return until it exits --
+            // 30 s for `sleep 30`. Waiting for the call to return before
+            // looking at the pid would therefore look at a `sleep` that had
+            // long since exited on its own and report the reaper as healthy,
+            // and bounding only the call's WALL TIME (as this test did) makes
+            // that bound, not the descendant, the assertion a regression
+            // trips -- 30 s of waiting for `elapsed() < 3s`, which names
+            // neither the descendant nor the reaper.
+            let (finished, call_returned) = std::sync::mpsc::channel();
+            let call = {
+                let shim = shim.clone();
+                let args = vec![descendant_pid.to_string_lossy().into_owned()];
+                let entry = entry.clone();
+                let out = out.clone();
+                std::thread::spawn(move || {
+                    let result = run_esbuild_with_timeout(
+                        shim.to_str().unwrap(),
+                        &args,
+                        &entry,
+                        &out,
+                        TIMEOUT,
+                    );
+                    // Only the error is inspected; `used` keeps the payload
+                    // Debug-printable for an unexpected success.
+                    let _ = finished.send(result.map(|report| report.used));
+                })
+            };
 
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(started.elapsed() < Duration::from_secs(3));
-
-            descendant = std::fs::read_to_string(&descendant_pid)
-                .ok()
-                .and_then(|recorded| recorded.trim().parse::<i32>().ok());
-            if descendant.is_some() {
-                break;
+            let spawned = Instant::now();
+            // The shim records the pid milliseconds in, so this normally falls
+            // through at once.
+            let recorded = loop {
+                let recorded = std::fs::read_to_string(&descendant_pid)
+                    .ok()
+                    .and_then(|recorded| recorded.trim().parse::<i32>().ok());
+                if recorded.is_some() || spawned.elapsed() >= BUDGET {
+                    break recorded;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let returned = call_returned.recv_timeout(BUDGET.saturating_sub(spawned.elapsed()));
+            match recorded {
+                Some(pid) => {
+                    attempt = Some((pid, returned, call));
+                    break;
+                }
+                // Nothing to observe. Leave a call that is still blocked to
+                // finish on its own rather than joining it for its descendant's
+                // full lifetime.
+                None => {
+                    if returned.is_ok() {
+                        let _ = call.join();
+                    }
+                }
             }
         }
-        let pid = descendant.unwrap_or_else(|| {
+        let (pid, returned, call) = attempt.unwrap_or_else(|| {
             panic!(
                 "the shim never recorded a descendant pid in {ATTEMPTS} attempts, so this run \
                  never observed a process group at all -- a harness failure, not a reaper one"
             )
         });
+
         // The descendant is a GRANDCHILD: the shim backgrounds `sleep` and
         // waits on it, so `terminate_esbuild`'s `child.wait()` reaps the shim
         // and nothing else. The grandchild is re-parented to init/launchd and
         // stays a zombie until that reaps it -- and `kill(pid, 0)` succeeds for
         // a zombie, so checking once, here, races the reaper. Poll for the pid
         // to actually stop being a live process instead.
-        const DEADLINE: Duration = Duration::from_secs(2);
+        //
+        // Asserted FIRST, before anything about the call: this is the property
+        // the test is named for, so it is the diagnostic a reaper regression
+        // must print.
         let state = await_descendant_death(pid, DEADLINE);
+        let call_state = if returned.is_ok() {
+            "had returned"
+        } else {
+            "had not returned"
+        };
         assert!(
             state.proves_death(),
             "the compiler's descendant (pid {pid}) was still {state:?} {DEADLINE:?} after \
-             terminate_esbuild returned; the SIGKILL to the process group must leave it \
-             dead (Zombie, awaiting its new parent's wait) or reaped (Gone)"
+             run_esbuild_with_timeout's {TIMEOUT:?} limit expired (the call itself {call_state} \
+             within {BUDGET:?}); the SIGKILL to the process group must leave it dead (Zombie, \
+             awaiting its new parent's wait) or reaped (Gone)"
         );
+        // Only then the call itself. Its return is what the old wall-clock
+        // bound measured, and a surviving descendant delays it, so it can only
+        // be judged once the descendant has been.
+        let result = returned.unwrap_or_else(|_| {
+            panic!(
+                "run_esbuild_with_timeout produced no result within {BUDGET:?} of being called \
+                 with a {TIMEOUT:?} limit, though its descendant (pid {pid}) is {state:?}: the \
+                 timeout path itself did not return"
+            )
+        });
+        let error = result.expect_err("the hung compiler must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let _ = call.join();
     }
 
     #[test]
