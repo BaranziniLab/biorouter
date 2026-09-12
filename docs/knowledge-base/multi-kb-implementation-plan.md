@@ -403,7 +403,7 @@ with:
 - [ ] **Step 2: Run the tests — see them fail**
 
 ```bash
-cargo test -p biorouter-mcp --lib knowledge::service::tests::session_hidden_override_can_be_explicitly_empty knowledge::service::tests::hidden_kbs_can_be_scoped_per_session
+cargo test -p biorouter-mcp --lib -- knowledge::service::tests::session_hidden_override_can_be_explicitly_empty knowledge::service::tests::hidden_kbs_can_be_scoped_per_session
 ```
 
 Expected: a compile error for the missing method.
@@ -3674,7 +3674,7 @@ git commit -m "docs(knowledge): describe the merged set-plus-primary model"
 cargo test -p biorouter-mcp --lib knowledge::
 cargo test -p biorouter-mcp --test knowledge_macros_e2e --test knowledge_registered --test knowledge_revert_integration
 cargo test -p biorouter-server --test knowledge_routes
-cargo test -p biorouter-server --lib routes::apps routes::agent routes::knowledge
+cargo test -p biorouter-server --lib -- routes::apps routes::agent routes::knowledge
 cargo test -p biorouter-cli
 cargo test -p biorouter --lib knowledge:: --lib agents::knowledge_tool
 cargo test -p biorouter --test knowledge_e2e
