@@ -1203,11 +1203,18 @@ record_result(all);"#;
     ///
     /// The writers were never the problem and adding a lock to them would not
     /// help — `env_lock` serialises only the tasks that ASK for it, and the
-    /// reader here never did. Pinning to the variable's *current* value is
-    /// deliberate: the point is to hold the lock, not to change the root.
+    /// reader here never did.
+    ///
+    /// ⚠ It pins the **sandbox** root rather than the variable's current value,
+    /// and the version that pinned "current" was this same bug one level down:
+    /// the read that decides what to pin happens *before* the lock is acquired,
+    /// so when a relocating test holds the lock at that moment it is that
+    /// test's `TempDir` that gets pinned — restored and deleted a moment later,
+    /// while this test spends its whole life resolving under it. Holding the
+    /// lock was always the point; reading the environment to decide what to
+    /// hold was the hole. See `crate::test_sandbox::pin_sandbox_path_root`.
     fn pinned_store_root() -> env_lock::EnvGuard<'static> {
-        let current = std::env::var("BIOROUTER_PATH_ROOT").ok();
-        env_lock::lock_env([("BIOROUTER_PATH_ROOT", current.as_deref())])
+        crate::test_sandbox::pin_sandbox_path_root()
     }
 
     fn store_path_spellings() -> Vec<String> {

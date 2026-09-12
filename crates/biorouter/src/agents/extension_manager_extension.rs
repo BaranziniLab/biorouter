@@ -4000,9 +4000,18 @@ mod tests {
         }
     }
 
+    /// Hold `BIOROUTER_PATH_ROOT` still for the duration of a test, so the
+    /// fixture below and the uninstall path under test resolve
+    /// `extensions_root()` to the same directory every time either asks.
+    ///
+    /// ⚠ It pins the **sandbox** root, not the variable's current value. The
+    /// difference is the whole bug: reading the variable to decide what to pin
+    /// happens before the lock is taken, so the value read is whichever of this
+    /// binary's ~30 relocating tests is holding `env_lock` at that instant —
+    /// and by the time the pin acquires the lock, that test has finished and
+    /// deleted its `TempDir`. See `crate::test_sandbox::pin_sandbox_path_root`.
     fn pinned_path_root() -> env_lock::EnvGuard<'static> {
-        let current = std::env::var("BIOROUTER_PATH_ROOT").ok();
-        env_lock::lock_env([("BIOROUTER_PATH_ROOT", current.as_deref())])
+        crate::test_sandbox::pin_sandbox_path_root()
     }
 
     async fn install_deletion_fixture(registry_id: &str, label: &str) -> DeletionFixture {
