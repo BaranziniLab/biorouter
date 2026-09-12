@@ -3396,6 +3396,52 @@ impl WorkspaceClient {
         })])
     }
 
+    /// Decision 4: never park an approval prompt where nobody can see it. In
+    /// manual/smart-approval modes a detached turn's tool confirmations arrive
+    /// as ToolConfirmationRequest messages that only a GUI (or an observer) can
+    /// answer; with no GUI attached the turn would sit until its timeout with
+    /// no one watching. Refuse clearly instead — the caller can use
+    /// mode:"note", or the user can open the app.
+    async fn refuse_turn_no_one_could_approve(
+        &self,
+        services: &dyn workspace_services::WorkspaceServices,
+        target_session_id: &str,
+    ) -> Result<(), String> {
+        if !services.gui_attached() && self.target_mode_requires_approval(target_session_id).await {
+            return Err(format!(
+                "refusing to start a turn in session {target_session_id}: this machine is in an \
+                 approval permission mode and no desktop window is attached, so any \
+                 tool confirmation the turn raises would wait unseen until it timed \
+                 out. Use mode:\"note\" to leave the text as context, or ask the user \
+                 to open the Biorouter app."
+            ));
+        }
+        Ok(())
+    }
+
+    /// Count this caller's own in-flight injections and take a slot, or refuse.
+    ///
+    /// ⚠ The guard is RETURNED, not `_`-bound. A slot is occupied by a turn
+    /// that is *in flight*, and a `wait:"none"` call returns while its turn
+    /// runs on — so binding the guard to the call's stack frame would release
+    /// every fire-and-forget injection's slot the instant the tool answered,
+    /// and the cap would bound nothing at all (five, fifty, five hundred
+    /// detached turns all accepted under a cap of four). The caller moves it
+    /// into the reservation task instead, which releases it on the turn's own
+    /// terminal event.
+    fn reserve_injected_turn_slot(caller_session_id: &str) -> Result<InjectedTurnGuard, String> {
+        let (inflight, cap_guard) = InjectedTurnGuard::enter(caller_session_id);
+        if inflight > Self::injected_turn_cap() {
+            return Err(format!(
+                "this session already has {} injected turns in flight (cap {}); \
+                 wait for one to finish",
+                inflight - 1,
+                Self::injected_turn_cap()
+            ));
+        }
+        Ok(cap_guard)
+    }
+
     /// `mode:"turn"` — start the target's agent on the text, then either
     /// detach or park for its final message.
     ///
@@ -3416,44 +3462,12 @@ impl WorkspaceClient {
             "mode:\"turn\" requires the BioRouter daemon (no workspace services installed); \
              use mode:\"note\" to leave context headlessly",
         )?;
-        // Decision 4: never park an approval prompt where nobody can see
-        // it. In manual/smart-approval modes a detached turn's tool
-        // confirmations arrive as ToolConfirmationRequest messages that
-        // only a GUI (or an observer) can answer; with no GUI attached
-        // the turn would sit until its timeout with no one watching.
-        // Refuse clearly instead — the caller can use mode:"note", or
-        // the user can open the app.
-        if !services.gui_attached() && self.target_mode_requires_approval(&args.session_id).await {
-            return Err(format!(
-                "refusing to start a turn in session {}: this machine is in an \
-                 approval permission mode and no desktop window is attached, so any \
-                 tool confirmation the turn raises would wait unseen until it timed \
-                 out. Use mode:\"note\" to leave the text as context, or ask the user \
-                 to open the Biorouter app.",
-                args.session_id
-            ));
-        }
+        self.refuse_turn_no_one_could_approve(services.as_ref(), &args.session_id)
+            .await?;
         // Bounded fan-out, PER CALLING SESSION (§5): subscribe before
         // starting so completion is never missed, and count this
         // caller's own in-flight injections.
-        //
-        // ⚠ The guard is NOT `_`-bound. A slot is occupied by a turn that
-        // is *in flight*, and a `wait:"none"` call returns while its turn
-        // runs on — so binding the guard to the call's stack frame would
-        // release every fire-and-forget injection's slot the instant the
-        // tool answered, and the cap would bound nothing at all (five,
-        // fifty, five hundred detached turns all accepted under a cap of
-        // four). It is moved into the reservation task below instead, and
-        // released on the turn's own terminal event.
-        let (inflight, cap_guard) = InjectedTurnGuard::enter(caller_session_id);
-        if inflight > Self::injected_turn_cap() {
-            return Err(format!(
-                "this session already has {} injected turns in flight (cap {}); \
-                 wait for one to finish",
-                inflight - 1,
-                Self::injected_turn_cap()
-            ));
-        }
+        let cap_guard = Self::reserve_injected_turn_slot(caller_session_id)?;
 
         let wait_for_final = args.wait.as_deref() == Some("final_message");
         let slot_rx = session_events::subscribe(&args.session_id);
@@ -3514,17 +3528,31 @@ impl WorkspaceClient {
         );
         let waited = tokio::time::timeout(timeout, follower.run()).await;
 
-        // F3: every ending the caller can reach is one verdict in one shape, so
-        // a refusal can no longer read as a completion — see
-        // [`InjectedTurnVerdict`].
-        let report = match waited {
+        let report =
+            Self::parked_turn_report(&args.session_id, &turn_id, timeout, waited, &follower)?;
+        Ok(report.into_call_tool_result())
+    }
+
+    /// Fold every way the park above can end into ONE verdict in one shape.
+    ///
+    /// F3: a refusal can no longer read as a completion — see
+    /// [`InjectedTurnVerdict`]. `Err` is reserved for the single ending that
+    /// yields no verdict at all, the event stream itself failing.
+    fn parked_turn_report(
+        session_id: &str,
+        turn_id: &str,
+        timeout: std::time::Duration,
+        waited: Result<Result<TurnOutcome, String>, tokio::time::error::Elapsed>,
+        follower: &TurnFollower,
+    ) -> Result<InjectedTurnReport, String> {
+        Ok(match waited {
             Ok(Ok(TurnOutcome::Finished {
                 reason,
                 last_assistant,
                 tool_calls,
             })) => InjectedTurnReport::finished(
-                &args.session_id,
-                &turn_id,
+                session_id,
+                turn_id,
                 reason,
                 last_assistant,
                 tool_calls,
@@ -3534,24 +3562,23 @@ impl WorkspaceClient {
                 last_assistant,
                 tool_calls,
             })) => InjectedTurnReport::errored(
-                &args.session_id,
-                &turn_id,
+                session_id,
+                turn_id,
                 message,
                 last_assistant,
                 tool_calls,
             ),
             Ok(Err(e)) => return Err(format!("event stream error while waiting: {e}")),
             // The park gave up; the TURN did not. The independent slot follower
-            // above still owns the caller's reservation until the target emits
-            // this turn's terminal event.
+            // still owns the caller's reservation until the target emits this
+            // turn's terminal event.
             Err(_) => InjectedTurnReport::timed_out(
-                &args.session_id,
-                &turn_id,
+                session_id,
+                turn_id,
                 timeout,
                 follower.tool_calls.len(),
             ),
-        };
-        Ok(report.into_call_tool_result())
+        })
     }
 
     /// BR-71 `workspace_set_tools`: the one place an agent changes *what another
