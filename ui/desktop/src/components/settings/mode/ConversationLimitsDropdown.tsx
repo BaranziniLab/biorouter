@@ -30,7 +30,7 @@ export const ConversationLimitsDropdown = ({
    *
    * As siblings, `:last-child` lands correctly in both states with no extra
    * rule: collapsed, the trigger is last and drops its hairline; expanded, the
-   * trigger keeps it (it is now a separator) and Max Turns drops its own.
+   * trigger keeps it (it is now a separator) and Max turns drops its own.
    *
    * The cost is the max-height/opacity collapse, which needs the panel mounted
    * to animate. A mount-time fade is the honest replacement — `animate-in
@@ -57,7 +57,7 @@ export const ConversationLimitsDropdown = ({
       {isExpanded && (
         <div className="biorouter-settings-row flex min-w-0 animate-in items-center justify-between gap-3 px-3 py-2.5 fade-in duration-100">
           <div className="min-w-0 flex-1">
-            <h4 className="text-label text-text-default">Max Turns</h4>
+            <h4 className="text-label text-text-default">Max turns</h4>
             <p className="mt-0.5 max-w-md text-supporting text-text-muted">
               Maximum agent turns before Biorouter asks for user input
             </p>

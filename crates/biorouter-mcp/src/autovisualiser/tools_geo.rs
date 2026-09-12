@@ -4,7 +4,7 @@
 pub struct ChoroplethData {
     /// A GeoJSON FeatureCollection describing the region boundaries
     pub geojson: Value,
-    /// Name of a numeric property within each feature's `properties` to colour by.
+    /// Name of a numeric property within each feature's `properties` to color by.
     /// Alternatively supply `values` keyed by an id property.
     #[serde(default, rename = "valueProperty")]
     pub value_property: Option<String>,
@@ -43,7 +43,7 @@ impl AutoVisualiserRouter {
         description = r#"Render a choropleth map: GeoJSON regions shaded by a value (disease prevalence by region, metrics by country/state, etc.).
 
 - geojson (required): a GeoJSON FeatureCollection of region polygons
-- valueProperty (optional): name of a numeric field in each feature's properties to colour by
+- valueProperty (optional): name of a numeric field in each feature's properties to color by
   OR values + idProperty: a {regionId: value} map matched on a feature property
 - nameProperty (optional): feature property used for hover labels
 - title, legendTitle, center {lat,lng}, zoom (optional)
@@ -70,7 +70,7 @@ Provide GeoJSON you have already obtained (e.g. read from a file or fetched). Ex
         check_limit(features.len(), MAX_MARKERS, "features")?;
         if d.value_property.is_none() && d.values.is_none() {
             return Err(invalid(
-                "Provide either `valueProperty` or `values`+`idProperty` to colour regions.",
+                "Provide either `valueProperty` or `values`+`idProperty` to color regions.",
             ));
         }
         let data_json = js_value(d)?;

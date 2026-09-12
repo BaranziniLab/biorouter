@@ -66,7 +66,7 @@ export const VoiceDictationToggle = () => {
     <div className="space-y-1">
       <div className="flex items-center justify-between py-2 px-2 hover:bg-background-muted rounded-element transition-all">
         <div>
-          <h3 className="text-text-default">Enable Voice Dictation</h3>
+          <h3 className="text-text-default">Enable voice dictation</h3>
           <p className="text-xs text-text-muted max-w-md mt-[2px]">
             Show microphone button for voice input
           </p>

@@ -57,7 +57,7 @@ describe('TunnelSection config cache', () => {
     });
 
     render(<TunnelSection />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Stop Tunnel' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop tunnel' }));
 
     await waitFor(() => expect(mocks.stopTunnel).toHaveBeenCalledOnce());
     expect(mocks.refreshConfig).toHaveBeenCalledOnce();
