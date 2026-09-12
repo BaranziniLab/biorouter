@@ -2513,7 +2513,7 @@ mod affiliation_wire_tests {
 /// `POST /privacy/disclosure/ack`.
 ///
 /// ⚠ **Handlers, not `oneshot` over a `Router`.** These two routes take no
-/// `AppState`, and building one opens the developer's REAL session database
+/// `AppState`, and building one opens the ONE session DB this binary shares
 /// (`routes::agent::working_dir_lock_tests`). Calling the handlers directly is
 /// how the rest of this file's tests reach `read_config` and
 /// `get_detectable_providers`, and it exercises the same guard the router would.

@@ -28,17 +28,29 @@
 /// An outer `BIOROUTER_PATH_ROOT` wins: the Task 33 gate exports its own
 /// `mktemp -d` root, and a harness that wants to inspect what a run wrote must
 /// be able to choose where it lands.
+///
+/// ⚠ Setting the variable is only half of it. `BIOROUTER_PATH_ROOT` is
+/// process-global and dozens of tests here relocate it under a `TempDir` of
+/// their own (`env_lock::lock_env`), so whichever test first reaches the session
+/// store still decides where this binary's `sessions.db` lives — and if that was
+/// a test holding such a lock, the store is pinned inside a directory that is
+/// unlinked moments later. The already-open connection keeps answering, so it
+/// stays invisible until two tasks want the pool at once and it has to open a
+/// second connection: `(code: 14) unable to open database file`, surfacing as
+/// whatever the *next* test was asserting. So the ctor also freezes the store's
+/// root here, which costs one environment read and a `PathBuf` — no pool, no
+/// disk, no runtime.
 #[ctor::ctor]
 fn sandbox_config_root_for_the_lib_test_binary() {
-    if std::env::var_os("BIOROUTER_PATH_ROOT").is_some() {
-        return;
+    if std::env::var_os("BIOROUTER_PATH_ROOT").is_none() {
+        let root = tempfile::TempDir::new().expect("scratch config root for the lib test binary");
+        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+        // Leaked deliberately: a `static` is never dropped, which is exactly the
+        // lifetime the sandbox needs — it must outlive the last test in the binary.
+        static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let _ = ROOT.set(root);
     }
-    let root = tempfile::TempDir::new().expect("scratch config root for the lib test binary");
-    std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
-    // Leaked deliberately: a `static` is never dropped, which is exactly the
-    // lifetime the sandbox needs — it must outlive the last test in the binary.
-    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let _ = ROOT.set(root);
+    let _ = crate::session::session_manager::SessionManager::shared_store_root();
 }
 
 #[cfg(test)]
@@ -59,6 +71,29 @@ mod tests {
             "Config::global() resolved to {path}, outside the sandbox at {root}. \
              Something reached Config::global() before the sandbox was installed, so \
              config writes from this binary land in the developer's real config."
+        );
+    }
+
+    /// The same claim for the session store, and it needs its own test because
+    /// the two singletons are frozen by different calls.
+    ///
+    /// `Paths::data_dir()` re-reads the environment on every call, so it answers
+    /// correctly even in a binary whose store was already pinned somewhere else.
+    /// `shared_store_root()` is the frozen value, and it is the one that decides
+    /// whether this binary's `sessions.db` can end up inside a `TempDir` a test
+    /// deletes underneath it.
+    #[test]
+    fn the_lib_test_binary_session_store_is_sandboxed() {
+        let root = std::env::var("BIOROUTER_PATH_ROOT")
+            .expect("BIOROUTER_PATH_ROOT must be sandboxed before any test in this binary runs");
+        let pinned = crate::session::session_manager::SessionManager::shared_store_root();
+        assert!(
+            pinned.starts_with(&root),
+            "the process session store is pinned at {}, outside the sandbox at {root}. \
+             Something resolved it before the ctor did, so a test that relocates \
+             BIOROUTER_PATH_ROOT can move this binary's sessions.db into a TempDir it \
+             then deletes.",
+            pinned.display()
         );
     }
 }
