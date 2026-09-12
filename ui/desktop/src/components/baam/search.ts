@@ -168,6 +168,48 @@ function words(text: string): string[] {
     .map((word) => word.toLowerCase());
 }
 
+/**
+ * Does `label` say nothing that `license` does not — is every word of it a word
+ * of the licence? A catalog whose entries carry a licence drops such a label when
+ * it assembles an entry's searchable text (see `labelFields` in `registry.ts`).
+ *
+ * The licence itself is not a searchable field: every entry in the BAAM registry
+ * is Apache-2.0, so it separates nothing, and both catalog searches leave the
+ * field out for that reason.
+ *
+ * ⚠ **Leaving the FIELD out was not enough.** A registry republishes the licence
+ * as one of the entry's own tag chips — and, for a skill, again among its
+ * keywords — and labels are searched, rightly: `MCP`, `ELN` and `Imaging` are
+ * exactly what a tag is for. Measured in the Browse-extensions modal on
+ * 2026-09-12 against the live 37-entry registry, with the field already gone:
+ * `PACS` → 31 of 37, `pac` → 31, `apache` → 31, and not one of the 31 about PACS.
+ * The three counts agreeing is the identification — `PACS` reaches `pac` through
+ * the plural fallback in {@link termStrength}, `pac` is inside `apache`, and 31
+ * rows wear an `Apache-2.0` chip. Removing the field had moved the defect one
+ * field over, where a test asserting "the licence is not searched" still passed.
+ *
+ * Compared by WORDS rather than by equality, because the second spelling is not
+ * the first: the tag is `Apache-2.0` and the keyword is `apache`. An equality
+ * test drops the tag and keeps the keyword, which is the same half-fix again.
+ *
+ * What this deliberately does not do: drop every label (`MCP`, `Imaging`, `ELN`,
+ * `Registry` are real search value), or name a licence in the matcher (`Apache`,
+ * `MIT` — the next licence reopens the hole). The cost of the word test is a
+ * licence id built from a topical word — `Python-2.0`, `Ruby`, `PostgreSQL` — on
+ * an entry that also tags itself with that word; the tag is then dropped for
+ * saying only what the licence says. No entry in the registry is such a case
+ * (measured over all 166: the rule drops the 129 licence labels and nothing
+ * else), and an equality test pays a smaller version of the same cost.
+ */
+export function namesOnlyTheLicense(label: string, license: string | undefined): boolean {
+  const labelWords = words(label);
+  // An empty label says nothing at all, which is not the same as saying only the
+  // licence: leave it, so the rule stays about the licence.
+  if (labelWords.length === 0) return false;
+  const licenseWords = words(license ?? '');
+  return labelWords.every((word) => licenseWords.includes(word));
+}
+
 /** Length in characters rather than UTF-16 code units, like Rust's `chars().count()`. */
 function charCount(text: string): number {
   return Array.from(text).length;
