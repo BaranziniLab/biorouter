@@ -316,18 +316,24 @@ export function searchTerms(query: string, noise: readonly string[] = []): strin
  *
  * So an unanchored match needs either {@link MIN_INFIX_CHARS} characters or half
  * the word it sits in. Two arms rather than one number, because each closes a
- * case the other gets wrong, and both were measured over the registry's own
- * vocabulary (807 distinct catalog words):
+ * case the other gets wrong, and each was checked against the registry's own
+ * vocabulary.
+ *
+ * ⚠ The counts that used to sit here were NOT reproducible and are gone.
+ * Measured 2026-09-12 from `landing/registry.json`, over exactly the fields
+ * these matchers search: 1,445 distinct words with the prose descriptions, 773
+ * without. No field combination yields the 807 this comment claimed. Quote a
+ * corpus size only with the field set that produces it.
  *
  * - A flat four-character floor drops what a short term earns inside a SHORT
  *   word — `rna` in `scRNA`/`rRNA`/`miRNA`/`piRNA`, `sem` in `RSEM` — costing
- *   `rna` the `single-cell` and `microbiome` skills. 87 hits removed.
+ *   `rna` the `single-cell` and `microbiome` skills.
  * - A flat half-the-word ratio drops what a LONG term earns inside a longer
  *   compound, which is most of a biomedical vocabulary: `omics` stopped finding
- *   `transcriptomics`, `flow` stopped finding `workflows`. 143 hits removed.
+ *   `transcriptomics`, `flow` stopped finding `workflows`.
  *
- * Together: 73 hits removed over 15 of the 807 queries, 34 of them the `lab`
- * flood. Half is also the proportion this rule's own documented case sits at —
+ * What the two arms remove together is dominated by the `lab` flood. Half is
+ * also the proportion this rule's own documented case sits at —
  * `heatmap` is 7 of `complexheatmap`'s 14 — so the arm that admits a short term
  * is calibrated to the example the infix rule exists for.
  *

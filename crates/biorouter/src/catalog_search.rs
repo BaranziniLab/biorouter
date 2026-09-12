@@ -278,22 +278,30 @@ fn terms(query: &str, noise: &[&str]) -> Vec<String> {
 ///
 /// So an unanchored match needs either [`MIN_INFIX_CHARS`] characters, or half
 /// the word it sits in. Two arms rather than one number, because each closes a
-/// case the other gets wrong, and both were measured over the shipped registry's
-/// own vocabulary (807 distinct catalog words, every query a visitor could be
-/// echoing back):
+/// case the other gets wrong, and each was checked against the shipped
+/// registry's own vocabulary — every word a visitor could be echoing back.
+///
+/// ⚠ The counts that used to sit here were **not reproducible** and are gone.
+/// Measured 2026-09-12 from `landing/registry.json`, over exactly the fields
+/// these matchers search: **1,445** distinct words with the prose descriptions,
+/// **773** without them. No combination of fields yields the 807 this comment
+/// claimed, and this change's own siblings say 795 (`catalog_search_mirrors.rs`,
+/// `landing/baam.html`) — three figures for one corpus is how a number nobody
+/// re-measures drifts. Quote a corpus size only together with the field set that
+/// produces it.
 ///
 /// * A flat four-character floor drops the hits a short term earns inside a
 ///   SHORT word: `rna` in `scRNA`, `rRNA`, `miRNA`, `piRNA` and `sem` in `RSEM`
 ///   are the search, not a morpheme. It cost `rna` `single-cell` and
-///   `microbiome`, and `sem` `rna-quantification` — 87 hits removed in total.
+///   `microbiome`, and `sem` `rna-quantification`.
 /// * A flat half-the-word ratio drops the hits a LONG term earns inside a longer
 ///   compound, which is most of a biomedical vocabulary: `omics` stopped finding
 ///   `transcriptomics`, `metabolomics` and `epigenomics`, and `flow` stopped
-///   finding `workflows`. 143 hits removed, 30 queries touched.
+///   finding `workflows`.
 ///
-/// Together: 73 hits removed over 15 of the 807, of which 34 are the `lab`
-/// flood; the rest are `pro` inside "reproducible"/"improving", `logs` inside
-/// "pathology", `end` inside "frontend"/"appendix". Half is also the proportion
+/// What the two arms remove together is dominated by the `lab` flood; the rest
+/// is `pro` inside "reproducible"/"improving", `logs` inside "pathology", `end`
+/// inside "frontend"/"appendix". Half is also the proportion
 /// this rule's own documented case sits at — `heatmap` is 7 of
 /// `complexheatmap`'s 14 — so the arm that admits a short term is calibrated to
 /// the example the infix rule exists for, rather than to the queries it refuses.

@@ -125,8 +125,11 @@
 
      An unanchored match therefore needs either MIN_INFIX_CHARS characters or half
      the word it sits in. Two arms, because each closes a case the other gets
-     wrong, and both were measured over the registry's own vocabulary (807 words):
-     a flat four-character floor loses `rna` inside `scRNA`/`rRNA`/`miRNA` and
+     wrong, and each was checked against the registry's own vocabulary. (The
+     "807 words" this comment used to claim is not reproducible: measured
+     2026-09-12 over exactly the searched fields, the catalog has 1,445 distinct
+     words with the prose descriptions and 773 without. Quote a corpus size only
+     with the field set that produces it.) A flat four-character floor loses `rna` inside `scRNA`/`rRNA`/`miRNA` and
      `sem` inside `RSEM`; a flat half-the-word ratio loses `omics` inside
      `transcriptomics` and `flow` inside `workflows`. Half is the proportion the
      infix rule's own documented case sits at — `heatmap` is 7 of
