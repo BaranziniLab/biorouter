@@ -1,6 +1,10 @@
 import type { ReactNode } from 'react';
 import { Note } from '../ui/note';
-import { subagentTabReadOnlyReason } from './subagentReadOnly';
+import {
+  composerSlotMode,
+  subagentTabReadOnlyReason,
+  type SubagentComposerKind,
+} from './subagentReadOnly';
 
 /**
  * The composer's place on a chat tab, which a delegated subagent's tab in a
@@ -17,17 +21,33 @@ import { subagentTabReadOnlyReason } from './subagentReadOnly';
  * composer with its Send greyed out would still offer a row of controls that
  * fail on click. Not mounting it is the one version with no control left to
  * forget.
+ *
+ * ⚠ **`kind` is three-valued, and the third value renders NOTHING.** The slot
+ * used to take a boolean, which reported "not a subagent" and "we do not know
+ * yet" with the same `false` — and in a browser every source of that fact is an
+ * asynchronous read, so the unknown state lasted seconds and mounted the
+ * composer throughout. `composerSlotMode` is where that is decided; see
+ * `subagentComposerKind` for why the daemon's tab badge does not close it on
+ * its own (it is in-memory React state and does not survive a page reload).
  */
 export function SubagentComposerSlot({
-  isSubagentChat,
+  kind,
   children,
 }: {
-  /** The chat on this tab is a delegated subagent's (`session_type === 'sub_agent'`). */
-  isSubagentChat: boolean;
+  /**
+   * What this tab knows about its chat: a delegated subagent's, definitely not
+   * one, or not yet resolved. Computed by `subagentComposerKind`.
+   */
+  kind: SubagentComposerKind;
   children: ReactNode;
 }) {
-  const reason = isSubagentChat ? subagentTabReadOnlyReason() : null;
-  if (!reason) return <>{children}</>;
+  const mode = composerSlotMode(kind);
+  if (mode === 'composer') return <>{children}</>;
+  // Nothing at all while the answer is in flight: an explanation that may turn
+  // out to be wrong is worse than a beat of empty space under an empty
+  // transcript, and a placeholder that flashes and vanishes reads as a fault.
+  if (mode === 'withheld') return null;
+  const reason = subagentTabReadOnlyReason() ?? '';
   // Full width, no `mx-3`: this takes the CARD's place, and the card spans the
   // composer shell edge to edge. The `mx-3` on `PinnedModelNote` is right for
   // it and wrong here — that note sits above the card, on the context row's

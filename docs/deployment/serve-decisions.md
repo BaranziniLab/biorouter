@@ -264,12 +264,25 @@ session id. A note takes the composer's place, one line takes the header Stop's,
 transcript's "still working" nudge stops pointing at a composer that is not there
 (`ui/desktop/src/components/subagent/subagentReadOnly.ts`).
 
-⚠ **The tab decides this at mount, from the badge the daemon's own workspace frame put on it**,
-not from either read. In a browser those reads queue behind the page's open event streams — six
-connections per origin, one stream per observed tab — and with a subagent running the refused
+⚠ **The tab decides this at mount, and the badge the daemon's own workspace frame put on it is
+not enough on its own.** In a browser the two reads queue behind the page's open event streams —
+six connections per origin, one stream per observed tab — and with a subagent running the refused
 resume alone took 4.8 s, with the session read still pending five seconds later. All of that is
 the running window, which is exactly when the ordinary composer was offering a Stop that could
-only be refused.
+only be refused. The badge is the one source known at mount, so it was added first; but
+`tabAnnotations` is ordinary renderer state written only from live daemon frames, while the tab
+LAYOUT is persisted per window — so a page **reload** restores a subagent's tab with no badge, and
+a tab reached from History never had one. Every source then read "no", and "no" mounted the
+composer: the decision **failed open on reload**, which is the opposite of SD-8's promise.
+
+So the decision has **three** states, not two (`subagentComposerKind`): a subagent's chat, a chat
+that is definitely not one, and *not yet known*. A boolean reported the third as the second. In a
+browser the third **withholds** the composer rather than mounting one that may have to be taken
+back; on the desktop, which holds the key, it changes nothing. The cost is close to invisible,
+because the transcript of a browser chat does not paint until that same read lands either — and
+the two states that could turn withholding into a lockout are resolved deliberately: a tab with no
+session id yet (the empty tab before a first message) and a chat the store could not load at all
+both count as "not a subagent".
 
 **Why.** SD-1 already required that *"the interface must explain the refusal rather than appear
 broken"*, and stated it about the model picker. The same argument covers every proof-backed

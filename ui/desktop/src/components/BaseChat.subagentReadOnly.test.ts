@@ -29,7 +29,7 @@ function renderChatInputBody(): string {
 describe("BaseChat — a subagent's composer in a browser", () => {
   it('mounts ChatInput only inside the read-only slot', () => {
     const body = renderChatInputBody();
-    const open = body.indexOf('<SubagentComposerSlot isSubagentChat={isSubagentChat}>');
+    const open = body.indexOf('<SubagentComposerSlot kind={subagentChatKind}>');
     const close = body.indexOf('</SubagentComposerSlot>');
     const composer = body.indexOf('<ChatInput');
     expect(open, 'the composer is not wrapped in SubagentComposerSlot').toBeGreaterThan(-1);
@@ -50,25 +50,37 @@ describe("BaseChat — a subagent's composer in a browser", () => {
     );
   });
 
-  it('decides from the tab badge first, then either read of the chat', () => {
-    const decision = /const isSubagentChat =([\s\S]*?);/.exec(source);
-    expect(decision, 'BaseChat no longer computes isSubagentChat').not.toBeNull();
-    // ⚠ The badge is the half that matters while the child RUNS. The two reads
-    // are ordinary requests, and in a browser they queue behind every open
-    // event stream (six connections per origin) — measured at five seconds and
-    // more, all of it with the ordinary composer and its Stop on screen. The
-    // badge is recorded when the daemon opens the tab, so it is there at mount.
-    expect(decision![1]).toMatch(/tabAnnotations\?\.\[sessionId\]\?\.badge === 'subagent'/);
-    expect(decision![1]).toMatch(/session\?\.session_type === 'sub_agent'/);
-    expect(decision![1]).toMatch(/subagent\.isSubagent/);
+  it('hands every source of the fact to one three-valued decision', () => {
+    const decision = /const subagentChatKind = subagentComposerKind\(\{([\s\S]*?)\}\);/.exec(
+      source
+    );
+    expect(decision, 'BaseChat no longer computes subagentChatKind').not.toBeNull();
+    // ⚠ The badge is the half that is known at MOUNT. The two reads are ordinary
+    // requests, and in a browser they queue behind every open event stream (six
+    // connections per origin) — measured at five seconds and more, all of it
+    // with the ordinary composer and its Stop on screen.
+    expect(decision![1]).toMatch(/tabAnnotations\?\.\[sessionId\]\?\.badge/);
+    expect(decision![1]).toMatch(/loadedSessionType: session\?\.session_type/);
+    expect(decision![1]).toMatch(/hookSaysSubagent: subagent\.isSubagent/);
+    // The review's finding 3: the badge does not survive a browser reload, so
+    // the decision must be able to say "not yet" as well as "no". These two
+    // fields are what let it.
+    expect(decision![1]).toMatch(/loadedSessionId: session\?\.id/);
+    expect(decision![1]).toMatch(/loadFailed:/);
+  });
+
+  it('keys the read-only consequences off the slot, not off subagent-ness', () => {
+    // Finding 3. `isSubagentChat` is false while the answer is in flight, so a
+    // consequence keyed off it is live for exactly the window the composer is
+    // withheld in.
+    expect(source).toMatch(
+      /const subagentTabReadOnly = composerSlotMode\(subagentChatKind\) !== 'composer';/
+    );
   });
 
   it("tells the transcript's activity nudge that this tab cannot stop the turn", () => {
     // With the composer gone, "You can stop the turn from the composer" would
     // send the reader to a control that is not there.
-    expect(source).toMatch(
-      /const subagentTabReadOnly = isSubagentChat && subagentTabReadOnlyReason\(\) !== null;/
-    );
     const list = /<ProgressiveMessageList\b[\s\S]*?\/>/.exec(source);
     expect(list, 'BaseChat no longer renders ProgressiveMessageList').not.toBeNull();
     expect(list![0]).toMatch(/canStopTurn=\{!subagentTabReadOnly\}/);

@@ -106,7 +106,7 @@ import type {
 } from '../api';
 import { SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH } from './Layout/yieldLadder';
 import { SubagentComposerSlot } from './subagent/SubagentComposerSlot';
-import { subagentTabReadOnlyReason } from './subagent/subagentReadOnly';
+import { composerSlotMode, subagentComposerKind } from './subagent/subagentReadOnly';
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
 import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
 import { useChatGroups } from '../contexts/ChatGroupsContext';
@@ -1418,30 +1418,47 @@ function BaseChatContent({
   // keeps the standalone mounts (which have no tab strip to open a parent into)
   // from crashing.
   const chatGroups = useChatGroups();
-  // Is this a delegated subagent's chat? Any one of three sources settles it,
-  // and the first to know wins:
+  // Is this a delegated subagent's chat — and if the answer is not in yet, say
+  // so rather than saying no. Three sources, and `subagentComposerKind` is
+  // where the three-way decision lives (with its own unit tests):
   //
   // - the badge the daemon's workspace frame put on the tab when it opened it
   //   for a subagent it had just spawned — the same annotation the tab strip
-  //   draws the robot glyph from, and the only one known at MOUNT;
+  //   draws the robot glyph from, and the only source known at MOUNT;
   // - the chat store's row, which in a browser is the only way a subagent's
   //   chat loads at all (`loadReadOnlySubagentChat`);
-  // - the header hook's own read.
+  // - the header hook's own read, which is positive-only.
   //
-  // ⚠ The badge is not redundant with the other two, and it was added because
-  // of a measurement. The two reads are ordinary requests, and in a browser
-  // they queue behind every open event stream: the page holds one per observed
-  // tab and the browser allows six connections per origin. Measured on
-  // 2026-09-11 with a subagent running, the store's `/agent/resume` took 4.8 s
-  // to be refused and its session read was still pending five seconds later —
-  // all of it the running window, which is exactly when the ordinary composer
-  // offered a Stop that could only be refused.
-  const isSubagentChat =
-    chatGroups?.tabAnnotations?.[sessionId]?.badge === 'subagent' ||
-    session?.session_type === 'sub_agent' ||
-    subagent.isSubagent;
-  // SD-8: in a browser such a chat can only be read (see `subagentReadOnly.ts`).
-  const subagentTabReadOnly = isSubagentChat && subagentTabReadOnlyReason() !== null;
+  // ⚠ Neither read is prompt. They are ordinary requests, and in a browser they
+  // queue behind every open event stream: the page holds one per observed tab
+  // and the browser allows six connections per origin. Measured on 2026-09-11
+  // with a subagent running, the store's `/agent/resume` took 4.8 s to be
+  // refused and its session read was still pending five seconds later — all of
+  // it the running window, which is exactly when the ordinary composer offered
+  // a Stop that could only be refused.
+  //
+  // ⚠ And the badge does NOT close that window on its own, which is what made
+  // this a three-state decision rather than a boolean. `tabAnnotations` is
+  // ordinary React state written only from live daemon frames; the tab LAYOUT is
+  // persisted to `localStorage` per window and the annotations are not. So a
+  // reloaded page — or a tab opened from History, which never had a frame —
+  // restores the subagent's tab with no badge, both reads start from nothing,
+  // and every source reads `false`. A boolean reported that as "not a
+  // subagent", and mounted the composer.
+  const subagentChatKind = subagentComposerKind({
+    badge: chatGroups?.tabAnnotations?.[sessionId]?.badge,
+    sessionId,
+    loadedSessionId: session?.id,
+    loadedSessionType: session?.session_type,
+    hookSaysSubagent: subagent.isSubagent,
+    loadFailed: sessionLoadError !== undefined,
+  });
+  // SD-8: in a browser such a chat can only be read (see `subagentReadOnly.ts`),
+  // and so can one whose kind is not settled YET — the composer is withheld in
+  // both. So everything that keys off "there is a composer to use" keys off the
+  // slot's own decision, never off "this is a subagent's chat": the two differ
+  // for exactly the window this fix is about.
+  const subagentTabReadOnly = composerSlotMode(subagentChatKind) !== 'composer';
 
   const canDivergeSession = useMemo(
     () => messages.some((message) => message.role === 'assistant'),
@@ -2101,7 +2118,7 @@ function BaseChatContent({
         else this renders its children untouched. The shell div stays so the
         composer's motion ref and layout slot are the same either way.
       */}
-      <SubagentComposerSlot isSubagentChat={isSubagentChat}>
+      <SubagentComposerSlot kind={subagentChatKind}>
         {pendingContinuation && (
           <div
             role="status"

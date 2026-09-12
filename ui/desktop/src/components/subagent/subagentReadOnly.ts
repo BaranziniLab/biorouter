@@ -71,3 +71,105 @@ export function subagentTabReadOnlyReason(): string | null {
 export function isReadOnlySubagentChat(sessionType: SessionType | null | undefined): boolean {
   return sessionType === 'sub_agent' && isBrowserSurface();
 }
+
+/**
+ * What this tab knows about whether its chat is a delegated subagent's.
+ *
+ * ⚠ **Three answers, not two, and the third is the whole point.** Every source
+ * of this fact except the tab badge is an ASYNCHRONOUS read — the chat store's
+ * session row, and `useSubagentSession`'s own `getSession` — and neither can
+ * say "not a subagent" until it has landed. A boolean therefore reports
+ * `false` for "no" and for "not yet" alike, and in a browser "not yet" lasted
+ * measurably longer than the window the composer must not be offered in: with
+ * a subagent running, the refused `/agent/resume` alone took 4.8 s and the
+ * session read was still pending five seconds later, because those requests
+ * queue behind one open event stream per observed tab against six connections
+ * per origin.
+ *
+ * The badge does not close it either, and this is the correction the review
+ * asked for: `ChatGroupsContext` holds `tabAnnotations` in ordinary React
+ * state, written only from live daemon workspace frames. The layout is
+ * persisted to `localStorage` per window and the annotations are NOT, so a
+ * browser RELOAD restores the subagent's tab with no badge at all — and a tab
+ * reached from History or a link never had one. In both cases every source read
+ * `false`, and `false` mounted the composer.
+ */
+export type SubagentComposerKind = 'subagent' | 'other' | 'unknown';
+
+/**
+ * Which of the three this tab is in, from every source at once.
+ *
+ * Positive signals are ORed, because each of them is evidence and none of them
+ * is required. The negative answer has exactly one source: a loaded session row
+ * **for this tab's own session id**. `loadedSessionId` is compared rather than
+ * assumed because `ChatGroupsShell` keys a chat by TAB id and the session
+ * behind a tab is rebindable, so the store's row can still be the previous
+ * chat's while a new id is loading.
+ *
+ * `unknown` needs something to be waiting on. A tab with no session id yet (the
+ * empty tab before the first message mints one) is `other`: there is no chat
+ * for a spawn to have created, and withholding its composer would leave a
+ * browser unable to start one. A load that FAILED is `other` too — the tab is
+ * already showing that it could not be read, and a failure is not evidence of a
+ * subagent, so withholding forever would be a lockout rather than a gate.
+ */
+export function subagentComposerKind({
+  badge,
+  sessionId,
+  loadedSessionId,
+  loadedSessionType,
+  hookSaysSubagent = false,
+  loadFailed = false,
+}: {
+  /** The daemon's own annotation on this tab, present from mount when it exists. */
+  badge?: string | null;
+  /** The session this tab is showing. */
+  sessionId: string;
+  /** The session id the chat store has actually loaded, if any. */
+  loadedSessionId?: string | null;
+  /** That row's type. Only meaningful when `loadedSessionId === sessionId`. */
+  loadedSessionType?: SessionType | null;
+  /** `useSubagentSession`'s answer, which is positive-only (`false` until it lands). */
+  hookSaysSubagent?: boolean;
+  /** The store reported it could not load this chat at all. */
+  loadFailed?: boolean;
+}): SubagentComposerKind {
+  const loaded = Boolean(sessionId) && loadedSessionId === sessionId;
+  if (badge === 'subagent' || hookSaysSubagent || (loaded && loadedSessionType === 'sub_agent')) {
+    return 'subagent';
+  }
+  if (!sessionId || loaded || loadFailed) return 'other';
+  return 'unknown';
+}
+
+/** What the composer's slot puts on screen. */
+export type ComposerSlotMode =
+  /** The composer, untouched. */
+  | 'composer'
+  /** The reason there is none, in its place (SD-8). */
+  | 'read-only'
+  /** Nothing yet — this surface cannot offer a composer it may have to take back. */
+  | 'withheld';
+
+/**
+ * The slot's one decision, as a pure function of the surface and what the tab
+ * knows.
+ *
+ * On the desktop it is always the composer: that surface holds the user-action
+ * key, so every control in there works on every chat, and there is nothing to
+ * withhold or explain.
+ *
+ * In a browser `unknown` **withholds** rather than mounting. That direction is
+ * the finding: SD-8's promise is that a control which can never work here says
+ * so *before* it is touched, and a composer mounted while the answer is still
+ * in flight breaks the promise for exactly the seconds in which a child is
+ * running and the reader most wants to intervene. The cost is bounded and
+ * almost invisible — the transcript of a browser chat does not paint until that
+ * same read lands either, so what is withheld sits under an empty conversation
+ * — and it is paid only on the surface that cannot prove a person acted.
+ */
+export function composerSlotMode(kind: SubagentComposerKind): ComposerSlotMode {
+  if (!isBrowserSurface()) return 'composer';
+  if (kind === 'subagent') return 'read-only';
+  return kind === 'unknown' ? 'withheld' : 'composer';
+}
