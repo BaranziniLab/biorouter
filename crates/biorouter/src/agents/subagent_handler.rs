@@ -2431,29 +2431,27 @@ mod tests {
         );
     }
 
-    /// ⚠ **Serialized, and it has to be.** The session bus is a process-global
-    /// map keyed by session **id**, but ids are minted per *store* as
-    /// `<date>_<n>` (`session_manager.rs`'s `CLAIM_NEXT_SESSION_N`, whose
-    /// high-water mark is per store and so starts at 1 in each one), so
-    /// two tests that each stand up their own `TempDir` `SessionManager` both
-    /// get `<today>_1` and publish into the *same* ring. Anything asserting on
-    /// the sequence then reads another test's frames interleaved with its own.
+    /// ⚠ **Serialized — but NOT any longer because ids collide.** Both keys were
+    /// added for that reason and the reason is gone: a minted session id is now
+    /// unique in the *process*, not merely in its store, and a duplicate mint
+    /// panics naming both stores (`session_manager.rs`'s `MINTED_IDS` and
+    /// `SessionStorage::id_prefix`). So do **not** read this as
+    /// an instruction that a new real-subagent test must join the key to be
+    /// safe from `<today>_1` — it need not, and five separate hand-rolled
+    /// defences of that shape were deleted precisely because each one protected
+    /// one registry and the next author had to remember it.
     ///
-    /// This is not hypothetical and it is not new: it is why the frame count
-    /// here varies between runs. The `exactly one TurnStarted` assertion below
-    /// is what turned it from silent noise into a failure, and the serial key
-    /// covers every test in this binary that runs a real subagent against a
-    /// minted id (today: this one and
-    /// `subagent_run_without_daemon_services_still_completes`). A new one must
-    /// join the key — or use an id no store would mint, as the two bracket
-    /// tests below do.
-    ///
-    /// `agent_manager_pin` is the SAME collision one layer up: this run
-    /// registers `<today>_1` in the process-global `AgentManager` pin, and
-    /// `workspace_extension`'s `the_default_scope_sees_a_registered_child_…`
-    /// registers its own `<today>_1` there and then asserts on it. The bus key
-    /// cannot cover that test — it publishes nothing — so the pin needs a key
-    /// of its own, shared across both files.
+    /// What the keys still buy is ORDERING, which is a narrower claim and the
+    /// only one that should be made for them: `subagent_session_bus` keeps two
+    /// concurrent real-subagent runs from interleaving frames in a ring this
+    /// test asserts the sequence of (the `exactly one TurnStarted` assertion
+    /// below is what makes interleaving a failure rather than noise), and
+    /// `agent_manager_pin` keeps this run's `AgentManager` registration from
+    /// overlapping `workspace_extension`'s
+    /// `the_default_scope_sees_a_registered_child_…`, which polls the pin.
+    /// Removing them is a plausible follow-up now the collision is closed; it
+    /// was not done here because a scheduling change whose failure mode is a
+    /// 40-minute CI hang needs more than a handful of local runs behind it.
     #[tokio::test]
     #[serial_test::parallel(workspace_services)]
     #[serial_test::serial(subagent_session_bus, agent_manager_pin)]
