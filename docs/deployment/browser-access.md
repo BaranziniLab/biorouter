@@ -22,7 +22,9 @@ first and then [Headless Linux deployment](headless-linux.md).
 ## Quickstart
 
 Choose the provider and model **before** you start serving — a browser session cannot change them
-(see [The model is fixed before you start](#the-model-is-fixed-before-you-start)):
+(see [The model is fixed before you start](#the-model-is-fixed-before-you-start)). Either kind
+works: a commercial model, or a private one your institution hosts or that runs on the machine,
+which is the choice to make for patient data.
 
 ```bash
 biorouter configure
@@ -195,6 +197,21 @@ provider is chosen once, at the terminal, and the tier that choice implies holds
 session in that daemon. A run started against an institutional model is private for its whole life;
 one started against a commercial model is public for its whole life. Neither can drift.
 
+What that means for a chat you start in the browser:
+
+- **It starts on the configured model**, private or not, with nothing asked of you — choosing it
+  at the terminal was the decision.
+- **A private model makes it private with its first reply.** The tab you are in keeps working with
+  it: the browser tells the daemon which model it runs under, and a chat is open to anything
+  running under a model at least as private as the chat.
+- **Nothing in the browser can move it onto a different private model.** The configured one is the
+  only private model a chat started here ever reaches.
+- **A private chat started in the desktop application opens here only when the host's model is
+  private too.** On a host configured with a commercial model it stays out of reach, with a card
+  saying so; open it in the desktop application instead.
+
+The reasoning is recorded as [decision SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does).
+
 **The fix is to choose the provider before you start serving:**
 
 ```bash
@@ -214,7 +231,7 @@ differs:
 
 | Area | In a browser |
 |---|---|
-| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application. |
+| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application, with two differences that follow from the fixed model: a new chat starts on the host's configured model, and a private chat opens only on a host whose configured model is private. See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
 | Workspace control, several conversations at once, live app agents | Work — these are WebSocket-backed daemon routes, reached on the same origin. |
 | Stopping a response, Stop and send | Work in an ordinary chat ([SD-11](serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)). |
 | Steering a response while it runs | **Not available.** Injecting text into a turn that is already running needs proof that a person acted, which only the desktop application holds. What you type is queued instead and sent when the turn ends, so nothing is lost — it simply does not redirect the answer in flight. |
@@ -245,6 +262,13 @@ you ran, and finds it either next to that CLI or next to the application the CLI
 (see [When the interface cannot be found](#when-the-interface-cannot-be-found) below for how that is
 recorded). If the application has moved or been reinstalled since, run `biorouter setup-path` again
 from inside it — `<application folder>\resources\bin\biorouter.exe setup-path`.
+
+**A message does not start a chat.** The composer keeps what you typed, and a notice in the corner
+says why. The commonest cause is on the host rather than in the browser — for example *Failed to
+configure the selected provider for the new chat: Configuration value not found:
+OPENAI_API_KEY* means the model chosen with `biorouter configure` has no credential on the serving
+machine. Fix it there, restart `serve`, and open the new address it prints. **Copy error** on the
+notice copies the daemon's own words, for a bug report.
 
 **The tab says the link needs its access token.** The `?t=` part was dropped — from a copy-paste, a
 chat client shortening the link, or a bookmark saved after the redirect. Use the full address as

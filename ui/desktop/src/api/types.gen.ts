@@ -4745,7 +4745,7 @@ export type StartAgentErrors = {
      */
     401: unknown;
     /**
-     * The selected private provider requires user-action proof
+     * The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.
      */
     409: ErrorResponse;
     /**
@@ -4898,7 +4898,7 @@ export type UpdateAgentProviderErrors = {
      */
     403: unknown;
     /**
-     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user; on a daemon with no user-action key, any bind to a private model (SD-12) (body = plain text)
      */
     409: PrivacyBarrierBody;
     /**

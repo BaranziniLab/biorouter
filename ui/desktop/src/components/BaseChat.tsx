@@ -73,7 +73,8 @@ import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError, toastWarning } from '../toasts';
-import { errorMessage, isConnectionError } from '../utils/conversionUtils';
+import { errorMessage } from '../utils/conversionUtils';
+import { startChatFailureNotice } from '../utils/startChatFailure';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
@@ -766,8 +767,9 @@ export function collectArtifactsFromMessages(
  * is unreachable the awaited createSession rejects *after* the text is already
  * gone — and the bare catch used to show nothing, so the message silently
  * vanished. Restore the typed text (via a `restore-chat-input` event the composer
- * listens for) and surface a visible toast. Connection detection only picks the
- * wording; the toast + restore fire on ANY rejection, so no silent path remains.
+ * listens for) and surface a visible toast. The words are
+ * `startChatFailureNotice`'s, shared with every other surface that starts a
+ * chat; the toast + restore fire on ANY rejection, so no silent path remains.
  * Exported so it can be unit-tested without Electron.
  */
 export function handleCreateSessionError(
@@ -784,13 +786,7 @@ export function handleCreateSessionError(
       },
     })
   );
-  const connection = isConnectionError(err);
-  toastError({
-    title: connection ? 'Backend disconnected' : 'Failed to start chat',
-    msg: connection
-      ? 'Biorouter could not reach its backend. Your message was kept - try again in a moment.'
-      : errorMessage(err),
-  });
+  toastError(startChatFailureNotice(err, { kept: true }));
 }
 
 /**

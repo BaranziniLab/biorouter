@@ -345,9 +345,24 @@ fn the_documented_closure_is_the_one_the_code_performs() {
     // The docs now assert a specific gate. If the gate goes, the docs are
     // wrong in the *dangerous* direction — claiming a hole is closed when it is
     // open — and no other test in this tree ties the two together.
-    let refusal = AGENT_ROUTE
-        .find("PrivacyRefusal::TierRaiseNeedsUser")
-        .expect("routes/agent.rs no longer refuses an unproven tier raise at all");
+    //
+    // ⚠ The scan starts at `update_agent_provider`, the handler AR-15 is about.
+    // It used to take the FIRST refusal in the file, which stopped being this
+    // handler's when `eb594ded` put the new-chat gate above it: from then on the
+    // scan read that gate, and deleting the proof from this one left it green.
+    // The new-chat gate is SD-12's, a different rule with its own tests in
+    // `routes/agent.rs`.
+    let handler = AGENT_ROUTE
+        .find("async fn update_agent_provider")
+        .expect("update_agent_provider moved; AR-15's gate is the one inside it");
+    let body = cut_from(AGENT_ROUTE, handler);
+    // Bounded by the next route, so a refusal that left this handler cannot be
+    // found in the one after it.
+    let body = cut_to(body, body.find("\n#[utoipa::path(").unwrap_or(body.len()));
+    let refusal = handler
+        + body
+            .find("PrivacyRefusal::TierRaiseNeedsUser")
+            .expect("update_agent_provider no longer refuses an unproven tier raise at all");
     let guard = cut_to(AGENT_ROUTE, refusal)
         .rfind("    if ")
         .expect("the tier-raise refusal is not inside an `if`");
@@ -369,6 +384,34 @@ fn the_documented_closure_is_the_one_the_code_performs() {
              the gate or un-retire AR-15 in all of them.\nGuard reads: {condition}"
         );
     }
+
+    // SD-12 (PR #229) put a second thing between the raise predicate and the
+    // truth, and it is this PR's own protection, so this PR pins it: on a daemon
+    // holding no user-action key, `raise_baseline` forces the capability the raise
+    // is measured FROM down to Public, which is what keeps a `Private -> Private`
+    // sideways move onto a private model nobody configured refused. Delete it and
+    // every token above is still present, the condition still reads as a gate, and
+    // the sideways move is waved through as "not a raise". `routes/agent.rs`'s unit
+    // tests cover the function; nothing covered its WIRING.
+    //
+    // ⚠ Two assertions, not one token in the loop above, and the split is
+    // load-bearing: the call is a `let` on the line *before* the `if`, so the
+    // condition slice — which starts at the last `    if ` — structurally cannot
+    // contain it. The handler carries the call; the condition carries the half
+    // that matters just as much, that the predicate measures from that value
+    // rather than from the chat's live `current` binding.
+    let handler_body = cut(AGENT_ROUTE, handler, refusal);
+    assert!(
+        handler_body.contains("raise_baseline("),
+        "update_agent_provider no longer computes a `raise_baseline`, so a keyless daemon measures \
+         a private raise from the chat's live binding again and SD-12's exemption can be carried \
+         sideways onto a private model the operator never configured"
+    );
+    assert!(
+        squash(condition).contains("raise_needs_user_action(baseline,"),
+        "the tier-raise predicate is no longer measured from `raise_baseline`'s result, so \
+         computing it changes nothing.\nGuard reads: {condition}"
+    );
 
     // A negative control, so the extractor is provably not matching anything it
     // is handed: the same file's `update_working_dir` is not a raise channel.

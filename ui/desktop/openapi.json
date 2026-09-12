@@ -692,7 +692,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "409": {
-            "description": "The selected private provider requires user-action proof",
+            "description": "The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.",
             "content": {
               "application/json": {
                 "schema": {
@@ -884,7 +884,7 @@
             "description": "The session is out of reach, or the target is a subagent and the request lacks user-action proof"
           },
           "409": {
-            "description": "Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)",
+            "description": "Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user; on a daemon with no user-action key, any bind to a private model (SD-12) (body = plain text)",
             "content": {
               "application/json": {
                 "schema": {

@@ -4,6 +4,11 @@ import { Button } from './ui/button';
 import { ModalShell } from './ModalShell';
 import { NotificationContent, type NotificationStatus } from './alerts/NotificationSurface';
 import { startNewSession } from '../sessions';
+// ⚠ `toasts.tsx` renders this component, so this import closes a cycle. It is
+// the one `utils/extensionErrorUtils` already closes, and `toastError` is only
+// read inside a click handler, long after both modules have evaluated.
+import { toastError } from '../toasts';
+import { startChatFailureNotice } from '../utils/startChatFailure';
 import { useNavigation } from '../hooks/useNavigation';
 import { formatExtensionErrorMessage } from '../utils/extensionErrorUtils';
 import { getInitialWorkingDir } from '../utils/workingDir';
@@ -232,7 +237,12 @@ export function GroupedExtensionLoadingToast({
           onOpenChange={setReportOpen}
           extensions={extensions}
           onAskBiorouter={
-            setView ? (hints) => startNewSession(getInitialWorkingDir(), hints, setView) : null
+            setView
+              ? (hints) =>
+                  void startNewSession(getInitialWorkingDir(), hints, setView).catch((error) =>
+                    toastError(startChatFailureNotice(error, { kept: false }))
+                  )
+              : null
           }
         />
       )}

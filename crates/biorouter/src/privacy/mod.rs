@@ -49,7 +49,7 @@ pub mod visibility;
 pub use affiliation::{CrossAffiliation, ExtensionAffiliation, ModelAffiliation};
 pub use alt_provider::assert_alt_provider_allowed;
 pub use capability::CallCapability;
-pub use config_keys::is_capability_key;
+pub use config_keys::{is_capability_key, CAPABILITY_CONFIG_KEYS};
 pub use extensions::{
     classify_extension, classify_extension_entry, private_extension_ids, resolve_extension,
     ExtensionClassification,
