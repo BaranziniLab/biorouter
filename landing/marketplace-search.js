@@ -1,7 +1,8 @@
 /* UCSF Biorouter — free-text search over the BAAM shelves.
  *
  * ⚠ **A query is a set of words, not a substring.** This is a rule-for-rule port
- * of `crates/biorouter/src/marketplace/search.rs`, which is the canonical
+ * of `crates/biorouter/src/catalog_search.rs` — `marketplace/search.rs` until
+ * PR #266 moved it — which is the canonical
  * matcher behind `skills__searchMarketplaceSkills` and
  * `extensionmanager__search_marketplace_extensions`. Read that module for the
  * reasoning; what follows is only what a JavaScript reader needs.
@@ -77,6 +78,7 @@
      stays one word. The Unicode classes stand in for Rust's
      `char::is_alphanumeric`. */
   var NON_WORD = /[^\p{L}\p{N}]+/u;
+  var WORD_CHAR = /[\p{L}\p{N}]/u;
 
   function words(text) {
     if (!text) return [];
@@ -124,6 +126,43 @@
     return strength(stem, word);
   }
 
+  /* Whether `phrase` is WRITTEN IN `text`: present as a substring, and not
+     buried inside a longer word at either end. The boundary is imposed only by
+     an end that is itself a word character, so `++` is written in `c++ code`
+     while `dy` is not written in `tidyverse`.
+
+     ⚠ **Every character position is tried**, not just the first occurrence,
+     because a refused occurrence can overlap an accepted one: `a a` is written
+     in `ba a a` only from the second `a`.
+
+     This is `written_in` in catalog_search.rs, which PR #266 introduced to
+     replace the plain substring test the verbatim bonus used to do. Ported so
+     `rank` keeps scoring the way the canonical matcher does; the shelves call
+     `matching`, which discards rank, so nothing on the page moves either way. */
+  function writtenIn(text, phrase) {
+    var chars = Array.from(String(text == null ? '' : text).toLowerCase());
+    var needle = Array.from(String(phrase == null ? '' : phrase));
+    if (needle.length === 0) return false;
+    var startsWord = WORD_CHAR.test(needle[0]);
+    var endsWord = WORD_CHAR.test(needle[needle.length - 1]);
+    for (var i = 0; i + needle.length <= chars.length; i++) {
+      var hit = true;
+      for (var j = 0; j < needle.length; j++) {
+        if (chars[i + j] !== needle[j]) {
+          hit = false;
+          break;
+        }
+      }
+      if (!hit) continue;
+      var before = i > 0 ? chars[i - 1] : null;
+      var after = i + needle.length < chars.length ? chars[i + needle.length] : null;
+      var opens = !startsWord || !(before !== null && WORD_CHAR.test(before));
+      var closes = !endsWord || !(after !== null && WORD_CHAR.test(after));
+      if (opens && closes) return true;
+    }
+    return false;
+  }
+
   /**
    * Rank `entries` against `query`.
    *
@@ -150,7 +189,7 @@
     list.forEach(function (entry, index) {
       var entryFields = fields(entry) || [];
       var verbatim = entryFields.some(function (field) {
-        return String(field[0] || '').toLowerCase().indexOf(phrase) !== -1;
+        return writtenIn(field[0], phrase);
       });
       var entryWords = [];
       entryFields.forEach(function (field) {
@@ -224,6 +263,7 @@
     WORKFLOW_NOISE: WORKFLOW_NOISE,
     words: words,
     terms: terms,
+    writtenIn: writtenIn,
     rank: rank,
     matching: matching
   };

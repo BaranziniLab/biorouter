@@ -1209,9 +1209,10 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 (`subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only`,
 `an_explicit_workspace_entry_still_hides_the_spawn_tool_when_delegation_is_off`,
 `subagents_disabled_injects_nothing`), via
-`cargo test -p biorouter --lib -- subagent` (**197 tests, measured 2026-09-11** — this
+`cargo test -p biorouter --lib -- subagent` (**198 tests, measured 2026-09-12** — this
 line said 102 for long enough that a "pre + N" assertion against it would have read a
-shortfall of ninety-five as a pass; re-measure rather than trusting the figure).
+shortfall of ninety-six as a pass; re-measure rather than trusting the figure, which
+moved 197 → 198 between this line being written and the branch carrying it landing).
 
 ### Browser access (`biorouter serve`)
 

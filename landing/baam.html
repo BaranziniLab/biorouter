@@ -3789,7 +3789,8 @@ extensions: []</pre>
 
   /* ── Text search (shared by all three shelves) ─────────────────
      The matcher is landing/marketplace-search.js, a port of the app's own
-     crates/biorouter/src/marketplace/search.rs. Each shelf used to ask
+     crates/biorouter/src/catalog_search.rs (it was marketplace/search.rs
+     until PR #266 moved it). Each shelf used to ask
      `hay.indexOf(q) !== -1` — the whole query as one substring — so every
      phrase a visitor typed returned an empty shelf.
 

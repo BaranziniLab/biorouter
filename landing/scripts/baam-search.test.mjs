@@ -12,7 +12,8 @@
 // cannot see that, because the matcher was never the thing on the page.
 //
 // The second half tests `landing/marketplace-search.js` directly, as a module.
-// It is the port of `crates/biorouter/src/marketplace/search.rs`, and the rules
+// It is the port of `crates/biorouter/src/catalog_search.rs` (`marketplace/search.rs`
+// until PR #266 moved it), and the rules
 // that keep a union of terms from returning the whole catalog (short terms are
 // whole-word only; filler is dropped; license is not a searched field) are
 // cheapest to pin one rule at a time, without a browser.
@@ -140,6 +141,32 @@ test('the singular fallback is a fallback, not a prefix search', () => {
 
 test('the verbatim phrase ranks first', () => {
   assert.equal(ids('annotated heat maps')[0], 'complex-plots');
+});
+
+// The verbatim bonus asks whether the phrase is WRITTEN IN the field, not
+// whether it occurs in it — `written_in` in catalog_search.rs, which PR #266
+// introduced after this port was first written. These are that module's own six
+// assertions, run against the port, so the two cannot drift apart unnoticed.
+//
+// The shelves call `matching`, which collapses rank to a membership set, so this
+// rule changes nothing a visitor sees today. It is pinned because the port claims
+// to be rule for rule, and a claim nothing checks is the one that goes stale.
+test('the verbatim bonus respects word boundaries, as the canonical matcher does', () => {
+  const { writtenIn } = Search;
+  assert.equal(writtenIn('r scripting', 'r scripting'), true, 'the whole phrase');
+  assert.equal(writtenIn('tidy code for r.', 'r'), true, 'the second `r`, at a boundary');
+  assert.equal(writtenIn('snippets for scripting', 'r scripting'), false, 'not present');
+  assert.equal(writtenIn('tidyverse', 'dy'), false, 'buried inside a longer word');
+  assert.equal(
+    writtenIn('ba a a', 'a a'),
+    true,
+    'a refused occurrence can overlap an accepted one, so every position is tried'
+  );
+  assert.equal(
+    writtenIn('c++ code', '++'),
+    true,
+    'a non-alphanumeric edge imposes no boundary on that side'
+  );
 });
 
 test('license is not a searched field', () => {
