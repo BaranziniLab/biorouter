@@ -6,12 +6,15 @@ import { WorkflowResourcePicker } from '../WorkflowResourcePicker';
 function renderPicker({
   selectedIds,
   defaultId,
+  noDefaultText,
+  onDefaultIdChange = vi.fn(),
 }: {
   selectedIds: string[];
   defaultId: string | null;
+  noDefaultText?: string;
+  onDefaultIdChange?: (id: string | null) => void;
 }) {
   const onSelectedIdsChange = vi.fn();
-  const onDefaultIdChange = vi.fn();
   render(
     <WorkflowResourcePicker
       label="Knowledge bases"
@@ -23,6 +26,7 @@ function renderPicker({
       onSelectedIdsChange={onSelectedIdsChange}
       defaultId={defaultId}
       onDefaultIdChange={onDefaultIdChange}
+      noDefaultText={noDefaultText}
       emptyText="No knowledge bases found"
       searchPlaceholder="Search knowledge bases..."
       noun="KB"
@@ -30,6 +34,9 @@ function renderPicker({
   );
   return { onSelectedIdsChange, onDefaultIdChange };
 }
+
+const NO_DEFAULT =
+  'No default — this workflow will not focus one. Chats it starts search every base above.';
 
 /**
  * The knowledge-base picker's default becomes the workflow's `default`, which
@@ -118,5 +125,64 @@ describe('WorkflowResourcePicker default', () => {
 
     await user.click(current);
     expect(onDefaultIdChange).toHaveBeenLastCalledWith(null);
+  });
+});
+
+/**
+ * Whether a default is set is only ever *marked* on a row, and the rows live
+ * inside a closed popover — so a captured "this chat has no primary base", which
+ * is the correct capture for a chat that pinned none, looked exactly like a card
+ * whose default had gone missing. The card has to say it.
+ */
+describe('WorkflowResourcePicker default summary', () => {
+  it('says there is no default, on the card, without opening the popover', () => {
+    renderPicker({
+      selectedIds: ['lab-notes', 'soul'],
+      defaultId: null,
+      noDefaultText: NO_DEFAULT,
+    });
+
+    expect(screen.getByTestId('resource-picker-default-summary')).toHaveTextContent(NO_DEFAULT);
+    // Still closed: the rows, and the Default control that marks one, are not
+    // rendered at all.
+    expect(screen.queryByRole('button', { name: 'Default KB: lab-notes' })).toBeNull();
+  });
+
+  it('names the default on the card when one is set', () => {
+    renderPicker({
+      selectedIds: ['lab-notes', 'soul'],
+      defaultId: 'lab-notes',
+      noDefaultText: NO_DEFAULT,
+    });
+
+    expect(screen.getByTestId('resource-picker-default-summary')).toHaveTextContent(
+      'Default: lab-notes'
+    );
+  });
+
+  // An empty selection already says so on the trigger, and "no default" on top
+  // of it is a statement about a set with nothing in it.
+  it('says nothing about a default when nothing is selected', () => {
+    renderPicker({ selectedIds: [], defaultId: null, noDefaultText: NO_DEFAULT });
+
+    expect(screen.queryByTestId('resource-picker-default-summary')).toBeNull();
+  });
+
+  // Skills and extensions have no default at all; the line must not appear for
+  // a picker that cannot name one.
+  it('says nothing for a picker with no default control', () => {
+    render(
+      <WorkflowResourcePicker
+        label="Skills"
+        items={[{ id: 'single-cell', label: 'single-cell' }]}
+        selectedIds={['single-cell']}
+        onSelectedIdsChange={vi.fn()}
+        emptyText="No skills found"
+        searchPlaceholder="Search skills..."
+        noun="skill"
+      />
+    );
+
+    expect(screen.queryByTestId('resource-picker-default-summary')).toBeNull();
   });
 });
