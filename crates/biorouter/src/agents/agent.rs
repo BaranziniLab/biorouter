@@ -1985,6 +1985,14 @@ pub(crate) fn is_workspace_tool_refused_for(
 /// Workspace tools that block on work happening in ANOTHER session, and must
 /// therefore not hold a global tool-dispatch permit while they do. Both name
 /// forms, like `is_spawn_tool_call`.
+///
+/// ⚠ **This is not the list of everything that parks.** `code_execution__execute_code`
+/// parks too, since QA finding F7 gave a script's own tool calls approval cards —
+/// and it deliberately does NOT belong here, because unlike these two it is not a
+/// do-nothing wrapper, and in the shipped Code Execution default it is very nearly
+/// the only tool the model calls, so exempting it would leave the semaphore
+/// bounding nothing. It releases the permit for the parked interval only, via
+/// `tool_dispatch_limits::DispatchPermitHandle::while_parked`.
 pub(crate) fn is_parking_workspace_tool(name: &str) -> bool {
     matches!(
         name,
@@ -7505,6 +7513,17 @@ impl Agent {
                     );
                     let inner_result = match script_gate {
                         Some(gate) => {
+                            // #246 review, finding 2: since F7 a script's own
+                            // calls can park on an approval card, inside this
+                            // body, holding one of the eight shared dispatch
+                            // permits. Hand it back for the parked interval
+                            // instead of exempting `execute_code` by name — in
+                            // the shipped Code Execution default it is nearly
+                            // the only tool, so an exemption would leave the
+                            // semaphore bounding nothing.
+                            gate.hold_dispatch_permit(_dispatch_guard.as_ref().map(
+                                super::tool_dispatch_limits::ToolDispatchGuard::parking_handle,
+                            ));
                             super::script_call_gate::judging_script_calls(gate, inner).await
                         }
                         None => inner.await,

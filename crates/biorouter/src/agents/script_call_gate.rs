@@ -317,6 +317,15 @@ pub struct ScriptCallGate {
     /// For the PreToolUse rewrites this gate's own inspection staged, and the
     /// PermissionRequest hooks consulted before a card.
     hooks: Arc<HooksManager>,
+    /// The global tool-dispatch concurrency permit the `execute_code` call this
+    /// judge belongs to is holding, handed back for the duration of a parked ask
+    /// (#246 review, finding 2). `None` where there is none to hand back: a test
+    /// gate, or a dispatch the semaphore exempts.
+    ///
+    /// Set after construction because the permit is acquired *inside* the tool
+    /// body, below the point where the agent still has the pieces this gate is
+    /// built from — see `Agent::dispatch_tool_call`.
+    parking_permit: Mutex<Option<crate::agents::tool_dispatch_limits::DispatchPermitHandle>>,
 }
 
 impl ScriptCallGate {
@@ -331,7 +340,32 @@ impl ScriptCallGate {
             mode,
             session,
             hooks,
+            parking_permit: Mutex::new(None),
         }
+    }
+
+    /// Hand this judge the dispatch permit its `execute_code` call holds, so an
+    /// ask parked on a person does not hold one of the eight the whole daemon
+    /// shares. Called once, before any judging.
+    pub(crate) fn hold_dispatch_permit(
+        &self,
+        handle: Option<crate::agents::tool_dispatch_limits::DispatchPermitHandle>,
+    ) {
+        *self
+            .parking_permit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = handle;
+    }
+
+    /// The handle, cloned out — never read across an `await`, because the lock is
+    /// a `std::sync::Mutex`.
+    fn parked_permit_handle(
+        &self,
+    ) -> Option<crate::agents::tool_dispatch_limits::DispatchPermitHandle> {
+        self.parking_permit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Decide one call a script made.
@@ -522,7 +556,19 @@ impl ScriptCallGate {
             requires_user_proof: false,
         });
         let parked = PendingUserActions::global().park(Some(&self.session.id), None, request);
-        let outcome = parked.wait(approval_ttl(), Some(cancel)).await;
+        // #246 review, finding 2. This wait is up to `approval_ttl()` long
+        // (default 3600 s; `Duration::MAX` when `BIOROUTER_CONFIRMATION_TIMEOUT_SECS=0`),
+        // and it happens INSIDE the `execute_code` tool body, which holds one of
+        // the eight tool-dispatch permits the whole daemon shares. Before F7
+        // `execute_code` could not park at all, so eight scripts parked on cards
+        // would now stall every other tool call in the process — the user's own
+        // foreground conversation included. Hand the permit back while we wait;
+        // the script queues for it again before it resumes doing work.
+        let wait = parked.wait(approval_ttl(), Some(cancel));
+        let outcome = match self.parked_permit_handle() {
+            Some(permit) => permit.while_parked(wait).await,
+            None => wait.await,
+        };
         self.verdict_for_answer(call, outcome, cancel).await
     }
 
@@ -1641,6 +1687,77 @@ mod tests {
         .await;
         assert!(!is_error, "{output}");
         assert!(output.contains("SCRIPT-GATE-RELEASED"), "{output}");
+    }
+
+    /// #246 review, finding 2. `execute_code` takes a permit from the
+    /// process-global eight-permit dispatch semaphore and holds it for the whole
+    /// tool body — which, since F7, contains every approval card a script's
+    /// sub-call parks on, for up to `approval_ttl()` (3600 s by default,
+    /// `Duration::MAX` when the confirmation timeout is 0). Eight scripts parked
+    /// on cards would stall every other tool call in the daemon, the user's own
+    /// foreground conversation included. So a parked ask must hold no permit.
+    ///
+    /// Measured by filling the ceiling to exactly one free permit before the
+    /// script runs: the script's dispatch takes the last one, and while it is
+    /// parked on its card an unrelated dispatch must still be able to acquire.
+    /// Before the fix that acquisition never completes.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_parked_scripts_ask_holds_no_global_dispatch_permit() {
+        use crate::agents::tool_dispatch_limits;
+
+        let f = fixture(BioRouterMode::Approve).await;
+        let dir = f.dir.path().to_path_buf();
+
+        // Fill the ceiling to one free permit. `probe` names no file, so these
+        // are concurrency permits and nothing else. Generous timeout: other
+        // tests in this binary hold permits briefly and release them.
+        let mut filled = Vec::new();
+        for _ in 0..tool_dispatch_limits::max_concurrent_tools().saturating_sub(1) {
+            filled.push(
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    tool_dispatch_limits::acquire("probe", None, &dir),
+                )
+                .await
+                .expect("the binary's other tool dispatches release their permits"),
+            );
+        }
+
+        let mut script = run_script(
+            &f,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-PARKED" }));"#,
+            CancellationToken::new(),
+        )
+        .await;
+        let card = card_or_completion(&f.session.id, &mut script)
+            .await
+            .unwrap_or_else(|(_, output)| panic!("the shell call must ask: {output}"));
+        assert_eq!(card.tool_name, SHELL);
+
+        // The script is parked on that card and must therefore be holding
+        // nothing: the last permit has to be available to an unrelated tool.
+        let unrelated = tokio::time::timeout(
+            Duration::from_secs(10),
+            tool_dispatch_limits::acquire("probe", None, &dir),
+        )
+        .await;
+        assert!(
+            unrelated.is_ok(),
+            "a script parked on an approval card held its dispatch permit; eight of \
+             those stall every other tool call in the daemon"
+        );
+
+        // Free everything before answering: the script queues for a permit again
+        // when it resumes, and would otherwise be waiting on this test.
+        drop(unrelated);
+        drop(filled);
+
+        answer(&f, &card, Permission::AllowOnce).await;
+        let (is_error, output) = finish(script).await;
+        assert!(!is_error, "the answered call still runs: {output}");
+        assert!(output.contains("SCRIPT-GATE-PARKED"), "{output}");
     }
 
     /// The record the refusal above keys on is taken by `judging_script_calls`
