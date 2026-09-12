@@ -1772,12 +1772,32 @@ mod tests {
         /// Reaped: the pid no longer resolves.
         Gone,
         /// Dead, but not yet reaped by whoever inherited it. Only Linux can
-        /// name this state (see `zombie_aware_state`), so elsewhere the variant
-        /// is matched but never constructed.
-        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+        /// name this state in a running poll (see `zombie_aware_state`);
+        /// `state_from_proc_read`'s own test constructs it on every unix.
         Zombie,
         /// Still a live process.
         Alive,
+        /// The pid resolves, but its state could not be *read*: the procfs
+        /// entry was there a moment ago (`kill(pid, 0)` succeeded) and the read
+        /// failed for a reason other than the entry being absent -- descriptor
+        /// exhaustion, `ENOMEM`, `EACCES`, or no `/proc` mounted at all.
+        ///
+        /// A failure to observe is not a death. This state differs from `Alive`
+        /// only in what it prints: neither satisfies `proves_death`, so both
+        /// keep the poll running and then fail on its deadline.
+        Unobservable,
+    }
+
+    #[cfg(unix)]
+    impl DescendantState {
+        /// The only two states that are evidence the reaper worked.
+        ///
+        /// The poll below and the assertion at the end of the reaper test both
+        /// ask this one question, so what stops the poll and what satisfies the
+        /// assertion cannot drift apart.
+        fn proves_death(self) -> bool {
+            matches!(self, DescendantState::Gone | DescendantState::Zombie)
+        }
     }
 
     /// Pull the state letter out of one `/proc/<pid>/stat` line.
@@ -1799,20 +1819,49 @@ mod tests {
             .next()
     }
 
-    /// Linux exposes the state letter directly, so a zombie is nameable even
-    /// where nothing ever reaps it -- a container whose pid 1 is not a
-    /// subreaper never turns the orphan below into `Gone`.
-    #[cfg(all(unix, target_os = "linux"))]
-    fn zombie_aware_state(pid: i32) -> DescendantState {
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+    /// Map one attempt to read `/proc/<pid>/stat` onto a descendant state.
+    ///
+    /// Reached only once `kill(pid, 0)` has just succeeded, so the pid resolved
+    /// a moment ago. `ENOENT` is therefore the single error that means what it
+    /// looks like: procfs has no entry any more, i.e. the pid was reaped between
+    /// that `kill()` and this read. Every other error is a failure to OBSERVE
+    /// the process, and for an assertion whose whole job is to prove deadness
+    /// that must not read as dead -- see `Unobservable`.
+    ///
+    /// Deliberately compiled on every unix, for the same reason
+    /// `proc_stat_state` is -- the one decision here that can be wrong in a way
+    /// no platform's absence should hide.
+    #[cfg(unix)]
+    fn state_from_proc_read(read: io::Result<String>) -> DescendantState {
+        match read {
             // Z is "zombie", X is "dead": terminated, awaiting a reaper.
             Ok(stat) => match proc_stat_state(&stat) {
                 Some('Z' | 'X') => DescendantState::Zombie,
                 _ => DescendantState::Alive,
             },
             // Reaped between the kill() and this read.
-            Err(_) => DescendantState::Gone,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => DescendantState::Gone,
+            // EMFILE/ENFILE, ENOMEM, EACCES, ... : we failed to look.
+            Err(_) => DescendantState::Unobservable,
         }
+    }
+
+    /// Linux exposes the state letter directly, so a zombie is nameable even
+    /// where nothing ever reaps it -- a container whose pid 1 is not a
+    /// subreaper never turns the orphan below into `Gone`.
+    #[cfg(all(unix, target_os = "linux"))]
+    fn zombie_aware_state(pid: i32) -> DescendantState {
+        let read = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+        // An absent entry means "reaped" only where procfs is mounted to have
+        // an entry in. Without this, a sandbox with no `/proc` answers ENOENT
+        // for every pid -- indistinguishable, to the arm above, from a reaper
+        // that worked -- and reports every live descendant as dead. Checked
+        // only on the error path, and against our OWN entry, which exists on
+        // any host where the read above can be believed.
+        if read.is_err() && std::fs::metadata("/proc/self/stat").is_err() {
+            return DescendantState::Unobservable;
+        }
+        state_from_proc_read(read)
     }
 
     /// Everywhere else, a pid that still resolves is reported as alive.
@@ -1847,7 +1896,7 @@ mod tests {
         let started = Instant::now();
         loop {
             let state = descendant_state(pid);
-            if state != DescendantState::Alive || started.elapsed() >= deadline {
+            if state.proves_death() || started.elapsed() >= deadline {
                 return state;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -1869,6 +1918,63 @@ mod tests {
         // Nothing parseable must not be reported as a state.
         assert_eq!(proc_stat_state("garbage"), None);
         assert_eq!(proc_stat_state("42 (sleep)"), None);
+    }
+
+    /// A `/proc` read that failed for any reason but `ENOENT` is a failure to
+    /// OBSERVE the descendant, and must never be reported as its death.
+    ///
+    /// The direction is the whole point: this poll exists to PROVE a descendant
+    /// died, so "I could not look" has to keep polling and then fail, never
+    /// satisfy the assertion. Mapping every `Err` onto `Gone` -- which is what
+    /// this did before the arm was split -- passed the reaper test with a live
+    /// `sleep 30` grandchild on any host that had run out of file descriptors,
+    /// was short of memory, or had no `/proc` mounted at all.
+    #[cfg(unix)]
+    #[test]
+    fn a_proc_read_that_failed_for_anything_but_enoent_is_not_evidence_of_death() {
+        // ENOENT is the one error that means what the old arm assumed of all of
+        // them: procfs no longer has an entry, so the pid really was reaped.
+        let gone = state_from_proc_read(Err(io::Error::from_raw_os_error(libc::ENOENT)));
+        assert_eq!(gone, DescendantState::Gone);
+        assert!(gone.proves_death());
+
+        // Every other errno: the pid resolved a moment ago and we failed to
+        // read it. Descriptor exhaustion, ENOMEM, EACCES, EIO.
+        for errno in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOMEM,
+            libc::EACCES,
+            libc::EIO,
+        ] {
+            let state = state_from_proc_read(Err(io::Error::from_raw_os_error(errno)));
+            assert_eq!(
+                state,
+                DescendantState::Unobservable,
+                "errno {errno} is a failed observation, not a reported state"
+            );
+            assert!(
+                !state.proves_death(),
+                "errno {errno} must not satisfy an assertion that the descendant died"
+            );
+        }
+
+        // An error carrying no errno at all is just as unobservable.
+        let synthetic = state_from_proc_read(Err(io::Error::other("procfs unavailable")));
+        assert_eq!(synthetic, DescendantState::Unobservable);
+        assert!(!synthetic.proves_death());
+
+        // A readable entry still decides on its state letter, and an entry that
+        // does not parse is not a death either.
+        assert_eq!(
+            state_from_proc_read(Ok("42 (sleep) Z 1 42".to_owned())),
+            DescendantState::Zombie
+        );
+        assert_eq!(
+            state_from_proc_read(Ok("42 (sleep) S 1 42".to_owned())),
+            DescendantState::Alive
+        );
+        assert!(!state_from_proc_read(Ok("garbage".to_owned())).proves_death());
     }
 
     #[cfg(unix)]
@@ -1935,7 +2041,7 @@ mod tests {
         const DEADLINE: Duration = Duration::from_secs(2);
         let state = await_descendant_death(pid, DEADLINE);
         assert!(
-            matches!(state, DescendantState::Gone | DescendantState::Zombie),
+            state.proves_death(),
             "the compiler's descendant (pid {pid}) was still {state:?} {DEADLINE:?} after \
              terminate_esbuild returned; the SIGKILL to the process group must leave it \
              dead (Zombie, awaiting its new parent's wait) or reaped (Gone)"
