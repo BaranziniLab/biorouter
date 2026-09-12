@@ -13,6 +13,7 @@ import {
   useSkillCatalog,
   type SkillCatalogEntry,
 } from '../skills/useSkillCatalog';
+import { rankCatalogEntries } from '../skills/searchCatalog';
 import { toastService } from '../../toasts';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
@@ -82,23 +83,20 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     [applyToggle, scope]
   );
 
-  const filteredEntries = useMemo(() => {
-    const q = searchQuery.toLowerCase();
-    if (!q) return entries;
-    return entries.filter((entry) => {
-      if (entry.kind === 'single') {
-        return (
-          entry.skill.name.toLowerCase().includes(q) ||
-          entry.skill.description.toLowerCase().includes(q)
-        );
-      }
-      return (
-        entry.bundle.displayName.toLowerCase().includes(q) ||
-        entry.bundle.name.toLowerCase().includes(q) ||
-        entry.bundle.skills.some((name) => name.toLowerCase().includes(q))
-      );
-    });
-  }, [entries, searchQuery]);
+  // One matcher, shared with Settings -> Skills, the Browse modals and the
+  // model's own search — see `skills/searchCatalog.ts`. This filter used to ask
+  // whether the WHOLE query occurred inside one field (QA finding F5), so a
+  // phrase naming two installed skills found neither. The list is flat, so the
+  // ranking reaches it directly: best match first, catalog order when nothing
+  // is typed.
+  //
+  // ⚠ It also feeds "Enable all", which writes every row left on screen — so a
+  // filter that leaks (`R` matching the letter anywhere) is a bulk write over
+  // rows the user never asked about, not just a long list.
+  const filteredEntries = useMemo(
+    () => rankCatalogEntries(entries, searchQuery).hits.map((hit) => hit.entry),
+    [entries, searchQuery]
+  );
 
   const activeCount = useMemo(() => entries.filter((e) => e.enabled).length, [entries]);
   const visibleEnabledCount = useMemo(
