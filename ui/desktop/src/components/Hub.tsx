@@ -32,6 +32,7 @@ import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import type { UserAttachment } from '../types/message';
 import { toastError } from '../toasts';
 import { startChatFailureNotice } from '../utils/startChatFailure';
+import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 
 export default function Hub({
   setView,
@@ -41,6 +42,7 @@ export default function Hub({
   const { extensionsList } = useConfig();
   const [workingDir, setWorkingDir] = useState(getInitialWorkingDir());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const confirmNewChatModel = useConfirmNewChatModel();
 
   /**
    * Resolves FALSE when no chat was started, which is ChatInput's signal to put
@@ -58,6 +60,11 @@ export default function Hub({
     const hasAttachments = attachments.length > 0;
 
     if ((combinedTextFromInput.trim() || hasAttachments) && !isCreatingSession) {
+      // F3. Before anything is consumed — the extension overrides below are
+      // cleared as they are read — so a refused send leaves nothing behind but
+      // the text, which `ChatInput` puts back when this resolves `false`.
+      if (!(await confirmNewChatModel())) return false;
+
       const extensionConfigs = getExtensionConfigsWithOverrides(extensionsList);
       clearExtensionOverrides();
       setIsCreatingSession(true);

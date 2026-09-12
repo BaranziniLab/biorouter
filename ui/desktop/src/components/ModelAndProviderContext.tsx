@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react';
 import { toastError, toastSuccess } from '../toasts';
 import Model, {
   getProviderMetadata,
@@ -32,7 +40,11 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { notifySessionToolsChanged } from '../utils/sessionToolEvents';
-import { announceSessionBinding } from '../utils/sessionBindingSync';
+import {
+  announceAppModelSelection,
+  announceSessionBinding,
+  subscribeAppModelSelectionChanges,
+} from '../utils/sessionBindingSync';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -42,7 +54,29 @@ export const UNKNOWN_PROVIDER_MSG = 'Unknown provider in config. Check your conf
 
 // success
 const CHANGE_MODEL_TOAST_TITLE = 'Model changed';
-const SWITCH_MODEL_SUCCESS_MSG = 'Switched models';
+
+/**
+ * What the success toast says a switch changed.
+ *
+ * It used to say "Switched models — using X from Y" whatever had moved, which
+ * was how a switch made in one chat could quietly become the model every new
+ * chat started on. A switch now lands in one of three places (see
+ * `ChangeModelOptions`), and the toast names the one it landed in.
+ */
+export function switchedModelMessage(
+  label: string,
+  source: string,
+  scope: { chat: boolean; newChats: boolean }
+): string {
+  const using = `${label} from ${source}`;
+  if (scope.chat && scope.newChats) {
+    return `This chat, and new chats in every window, now use ${using}.`;
+  }
+  if (scope.chat) {
+    return `This chat now uses ${using}. Other chats, and new ones, are unchanged.`;
+  }
+  return `New chats in every window now start on ${using}. Existing chats keep their own model.`;
+}
 
 /**
  * Issue #56 DR-16. The one refusal in this feature addressed to the USER rather
@@ -71,19 +105,66 @@ export const NO_USER_PROOF_TOAST_MSG =
  */
 export type ModelConfigStatus = 'loading' | 'ready';
 
+/**
+ * The app-wide selection — `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` — as the
+ * daemon holds it. This is exactly what `/agent/start` binds a new chat to
+ * (`configured_new_session_provider`), and nothing else about it is implied: an
+ * existing chat runs on its own session row. `null` is "not set".
+ */
+export interface AppModelSelection {
+  provider: string | null;
+  model: string | null;
+}
+
+/**
+ * Where a model switch lands.
+ *
+ * ⚠ **A switch made from inside a chat changes THAT CHAT, and nothing else,
+ * unless the user says otherwise.** Until 2026-09-11 it also rewrote the
+ * app-wide default, silently: provider QA F bound Claude Code in one chat for
+ * one check, and the next chat it opened came up public. That is the coupling
+ * `docs/security/privacy-tiers.md` §14.3 P4 asked to be undone — "pick Versa
+ * once in a scratch chat privatises not one session but every session created
+ * afterwards", and the mirror image makes every new chat public. The coupling is
+ * now the explicit opt-in below, offered in the dialog where the choice is made.
+ *
+ * A switch with no chat (Home's composer, a chat not yet started, Settings →
+ * Models, onboarding) has only one thing it can change — the model new chats
+ * start on — so it always does, and its dialog says so.
+ */
+export interface ChangeModelOptions {
+  /** Also make this the model every new chat starts on, in every window. */
+  alsoForNewChats?: boolean;
+}
+
 interface ModelAndProviderContextType {
   currentModel: string | null;
   currentProvider: string | null;
   modelConfigStatus: ModelConfigStatus;
   currentModelSupportsVision: boolean;
   currentModelSupportedInputMimeTypes: string[] | null;
-  changeModel: (sessionId: string | null, model: Model) => Promise<boolean>;
+  changeModel: (
+    sessionId: string | null,
+    model: Model,
+    options?: ChangeModelOptions
+  ) => Promise<boolean>;
   getCurrentModelAndProvider: () => Promise<{ model: string; provider: string }>;
   getFallbackModelAndProvider: () => Promise<{ model: string; provider: string }>;
   getCurrentModelAndProviderForDisplay: () => Promise<{ model: string; provider: string }>;
   getCurrentModelDisplayName: () => Promise<string>;
   getCurrentProviderDisplayName: () => Promise<string>; // Gets provider display name from subtext
   refreshCurrentModelAndProvider: () => Promise<void>;
+  /**
+   * F3. Re-read the app-wide selection from the daemon and state it, now.
+   *
+   * Resolves with what was read, or `null` when the daemon could not answer —
+   * in which case nothing on screen changed, because a failed read is not
+   * evidence that nothing is configured. A pure read: unlike the mount-time
+   * {@link refreshCurrentModelAndProvider}, it never seeds the bundled default,
+   * so neither a window gaining focus nor another window's announcement can
+   * write config.
+   */
+  syncAppModelSelection: () => Promise<AppModelSelection | null>;
 }
 
 interface ModelAndProviderProviderProps {
@@ -210,6 +291,37 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   const { read, getProviders, refreshConfig } = useConfig();
 
   /**
+   * F3 — the order in which statements of the app-wide selection may land.
+   *
+   * Three things now set `currentModel`/`currentProvider`: the mount read, a
+   * re-read (another window's announcement, this window regaining focus), and
+   * this window's own switch. Reads are async and overlap, so each takes a
+   * ticket when it is ISSUED and publishes only if no statement issued after it
+   * has already been published — a read that left before a switch landed cannot
+   * come back afterwards and restore the model the user switched away from.
+   *
+   * ⚠ Compared against what was last APPLIED, never against what was last
+   * issued: a newer read that FAILS publishes nothing, and must not thereby
+   * condemn an older one that succeeded (`docs/desktop-ui/renderer-testing-traps.md`,
+   * "Newest issued is the wrong rule").
+   */
+  const selectionIssued = useRef(0);
+  const selectionApplied = useRef(0);
+
+  const takeSelectionTicket = useCallback(() => ++selectionIssued.current, []);
+
+  const publishSelection = useCallback(
+    (ticket: number, model: string | null, provider: string | null): boolean => {
+      if (ticket < selectionApplied.current) return false;
+      selectionApplied.current = ticket;
+      setCurrentModel(model);
+      setCurrentProvider(provider);
+      return true;
+    },
+    []
+  );
+
+  /**
    * Invalidate ConfigContext's cached snapshot after a write that bypassed it.
    *
    * `setConfigProvider` writes BIOROUTER_PROVIDER/BIOROUTER_MODEL straight to
@@ -319,9 +431,12 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   }, [llamaWarmupDialog]);
 
   const changeModel = useCallback(
-    async (sessionId: string | null, model: Model) => {
+    async (sessionId: string | null, model: Model, options?: ChangeModelOptions) => {
       const modelName = model.name;
       const providerName = model.provider;
+      // See `ChangeModelOptions`: from a chat, the app-wide default moves only
+      // when the user asked for it; with no chat, it is the only thing to move.
+      const setsNewChatDefault = !sessionId || options?.alsoForNewChats === true;
       let phase = 'agent';
 
       try {
@@ -371,11 +486,13 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           // differs from the app-wide selection, would keep naming the model the
           // user just switched away from.
           //
-          // ⚠ **Here, not below.** This lands BEFORE `setConfigProvider` and
-          // before `setCurrentProvider`/`setCurrentModel`, so in the only render
-          // where the two can disagree the ROW holds the new binding and the
-          // selection still holds the old one. Announcing after the selection
-          // moved would invert that window and flash the old model.
+          // ⚠ **Here, not below.** When this switch moves the new-chat default
+          // as well, this lands BEFORE `setConfigProvider` and before the
+          // selection is published, so in the only render where the two can
+          // disagree the ROW holds the new binding and the selection still
+          // holds the old one. Announcing after the selection moved would invert
+          // that window and flash the old model. (A switch that moves only this
+          // chat never moves the selection, and the row alone is the change.)
           //
           // ⚠ And only after `updateAgentProvider` RESOLVED: a refusal (Gate A's
           // 409 for a public model on a private chat) throws past this line, and
@@ -388,24 +505,34 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           });
         }
 
-        phase = 'config';
-        await setConfigProvider({
-          body: {
-            provider: providerName,
-            model: modelName,
-          },
-          headers: await userActionHeaders(),
-          throwOnError: true,
-        });
+        if (setsNewChatDefault) {
+          phase = 'config';
+          await setConfigProvider({
+            body: {
+              provider: providerName,
+              model: modelName,
+            },
+            headers: await userActionHeaders(),
+            throwOnError: true,
+          });
 
-        setCurrentProvider(providerName);
-        setCurrentModel(modelName);
-        setModelConfigStatus('ready');
-        await refreshCachedConfig();
+          // A statement like any read, and ticketed like one: a read that left
+          // before this write landed is older than what is now on screen, and
+          // must not be allowed to come back and restore the previous model.
+          publishSelection(takeSelectionTicket(), modelName, providerName);
+          setModelConfigStatus('ready');
+          await refreshCachedConfig();
+          // F3. Every other window — and each one's next new chat — follows.
+          // After the write, never before: a receiver re-reads the daemon.
+          announceAppModelSelection();
+        }
 
         toastSuccess({
           title: CHANGE_MODEL_TOAST_TITLE,
-          msg: `${SWITCH_MODEL_SUCCESS_MSG} — using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
+          msg: switchedModelMessage(model.alias ?? modelName, model.subtext ?? providerName, {
+            chat: !!sessionId,
+            newChats: setsNewChatDefault,
+          }),
         });
         // Issue #56 DR-26 at the BIND surface. Binding a model covered by one
         // institution's agreements into a chat holding another institution's
@@ -458,7 +585,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         return false;
       }
     },
-    [prepareLlamaModel, refreshCachedConfig]
+    [prepareLlamaModel, refreshCachedConfig, publishSelection, takeSelectionTicket]
   );
 
   const getFallbackModelAndProvider = useCallback(async () => {
@@ -481,6 +608,9 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         });
         // Same API-mediated write, same stale cache (#52).
         await refreshCachedConfig();
+        // F3. A seeded default is a new-chat default like any other; a window
+        // that mounted before it was written would otherwise go on naming none.
+        announceAppModelSelection();
       } catch (error) {
         console.error('[getFallbackModelAndProvider] Failed to write to config', error);
       }
@@ -558,10 +688,10 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   }, [read, getCurrentModelAndProviderForDisplay]);
 
   const refreshCurrentModelAndProvider = useCallback(async () => {
+    const ticket = takeSelectionTicket();
     try {
       const { model, provider } = await getCurrentModelAndProvider();
-      setCurrentModel(model);
-      setCurrentProvider(provider);
+      publishSelection(ticket, model, provider);
     } catch (_error) {
       console.error('Failed to refresh current model and provider:', _error);
     } finally {
@@ -570,7 +700,75 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       // would park every consumer on a spinner that never resolves.
       setModelConfigStatus('ready');
     }
-  }, [getCurrentModelAndProvider]);
+  }, [getCurrentModelAndProvider, publishSelection, takeSelectionTicket]);
+
+  const syncAppModelSelection = useCallback(async (): Promise<AppModelSelection | null> => {
+    const ticket = takeSelectionTicket();
+    let fresh: AppModelSelection;
+    try {
+      const [model, provider] = await Promise.all([
+        read('BIOROUTER_MODEL', false),
+        read('BIOROUTER_PROVIDER', false),
+      ]);
+      // `/config/read` answers an unset key with `null`, and a failed read —
+      // a 500, an unreachable daemon — resolves with no body at all, which the
+      // generated client hands back as `undefined`. Only the first is a fact.
+      if (model === undefined || provider === undefined) return null;
+      fresh = {
+        model: typeof model === 'string' && model ? model : null,
+        provider: typeof provider === 'string' && provider ? provider : null,
+      };
+    } catch (error) {
+      console.error('Failed to re-read the app-wide model selection:', error);
+      return null;
+    }
+    publishSelection(ticket, fresh.model, fresh.provider);
+    return fresh;
+  }, [read, publishSelection, takeSelectionTicket]);
+
+  /**
+   * F3 — follow the app-wide selection for the life of this window.
+   *
+   * Two ears, one action (a pure re-read):
+   *
+   * - **Another window, or this one's `ConfigContext`, wrote it.** Every
+   *   renderer write of `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL` announces on
+   *   `sessionBindingSync`'s channel, which reaches every window of the app.
+   * - **Something outside the renderer wrote it** — `biorouter configure` in a
+   *   terminal (the app's own included), a hand-edited `config.yaml`. Nothing
+   *   announces those; the daemon's config cache is keyed on the file's stamp,
+   *   so `/agent/start` binds them at once. The window is re-read when it
+   *   regains focus or becomes visible, which is when a user who made the
+   *   change elsewhere comes back to act on it. The send path checks once more
+   *   (`useConfirmNewChatModel`), because a terminal docked INSIDE the window
+   *   never takes the window's focus away.
+   *
+   * ⚠ Mount-once, with the handler read through a ref at call time — the
+   * subscription must not be torn down and re-made because a callback's
+   * identity moved (the same rule `ConfigContext`'s catalogue subscription
+   * records, for the same reason: the subscription belongs to the mount).
+   */
+  const syncAppModelSelectionRef = useRef(syncAppModelSelection);
+  useEffect(() => {
+    syncAppModelSelectionRef.current = syncAppModelSelection;
+  }, [syncAppModelSelection]);
+
+  useEffect(() => {
+    const resync = () => {
+      void syncAppModelSelectionRef.current();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') resync();
+    };
+    const unsubscribe = subscribeAppModelSelectionChanges(resync);
+    window.addEventListener('focus', resync);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', resync);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
 
   // Derive vision support whenever the active model/provider changes
   useEffect(() => {
@@ -658,6 +856,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       getCurrentModelDisplayName,
       getCurrentProviderDisplayName,
       refreshCurrentModelAndProvider,
+      syncAppModelSelection,
     }),
     [
       currentModel,
@@ -672,6 +871,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       getCurrentModelDisplayName,
       getCurrentProviderDisplayName,
       refreshCurrentModelAndProvider,
+      syncAppModelSelection,
     ]
   );
 

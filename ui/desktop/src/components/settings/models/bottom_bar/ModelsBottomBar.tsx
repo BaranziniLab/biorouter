@@ -45,6 +45,19 @@ import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
 export const CHAT_KEEPS_ITS_MODEL_NOTE =
   'This chat keeps the model it was last set to. A model chosen elsewhere applies to new chats.';
 
+/**
+ * F3 — the heading and line this chip's dropdown carries where there is no chat
+ * yet (Home, a chat not started).
+ *
+ * There the chip names the APP-WIDE selection — the pair `/agent/start` will
+ * bind — and switching from it changes that pair for every window. "Current
+ * model" read as a property of this screen; the heading says whose model it is,
+ * and the line says how far a change reaches, beside the control that makes it.
+ */
+export const NEW_CHATS_MODEL_HEADING = 'Model for new chats';
+export const NEW_CHATS_MODEL_NOTE =
+  'New chats in every window start on this model. Existing chats keep their own.';
+
 interface ModelsBottomBarProps {
   sessionId: string | null;
   dropdownRef: React.RefObject<HTMLDivElement>;
@@ -518,11 +531,21 @@ export default function ModelsBottomBar({
         </Tooltip>
         <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
           <div className="border-b border-border-subtle px-3 py-2.5">
-            <div className="text-sm font-medium text-text-default">Current model</div>
+            <div className="text-sm font-medium text-text-default">
+              {sessionId ? 'Current model' : NEW_CHATS_MODEL_HEADING}
+            </div>
             <div className="mt-0.5 text-supporting leading-4 text-text-muted">
               {shownModelName}
               {shownProviderName && ` · ${shownProviderName}`}
             </div>
+            {!sessionId && (
+              <div
+                data-testid="new-chats-model-note"
+                className="mt-1 text-[11px] leading-4 text-text-muted"
+              >
+                {NEW_CHATS_MODEL_NOTE}
+              </div>
+            )}
             {/* Under the heading "Current model", so it must be about the
                 model. It used to be `privacyLine`. */}
             {modelTierWords && (
