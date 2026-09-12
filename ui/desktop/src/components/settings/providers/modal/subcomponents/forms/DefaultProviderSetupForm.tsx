@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Input } from '../../../../../ui/input';
+import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
 import { ProviderDetails, ConfigKey } from '../../../../../../api';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../../../../ui/collapsible';
@@ -127,7 +128,8 @@ export default function DefaultProviderSetupForm({
       .trim();
   };
 
-  const getFieldLabel = (parameter: ConfigKey) => {
+  /** The field's name in words — the label's text, and what a reveal toggle is called. */
+  const getFieldName = (parameter: ConfigKey): string => {
     const name = parameter.name.toLowerCase();
     if (name.includes('api_key')) return 'API Key';
     if (name.includes('api_url') || name.includes('host')) return 'API Host';
@@ -137,10 +139,20 @@ export default function DefaultProviderSetupForm({
     if (parameter_name.startsWith(provider.name.toUpperCase().replace('-', '_'))) {
       parameter_name = parameter_name.slice(provider.name.length + 1);
     }
-    let pretty = envToPrettyName(parameter_name);
+    return envToPrettyName(parameter_name);
+  };
+
+  const getFieldLabel = (parameter: ConfigKey) => {
+    const name = parameter.name.toLowerCase();
+    // The recognised roles are labelled by the role alone; everything else also
+    // names the config key it writes.
+    if (['api_key', 'api_url', 'host', 'models'].some((role) => name.includes(role))) {
+      return getFieldName(parameter);
+    }
+
     return (
       <span>
-        <span>{pretty}</span>
+        <span>{getFieldName(parameter)}</span>
         <span className="text-xs text-text-muted font-normal ml-1.5">({parameter.name})</span>
       </span>
     );
@@ -160,37 +172,49 @@ export default function DefaultProviderSetupForm({
   }
 
   const renderParametersList = (parameters: ConfigKey[]) => {
-    return parameters.map((parameter) => (
-      <div key={parameter.name}>
-        <label className="block text-sm font-medium text-text-default mb-1">
-          {getFieldLabel(parameter)}
-          {parameter.required && <span className="text-text-danger ml-1">*</span>}
-        </label>
-        <Input
-          type="text"
-          value={getRenderValue(parameter)}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-            setConfigValues((prev) => {
-              const newValue = { ...(prev[parameter.name] || {}), value: e.target.value };
-              return {
-                ...prev,
-                [parameter.name]: newValue,
-              };
-            });
-          }}
-          placeholder={getPlaceholder(parameter)}
-          className={`w-full h-9 px-3 rounded-element shadow-none text-sm ${
-            validationErrors[parameter.name]
-              ? 'border-2 border-border-danger'
-              : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
-          } bg-background-default placeholder:text-text-muted text-text-default`}
-          required={parameter.required}
-        />
-        {validationErrors[parameter.name] && (
-          <p className="text-text-danger text-sm mt-1">{validationErrors[parameter.name]}</p>
-        )}
-      </div>
-    ));
+    return parameters.map((parameter) => {
+      const fieldId = `provider-config-${parameter.name}`;
+      const fieldProps = {
+        id: fieldId,
+        value: getRenderValue(parameter),
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+          setConfigValues((prev) => {
+            const newValue = { ...(prev[parameter.name] || {}), value: e.target.value };
+            return {
+              ...prev,
+              [parameter.name]: newValue,
+            };
+          });
+        },
+        placeholder: getPlaceholder(parameter),
+        className: `w-full h-9 px-3 rounded-element shadow-none text-sm ${
+          validationErrors[parameter.name]
+            ? 'border-2 border-border-danger'
+            : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
+        } bg-background-default placeholder:text-text-muted text-text-default`,
+        required: parameter.required,
+      };
+
+      return (
+        <div key={parameter.name}>
+          <label htmlFor={fieldId} className="block text-sm font-medium text-text-default mb-1">
+            {getFieldLabel(parameter)}
+            {parameter.required && <span className="text-text-danger ml-1">*</span>}
+          </label>
+          {/* F5: a secret is masked, exactly as the custom-provider form masks
+              its key — the same primitive, so the two cannot diverge again. A
+              non-secret parameter (an endpoint, a region) stays readable. */}
+          {parameter.secret ? (
+            <SecretInput {...fieldProps} revealLabel={getFieldName(parameter)} />
+          ) : (
+            <Input {...fieldProps} type="text" />
+          )}
+          {validationErrors[parameter.name] && (
+            <p className="text-text-danger text-sm mt-1">{validationErrors[parameter.name]}</p>
+          )}
+        </div>
+      );
+    });
   };
 
   let aboveFoldParameters = parameters.filter((p) => p.required);

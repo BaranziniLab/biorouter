@@ -239,11 +239,11 @@ pub fn unwrap_json_error(raw: &str) -> String {
 pub fn unavailable_error(kind: CodingAgentKind, availability: &AgentAvailability) -> ProviderError {
     match &availability.auth {
         AuthState::NotInstalled => ProviderError::ExecutionError(format!(
-            "{} is not installed, or is not on a path Biorouter searches.\n\n\
+            "{}.\n\n\
              Install it with:\n    {}\n\n\
              If it is already installed somewhere unusual (nvm, volta, bun, asdf), set {} to its \
              full path in Settings instead.",
-            kind.display_name(),
+            kind.not_installed_summary(),
             kind.install_hint(),
             kind.command_config_key(),
         )),

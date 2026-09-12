@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
 import ProviderCatalog, { defaultCatalogTab, tabFromHint } from './ProviderCatalog';
@@ -11,12 +12,26 @@ const mocks = vi.hoisted(() => ({
   ackPrivacyDisclosure: vi.fn(),
   fetchCodingAgentStatus: vi.fn(),
   upsert: vi.fn(),
+  checkProvider: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getPrivacyDisclosure: mocks.getPrivacyDisclosure,
   ackPrivacyDisclosure: mocks.ackPrivacyDisclosure,
+  // The configure form's submit handler validates the saved keys through it.
+  checkProvider: mocks.checkProvider,
+}));
+// The configure modal asks which provider is bound before offering "Remove".
+vi.mock('../../ModelAndProviderContext', () => ({
+  useModelAndProvider: () => ({
+    getCurrentModelAndProvider: async () => ({ provider: 'versa_azure', model: 'm' }),
+  }),
+}));
+// A successful save opens the model picker; what it shows is its own suite's
+// business (`SwitchModelModal.*.test.tsx`), not this one's.
+vi.mock('../models/subcomponents/SwitchModelModal', () => ({
+  SwitchModelModal: () => <div data-testid="switch-model-modal" />,
 }));
 vi.mock('../../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
@@ -67,6 +82,7 @@ type Backend = {
   affiliation?: ProviderDetails['affiliation'];
   resolved_tier?: ProviderTier | null;
   is_configured?: boolean;
+  unavailable_reason?: string | null;
 };
 
 function provider(name: string, backend: Backend = {}, display = name): ProviderDetails {
@@ -76,6 +92,7 @@ function provider(name: string, backend: Backend = {}, display = name): Provider
     provider_type: 'Builtin',
     affiliation: backend.affiliation,
     resolved_tier: backend.resolved_tier ?? null,
+    unavailable_reason: backend.unavailable_reason ?? null,
     metadata: {
       config_keys: [],
       default_model: '',
@@ -387,6 +404,163 @@ describe('ProviderCatalog — AI agents', () => {
     fireEvent.click(await screen.findByTestId('provider-row-toggle-claude_code'));
     fireEvent.click(screen.getByTestId('coding-agent-recheck-claude_code'));
     await waitFor(() => expect(mocks.fetchCodingAgentStatus).toHaveBeenCalledTimes(2));
+  });
+
+  /**
+   * F6 of the 2026-09-10 provider QA run, as the renderer can reproduce it: the
+   * row read "Codex · Not installed" and "✓ Configured" on one line.
+   *
+   * The check is `is_configured`, and the daemon no longer grants it to a coding
+   * agent whose CLI does not resolve — but the catalog reads the provider list
+   * once, when the page opens. Here the list was read while Codex was installed;
+   * the CLI is then removed and "Check again" says so. Unless the re-check also
+   * re-reads the list, the stale check sits beside the fresh pill.
+   */
+  it('drops the Configured check when a re-check finds the CLI gone', async () => {
+    const NOT_INSTALLED = 'Codex is not installed, or is not on a path Biorouter searches';
+    mocks.fetchCodingAgentStatus
+      .mockResolvedValueOnce({ agents: [agent('codex', { state: 'signed_in_subscription' })] })
+      .mockResolvedValueOnce({ agents: [agent('codex', { state: 'not_installed' })] });
+
+    function CatalogWithLiveList() {
+      const [rows, setRows] = useState([provider('codex', {}, 'Codex')]);
+      return (
+        <ProviderCatalog
+          providers={rows}
+          mode="settings"
+          configuredProvider={null}
+          // What the daemon serves once the CLI is gone.
+          refreshProviders={() =>
+            setRows([
+              provider(
+                'codex',
+                { is_configured: false, unavailable_reason: NOT_INSTALLED },
+                'Codex'
+              ),
+            ])
+          }
+        />
+      );
+    }
+
+    render(<CatalogWithLiveList />);
+    clickTab('commercial');
+    const row = await screen.findByTestId('provider-card-codex');
+    await within(row).findByText('Ready · signed in on your subscription');
+    expect(within(row).getByText('Configured')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('provider-row-toggle-codex'));
+    fireEvent.click(screen.getByTestId('coding-agent-recheck-codex'));
+
+    await within(row).findByText('Not installed');
+    await waitFor(() => expect(within(row).queryByText('Configured')).toBeNull());
+  });
+
+  // The other half: the mount probe must not re-read a list the page fetched
+  // at the same moment, or opening the catalog costs two provider sweeps.
+  it('re-reads the provider list only on an explicit re-check', async () => {
+    const refreshProviders = vi.fn();
+    mocks.fetchCodingAgentStatus.mockResolvedValue({
+      agents: [agent('codex', { state: 'not_installed' })],
+    });
+    render(
+      <ProviderCatalog
+        providers={[provider('codex', { is_configured: false }, 'Codex')]}
+        mode="settings"
+        configuredProvider={null}
+        refreshProviders={refreshProviders}
+      />
+    );
+    clickTab('commercial');
+    await screen.findByText('Not installed');
+    expect(refreshProviders).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('provider-row-toggle-codex'));
+    fireEvent.click(screen.getByTestId('coding-agent-recheck-codex'));
+    await waitFor(() => expect(refreshProviders).toHaveBeenCalledTimes(1));
+  });
+
+  /**
+   * The same contradiction from the other side, found by driving the running
+   * app: `CODEX_COMMAND` corrected in the configure form. The save re-read the
+   * provider list, so the check came back — beside a pill still saying "Not
+   * installed" from the probe taken when the path was wrong. A change to an
+   * agent's setup has to re-probe as well.
+   */
+  it('re-probes when an agent’s command key is corrected in the configure form', async () => {
+    const NOT_INSTALLED = 'Codex is not installed, or is not on a path Biorouter searches';
+    const codexKeys = {
+      config_keys: [{ name: 'CODEX_COMMAND', required: true, secret: false, default: 'codex' }],
+    };
+    const codexRow = (backend: Backend) => {
+      const row = provider('codex', backend, 'Codex');
+      return { ...row, metadata: { ...row.metadata, ...codexKeys } } as ProviderDetails;
+    };
+    mocks.checkProvider.mockResolvedValue({ data: {} });
+    mocks.upsert.mockResolvedValue(undefined);
+    mocks.fetchCodingAgentStatus
+      .mockResolvedValueOnce({ agents: [agent('codex', { state: 'not_installed' })] })
+      .mockResolvedValueOnce({ agents: [agent('codex', { state: 'signed_in_subscription' })] });
+
+    function CatalogWithLiveList() {
+      const [rows, setRows] = useState([
+        codexRow({ is_configured: false, unavailable_reason: NOT_INSTALLED }),
+      ]);
+      return (
+        <ProviderCatalog
+          providers={rows}
+          mode="settings"
+          configuredProvider={null}
+          refreshProviders={() => setRows([codexRow({ is_configured: true })])}
+        />
+      );
+    }
+
+    render(<CatalogWithLiveList />);
+    clickTab('commercial');
+    const row = await screen.findByTestId('provider-card-codex');
+    await within(row).findByText('Not installed');
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Configure' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+
+    await within(row).findByText('Ready · signed in on your subscription');
+    expect(within(row).getByText('Configured')).toBeInTheDocument();
+    expect(mocks.upsert).toHaveBeenCalledWith('CODEX_COMMAND', 'codex', false);
+  });
+
+  // "Use Codex" saves the command key, which is what makes the daemon report it
+  // configured — so the row behind the picker that opens must re-read the list.
+  it('re-reads the provider list after "Use" saves an agent’s command key', async () => {
+    const refreshProviders = vi.fn();
+    mocks.upsert.mockResolvedValue(undefined);
+    mocks.fetchCodingAgentStatus.mockResolvedValue({
+      agents: [agent('codex', { state: 'signed_in_subscription' })],
+    });
+    render(
+      <ProviderCatalog
+        providers={[provider('codex', { is_configured: false }, 'Codex')]}
+        mode="settings"
+        configuredProvider={null}
+        refreshProviders={refreshProviders}
+      />
+    );
+    clickTab('commercial');
+    fireEvent.click(await screen.findByTestId('provider-row-toggle-codex'));
+    fireEvent.click(await screen.findByTestId('coding-agent-connect-codex'));
+
+    await screen.findByTestId('switch-model-modal');
+    expect(refreshProviders).toHaveBeenCalledTimes(1);
+    expect(mocks.upsert).toHaveBeenCalledWith('CODEX_COMMAND', 'codex', false);
+  });
+
+  /** The control: a usable agent keeps its check, so the case above is not "never show it". */
+  it('keeps the Configured check on an agent that is ready', async () => {
+    withAgents([agent('claude_code', { state: 'signed_in_subscription' })]);
+    clickTab('commercial');
+    const row = await screen.findByTestId('provider-card-claude_code');
+    await within(row).findByText('Ready · signed in on your subscription');
+    expect(within(row).getByText('Configured')).toBeInTheDocument();
   });
 
   it('puts the agents ahead of the pinned API providers, in their fixed order', async () => {
