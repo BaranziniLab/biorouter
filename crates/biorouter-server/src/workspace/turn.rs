@@ -1347,11 +1347,13 @@ mod tests {
 
     /// NOTE — two things about every test in this module:
     ///
-    /// 1. `AppState::new()` opens the **REAL user session database** (it goes
+    /// 1. `AppState::new()` opens the **ONE shared session database** (it goes
     ///    through `AgentManager::instance()` → `SessionManager::instance()`;
-    ///    `routes/session.rs:1122` and `:1414` carry the same warning). These
-    ///    tests create rows in the developer's own history. Keep session names
-    ///    unique and never assert on total row counts.
+    ///    `routes/session.rs` carries the same warning). Every test in the
+    ///    binary creates rows in the same store, so keep session names unique and
+    ///    never assert on total row counts. It is a throwaway root rather than
+    ///    the developer's own history — `src/test_sandbox.rs` pins it there
+    ///    before the first test runs.
     /// 2. The `TempDir` is the session's **working dir**, not a database.
     ///    `create_session`'s first parameter is `working_dir`
     ///    (`session_manager.rs:1191-1196`). An earlier draft did

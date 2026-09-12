@@ -237,7 +237,11 @@ export function KnowledgeProvider({
     try {
       // With the proof, for the reason `fetchKnowledgeSelection` gives: a daemon that
       // filters what an unproven caller may see would otherwise hand this list
-      // back with the user's own private bases missing.
+      // back with the user's own private bases missing — and the effects below
+      // prune the selection AGAINST this list, so a missing base reads as "that
+      // base was deleted" and would be dropped from the primary and the hidden
+      // set. The daemon also refuses such a caller a move it cannot see
+      // (`set_selection_within`), but the list the user is shown must be whole.
       const res = await listBases({ headers: await userActionHeaders(), throwOnError: true });
       setBases(res.data || []);
       setBasesLoaded(true);

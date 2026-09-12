@@ -4483,8 +4483,9 @@ mod tests {
 /// ⚠ SCOPE, because the plan's sketch of the first test reads
 /// `tick(&job).await` and this one does not. `execute_job` builds its agent with
 /// `Agent::new()`, whose session manager is the process-wide
-/// `SessionManager::instance()` — the developer's REAL `~/.config/biorouter`
-/// store — and then drives a real `Agent::reply` against a real provider built
+/// `SessionManager::instance()` — the ONE store this whole test binary shares
+/// (a throwaway root, pinned by `crate::test_sandbox`, but shared) — and then
+/// drives a real `Agent::reply` against a real provider built
 /// from the registry (`versa_azure` needs a UCSF credential). A unit test cannot
 /// tick a job without writing sessions into the user's own history and calling a
 /// paid endpoint. What it CAN do, and what C2 is actually about, is the two

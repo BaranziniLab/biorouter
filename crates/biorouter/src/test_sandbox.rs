@@ -40,23 +40,41 @@ static SANDBOX_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 ///
 /// An outer `BIOROUTER_PATH_ROOT` wins: the Task 33 gate exports its own
 /// `mktemp -d` root, and a harness that wants to inspect what a run wrote must
-/// be able to choose where it lands. Either way the value that ends up in
-/// effect is recorded in [`SANDBOX_ROOT`] — this is the one moment in the
-/// process's life at which reading the variable answers the right question,
-/// because no test has run yet.
+/// be able to choose where it lands.
+///
+/// ⚠ Setting the variable is only half of it. `BIOROUTER_PATH_ROOT` is
+/// process-global and dozens of tests here relocate it under a `TempDir` of
+/// their own (`env_lock::lock_env`), so whichever test first reaches the session
+/// store still decides where this binary's `sessions.db` lives — and if that was
+/// a test holding such a lock, the store is pinned inside a directory that is
+/// unlinked moments later. The already-open connection keeps answering, so it
+/// stays invisible until two tasks want the pool at once and it has to open a
+/// second connection: `(code: 14) unable to open database file`, surfacing as
+/// whatever the *next* test was asserting. So the ctor also freezes the store's
+/// root here, which costs one environment read and a `PathBuf` — no pool, no
+/// disk, no runtime.
+///
+/// ⚠ …and freezing one singleton is only half of THAT. A test that resolves a
+/// path itself, rather than through a frozen cell, still needs to know which
+/// root is its own — so whichever value ends up in effect is also recorded in
+/// [`SANDBOX_ROOT`] here. This is the one moment in the process's life at which
+/// reading the variable answers that question, because no test has run yet.
 #[ctor::ctor]
 fn sandbox_config_root_for_the_lib_test_binary() {
-    if let Some(outer) = std::env::var_os("BIOROUTER_PATH_ROOT") {
-        record_sandbox_root(&outer);
-        return;
+    if std::env::var_os("BIOROUTER_PATH_ROOT").is_none() {
+        let root = tempfile::TempDir::new().expect("scratch config root for the lib test binary");
+        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+        // Leaked deliberately: a `static` is never dropped, which is exactly the
+        // lifetime the sandbox needs — it must outlive the last test in the binary.
+        static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let _ = ROOT.set(root);
     }
-    let root = tempfile::TempDir::new().expect("scratch config root for the lib test binary");
-    std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
-    record_sandbox_root(root.path().as_os_str());
-    // Leaked deliberately: a `static` is never dropped, which is exactly the
-    // lifetime the sandbox needs — it must outlive the last test in the binary.
-    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let _ = ROOT.set(root);
+    // Both branches, and after the set: an outer root is recorded as-is, and one
+    // we minted is recorded as the value we just installed.
+    if let Some(root) = std::env::var_os("BIOROUTER_PATH_ROOT") {
+        record_sandbox_root(&root);
+    }
+    let _ = crate::session::session_manager::SessionManager::shared_store_root();
 }
 
 fn record_sandbox_root(root: &std::ffi::OsStr) {
@@ -258,5 +276,33 @@ mod tests {
         assert!(crate::config::paths::Paths::config_dir().starts_with(super::sandbox_path_root()));
         assert!(crate::extension_install::brxt::extensions_root()
             .starts_with(super::sandbox_path_root()));
+    }
+
+    /// The same claim for the session store, and it needs its own test because
+    /// the two singletons are frozen by different calls.
+    ///
+    /// `Paths::data_dir()` re-reads the environment on every call, so it answers
+    /// correctly even in a binary whose store was already pinned somewhere else.
+    /// `shared_store_root()` is the frozen value, and it is the one that decides
+    /// whether this binary's `sessions.db` can end up inside a `TempDir` a test
+    /// deletes underneath it.
+    ///
+    /// ⚠ The expected root is the **recorded** one, not `std::env::var`. It
+    /// arrived from #282 reading the variable live, which is the hazard the rest
+    /// of this module exists to close: a sibling relocating the root while this
+    /// test runs would make it compare a frozen store path against that
+    /// sibling's `TempDir` and fail, blaming the store for a harness race.
+    #[test]
+    fn the_lib_test_binary_session_store_is_sandboxed() {
+        let root = super::sandbox_path_root();
+        let pinned = crate::session::session_manager::SessionManager::shared_store_root();
+        assert!(
+            pinned.starts_with(root),
+            "the process session store is pinned at {}, outside the sandbox at {root}. \
+             Something resolved it before the ctor did, so a test that relocates \
+             BIOROUTER_PATH_ROOT can move this binary's sessions.db into a TempDir it \
+             then deletes.",
+            pinned.display()
+        );
     }
 }

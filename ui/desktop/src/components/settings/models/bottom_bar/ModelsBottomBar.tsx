@@ -1,5 +1,5 @@
 import { SlidersHorizontal, Brain } from '../../../icons/app-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { NO_MODEL_CHIP_LABEL, hasNoModelConfigured } from '../../../composerNoProvider';
 import { SwitchModelModal } from '../subcomponents/SwitchModelModal';
@@ -31,6 +31,7 @@ import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy
 import { isBrowserSurface } from '../../../../utils/surface';
 import type { ProviderTier, SessionClassification } from '../../../../api/types.gen';
 import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
+import { subscribeAppModelSelectionChanges } from '../../../../utils/sessionBindingSync';
 
 /**
  * Round 3 / N1 — the one line explaining why the chip may not name the model the
@@ -202,58 +203,77 @@ export default function ModelsBottomBar({
    */
   const effectiveProvider = effectiveModel?.provider ?? currentProvider;
 
-  // Check if lead/worker mode is active
-  useEffect(() => {
-    const checkLeadWorker = async () => {
-      try {
-        const leadModel = await read('BIOROUTER_LEAD_MODEL', false);
-        setIsLeadWorkerActive(!!leadModel);
-      } catch (error) {
-        console.error('Error checking lead model:', error);
-        setIsLeadWorkerActive(false);
-      }
-    };
-    checkLeadWorker();
-  }, [read]);
-
-  // Refresh lead/worker status when modal closes
-  const handleLeadWorkerModalClose = () => {
-    setIsLeadWorkerModalOpen(false);
-    // Refresh the lead/worker status after modal closes
-    const checkLeadWorker = async () => {
-      try {
-        const leadModel = await read('BIOROUTER_LEAD_MODEL', false);
-        const currentModel = await read('BIOROUTER_MODEL', false);
-        setIsLeadWorkerActive(!!leadModel);
-        setLeadModelName((leadModel as string) || '');
-        setCurrentActiveModel((currentModel as string) || '');
-      } catch (error) {
-        console.error('Error checking lead model after modal close:', error);
-        setIsLeadWorkerActive(false);
-      }
-    };
-    checkLeadWorker();
-  };
-
-  // Since currentModelInfo.mode is not working, let's determine mode differently
-  // We'll need to get the lead model and compare it with the current model
+  // Which half of a lead/worker pair the app-wide selection names.
+  // `BIOROUTER_MODEL` IS the worker while the pair is on, so the role has to be
+  // derived by comparing it against `BIOROUTER_LEAD_MODEL` — there is no
+  // "which half" key to read.
   const [leadModelName, setLeadModelName] = useState<string>('');
   const [currentActiveModel, setCurrentActiveModel] = useState<string>('');
 
-  // Get lead model name and current model for comparison
-  useEffect(() => {
-    const getModelInfo = async () => {
-      try {
-        const leadModel = await read('BIOROUTER_LEAD_MODEL', false);
-        const currentModel = await read('BIOROUTER_MODEL', false);
-        setLeadModelName((leadModel as string) || '');
-        setCurrentActiveModel((currentModel as string) || '');
-      } catch (error) {
-        console.error('Error getting model info:', error);
-      }
-    };
-    getModelInfo();
+  /**
+   * One read for the whole lead/worker question: is a pair configured, what is
+   * the lead, and which of the two does `BIOROUTER_MODEL` currently name.
+   *
+   * ⚠ **The three answers move together or not at all.** They used to be three
+   * reads across two effects and a modal-close handler, so `isLeadWorkerActive`
+   * could be refreshed while `currentActiveModel` stayed behind — and that
+   * comparison is the whole of `modelMode`. A half-refreshed chip puts the
+   * wrong role on the right model, which is worse than carrying no role.
+   */
+  const refreshLeadWorker = useCallback(async () => {
+    try {
+      const [leadModel, activeModel] = await Promise.all([
+        read('BIOROUTER_LEAD_MODEL', false),
+        read('BIOROUTER_MODEL', false),
+      ]);
+      setIsLeadWorkerActive(!!leadModel);
+      setLeadModelName((leadModel as string) || '');
+      setCurrentActiveModel((activeModel as string) || '');
+    } catch (error) {
+      console.error('Error reading the lead/worker selection:', error);
+      setIsLeadWorkerActive(false);
+    }
   }, [read]);
+
+  /**
+   * F3's other half. Saving a lead/worker pair rewrites `BIOROUTER_MODEL` to
+   * the WORKER, and that write is announced on `sessionBindingSync`, so since
+   * #247 every window's chip already follows the new *value*. Nothing told the
+   * other windows about the *role*: they kept the `isLeadWorkerActive: false`
+   * they had read at mount, so the window that saved drew
+   * `gpt-4.1-mini-2025-04-14 (worker)` and every other window drew a bare
+   * `gpt-4.1-mini-2025-04-14`.
+   *
+   * Two windows of one app then said different things about one selection, and
+   * the one saying less was saying the more misleading thing: a bare name reads
+   * as "this is simply the model", with nothing to suggest a lead is configured
+   * at all.
+   *
+   * ⚠ Mount-once, with the handler reached through a ref — the subscription
+   * belongs to the mount, not to a callback's identity. Hanging it off
+   * `refreshLeadWorker` would tear it down and remake it every time `read`'s
+   * identity moved (the rule `ConfigContext`'s catalogue subscription and
+   * `ModelAndProviderContext`'s selection subscription both record).
+   */
+  const refreshLeadWorkerRef = useRef(refreshLeadWorker);
+  useEffect(() => {
+    refreshLeadWorkerRef.current = refreshLeadWorker;
+  }, [refreshLeadWorker]);
+
+  useEffect(() => {
+    void refreshLeadWorkerRef.current();
+    return subscribeAppModelSelectionChanges(() => {
+      void refreshLeadWorkerRef.current();
+    });
+  }, []);
+
+  // Refresh when the modal closes as well. The save inside it announces, so
+  // this covers a close that wrote nothing through that channel — a cancel
+  // after an edit, or a save that failed part-way.
+  const handleLeadWorkerModalClose = () => {
+    setIsLeadWorkerModalOpen(false);
+    void refreshLeadWorker();
+  };
 
   // Determine the mode based on which model is currently active
   const modelMode = isLeadWorkerActive

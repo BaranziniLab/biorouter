@@ -7319,6 +7319,30 @@ stop: that is a different product decision and it is [Open question 15](#open-qu
 > proves nothing, and the user proves it on every request. Half (b) of
 > [Open question 15](#open-questions) is answered by this. Record:
 > [`privacy-tiers.md`](privacy-tiers.md#shipped), the knowledge-base tier entry.
+>
+> ⚠ **AMENDED 2026-09-12 by an adversarial review, which found the sentence above true and
+> incomplete.** "Every route that names a base by `{id}`" was the right set to layer and the wrong
+> set to stop at: `POST /knowledge/bases` names a base by `body.id` rather than by path, sat on the
+> outer router, and **refuses an id that is taken** — so a caller holding only the daemon secret
+> POSTed a guessed id and read `400 kb '<id>' already exists at <absolute config path>` when a
+> **private** base held it, and `200` when nothing did. KB ids are user-authored names, so a short
+> dictionary enumerated by name exactly the bases `KNOWLEDGE_BASE_OUT_OF_REACH` exists to withhold.
+> It is gated now by `HttpCaller::mints_knowledge_base`, which takes **no id** — that is what makes
+> the answer the same for a private id, a public id and an id that has never existed — and neither
+> error body on that route names a directory any more. What it costs is stated rather than hidden: a
+> caller holding nothing but the secret can no longer create a knowledge base over HTTP, which is
+> the same answer it already got for every private base on the machine.
+>
+> The second half of the same finding was about the layer itself. `Router::route_layer` is a
+> **snapshot** — it wraps the routes present when it is called and, silently, nothing added
+> afterwards — so "and any route added to it later is gated by construction", which
+> `routes/knowledge.rs` asserted in as many words, was never something axum offered. Measured: a
+> `{id}` route appended after that call answered **200 with a private base's manifest** to a
+> secret-only caller. The sub-router is now built ungated by `base_routes()` and the layer is applied
+> to its return value at its single call site, so appending a route there is gated and appending one
+> at the call site is visibly outside the gate;
+> `every_route_that_names_a_base_is_inside_the_gated_sub_router` reads the file rather than trusting
+> either sentence, and also asserts that every gated route is actually driven by the H2 probe list.
 
 - [ ] **Step 1: Write the failing tests**
 

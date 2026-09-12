@@ -426,8 +426,42 @@ impl std::str::FromStr for SessionType {
     }
 }
 
+/// The data directory the process-global session store lives under, resolved
+/// **once** per process.
+///
+/// Split out of [`SESSION_STORAGE`] on purpose, and the split is the whole fix
+/// for a Windows CI flake that rotated through the route tests. Resolving the
+/// path and building the pool used to be one `LazyLock`, so the path was frozen
+/// at the instant the first caller touched the store — an instant nothing owns,
+/// because the tests run in parallel. A test that relocates
+/// `BIOROUTER_PATH_ROOT` under a `TempDir` (for config/skills isolation) could
+/// therefore win that race and pin the whole process's `sessions.db` inside a
+/// directory that is unlinked when its `TempDir` drops.
+///
+/// The symptom is nothing like the cause. After the unlink the pool's already
+/// open connection keeps answering — SQLite on POSIX does not care that its
+/// inode has no name any more — so a *serial* query still succeeds. It is the
+/// moment two tasks want the pool at once, and it has to open a **second**
+/// connection, that the vanished directory bites: `(code: 14) unable to open
+/// database file`. Every caller turns that into its own failure, and
+/// `GET /sessions/activity` turns it into a 500, which is what
+/// `activity_clamps_an_absurd_window` measured as `left: 500 right: 200`. The
+/// victim is whichever test queried next, so the failing name rotates and the
+/// same test can pass in one binary and fail in another.
+///
+/// Freezing the path separately lets a test binary pin it — cheaply, with no
+/// pool, no I/O and no runtime — *before* the first test runs, via
+/// [`SessionManager::shared_store_root`]. See `src/test_sandbox.rs` in this
+/// crate and in `biorouter-server`.
+///
+/// Production behaviour is unchanged: nothing outside a test mutates
+/// `BIOROUTER_PATH_ROOT` after start, so this resolves to the same directory it
+/// always did, and it was already effectively frozen — only the instant it is
+/// captured moved earlier.
+static SHARED_STORE_ROOT: LazyLock<PathBuf> = LazyLock::new(Paths::data_dir);
+
 static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
-    LazyLock::new(|| Arc::new(SessionStorage::new(Paths::data_dir())));
+    LazyLock::new(|| Arc::new(SessionStorage::new(SHARED_STORE_ROOT.clone())));
 
 pub const DEFAULT_SESSION_NAME: &str = "New chat";
 
@@ -538,6 +572,37 @@ pub struct SessionSummary {
     /// private chat without an N+1 `get_session` per row.
     #[serde(default = "SessionClassification::public")]
     pub privacy_tier: SessionClassification,
+}
+
+/// Where a sidebar page resumes: the sort key of the last row that page emitted.
+///
+/// ⚠ **A keyset, deliberately not an offset** (adversarial security review
+/// 2026-09-12, HIGH). `GET /sessions/sidebar` pages a view that omits the chats
+/// its caller may not see, and it used to resume by *position in the unfiltered
+/// ordering* — so the continuation value counted the rows it had hidden, and a
+/// caller that polled it watched private chats start and finish, because
+/// `updated_at` is stamped on every token written. A keyset is a fact about a
+/// row the caller was **just handed**, so it can carry nothing the caller did
+/// not already have.
+///
+/// `updated_at` is the **stored text**, verbatim, not a re-serialised
+/// `DateTime`. Rows stamped by `datetime('now')` and rows written from a bound
+/// `DateTime<Utc>` do not spell the same instant the same way, and the ordering
+/// this resumes into compares the stored bytes — so a round-trip through
+/// `chrono` would put the boundary in the wrong place for one of the two
+/// spellings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarCursor {
+    pub updated_at: String,
+    pub id: String,
+}
+
+/// One row of a sidebar page: the summary the caller is shown, and the
+/// [`SidebarCursor`] a later page resumes after it.
+#[derive(Debug, Clone)]
+pub struct SidebarRow {
+    pub summary: SessionSummary,
+    pub cursor: SidebarCursor,
 }
 
 /// One turn's token usage, applied additively and atomically in SQL.
@@ -1579,6 +1644,23 @@ impl SessionManager {
         }
     }
 
+    /// The data directory [`SessionManager::instance`]'s store resolves
+    /// `sessions/sessions.db` under, resolved once per process (see
+    /// [`SHARED_STORE_ROOT`]).
+    ///
+    /// Reading it is what *freezes* it, and that side effect is the point of the
+    /// call in a test binary's `#[ctor]`: it costs one environment read and a
+    /// `PathBuf`, builds no pool, touches no disk and needs no async runtime, so
+    /// it is safe to run before `main`. Once frozen, no later relocation of
+    /// `BIOROUTER_PATH_ROOT` can move the process's session database into a
+    /// directory that test owns and then deletes.
+    ///
+    /// In production this is a plain accessor — the daemon's data dir does not
+    /// move while it runs.
+    pub fn shared_store_root() -> &'static Path {
+        &SHARED_STORE_ROOT
+    }
+
     pub fn storage(&self) -> &Arc<SessionStorage> {
         &self.storage
     }
@@ -1965,6 +2047,28 @@ impl SessionManager {
     ) -> Result<Vec<SessionSummary>> {
         self.storage
             .list_session_summaries(limit, offset, include_subagents, include_empty)
+            .await
+    }
+
+    /// One keyset page of the sidebar's view. See
+    /// [`SessionStorage::list_session_summaries_page`] — in particular why
+    /// `public_only` filters in SQL rather than in the caller.
+    pub async fn list_session_summaries_page(
+        &self,
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        include_subagents: bool,
+        include_empty: bool,
+        public_only: bool,
+    ) -> Result<Vec<SidebarRow>> {
+        self.storage
+            .list_session_summaries_page(
+                limit,
+                after,
+                include_subagents,
+                include_empty,
+                public_only,
+            )
             .await
     }
 
@@ -3074,6 +3178,24 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
             // yields None rather than erroring.
             diverged_from: row.try_get("diverged_from").ok().flatten(),
             privacy_tier: read_privacy_tier(row),
+        })
+    }
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SidebarRow {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let summary = SessionSummary::from_row(row)?;
+        Ok(SidebarRow {
+            cursor: SidebarCursor {
+                // The projection aliases `CAST(s.updated_at AS TEXT)` to this
+                // name, so it is the bytes the ordering compares rather than a
+                // value chrono has been through. See [`SidebarCursor`].
+                updated_at: row.try_get("cursor_updated_at")?,
+                id: summary.id.clone(),
+            },
+            summary,
         })
     }
 }
@@ -6915,6 +7037,97 @@ impl SessionStorage {
         sqlx::query_as::<_, SessionSummary>(&query)
             .bind(i64::from(limit))
             .bind(i64::from(offset))
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// [`Self::list_session_summaries`] as a **keyset** page over a view that
+    /// may be filtered, for `GET /sessions/sidebar`.
+    ///
+    /// Two differences from the offset form, and both exist for the same reason
+    /// (adversarial security review 2026-09-12, HIGH):
+    ///
+    /// * `public_only` filters **in SQL**. The route used to fetch unfiltered
+    ///   windows and drop the private rows in Rust, which made every position it
+    ///   reported a count of what it had hidden. `sessions.privacy_tier` is a
+    ///   real column, so the rows the caller may not see never leave the
+    ///   database and there is nothing left to count. The comparison is
+    ///   `= 'public'`, which fails **closed** exactly as [`read_privacy_tier`]
+    ///   does: a row whose column is absent, `NULL` or unrecognised is withheld
+    ///   rather than shown.
+    /// * the page resumes from a [`SidebarCursor`] — the sort key of the last
+    ///   row the previous page emitted — rather than from a row count.
+    ///
+    /// The keyset predicate mirrors `ORDER BY s.updated_at DESC, s.id ASC`
+    /// exactly: strictly older, or the same instant with a larger id. Both sides
+    /// of the comparison are `CAST(... AS TEXT)` so the boundary is evaluated on
+    /// the same bytes the cursor carries.
+    async fn list_session_summaries_page(
+        &self,
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        include_subagents: bool,
+        include_empty: bool,
+        public_only: bool,
+    ) -> Result<Vec<SidebarRow>> {
+        let type_filter = if include_subagents {
+            "('user', 'scheduled', 'sub_agent')"
+        } else {
+            "('user', 'scheduled')"
+        };
+        // See [`Self::list_session_summaries`] for why the sidebar and
+        // `workspace_list` want opposite joins here.
+        let join = if include_empty {
+            "LEFT JOIN messages m ON s.id = m.session_id"
+        } else {
+            "INNER JOIN messages m ON s.id = m.session_id"
+        };
+        let tier_filter = if public_only {
+            "AND s.privacy_tier = 'public'"
+        } else {
+            ""
+        };
+        let keyset = if after.is_some() {
+            "AND (CAST(s.updated_at AS TEXT) < ? \
+              OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))"
+        } else {
+            ""
+        };
+        let query = format!(
+            r#"
+            SELECT s.id,
+                   s.working_dir,
+                   COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
+                   s.user_set_name,
+                   s.created_at,
+                   s.updated_at,
+                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
+                   s.parent_session_id,
+                   s.session_type,
+                   s.diverged_from,
+                   s.privacy_tier,
+                   COUNT(m.id) AS message_count
+            FROM sessions s
+            {join}
+            WHERE s.session_type IN {type_filter}
+            {tier_filter}
+            {keyset}
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC, s.id ASC
+            LIMIT ?
+            "#
+        );
+
+        let mut q = sqlx::query_as::<_, SidebarRow>(&query);
+        if let Some(cursor) = after {
+            q = q
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.id.clone());
+        }
+        let pool = self.pool().await?;
+        q.bind(i64::from(limit))
             .fetch_all(pool)
             .await
             .map_err(Into::into)
@@ -12562,6 +12775,87 @@ mod tests {
         assert!(summary.user_set_name);
     }
 
+    /// The keyset page, at the corner an offset page never had to think about:
+    /// every row sharing one `updated_at`.
+    ///
+    /// `updated_at` is `datetime('now')` — one-second granularity — so several
+    /// chats really do tie in practice, and the ordering breaks the tie by
+    /// `id ASC`. A resume predicate of `updated_at < :ts` alone would skip the
+    /// rest of the tied group; one of `<=` would repeat it forever. So the
+    /// boundary is `(< ts) OR (= ts AND id > last_id)`, and this walks a tied
+    /// group one row at a time to assert every row is seen exactly once.
+    ///
+    /// It also drives `public_only`, which is the security half: the rows a
+    /// filtered caller may not see never leave the database, which is what
+    /// leaves the continuation value with nothing hidden to count (adversarial
+    /// security review 2026-09-12).
+    #[tokio::test]
+    async fn a_keyset_page_walks_a_tied_updated_at_group_exactly_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let mut public_ids = Vec::new();
+        let mut private_ids = Vec::new();
+        for index in 0..6 {
+            let session = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    format!("tied {index}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&session.id, &umsg(10, "hello"))
+                .await
+                .unwrap();
+            if index % 2 == 0 {
+                public_ids.push(session.id.clone());
+            } else {
+                sm.update(&session.id)
+                    .raise_privacy(SessionClassification::Private, "turn:test")
+                    .apply()
+                    .await
+                    .unwrap();
+                private_ids.push(session.id.clone());
+            }
+        }
+
+        for public_only in [false, true] {
+            let mut seen = Vec::new();
+            let mut cursor: Option<SidebarCursor> = None;
+            for _ in 0..20 {
+                let page = sm
+                    .list_session_summaries_page(1, cursor.as_ref(), false, false, public_only)
+                    .await
+                    .unwrap();
+                let Some(row) = page.into_iter().next() else {
+                    break;
+                };
+                seen.push(row.summary.id.clone());
+                cursor = Some(row.cursor);
+            }
+
+            let mut sorted = seen.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(
+                sorted.len(),
+                seen.len(),
+                "the keyset walk repeated a row: {seen:?}"
+            );
+            for id in &public_ids {
+                assert!(seen.contains(id), "the walk skipped the public chat {id}");
+            }
+            for id in &private_ids {
+                assert_eq!(
+                    seen.contains(id),
+                    !public_only,
+                    "public_only={public_only} handled the private chat {id} wrongly"
+                );
+            }
+        }
+    }
+
     #[test]
     fn legacy_session_summary_json_defaults_user_set_name_to_false() {
         let summary: SessionSummary = serde_json::from_value(serde_json::json!({
@@ -16194,13 +16488,15 @@ mod tests {
         fn no_copy_path_hand_rolls_its_own_builder_any_more() {
             // The enumeration test, aimed at the three functions that matter
             // rather than at all 104 `create_session` call sites.
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            let src = include_str!("session_manager.rs");
             for f in [
                 "copy_session",
                 "diverge_session_for_edit",
                 "diverge_session",
             ] {
-                let body = fn_body(&src, f);
+                let body = fn_body(src, f);
                 assert!(
                     body.contains("create_derived_session"),
                     "{f} does not use the shared helper"
@@ -16451,7 +16747,9 @@ mod tests {
         /// **values**, and the scan below pins that those four **names** are what
         /// the function hands to `info!`.
         fn fn_body(name: &str) -> String {
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            let src = include_str!("session_manager.rs");
             let start = src
                 .find(&format!("fn {name}("))
                 .unwrap_or_else(|| panic!("no `fn {name}(` in the file"));
@@ -17030,9 +17328,11 @@ mod tests {
             // out of this string — the cut below, and the `\n            }`
             // that closes a match arm in the caller — is written with `\n`. A
             // raw read therefore fails on Windows alone, which is what it did.
-            let src = std::fs::read_to_string("src/session/session_manager.rs")
-                .unwrap()
-                .replace("\r\n", "\n");
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            // The CRLF normalisation below is a separate concern and still needed —
+            // `include_str!` hands back whatever the checkout holds.
+            let src = include_str!("session_manager.rs").replace("\r\n", "\n");
             let cut = src
                 .find("\n#[cfg(test)]\nmod tests {")
                 .expect("this file's main test module moved");

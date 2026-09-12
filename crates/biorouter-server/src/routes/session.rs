@@ -20,7 +20,7 @@ use biorouter::privacy::declassify::{
 use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
-    ActivityWindow, ModelUsageRow, SessionInsights, TruncateOutcome,
+    ActivityWindow, ModelUsageRow, SessionInsights, SidebarCursor, TruncateOutcome,
 };
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
@@ -120,11 +120,50 @@ fn minted_capability_without_proof(child: SessionClassification, had_user_action
 pub struct SidebarSessionsQuery {
     #[serde(default = "default_sidebar_session_limit")]
     limit: u32,
+    /// The previous page's `next_cursor`, passed back unchanged. Absent for the
+    /// first page.
+    ///
+    /// ⚠ **This replaced an `offset`** (adversarial security review 2026-09-12,
+    /// HIGH). serde ignores unknown query fields, so a client still sending
+    /// `offset=…` is served the first page rather than a 400 — it pages from the
+    /// top instead of failing, which is the degradation to prefer for a listing.
     #[serde(default)]
-    offset: u32,
+    cursor: Option<String>,
     /// BR-71: include `sub_agent` sessions (grouped under `parent_session_id`).
     #[serde(default)]
     include_subagents: bool,
+}
+
+/// What `next_cursor` carries on the wire.
+///
+/// ⚠ **It is not signed, and it does not need to be.** A cursor names the sort
+/// key of a row the caller was just handed, and the page it opens is assembled
+/// by the same filter as every other page — so a caller that forges one, or
+/// replays someone else's, still sees exactly the rows it may see. What the
+/// encoding buys is that the value carries **no position**: there is nothing in
+/// it to subtract from the next one, which is the whole defect it replaces.
+///
+/// Base64 rather than the two fields in the open so that no client starts
+/// parsing it and pins a shape this route must then keep.
+fn encode_sidebar_cursor(cursor: &SidebarCursor) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(format!("{}\u{1f}{}", cursor.updated_at, cursor.id))
+}
+
+/// The inverse of [`encode_sidebar_cursor`]. `None` for anything this route did
+/// not mint.
+fn decode_sidebar_cursor(encoded: &str) -> Option<SidebarCursor> {
+    use base64::Engine as _;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    let raw = String::from_utf8(raw).ok()?;
+    let (updated_at, id) = raw.split_once('\u{1f}')?;
+    (!updated_at.is_empty() && !id.is_empty()).then(|| SidebarCursor {
+        updated_at: updated_at.to_string(),
+        id: id.to_string(),
+    })
 }
 
 /// Query parameters for `GET /sessions`.
@@ -158,7 +197,11 @@ fn listed_session_types(include_subagents: bool) -> &'static [SessionType] {
 pub struct SidebarSessionListResponse {
     sessions: Vec<SessionSummary>,
     has_more: bool,
-    next_offset: Option<u32>,
+    /// Where the next page resumes — pass it back as `cursor`, unchanged, and do
+    /// not parse it. `null` when this was the last page.
+    // Not a doc comment: utoipa publishes those as the schema's `description`,
+    // and the reasoning belongs beside the codec. See `encode_sidebar_cursor`.
+    next_cursor: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -373,17 +416,18 @@ async fn list_sessions(
     path = "/sessions/sidebar",
     params(
         ("limit" = Option<u32>, Query, description = "Session summaries per page (default 10, clamped to 1..=50)"),
-        ("offset" = Option<u32>, Query, description = "Number of session summaries to skip"),
+        ("cursor" = Option<String>, Query, description = "The previous page's `next_cursor`, passed back unchanged. Omit for the first page; an unrecognised value is answered 400"),
         ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
     ),
     responses(
         (status = 200, description = "Paginated lightweight session summaries for the sidebar, \
                                       holding only the sessions this caller could open (see \
-                                      `GET /sessions`). `next_offset` is where the next page \
-                                      starts; for a caller shown every session it is `offset + \
-                                      limit` as before, and for one shown a filtered view it is a \
-                                      position in the underlying ordering, so pass it back as \
-                                      given rather than computing it", body = SidebarSessionListResponse),
+                                      `GET /sessions`). `next_cursor` is an OPAQUE continuation \
+                                      token: pass it back as `cursor` and do not parse it. It is \
+                                      not a position and not a count — it names the last row this \
+                                      page returned, so it says nothing about rows that were \
+                                      filtered out", body = SidebarSessionListResponse),
+        (status = 400, description = "The `cursor` was not one this route issued"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 500, description = "Internal server error")
     ),
@@ -400,84 +444,55 @@ async fn list_sidebar_sessions(
     let limit = query.limit.clamp(1, MAX_SIDEBAR_SESSION_LIMIT);
     let caller = crate::routes::session_reach::http_caller(&headers).await;
 
-    // A caller shown every row — the desktop app, a private-capability program,
-    // or any caller with tiers switched off — pages exactly as it always did,
-    // one query per page.
-    if caller.lists_session(SessionClassification::Private) {
-        let mut sessions = state
-            .session_manager()
-            .list_session_summaries(
-                limit.saturating_add(1),
-                query.offset,
-                query.include_subagents,
-                false,
-            )
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let has_more = sessions.len() > limit as usize;
-        sessions.truncate(limit as usize);
-        let next_offset = has_more.then(|| query.offset.saturating_add(limit));
-
-        return Ok(Json(SidebarSessionListResponse {
-            sessions,
-            has_more,
-            next_offset,
-        }));
-    }
-
-    // Issue #56, QA 2026-09-10 M1: every other caller is shown the public rows
-    // only, so the page is assembled by SCANNING the ordering rather than by
-    // filtering one `LIMIT` window — a window filtered after the fact hands back
-    // short, ragged pages, and a `has_more` counted before the filter would
-    // report the private rows it hid, which is the count oracle omission exists
-    // to close. `workspace_list` pages a filtered view the same way.
+    // Issue #56, QA 2026-09-10 M1: a caller that may not open a private chat is
+    // not shown one here either — the listing is the union of what the singular
+    // gate admits, and nothing more.
     //
-    // `offset` and `next_offset` are therefore positions in the UNFILTERED
-    // ordering: the next page starts exactly where this one stopped, so a walk
-    // that passes `next_offset` back sees every visible row once.
+    // ⚠ **The filter is a SQL predicate, and that is the security property, not
+    // an optimisation** (adversarial security review 2026-09-12, HIGH). This
+    // route first answered M1 by scanning the unfiltered ordering and dropping
+    // private rows in Rust, then resuming from the *position it had reached*.
+    // The positions it handed back were positions among the rows it had hidden,
+    // so subtracting two of them gave their exact count — and because
+    // `updated_at` is stamped on every token written, polling it watched private
+    // chats start and finish. Rows the caller may not see now never leave the
+    // database, and a page resumes from a keyset of the last row it RETURNED,
+    // which is a fact the caller already holds.
     //
-    // The scan is bounded per request. Hitting the bound is not the end of the
-    // list: the page says where to resume, so a machine whose history is mostly
-    // private is walked in several requests rather than silently cut short.
-    const SCAN_CHUNK: u32 = 200;
-    const MAX_SCANNED_ROWS: u32 = 20_000;
-    let manager = state.session_manager();
-    let mut sessions = Vec::with_capacity(limit as usize);
-    let mut next_offset = None;
-    let mut position = query.offset;
-    'scan: loop {
-        if position.saturating_sub(query.offset) >= MAX_SCANNED_ROWS {
-            next_offset = Some(position);
-            break;
-        }
-        let chunk = manager
-            .list_session_summaries(SCAN_CHUNK, position, query.include_subagents, false)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let fetched = chunk.len() as u32;
-        for (index, summary) in chunk.into_iter().enumerate() {
-            if !caller.lists_session(summary.privacy_tier) {
-                continue;
-            }
-            if sessions.len() == limit as usize {
-                // A visible row beyond this page exists, so there is a next
-                // page, and it starts at this row.
-                next_offset = Some(position.saturating_add(index as u32));
-                break 'scan;
-            }
-            sessions.push(summary);
-        }
-        if fetched < SCAN_CHUNK {
-            break;
-        }
-        position = position.saturating_add(fetched);
-    }
+    // One path for both callers. The proven caller could still page by offset
+    // cheaply, but two shapes of continuation token is how the first one came to
+    // mean something different from the other.
+    let after = match query.cursor.as_deref() {
+        Some(encoded) => match decode_sidebar_cursor(encoded) {
+            Some(cursor) => Some(cursor),
+            None => return Err(StatusCode::BAD_REQUEST),
+        },
+        None => None,
+    };
+    let public_only = !caller.lists_session(SessionClassification::Private);
+
+    let mut rows = state
+        .session_manager()
+        .list_session_summaries_page(
+            limit.saturating_add(1),
+            after.as_ref(),
+            query.include_subagents,
+            false,
+            public_only,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_cursor = has_more
+        .then(|| rows.last().map(|row| encode_sidebar_cursor(&row.cursor)))
+        .flatten();
 
     Ok(Json(SidebarSessionListResponse {
-        sessions,
-        has_more: next_offset.is_some(),
-        next_offset,
+        sessions: rows.into_iter().map(|row| row.summary).collect(),
+        has_more,
+        next_cursor,
     }))
 }
 
@@ -1772,6 +1787,31 @@ pub fn routes(state: Arc<AppState>) -> Router {
 // second module and takes this one instead.
 #[cfg(test)]
 pub(crate) mod diverge_tests {
+    //! ⚠ **If a test in here fails with a 500 where it asserted a 200, suspect
+    //! the session store's PATH before you suspect this file.**
+    //!
+    //! Several of these are read-only route tests over one process-global
+    //! session store, and they were the rotating victims of a
+    //! `test (windows-latest)` flake: `activity_clamps_an_absurd_window`
+    //! answering 500 on one run, `sidebar_route_…` or a `/usage` route on the
+    //! next, and — measured in one job of PR #240 — the same test `... ok` in the
+    //! `biorouter_server` lib binary and `... FAILED` in the `biorouterd` bin
+    //! binary 61 s later, off identical source (`main.rs` and `lib.rs` both
+    //! declare `mod routes`).
+    //!
+    //! The 500 is honest: `get_activity(..).map_err(|_| INTERNAL_SERVER_ERROR)`
+    //! reporting a real database error. The database had been moved out from
+    //! under the process — a sibling test relocated `BIOROUTER_PATH_ROOT` under a
+    //! `TempDir`, won the race to be the first to touch the store, and then
+    //! unlinked it. The already-open connection kept answering, so it only bit
+    //! when the pool had to open a *second* one: `(code: 14) unable to open
+    //! database file`.
+    //!
+    //! `src/test_sandbox.rs` now freezes the store's directory before any test
+    //! runs, and `tests/session_store_survives_a_relocated_path_root.rs` holds
+    //! that closed. Read the pinning section of the first before changing
+    //! anything that relocates the path root.
+
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
@@ -1934,7 +1974,7 @@ pub(crate) mod diverge_tests {
     /// `/sessions/activity` must not be swallowed by the `/sessions/{session_id}`
     /// wildcard registered next to it, and the payload must be camelCase.
     ///
-    /// NOTE: `AppState::new()` opens the REAL user session database, so a route
+    /// NOTE: `AppState::new()` opens the ONE shared session database, so a route
     /// test here must be READ-ONLY. The behaviour of the activity aggregation is
     /// covered by `session_manager`'s unit tests, which use a `TempDir`.
     #[tokio::test(flavor = "multi_thread")]
@@ -1953,7 +1993,7 @@ pub(crate) mod diverge_tests {
     #[serial]
     async fn sidebar_route_returns_paginated_lightweight_sessions() {
         let state = AppState::new().await.unwrap();
-        let (status, body) = get_sidebar_sessions(state, "?limit=2&offset=0").await;
+        let (status, body) = get_sidebar_sessions(state, "?limit=2").await;
         assert_eq!(status, axum::http::StatusCode::OK);
 
         let sessions = body
@@ -1962,7 +2002,7 @@ pub(crate) mod diverge_tests {
             .expect("sessions array");
         assert!(sessions.len() <= 2);
         assert!(body.get("has_more").is_some());
-        assert!(body.get("next_offset").is_some());
+        assert!(body.get("next_cursor").is_some());
 
         if let Some(session) = sessions.first().and_then(|session| session.as_object()) {
             for field in [
@@ -1982,6 +2022,60 @@ pub(crate) mod diverge_tests {
             assert!(!session.contains_key("extension_data"));
             assert!(!session.contains_key("workflow"));
         }
+    }
+
+    /// The cursor round-trips, and carries the two fields it claims to — no
+    /// position among them (adversarial security review 2026-09-12, HIGH).
+    #[test]
+    fn a_sidebar_cursor_carries_one_rows_sort_key_and_nothing_else() {
+        let cursor = SidebarCursor {
+            updated_at: "2026-09-11 04:05:06".to_string(),
+            id: "20260911_040506".to_string(),
+        };
+        let encoded = encode_sidebar_cursor(&cursor);
+        assert_eq!(decode_sidebar_cursor(&encoded), Some(cursor.clone()));
+
+        // Whatever a caller decodes out of it, it is the row it was just handed.
+        use base64::Engine as _;
+        let plain = String::from_utf8(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&encoded)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(plain.contains(&cursor.updated_at) && plain.contains(&cursor.id));
+
+        for junk in ["", "not base64!!", "Zm9v", "AB8=", "\u{1f}"] {
+            assert_eq!(
+                decode_sidebar_cursor(junk),
+                None,
+                "{junk:?} was accepted as a cursor"
+            );
+        }
+        // Neither half may be empty: an empty id would compare `> ''`, which is
+        // every row, and an empty timestamp would resume before the beginning.
+        let half =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("2026-09-11 04:05:06\u{1f}");
+        assert_eq!(decode_sidebar_cursor(&half), None);
+    }
+
+    /// A cursor this route did not mint is a 400, and the `offset` the parameter
+    /// replaced is IGNORED rather than rejected — a client built against the old
+    /// shape pages from the top instead of breaking.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_sidebar_rejects_a_forged_cursor_and_ignores_a_stale_offset() {
+        let state = AppState::new().await.unwrap();
+        let (status, _) = get_sidebar_sessions(state.clone(), "?limit=1&cursor=not-a-cursor").await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+        let (status, body) = get_sidebar_sessions(state.clone(), "?limit=1&offset=40").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let first = get_sidebar_sessions(state, "?limit=1").await.1;
+        assert_eq!(
+            body["sessions"], first["sessions"],
+            "a stale `offset` moved the page it was ignored on"
+        );
     }
 
     /// BR-71: the two type slices `GET /sessions` chooses between. A wrong slice
@@ -2117,7 +2211,7 @@ pub(crate) mod diverge_tests {
     /// totalTokens, turns}`, with the unknown bucket carrying `null`.
     ///
     /// This is a pure serialization assertion rather than a live round-trip:
-    /// `AppState::new()` opens the REAL shared session DB, whose token-ledger
+    /// `AppState::new()` opens the ONE shared session DB, whose token-ledger
     /// contents (and, across parallel worktrees, whose schema) are not stable
     /// enough for a write-then-read route test. The aggregation SQL itself is
     /// covered by `session_manager`'s `TempDir` unit tests.
@@ -2206,6 +2300,44 @@ pub(crate) mod diverge_tests {
 
         let (status, _) = get_usage(state, "29990101_99999").await;
         assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// A genuine database failure on `/sessions/activity` is still a **500**.
+    ///
+    /// ⚠ This is here because of the flake in the module note, not in spite of
+    /// it. That 500 was *correct* — the store really had been moved out from
+    /// under the process — so the only legitimate fix was to make the store
+    /// sound. Making this route quieter instead (an empty `ActivityWindow`, a
+    /// 200 with zeroes, an `unwrap_or_default`) would have turned the same green
+    /// suite into a daemon that answers the Home heatmap with silence when its
+    /// database is unreadable. Nothing else asserts that mapping, because it
+    /// cannot be driven from here: the handler reads the process-global store,
+    /// and there is no seam to hand it a broken one.
+    ///
+    /// A source scan over the handler's own span, with the negative control
+    /// [`crate::routes::body_of`] requires of every caller.
+    #[test]
+    fn a_database_failure_on_activity_is_reported_as_500() {
+        const SOURCE: &str = include_str!("session.rs");
+        let handler = crate::routes::body_of(SOURCE, "async fn get_session_activity(");
+
+        // Two `contains`, not the whole line: the exact closure spelling is not
+        // the claim (`|_|` vs `|_e|` is a rename, not a behaviour change), and a
+        // test that fails on a rename gets relaxed rather than read. The claim is
+        // that the error is still MAPPED and that what it maps to is 500.
+        assert!(
+            handler.contains(".map_err("),
+            "the activity route stopped mapping its database error:\n{handler}"
+        );
+        assert!(
+            handler.contains("StatusCode::INTERNAL_SERVER_ERROR"),
+            "the activity route stopped reporting a database failure as 500:\n{handler}"
+        );
+        assert!(
+            !handler.contains("SessionModelUsageResponse"),
+            "body_of over-read past get_session_activity into the /usage route, so \
+             the assertion above may have matched a different handler"
+        );
     }
 
     /// `days` is attacker-controlled; the server clamps it rather than building a
@@ -2652,10 +2784,19 @@ pub(crate) mod diverge_tests {
     /// route test, so the structural assertion is what stands in for it.
     #[test]
     fn both_copy_handlers_take_the_second_read() {
-        let src = std::fs::read_to_string("src/routes/session.rs").unwrap();
+        // `include_str!`, not `read_to_string("src/routes/session.rs")`. A
+        // relative read resolves against the process's working directory, which
+        // is ambient state no test owns: `cargo test` happens to set it to the
+        // package root, so the relative form works under cargo and fails with
+        // `NotFound` the moment the same binary is run any other way — under a
+        // debugger, from a load harness, or from a wrapper that runs the binary
+        // directly. That is the same class of bug as the session-store path this
+        // module's note describes, and `include_str!` closes it by resolving at
+        // compile time relative to THIS file.
+        let src = include_str!("session.rs");
         for signature in ["async fn diverge_session(", "async fn edit_message("] {
             assert!(
-                fn_body(&src, signature).contains("minted_capability_without_proof"),
+                fn_body(src, signature).contains("minted_capability_without_proof"),
                 "{signature} gates on the source it read before the copy and never \
                  re-checks the child it minted"
             );
@@ -2665,7 +2806,7 @@ pub(crate) mod diverge_tests {
         // `edit_in_place` truncates the LIVE session and copies nothing, so it
         // mints no capability and must not be carrying this gate.
         assert!(
-            !fn_body(&src, "async fn edit_in_place(").contains("minted_capability_without_proof"),
+            !fn_body(src, "async fn edit_in_place(").contains("minted_capability_without_proof"),
             "fn_body is not returning one function's body"
         );
     }
@@ -2795,7 +2936,7 @@ pub(crate) mod diverge_tests {
 /// LIVE session. These pin the preconditions that make that safe — the same
 /// discipline `/reply` applies to `conversation_so_far`.
 ///
-/// NOTE: `AppState::new()` opens the REAL user session database, so each test
+/// NOTE: `AppState::new()` opens the ONE shared session database, so each test
 /// creates its own session and deletes it again, exactly like `diverge_tests`.
 #[cfg(test)]
 mod edit_message_tests {

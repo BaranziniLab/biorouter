@@ -253,7 +253,7 @@ impl PrivacyBarrierBody {
 /// How `/agent/update_provider` failed, at the granularity the client needs.
 ///
 /// Split out of the handler so the mapping can be tested without an
-/// `AppState`: `AppState::new()` opens the REAL user session database (see the
+/// `AppState`: `AppState::new()` opens the ONE shared session database (see the
 /// note in `routes/session.rs`), so a route test must never go through it.
 #[derive(Debug)]
 pub(crate) enum ProviderBindFailure {
@@ -1481,9 +1481,12 @@ async fn permission_editor_tools(
     responses(
         (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
-                                      word, that `GET /sessions/{session_id}` gives (body = plain \
-                                      text)"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent, and an unproven caller \
+                                      is told the same thing for both) and the request carried \
+                                      neither a capability that covers it nor proof it came from \
+                                      the user. It is the same refusal, word for word, that \
+                                      `GET /sessions/{session_id}` gives (body = plain text)"),
         (status = 424, description = "Agent not initialized")
     )
 )]
@@ -1512,7 +1515,11 @@ async fn get_callable_tool_count(
     // `ErrorResponse`, which would wrap the same words in a JSON envelope.** One
     // boundary has one body (see the module header of `routes::session_reach`),
     // and that is the only reason the gate lives in this wrapper and the work
-    // lives in the function below rather than all in one body.
+    // lives in the function below rather than all in one body — `get_tools`
+    // beside it has the same shape for the same reason. A caller must not be
+    // able to tell the gated routes apart by their envelopes, which is what
+    // `every_route_that_names_a_private_chat_refuses_it_exactly_as_the_read_does`
+    // measures: it fails on the wrapping alone, with the words unchanged.
     if let Err(refusal) = crate::routes::session_reach::session_reach(
         state.session_manager(),
         &query.session_id,
@@ -1981,7 +1988,7 @@ const CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED: &str =
 ///
 /// ⚠ **Extracted so the claim "only the user may grant" is asserted rather than
 /// grepped for.** The handler it belongs to cannot be driven from a test —
-/// `AppState::new()` opens the developer's REAL session database — so every
+/// `AppState::new()` opens the ONE session DB this binary shares — so every
 /// other fact about this route is a source scan, and a scan for
 /// `user_action_proof(` keeps passing against a match whose `Unproven` arm was
 /// refactored into `=> {}`. This mapping is pure, so
@@ -2035,7 +2042,7 @@ const CROSS_AFFILIATION_GRANT_AUTH_SUBJECT: &str = "one cross-institution connec
 ///
 /// ⚠ **Extracted for [`refuse_grant_unless_user`]'s reason, which is the same
 /// reason.** This handler cannot be driven from a test — `AppState::new()` opens
-/// the developer's REAL session database — so every other fact about the route
+/// the ONE session DB this binary shares — so every other fact about the route
 /// is a source scan, and a scan cannot tell "prompts in strict" from "prompts in
 /// every mode" or from "prompts in none". Taking the policy and the prompter as
 /// arguments makes all three modes assertions about the real decision path, with
@@ -2720,7 +2727,7 @@ async fn read_resource(
 /// of this process.
 ///
 /// Extracted so the mapping can be tested without `AppState`, which builds the
-/// process-global `AgentManager` and opens the REAL user session database. It
+/// process-global `AgentManager` and opens the ONE shared session database. It
 /// is the resource-path sibling of [`dispatch_failure_response`], and it exists
 /// for the same reason: `.map_err(|_e| INTERNAL_SERVER_ERROR)` threw Gate C's
 /// sibling refusal away and told the caller Biorouter had crashed. A privacy
@@ -2785,8 +2792,8 @@ mod read_resource_route_tests {
     //! properties below are the ones nothing asserted while it had a caller.
     //!
     //! The behaviour is asserted through [`read_resource_failure`] rather than
-    //! over HTTP because `AppState::new()` opens the developer's REAL session
-    //! database — the same reason `cross_affiliation_grant_route_tests` states.
+    //! over HTTP because `AppState::new()` opens the ONE session DB this binary
+    //! shares — the same reason `cross_affiliation_grant_route_tests` states.
     //! The capability the route hands the extension manager cannot be reached
     //! that way at all, so it is pinned at the source, and the refusal it
     //! produces is proved end-to-end by building the REAL refusal rather than a
@@ -2970,7 +2977,7 @@ mod read_resource_route_tests {
 /// server fault that keeps its 500.
 ///
 /// Extracted so the mapping can be tested without `AppState`, which builds the
-/// process-global `AgentManager` and opens the REAL user session database. It
+/// process-global `AgentManager` and opens the ONE shared session database. It
 /// mirrors the agent loop, which downcasts to `ErrorData` to avoid
 /// double-wrapping and hands the model the message.
 ///
@@ -4858,7 +4865,7 @@ mod cross_affiliation_grant_route_tests {
     //! silently.
     //!
     //! The behaviour these guard is not testable at the HTTP layer here —
-    //! `AppState::new()` opens the developer's REAL session database (see
+    //! `AppState::new()` opens the ONE session DB this binary shares (see
     //! `working_dir_lock_tests`) — so the copy is asserted directly, the way
     //! `routes::session`'s `the_refusals_say_different_things` asserts the
     //! declassification pair.
@@ -5335,7 +5342,7 @@ mod privacy_barrier_tests {
     //!
     //! Exercised through [`classify_provider_bind_failure`] — the exact mapping
     //! the handler applies — rather than through `AppState`, which opens the
-    //! REAL user session database.
+    //! ONE shared session database.
 
     use super::{classify_provider_bind_failure, PrivacyBarrierBody, ProviderBindFailure};
     use axum::http::StatusCode;
@@ -5741,7 +5748,7 @@ mod gate_c_call_tool_tests {
     //!
     //! Exercised through [`dispatch_failure_response`] — the exact mapping the
     //! handler applies — rather than through `AppState`, which builds the
-    //! process-global `AgentManager` and opens the REAL user session database.
+    //! process-global `AgentManager` and opens the ONE shared session database.
     //! That is the same shape `privacy_barrier_tests` above uses for Gate A's
     //! route half, and the same reason.
 
@@ -5862,7 +5869,7 @@ mod working_dir_lock_tests {
     //! rule (#44), exercised through [`apply_working_dir_update`] — the exact
     //! validation + guard + update path the handler runs before restarting the
     //! agent. A hermetic tempdir-backed [`SessionManager`] stands in for the
-    //! real one: `AppState::new()` opens the REAL user session database (see
+    //! real one: `AppState::new()` opens the ONE shared session database (see
     //! the note in `routes/session.rs`), so a mutating route test must never
     //! go through it.
 
