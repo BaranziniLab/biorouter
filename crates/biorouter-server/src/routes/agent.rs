@@ -578,7 +578,7 @@ async fn discard_failed_new_session(state: &AppState, session_id: &str) {
         tracing::debug!(session_id, %error, "New chat had no cached agent to discard");
     }
     if let Err(error) = state.session_manager().delete_session(session_id).await {
-        tracing::warn!(session_id, %error, "Failed to discard a new chat after provider binding failed");
+        tracing::warn!(session_id, %error, "Failed to discard a new chat whose setup failed");
     }
 }
 
@@ -923,47 +923,64 @@ async fn start_agent(
     let extensions_state = EnabledExtensionsState::new(extensions_to_use);
     if let Err(e) = extensions_state.to_extension_data(&mut extension_data) {
         tracing::warn!("Failed to initialize session with extensions: {}", e);
-    } else {
-        manager
-            .update(&session.id)
-            .extension_data(extension_data.clone())
-            .apply()
-            .await
-            .map_err(|err| {
-                error!("Failed to save initial extension state: {}", err);
-                ErrorResponse {
-                    message: format!("Failed to save initial extension state: {}", err),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
+    } else if let Err(err) = manager
+        .update(&session.id)
+        .extension_data(extension_data.clone())
+        .apply()
+        .await
+    {
+        // The session store failing is exactly the case where the discard's own
+        // `delete_session` is likeliest to fail too — which is why this site was
+        // left with a bare `?` when its three older siblings got the cleanup.
+        // Attempting it anyway is still right: `discard_failed_new_session`
+        // logs instead of propagating, so the cost of a hopeless attempt is one
+        // `warn!` on a request that is already returning 500, while the gain is
+        // every failure that is specific to *this* write (a rejected column, a
+        // transient lock) rather than the store being down. The caller never
+        // receives this chat's id, so a chat that survives the error is one
+        // nobody can connect to anything they did.
+        error!("Failed to save initial extension state: {}", err);
+        discard_failed_new_session(&state, &session.id).await;
+        return Err(ErrorResponse {
+            message: format!("Failed to save initial extension state: {}", err),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        });
     }
 
     if let Some(workflow) = original_workflow.clone() {
-        manager
+        if let Err(err) = manager
             .update(&session.id)
             .workflow(Some(workflow))
             .apply()
             .await
-            .map_err(|err| {
-                error!("Failed to update session with workflow: {}", err);
-                ErrorResponse {
-                    message: format!("Failed to update session with workflow: {}", err),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
+        {
+            error!("Failed to update session with workflow: {}", err);
+            discard_failed_new_session(&state, &session.id).await;
+            return Err(ErrorResponse {
+                message: format!("Failed to update session with workflow: {}", err),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            });
+        }
     }
 
     // Refetch session to get all updates
-    session = manager
-        .get_session(&session.id, false)
-        .await
-        .map_err(|err| {
+    session = match manager.get_session(&session.id, false).await {
+        Ok(updated) => updated,
+        Err(err) => {
+            // A read-back, not a write, so the chat on disk may well be intact
+            // and fully configured. It is still discarded, for the same reason
+            // as the writes: this handler returns the id or nothing, and the
+            // error path returns nothing. A chat nobody was handed is a row the
+            // user cannot explain, whatever its contents — and the placeholder
+            // name makes it indistinguishable from the one their retry creates.
             error!("Failed to get updated session: {}", err);
-            ErrorResponse {
+            discard_failed_new_session(&state, &session.id).await;
+            return Err(ErrorResponse {
                 message: format!("Failed to get updated session: {}", err),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
+            });
+        }
+    };
 
     // Eagerly start loading extensions in the background
     let session_for_spawn = session.clone();
@@ -6154,13 +6171,13 @@ mod knowledge_selection_tests {
 
     /// Every step that can fail while the new chat already exists, but before it
     /// is returned, discards it. An orphan chat is a row the user never asked
-    /// for and cannot explain, and the knowledge apply was the one step that
-    /// left one: it used a bare `?` where its two siblings take the error, call
-    /// `discard_failed_new_session`, and only then return.
+    /// for and cannot explain, and each step that used a bare `?` left one
+    /// behind instead of taking the error, calling `discard_failed_new_session`,
+    /// and only then returning.
     ///
     /// ⚠ It was not a rare race. A workflow whose `default` names a base that
-    /// has since been deleted fails here on EVERY start, so a stale workflow
-    /// minted one orphan per press.
+    /// has since been deleted fails in the knowledge apply on EVERY start, so a
+    /// stale workflow minted one orphan per press.
     ///
     /// **A source read, deliberately.** Reaching the real handler needs an
     /// `AppState`, and `AppState::new` calls `AgentManager::instance()` and
@@ -6169,12 +6186,15 @@ mod knowledge_selection_tests {
     /// worse than no test. The shape is what the defect was, so the shape is
     /// what is asserted.
     ///
-    /// ⚠ **Scope.** The `?` sites *after* this window — the two
-    /// `manager.update(...)` calls and the refetch — orphan a chat too and are
-    /// deliberately not covered: each of those is the session store itself
-    /// failing, where the discard's own `delete_session` would be failing for
-    /// the same reason, and deciding what to do there is a separate question.
-    /// Named here so the next reader knows they were seen, not missed.
+    /// ⚠ **The last three steps are the session store itself failing**, which is
+    /// why they were once excluded: the discard's own `delete_session` may be
+    /// failing for the same reason. They are covered now because a hopeless
+    /// discard costs one `warn!` on a request already returning 500 — the
+    /// helper logs rather than propagating — and a store failure specific to one
+    /// write leaves a chat that a delete would have removed. The refetch is only
+    /// a read-back, so its chat may be perfectly intact; it is discarded anyway,
+    /// because the handler returns the id or nothing and the error path returns
+    /// nothing.
     #[test]
     fn every_failure_before_a_new_chat_is_returned_discards_it() {
         let source = include_str!("agent.rs");
@@ -6191,10 +6211,13 @@ mod knowledge_selection_tests {
         // assertion is "between one fallible step and the next, the error path
         // discards the chat" rather than a count that a fourth step could pass
         // without being looked at.
-        const STEPS: [&str; 3] = [
+        const STEPS: [&str; 6] = [
             "bind_new_session_provider(",
             "runtime::prepare_prompt(",
             "apply_workflow_knowledge_selection(",
+            ".extension_data(extension_data.clone())",
+            ".workflow(Some(workflow))",
+            "get_session(&session.id, false)",
         ];
 
         let at = |needle: &str| {
