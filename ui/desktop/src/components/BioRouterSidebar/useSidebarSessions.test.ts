@@ -57,10 +57,10 @@ describe('useSidebarSessions', () => {
     const secondPage = [makeSummary(10), makeSummary(11)];
     mocks.listSidebarSessions
       .mockResolvedValueOnce({
-        data: { sessions: firstPage, has_more: true, next_offset: 10 },
+        data: { sessions: firstPage, has_more: true, next_cursor: 'cursor-page-2' },
       })
       .mockResolvedValueOnce({
-        data: { sessions: secondPage, has_more: false, next_offset: null },
+        data: { sessions: secondPage, has_more: false, next_cursor: null },
       });
 
     const { result } = renderHook(() => useSidebarSessions());
@@ -68,7 +68,7 @@ describe('useSidebarSessions', () => {
     await waitFor(() => expect(result.current.sessions).toHaveLength(10));
     expect(result.current.hasMore).toBe(true);
     expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(1, {
-      query: { limit: 10, offset: 0 },
+      query: { limit: 10 },
       headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
@@ -78,7 +78,7 @@ describe('useSidebarSessions', () => {
     await waitFor(() => expect(result.current.sessions).toHaveLength(12));
     expect(result.current.hasMore).toBe(false);
     expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(2, {
-      query: { limit: 10, offset: 10 },
+      query: { limit: 10, cursor: 'cursor-page-2' },
       headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
@@ -93,13 +93,20 @@ describe('useSidebarSessions', () => {
     ];
     mocks.listSidebarSessions
       .mockResolvedValueOnce({
-        data: { sessions: firstPage, has_more: true, next_offset: 10 },
+        data: { sessions: firstPage, has_more: true, next_cursor: 'cursor-page-2' },
       })
       .mockResolvedValueOnce({
-        data: { sessions: secondPage, has_more: true, next_offset: 20 },
+        data: { sessions: secondPage, has_more: true, next_cursor: 'cursor-page-3' },
       })
       .mockResolvedValueOnce({
-        data: { sessions: refreshedFirstPage, has_more: true, next_offset: 10 },
+        data: { sessions: refreshedFirstPage, has_more: true, next_cursor: 'cursor-page-2' },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          sessions: [makeSummary(20)],
+          has_more: false,
+          next_cursor: null,
+        },
       });
 
     const { result } = renderHook(() => useSidebarSessions());
@@ -116,7 +123,20 @@ describe('useSidebarSessions', () => {
 
     expect(result.current.sessions).toHaveLength(20);
     expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(3, {
-      query: { limit: 10, offset: 0 },
+      query: { limit: 10 },
+      headers: { 'X-User-Action': 'test-proof' },
+      throwOnError: true,
+    });
+
+    // …and the refresh must not rewind the tail. `next_cursor` is opaque and
+    // names the last row of the page that issued it, so a refresh of the HEAD
+    // carries the cursor for page 2 — adopting it would make "Load more" refetch
+    // rows the list already holds and appear to do nothing. The furthest cursor
+    // wins.
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(4));
+    expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(4, {
+      query: { limit: 10, cursor: 'cursor-page-3' },
       headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });

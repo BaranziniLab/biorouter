@@ -82,8 +82,15 @@
 //!   ([`HttpCaller::lists_session`]), so the list is the union of what per-id
 //!   probing could learn and nothing more. **Filter, not refuse**: a refused
 //!   list would break every client on the public chats the gate is deliberately
-//!   inert on. The sidebar pages its filtered view by scanning, so `has_more`
-//!   cannot count the rows it hid. `GET /schedule/{id}/sessions` takes the same
+//!   inert on. ⚠ **The sidebar's pagination was the second half of this and got
+//!   it wrong.** It answered M1 by scanning the unfiltered ordering, dropping
+//!   the private rows in Rust and resuming from the position it had reached — so
+//!   two continuation values subtracted gave the exact number of private chats
+//!   between two visible ones, and because `updated_at` is stamped on every
+//!   token written, polling the route reported when a private chat was running.
+//!   Since the adversarial review of 2026-09-12 the tier is a **SQL predicate**
+//!   and the page resumes from a keyset of the last row it RETURNED, so there is
+//!   nothing hidden left to count. `GET /schedule/{id}/sessions` takes the same
 //!   filter, and so, since 2026-09-11, does `GET /active_work`. A row of running
 //!   work is not a chat, so [`HttpCaller::lists_work`] resolves the chat it
 //!   belongs to, and a row that names no chat, or one that cannot be read, is
@@ -800,6 +807,43 @@ impl HttpCaller {
         )
         .map_err(SessionOutOfReach::for_knowledge_base)
     }
+
+    /// May this caller **mint** a knowledge-base id — `POST /knowledge/bases`
+    /// (adversarial security review 2026-09-12, MEDIUM)?
+    ///
+    /// ⚠ **It takes no id, and that is the fix rather than an omission.** Create
+    /// refuses an id that is taken, so an answer that depended on the id would
+    /// tell its caller which ids are taken — and a private base's id is content
+    /// the listing deliberately omits ([`KNOWLEDGE_BASE_OUT_OF_REACH`] says so
+    /// in as many words). The old route answered a colliding private id with
+    /// `400 kb '<id>' already exists at /Users/…/knowledge/<id>` and a free one
+    /// with `200`, so a short dictionary of plausible names enumerated the
+    /// machine's private bases, with the absolute path thrown in.
+    ///
+    /// The question asked instead is about the **namespace**: a not-yet-existing
+    /// id has exactly the tier [`TargetTier::Unreadable`] names, and a caller
+    /// that may not be told about such an id may not take one either. Because
+    /// the id is never read, the refusal is the same for every id — which is the
+    /// property, stated as a type rather than as a promise.
+    ///
+    /// What this costs, stated plainly: a caller holding nothing but the daemon
+    /// secret can no longer create a knowledge base over HTTP. The desktop sends
+    /// the user's proof, a program stating a private provider passes on its
+    /// capability, and a `biorouter serve` operator on a private provider passes
+    /// on theirs. A public serve operator is refused, and that is the same
+    /// answer they already get for every private base on that machine.
+    ///
+    /// DR-15's opt-out is inert here as everywhere: with tiers off, creation is
+    /// exactly what it was.
+    pub fn mints_knowledge_base(&self) -> Result<(), SessionOutOfReach> {
+        refuse_unless_reachable(
+            self.enforced,
+            TargetTier::Unreadable,
+            self.capability(),
+            self.proof,
+        )
+        .map_err(SessionOutOfReach::for_knowledge_base)
+    }
 }
 
 /// A named knowledge base, reduced to the bit the gate turns on.
@@ -920,13 +964,22 @@ pub async fn gate_knowledge_active(
 /// sends, or by the private capability a program states.
 ///
 /// ⚠ **A layer on a sub-router of exactly the routes that name a base, not a
-/// list of routes.** `knowledge::router` puts every `{id}` route in one router
-/// and `route_layer`s this onto it, so the gate reads the `id` the router
-/// itself matched — percent-decoded exactly as each handler's `Path` sees it —
-/// and a route added there later is gated by construction. Reads and writes
-/// alike: a caller that may not read a base may not rewrite, restore, merge or
-/// delete it either, which is F0's lesson applied here before anyone measured
-/// it.
+/// list of routes.** `knowledge::base_routes` puts every `{id}` route in one
+/// router and `knowledge::router` `route_layer`s this onto it, so the gate reads
+/// the `id` the router itself matched — percent-decoded exactly as each handler's
+/// `Path` sees it. Reads and writes alike: a caller that may not read a base may
+/// not rewrite, restore, merge or delete it either, which is F0's lesson applied
+/// here before anyone measured it.
+///
+/// ⚠ **"and any route added later is gated by construction" was a claim axum does
+/// not support, and this doc made it until 2026-09-12.** `Router::route_layer`
+/// wraps the routes present when it is *called* and returns a new map; a route
+/// registered afterwards is not wrapped, and nothing says so. `base_routes` is
+/// therefore now ungated by construction and the layer is applied to its return
+/// value at its single call site, which is the shape that makes appending a
+/// route safe — see that function, and
+/// `every_route_that_names_a_base_is_inside_the_gated_sub_router`, which reads
+/// the file rather than trusting either doc.
 ///
 /// It runs before the handler's own extractors, so a refused request never has
 /// its body parsed, its model constructed or its base looked up.
@@ -1608,6 +1661,10 @@ mod tests {
                 agent_rs,
                 "async fn get_callable_tool_count(",
                 "session_reach(",
+                // The delegate, which is where the agent fetch lives: the gate is
+                // in the wrapper so the refusal keeps its own plain-text body
+                // rather than this route's JSON envelope, exactly as `get_tools`
+                // does beside it.
                 "model_visible_tool_count(",
                 "the agent fetch, which mints an agent for the chat",
             ),
@@ -2194,38 +2251,14 @@ mod tests {
         );
     }
 
-    /// Every route that names a base by `{id}` sits in `base_routes`, behind
-    /// `gate_knowledge_base`, and none sits on the outer router. The HTTP tests
-    /// in `tests/knowledge_routes.rs` prove the layer FIRES on the routes that
-    /// exist today; this is what stops a route added tomorrow landing on the
-    /// wrong router, where it would be ungated and nothing would say so.
-    #[test]
-    fn every_route_that_names_a_base_sits_behind_the_knowledge_base_gate() {
-        let router = body_of(include_str!("knowledge.rs"), "pub fn router(");
-        let (gated, outer) = router
-            .split_once(".route_layer(")
-            .expect("the knowledge router no longer layers the base-reach gate");
-        assert!(
-            outer.contains("session_reach::gate_knowledge_base"),
-            "the knowledge router's route layer is no longer the base-reach gate"
-        );
-        let (layer, outer) = outer
-            .split_once("Router::new()")
-            .expect("the outer knowledge router moved");
-        assert!(layer.contains("gate_knowledge_base"));
-        assert!(
-            gated.matches("\"/bases/{id}").count() >= 20,
-            "fewer routes than expected sit behind the gate:\n{gated}"
-        );
-        assert!(
-            !outer.contains("{id}"),
-            "a route naming a base by `{{id}}` is registered on the ungated outer router:\n{outer}"
-        );
-        assert!(
-            !gated.contains("\"/bases\"") && !gated.contains("\"/active\""),
-            "a route that names no base was put behind the base gate"
-        );
-    }
+    // The router-shape scan that used to live here — "every `{id}` route sits
+    // behind `gate_knowledge_base`" — moved to
+    // `every_route_that_names_a_base_is_inside_the_gated_sub_router`, beside
+    // `base_addressing_routes`, when the adversarial review of 2026-09-12 found
+    // that the claim it checked was weaker than the doc it was checking. It now
+    // also asserts that every gated route is actually PROBED, which needs that
+    // list in scope; and it was tied to a `.route_layer(` inside `pub fn
+    // router(`, which is exactly the shape that had to change.
 }
 
 #[cfg(test)]
@@ -4231,11 +4264,338 @@ mod bypass_tests {
         seeded
     }
 
+    /// **`POST /knowledge/bases` was an existence oracle**, as a named
+    /// regression test (adversarial security review 2026-09-12, MEDIUM).
+    ///
+    /// Create refuses an id that is taken, and it used to say so for a
+    /// **private** base — to a caller holding nothing but the daemon secret, with
+    /// the machine's absolute config path in the body. KB ids are user-authored
+    /// names, so a short dictionary enumerated the private bases the listing
+    /// deliberately omits.
+    ///
+    /// What is asserted is indistinguishability, byte for byte: the id of a
+    /// private base, the id of a public base and an id that has never existed all
+    /// get the SAME answer. That is only checkable if the answer does not depend
+    /// on the id, which is why `mints_knowledge_base` does not take one.
+    ///
+    /// And the user is unaffected: with the proof, the collision is reported
+    /// truthfully, a free id is created — and neither answer names a path.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn creating_a_base_cannot_be_used_to_ask_which_private_bases_exist() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let bases = seed_bases(&state, "create-oracle").await;
+        let absent = format!("qa-create-oracle-absent-{}", std::process::id());
+
+        let mint = |id: String, headers: Vec<(&'static str, &'static str)>| {
+            let state = state.clone();
+            async move {
+                call(
+                    state,
+                    "POST",
+                    "/knowledge/bases",
+                    Some(serde_json::json!({ "id": id, "name": "minted by a probe" })),
+                    &headers,
+                )
+                .await
+            }
+        };
+
+        // The caller AR-11 measured: the daemon secret and nothing else.
+        let private = mint(bases.private.clone(), vec![]).await;
+        let public = mint(bases.public.clone(), vec![]).await;
+        let free = mint(absent.clone(), vec![]).await;
+        assert_eq!(
+            private,
+            (
+                StatusCode::FORBIDDEN,
+                KNOWLEDGE_BASE_OUT_OF_REACH.to_string()
+            ),
+            "a private base's id was answered differently from every other id"
+        );
+        assert_eq!(
+            public, private,
+            "a taken PUBLIC id and a taken PRIVATE id must be answered the same way here, or \
+             the difference between them is the oracle"
+        );
+        assert_eq!(
+            free, private,
+            "an id that does not exist was answered differently from a private base's id, which \
+             is the oracle: 403 means taken by something this caller may not see"
+        );
+        // …and the person at the keyboard is told the truth, without a path.
+        let (status, collision) = mint(bases.private.clone(), vec![PROOF]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{collision}");
+        assert!(
+            collision.contains("already exists"),
+            "the user was not told the id is taken: {collision}"
+        );
+
+        // No body on this route names a directory, whichever caller asked.
+        let root = state
+            .knowledge_service
+            .root()
+            .to_string_lossy()
+            .into_owned();
+        for body in [&private.1, &public.1, &free.1, &collision] {
+            assert!(
+                !body.contains(&root),
+                "an error body on the create path named the knowledge root: {body}"
+            );
+            assert!(
+                !body.contains(&format!("/{}", bases.private)),
+                "an error body on the create path named a base's directory: {body}"
+            );
+        }
+
+        let (status, body) = mint(absent.clone(), vec![PROOF]).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the user can no longer create a knowledge base: {body}"
+        );
+        let _ = state.knowledge_service.delete_base(&absent);
+        let _ = std::fs::remove_dir_all(state.knowledge_service.root().join(&absent));
+    }
+
+    /// `crates/biorouter-server/src/routes/knowledge.rs`, as text, for the router
+    /// shape assertions below. `include_str!` rather than a runtime read so a
+    /// moved file is a compile error rather than a skipped check.
+    const KNOWLEDGE_ROUTES_SOURCE: &str = include_str!("knowledge.rs");
+
+    /// The body of a top-level `fn` in a `routes/*.rs` file: from its first `{`
+    /// to the first line that is a bare `}` in column 0.
+    ///
+    /// A brace counter would be the obvious implementation and is the wrong one
+    /// here: the bodies this reads are full of `"{id}"` and `"{*page_path}"`
+    /// literals. Column-0 `}` is what `cargo fmt` guarantees for a top-level
+    /// item, and nothing inside a function body can produce one.
+    ///
+    /// ⚠ **Line comments are removed**, and the first draft of this did not do
+    /// that — a comment in `router()` reading "applied here, to the whole of
+    /// `base_routes()`" made the single-consumer assertion below count two. A
+    /// scanner that reads prose as code is the failure mode `privacy_guard_wiring`
+    /// was written to avoid; the same applies here. Nothing in these bodies puts
+    /// `//` inside a string literal, which is the case this does not handle.
+    #[allow(clippy::string_slice)] // every index comes from `find`: a char boundary
+    fn top_level_fn_body(source: &str, signature: &str) -> String {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("`{signature}` is not in knowledge.rs any more"));
+        let after = &source[start..];
+        let open = after
+            .find('{')
+            .unwrap_or_else(|| panic!("`{signature}` has no body"));
+        let rest = &after[open + 1..];
+        let end = rest
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("`{signature}` is not closed in column 0"));
+        rest[..end]
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(at) => &line[..at],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every `.route("<path>", <verbs>)` in a router-builder body, as
+    /// `(path, methods)`.
+    #[allow(clippy::string_slice)] // every index comes from `find`: a char boundary
+    fn registered_routes(body: &str) -> Vec<(String, Vec<String>)> {
+        body.split(".route(")
+            .skip(1)
+            .map(|chunk| {
+                let quote = chunk
+                    .find('"')
+                    .unwrap_or_else(|| panic!("a `.route(` with no path literal: {chunk:.80}"));
+                let rest = &chunk[quote + 1..];
+                let close = rest.find('"').expect("unterminated route path literal");
+                let path = rest[..close].to_string();
+                let args = &rest[close + 1..];
+                let methods = ["get", "post", "put", "delete", "patch"]
+                    .into_iter()
+                    .filter(|verb| args.contains(&format!("{verb}(")))
+                    .map(str::to_uppercase)
+                    .collect();
+                (path, methods)
+            })
+            .collect()
+    }
+
+    /// Does `uri` (a concrete request path, `/knowledge` prefix and query string
+    /// included) match the axum route pattern `pattern` (`/bases/{id}/…`)?
+    fn uri_matches_route(uri: &str, pattern: &str) -> bool {
+        let path = uri.split('?').next().unwrap_or(uri);
+        let path = path.strip_prefix("/knowledge").unwrap_or(path);
+        let mut actual = path.trim_start_matches('/').split('/');
+        let expected: Vec<&str> = pattern.trim_start_matches('/').split('/').collect();
+        for (index, segment) in expected.iter().enumerate() {
+            if segment.starts_with("{*") {
+                // A wildcard capture eats the whole remainder, which must be
+                // non-empty.
+                return actual.next().is_some();
+            }
+            let Some(got) = actual.next() else {
+                return false;
+            };
+            if segment.starts_with('{') {
+                if got.is_empty() {
+                    return false;
+                }
+            } else if *segment != got {
+                return false;
+            }
+            if index + 1 == expected.len() {
+                return actual.next().is_none();
+            }
+        }
+        false
+    }
+
+    /// **The guarantee the doc used to assert and axum does not provide**
+    /// (adversarial security review 2026-09-12, MEDIUM).
+    ///
+    /// `Router::route_layer` wraps the routes that exist when it is called and
+    /// nothing added afterwards, so "every `/bases/{id}` route is gated" is a
+    /// property of how `knowledge.rs` is *written*, not of what axum promises.
+    /// The restructure makes the natural edit safe — the layer is applied to
+    /// `base_routes()`'s return value at its one call site — and this reads the
+    /// file to check the three things that restructure depends on, plus the one
+    /// thing the restructure cannot give: that the probe list the H2 tests drive
+    /// actually reaches every route registered.
+    #[test]
+    fn every_route_that_names_a_base_is_inside_the_gated_sub_router() {
+        let gated = top_level_fn_body(
+            KNOWLEDGE_ROUTES_SOURCE,
+            "fn base_routes() -> Router<Arc<KnowledgeService>>",
+        );
+        let outer = top_level_fn_body(KNOWLEDGE_ROUTES_SOURCE, "pub fn router(svc: Arc<Knowledge");
+
+        // 1. No route that names a base is registered outside the sub-router.
+        for (path, _) in registered_routes(&outer) {
+            assert!(
+                !path.contains('{'),
+                "`{path}` captures a path parameter and is registered on the UNGATED outer \
+                 router. Every route that names a base belongs in `base_routes()`."
+            );
+        }
+
+        // 2. The sub-router does not gate itself, and its one consumer does —
+        //    immediately, so nothing can be appended between the two.
+        assert!(
+            !gated.contains("route_layer"),
+            "`base_routes()` applies its own layer again. That is the snapshot trap: a route \
+             appended after that call is silently ungated."
+        );
+        assert_eq!(
+            outer.matches("base_routes()").count(),
+            1,
+            "`base_routes()` has more than one consumer; each would need its own gate"
+        );
+        let consumed = outer.split_once("base_routes()").expect("checked above").1;
+        assert!(
+            consumed.trim_start().starts_with(".route_layer("),
+            "`base_routes()` is consumed without `.route_layer(` immediately after it"
+        );
+        assert!(
+            consumed.contains("gate_knowledge_base"),
+            "the layer applied to `base_routes()` is not `gate_knowledge_base`"
+        );
+
+        // 3. …and the probe list the H2 tests drive covers every one of them, so
+        //    "each route refuses" is measured rather than assumed.
+        let probes = base_addressing_routes("probe-kb", "deadbeef", "other-kb");
+        let registered = registered_routes(&gated);
+        assert!(
+            registered.len() >= 20,
+            "only {} `/bases/{{id}}` routes were found; the scanner has stopped reading \
+             knowledge.rs",
+            registered.len()
+        );
+        for (path, methods) in &registered {
+            assert!(
+                !methods.is_empty(),
+                "no HTTP method was read off `{path}`; the scanner needs a new verb"
+            );
+            for method in methods {
+                assert!(
+                    probes
+                        .iter()
+                        .any(|(probe_method, uri, _)| probe_method == method
+                            && uri_matches_route(uri, path)),
+                    "`{method} {path}` is gated but never probed: add it to \
+                     `base_addressing_routes` so the H2 tests drive it against a real private \
+                     base"
+                );
+            }
+        }
+    }
+
+    /// The scanner's own corners, so a silently-matching-everything matcher
+    /// cannot make the assertion above vacuous.
+    #[test]
+    fn the_route_scanner_reads_paths_methods_and_matches_exactly() {
+        let parsed = registered_routes(
+            r#"
+            .route("/bases/{id}", get(a).put(b).delete(c))
+            .route("/bases/{id}/pages/{*page_path}", get(d).put(e))
+            .route("/active", post(f))
+            "#,
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                (
+                    "/bases/{id}".to_string(),
+                    vec!["GET".to_string(), "PUT".to_string(), "DELETE".to_string()]
+                ),
+                (
+                    "/bases/{id}/pages/{*page_path}".to_string(),
+                    vec!["GET".to_string(), "PUT".to_string()]
+                ),
+                ("/active".to_string(), vec!["POST".to_string()]),
+            ]
+        );
+
+        assert!(uri_matches_route("/knowledge/bases/kb1", "/bases/{id}"));
+        assert!(uri_matches_route(
+            "/knowledge/bases/kb1/page?path=knowledge/x.md",
+            "/bases/{id}/page"
+        ));
+        assert!(uri_matches_route(
+            "/knowledge/bases/kb1/pages/knowledge/x.md",
+            "/bases/{id}/pages/{*page_path}"
+        ));
+        assert!(!uri_matches_route(
+            "/knowledge/bases/kb1/pages",
+            "/bases/{id}/pages/{*page_path}"
+        ));
+        assert!(!uri_matches_route(
+            "/knowledge/bases/kb1/tier",
+            "/bases/{id}"
+        ));
+        assert!(!uri_matches_route(
+            "/knowledge/bases/kb1",
+            "/bases/{id}/tier"
+        ));
+        assert!(!uri_matches_route(
+            "/knowledge/bases/kb1/graph",
+            "/bases/{id}/tier"
+        ));
+    }
+
     /// Every route under `/knowledge/bases/{id}` in the served tree, as
     /// `(method, uri, body)`. Macros name a provider the registry does not
     /// know, so an admitted one stops with a 400 long before any model.
     ///
     /// ⚠ **Destructive last**, for the reason the chat sweep gives.
+    ///
+    /// ⚠ **This list is checked for completeness**, by
+    /// `every_route_that_names_a_base_is_inside_the_gated_sub_router`: a route
+    /// added to `knowledge::base_routes` and not added here fails that test.
     fn base_addressing_routes(
         id: &str,
         sha: &str,
@@ -4579,36 +4939,170 @@ mod bypass_tests {
         );
     }
 
-    /// Every id the sidebar hands this caller, walking `next_offset` to the end.
+    /// One sidebar page, as the route's own clients take it: `cursor` passed
+    /// back unchanged, never computed.
+    async fn sidebar_page(
+        state: &Arc<AppState>,
+        limit: u32,
+        cursor: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> serde_json::Value {
+        // The cursor is base64url without padding, so every byte of it is
+        // already safe in a query string — no escaping, and a client that had to
+        // escape it would be a client that had parsed it.
+        let uri = match cursor {
+            Some(cursor) => format!("/sessions/sidebar?limit={limit}&cursor={cursor}"),
+            None => format!("/sessions/sidebar?limit={limit}"),
+        };
+        let (status, body) = call(state.clone(), "GET", &uri, None, headers).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        serde_json::from_str(&body).unwrap()
+    }
+
+    fn page_ids(page: &serde_json::Value) -> Vec<String> {
+        page["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// Every id the sidebar hands this caller, walking `next_cursor` to the end.
     async fn sidebar_ids(
         state: &Arc<AppState>,
         limit: u32,
         headers: &[(&str, &str)],
     ) -> Vec<String> {
         let mut ids = Vec::new();
-        let mut offset = 0u64;
+        let mut cursor: Option<String> = None;
         for _ in 0..10_000 {
-            let (status, body) = call(
-                state.clone(),
-                "GET",
-                &format!("/sessions/sidebar?limit={limit}&offset={offset}"),
-                None,
-                headers,
-            )
-            .await;
-            assert_eq!(status, StatusCode::OK, "{body}");
-            let page: serde_json::Value = serde_json::from_str(&body).unwrap();
-            for row in page["sessions"].as_array().unwrap() {
-                ids.push(row["id"].as_str().unwrap().to_string());
-            }
+            let page = sidebar_page(state, limit, cursor.as_deref(), headers).await;
+            ids.extend(page_ids(&page));
             if page["has_more"] != serde_json::Value::Bool(true) {
                 return ids;
             }
-            offset = page["next_offset"]
-                .as_u64()
-                .expect("has_more without next_offset");
+            cursor = Some(
+                page["next_cursor"]
+                    .as_str()
+                    .expect("has_more without next_cursor")
+                    .to_string(),
+            );
         }
         panic!("the sidebar never reported its last page");
+    }
+
+    /// **The count oracle, as a named regression test** (adversarial security
+    /// review 2026-09-12, HIGH). This is the test that would have caught it.
+    ///
+    /// The sidebar filters its rows for a caller that may not open a private
+    /// chat, and it used to resume the next page from the position it had
+    /// reached in the UNFILTERED ordering. So the continuation value counted the
+    /// rows it had hidden: ask for page 1 twice with N private chats created in
+    /// between and the value moves by exactly N. `updated_at` is stamped on
+    /// every token written in this tree, so a private chat merely *running a
+    /// turn* moves it — which turns a listing into a live activity monitor on
+    /// chats the singular read refuses outright.
+    ///
+    /// Two assertions, and the first is the one that fails on the old code:
+    ///
+    /// 1. the continuation value does not move when hidden chats appear; and
+    /// 2. the walk still reaches the same visible rows across that churn — a
+    ///    position-based resume does not, because the position it was given now
+    ///    points at a different row.
+    ///
+    /// The sleep is load-bearing: `updated_at` is `datetime('now')`, one-second
+    /// granularity, so without it the seeded rows tie and SQLite breaks the tie
+    /// by `id ASC` — which would put the private rows *below* the boundary and
+    /// leave the old code's value accidentally unmoved.
+    ///
+    /// ⚠ The measurement is **retried**, and that is a statement about this
+    /// binary rather than about the route. The head of the listing is the whole
+    /// machine's newest visible chat; `#[serial]` keeps the other serial tests
+    /// out, but a non-serial test that creates a chat can land a foreign row at
+    /// the head inside the second this waits — which makes the test's PREMISE
+    /// false (a different visible row) rather than its subject wrong. A repeated
+    /// displacement still fails, and says so.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_sidebar_continuation_value_is_not_a_count_of_the_chats_it_hid() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+
+        // Two visible rows, in one `datetime('now')` second. Which of them sorts
+        // first does not matter — only that the pair is stable across the churn
+        // below, which it is, because nothing here touches them again.
+        let _visible_a = seed_chat(
+            &state,
+            "count-oracle visible A (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+        let _visible_b = seed_chat(
+            &state,
+            "count-oracle visible B (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+
+        // "Secret only" — the caller AR-11 measured, and the one this gate
+        // answers as a public model.
+        let secret_only: &[(&str, &str)] = &[];
+        const HIDDEN: usize = 3;
+        let mut displacements = Vec::new();
+
+        for _ in 0..3 {
+            let before = sidebar_page(&state, 1, None, secret_only).await;
+            let first_page_ids = page_ids(&before);
+            let token_before = before["next_cursor"].clone();
+            assert!(
+                !token_before.is_null(),
+                "two visible chats were just seeded and the first page reported no next page: \
+                 {before}"
+            );
+            let second_page_ids =
+                page_ids(&sidebar_page(&state, 1, token_before.as_str(), secret_only).await);
+
+            // Now the hidden rows, stamped into a strictly later second so they
+            // sort above everything seeded above. The guards drop at the end of
+            // each attempt, so a retry starts from the state this one did.
+            tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+            let mut hidden = Vec::new();
+            for i in 0..HIDDEN {
+                hidden.push(
+                    seed_private_chat(&state, &format!("count-oracle hidden {i} (test fixture)"))
+                        .await,
+                );
+            }
+
+            let after = sidebar_page(&state, 1, None, secret_only).await;
+            if page_ids(&after) != first_page_ids {
+                displacements.push(format!("{first_page_ids:?} -> {:?}", page_ids(&after)));
+                continue;
+            }
+            assert_eq!(
+                after["next_cursor"], token_before,
+                "the continuation value moved when {HIDDEN} private chats were created. Its \
+                 displacement IS their count, and because `updated_at` is stamped on every token \
+                 written, polling this route reports when a private chat is running."
+            );
+
+            // …and the value the caller was given still walks to the same row,
+            // which a position into the unfiltered ordering no longer does once
+            // that ordering has shifted underneath it.
+            assert_eq!(
+                page_ids(&sidebar_page(&state, 1, token_before.as_str(), secret_only).await),
+                second_page_ids,
+                "the same continuation value reached a different visible row after private chats \
+                 were created"
+            );
+            return;
+        }
+
+        panic!(
+            "the head of the listing moved under every attempt, so nothing was measured — \
+             another test in this binary is creating chats: {displacements:?}"
+        );
     }
 
     /// A private chat with no message at all — `/workflows/create` answers such

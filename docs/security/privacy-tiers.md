@@ -83,9 +83,22 @@ this section is the ledger.
     `/workflows/create`, `/skills/session`, and each chat `ingest-conversation` names. Each refuses
     with `GET /sessions/{id}`'s own words, and answers a chat that does not exist the same way.
   - **Chat listings.** `GET /sessions`, `/sessions/sidebar` and `/schedule/{id}/sessions` omit the
-    rows that gate would refuse.
+    rows that gate would refuse. ⚠ **Omitting a row is not enough if the pagination still counts
+    it.** The sidebar first filtered after fetching, and resumed each page from the position it had
+    reached in the *unfiltered* ordering — so two continuation values subtracted gave the exact
+    number of private chats between two visible ones, and because `updated_at` is stamped on every
+    token written, polling the route reported when a private chat was running. Since an adversarial
+    review on 2026-09-12 the tier is a **SQL predicate** (the rows never leave the database) and a
+    page resumes from an opaque keyset of the last row it *returned*, so there is nothing hidden
+    left to count.
   - **Knowledge bases.** One route layer covers every route that names a base by `{id}`, reads and
-    writes alike. An absent or malformed id is answered as a private one.
+    writes alike. An absent or malformed id is answered as a private one. **Creating** one
+    (`POST /knowledge/bases`, which names a base by `body.id`) is gated too, since the same review:
+    it refuses an id that is taken, so answering that for a private base enumerated the machine's
+    private bases by name — and named the config path while doing it. The gate is asked **without
+    the id**, which is what makes the answer the same for a taken private id, a taken public id and
+    an id that has never existed; the cost is that a caller holding nothing but the daemon secret
+    can no longer create a base over HTTP.
   - **Knowledge-base listings.** `GET /knowledge/bases` and `/knowledge/active` omit what the
     caller cannot reach, and a selection write cannot move a base its caller cannot see.
   - **Running work.** `GET /active_work` omits every row whose chat the caller could not open. A

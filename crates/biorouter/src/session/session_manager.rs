@@ -540,6 +540,37 @@ pub struct SessionSummary {
     pub privacy_tier: SessionClassification,
 }
 
+/// Where a sidebar page resumes: the sort key of the last row that page emitted.
+///
+/// ⚠ **A keyset, deliberately not an offset** (adversarial security review
+/// 2026-09-12, HIGH). `GET /sessions/sidebar` pages a view that omits the chats
+/// its caller may not see, and it used to resume by *position in the unfiltered
+/// ordering* — so the continuation value counted the rows it had hidden, and a
+/// caller that polled it watched private chats start and finish, because
+/// `updated_at` is stamped on every token written. A keyset is a fact about a
+/// row the caller was **just handed**, so it can carry nothing the caller did
+/// not already have.
+///
+/// `updated_at` is the **stored text**, verbatim, not a re-serialised
+/// `DateTime`. Rows stamped by `datetime('now')` and rows written from a bound
+/// `DateTime<Utc>` do not spell the same instant the same way, and the ordering
+/// this resumes into compares the stored bytes — so a round-trip through
+/// `chrono` would put the boundary in the wrong place for one of the two
+/// spellings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarCursor {
+    pub updated_at: String,
+    pub id: String,
+}
+
+/// One row of a sidebar page: the summary the caller is shown, and the
+/// [`SidebarCursor`] a later page resumes after it.
+#[derive(Debug, Clone)]
+pub struct SidebarRow {
+    pub summary: SessionSummary,
+    pub cursor: SidebarCursor,
+}
+
 /// One turn's token usage, applied additively and atomically in SQL.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenDelta {
@@ -1968,6 +1999,28 @@ impl SessionManager {
             .await
     }
 
+    /// One keyset page of the sidebar's view. See
+    /// [`SessionStorage::list_session_summaries_page`] — in particular why
+    /// `public_only` filters in SQL rather than in the caller.
+    pub async fn list_session_summaries_page(
+        &self,
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        include_subagents: bool,
+        include_empty: bool,
+        public_only: bool,
+    ) -> Result<Vec<SidebarRow>> {
+        self.storage
+            .list_session_summaries_page(
+                limit,
+                after,
+                include_subagents,
+                include_empty,
+                public_only,
+            )
+            .await
+    }
+
     pub async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
         self.storage.list_sessions_by_types(types).await
     }
@@ -3074,6 +3127,24 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
             // yields None rather than erroring.
             diverged_from: row.try_get("diverged_from").ok().flatten(),
             privacy_tier: read_privacy_tier(row),
+        })
+    }
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SidebarRow {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let summary = SessionSummary::from_row(row)?;
+        Ok(SidebarRow {
+            cursor: SidebarCursor {
+                // The projection aliases `CAST(s.updated_at AS TEXT)` to this
+                // name, so it is the bytes the ordering compares rather than a
+                // value chrono has been through. See [`SidebarCursor`].
+                updated_at: row.try_get("cursor_updated_at")?,
+                id: summary.id.clone(),
+            },
+            summary,
         })
     }
 }
@@ -6915,6 +6986,97 @@ impl SessionStorage {
         sqlx::query_as::<_, SessionSummary>(&query)
             .bind(i64::from(limit))
             .bind(i64::from(offset))
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// [`Self::list_session_summaries`] as a **keyset** page over a view that
+    /// may be filtered, for `GET /sessions/sidebar`.
+    ///
+    /// Two differences from the offset form, and both exist for the same reason
+    /// (adversarial security review 2026-09-12, HIGH):
+    ///
+    /// * `public_only` filters **in SQL**. The route used to fetch unfiltered
+    ///   windows and drop the private rows in Rust, which made every position it
+    ///   reported a count of what it had hidden. `sessions.privacy_tier` is a
+    ///   real column, so the rows the caller may not see never leave the
+    ///   database and there is nothing left to count. The comparison is
+    ///   `= 'public'`, which fails **closed** exactly as [`read_privacy_tier`]
+    ///   does: a row whose column is absent, `NULL` or unrecognised is withheld
+    ///   rather than shown.
+    /// * the page resumes from a [`SidebarCursor`] — the sort key of the last
+    ///   row the previous page emitted — rather than from a row count.
+    ///
+    /// The keyset predicate mirrors `ORDER BY s.updated_at DESC, s.id ASC`
+    /// exactly: strictly older, or the same instant with a larger id. Both sides
+    /// of the comparison are `CAST(... AS TEXT)` so the boundary is evaluated on
+    /// the same bytes the cursor carries.
+    async fn list_session_summaries_page(
+        &self,
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        include_subagents: bool,
+        include_empty: bool,
+        public_only: bool,
+    ) -> Result<Vec<SidebarRow>> {
+        let type_filter = if include_subagents {
+            "('user', 'scheduled', 'sub_agent')"
+        } else {
+            "('user', 'scheduled')"
+        };
+        // See [`Self::list_session_summaries`] for why the sidebar and
+        // `workspace_list` want opposite joins here.
+        let join = if include_empty {
+            "LEFT JOIN messages m ON s.id = m.session_id"
+        } else {
+            "INNER JOIN messages m ON s.id = m.session_id"
+        };
+        let tier_filter = if public_only {
+            "AND s.privacy_tier = 'public'"
+        } else {
+            ""
+        };
+        let keyset = if after.is_some() {
+            "AND (CAST(s.updated_at AS TEXT) < ? \
+              OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))"
+        } else {
+            ""
+        };
+        let query = format!(
+            r#"
+            SELECT s.id,
+                   s.working_dir,
+                   COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
+                   s.user_set_name,
+                   s.created_at,
+                   s.updated_at,
+                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
+                   s.parent_session_id,
+                   s.session_type,
+                   s.diverged_from,
+                   s.privacy_tier,
+                   COUNT(m.id) AS message_count
+            FROM sessions s
+            {join}
+            WHERE s.session_type IN {type_filter}
+            {tier_filter}
+            {keyset}
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC, s.id ASC
+            LIMIT ?
+            "#
+        );
+
+        let mut q = sqlx::query_as::<_, SidebarRow>(&query);
+        if let Some(cursor) = after {
+            q = q
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.id.clone());
+        }
+        let pool = self.pool().await?;
+        q.bind(i64::from(limit))
             .fetch_all(pool)
             .await
             .map_err(Into::into)
@@ -12560,6 +12722,87 @@ mod tests {
             .unwrap();
         assert_eq!(summary.name, "New Session");
         assert!(summary.user_set_name);
+    }
+
+    /// The keyset page, at the corner an offset page never had to think about:
+    /// every row sharing one `updated_at`.
+    ///
+    /// `updated_at` is `datetime('now')` — one-second granularity — so several
+    /// chats really do tie in practice, and the ordering breaks the tie by
+    /// `id ASC`. A resume predicate of `updated_at < :ts` alone would skip the
+    /// rest of the tied group; one of `<=` would repeat it forever. So the
+    /// boundary is `(< ts) OR (= ts AND id > last_id)`, and this walks a tied
+    /// group one row at a time to assert every row is seen exactly once.
+    ///
+    /// It also drives `public_only`, which is the security half: the rows a
+    /// filtered caller may not see never leave the database, which is what
+    /// leaves the continuation value with nothing hidden to count (adversarial
+    /// security review 2026-09-12).
+    #[tokio::test]
+    async fn a_keyset_page_walks_a_tied_updated_at_group_exactly_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let mut public_ids = Vec::new();
+        let mut private_ids = Vec::new();
+        for index in 0..6 {
+            let session = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    format!("tied {index}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&session.id, &umsg(10, "hello"))
+                .await
+                .unwrap();
+            if index % 2 == 0 {
+                public_ids.push(session.id.clone());
+            } else {
+                sm.update(&session.id)
+                    .raise_privacy(SessionClassification::Private, "turn:test")
+                    .apply()
+                    .await
+                    .unwrap();
+                private_ids.push(session.id.clone());
+            }
+        }
+
+        for public_only in [false, true] {
+            let mut seen = Vec::new();
+            let mut cursor: Option<SidebarCursor> = None;
+            for _ in 0..20 {
+                let page = sm
+                    .list_session_summaries_page(1, cursor.as_ref(), false, false, public_only)
+                    .await
+                    .unwrap();
+                let Some(row) = page.into_iter().next() else {
+                    break;
+                };
+                seen.push(row.summary.id.clone());
+                cursor = Some(row.cursor);
+            }
+
+            let mut sorted = seen.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(
+                sorted.len(),
+                seen.len(),
+                "the keyset walk repeated a row: {seen:?}"
+            );
+            for id in &public_ids {
+                assert!(seen.contains(id), "the walk skipped the public chat {id}");
+            }
+            for id in &private_ids {
+                assert_eq!(
+                    seen.contains(id),
+                    !public_only,
+                    "public_only={public_only} handled the private chat {id} wrongly"
+                );
+            }
+        }
     }
 
     #[test]
