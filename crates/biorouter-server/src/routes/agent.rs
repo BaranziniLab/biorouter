@@ -707,7 +707,18 @@ async fn start_agent(
     };
 
     if let Some(workflow) = original_workflow.as_ref() {
-        apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)?;
+        // The siblings' shape, and for the same reason. A bare `?` here left the
+        // chat this function had just created sitting in the session list — a
+        // row the user never asked for and cannot explain. It is not a rare
+        // race, either: a workflow whose `default` names a base that has since
+        // been deleted fails here on EVERY start, so a stale workflow minted one
+        // orphan per press.
+        if let Err(error) =
+            apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)
+        {
+            discard_failed_new_session(&state, &session.id).await;
+            return Err(error);
+        }
     }
 
     let workflow_extensions = original_workflow
@@ -5358,5 +5369,74 @@ mod knowledge_selection_tests {
             "only the declared base belongs to a workflow session"
         );
         assert_eq!(selection.primary_kb.as_deref(), Some("alpha"));
+    }
+
+    /// Every step that can fail while the new chat already exists, but before it
+    /// is returned, discards it. An orphan chat is a row the user never asked
+    /// for and cannot explain, and the knowledge apply was the one step that
+    /// left one: it used a bare `?` where its two siblings take the error, call
+    /// `discard_failed_new_session`, and only then return.
+    ///
+    /// ⚠ It was not a rare race. A workflow whose `default` names a base that
+    /// has since been deleted fails here on EVERY start, so a stale workflow
+    /// minted one orphan per press.
+    ///
+    /// **A source read, deliberately.** Reaching the real handler needs an
+    /// `AppState`, and `AppState::new` calls `AgentManager::instance()` and
+    /// `KnowledgeService::new_default()` — both of which resolve the developer's
+    /// own `~/.config/biorouter`. A test that creates and deletes chats there is
+    /// worse than no test. The shape is what the defect was, so the shape is
+    /// what is asserted.
+    ///
+    /// ⚠ **Scope.** The `?` sites *after* this window — the two
+    /// `manager.update(...)` calls and the refetch — orphan a chat too and are
+    /// deliberately not covered: each of those is the session store itself
+    /// failing, where the discard's own `delete_session` would be failing for
+    /// the same reason, and deciding what to do there is a separate question.
+    /// Named here so the next reader knows they were seen, not missed.
+    #[test]
+    fn every_failure_before_a_new_chat_is_returned_discards_it() {
+        let source = include_str!("agent.rs");
+        // ⚠ The leading newline is load-bearing: `include_str!` reads this file
+        // including this test, so an anchor without it matches the copy inside
+        // this very string literal and slices the test instead of the handler.
+        let body = source
+            .split("\nasync fn start_agent(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("start_agent production body");
+
+        // In source order. Each step's window runs to the next one, so the
+        // assertion is "between one fallible step and the next, the error path
+        // discards the chat" rather than a count that a fourth step could pass
+        // without being looked at.
+        const STEPS: [&str; 3] = [
+            "bind_new_session_provider(",
+            "runtime::prepare_prompt(",
+            "apply_workflow_knowledge_selection(",
+        ];
+
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is a step of start_agent"))
+        };
+        for (index, step) in STEPS.iter().enumerate() {
+            let start = at(step);
+            let end = STEPS.get(index + 1).map_or(body.len(), |next| at(next));
+            let window = &body[start..end];
+            let discarded = window
+                .find("discard_failed_new_session")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{step}` can return an error without discarding the chat it leaves behind"
+                    )
+                });
+            if let Some(returned) = window.find("return Err") {
+                assert!(
+                    discarded < returned,
+                    "`{step}` returns its error before discarding the chat"
+                );
+            }
+        }
     }
 }
