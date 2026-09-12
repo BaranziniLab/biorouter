@@ -20,12 +20,35 @@ function emitChange(): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * Names the name channel published WHILE a list request was in flight.
+ *
+ * A list response describes the moment it was ISSUED, so a rename that landed
+ * after that is the LATER fact — but `refreshSessionList` replaces the whole
+ * array, which would undo it. That is the snap-back `sessionNameSync`'s header
+ * describes, and until now it only cost Home recents and See-all a wrong name
+ * until their next refresh. It costs more now: the tab strip reconciles its
+ * titles against this cache (`ChatGroupsShell.useTabTitlesFromSessionList`), so
+ * a clobbered name would be written onto a tab AND persisted there.
+ *
+ * The window is not hypothetical. A brand-new chat's first turn opens both
+ * halves of it: `refreshSessionBinding` finds the chat missing from a fetched
+ * list and calls `notifySessionListChanged` (→ a full `GET /sessions`), and
+ * ~800 ms later the auto-name poll announces the generated name. On a machine
+ * with thousands of chats the list is easily the slower of the two.
+ *
+ * Recorded only while a request is outstanding, and cleared by the request that
+ * consumes them, so the map cannot grow.
+ */
+const namesPublishedDuringFetch = new Map<string, { name: string; userSetName: boolean }>();
+
 // A session rename rides the name channel, not the list channel — but the
 // See-all view and Home recents read THIS cache, so patch the cached name when
 // one arrives. Without this a rename made in the tab pill or the sidebar never
 // reached those two surfaces until they remounted, and the same session showed
 // two different names in two panels at once.
 subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
+  if (inFlightRequest) namesPublishedDuringFetch.set(sessionId, { name, userSetName });
   if (!cachedSessions) return;
   const idx = cachedSessions.findIndex((s) => s.id === sessionId);
   if (idx === -1) return;
@@ -125,6 +148,17 @@ export function notifySessionListChanged(change: SessionListChange = {}): void {
   getListChannel()?.postMessage({ at: Date.now(), ...change });
 }
 
+/** Re-apply the renames that outran this response. See {@link namesPublishedDuringFetch}. */
+function applyNamesPublishedDuringFetch(sessions: Session[]): Session[] {
+  if (namesPublishedDuringFetch.size === 0) return sessions;
+  const next = sessions.map((session) => {
+    const later = namesPublishedDuringFetch.get(session.id);
+    return later ? { ...session, name: later.name, user_set_name: later.userSetName } : session;
+  });
+  namesPublishedDuringFetch.clear();
+  return next;
+}
+
 export function getCachedSessionList(): Session[] | null {
   return cachedSessions;
 }
@@ -167,6 +201,9 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
   // proof's async hop: a flag change in that gap orphans this request, and
   // an orphan must still ask for the list it was issued for.
   const issuedFor = cachedIncludeSubagents;
+  // This request's answer supersedes every name it is about to carry — except
+  // the ones announced from HERE on. See {@link namesPublishedDuringFetch}.
+  namesPublishedDuringFetch.clear();
   inFlightRequest = userActionHeaders()
     .then((headers) =>
       listSessions<true>({
@@ -180,7 +217,7 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
       // this exact call, but publish nothing — the cache and its subscribers
       // belong to the request that replaced it.
       if (generation !== requestGeneration) return response.data.sessions;
-      cachedSessions = response.data.sessions;
+      cachedSessions = applyNamesPublishedDuringFetch(response.data.sessions);
       emitChange();
       return cachedSessions;
     })

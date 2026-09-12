@@ -20,6 +20,7 @@ import {
 } from '../api';
 import {
   announceSessionName,
+  AUTO_RENAME_USER_MESSAGE_LIMIT,
   cacheGet,
   cacheSet,
   isDefaultSessionName,
@@ -2407,11 +2408,32 @@ class ChatStreamController {
     // touched. Not awaited — the turn is over and nothing on screen waits on it.
     void this.refreshSessionBinding();
 
+    // ⚠ **The name this window believes, captured BEFORE the poll below.** The
+    // poll's question is "did the daemon rename this chat?", and the only way to
+    // answer it is to compare against what we already show. Comparing against
+    // the PLACEHOLDER instead — which is what this did — answers a narrower
+    // question ("has it been named at all?") and so noticed only the FIRST
+    // auto-name. Every later one was invisible to the whole renderer.
+    const knownName = this.snapshot.session?.name ?? '';
+    // The daemon's own rule, mirrored: `SessionManager::maybe_update_name` skips
+    // a user-named session, and otherwise renames while the chat is still on the
+    // placeholder OR has at most {@link AUTO_RENAME_USER_MESSAGE_LIMIT} (3,
+    // mirrored from the daemon) user-role messages. So those are exactly the
+    // turns after which a rename can arrive, and polling past them would ask a
+    // question whose answer can no longer change. Counted the same
+    // way the daemon counts it — user-role messages of the stored conversation,
+    // tool responses included. A disagreement costs one wasted metadata read in
+    // one direction and one missed poll in the other; the two counts are of the
+    // same objects, so it is the same number.
+    const userMessageCount = this.snapshot.messages.filter((m) => m.role === 'user').length;
+    const daemonMayStillRename =
+      isDefaultSessionName(knownName) || userMessageCount <= AUTO_RENAME_USER_MESSAGE_LIMIT;
+
     if (
       this.sessionId &&
       this.snapshot.session &&
       !this.snapshot.session.user_set_name &&
-      isDefaultSessionName(this.snapshot.session.name)
+      daemonMayStillRename
     ) {
       const pollDelays = [800, 1200, 2000, 3000, 4000, 6000, 8000, 10000];
       void (async () => {
@@ -2420,6 +2442,10 @@ class ChatStreamController {
           try {
             const response = await getSession({
               path: { session_id: this.sessionId },
+              // The name and the flag are all this reads, and it reads them up
+              // to eight times per turn — so it must not drag the whole
+              // conversation across with them.
+              query: { metadata_only: true },
               // Issue #56 Task 58: reading a private chat needs the
               // proof-of-user.
               headers: await userActionHeaders(),
@@ -2429,7 +2455,7 @@ class ChatStreamController {
             if (!data) continue;
             const proposedName = data.name;
             if (data.user_set_name) break;
-            if (proposedName && !isDefaultSessionName(proposedName)) {
+            if (proposedName && proposedName !== knownName && !isDefaultSessionName(proposedName)) {
               const uniqueName = await disambiguateSessionName(proposedName, this.sessionId);
               if (uniqueName !== proposedName) {
                 try {
