@@ -209,15 +209,26 @@ const CLAIM_NEXT_SESSION_N: &str = "INSERT INTO session_id_high_water (prefix, l
 /// ~4000 passing results discarded, and nothing in the log naming a cause. A
 /// panic naming both stores is the difference between five minutes and a week.
 ///
-/// ⚠ **Scoped to this crate's own unit tests, deliberately, and NOT to
-/// `debug_assertions`.** The invariant it checks is only true where
-/// [`SessionStorage::id_prefix`] gives each store its own prefix, which is this
-/// same `cfg(test)`. Built without it the prefix is the date, two stores in one
-/// process both mint `<date>_1`, and the guard would fire on a duplicate that is
-/// real but that nothing in this change fixes — see
-/// `two_stores_in_one_process_never_mint_the_same_id` for the measurement and
-/// the reason that gap is left open rather than half-closed here.
-#[cfg(test)]
+/// ⚠ **`debug_assertions`, not `cfg(test)`.** It was the narrower scope until
+/// [`SessionStorage::id_prefix`] gave every store its own prefix in every build
+/// rather than only under `cfg(test)`. While the prefix was per-store only in
+/// this crate's own unit tests, a guard compiled anywhere else would have fired
+/// on a duplicate that was real and unfixed: every integration binary in the
+/// workspace — `crates/biorouter/tests/*.rs`, and every test in
+/// `biorouter-server`, `biorouter-mcp` and `biorouter-cli` — links this crate
+/// built WITHOUT `cfg(test)`, so two stores in one process both minted
+/// `<date>_1`. Measured on 2026-09-12 with the guard widened and the prefix left
+/// alone: `tests/agent.rs` failed 1 of 17 and
+/// `tests/conversation_writeback_stress.rs` 9 of 9, each naming two TempDir
+/// stores. Now that the mint is safe in all builds the guard follows it, which
+/// is what turns a future regression into a panic at the mint instead of a
+/// 40-minute CI timeout naming nothing.
+///
+/// Release builds are deliberately left out. There the check is dead weight —
+/// one store per process, so nothing can clash — and the failure it would
+/// introduce (a panic inside `create_session`) is worse than the one it guards
+/// against.
+#[cfg(debug_assertions)]
 static MINTED_IDS: LazyLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
@@ -234,7 +245,7 @@ static MINTED_IDS: LazyLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
 /// die with `PoisonError` instead of their own result — one genuine detection
 /// became seven failures, six of them meaningless. Measured, in
 /// `conversation_writeback_stress`.
-#[cfg(test)]
+#[cfg(debug_assertions)]
 fn record_minted_id(id: &str, session_dir: &Path) {
     let mut minted = MINTED_IDS
         .lock()
@@ -260,31 +271,47 @@ fn record_minted_id(id: &str, session_dir: &Path) {
     }
 }
 
-/// The 8-character prefix bound to one store directory, allocated from a
-/// process-wide counter.
+/// Where this store sits in the order the process first minted from each one:
+/// `0` for the first, then 1, 2, … one index per distinct store directory.
+///
+/// Stable for one directory and never reused, so a store's prefix — and with it
+/// its `MAX(N)` counter — cannot move under it mid-process.
+///
+/// ⚠ **Never panics while holding the lock, and never trusts it to be
+/// unpoisoned**, for the reason [`record_minted_id`] gives: this now runs in
+/// every build, so a poisoned mutex here would turn one unrelated panic into a
+/// process that can no longer create a session at all.
+fn store_index(session_dir: &Path) -> u64 {
+    static INDEXES: LazyLock<std::sync::Mutex<HashMap<PathBuf, u64>>> =
+        LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut indexes = INDEXES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(index) = indexes.get(session_dir) {
+        return *index;
+    }
+    let index = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    indexes.insert(session_dir.to_path_buf(), index);
+    index
+}
+
+/// The 8-character prefix of a store that is not the process's first: `s`
+/// followed by [`store_index`] in seven hex digits.
 ///
 /// Free rather than a method so a test can exercise it over thousands of paths
 /// without standing up a `SessionStorage` for each (the constructor creates the
 /// store directory, so the paths would have to be real). See
-/// [`SessionStorage::id_prefix`] for why it is allocated rather than hashed.
-#[cfg(test)]
+/// [`SessionStorage::id_prefix`] for why it is allocated rather than hashed, and
+/// why it leads with a letter.
 fn allocate_store_prefix(session_dir: &Path) -> String {
-    static ALLOCATED: LazyLock<std::sync::Mutex<HashMap<PathBuf, String>>> =
-        LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let mut allocated = ALLOCATED.lock().expect("test id prefixes poisoned");
-    if let Some(prefix) = allocated.get(session_dir) {
-        return prefix.clone();
-    }
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let index = store_index(session_dir);
     assert!(
-        n <= u32::MAX as u64,
-        "ran out of 8-character store prefixes ({n}); the prefix must stay 8 \
+        index <= 0x0fff_ffff,
+        "ran out of 8-character store prefixes ({index}); the prefix must stay 8 \
          characters because the counter is read back with SUBSTR(id, 10)"
     );
-    let prefix = format!("{n:08x}");
-    allocated.insert(session_dir.to_path_buf(), prefix.clone());
-    prefix
+    format!("s{index:07x}")
 }
 
 /// Raise every prefix's mark to the largest `N` on disk under it.
@@ -5579,15 +5606,23 @@ impl SessionStorage {
         Ok(())
     }
 
-    /// The 8-character prefix a new session id is built on.
+    /// The 8-character prefix a new session id is built on: today's date for the
+    /// process's FIRST store, `s<index>` for every store after it.
     ///
-    /// Production uses today's date, which is what makes ids sort and read
-    /// sensibly. **Tests must not**, and the reason is worth stating because the
-    /// symptom is nothing like the cause: ids are minted as `PREFIX_N` where `N`
-    /// is `MAX(N) + 1` *within this database*, and every test builds its own
-    /// `TempDir` manager over an EMPTY one. So the first session of every test
-    /// is `20260827_1`, the second `20260827_2`, and so on — ids collide across
-    /// tests by construction.
+    /// The date is what makes ids sort and read sensibly, and **the first store
+    /// is the only store there is in production** — the daemon, a terminal
+    /// `biorouter`, `biorouter acp` and a scheduled job each open one, and
+    /// `SessionManager::instance()` and `biorouter-acp`'s own
+    /// `SessionManager::new(Paths::data_dir())` resolve to the SAME directory, so
+    /// they share one index. Shipped ids are therefore `YYYYMMDD_N` exactly as
+    /// before, `Utc::now()` re-read on every mint so a daemon still rolls over at
+    /// midnight.
+    ///
+    /// A second, DIFFERENT store in one process must not use the date, and the
+    /// reason is worth stating because the symptom is nothing like the cause: ids
+    /// are minted as `PREFIX_N` where `N` is `MAX(N) + 1` *within this database*,
+    /// and a second store opens its own. So both mint `<date>_1`, both mint
+    /// `<date>_2`, and so on — ids collide by construction.
     ///
     /// That matters because `agents::subagent_handle::HANDLES` is process-global
     /// and keyed by session id. A test that leaves a handle behind hands it to
@@ -5612,14 +5647,36 @@ impl SessionStorage {
     /// candidates, and one lib-test run allocates thousands of stores. A counter
     /// cannot collide at all, costs a map lookup, and removes the only place
     /// where whether CI hangs was a question of luck.
+    ///
+    /// ⚠ **The allocated prefix leads with `s`, and that letter is the whole
+    /// point.** A date is eight digits, so a bare hex counter could in principle
+    /// reach `20260912` and hand a later store the prefix the first one is
+    /// using — 539,760,402 distinct stores in one process, which is absurd, but
+    /// "absurd" is the same kind of answer the truncated hash gave. A leading
+    /// letter makes it impossible instead of unlikely, and it also says at a
+    /// glance, in a database or a log, that an id did not come from the store
+    /// this process was built around.
+    ///
+    /// ⚠ **Both branches give every store its own prefix.** That is the
+    /// invariant [`MINTED_IDS`] checks, and it is why that guard can now be
+    /// compiled for every `debug_assertions` build rather than only for this
+    /// crate's own unit tests.
     #[cfg(test)]
     fn id_prefix(&self) -> String {
+        // Never the date, not even for the first store: which store is first in a
+        // test binary depends on the order the harness happens to schedule its
+        // threads, so a date branch here would make one arbitrary store's ids
+        // change shape from run to run. Uniqueness does not need it.
         allocate_store_prefix(&self.session_dir)
     }
 
     #[cfg(not(test))]
     fn id_prefix(&self) -> String {
-        chrono::Utc::now().format("%Y%m%d").to_string()
+        if store_index(&self.session_dir) == 0 {
+            chrono::Utc::now().format("%Y%m%d").to_string()
+        } else {
+            allocate_store_prefix(&self.session_dir)
+        }
     }
 
     async fn create_session(
@@ -5646,7 +5703,7 @@ impl SessionStorage {
             .await?;
 
         let id = format!("{today}_{next_n}");
-        #[cfg(test)]
+        #[cfg(debug_assertions)]
         record_minted_id(&id, &self.session_dir);
 
         let session = sqlx::query_as(
@@ -19110,33 +19167,76 @@ mod session_id_uniqueness_tests {
         );
     }
 
+    /// An allocated prefix can never be mistaken for a date, by shape.
+    ///
+    /// The exactness the allocator buys is only worth anything if the two
+    /// prefix *kinds* cannot meet: production's first store takes today's date,
+    /// every later one takes an allocated prefix, and if a counter could ever
+    /// render as eight digits it could render as today's. `s` makes that a
+    /// property of the alphabet instead of a property of how many stores a
+    /// process happens to open.
+    #[test]
+    fn an_allocated_prefix_can_never_be_a_date() {
+        let today = chrono::Utc::now().format("%Y%m%d").to_string();
+        assert!(
+            today.len() == 8 && today.chars().all(|c| c.is_ascii_digit()),
+            "the date prefix stopped being eight digits ({today}); this test \
+             compares the two prefix kinds by shape and no longer knows one"
+        );
+        // Four fresh stores, so four consecutive indices — whatever the counter
+        // happens to stand at when this test runs. That is all the coverage the
+        // property needs: the leading character comes from the format string and
+        // not from the value, so no index can lose it.
+        for path in ["/kind/a", "/kind/b", "/kind/c", "/kind/d"] {
+            let prefix = allocate_store_prefix(&PathBuf::from(path).join(SESSIONS_FOLDER));
+            assert_eq!(
+                prefix.len(),
+                8,
+                "the prefix must stay 8 characters: {prefix}"
+            );
+            assert_ne!(
+                prefix, today,
+                "an allocated prefix rendered as today's date"
+            );
+            assert!(
+                !prefix.starts_with(|c: char| c.is_ascii_digit()),
+                "an allocated prefix starting with a digit can collide with a \
+                 date once the counter is large enough: {prefix}"
+            );
+        }
+    }
+
     /// End to end: two stores in one process never mint the same id.
     ///
     /// The property the two tests above are components of, asserted through
     /// `create_session` itself so a future change that keeps the allocator and
     /// breaks the mint still goes red.
     ///
-    /// ⚠ **This holds in THIS binary and not in every one.**
-    /// [`SessionStorage::id_prefix`]'s per-store branch is `#[cfg(test)]`, so it
-    /// is compiled only for this crate's own unit tests. Every integration
-    /// binary in the workspace — `crates/biorouter/tests/*.rs`, and every test in
-    /// `biorouter-server`, `biorouter-mcp` and `biorouter-cli` — links this crate
-    /// built WITHOUT `cfg(test)`, prefixes ids with the date, and mints
-    /// `<date>_1` from every store. That is not a theory: building with
-    /// [`MINTED_IDS`] active outside `cfg(test)` makes `tests/agent.rs` fail four
-    /// tests and `tests/conversation_writeback_stress.rs` eight, each reporting
-    /// `session id 20260912_1 was minted twice in one process` between two named
-    /// TempDir stores. CI runs those binaries.
+    /// ⚠ **This used to hold in THIS binary and in no other one**, and the
+    /// companion that proves it now holds everywhere is
+    /// `crates/biorouter/tests/session_id_cross_store.rs` — the same property,
+    /// asserted from an integration binary, which is a build of this crate
+    /// WITHOUT `cfg(test)`. Keep both: this one covers the `cfg(test)` branch of
+    /// [`SessionStorage::id_prefix`], that one covers the shipped branch, and
+    /// neither can see the other's.
     ///
-    /// That gap is deliberately NOT closed here. The two ways to close it are to
-    /// give later stores a non-date prefix in non-test builds — which changes
-    /// user-visible ids on a real production path (`biorouter-acp`'s server
-    /// constructs its own manager) — or to floor the numeric part
-    /// process-wide, which was written, measured and removed: it breaks every
-    /// fixture that replays id reuse, because
-    /// `a_rewrite_basis_cannot_cross_a_wipe_that_recycled_the_session_id`
-    /// asserts the wipe hands *the same id* back. Both are a maintainer's call,
-    /// not a bug fix's.
+    /// The gap was real and measured. While the per-store prefix was
+    /// `#[cfg(test)]`-only, every integration binary in the workspace —
+    /// `crates/biorouter/tests/*.rs`, and every test in `biorouter-server`,
+    /// `biorouter-mcp` and `biorouter-cli`, all of which CI runs — prefixed ids
+    /// with the date and minted `<date>_1` from every store. Building
+    /// [`MINTED_IDS`] outside `cfg(test)` on top of that, on 2026-09-12, made
+    /// `tests/agent.rs` fail 1 of 17 and `tests/conversation_writeback_stress.rs`
+    /// 9 of 9, each reporting `session id 20260912_1 was minted twice in one
+    /// process` between two named TempDir stores.
+    ///
+    /// It was closed by giving stores *after the first* a non-date prefix in
+    /// every build, so a single-store process — which is every production one —
+    /// keeps `YYYYMMDD_N` unchanged. The alternative, flooring the numeric part
+    /// process-wide, was written, measured and removed: it breaks every fixture
+    /// that replays id reuse, because
+    /// `a_rewrite_basis_cannot_cross_a_wipe_that_recycled_the_session_id` asserts
+    /// the wipe hands *the same id* back, and a process floor cannot allow that.
     #[tokio::test]
     async fn two_stores_in_one_process_never_mint_the_same_id() {
         let a = tempfile::TempDir::new().unwrap();
