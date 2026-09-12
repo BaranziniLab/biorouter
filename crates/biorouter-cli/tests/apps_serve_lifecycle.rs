@@ -1,12 +1,16 @@
-//! Stopping `biorouter serve` stops the daemon it started.
+//! Stopping `biorouter apps serve` stops the daemon it started.
 //!
-//! It did not. `serve` never killed its child — the `Child` had been moved into
-//! the task waiting on it, so the Ctrl-C arm held no handle — and the only
-//! thing that ever stopped the daemon was a terminal's Ctrl-C, which reaches
-//! the whole foreground process group. `kill <pid of serve>` left the daemon
-//! running, still holding the port, still accepting the launch token, and still
-//! serving the shell that carries its secret. These tests run the real binaries
-//! and stop `serve` the way a process manager or an operator does: by pid.
+//! It did not. The command handled `ctrl_c` and nothing else, so SIGTERM ran no
+//! code here at all: the default action ended `apps serve` on the spot and left
+//! `biorouterd` running, holding the port, serving the app, and holding the
+//! daemon's secret. `kill <pid of apps serve>` — what a process manager, a
+//! script or an editor's stop button sends — orphaned it every time.
+//!
+//! This is the defect PR #226 fixed for `biorouter serve`; these tests are the
+//! same measurement, of the same two layers, against the same helpers the two
+//! commands now share (`commands::serve::stop_daemon` and `--exit-with-parent`).
+//! They run the real binaries and stop the command the way a process manager or
+//! an operator does: by pid.
 //!
 //! ⚠ They need a `biorouterd` built from this tree beside the `biorouter` under
 //! test. `cargo test -p biorouter-cli` does not build another package's binary,
@@ -14,15 +18,11 @@
 //!
 //! ```text
 //! cargo build -p biorouter-cli -p biorouter-server
-//! cargo test -p biorouter-cli --test serve_lifecycle
+//! cargo test -p biorouter-cli --test apps_serve_lifecycle
 //! ```
 //!
-//! The same harness covers the browser token `serve` hands the daemon, because
-//! the only way to know which token a daemon ended up with is to present one and
-//! read the answer.
-//!
-//! Unix only: the second layer (`--exit-with-parent`) is Unix only, and there
-//! is no SIGTERM to send on Windows.
+//! Unix only: the second layer (`--exit-with-parent`) is Unix only, and there is
+//! no SIGTERM to send on Windows.
 #![cfg(unix)]
 
 use std::io::{Read, Write};
@@ -31,30 +31,30 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long `serve` may take to stop. Its grace for the daemon is ten seconds;
-/// this leaves room for a loaded machine beyond that, so a pass means "the
-/// daemon did not survive", not "it survived for less than N seconds".
+/// How long the command may take to stop. Its grace for the daemon is ten
+/// seconds; this leaves room for a loaded machine beyond that, so a pass means
+/// "the daemon did not survive", not "it survived for less than N seconds".
 const STOP_BUDGET: Duration = Duration::from_secs(30);
 
-/// A debug daemon's cold start on a busy CI runner.
+/// A debug daemon's cold start on a busy machine.
 const READY_BUDGET: Duration = Duration::from_secs(120);
 
-const TOKEN: &str = "lifecycle-test-token";
+const APP_ID: &str = "lifecycle-app";
 
 fn biorouter() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_biorouter"))
 }
 
-/// `serve` starts the daemon that sits beside it, so this is the one it runs.
+/// `apps serve` starts the daemon that sits beside it, so this is the one it
+/// runs.
 fn biorouterd() -> PathBuf {
     biorouter().with_file_name("biorouterd")
 }
 
-/// Refuse to run against a daemon these tests cannot be about.
-///
-/// A stale one would fail the second-layer test for a reason that has nothing
-/// to do with `serve`, and a missing one fails every test with a spawn error.
-/// Either should say what to do rather than leave the reader to work it out.
+/// Refuse to run against a daemon these tests cannot be about, and warm its
+/// first exec while we are here: a freshly linked binary's first run costs
+/// seconds at almost no CPU, which would otherwise land inside the readiness
+/// wait.
 fn require_a_daemon_from_this_tree() {
     let daemon = biorouterd();
     assert!(
@@ -75,9 +75,9 @@ fn require_a_daemon_from_this_tree() {
     );
 }
 
-/// A port nothing is listening on. Released before `serve` binds it, which
-/// leaves a window another process could take it in; `serve` then refuses to
-/// start and the readiness wait reports that, rather than a wrong result.
+/// A port nothing is listening on. Released before the daemon binds it, which
+/// leaves a window another process could take it in; the readiness wait then
+/// reports that rather than a wrong result.
 fn free_port() -> u16 {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .and_then(|l| l.local_addr())
@@ -157,12 +157,12 @@ fn wait_for(budget: Duration, mut done: impl FnMut() -> bool) -> Option<Duration
     None
 }
 
-/// A running `serve` and the daemon it started.
+/// A running `apps serve` and the daemon it started.
 struct Served {
     serve: Child,
     daemon: u32,
-    /// The daemon's [`identity`] when it was found, so cleanup can tell it
-    /// from a later process that happens to reuse its pid.
+    /// The daemon's [`identity`] when it was found, so cleanup can tell it from
+    /// a later process that happens to reuse its pid.
     daemon_identity: String,
     port: u16,
     root: tempfile::TempDir,
@@ -170,51 +170,37 @@ struct Served {
 
 impl Served {
     fn start() -> Self {
-        Self::start_with(&["--token", TOKEN], &[])
-    }
-
-    /// `serve` with `args` appended, and `env` set in its environment.
-    ///
-    /// Split out for the browser-token tests: what token the daemon is actually
-    /// holding cannot be read from the outside, only presented to.
-    fn start_with(args: &[&str], env: &[(&str, &str)]) -> Self {
         require_a_daemon_from_this_tree();
 
         let root = tempfile::tempdir().expect("temp dir");
-        let web = root.path().join("web");
-        std::fs::create_dir_all(&web).unwrap();
-        std::fs::write(
-            web.join("index.html"),
-            "<!doctype html><html><head></head><body>lifecycle</body></html>",
-        )
-        .unwrap();
         let home = root.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
+        // `apps serve` refuses an id the store does not hold, and the store is
+        // `<BIOROUTER_PATH_ROOT>/config/agent_drafter`.
+        let path_root = root.path().join("biorouter");
+        let app = path_root.join("config").join("agent_drafter").join(APP_ID);
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            app.join("manifest.json"),
+            format!(r#"{{"id":"{APP_ID}","title":"Lifecycle","kind":"static","updated_at":1}}"#),
+        )
+        .unwrap();
         let log = std::fs::File::create(root.path().join("serve.log")).unwrap();
 
         let port = free_port();
-        let mut command = Command::new(biorouter());
-        command
-            .args(["serve", "--port", &port.to_string()])
-            .args(args)
-            .arg("--web-dir")
-            .arg(&web);
-        let serve = command
+        let serve = Command::new(biorouter())
+            .args(["apps", "serve", APP_ID])
             // Nothing here may touch the developer's own configuration,
             // sessions or keychain.
             .env("HOME", &home)
-            .env("BIOROUTER_PATH_ROOT", root.path().join("biorouter"))
+            .env("BIOROUTER_PATH_ROOT", &path_root)
+            .env("BIOROUTER_PORT", port.to_string())
             .env("BIOROUTER_DISABLE_KEYRING", "true")
-            // `serve` sets both for the daemon; an inherited value must not
-            // leak into what is under test.
-            .env_remove("BIOROUTER_SERVE_UI")
-            .env_remove("BIOROUTER_BROWSER_TOKEN")
-            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()
-            .expect("spawn biorouter serve");
+            .expect("spawn biorouter apps serve");
 
         let mut served = Self {
             serve,
@@ -229,7 +215,7 @@ impl Served {
         });
         assert!(
             ready.is_some() && matches!(served.serve.try_wait(), Ok(None)),
-            "serve did not come up on port {port}:\n{}",
+            "apps serve did not come up on port {port}:\n{}",
             served.log()
         );
         served.daemon = served.only_child();
@@ -237,13 +223,13 @@ impl Served {
         assert!(
             served.daemon_identity.contains("biorouterd")
                 && served.daemon_identity.contains("agent"),
-            "serve's child is not the daemon: {:?}",
+            "the command's child is not the daemon: {:?}",
             served.daemon_identity
         );
         served
     }
 
-    /// The daemon: `serve`'s one child.
+    /// The daemon: the command's one child.
     fn only_child(&self) -> u32 {
         let out = Command::new("pgrep")
             .args(["-P", &self.serve.id().to_string()])
@@ -256,7 +242,7 @@ impl Served {
         assert_eq!(
             pids.len(),
             1,
-            "expected serve to have exactly one child, the daemon: {pids:?}"
+            "expected apps serve to have exactly one child, the daemon: {pids:?}"
         );
         pids[0]
     }
@@ -265,8 +251,8 @@ impl Served {
         std::fs::read_to_string(self.root.path().join("serve.log")).unwrap_or_default()
     }
 
-    /// Stop `serve` with `name` and assert that it exits and takes the daemon
-    /// with it.
+    /// Stop the command with `name` and assert that it exits and takes the
+    /// daemon with it.
     fn stop_with(mut self, name: &str) -> ExitStatus {
         signal(self.serve.id(), name);
         let mut status = None;
@@ -276,29 +262,29 @@ impl Served {
         });
         let status = match (took, status) {
             (Some(took), Some(status)) => {
-                eprintln!("serve exited {took:?} after SIG{name}");
+                eprintln!("apps serve exited {took:?} after SIG{name}");
                 status
             }
             _ => panic!(
-                "serve was still running {STOP_BUDGET:?} after SIG{name} (its daemon is pid \
-                 {}):\n{}",
+                "apps serve was still running {STOP_BUDGET:?} after SIG{name} (its daemon is \
+                 pid {}):\n{}",
                 self.daemon,
                 self.log()
             ),
         };
 
-        // `serve` reaps the daemon before it exits, so both of these hold the
-        // moment it is gone. They are what an operator stopping the service
-        // needs to be true: nothing left running, and nothing on the port.
+        // The command reaps the daemon before it exits, so both of these hold
+        // the moment it is gone. They are what an operator stopping it needs to
+        // be true: nothing left running, and nothing on the port.
         assert!(
             !is_running(self.daemon),
-            "the daemon (pid {}) outlived serve after SIG{name}:\n{}",
+            "the daemon (pid {}) outlived apps serve after SIG{name}:\n{}",
             self.daemon,
             self.log()
         );
         assert!(
             !port_is_open(self.port),
-            "port {} is still accepting connections after serve exited on SIG{name}",
+            "port {} is still accepting connections after apps serve exited on SIG{name}",
             self.port
         );
         status
@@ -321,65 +307,13 @@ impl Drop for Served {
     }
 }
 
-/// The measured defect (2026-09-12): `BIOROUTER_BROWSER_TOKEN=<t> biorouter
-/// serve` printed a RANDOM token and answered `?t=<t>` with 401, so the systemd
-/// deployment in `docs/deployment/headless-linux.md` — an environment file whose
-/// whole purpose is a token that survives a restart — could not work as written.
+/// The measured defect: `apps serve` listened for `ctrl_c` alone, so SIGTERM ran
+/// no code here and the daemon was left holding the port.
 ///
-/// The daemon holds the token and nothing reads it back, so the only honest
-/// check is to present the operator's token to the running daemon: 303 is the
-/// exchange for a cookie, 401 is a token it has never heard of.
-///
-/// Fails the shipped command with `Some(401)`.
+/// Fails the shipped command on both assertions: the daemon is still running,
+/// and the port still answers.
 #[test]
-fn serve_hands_the_daemon_the_token_the_operator_set_in_its_environment() {
-    let served = Served::start_with(&[], &[("BIOROUTER_BROWSER_TOKEN", "token-from-the-file")]);
-    assert_eq!(
-        http_status(served.port, "/?t=token-from-the-file"),
-        Some(303),
-        "the operator's own token must open the interface:\n{}",
-        served.log()
-    );
-    assert_eq!(
-        http_status(served.port, "/?t=some-other-token"),
-        Some(401),
-        "and nothing else may"
-    );
-}
-
-/// `--token` outranks the environment it runs in, as a command line does.
-#[test]
-fn the_token_flag_outranks_the_environment() {
-    let served = Served::start_with(
-        &["--token", TOKEN],
-        &[("BIOROUTER_BROWSER_TOKEN", "from-the-file")],
-    );
-    assert_eq!(http_status(served.port, &format!("/?t={TOKEN}")), Some(303));
-    assert_eq!(http_status(served.port, "/?t=from-the-file"), Some(401));
-}
-
-/// `--no-token` is a refusal to have a gate. A token this shell exports must not
-/// put one back: the daemon would demand it while the URL `serve` printed
-/// carries none, so every open would be a 401 nothing on screen explains.
-///
-/// Fails a fix that honours the variable without removing it from the child's
-/// environment.
-#[test]
-fn no_token_is_not_undone_by_a_token_in_the_environment() {
-    let served = Served::start_with(
-        &["--no-token"],
-        &[("BIOROUTER_BROWSER_TOKEN", "from-the-file")],
-    );
-    assert_eq!(
-        http_status(served.port, "/"),
-        Some(200),
-        "--no-token means the bare address opens the interface:\n{}",
-        served.log()
-    );
-}
-
-#[test]
-fn sigterm_to_serve_stops_its_daemon() {
+fn sigterm_to_apps_serve_stops_its_daemon() {
     let status = Served::start().stop_with("TERM");
     assert!(
         status.success(),
@@ -387,11 +321,11 @@ fn sigterm_to_serve_stops_its_daemon() {
     );
 }
 
-/// The report measured this one hanging as well as orphaning: the Ctrl-C arm
-/// returned, and then the runtime waited forever on the task that was still
-/// blocked waiting for the daemon to exit.
+/// SIGINT was handled before this change, but with a `start_kill` and no grace.
+/// It must still stop both, and now through the same bounded stop-then-kill
+/// `biorouter serve` uses.
 #[test]
-fn sigint_to_serve_stops_its_daemon() {
+fn sigint_to_apps_serve_stops_its_daemon() {
     let status = Served::start().stop_with("INT");
     assert!(
         status.success(),
@@ -399,20 +333,23 @@ fn sigint_to_serve_stops_its_daemon() {
     );
 }
 
-/// SIGKILL runs no code in `serve` at all, so this is the second layer alone:
-/// the daemon sees that its parent is gone and stops itself.
+/// SIGKILL runs no code in `apps serve` at all, so this is the second layer
+/// alone: the daemon sees that its parent is gone and stops itself.
+///
+/// Fails the shipped command, which passed no `--exit-with-parent`, so the
+/// orphan ran until something else killed it.
 #[test]
-fn a_daemon_whose_serve_was_killed_outright_stops_itself() {
+fn a_daemon_whose_apps_serve_was_killed_outright_stops_itself() {
     let mut served = Served::start();
     let daemon = served.daemon;
-    served.serve.kill().expect("SIGKILL serve");
-    served.serve.wait().expect("reap serve");
+    served.serve.kill().expect("SIGKILL apps serve");
+    served.serve.wait().expect("reap apps serve");
 
     let took = wait_for(STOP_BUDGET, || !is_running(daemon));
     match took {
-        Some(took) => eprintln!("the orphaned daemon stopped {took:?} after serve was killed"),
+        Some(took) => eprintln!("the orphaned daemon stopped {took:?} after apps serve was killed"),
         None => panic!(
-            "the daemon (pid {daemon}) was still running {STOP_BUDGET:?} after serve was \
+            "the daemon (pid {daemon}) was still running {STOP_BUDGET:?} after apps serve was \
              killed:\n{}",
             served.log()
         ),

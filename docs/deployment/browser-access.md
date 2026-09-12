@@ -121,8 +121,12 @@ carries a credential instead.
   token. Open the full address the command printed, `?t=` included.
 
 To keep one address working across restarts — a bookmark, or a service that restarts — pass the
-same token each time with `--token <t>`, or set `BIOROUTER_BROWSER_TOKEN` for the daemon. Treat that
-value like a password: anyone who has it has the same access you do.
+same token each time with `--token <t>`, or set `BIOROUTER_BROWSER_TOKEN` in the environment `serve`
+runs in. `serve` uses it as given (trimmed), hands it to the daemon, and says on the banner that the
+token came from there rather than claiming it is new; `--token` wins when both are set. A service
+unit should use the variable, from a file only the service user can read, rather than the flag,
+which `ps` shows to every user on the host. Treat that value like a password: anyone who has it has
+the same access you do.
 
 `--no-token` turns the gate off entirely. It is accepted **only** for a loopback bind, where the
 only callers are processes on the same machine, and `serve` prints a line saying so:

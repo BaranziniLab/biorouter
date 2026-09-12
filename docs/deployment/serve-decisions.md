@@ -340,7 +340,8 @@ can never half-believe a person is reachable.
 **Ruling.** `GET /?t=<token>` exchanges the token for the session cookie every time it is
 presented, not only the first time. The exchange takes the token out of the address bar; it does
 not consume it. The token stops working when the daemon stops — which SD-7 ties to `serve`
-stopping — or, for one passed with `--token`, when a different one is passed.
+stopping — or, for a token the operator chose (`--token`, or `BIOROUTER_BROWSER_TOKEN` in the
+environment `serve` runs in), when a different one is chosen.
 
 **Why.** The token was first described as "spent on the first request", and that was never true:
 the 2026-09-10 QA run redeemed one token four more times after the first and got a 303 each time.
@@ -354,8 +355,14 @@ had without breaking what the product promises:
 - **The supported uses need a second redemption.** A second browser, or a colleague on a shared
   host, where everyone who opens the address is the same user; the same browser after it has
   dropped its session cookie, which carries no expiry and may be discarded when the browser
-  closes; and a bookmark of an address fixed with `--token`, which
+  closes; and a bookmark of an address fixed with `--token` or `BIOROUTER_BROWSER_TOKEN`, which
   [browser access](browser-access.md) offers precisely so that the address survives restarts.
+  A service unit is the case that needs the variable rather than the flag: nobody is watching its
+  terminal for a new token, and a flag on `ExecStart` is visible in `ps` to every user on the
+  host. ⚠ `serve` ignored that variable and minted a token over it until 2026-09-12, which made
+  the systemd recipe in [headless Linux](headless-linux.md) unusable as written; honouring it
+  needed no new ruling, because a fixed operator-chosen token is the shape this record already
+  provides for.
 - **Things other than people fetch links.** A browser prefetching a pasted address, or a chat
   client unfurling it, would spend a single-use link before anyone clicked it.
 
@@ -372,7 +379,7 @@ consumed.
 
 **Consequence to accept.** The address `serve` prints is a bearer credential for as long as the
 daemon runs. Revoking it means stopping `serve` — which is why SD-7 requires that the daemon never
-outlive it — and, for an address fixed with `--token`, choosing a new token. Treat it like the
+outlive it — and, for an address fixed by the operator, choosing a new token and restarting. Treat it like the
 password it is. `the_token_is_not_consumed_by_the_exchange` in `routes::web_ui` pins the
 behaviour, so changing it means revisiting this record, not making a quiet fix.
 

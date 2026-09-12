@@ -53,6 +53,10 @@ pub(crate) mod reply_parts;
 pub mod resource_refs;
 pub mod retry;
 pub(crate) mod schedule_tool;
+/// A cron expression in words. Re-exported because the `biorouter schedule`
+/// confirmation says when a job will run, and saying it differently from the
+/// `manage_schedule` approval card would be two descriptions of one thing.
+pub use schedule_tool::describe_cron;
 // QA finding F7: every tool call a Code Execution script makes faces the same
 // permission decision it would face as a direct call.
 pub(crate) mod script_call_gate;

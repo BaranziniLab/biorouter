@@ -726,6 +726,8 @@ No running Biorouter could be reached from this terminal (no daemon answered on 
 
 This is always the case next to the desktop app. The app's own daemon uses a random port and a new secret every launch, so a terminal cannot reach it. It is also always the case in an agent's shell, because the daemon's secret is never passed to a tool. A running Biorouter polls the file and usually picks up the change within a couple of seconds, but the promise is 60. `sessions` reads the session store directly and never needs a daemon.
 
+**A change made in the file needs a person.** A scheduled job is a standing unattended agent run, so `add`, `remove` and `run-now` print what will happen and ask for confirmation before writing the file — and refuse, with exit 2 and nothing written, when stdin and stderr are not both terminals. There is no `--yes`: a flag that skipped the question would be a flag an agent could pass. `list` and `sessions` only read, and ask nothing. To make the change from a script, reach a daemon instead: with `BIOROUTER_SERVER__SECRET_KEY` and `BIOROUTER_PORT` pointing at a running one, the daemon makes the change and no terminal is involved.
+
 ### mcp
 
 Run an enabled MCP server specified by `<name>` (e.g. `'Google Drive'`). MCP is the Model Context Protocol, the standard biorouter extensions speak.
