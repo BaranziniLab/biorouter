@@ -657,6 +657,13 @@ struct WorkspaceSetToolsParams {
     remove_skills: Vec<String>,
     /// Switch the conversation's provider. Required whenever `model` is given —
     /// a model name alone is ambiguous across providers.
+    ///
+    /// It must be a provider at the conversation's OWN privacy level: you may
+    /// move a public chat between public models and a private chat between
+    /// private ones, but you may not move a chat across that line in either
+    /// direction. Raising a conversation to a private model is the user's
+    /// decision (DR-16) — ask them to make it in that conversation's model
+    /// picker rather than calling this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     /// Switch the conversation's model. Validated against the provider's
@@ -3801,6 +3808,34 @@ impl WorkspaceClient {
                 return Err(format!(
                     "failed to switch provider: {}",
                     crate::privacy::refusal::PrivacyRefusal::PublicModelOnPrivateSession {
+                        session_id: args.session_id.clone(),
+                        provider: provider.get_name().to_string(),
+                    }
+                ));
+            }
+            // DR-16's half, which Gate A's predicate deliberately does not
+            // carry. `bind_allowed` refuses only the DOWNWARD bind, so on its
+            // own it lets a model put a PRIVATE provider in front of a public
+            // conversation — granting that conversation Private capability
+            // (chatrecall over private chats, private knowledge bases, an
+            // unfiltered Gate E roster) and, on its next turn, ratcheting its
+            // stored `privacy_tier` to Private for good.
+            //
+            // DR-16 rules that raise the user's alone, and its three enforcement
+            // sites are all HTTP routes, where `X-User-Action` can prove a
+            // person asked. Nothing proves that of a tool call, so this is a
+            // refusal and not a proof check — see `privacy::tool_bind_allowed`,
+            // which composes the two rules, and `PrivacyRefusal::ToolTierRaise`,
+            // which explains why a question here would be one the caller has no
+            // way to answer.
+            //
+            // Reached only when `bind_allowed` already passed, so the only way
+            // this can be false is the raise; the branch above owns the other
+            // sentence.
+            if !crate::privacy::tool_bind_allowed(provider.tier(), classification) {
+                return Err(format!(
+                    "failed to switch provider: {}",
+                    crate::privacy::refusal::PrivacyRefusal::ToolTierRaise {
                         session_id: args.session_id.clone(),
                         provider: provider.get_name().to_string(),
                     }
@@ -12337,6 +12372,181 @@ pub(crate) mod tests {
             text_of(&result).contains("provider"),
             "got: {}",
             text_of(&result)
+        );
+    }
+
+    /// A provider the registry really builds and whose INSTANCE reports
+    /// `Private`, for the tier tests below.
+    ///
+    /// The instance, not the metadata: `llamacpp`'s tier is a property of what
+    /// the instance resolved (`None` external base = the loopback sidecar), and
+    /// a metadata-only check would pass on a machine where
+    /// `LLAMACPP_EXTERNAL_HOST` points somewhere public — i.e. exactly where the
+    /// test would stop testing a raise. It is resolved through
+    /// `providers::create`, the same call `resolve_provider_switch` makes, so
+    /// what the test asserts about is what the handler will see.
+    async fn a_private_provider() -> (
+        &'static str,
+        std::sync::Arc<dyn crate::providers::base::Provider>,
+    ) {
+        const NAME: &str = "llamacpp";
+        let registry = crate::providers::providers().await;
+        let metadata = registry
+            .iter()
+            .map(|(metadata, _)| metadata)
+            .find(|m| m.name == NAME)
+            .unwrap_or_else(|| panic!("'{NAME}' is no longer a registered provider"))
+            .clone();
+        let provider = crate::providers::create(
+            NAME,
+            crate::model::ModelConfig::new_or_fail(&metadata.default_model),
+        )
+        .await
+        .expect("the bundled local provider must construct with no credentials");
+        assert_eq!(
+            provider.tier(),
+            crate::privacy::ProviderTier::Private,
+            "'{NAME}' resolved PUBLIC, so nothing below is testing a tier raise. \
+             Unset LLAMACPP_EXTERNAL_HOST (or point it at loopback) and re-run."
+        );
+        (NAME, provider)
+    }
+
+    /// **DR-16 at the model-facing surface.** `workspace_set_tools` may LOWER a
+    /// conversation's capability, never RAISE it.
+    ///
+    /// Before this gate, `privacy::bind_allowed` was the only privacy predicate
+    /// on this path, and it answers `true` for every bind onto a public
+    /// conversation — it exists to refuse the DOWNWARD bind. So a model could
+    /// hand any conversation it can write to a private provider: Private
+    /// capability (chatrecall over private chats, private knowledge bases, an
+    /// unfiltered Gate E roster) and, on that conversation's next turn, a
+    /// PERMANENT ratchet of its stored `privacy_tier`, with no person having
+    /// asked for any of it.
+    ///
+    /// Asserted through `set_tools_preflight_refusal` — the function the
+    /// always-confirm inspector asks BEFORE it raises a card, and the same one
+    /// `handle_set_tools` runs — so a refusal here is also the proof that no
+    /// confirmation card is raised for a change that cannot happen (F4).
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_to_raise_a_public_conversation_onto_a_private_model() {
+        let f = tier_fixture().await;
+        let sm = f.client.context.session_manager.clone();
+        let (name, _provider) = a_private_provider().await;
+        let args = |session_id: &str| -> rmcp::model::JsonObject {
+            serde_json::from_value(serde_json::json!({
+                "session_id": session_id, "provider": name
+            }))
+            .unwrap()
+        };
+
+        // The headline: a PUBLIC conversation may not be raised, and the caller's
+        // own tier does not buy the raise — a private caller is refused too,
+        // because the rule is about the target, not about who asked.
+        for (label, caller) in [("public", public_caller()), ("private", private_caller())] {
+            let refusal = WorkspaceClient::set_tools_preflight_refusal(
+                sm.clone(),
+                "tier-caller",
+                caller.capability,
+                &args(&f.public_id),
+            )
+            .await
+            .unwrap_or_else(|| {
+                panic!("a {label} caller raised a public conversation to a private model")
+            });
+            assert!(
+                refusal.contains(&f.public_id) && refusal.contains(name),
+                "the refusal names neither what it refused nor where: {refusal}"
+            );
+            assert!(
+                refusal.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+                "a DR-16 refusal must say whose decision it is: {refusal}"
+            );
+        }
+
+        // The ratchet is permanent, so a refused raise that had already written
+        // would be unrecoverable. It did not write.
+        assert_eq!(
+            sm.get_session(&f.public_id, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            crate::privacy::SessionClassification::Public,
+            "a refused raise moved the ratchet anyway"
+        );
+
+        // The SIDEWAYS bind is untouched: a private conversation may still be
+        // moved between private models. Asserted as the absence of THIS gate's
+        // sentence rather than as success — the pre-flight has later phases that
+        // are not what this test is about.
+        let sideways = WorkspaceClient::set_tools_preflight_refusal(
+            sm.clone(),
+            "tier-caller",
+            private_caller().capability,
+            &args(&f.private_id),
+        )
+        .await
+        .unwrap_or_default();
+        assert!(
+            !sideways.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "private → private is sideways, not a raise: {sideways}"
+        );
+
+        // DR-15: with the feature off there is no tier to raise, so this gate
+        // must be silent — the same opt-out the storage gate honours, honoured
+        // here because the check lives inside the `Some(classification)` arm.
+        let opted_out = WorkspaceClient::set_tools_preflight_refusal(
+            sm.clone(),
+            "tier-caller",
+            opted_out_caller().capability,
+            &args(&f.public_id),
+        )
+        .await
+        .unwrap_or_default();
+        assert!(
+            !opted_out.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "DR-15's opt-out must reach this gate too: {opted_out}"
+        );
+    }
+
+    /// The same refusal, through the real tool — and **this is the test that
+    /// covers the un-inspected boundary**, which is where the hole actually was.
+    ///
+    /// It drives `WorkspaceClient::call_tool` with no `ToolInspectionManager`
+    /// anywhere, which is exactly the shape of a call made from inside an
+    /// `execute_code` script: `code_execution_extension.rs` hands a script's
+    /// inner calls straight to `ExtensionManager::dispatch_tool_call`, so
+    /// `WorkspaceMutationInspector`'s always-confirm — the only control that
+    /// stood on the provider switch — never runs. That file's
+    /// `uninspected_boundary_refusal` re-asks four boundaries and this is not one
+    /// of them; `workspace_inspector::uninspected_crossing_refusal`, the closest,
+    /// returns `None` on its first line for a PUBLIC caller and is about a
+    /// first crossing rather than a bind.
+    ///
+    /// With the pre-flight check removed, this test reported the handler's own
+    /// SUCCESS message — *"Applied to session …: model=llamacpp/gemma4-12b"* —
+    /// i.e. a public-tier caller had bound a private provider to another of the
+    /// user's conversations with no card and no proof. That is why the gate lives
+    /// in the handler's resolve phase and not in a fifth boundary refusal: the
+    /// choke point cannot be missed by a sixth door.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_tool_itself_refuses_the_raise() {
+        let f = tier_fixture().await;
+        let (name, _provider) = a_private_provider().await;
+        let result = call_as(
+            &f.client,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": f.public_id, "provider": name }),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&result);
+        assert_eq!(result.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "{text}"
         );
     }
 
