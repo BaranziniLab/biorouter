@@ -40,6 +40,25 @@ vi.mock('../../ConfigContext', () => ({
 vi.mock('../../InAppTerminalDock', () => ({
   default: () => <div data-testid="in-app-terminal-dock" />,
 }));
+// The Local tab mounts `OllamaInlineCard`, whose mount effect calls
+// `checkOllamaStatus()` -> `fetch('http://127.0.0.1:11434/api/tags')`. Left
+// un-mocked that is a REAL request to whatever the developer is running: with
+// `ollama serve` up it resolves `isRunning: true`, takes the branch at
+// OllamaInlineCard.tsx:39, fires a second request for `hasModel()`, and lands two
+// more state updates after the test body. CI, where nothing listens on 11434,
+// takes neither. Reporting "not running" is what CI sees, so that is what every
+// machine should see. App.test.tsx, App.routing.test.tsx and
+// LocalModelInventory.test.tsx already mock this module; this suite did not.
+vi.mock('../../../utils/ollamaDetection', () => ({
+  checkOllamaStatus: vi.fn(async () => ({ isRunning: false, host: 'http://127.0.0.1:11434' })),
+  getOllamaModels: vi.fn(async () => []),
+  hasModel: vi.fn(async () => false),
+  pullOllamaModel: vi.fn(async () => false),
+  deleteOllamaModel: vi.fn(async () => false),
+  pollForOllama: vi.fn(() => () => {}),
+  getOllamaDownloadUrl: () => 'https://ollama.com/download',
+  getPreferredModel: () => 'gpt-oss:20b',
+}));
 
 type Backend = {
   tier?: ProviderTier;

@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, type Browser } from 'playwright';
+import { chromium, type Browser, type BrowserServer } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { inlineArtifactCdnAssets } from './artifactCdnAssets';
 import { injectArtifactBrowserCsp } from './artifactSecurity';
@@ -36,15 +36,65 @@ const fetchVendored = async (url: string): Promise<string> => {
 };
 
 /**
+ * Every step of teardown gets this long, and no longer.
+ *
+ * ⚠ Chosen so the WHOLE hook — disconnect, close, kill, reap — is strictly
+ * bounded well under `HOOK_TIMEOUT_MS` (30s). Three steps at 5s is 15s worst
+ * case, which leaves the runner's own limit as a backstop rather than as the
+ * thing that fires.
+ */
+const TEARDOWN_STEP_MS = 5_000;
+
+/** Resolve `true` if `work` settled within `ms`, `false` if it ran out of time. */
+const settledWithin = async (work: Promise<unknown>, ms: number): Promise<boolean> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    // Never hold the loop open on account of the watchdog itself.
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  try {
+    // A rejected close is still a settled one: the point here is elapsed time,
+    // and a browser that refused to close is handled by the caller's next step.
+    return (
+      (await Promise.race([
+        work.then(
+          () => true,
+          () => true
+        ),
+        expired,
+      ])) !== false
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+/**
  * Launch whichever Chromium build this machine downloaded. Playwright's default
  * is the headless shell, which is a *separate* download from full Chromium, so
  * a tree that only has one of the two must not be reported as "no browser".
+ *
+ * ⚠ **`launchServer` + `connect`, not `launch`, and the reason is teardown.**
+ * A `Browser` from `chromium.launch()` exposes no handle on the Chromium
+ * process, so `browser.close()` is the ONLY way to end it — and when that call
+ * is slow there is nothing left to do but wait for it. Under load it is slow:
+ * with the machine saturated, `close()` blocked past the 30s hook limit while
+ * both tests had already passed, so the file failed with ZERO failing tests and
+ * `npm run test:run` exited 1 for a reason no test name could explain. A
+ * `BrowserServer` hands back `process()`, which makes the last resort a SIGKILL
+ * instead of an unbounded await.
  */
-const launchChromium = async (): Promise<Browser | null> => {
+const launchChromium = async (): Promise<{ server: BrowserServer; browser: Browser } | null> => {
   for (const options of [{}, { channel: 'chromium' }] as const) {
+    let server: BrowserServer | null = null;
     try {
-      return await chromium.launch(options);
+      server = await chromium.launchServer(options);
+      return { server, browser: await chromium.connect(server.wsEndpoint()) };
     } catch {
+      // Launched but could not be connected to: end it here rather than leaking
+      // a Chromium for the next option to sit beside.
+      if (server) await settledWithin(server.close(), TEARDOWN_STEP_MS);
       // try the next build
     }
   }
@@ -53,9 +103,15 @@ const launchChromium = async (): Promise<Browser | null> => {
 
 describe('a CDN-mode Mermaid figure in a real browser', () => {
   let browser: Browser | null = null;
+  let server: BrowserServer | null = null;
 
   beforeAll(async () => {
-    browser = await launchChromium();
+    // Launched ONCE. A second launch would strand the first browser with no
+    // handle left to close it by.
+    if (browser) return;
+    const launched = await launchChromium();
+    browser = launched?.browser ?? null;
+    server = launched?.server ?? null;
     if (!browser) {
       // Say so out loud: a silently skipped browser test reads as a passing one.
       console.warn(
@@ -65,8 +121,27 @@ describe('a CDN-mode Mermaid figure in a real browser', () => {
     }
   }, 120_000);
 
+  /**
+   * Bounded, and closed exactly once.
+   *
+   * The handles are nulled BEFORE anything is awaited, so a re-entered hook
+   * cannot start a second shutdown of the same browser — and so a later
+   * `browser` read cannot hand a test a connection that is being torn down.
+   */
   afterAll(async () => {
-    await browser?.close();
+    const connection = browser;
+    const launched = server;
+    browser = null;
+    server = null;
+
+    if (connection) await settledWithin(connection.close(), TEARDOWN_STEP_MS);
+    if (!launched) return;
+
+    if (await settledWithin(launched.close(), TEARDOWN_STEP_MS)) return;
+
+    // Still up. Stop asking.
+    launched.process().kill('SIGKILL');
+    await settledWithin(launched.close(), TEARDOWN_STEP_MS);
   });
 
   /** Render a prepared artifact document under the real artifact CSP. */

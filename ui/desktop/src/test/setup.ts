@@ -1,13 +1,28 @@
 import '@testing-library/jest-dom';
-import { vi, afterEach } from 'vitest';
+import { vi, afterEach, afterAll, expect } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
 import { ASYNC_UTIL_TIMEOUT_MS, TEST_TIMEOUT_MS, MIN_TIMEOUT_HEADROOM } from './timeouts';
+import { assertNoUnexpectedNetworkAttempts, installOfflineFetch } from './networkGuard';
 import { client } from '../api/client.gen';
 
 // This is the standard setup to ensure that React Testing Library's
 // automatic cleanup runs after each test.
+//
+// The network check is in this SAME callback, deliberately, rather than its own
+// `afterEach`. vitest runs `afterEach` hooks in reverse registration order, so a
+// separate hook could not be ordered after `cleanup()` from here — and it has to
+// be after it, because unmounting is what flushes the passive effects that make
+// these calls. See src/test/networkGuard.ts.
 afterEach(() => {
   cleanup();
+  assertNoUnexpectedNetworkAttempts(expect.getState().testPath);
+});
+
+// A request whose promise settles after the last test's `afterEach` — the late
+// resolution that started this — is recorded with nothing left to report it.
+// This is where it surfaces.
+afterAll(() => {
+  assertNoUnexpectedNetworkAttempts(expect.getState().testPath);
 });
 
 // Keep routine application logging quiet. Warnings and errors stay connected to
@@ -105,6 +120,64 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   });
 }
 
+/**
+ * jsdom implements no `Element.prototype.scrollIntoView`, and several components
+ * call it from an effect — `MentionPopover` scrolls its selected row into view
+ * on every render, `IngestPanel` brings the summoned paste box up, and
+ * `ArtifactViewer`, `ChatTabStrip` and `ExtensionsView` all do the same.
+ *
+ * ⚠ **It is installed ONCE, for the whole process, and must never be removed
+ * per test.** Two specs used to install it in `beforeEach` and DELETE it in
+ * `afterEach`, and that is a race the polyfill cannot win, because the effect
+ * that needs it does not run inside the test body:
+ *
+ *   - `scrollIntoView` is called from a PASSIVE effect. React commits a render
+ *     in one scheduler callback and flushes that render's passive effects in
+ *     the NEXT one, so a render committed by a late async resolution leaves
+ *     `commitHookPassiveMountEffects` still queued when the test returns.
+ *   - vitest runs `afterEach` hooks in reverse registration order, so a spec's
+ *     own `afterEach` runs BEFORE this file's `cleanup()`. The property is
+ *     therefore already gone when `cleanup()` unmounts — and unmounting is
+ *     precisely what flushes the queued passive effects.
+ *
+ * The effect then throws `TypeError: … scrollIntoView is not a function` from
+ * inside React, which unmounts the tree and fails a test that had already
+ * asserted everything it came to assert. The window is a single scheduler turn
+ * wide, so it opens on a loaded CI runner and almost never locally — i.e. it
+ * reads as flakiness rather than as the deterministic ordering bug it is.
+ * Measured with a probe that returns one macrotask after render: it throws
+ * every time with the per-test install and never with this one.
+ *
+ * A spec that wants to ASSERT on the scroll should spy on the prototype with
+ * `vi.spyOn(Element.prototype, 'scrollIntoView')` and restore the spy, which
+ * puts this no-op back rather than leaving the property undefined. See
+ * src/test/scrollIntoViewPolyfill.test.tsx for the regression guard.
+ */
+if (typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !== 'function') {
+  Object.defineProperty(Element.prototype, 'scrollIntoView', {
+    configurable: true,
+    writable: true,
+    value: function scrollIntoView(): void {
+      /* jsdom has no layout, so there is nothing to scroll. */
+    },
+  });
+}
+
 client.setConfig({
   baseUrl: 'http://localhost',
 });
+
+/**
+ * jsdom inherits Node's real `fetch`, so an un-stubbed request in a test does
+ * not fail — it leaves the machine, and the suite's result becomes a property of
+ * whatever the developer happens to be running. `ProviderCatalog.test.tsx` was
+ * reaching a live `ollama serve` on 127.0.0.1:11434 and taking a different path
+ * through `OllamaInlineCard` than CI takes.
+ *
+ * Installed LAST, after `client.setConfig`, because the generated client
+ * resolves `globalThis.fetch` per call rather than capturing it at import time —
+ * so order does not matter for correctness, but reading it here next to the base
+ * URL it neutralises does. src/test/networkGuard.ts holds the reasoning and the
+ * measured census of specs that already reach out.
+ */
+installOfflineFetch();
