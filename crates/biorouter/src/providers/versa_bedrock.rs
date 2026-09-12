@@ -183,7 +183,8 @@ impl VersaBedrockProvider {
             match config.get_secret::<String>(name) {
                 Ok(value) => Ok(value),
                 Err(crate::config::ConfigError::NotFound(_)) => Err(anyhow::anyhow!(
-                    "{name} is not configured. Add it under Versa API Bedrock in Settings."
+                    "{name} {}. Add it under Versa API Bedrock in Settings.",
+                    super::CREDENTIAL_NEVER_SET
                 )),
                 Err(error) => Err(anyhow::anyhow!(
                     "Could not read {name} from the credential store: {error}\n\n\
