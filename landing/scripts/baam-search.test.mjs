@@ -407,7 +407,7 @@ if (!existsSync(PLAYWRIGHT)) {
 
   /**
    * What a visitor might type: every distinct word the catalog itself uses, plus
-   * the queries that measured the four defects this file guards. Derived from the
+   * the queries that measured each defect this file guards. Derived from the
    * registry rather than listed, so a new entry widens the comparison.
    */
   function corpus(registry) {
