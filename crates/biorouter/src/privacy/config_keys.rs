@@ -54,36 +54,50 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     ("LLAMACPP_TIMEOUT", "transport timeout"),
     ("LLAMACPP_STARTUP_TIMEOUT", "sidecar readiness deadline"),
     ("LLAMACPP_CONTEXT_SIZE", "token budget"),
-    // ⚠ The four endpoint keys below MOVE where a Private-badged provider sends
-    //   traffic, but they cannot RAISE a tier: Task 5 name-keys versa_azure and
-    //   versa_bedrock Private regardless of endpoint, and azure.rs ships the
-    //   UCSF gateway as a PUBLIC provider's default for the same reason.
-    //   Pointing a private-badged provider off-site is a real and different
-    //   problem — it belongs to Task 5's tier definition and to Open question 5,
-    //   not to DR-16 — and it is recorded here rather than left unstated.
-    (
-        "AZURE_OPENAI_ENDPOINT",
-        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
-    ),
-    ("AZURE_OPENAI_DEPLOYMENT_NAME", "deployment selection"),
-    ("AZURE_OPENAI_API_VERSION", "wire version"),
-    // Versa's own namespace for the same three overrides. They exist because
-    // onboarding used to write the `AZURE_OPENAI_*` keys above on Versa's
-    // behalf, which made the PUBLIC `azure_openai` card report itself
-    // Configured whenever a user connected UCSF's PRIVATE Versa. Same meaning,
-    // same classification as their legacy twins: they move a Private
-    // provider's endpoint, they do not raise a tier.
+    // ⚠ The two endpoint keys below MOVE where a Private-badged provider sends
+    //   traffic, and since `e2e4eb9d` that moves its tier as well: `tier()`
+    //   follows the endpoint an instance resolved (`ucsf_gateway_tier`), so an
+    //   off-site value demotes it to Public, and deleting that value restores
+    //   Private. These rows used to say the keys "cannot RAISE a tier" because
+    //   Task 5 name-keyed versa_* Private regardless of endpoint, and that
+    //   stopped being true. The classification rests on this instead: the only
+    //   value that reads Private is the UCSF gateway's own host, so no write can
+    //   make an off-site endpoint look Private, and a raise through one of these
+    //   keys is always a return to the institution's gateway. Whether even that
+    //   raise should be a user act, as it is for `OLLAMA_HOST`, is an open DR-16
+    //   question, recorded here rather than left unstated.
+    //
+    // Versa Azure's three overrides, in its own namespace. It used to share the
+    // public `azure_openai` card's `AZURE_OPENAI_*` keys, which went wrong both
+    // ways: onboarding WROTE them on Versa's behalf, so connecting UCSF's
+    // PRIVATE Versa made that PUBLIC card report itself Configured (hence this
+    // namespace, 2026-09-03); and Versa went on READING them as a fallback, so
+    // whatever that card was set up with — a company resource's endpoint,
+    // deployment and API version — steered every Versa request (read removed
+    // 2026-09-11). No tier-input file reads the `AZURE_OPENAI_*` keys now, so
+    // they have no rows here; `azure.rs` still reads them and is not a
+    // tier-input file, because `azure_openai` is Public wherever it points.
     (
         "VERSA_AZURE_ENDPOINT",
-        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
+        "moves a Private provider's endpoint; only the UCSF gateway reads Private (see above)",
     ),
     ("VERSA_AZURE_DEPLOYMENT_NAME", "deployment selection"),
     ("VERSA_AZURE_API_VERSION", "wire version"),
+    // Versa Bedrock's two overrides, in its own namespace since 2026-09-11. It
+    // used to declare and read the public Amazon Bedrock card's `AWS_REGION` and
+    // an `AWS_ENDPOINT_URL_BEDROCK` key, then fall back to the process
+    // environment, so the public side's values steered Versa and a Versa setup
+    // configured the public card. No tier-input file reads an `AWS_*` key now,
+    // so none has a row; `bedrock.rs` still reads them and is not a tier-input
+    // file, because `aws_bedrock` is Public wherever it points.
     (
-        "AWS_ENDPOINT_URL_BEDROCK",
-        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
+        "VERSA_BEDROCK_ENDPOINT",
+        "moves a Private provider's endpoint; only the UCSF gateway reads Private (see above)",
     ),
-    ("AWS_REGION", "region selection"),
+    (
+        "VERSA_BEDROCK_REGION",
+        "SigV4 signing region; the endpoint, not the region, decides where a request goes",
+    ),
     ("BEDROCK_MAX_RETRIES", "retry policy"),
     ("BEDROCK_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
     ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
@@ -183,10 +197,10 @@ mod tests {
         // of the two lists. Adding a config read to any of them fails this test
         // until someone decides whether it determines capability. That is the
         // checkable list: it does not depend on anyone remembering a rule.
-        let scanned = scan_get_param_keys(); // 26 today
+        let scanned = scan_get_param_keys(); // 23 today
         assert_eq!(
             scanned.len(),
-            26,
+            23,
             "the tier-input files' config surface changed: {scanned:?}"
         );
         for key in &scanned {
@@ -205,6 +219,21 @@ mod tests {
         // survives.
         assert!(CAPABILITY_CONFIG_KEYS.contains(&"BIOROUTER_PROVIDER"));
         assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5);
+
+        // …and the other way round: every classified key is still READ by a
+        // tier-input file. Without this, a read that goes away leaves its row
+        // behind — the count above moves, someone edits the number, and the
+        // lists quietly start classifying keys nothing reads.
+        let classified = CAPABILITY_CONFIG_KEYS
+            .iter()
+            .copied()
+            .chain(NOT_CAPABILITY_CONFIG_KEYS.iter().map(|(key, _why)| *key));
+        for key in classified.filter(|key| *key != "BIOROUTER_PROVIDER") {
+            assert!(
+                scanned.iter().any(|read| read == key),
+                "{key} is classified but no tier-input file reads it; delete its row"
+            );
+        }
     }
 
     #[test]
