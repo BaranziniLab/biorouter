@@ -1772,12 +1772,32 @@ mod tests {
         /// Reaped: the pid no longer resolves.
         Gone,
         /// Dead, but not yet reaped by whoever inherited it. Only Linux can
-        /// name this state (see `zombie_aware_state`), so elsewhere the variant
-        /// is matched but never constructed.
-        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+        /// name this state in a running poll (see `zombie_aware_state`);
+        /// `state_from_proc_read`'s own test constructs it on every unix.
         Zombie,
         /// Still a live process.
         Alive,
+        /// The pid resolves, but its state could not be *read*: the procfs
+        /// entry was there a moment ago (`kill(pid, 0)` succeeded) and the read
+        /// failed for a reason other than the entry being absent -- descriptor
+        /// exhaustion, `ENOMEM`, `EACCES`, or no `/proc` mounted at all.
+        ///
+        /// A failure to observe is not a death. This state differs from `Alive`
+        /// only in what it prints: neither satisfies `proves_death`, so both
+        /// keep the poll running and then fail on its deadline.
+        Unobservable,
+    }
+
+    #[cfg(unix)]
+    impl DescendantState {
+        /// The only two states that are evidence the reaper worked.
+        ///
+        /// The poll below and the assertion at the end of the reaper test both
+        /// ask this one question, so what stops the poll and what satisfies the
+        /// assertion cannot drift apart.
+        fn proves_death(self) -> bool {
+            matches!(self, DescendantState::Gone | DescendantState::Zombie)
+        }
     }
 
     /// Pull the state letter out of one `/proc/<pid>/stat` line.
@@ -1799,20 +1819,49 @@ mod tests {
             .next()
     }
 
-    /// Linux exposes the state letter directly, so a zombie is nameable even
-    /// where nothing ever reaps it -- a container whose pid 1 is not a
-    /// subreaper never turns the orphan below into `Gone`.
-    #[cfg(all(unix, target_os = "linux"))]
-    fn zombie_aware_state(pid: i32) -> DescendantState {
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+    /// Map one attempt to read `/proc/<pid>/stat` onto a descendant state.
+    ///
+    /// Reached only once `kill(pid, 0)` has just succeeded, so the pid resolved
+    /// a moment ago. `ENOENT` is therefore the single error that means what it
+    /// looks like: procfs has no entry any more, i.e. the pid was reaped between
+    /// that `kill()` and this read. Every other error is a failure to OBSERVE
+    /// the process, and for an assertion whose whole job is to prove deadness
+    /// that must not read as dead -- see `Unobservable`.
+    ///
+    /// Deliberately compiled on every unix, for the same reason
+    /// `proc_stat_state` is -- the one decision here that can be wrong in a way
+    /// no platform's absence should hide.
+    #[cfg(unix)]
+    fn state_from_proc_read(read: io::Result<String>) -> DescendantState {
+        match read {
             // Z is "zombie", X is "dead": terminated, awaiting a reaper.
             Ok(stat) => match proc_stat_state(&stat) {
                 Some('Z' | 'X') => DescendantState::Zombie,
                 _ => DescendantState::Alive,
             },
             // Reaped between the kill() and this read.
-            Err(_) => DescendantState::Gone,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => DescendantState::Gone,
+            // EMFILE/ENFILE, ENOMEM, EACCES, ... : we failed to look.
+            Err(_) => DescendantState::Unobservable,
         }
+    }
+
+    /// Linux exposes the state letter directly, so a zombie is nameable even
+    /// where nothing ever reaps it -- a container whose pid 1 is not a
+    /// subreaper never turns the orphan below into `Gone`.
+    #[cfg(all(unix, target_os = "linux"))]
+    fn zombie_aware_state(pid: i32) -> DescendantState {
+        let read = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+        // An absent entry means "reaped" only where procfs is mounted to have
+        // an entry in. Without this, a sandbox with no `/proc` answers ENOENT
+        // for every pid -- indistinguishable, to the arm above, from a reaper
+        // that worked -- and reports every live descendant as dead. Checked
+        // only on the error path, and against our OWN entry, which exists on
+        // any host where the read above can be believed.
+        if read.is_err() && std::fs::metadata("/proc/self/stat").is_err() {
+            return DescendantState::Unobservable;
+        }
+        state_from_proc_read(read)
     }
 
     /// Everywhere else, a pid that still resolves is reported as alive.
@@ -1847,7 +1896,7 @@ mod tests {
         let started = Instant::now();
         loop {
             let state = descendant_state(pid);
-            if state != DescendantState::Alive || started.elapsed() >= deadline {
+            if state.proves_death() || started.elapsed() >= deadline {
                 return state;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -1871,6 +1920,63 @@ mod tests {
         assert_eq!(proc_stat_state("42 (sleep)"), None);
     }
 
+    /// A `/proc` read that failed for any reason but `ENOENT` is a failure to
+    /// OBSERVE the descendant, and must never be reported as its death.
+    ///
+    /// The direction is the whole point: this poll exists to PROVE a descendant
+    /// died, so "I could not look" has to keep polling and then fail, never
+    /// satisfy the assertion. Mapping every `Err` onto `Gone` -- which is what
+    /// this did before the arm was split -- passed the reaper test with a live
+    /// `sleep 30` grandchild on any host that had run out of file descriptors,
+    /// was short of memory, or had no `/proc` mounted at all.
+    #[cfg(unix)]
+    #[test]
+    fn a_proc_read_that_failed_for_anything_but_enoent_is_not_evidence_of_death() {
+        // ENOENT is the one error that means what the old arm assumed of all of
+        // them: procfs no longer has an entry, so the pid really was reaped.
+        let gone = state_from_proc_read(Err(io::Error::from_raw_os_error(libc::ENOENT)));
+        assert_eq!(gone, DescendantState::Gone);
+        assert!(gone.proves_death());
+
+        // Every other errno: the pid resolved a moment ago and we failed to
+        // read it. Descriptor exhaustion, ENOMEM, EACCES, EIO.
+        for errno in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOMEM,
+            libc::EACCES,
+            libc::EIO,
+        ] {
+            let state = state_from_proc_read(Err(io::Error::from_raw_os_error(errno)));
+            assert_eq!(
+                state,
+                DescendantState::Unobservable,
+                "errno {errno} is a failed observation, not a reported state"
+            );
+            assert!(
+                !state.proves_death(),
+                "errno {errno} must not satisfy an assertion that the descendant died"
+            );
+        }
+
+        // An error carrying no errno at all is just as unobservable.
+        let synthetic = state_from_proc_read(Err(io::Error::other("procfs unavailable")));
+        assert_eq!(synthetic, DescendantState::Unobservable);
+        assert!(!synthetic.proves_death());
+
+        // A readable entry still decides on its state letter, and an entry that
+        // does not parse is not a death either.
+        assert_eq!(
+            state_from_proc_read(Ok("42 (sleep) Z 1 42".to_owned())),
+            DescendantState::Zombie
+        );
+        assert_eq!(
+            state_from_proc_read(Ok("42 (sleep) S 1 42".to_owned())),
+            DescendantState::Alive
+        );
+        assert!(!state_from_proc_read(Ok("garbage".to_owned())).proves_death());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_timed_out_esbuild_reaps_its_whole_process_group() {
@@ -1891,55 +1997,128 @@ mod tests {
         let entry = dir.path().join("main.ts");
         let out = dir.path().join("app.js");
         std::fs::write(&entry, "const ok = true;").unwrap();
+
+        /// The compiler's own limit, so the reaper runs about a second in.
+        const TIMEOUT: Duration = Duration::from_secs(1);
+        /// How long the whole attempt gets -- the pid being recorded, and the
+        /// call returning after its limit expired. This BOUNDS the call rather
+        /// than waiting on it, which is what lets the descendant be inspected
+        /// while it is still held; see the comment on the spawn below.
+        const BUDGET: Duration = Duration::from_secs(3);
+        /// How long after that the descendant gets to stop being a live
+        /// process.
+        const DEADLINE: Duration = Duration::from_secs(2);
         // Under load the shim can be killed before it reaches its
         // `echo "$!" > "$pidfile"`, leaving that file absent or truncated. Such
         // an attempt established no descendant at all, so it proves nothing in
         // either direction -- it is a harness miss, not a reaper failure. Retry
         // it instead of reading a pid that was never written.
         const ATTEMPTS: usize = 5;
-        let mut descendant = None;
+        let mut attempt = None;
         for _ in 0..ATTEMPTS {
             let _ = std::fs::remove_file(&descendant_pid);
-            let started = Instant::now();
-            let error = run_esbuild_with_timeout(
-                shim.to_str().unwrap(),
-                &[descendant_pid.to_string_lossy().into_owned()],
-                &entry,
-                &out,
-                Duration::from_secs(1),
-            )
-            .expect_err("the hung compiler must time out");
+            // The call runs on its own thread and the descendant is watched
+            // from this one, because a descendant that SURVIVES holds the
+            // call open: it inherited the shim's piped stdout/stderr, so
+            // `join_output`'s `read_to_end` cannot return until it exits --
+            // 30 s for `sleep 30`. Waiting for the call to return before
+            // looking at the pid would therefore look at a `sleep` that had
+            // long since exited on its own and report the reaper as healthy,
+            // and bounding only the call's WALL TIME (as this test did) makes
+            // that bound, not the descendant, the assertion a regression
+            // trips -- 30 s of waiting for `elapsed() < 3s`, which names
+            // neither the descendant nor the reaper.
+            let (finished, call_returned) = std::sync::mpsc::channel();
+            let call = {
+                let shim = shim.clone();
+                let args = vec![descendant_pid.to_string_lossy().into_owned()];
+                let entry = entry.clone();
+                let out = out.clone();
+                std::thread::spawn(move || {
+                    let result = run_esbuild_with_timeout(
+                        shim.to_str().unwrap(),
+                        &args,
+                        &entry,
+                        &out,
+                        TIMEOUT,
+                    );
+                    // Only the error is inspected; `used` keeps the payload
+                    // Debug-printable for an unexpected success.
+                    let _ = finished.send(result.map(|report| report.used));
+                })
+            };
 
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(started.elapsed() < Duration::from_secs(3));
-
-            descendant = std::fs::read_to_string(&descendant_pid)
-                .ok()
-                .and_then(|recorded| recorded.trim().parse::<i32>().ok());
-            if descendant.is_some() {
-                break;
+            let spawned = Instant::now();
+            // The shim records the pid milliseconds in, so this normally falls
+            // through at once.
+            let recorded = loop {
+                let recorded = std::fs::read_to_string(&descendant_pid)
+                    .ok()
+                    .and_then(|recorded| recorded.trim().parse::<i32>().ok());
+                if recorded.is_some() || spawned.elapsed() >= BUDGET {
+                    break recorded;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let returned = call_returned.recv_timeout(BUDGET.saturating_sub(spawned.elapsed()));
+            match recorded {
+                Some(pid) => {
+                    attempt = Some((pid, returned, call));
+                    break;
+                }
+                // Nothing to observe. Leave a call that is still blocked to
+                // finish on its own rather than joining it for its descendant's
+                // full lifetime.
+                None => {
+                    if returned.is_ok() {
+                        let _ = call.join();
+                    }
+                }
             }
         }
-        let pid = descendant.unwrap_or_else(|| {
+        let (pid, returned, call) = attempt.unwrap_or_else(|| {
             panic!(
                 "the shim never recorded a descendant pid in {ATTEMPTS} attempts, so this run \
                  never observed a process group at all -- a harness failure, not a reaper one"
             )
         });
+
         // The descendant is a GRANDCHILD: the shim backgrounds `sleep` and
         // waits on it, so `terminate_esbuild`'s `child.wait()` reaps the shim
         // and nothing else. The grandchild is re-parented to init/launchd and
         // stays a zombie until that reaps it -- and `kill(pid, 0)` succeeds for
         // a zombie, so checking once, here, races the reaper. Poll for the pid
         // to actually stop being a live process instead.
-        const DEADLINE: Duration = Duration::from_secs(2);
+        //
+        // Asserted FIRST, before anything about the call: this is the property
+        // the test is named for, so it is the diagnostic a reaper regression
+        // must print.
         let state = await_descendant_death(pid, DEADLINE);
+        let call_state = if returned.is_ok() {
+            "had returned"
+        } else {
+            "had not returned"
+        };
         assert!(
-            matches!(state, DescendantState::Gone | DescendantState::Zombie),
+            state.proves_death(),
             "the compiler's descendant (pid {pid}) was still {state:?} {DEADLINE:?} after \
-             terminate_esbuild returned; the SIGKILL to the process group must leave it \
-             dead (Zombie, awaiting its new parent's wait) or reaped (Gone)"
+             run_esbuild_with_timeout's {TIMEOUT:?} limit expired (the call itself {call_state} \
+             within {BUDGET:?}); the SIGKILL to the process group must leave it dead (Zombie, \
+             awaiting its new parent's wait) or reaped (Gone)"
         );
+        // Only then the call itself. Its return is what the old wall-clock
+        // bound measured, and a surviving descendant delays it, so it can only
+        // be judged once the descendant has been.
+        let result = returned.unwrap_or_else(|_| {
+            panic!(
+                "run_esbuild_with_timeout produced no result within {BUDGET:?} of being called \
+                 with a {TIMEOUT:?} limit, though its descendant (pid {pid}) is {state:?}: the \
+                 timeout path itself did not return"
+            )
+        });
+        let error = result.expect_err("the hung compiler must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let _ = call.join();
     }
 
     #[test]
