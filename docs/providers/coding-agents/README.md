@@ -37,6 +37,14 @@ are now bridged, and the bound is the same one that applies everywhere else:
 privacy Gate C. See
 [the tool bridge](tool-bridge.md#the-tools-do-not-have-to-be-an-extensions-109).
 
+And in the other direction — what the child *reads* — bridged tool output is
+framed as untrusted data and scanned for injection and PII before the child sees
+it, exactly as it is for the parent model. That was **not** true until
+2026-09-11: the frame's only funnel was `Agent::integrate_tool_result`, which a
+bridged call never reaches, so the same `date` call stored framed text under
+`versa_azure` and raw text under both coding agents. See
+[Tool output is framed as untrusted on this path too](tool-bridge.md#tool-output-is-framed-as-untrusted-on-this-path-too).
+
 ⚠ **Consequence worth stating plainly:** under `BIOROUTER_MODE: auto` the
 permission inspector does not prompt, so a bridged `developer__shell` runs
 without a confirmation step. That combination — a coding agent, full Developer,

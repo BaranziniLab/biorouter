@@ -962,6 +962,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
         currentSessions.filter((session) => session.id !== sessionToDeleteId);
       updateCachedSessionList(removeDeletedSession);
       setSessions(removeDeletedSession);
+      // M11. The two lines above fix THIS view and the cache behind it; every
+      // other list surface learns of membership changes over the list channel,
+      // and delete was the one mutation that never announced itself there —
+      // which is why a deleted chat sat in the sidebar Recents until a renderer
+      // reload. The id is carried because Recents merges its re-reads and
+      // cannot discover a removal by refetching; see `SessionListChange`.
+      notifySessionListChanged({ removed: sessionToDeleteId });
       toastSuccess({
         title: 'Chat deleted',
         msg: `"${sessionName}" was removed from chat history.`,

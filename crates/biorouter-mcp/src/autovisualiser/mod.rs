@@ -772,7 +772,7 @@ impl AutoVisualiserRouter {
             - **network**: force-directed node-link graph (knowledge graphs, PPI, gene networks)
             - **sankey**: flow diagrams between stages
             - **chord**: pairwise flows between entities (square matrix)
-            - **heatmap**: matrix as a colour grid (expression/correlation matrices)
+            - **heatmap**: matrix as a color grid (expression/correlation matrices)
             - **treemap**: hierarchical proportional boxes
             - **sunburst**: hierarchical radial chart
             - **dendrogram**: hierarchical clustering / phylogenetic tree

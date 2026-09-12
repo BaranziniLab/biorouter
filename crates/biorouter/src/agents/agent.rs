@@ -20,7 +20,11 @@ use super::platform_tools;
 /// a classifier that silently stops matching, and a scheduled run that stops
 /// matching is one that reports success for having done nothing.
 pub(crate) use super::tool_execution::EXPIRED_RESPONSE;
-use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
+use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE};
+// The denial text itself is written by `tool_execution::denied_response_text`
+// now; the tests below still assert against the constant.
+#[cfg(test)]
+use super::tool_execution::DECLINED_RESPONSE;
 use super::turn_abort::TurnAbortCode;
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
@@ -1995,6 +1999,14 @@ pub(crate) fn is_workspace_tool_refused_for(
 /// Workspace tools that block on work happening in ANOTHER session, and must
 /// therefore not hold a global tool-dispatch permit while they do. Both name
 /// forms, like `is_spawn_tool_call`.
+///
+/// ⚠ **This is not the list of everything that parks.** `code_execution__execute_code`
+/// parks too, since QA finding F7 gave a script's own tool calls approval cards —
+/// and it deliberately does NOT belong here, because unlike these two it is not a
+/// do-nothing wrapper, and in the shipped Code Execution default it is very nearly
+/// the only tool the model calls, so exempting it would leave the semaphore
+/// bounding nothing. It releases the permit for the parked interval only, via
+/// `tool_dispatch_limits::DispatchPermitHandle::while_parked`.
 pub(crate) fn is_parking_workspace_tool(name: &str) -> bool {
     matches!(
         name,
@@ -6413,70 +6425,8 @@ impl Agent {
     ) {
         for request in &permission_check_result.denied {
             if let Some(response_msg) = request_to_response_map.get(&request.id) {
-                // When an inspector denied this call, tell the model why so it
-                // can adjust instead of blindly retrying. The always-on
-                // catastrophic-command block (security inspector) and hook denials
-                // carry a reason; surface it verbatim / with context.
-                let deny_reason = inspection_results.iter().find(|result| {
-                    result.tool_request_id == request.id
-                        && result.action == InspectionAction::Deny
-                        && !result.reason.trim().is_empty()
-                });
-                let response_text = match deny_reason {
-                    Some(result)
-                        if result.inspector_name
-                            == crate::hooks::inspector::HOOK_INSPECTOR_NAME =>
-                    {
-                        format!("{DECLINED_RESPONSE}\n\nHook feedback: {}", result.reason)
-                    }
-                    // Non-bypassable safety block: the user did not decline, the
-                    // command is refused outright, so return the reason directly.
-                    Some(result) if result.inspector_name == "security" => result.reason.clone(),
-                    // BR-29/BR-31: a loop guard tripped — the call repeated
-                    // itself, or the tool has been failing the same way over and
-                    // over. The user did not decline anything; telling the model
-                    // they did (the old DECLINED_RESPONSE) is actively misleading
-                    // and leaves it unable to diagnose the stop. Return the real
-                    // reason.
-                    Some(result)
-                        if result.inspector_name
-                            == crate::tool_monitor::REPETITION_INSPECTOR_NAME =>
-                    {
-                        result.reason.clone()
-                    }
-                    // #63: a cross-session memory shape Biorouter refuses (the
-                    // whole-store global read). Same reasoning as the loop
-                    // guards above — the user declined nothing, and the reason
-                    // is the only thing that tells the model the itemised call
-                    // still works. `DECLINED_RESPONSE` here would be both untrue
-                    // and unactionable, and would read as the feature being off.
-                    Some(result)
-                        if result.inspector_name
-                            == crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME =>
-                    {
-                        result.reason.clone()
-                    }
-                    // F4: a `workspace_set_tools` change that cannot be made —
-                    // a built-in capability named for removal, a knowledge base
-                    // that does not exist — refused BEFORE any card. Nobody was
-                    // asked, so "the user has declined" would be false, and the
-                    // reason is the handler's own sentence.
-                    Some(result)
-                        if result.inspector_name
-                            == crate::agents::workspace_inspector::WORKSPACE_MUTATION_INSPECTOR_NAME =>
-                    {
-                        result.reason.clone()
-                    }
-                    // The planning gate: nobody declined, and the reason is
-                    // the instruction — write the checklist, then repeat.
-                    Some(result)
-                        if result.inspector_name
-                            == crate::agents::planning_gate::PLANNING_GATE_NAME =>
-                    {
-                        result.reason.clone()
-                    }
-                    _ => DECLINED_RESPONSE.to_string(),
-                };
+                let response_text =
+                    super::tool_execution::denied_response_text(&request.id, inspection_results);
                 let mut response = response_msg.lock().await;
                 *response = response.clone().with_tool_response_with_metadata(
                     request.id.clone(),
@@ -7540,6 +7490,23 @@ impl Agent {
         let exec_tool_name = tool_call.name.to_string();
         let exec_request_id = request_id.clone();
 
+        // QA finding F7: the calls a Code Execution script makes are judged by
+        // this agent's own inspector stack, in this agent's mode, exactly as its
+        // direct calls are — see `script_call_gate`. Built here, where `self`
+        // still is, and installed below around the tool's BODY: a scope around
+        // this function alone would be gone before the script ran.
+        let script_gate = super::code_execution_extension::is_execute_code_call(
+            tool_call.name.as_ref(),
+        )
+        .then(|| {
+            Arc::new(super::script_call_gate::ScriptCallGate::new(
+                Arc::clone(&self.tool_inspection_manager),
+                self.config.biorouter_mode,
+                session.clone(),
+                Arc::clone(&self.hooks_manager),
+            ))
+        });
+
         (
             request_id,
             Ok(ToolCallResult {
@@ -7578,7 +7545,23 @@ impl Agent {
                         id = %exec_request_id,
                         "TOOL_EXEC_START"
                     );
-                    let inner_result = inner.await;
+                    let inner_result = match script_gate {
+                        Some(gate) => {
+                            // #246 review, finding 2: since F7 a script's own
+                            // calls can park on an approval card, inside this
+                            // body, holding one of the eight shared dispatch
+                            // permits. Hand it back for the parked interval
+                            // instead of exempting `execute_code` by name — in
+                            // the shipped Code Execution default it is nearly
+                            // the only tool, so an exemption would leave the
+                            // semaphore bounding nothing.
+                            gate.hold_dispatch_permit(_dispatch_guard.as_ref().map(
+                                super::tool_dispatch_limits::ToolDispatchGuard::parking_handle,
+                            ));
+                            super::script_call_gate::judging_script_calls(gate, inner).await
+                        }
+                        None => inner.await,
+                    };
                     let dur_ms = exec_started.elapsed().as_millis() as u64;
                     debug!(
                         name = %exec_tool_name,

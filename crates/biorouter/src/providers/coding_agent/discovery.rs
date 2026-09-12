@@ -82,6 +82,17 @@ impl CodingAgentKind {
         }
     }
 
+    /// The kind whose provider id is `name`, or `None` for every other provider.
+    ///
+    /// The inverse of [`Self::provider_id`], so code that sees every provider the
+    /// daemon serves — `check_provider_configured` — can ask "is this one of the
+    /// coding agents?" without keeping a second list of their ids.
+    pub fn from_provider_id(name: &str) -> Option<Self> {
+        Self::all()
+            .into_iter()
+            .find(|kind| kind.provider_id() == name)
+    }
+
     /// The config key naming the executable.
     ///
     /// Each provider declares exactly one **required** key with a **default**.
@@ -90,6 +101,13 @@ impl CodingAgentKind {
     /// in the tree ever writes, so a genuinely zero-key provider would report
     /// `is_configured: false` forever and never appear in the model picker.
     /// `llamacpp` solves it the same way with `LLAMACPP_PORT`.
+    ///
+    /// ⚠ **A saved key is necessary, not sufficient.** The key only NAMES a
+    /// command, so `check_provider_configured` also requires that command to
+    /// resolve ([`resolve_configured`]). Before it did, `CODEX_COMMAND` pointed at
+    /// a path that did not exist left the row reading "Not installed" and
+    /// "Configured" side by side, and Codex selectable in the model picker —
+    /// where the bind then failed in `from_env`.
     pub const fn command_config_key(self) -> &'static str {
         match self {
             Self::ClaudeCode => "CLAUDE_CODE_COMMAND",
@@ -122,6 +140,20 @@ impl CodingAgentKind {
             Self::ClaudeCode => "claude auth login",
             Self::Codex => "codex login",
         }
+    }
+
+    /// One line saying the CLI cannot be found.
+    ///
+    /// The first sentence of [`super::unavailable_error`]'s not-installed
+    /// message, and — on its own — the reason `GET /config/providers` serves for
+    /// a row the user set up whose CLI is missing, which the model picker prints
+    /// on the disabled row. One definition, so the picker and the error a turn
+    /// would have raised cannot come to say different things.
+    pub fn not_installed_summary(self) -> String {
+        format!(
+            "{} is not installed, or is not on a path Biorouter searches",
+            self.display_name()
+        )
     }
 
     pub const fn all() -> [Self; 2] {
@@ -223,6 +255,19 @@ pub fn configured_command(kind: CodingAgentKind) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
+/// [`resolve_binary`] under the command the user configured — "is it installed?"
+/// asked the way every consumer must ask it.
+///
+/// ⚠ **One question, one function.** [`probe`] (behind `/coding_agents/status`,
+/// whose "Not installed" pill the provider row shows) and
+/// `check_provider_configured` (behind the "Configured" check on the SAME row,
+/// and behind which providers the model picker offers) both call this. Two
+/// spellings of it are how the row came to say both things at once. Cheap
+/// enough for the provider list: `stat` calls, never a spawn.
+pub fn resolve_configured(kind: CodingAgentKind) -> Option<PathBuf> {
+    resolve_binary(kind, configured_command(kind).as_deref())
+}
+
 // ---------------------------------------------------------------------------
 // The spawning half. Never call these from `from_env` — see the module header.
 // ---------------------------------------------------------------------------
@@ -236,7 +281,7 @@ pub fn configured_command(kind: CodingAgentKind) -> Option<String> {
 /// `ANTHROPIC_API_KEY` is exported, so probing with the ambient environment
 /// would describe a credential our own runs will never use.
 pub async fn probe(kind: CodingAgentKind) -> AgentAvailability {
-    let path = resolve_binary(kind, configured_command(kind).as_deref());
+    let path = resolve_configured(kind);
 
     let (version, auth) = match &path {
         None => (None, AuthState::NotInstalled),
@@ -499,6 +544,48 @@ mod tests {
             assert!(
                 !other.is_subscription(),
                 "{other:?} must not count as subscription-backed"
+            );
+        }
+    }
+
+    /// `from_provider_id` is the exact inverse of `provider_id`, and answers
+    /// nothing for any other provider — `check_provider_configured` runs it over
+    /// every provider the daemon serves, and a false match there would hold an
+    /// API provider to a CLI it has no reason to have.
+    #[test]
+    fn from_provider_id_inverts_provider_id_and_nothing_else() {
+        for kind in CodingAgentKind::all() {
+            assert_eq!(
+                CodingAgentKind::from_provider_id(kind.provider_id()),
+                Some(kind)
+            );
+        }
+        for other in ["anthropic", "openai", "claude", "Codex", ""] {
+            assert_eq!(CodingAgentKind::from_provider_id(other), None, "{other:?}");
+        }
+    }
+
+    /// The picker's reason and the turn's error open with the same words.
+    #[test]
+    fn the_not_installed_summary_is_the_errors_first_sentence() {
+        for kind in CodingAgentKind::all() {
+            let error = super::super::unavailable_error(
+                kind,
+                &AgentAvailability {
+                    kind,
+                    provider_id: kind.provider_id().to_string(),
+                    display_name: kind.display_name().to_string(),
+                    path: None,
+                    version: None,
+                    auth: AuthState::NotInstalled,
+                    login_command: kind.login_command().to_string(),
+                    install_hint: kind.install_hint().to_string(),
+                },
+            )
+            .to_string();
+            assert!(
+                error.contains(&format!("{}.", kind.not_installed_summary())),
+                "{kind:?}: {error}"
             );
         }
     }

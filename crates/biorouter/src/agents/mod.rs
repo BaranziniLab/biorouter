@@ -53,6 +53,9 @@ pub(crate) mod reply_parts;
 pub mod resource_refs;
 pub mod retry;
 pub(crate) mod schedule_tool;
+// QA finding F7: every tool call a Code Execution script makes faces the same
+// permission decision it would face as a direct call.
+pub(crate) mod script_call_gate;
 mod session_blob_tool;
 // The session-row write for `enabled_extensions.v0`, plus the classifier that
 // says which catalog tools require it. `pub` because `agents::agent` is

@@ -16,6 +16,16 @@ BioRouter's controls. What the child gets instead is BioRouter's own tools, over
 [the tool bridge](tool-bridge.md), executed by BioRouter's dispatcher where every existing gate
 still fires.
 
+Isolation runs in both directions, and the second half is easy to forget. Switching the child's own
+tools off controls what it can *do*; it says nothing about what it *reads*. A child agent consuming a
+tool result is consuming bytes a third party wrote — a fetched page, a repository's README, a
+database row — and it is an agent, so it can be talked into acting on them. Bridged tool output is
+therefore framed as `<tool-output untrusted="true" tool="…">` and scanned for injection markers and
+PII/PHI before it reaches the child, the same treatment the parent model's tool output gets. ⚠ **That
+was not true until 2026-09-11**: the frame's only funnel was `Agent::integrate_tool_result`, which no
+bridged call passes through, so a child read raw unscanned output and the transcript recorded it raw.
+See [Tool output is framed as untrusted on this path too](tool-bridge.md#tool-output-is-framed-as-untrusted-on-this-path-too).
+
 ## Claude Code: the arguments, and which ones are load-bearing
 
 Every invocation is `claude -p` with the following. The **argument builder** varies on exactly one

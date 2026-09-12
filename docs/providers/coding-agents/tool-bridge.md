@@ -222,6 +222,7 @@ Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and 
 | Tool inspectors (command policy, sensitive ops, everything in the inspector stack) | Run on every call, against the conversation snapshot and the session's permission mode. |
 | Permission mode | The inspectors' permission decision is honoured: denied is refused, "no decision was reached" is refused too (an absent decision must never read as approval), and `needs_approval` is [put to a person](#a-call-needing-approval-is-put-to-a-person-and-the-call-waits-107) rather than refused. |
 | Privacy Gate C | `dispatch_tool_call` is the one choke point every tool call passes through, and a bridged call goes through it with the turn's `CallCapability`. |
+| Untrusted-output framing + injection/PII scan | Applied in `BridgeGrant::call_for_child`, to the result **before** it is either handed to the child or kept for the transcript. See [Tool output is framed as untrusted](#tool-output-is-framed-as-untrusted-on-this-path-too) — this is the bridge's half of a funnel that used to have only one end. |
 | `PreToolUse` hook rewrites | Applied and then **re-judged**. The hooks have already run inside the inspector pass, so their `updatedInput` is collected and applied, and every inspector except the hook one re-runs on the rewritten arguments — otherwise a hook would be a hole straight through the security and permission gates, which only ever saw what the child's model asked for. The rewrite is taken scoped to this call's own request id, because the staging buffer is per session and bridged calls run concurrently. |
 | Host file containment | The built-in policy and admitted extension configuration determine the surface. ⚠ The bridge no longer adds a Developer-specific working-directory jail: the editor used to be confined to the session working directory here and nowhere else, which stopped nothing once `developer__shell` was bridged beside it (a child holding a shell reads the same path by typing `cat`) and only made the editor stricter under these two providers than under every other one. Containment is therefore what it is on the ordinary path — `.biorouterignore`, the secret guard, the inspectors and the permission mode — not a second jail on one tool. Granting an ordinary extension is not an OS sandbox for that extension's process. There is no process-global Auto-mode relaxation for another route or session to inherit. |
 | `.biorouterignore`, vault, session working directory | Whatever BioRouter's dispatcher and inspectors already enforce, because BioRouter is the process executing the tool. A `{{vault:NAME}}` in the arguments is resolved on the leaf dispatch path, after the call has been judged and immediately before it runs — the same position the agent's own path uses, so the inspectors and the user's hooks never see the decrypted secret. |
@@ -231,6 +232,54 @@ Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and 
 `POST /agent/call_tool` *is* that thin proxy, and its own comment records the cost: it bypasses the
 agent loop and therefore every `ToolInspector`. A child agent's tool calls are model-initiated and
 must be inspected exactly like the parent model's.
+
+### Tool output is framed as untrusted on this path too
+
+Every tool result the *parent* model reads is wrapped in
+`<tool-output untrusted="true" tool="…">` and scanned for injection markers and PII/PHI. That frame
+is applied by `guardrails::tool_output::guard_tool_result`, and until 2026-09-11 it had exactly one
+call site: `Agent::integrate_tool_result`, the funnel every completed tool call passes through on its
+way into the conversation.
+
+**A bridged call does not pass through it.** The child CLI calls `POST /tool_bridge/{nonce}`, the
+route answers from `BridgeGrant::call_for_child`, and the provider later lifts the kept result
+straight into the transcript (`mirror::stored_bridged_result`). Nothing in that path is the agent's
+turn loop. The consequence was measurable rather than theoretical: the same `date` call stored
+**framed** text under `versa_azure` and **raw** text under both coding agents, and the child agent —
+itself a whole agent, reading bytes a third party wrote — read tool output that had never been
+framed or scanned.
+
+So `call_for_child` is now the guardrail's second funnel, and the frame is applied **once, above the
+fork**:
+
+```
+dispatch -> guard_tool_result  ->  record(child_call_id)   -> the transcript
+                               ->  child_view(...)          -> the child agent
+```
+
+Three things follow, each of them a decision rather than an accident:
+
+- **Both readers, not one.** Framing only the child's copy would leave a coding agent's transcript
+  disagreeing with every other provider's — including for the BR-31/66 detectors that read a
+  transcript back. Framing only the stored copy would leave the child with the injection surface the
+  frame exists to close. The interesting reader here is the child: it is the one that can be talked
+  into something.
+- **The MCP result shape is untouched.** `guard_tool_result` rewrites `text` and nothing else —
+  `is_error`, `structured_content`, images, embedded resources and every annotation pass through
+  bit-for-bit — so what the vendor CLIs parse is the same shape it always was. The frame is plain
+  text inside a text block.
+- **`recorded_if_received` stays honest.** It decides whether the child really received a result by
+  comparing `child_view(recorded)` against the child's echo of it. Both sides now derive from the
+  same framed result, so the texts still match; framing only one of the two would have made every
+  bridged call look un-received and silently fallen back to storing the echo.
+
+The mode is sampled **once**, when the grant is built, like every other field on it — the agent
+samples it once per turn for the same reason: a mode that changed halfway through a turn would frame
+some of that turn's results and not others.
+
+Two tests pin the pair, and `guardrails::tool_output`'s
+`the_guardrail_has_one_call_site_in_each_of_its_two_funnels` pins that there are exactly two funnels
+and that the call has not drifted out of either. A third would be the same silent hole again.
 
 The privacy capability is **sampled once**, when the grant is issued, and threaded from there. A
 gate on this path asks the sampled capability rather than re-reading the master switch — a second

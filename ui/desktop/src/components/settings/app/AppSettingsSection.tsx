@@ -201,7 +201,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
 
           <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <p className="text-label text-text-default">Prevent Sleep</p>
+              <p className="text-label text-text-default">Prevent sleep</p>
               <p className="mt-0.5 max-w-md text-supporting text-text-muted">
                 Keep your computer awake while Biorouter is running a task (screen can still lock)
               </p>
@@ -216,7 +216,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           {COST_TRACKING_ENABLED && (
             <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
               <div className="min-w-0 flex-1">
-                <p className="text-label text-text-default">Cost Tracking</p>
+                <p className="text-label text-text-default">Cost tracking</p>
                 <p className="mt-0.5 max-w-md text-supporting text-text-muted">
                   Show model pricing and usage costs
                 </p>
@@ -344,7 +344,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               {/* `text-iconStandard` is not a token — it had no effect and no
                   definition. The two dialog titles now agree on 20px. */}
               <Settings size={20} />
-              How to Enable Notifications
+              How to enable notifications
             </DialogTitle>
           </DialogHeader>
 

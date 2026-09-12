@@ -25,6 +25,25 @@
  * actually named by a Tailwind colour utility somewhere in src/, and (3)
  * missing its `--color-*` mirror. An unused token is not a bug, and a token
  * only ever read through `var()` is not one either.
+ *
+ * WHERE THE MIRRORS ARE READ FROM is the one thing this check must not guess.
+ * A mirror is a `--color-*` inside an `@theme inline { … }` block, found by a
+ * line that BEGINS `@theme inline {` once comments are blanked out, and read
+ * only up to that block's own closing brace. Until 2026-09-11 the block was
+ * found with `indexOf('@theme inline')` and read to the end of the file — and
+ * the first occurrence of that phrase is a comment in the plain `@theme` block,
+ * far above the real one. So every `--color-*` below the comment counted: the
+ * palette primitives in the plain `@theme` (`--color-coral-*`,
+ * `--color-neutral-*`, …) and their remaps in the family selector blocks — 91
+ * "mirrors" where the block held 61. Tailwind generates utilities from `@theme`
+ * declarations and never from a selector block, so a mirror moved into
+ * `:root[data-theme='alma-mater']` generated nothing — and passed.
+ *
+ * Exit 0: every token a utility names is mirrored. Exit 1: some are not, and
+ * they are listed. Exit 2: no `@theme inline` block was found, or one never
+ * closes — a refusal, not a pass. Falling back to an empty read would report
+ * every token missing, which says nothing about any of them; falling back to
+ * the whole file would report them all present.
  */
 import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -56,6 +75,18 @@ const COLOR_PREFIXES = [
 ];
 
 const css = await readFile(CSS, 'utf8');
+const lineOf = (offset) => css.slice(0, offset).split('\n').length;
+const at = (offset) => `${relative(ROOT, CSS)}:${lineOf(offset)}`;
+
+/** The check cannot run. Exit 2, never 0 — see WHERE THE MIRRORS ARE READ FROM. */
+function refuse(...lines) {
+  console.error('CANNOT READ THE @theme inline MIRROR BLOCK\n');
+  for (const line of lines) console.error(line);
+  console.error(
+    '\nRefusing to report OK: exit 2 means this check could not run, not that it passed.'
+  );
+  process.exit(2);
+}
 
 /**
  * Every `--name:` declared anywhere outside the `@theme` / `@theme inline`
@@ -64,10 +95,65 @@ const css = await readFile(CSS, 'utf8');
 const declared = new Set();
 for (const m of css.matchAll(/^\s{2,}(--[a-z0-9-]+)\s*:/gm)) declared.add(m[1].slice(2));
 
-/** The `@theme inline` mirror block: `--color-x: var(--x)`. */
-const inlineBlock = css.slice(css.indexOf('@theme inline'));
+/**
+ * main.css with every comment and string blanked to spaces. Line breaks stay
+ * and nothing moves, so an offset in `code` is an offset in the real file. One
+ * pattern does both because a global match starts at the EARLIEST position: a
+ * quote inside a comment is swallowed by the comment, and a `/*` inside a string
+ * by the string. Left unterminated, each runs to where CSS ends it — the end of
+ * the file for a comment, the end of the line for a string.
+ */
+const code = css.replace(
+  /\/\*[\s\S]*?(?:\*\/|$)|"(?:[^"\\\n]|\\[\s\S])*"?|'(?:[^'\\\n]|\\[\s\S])*'?/g,
+  (m) => m.replace(/[^\n]/g, ' ')
+);
+
+/** Offset of the `}` that closes the `{` at `open` in `code`, or -1 if none does. */
+function closingBrace(open) {
+  for (let depth = 0, i = open; i < code.length; i++) {
+    if (code[i] === '{') depth++;
+    else if (code[i] === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The `@theme inline` mirror blocks, as `{ open, close }` brace offsets. Every
+ * one counts, because Tailwind reads every `@theme` block. Not `blocks()` from
+ * lib/theme-tokens.mjs: that one counts braces inside comments and runs an
+ * unclosed block to the end of the file — the two ways this read can silently
+ * widen back into the bug described above.
+ */
+const mirrorBlocks = [];
+for (const m of code.matchAll(/^@theme[ \t]+inline[ \t]*\{/gm)) {
+  const open = m.index + m[0].length - 1;
+  const close = closingBrace(open);
+  if (close === -1) {
+    refuse(
+      `The \`@theme inline\` block opened at ${at(open)} never closes.`,
+      'Reading on to the end of the file would count every `--color-*` below it as a mirror.'
+    );
+  }
+  mirrorBlocks.push({ open, close });
+}
+if (mirrorBlocks.length === 0) {
+  refuse(
+    `No line of ${relative(ROOT, CSS)} begins \`@theme inline {\` outside a comment.`,
+    'Mirrors are read from that block and nowhere else — a `--color-*` in a plain `@theme` or',
+    'in a family selector block is not one — so without it there is nothing to check against.'
+  );
+}
+const readFrom = `${relative(ROOT, CSS)}:${mirrorBlocks
+  .map(({ open, close }) => `${lineOf(open)}-${lineOf(close)}`)
+  .join(', ')}`;
+
+/** Their `--color-x: var(--x)` entries. Nothing outside the braces counts. */
 const mirrored = new Set();
-for (const m of inlineBlock.matchAll(/^\s+--color-([a-z0-9-]+)\s*:/gm)) mirrored.add(m[1]);
+for (const { open, close } of mirrorBlocks) {
+  for (const m of code.slice(open + 1, close).matchAll(/^\s+--color-([a-z0-9-]+)\s*:/gm)) {
+    mirrored.add(m[1]);
+  }
+}
 
 /** Walk src/ for class strings. */
 async function* files(dir) {
@@ -116,13 +202,15 @@ if (broken.length === 0) {
   console.log(
     `     (${declared.size} declared, ${mirrored.size} mirrored, ${used.size} reached from a utility)`
   );
+  console.log(`     mirrors read from ${readFrom}`);
   process.exit(0);
 }
 
 console.error('MISSING @theme inline MIRRORS\n');
 console.error('These tokens are declared in main.css and named by a Tailwind colour utility,');
 console.error('but have no `--color-<name>` entry — so the utility is never generated and the');
-console.error('call sites below silently render a fallback colour.\n');
+console.error('call sites below silently render a fallback colour.');
+console.error(`(Mirrors read from ${readFrom}.)\n`);
 for (const token of broken) {
   console.error(`  --${token}`);
   console.error(`      add to @theme inline:  --color-${token}: var(--${token});`);

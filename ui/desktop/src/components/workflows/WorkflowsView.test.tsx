@@ -342,3 +342,62 @@ describe('WorkflowsView on the settings visual vocabulary', () => {
     expect(await screen.findByTitle('Use workflow')).toBeInTheDocument();
   });
 });
+
+/**
+ * Defect 3.4. This is a MIS-ACTION risk, not missing copy: with two rows and
+ * two identically-titled "Add schedule" buttons, QA scheduled the wrong
+ * workflow on the first try. The dialog held the subject in state the whole
+ * time (`scheduleWorkflowManifest`) and simply never showed it, and
+ * `aria-describedby={undefined}` opted the dialog out of a description, so a
+ * screen reader heard "Add schedule" and nothing else either.
+ */
+describe('the schedule dialog names the workflow it is about to schedule', () => {
+  const rows = [
+    {
+      id: 'workflow-1',
+      file_path: '/tmp/one.yaml',
+      last_modified: '2026-07-11',
+      workflow: { title: 'Cohort review', description: 'one' },
+    },
+    {
+      id: 'workflow-2',
+      file_path: '/tmp/two.yaml',
+      last_modified: '2026-07-11',
+      workflow: { title: 'Variant calling nightly', description: 'two' },
+    },
+  ];
+
+  it('names the row the button belonged to, not merely "Add schedule"', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue(rows);
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Variant calling nightly');
+    const buttons = screen.getAllByTitle('Add schedule');
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[1]);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Variant calling nightly/)).toBeInTheDocument();
+    // The wrong subject must not be reachable from the dialog at all.
+    expect(within(dialog).queryByText(/Cohort review/)).not.toBeInTheDocument();
+  });
+
+  it('describes itself to assistive technology instead of opting out', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue(rows);
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Cohort review');
+    fireEvent.click(screen.getAllByTitle('Add schedule')[0]);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-describedby');
+  });
+});

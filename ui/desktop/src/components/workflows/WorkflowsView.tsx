@@ -305,9 +305,14 @@ export default function WorkflowsView() {
         },
       });
 
+      // Named here too. The confirmation is the last chance to notice that the
+      // wrong row's button was pressed, and "Workflow will run ..." says
+      // nothing about WHICH workflow.
       toastSuccess({
         title: 'Schedule saved',
-        msg: `Workflow will run ${getReadableCron(scheduleCron)}`,
+        msg: `"${scheduleWorkflowManifest.workflow.title}" will run ${getReadableCron(
+          scheduleCron
+        )}`,
       });
 
       setShowScheduleDialog(false);
@@ -336,7 +341,7 @@ export default function WorkflowsView() {
 
       toastSuccess({
         title: 'Schedule removed',
-        msg: 'Workflow will no longer run automatically',
+        msg: `"${scheduleWorkflowManifest.workflow.title}" will no longer run automatically`,
       });
 
       setShowScheduleDialog(false);
@@ -807,15 +812,20 @@ export default function WorkflowsView() {
               desktop window and 448px only below the breakpoint. `MODAL_SIZE`
               is the ladder (V8: never a pixel literal for a dialog width), and
               its rungs are `sm:`-prefixed for exactly that reason. */}
-          <DialogContent
-            aria-describedby={undefined}
-            dismissible={!isSavingSchedule}
-            className={MODAL_SIZE.md}
-          >
+          {/* ⚠ No `aria-describedby={undefined}` here, and the description is
+              not decoration. Every row carries an identically-titled "Add
+              schedule" button, the dialog held its subject in state
+              (`scheduleWorkflowManifest`) and showed nothing, and QA scheduled
+              the WRONG workflow on the first try with two rows on screen. A
+              dialog that acts on one of several similar things has to name the
+              one it will act on — and opting out of the description meant a
+              screen reader heard "Add schedule" and nothing else either. */}
+          <DialogContent dismissible={!isSavingSchedule} className={MODAL_SIZE.md}>
             <DialogHeader>
               <DialogTitle>
                 {scheduleWorkflowManifest.schedule_cron ? 'Edit' : 'Add'} schedule
               </DialogTitle>
+              <DialogDescription>{scheduleWorkflowManifest.workflow.title}</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <CronPicker

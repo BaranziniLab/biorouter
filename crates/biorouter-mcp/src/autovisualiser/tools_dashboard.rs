@@ -133,7 +133,7 @@ pub struct DashboardSection {
     pub panels: Vec<DashboardPanel>,
 }
 
-/// Report colour theme. `Auto` (default) follows the desktop app's light/dark
+/// Report color theme. `Auto` (default) follows the desktop app's light/dark
 /// setting so the report matches the rest of the UI (and stays identical in the
 /// side-panel preview and the expanded view); `Light`/`Dark` force a look
 /// regardless of the host — set one when the user asks for a specific background.
@@ -196,7 +196,7 @@ pub struct RenderDashboardParams {
     /// Closing prose: caveats, data provenance, next steps.
     #[serde(default)]
     pub footer: Option<String>,
-    /// Report colour theme: `auto` (default, follows the app's light/dark setting),
+    /// Report color theme: `auto` (default, follows the app's light/dark setting),
     /// `light`, or `dark`. Set `light` or `dark` when the user asks for a specific
     /// background; leave it `auto` to match whatever theme the app is in.
     #[serde(default)]

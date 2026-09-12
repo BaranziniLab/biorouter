@@ -1,8 +1,9 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { KnowledgeProvider, useKnowledge } from './KnowledgeContext';
-import { reachGatedGetActive, USER_ACTION_KEY } from '../../test/reachGate';
+import { KnowledgeProvider, SELECTION_NOT_SAVED_TITLE, useKnowledge } from './KnowledgeContext';
+import { useKnowledgeBases } from './hooks/useKnowledgeBases';
+import { reachGatedGetActive, SESSION_OUT_OF_REACH, USER_ACTION_KEY } from '../../test/reachGate';
 
 /** A promise the test resolves by hand, so "after the response settled" is a fact, not a race. */
 function deferred<T>() {
@@ -28,13 +29,20 @@ const mocks = vi.hoisted(() => ({
   listBases: vi.fn(),
   getActive: vi.fn(),
   setActive: vi.fn(),
+  createBase: vi.fn(),
+  deleteBase: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock('../../api', () => ({
   listBases: mocks.listBases,
   getActive: mocks.getActive,
   setActive: mocks.setActive,
+  createBase: mocks.createBase,
+  deleteBase: mocks.deleteBase,
 }));
+
+vi.mock('../../toasts', () => ({ toastError: mocks.toastError }));
 
 function base(id: string) {
   return { id, name: id, color: '#cf6d47', created_at: '', schema_version: 1 };
@@ -73,6 +81,7 @@ function Probe() {
     toggleKbHidden,
     refresh,
   } = useKnowledge();
+  const { remove } = useKnowledgeBases();
   return (
     <div>
       <span data-testid="primary">{primaryKbId ?? 'none'}</span>
@@ -99,6 +108,9 @@ function Probe() {
       </button>
       <button type="button" onClick={() => toggleKbHidden('alpha')}>
         toggle alpha
+      </button>
+      <button type="button" onClick={() => void remove('alpha')}>
+        delete alpha
       </button>
     </div>
   );
@@ -143,6 +155,7 @@ beforeEach(() => {
   mocks.setActive.mockResolvedValue({
     data: { kb_ids: ['alpha', 'beta'], primary_kb: 'beta', active_kb: 'beta', hidden_kbs: [] },
   });
+  mocks.deleteBase.mockResolvedValue({});
 });
 
 describe('KnowledgeContext', () => {
@@ -291,6 +304,11 @@ describe('KnowledgeContext', () => {
     expect(mocks.getActive).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId('primary').textContent).toBe('alpha');
     expect(screen.getByTestId('hidden').textContent).toBe('beta');
+    // …and the person who clicked is told the click did not land.
+    expect(mocks.toastError).toHaveBeenCalledWith({
+      title: SELECTION_NOT_SAVED_TITLE,
+      msg: 'network down',
+    });
   });
 
   // Same divergence by the other door: the client resolves, but with an error
@@ -308,6 +326,10 @@ describe('KnowledgeContext', () => {
     expect(mocks.getActive).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId('primary').textContent).toBe('alpha');
     expect(screen.getByTestId('hidden').textContent).toBe('beta');
+    expect(mocks.toastError).toHaveBeenCalledWith({
+      title: SELECTION_NOT_SAVED_TITLE,
+      msg: 'primary_kb is not a member',
+    });
   });
 
   // Two clicks, two writes, answers out of order. The older answer describes a
@@ -358,21 +380,25 @@ describe('KnowledgeContext', () => {
     expect(screen.getByTestId('hidden').textContent).toBe('beta');
   });
 
-  it('clears a stale primary after an empty base list has arrived', async () => {
+  // A pointer at a base the list no longer holds must not be SHOWN — the view,
+  // the ingest target and the graph would all aim at a base that is gone — and
+  // must not be WRITTEN back as "no primary" either. That write used to happen
+  // here: a durable, session-scoped override derived from whatever list this
+  // renderer held, installed in a chat that may only have inherited the pointer
+  // and that the daemon had deliberately left alone (D2; QA 2026-09-10 F14).
+  it('hides a primary whose base is gone without writing a durable clear', async () => {
     mocks.listBases.mockResolvedValue({ data: [] });
     daemon.session.hidden_kbs = [];
-    mocks.setActive.mockResolvedValue({
-      data: { kb_ids: [], primary_kb: null, active_kb: null, hidden_kbs: [] },
-    });
 
     renderProvider();
 
+    await waitFor(() => expect(mocks.listBases).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('none'));
-    await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
-    expect(mocks.setActive.mock.calls[0]?.[0]?.body).toMatchObject({
-      clear_primary: true,
-      session_id: 'chat-1',
-    });
+    await settle(() => {});
+    expect(mocks.setActive).not.toHaveBeenCalled();
+    // …and the daemon's answer is what `localStorage` keeps: the renderer did
+    // not invent a different one to persist.
+    expect(localStorage.getItem('knowledge_active_kb:chat-1')).toBe('alpha');
   });
 
   // Same, by the other door: a list request that fails is not a list of zero
@@ -418,6 +444,132 @@ describe('KnowledgeContext', () => {
     await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('idle'));
     expect(screen.getByTestId('bases-error').textContent).not.toBe('none');
     expect(screen.getByTestId('bases-error').textContent).not.toBe('');
+  });
+
+  // QA 2026-09-10 F14. Around the refused reads (see 'a private chat' below), the
+  // renderer made selection writes nobody asked for, which is how a click could
+  // look saved and not be. It now writes only what a person clicked, persists
+  // only what the daemon confirmed, and says so when a write does not land.
+  describe('writes only what the daemon confirmed', () => {
+    // The renderer believed the write succeeded while the daemon had refused
+    // it: `localStorage` took the guess before the POST went out, and nothing on
+    // screen ever said the click had not landed.
+    it('says a refused write did not land, and keeps localStorage on what the daemon confirmed', async () => {
+      const write = deferred<unknown>();
+      renderProvider();
+      await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+      expect(localStorage.getItem('knowledge_active_kb:chat-1')).toBe('alpha');
+
+      mocks.setActive.mockReturnValue(write.promise);
+      // …and the recovery read cannot reach the daemon either.
+      mocks.getActive.mockRejectedValue(new Error('Failed to fetch'));
+      await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+
+      // Optimistic on screen, never in storage.
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+      expect(localStorage.getItem('knowledge_active_kb:chat-1')).toBe('alpha');
+
+      const listsBefore = mocks.listBases.mock.calls.length;
+      await settle(() => write.resolve({ error: SESSION_OUT_OF_REACH }));
+
+      await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+      expect(mocks.toastError).toHaveBeenCalledWith({
+        title: SELECTION_NOT_SAVED_TITLE,
+        msg: 'That chat is private, or there is no chat with that id.',
+      });
+      // The list is re-read as well: a choice is most often refused because
+      // the base it named went away somewhere else.
+      expect(mocks.listBases.mock.calls.length).toBeGreaterThan(listsBefore);
+      await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+      expect(screen.getByTestId('hidden').textContent).toBe('beta');
+      expect(localStorage.getItem('knowledge_active_kb:chat-1')).toBe('alpha');
+      expect(localStorage.getItem('knowledge_hidden_kbs:chat-1')).toBe('["beta"]');
+    });
+
+    // A base the chat already uses needs no set edit. Echoing the resolved
+    // hidden list back installed a session-scoped override on a chat that was
+    // inheriting the machine-wide one.
+    it('makes a base already in the chat primary without re-sending the set', async () => {
+      daemon.session = {
+        kb_ids: ['alpha', 'beta'],
+        primary_kb: 'alpha',
+        active_kb: 'alpha',
+        hidden_kbs: [],
+      };
+      renderProvider();
+      await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+
+      await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+
+      await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
+      const body = mocks.setActive.mock.calls[0]?.[0]?.body;
+      expect(body.primary_kb).toBe('beta');
+      expect(body.hidden_kbs).toBeUndefined();
+    });
+
+    // The delete IS the repair (D2): the daemon clears every pointer that named
+    // the base. The renderer used to write `clear_primary` on top of it — a
+    // durable "no primary" in a chat that may only have inherited the pointer.
+    it("follows the daemon's repair after a delete instead of writing a clear", async () => {
+      renderProvider();
+      await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+      // What the daemon holds once `alpha` is gone: it cleared this chat's pin.
+      mocks.listBases.mockResolvedValue({ data: [base('beta')] });
+      daemon.session = { kb_ids: [], primary_kb: null, active_kb: null, hidden_kbs: ['beta'] };
+      const readsBefore = mocks.getActive.mock.calls.length;
+
+      await userEvent.click(screen.getByRole('button', { name: 'delete alpha' }));
+
+      await waitFor(() =>
+        expect(mocks.deleteBase).toHaveBeenCalledWith(
+          expect.objectContaining({ path: { id: 'alpha' } })
+        )
+      );
+      await waitFor(() => expect(mocks.getActive.mock.calls.length).toBeGreaterThan(readsBefore));
+      await waitFor(() => expect(localStorage.getItem('knowledge_active_kb:chat-1')).toBeNull());
+      expect(screen.getByTestId('primary').textContent).toBe('none');
+      expect(mocks.setActive).not.toHaveBeenCalled();
+    });
+
+    // `refresh` now re-reads the selection, so it must never land on top of a
+    // click: a read answered before the write commits describes the selection
+    // the user just moved away from.
+    it('never lets a background refresh overwrite a write that is still out', async () => {
+      renderProvider();
+      await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+
+      // A refresh whose selection read is answered late, with the old selection…
+      const staleRead = deferred<unknown>();
+      mocks.getActive.mockReturnValueOnce(staleRead.promise);
+      await userEvent.click(screen.getByRole('button', { name: 'refresh' }));
+
+      // …then a click.
+      const write = deferred<unknown>();
+      mocks.setActive.mockReturnValue(write.promise);
+      await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+
+      // A refresh while the write is out does not even ask.
+      const readsDuringWrite = mocks.getActive.mock.calls.length;
+      await userEvent.click(screen.getByRole('button', { name: 'refresh' }));
+      await settle(() => {});
+      expect(mocks.getActive.mock.calls.length).toBe(readsDuringWrite);
+
+      await settle(() => staleRead.resolve({ data: daemon.session }));
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+
+      await settle(() =>
+        write.resolve({
+          data: {
+            kb_ids: ['alpha', 'beta'],
+            primary_kb: 'beta',
+            active_kb: 'beta',
+            hidden_kbs: [],
+          },
+        })
+      );
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+      expect(localStorage.getItem('knowledge_active_kb:chat-1')).toBe('beta');
+    });
   });
 
   // The fourth intent. `clear` writes a *durable* "this chat has no primary",

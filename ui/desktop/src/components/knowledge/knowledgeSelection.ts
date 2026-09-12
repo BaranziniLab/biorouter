@@ -3,7 +3,7 @@ import { userActionHeaders } from '../../utils/userAction';
 import { briefSelectionFailure } from './selectionWarning';
 
 /** The shape both selection endpoints answer with — GET /active and POST /active. */
-type SelectionPayload =
+export type SelectionPayload =
   | { primary_kb?: string | null; active_kb?: string | null; hidden_kbs?: string[] | null }
   | undefined;
 
@@ -26,6 +26,40 @@ export function readHidden(data: SelectionPayload): string[] | null {
 export interface KnowledgeSelection {
   primaryKbId: string | null;
   hiddenKbIds: ReadonlySet<string>;
+}
+
+/**
+ * THE request for a knowledge-base selection: the chat's when `sessionId` names
+ * one, the machine-wide default otherwise, read as the person at the keyboard.
+ * Resolves to the daemon's answer and REJECTS when there is none, so a caller
+ * can never mistake a failure for a selection.
+ *
+ * ⚠ **Every selection read in the renderer goes through here**: the
+ * `KnowledgeProvider` hydrate, its re-reads and its machine-default read, and
+ * `readKnowledgeSelection` below for the `/` palette and the create-workflow
+ * modal. Issue #56 Task 58: `GET /knowledge/active` naming a PRIVATE chat is on
+ * the reach gate's list exactly as the POST is, and the desktop gets through it
+ * the only way it can — `userActionHeaders()`, the one helper that decides how
+ * this surface proves a person. The reads used to go without it, and on a UCSF
+ * install, where every chat is private, the daemon refused every one: the
+ * Knowledge view, the chip and the ingest target then showed the renderer's
+ * cache as the chat's selection (QA 2026-09-10 F14). The proof reaches nothing
+ * new; it already reads the chat's whole transcript through `getSession`.
+ *
+ * It carries the proof at machine scope too, where the gate is inert today, so
+ * that a daemon which filters what an unproven caller may see never hands this
+ * surface a selection with the user's own private bases missing from it.
+ */
+export async function fetchKnowledgeSelection(
+  sessionId: string | null | undefined
+): Promise<NonNullable<SelectionPayload>> {
+  const res = await getActive({
+    query: sessionId ? { session_id: sessionId } : undefined,
+    headers: await userActionHeaders(),
+    throwOnError: false,
+  });
+  if (!res.data) throw res.error ?? new Error('The daemon answered without a selection.');
+  return res.data;
 }
 
 /**
@@ -52,21 +86,10 @@ export async function readKnowledgeSelection(
   sessionId: string | null | undefined
 ): Promise<KnowledgeSelection | null> {
   try {
-    const res = await getActive({
-      query: sessionId ? { session_id: sessionId } : undefined,
-      // Issue #56 Task 58: a GET naming a PRIVATE chat is on the reach gate's
-      // list, and the desktop gets through it by proving the person — as the
-      // hydrate in `KnowledgeContext` does, and as `setActive` always has.
-      headers: await userActionHeaders(),
-      throwOnError: false,
-    });
-    if (!res.data) {
-      console.warn('Knowledge selection not read:', briefSelectionFailure(res.error));
-      return null;
-    }
+    const data = await fetchKnowledgeSelection(sessionId);
     return {
-      primaryKbId: readPrimary(res.data),
-      hiddenKbIds: new Set(readHidden(res.data) ?? []),
+      primaryKbId: readPrimary(data),
+      hiddenKbIds: new Set(readHidden(data) ?? []),
     };
   } catch (err) {
     console.warn('Knowledge selection not read:', briefSelectionFailure(err));

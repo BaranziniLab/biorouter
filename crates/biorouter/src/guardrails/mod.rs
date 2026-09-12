@@ -9,6 +9,10 @@
 
 pub mod pii;
 pub mod run_state;
+/// Credential redaction in tool output — the second line behind
+/// `SecretGuard`'s argument scan (H1). Applied at the dispatch choke point, on
+/// every tool result, in every chat.
+pub mod secret_output;
 /// Main-loop tool-*output* guardrail: scans returned tool content for
 /// prompt-injection markers and PII/PHI and (by default) annotates it as
 /// untrusted data before it re-enters the model context. This is the first

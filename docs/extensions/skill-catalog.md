@@ -223,6 +223,38 @@ unchanged: a batch with any bad name still removes nothing.
 that is the only root `removeSkillPackage` deletes under. An extension's skill is
 uninstalled by removing the extension.
 
+## How a query is matched
+
+`skills__searchSkills` with no `query` pages the catalog alphabetically. With a
+query it **ranks** the skills this conversation has enabled, through
+`catalog_search::rank` — the same matcher behind `searchMarketplaceSkills` and
+`search_marketplace_extensions`, whose module doc is the specification:
+
+- A skill is returned when it matches **any** word of the query, not all of
+  them. Skills matching the most words come first; ties go to where a word
+  matched — the skill's name, then its bundle's name, then its description —
+  and then to alphabetical order. A skill holding the whole query as written
+  outranks all of those.
+- A word under three characters matches whole words only, so `r` finds the R
+  language rather than every word with an r in it. Filler (`for`, `about`,
+  `skill`) is dropped, and a plural falls back to its singular.
+- The conversation's switches apply **first**: a skill turned off here is never
+  scored, returned or counted.
+
+A ranked page is the listing's page plus three fields. `terms` is what the query
+was read as, each row adds `matchedTerms`, and a search that matches nothing adds
+`guidance` — how many skills are enabled in this conversation, and to try a
+shorter term or list them all. A query with no letter or digit in it is the
+listing.
+
+⚠ **The search used to keep a skill only when it contained every word of the
+query.** With a ggplot skill and an R-scripting skill installed,
+`R scripting ggplot visualization` returned `total: 0` — QA finding F5, which the
+marketplace search had too, through different code. It now returns the ggplot
+skill (three of the four words), the R-scripting skill (two), then any skill
+matching one. Add a catalog search by calling `rank` with that catalog's fields,
+never by writing another matcher.
+
 ## Debugging a skill that is installed but not usable
 
 1. `biorouter skill list` — if it is absent, discovery never saw it. Check the

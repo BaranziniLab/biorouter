@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
+import { useSameRouteReset } from '../../hooks/useSameRouteReset';
 import {
   listSchedules,
   createSchedule,
@@ -246,6 +247,16 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
   const actionsInProgressRef = useRef<Set<string>>(new Set());
   const [viewingScheduleId, setViewingScheduleId] = useState<string | null>(null);
   const [scheduleToDeleteId, setScheduleToDeleteId] = useState<string | null>(null);
+
+  // Defect 3.3. `viewingScheduleId` (and the session history nested inside
+  // `ScheduleDetailView`) is local state, not a URL — so re-selecting Scheduler
+  // in the rail reconciled this component unchanged and left the user parked in
+  // a run detail. Dropping the id here unmounts the detail view, which takes
+  // its own `selectedSession` with it.
+  useSameRouteReset('/schedules', () => {
+    setViewingScheduleId(null);
+    setScheduleToDeleteId(null);
+  });
 
   const beginAction = (id: string) => {
     if (actionsInProgressRef.current.has(id)) return false;

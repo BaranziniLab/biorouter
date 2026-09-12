@@ -5,6 +5,10 @@
 import { ExtensionLoadResult } from '../api/types.gen';
 import { toastService, ExtensionLoadingStatus } from '../toasts';
 import { isCapabilityExtension } from '../components/settings/capabilities/capabilities';
+import {
+  markExtensionLoadFailuresAnnounced,
+  recordExtensionLoadResults,
+} from './extensionLoadFailures';
 
 export const MAX_ERROR_MESSAGE_LENGTH = 70;
 
@@ -84,6 +88,12 @@ export function resetExtensionToastState(): void {
  *     broken tool call, so it must not be swallowed — and since the grouped
  *     toast reuses one toast id, four chats hitting the same broken extension
  *     coalesce into one toast rather than stacking four.
+ *  3. **…but a failure is announced ONCE.** The only caller is `/agent/resume`,
+ *     which every renderer load performs, so rule 2 on its own re-announced the
+ *     same failure after every reload — a notification for something the user
+ *     did not do. `extensionLoadFailures` keeps the standing record across
+ *     reloads and answers what is actually new; anything the user has already
+ *     been shown is recorded silently and read on the Extensions page instead.
  *
  * @param results - Array of extension load results from the backend
  * @param sessionId - The chat these results belong to. Omit for non-chat callers
@@ -119,6 +129,22 @@ export function showExtensionLoadResults(
   const shipsWithBiorouter = (name: string) => isCapabilityExtension({ name });
   const results = allResults.filter((r) => !shipsWithBiorouter(r.name));
   const shippedFailures = allResults.filter((r) => shipsWithBiorouter(r.name) && !r.success);
+
+  // Rule 3. Record FIRST, unconditionally, and BEFORE any early return: the
+  // standing surface must learn of a failure whether or not the transient one
+  // is about to speak, and — the half that is easy to miss — a clean load has
+  // to CLEAR a record that is no longer true, including the all-shipped load
+  // the next line returns on. What comes back is only what the user has not
+  // already been shown.
+  const unannounced = recordExtensionLoadResults(
+    allResults.map((r) => ({
+      name: r.name,
+      success: r.success,
+      error: r.error,
+      builtin: shipsWithBiorouter(r.name),
+    }))
+  );
+
   if (results.length === 0 && shippedFailures.length === 0) {
     return;
   }
@@ -128,6 +154,13 @@ export function showExtensionLoadResults(
   // below: it must not be silenced as a background success, and it must not be
   // overwritten by a later clean run. It is only excluded from the *ratio*.
   const anyFailure = failedExtensions.length > 0 || shippedFailures.length > 0;
+
+  if (anyFailure && unannounced.length === 0) {
+    // Every failure here has already had its one announcement. Repeating it is
+    // the recurrence this rule exists to stop; the Extensions page still shows
+    // it, with the error text and something to do about it.
+    return;
+  }
 
   if (!anyFailure) {
     // Rule 1: a background chat's clean load is silent.
@@ -158,6 +191,9 @@ export function showExtensionLoadResults(
       traceback: errorMsg,
       recoverHints,
     });
+    // Only now — a failure that was never rendered has not been announced, and
+    // must keep its one announcement for the load that does render it.
+    markExtensionLoadFailuresAnnounced([failed.name]);
     return;
   }
 
@@ -177,4 +213,5 @@ export function showExtensionLoadResults(
     true,
     shippedFailures.map((r) => r.name)
   );
+  markExtensionLoadFailuresAnnounced(unannounced.map((entry) => entry.name));
 }

@@ -56,7 +56,7 @@ describe('DiagnosticsModal', () => {
 
     render(<DiagnosticsModal isOpen onClose={onClose} sessionId="20260716_27" />);
 
-    expect(screen.getByRole('dialog', { name: 'Report a Problem' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Report a problem' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Generate diagnostics' }));
 
     await waitFor(() => {
@@ -95,7 +95,7 @@ describe('DiagnosticsModal', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Generate diagnostics' })).toBeEnabled();
     });
-    expect(screen.getByRole('dialog', { name: 'Report a Problem' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Report a problem' })).toBeVisible();
     expect(onClose).not.toHaveBeenCalled();
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
@@ -117,7 +117,7 @@ describe('DiagnosticsModal', () => {
       });
     });
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByRole('dialog', { name: 'Report a Problem' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Report a problem' })).toBeVisible();
   });
 
   /**
