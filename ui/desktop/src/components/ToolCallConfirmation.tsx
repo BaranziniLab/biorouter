@@ -190,6 +190,23 @@ export default function ToolConfirmation({
     return parts.length > 1 ? parts[0] : '';
   }
 
+  // `prompt` is `approval_prompt_for_request` — every reason an INSPECTOR gave
+  // for escalating this call — so its presence is what marks a security finding.
+  //
+  // One derived boolean rather than two independent reads of `prompt`: the
+  // warning banner and the withheld "Always Allow" are two halves of one
+  // decision, and a card that shows the banner while still offering a permanent
+  // grant (or the reverse) is worse than either. Whitespace is not a finding —
+  // a blank prompt used to paint an empty warning band *and* take the user's
+  // "Always Allow" away.
+  //
+  // ⚠ It is also why nothing but an inspector may write that field. The
+  // coding-agent bridge used to put its own framing there ("<child> asked to run
+  // this through Biorouter"), which put every bridged call behind a warning
+  // banner with no way to grant a lasting permission. The card was reading the
+  // field correctly; the producer was misusing it. See `bridge.rs::await_approval`.
+  const securityFinding = typeof prompt === 'string' && prompt.trim().length > 0;
+
   // One cohesive, bordered "permission request" card. A single border wraps the
   // whole element (header + actions) so there are no mismatched borders, it uses
   // the app's standard card tokens + typography, and a gentle slide-in makes it
@@ -201,9 +218,12 @@ export default function ToolConfirmation({
   ) : (
     <>
       <div className="biorouter-message-content text-body overflow-hidden rounded-2xl border border-border-subtle bg-background-default animate-in fade-in slide-in-from-bottom-1 duration-200">
-        {/* Security finding banner, only when the backend flagged one */}
-        {prompt && (
-          <div className="flex items-start gap-2 border-b border-border-subtle bg-background-warning/10 px-4 py-2.5 text-sm text-text-warning">
+        {/* Security finding banner, only when an inspector flagged one */}
+        {securityFinding && (
+          <div
+            data-testid="tool-security-finding"
+            className="flex items-start gap-2 border-b border-border-subtle bg-background-warning/10 px-4 py-2.5 text-sm text-text-warning"
+          >
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{prompt}</span>
           </div>
@@ -280,8 +300,10 @@ export default function ToolConfirmation({
                 >
                   Allow Once
                 </Button>
-                {/* Only offer "Always Allow" when there's no security finding. */}
-                {!prompt && (
+                {/* Only offer "Always Allow" when there's no security finding. A
+                    permanent grant is not something to decide from a card that
+                    exists because an inspector objected. */}
+                {!securityFinding && (
                   <Button
                     type="button"
                     size="sm"

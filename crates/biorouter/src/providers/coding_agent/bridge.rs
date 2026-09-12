@@ -647,10 +647,18 @@ impl BridgeGrant {
         let request = UserActionRequest::ToolApproval(ToolApprovalRequest {
             tool_name: call.name.to_string(),
             arguments: arguments.clone(),
-            prompt: Some(format!(
-                "{} asked to run this through Biorouter.",
-                self.child_label()
-            )),
+            // ⚠ **`prompt` is the inspector's field — "why you are being asked" —
+            // and nothing else may borrow it.** This used to carry "<child> asked
+            // to run this through Biorouter", which is framing, not a finding; the
+            // card reads any prompt as a SECURITY FINDING, so every bridged call
+            // arrived under a warning banner with "Always Allow" withheld. The
+            // card was telling the truth about the field it was given.
+            //
+            // The attribution belongs on the card, but it needs a field of its
+            // own (`requestedBy`) plumbed through `ActionRequiredData` and the
+            // OpenAPI client. Until then it is logged rather than dressed up as
+            // an inspector's verdict.
+            prompt: None,
             risk: Some(self.tool_risks.risk_for(&call.name)),
             preview: crate::conversation::tool_preview::ToolPreview::for_tool_call(
                 &call.name, &arguments,
@@ -671,15 +679,19 @@ impl BridgeGrant {
             UserActionOutcome::Approved { permission } => {
                 tracing::info!(
                     tool_name = %name,
+                    child = self.child_label(),
                     ?permission,
                     "a bridged tool call was approved by the user"
                 );
+                self.record_lasting_decision(&call.name, &permission).await;
                 Ok(())
             }
             // `AlwaysDeny` and `DenyOnce` read the same to the child: it may not
             // run this. The *scope* of the refusal is the permission store's
-            // business, not the child's.
-            UserActionOutcome::Denied { .. } => {
+            // business, not the child's — which is why the store is written
+            // before the refusal is worded.
+            UserActionOutcome::Denied { permission } => {
+                self.record_lasting_decision(&call.name, &permission).await;
                 Err(format!("`{name}` was refused: you did not approve it."))
             }
             other => Err(format!(
@@ -689,6 +701,37 @@ impl BridgeGrant {
                 other.refusal_detail()
             )),
         }
+    }
+
+    /// Write a decision the user meant to LAST into the permission store.
+    ///
+    /// The outcome's `permission` carries the scope of the answer — its own doc
+    /// says it "distinguishes a one-off from an `AlwaysAllow` the caller may want
+    /// to record" — and on the agent's own path `handle_approved_and_denied_tools`
+    /// records it. The bridge only logged it, so "Always Allow" on a bridged card
+    /// granted a single call and the next identical one asked again: a card
+    /// offering a lasting decision it could not keep. An existing entry was
+    /// always honoured (the permission inspector reads the store before the card
+    /// is ever raised); what was missing was writing one.
+    ///
+    /// A one-off (`AllowOnce` / `DenyOnce`) is deliberately not recorded: that is
+    /// an answer about this call, not a rule.
+    async fn record_lasting_decision(
+        &self,
+        tool_name: &str,
+        permission: &crate::permission::Permission,
+    ) {
+        use crate::config::permission::PermissionLevel;
+        use crate::permission::Permission;
+
+        let level = match permission {
+            Permission::AlwaysAllow => PermissionLevel::AlwaysAllow,
+            Permission::AlwaysDeny => PermissionLevel::NeverAllow,
+            _ => return,
+        };
+        self.inspections
+            .update_permission_manager(tool_name, level)
+            .await;
     }
 
     /// What to call the child on the approval card.
