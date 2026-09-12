@@ -22,6 +22,7 @@ export function BottomMenuKnowledgeSelection() {
     toggleKbHidden,
     hideAllKnowledgeBases,
     showAllKnowledgeBases,
+    refresh,
   } = useKnowledge();
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -68,6 +69,10 @@ export function BottomMenuKnowledgeSelection() {
       onOpenChange={(nextOpen) => {
         setOpen(nextOpen);
         if (!nextOpen) setSearchQuery('');
+        // Re-read on open, as the Knowledge view's picker and manager do: the
+        // provider already follows a turn's end, but a base created from the
+        // CLI or another window changes nothing this renderer can hear.
+        if (nextOpen) void refresh();
       }}
     >
       <Tooltip>

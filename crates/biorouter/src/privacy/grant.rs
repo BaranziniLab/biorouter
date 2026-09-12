@@ -201,6 +201,34 @@ fn extension_key(extension: &str) -> String {
     crate::config::extensions::name_to_key(extension)
 }
 
+/// Whether a stored grant belongs to the chat that holds its session id now:
+/// that chat already existed when the grant was recorded. A predicate over
+/// `cross_affiliation_grants g JOIN sessions s ON s.id = g.session_id`.
+///
+/// ⚠ **The id is not the chat.** `create_session` minted `<day>_<MAX(N)+1>`, so
+/// deleting the newest chat of the day handed its id to the next one, and until
+/// `delete_session` took a chat's grants with it that next chat read every flow
+/// accepted in the deleted one as accepted in itself — the one thing
+/// [`GRANT_SCOPE_COPY`] tells the user cannot happen. The delete is not the
+/// only way a grant outlives its chat: every earlier build left them behind, a
+/// terminal `biorouter` lagging the desktop app still does while it shares the
+/// database, and a restored backup can hold grants for an id that is live
+/// again. None of those can be recorded after the chat now holding the id was
+/// created, so this test needs no cooperation from any of them.
+///
+/// Both timestamps come from SQLite's clock (`datetime('now')` and
+/// `CURRENT_TIMESTAMP`, or an imported chat's RFC 3339 `created_at`, which
+/// `datetime()` reads the same way), at one-second resolution. A grant from the
+/// chat's first second still counts — a user cannot be shown a refusal and
+/// accept it inside the second the chat was created in, and a stale grant would
+/// need a user to accept, delete the chat and start another within one. A row
+/// either side cannot read fails closed: the flow is asked about again.
+///
+/// One definition, read by [`is_granted`] and by the startup sweep in
+/// `session_manager` that deletes what it rejects, so the two can never
+/// disagree about which grants are live.
+pub(crate) const GRANT_IS_THE_CHATS_OWN: &str = "datetime(g.granted_at) >= datetime(s.created_at)";
+
 /// How deep the parent walk goes before giving up.
 ///
 /// A subagent may itself spawn a subagent, so the chain is genuinely longer than
@@ -265,6 +293,10 @@ pub async fn record(
 /// The ancestor walk is what makes "a subagent inherits its parent's grants"
 /// true. It reads upward only: a child's own grants are invisible to its parent,
 /// and a child has no way to create one regardless.
+///
+/// Only a grant recorded while the chat holding its id existed is read — see
+/// [`GRANT_IS_THE_CHATS_OWN`]. A grant whose chat is gone is not read either,
+/// because the lookup joins the chat's row.
 pub async fn is_granted(
     sm: &SessionManager,
     session_id: &str,
@@ -294,17 +326,20 @@ async fn granted_inner(
     let key = model_key(model);
     let ext = extension_key(extension);
 
+    let lookup = format!(
+        "SELECT COUNT(*) FROM cross_affiliation_grants g \
+           JOIN sessions s ON s.id = g.session_id \
+          WHERE g.session_id = ?1 AND g.extension = ?2 AND g.model_affiliation = ?3 \
+            AND {GRANT_IS_THE_CHATS_OWN}"
+    );
     let mut current = session_id.to_string();
     for _ in 0..MAX_PARENT_DEPTH {
-        let found: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM cross_affiliation_grants \
-              WHERE session_id = ?1 AND extension = ?2 AND model_affiliation = ?3",
-        )
-        .bind(&current)
-        .bind(&ext)
-        .bind(&key)
-        .fetch_one(pool)
-        .await?;
+        let found: i64 = sqlx::query_scalar(&lookup)
+            .bind(&current)
+            .bind(&ext)
+            .bind(&key)
+            .fetch_one(pool)
+            .await?;
         if found > 0 {
             return Ok(true);
         }
@@ -968,6 +1003,102 @@ mod tests {
             src.contains(super::super::refusal::CROSS_AFFILIATION_ACCEPT_MARKER),
             "the renderer no longer recognises the accept frame, so the control it exists to \
              render can never appear"
+        );
+    }
+
+    /// A grant belongs to the chat it was given in, and "the chat" is not "the
+    /// id". `create_session` mints `<day>_<MAX(N)+1>`, so deleting the newest
+    /// chat of the day hands its id to the next one — "delete the chat I just
+    /// made and start again". Before a delete took the chat's grants with it,
+    /// that next chat silently inherited every cross-institutional flow the user
+    /// had accepted in the deleted one: a flow nobody accepted in the new chat,
+    /// which is exactly what [`GRANT_SCOPE_COPY`] promises cannot happen.
+    #[tokio::test]
+    async fn a_deleted_chats_grant_is_not_inherited_by_the_next_chat_to_get_its_id() {
+        let (_dir, sm, id) = session_manager_with_a_chat().await;
+        record_for_test(&sm, &id, "ucsfomopagent", bound_to("stanford"))
+            .await
+            .unwrap();
+        assert!(is_granted(&sm, &id, "ucsfomopagent", bound_to("stanford")).await);
+
+        sm.delete_session(&id).await.unwrap();
+        // `session_id_high_water` stops THIS build reissuing the id, so the
+        // reuse is arranged — as a build without the mark sharing the file, or a
+        // restored backup, really produces it. This refusal is what has to hold
+        // when that happens, and it must not be deleted on the grounds that ids
+        // are single-use now.
+        sm.forget_minted_session_ids_for_test().await.unwrap();
+        let next = sm
+            .create_session(PathBuf::from("."), "next".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(
+            next, id,
+            "the fixture must reproduce the id reuse, or this test proves nothing"
+        );
+
+        assert!(
+            !is_granted(&sm, &next, "ucsfomopagent", bound_to("stanford")).await,
+            "a new chat inherited a cross-institutional approval given in a chat the user deleted"
+        );
+    }
+
+    /// ...and a delete is not the only way a grant can outlive its chat. Every
+    /// build before this one left grants behind on delete, a terminal
+    /// `biorouter` that lags the desktop app still does while it shares this
+    /// database, and a restored backup can hold grants for ids that are live
+    /// again. So the reader refuses, on its own, a grant recorded before the chat
+    /// now holding the id existed — it cannot have been given in that chat — and
+    /// it does so at read time, not only when a startup sweep next runs.
+    #[tokio::test]
+    async fn a_grant_recorded_before_its_chat_existed_is_not_read() {
+        let (_dir, sm, id) = session_manager_with_a_chat().await;
+        record_for_test(&sm, &id, "ucsfomopagent", bound_to("stanford"))
+            .await
+            .unwrap();
+
+        // The delete an older build performs: the chat goes, its grants stay.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("DELETE FROM sessions WHERE id = ?1")
+            .bind(&id)
+            .execute(pool)
+            .await
+            .unwrap();
+        // Backdated, because a person takes longer than one clock second to
+        // accept a warning, delete the chat and start another; a fixture that
+        // did all three inside one second would be testing a tie no user makes.
+        sqlx::query("UPDATE cross_affiliation_grants SET granted_at = datetime('now', '-1 hour')")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // ...and the id has to come back for the grant to be misread as the new
+        // chat's at all. See the sibling test above for why forcing it is the
+        // honest fixture.
+        sm.forget_minted_session_ids_for_test().await.unwrap();
+        let next = sm
+            .create_session(PathBuf::from("."), "next".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(
+            next, id,
+            "the fixture must reproduce the id reuse, or this test proves nothing"
+        );
+        assert!(
+            !is_granted(&sm, &next, "ucsfomopagent", bound_to("stanford")).await,
+            "a grant older than the chat holding its id was read as that chat's"
+        );
+
+        // ...and the new chat's own acceptance of the same flow is honoured: the
+        // upsert refreshes `granted_at`, so the row is this chat's again.
+        record_for_test(&sm, &next, "ucsfomopagent", bound_to("stanford"))
+            .await
+            .unwrap();
+        assert!(
+            is_granted(&sm, &next, "ucsfomopagent", bound_to("stanford")).await,
+            "re-accepting the flow in the new chat must work"
         );
     }
 }

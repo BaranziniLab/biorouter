@@ -23,8 +23,11 @@
 //!   it can name — that is not a privacy boundary and this gate is deliberately
 //!   inert there;
 //! * it still reaches every session-addressing route NOT on
-//!   [the gated list](self#the-gated-list). `POST /interrupt` and `POST
-//!   /agent/cancel` now require user-action proof. `GET
+//!   [the gated list](self#the-gated-list). `POST /agent/cancel` requires
+//!   user-action proof on a daemon that holds a key and is on the list on one
+//!   that does not (SD-11); `POST /interrupt` requires the proof on **either**
+//!   kind and so is on neither (SD-11a — `routes::reply::authorize_steer` says
+//!   why the steer did not move with the Stop); `GET
 //!   /sessions/{id}/extensions`, `GET /sessions/{id}/usage`, `PUT
 //!   /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_values` and
 //!   `DELETE /sessions/{id}` were open until QA's 2026-09-10 sweep, which
@@ -176,14 +179,16 @@
 //! | `POST /agent/add_extension` | Attaches tools to the session. |
 //! | `GET|POST /knowledge/active` | Reads or repoints the session's knowledge bases and write target. |
 //! | `POST /agent/resume` | Loads the session's stored conversation into a live agent. Gates directly, like the rows above. |
+//! | `GET /agent/callable_tool_count` | Counts the named session's MODEL-FACING tools, and answers through `get_or_create_agent` — so it CREATES an agent for a session that has none. Added 2026-09-12 by the SD-8 review of #260, which found it with no gate of any kind; the renderer had merely stopped calling it. ⚠ Its sibling `GET /agent/tools` has a row of its own below — QA's M2 sweep gated it for REACH. What stays **deliberate** there is the other question: once a caller is admitted, the list it returns is UNFILTERED, so a person can administer private tools a public model cannot see. |
 //! | `POST /agent/continuation/recover` | Resumes a parked continuation in the named session. Gates directly. |
 //! | `POST /agent/update_from_session` | Adopts another session's provider configuration. Gates directly. |
 //! | `POST /agent/update_provider` · `restart` · `stop` · `remove_extension` | Gate through [`authorize_agent_control`](../agent/fn.authorize_agent_control.html), which calls [`session_reach`] and then reads the row. |
+//! | `POST /agent/cancel` · `/agent/continuation/abandon` | Stop and settle the named session's turn. **On a daemon that holds no user-action key only** (serve decision SD-11): there `routes::reply::authorize_turn_control` gates them through the same `authorize_agent_control` as the row above, so a Stop admits exactly the callers `/agent/stop` does. A daemon that holds a key asks them for the proof instead, which reaches every chat. `POST /interrupt` is NOT here: it asks for the proof on both kinds of daemon, so it never reaches this gate — see `routes::reply::authorize_steer`. |
 //! | `DELETE /sessions/{session_id}` | QA 2026-09-10 F0: deleted a private chat the read refused, four of four. Gated before the turn is cancelled or anything parked is released. |
 //! | `PUT /sessions/{session_id}/name` · `user_workflow_values` | Writes into the chat; the second re-applies its workflow to the live agent. |
 //! | `POST /sessions/{session_id}/edit_message`, `editType: edit` | Truncates the chat in place. (`diverge` keeps DR-19's stricter proof gate.) |
 //! | `GET /sessions/{session_id}/extensions` · `usage` | The chat's extensions by name (M2's sibling); its usage, whose 200/404 was an existence oracle. |
-//! | `GET /agent/tools` · `GET /agent/callable_tool_count` | QA M2: a private chat's private-connector tool names. Both mint an agent for the chat, so the gate runs first. The empty `session_id` of the settings page names no chat. |
+//! | `GET /agent/tools` | QA M2: a private chat's private-connector tool names, handed to a secret-only caller while `add_extension` on the same chat refused. Like the `callable_tool_count` row above it mints an agent for the chat, so the gate runs first. The empty `session_id` of the settings page names no chat and is not gated. |
 //! | `POST /workflows/create` | Loads the chat's whole transcript and returns what a model makes of it. |
 //! | `POST /skills/session` | Writes a skill's instructions into the chat's next turn. |
 //! | `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, checked before any is loaded. |
@@ -193,15 +198,20 @@
 //! as PLAIN TEXT — the bytes `GET /sessions/{session_id}` returns — rather than
 //! through the route's own error envelope, so one boundary has one body.
 //!
-//! ⚠ **Two spellings, one list.** The last row reaches the gate through a helper
-//! rather than by naming it, which is why a scan for the literal `session_reach(`
-//! reports those four as ungated and why the ordering test below uses two of them
-//! as over-read controls. They are NOT exempt — measured live, each answers 403
-//! without the capability header and proceeds with it. A future sweep that greps
-//! for the call must follow `authorize_agent_control` too, or it will "discover"
-//! four holes that are not there and, worse, trust the same grep when it reports
-//! a real one. The same holds for `POST /active_work/{id}/cancel`, which reaches
-//! the gate through [`work_reach`]; its ordering rows below name `work_reach(`.
+//! ⚠ **Two spellings, one list.** THREE of the rows above reach the gate through
+//! a helper rather than by naming it — the `authorize_agent_control` row, the
+//! `/agent/cancel` row beside it (through `authorize_turn_control`, into that
+//! same helper), and `POST /active_work/{id}/cancel` (through [`work_reach`]) —
+//! which is why a scan for the literal `session_reach(` reports those **seven**
+//! routes as ungated, and why the ordering test below uses handlers from those
+//! files as over-read controls. They are NOT exempt: measured live, each of the
+//! `authorize_agent_control` four answers 403 without the capability header and
+//! proceeds with it, `tests/turn_control_no_user_key.rs` measures the other two
+//! on a keyless daemon, and the `active_work` ordering rows below name
+//! `work_reach(`. A future sweep that greps for the call must follow
+//! `authorize_agent_control` and `work_reach` too, or it will "discover" seven
+//! holes that are not there and, worse, trust the same grep when it reports a
+//! real one.
 //!
 //! # Why `X-User-Action` and not a new mechanism, for the proof half
 //!
@@ -1436,11 +1446,13 @@ mod tests {
     /// unit test — `AppState::new()` opens the developer's REAL session
     /// database. Every route on the list is also driven over HTTP by
     /// [`super::bypass_tests`] except `POST /agent/add_extension` (whose admitted
-    /// arm mints a real agent) and `GET|POST /knowledge/active` (a middleware, which
+    /// arm mints a real agent), `GET|POST /knowledge/active` (a middleware, which
     /// a body scan cannot see and
     /// [`super::bypass_tests::the_knowledge_active_gate_is_actually_wired`]
-    /// drives instead); this is what holds the ORDERING, which no status code
-    /// can show.
+    /// drives instead) and the two SD-11 turn-control routes, which are gated
+    /// only on a daemon with no user-action key and so are driven by their own
+    /// keyless binary, `tests/turn_control_no_user_key.rs`; this is what holds
+    /// the ORDERING, which no status code can show.
     ///
     /// ⚠ **Every route added to the gated list gets a row here.** `/export`,
     /// `/events` and `/diagnostics` each shipped a gate that this table did not
@@ -1472,6 +1484,31 @@ mod tests {
                 "session_reach(",
                 "recover_continuation_for_owner(",
                 "the pending continuation ownership state",
+            ),
+            // SD-11: the turn-control routes. Their gate is a helper, because on
+            // a daemon that holds a key the answer is the proof and on one that
+            // holds none it is `authorize_agent_control` — the ordering is the
+            // same either way, and it is what is asserted here.
+            (
+                reply_rs,
+                "pub async fn recover_continuation",
+                "authorize_turn_control(",
+                "recover_continuation_for_owner(",
+                "the pending continuation ownership state",
+            ),
+            (
+                reply_rs,
+                "pub async fn cancel_turn(",
+                "authorize_turn_control(",
+                "cancel_turn_bounded(",
+                "the turn registry, whose answer says whether this chat is busy",
+            ),
+            (
+                reply_rs,
+                "pub async fn abandon_continuation_lease",
+                "authorize_turn_control(",
+                "state.abandon_continuation_lease(",
+                "the continuation registry",
             ),
             (
                 session_rs,
@@ -1659,18 +1696,24 @@ mod tests {
         // answers 403 without the capability header and proceeds with it. They
         // are controls for the EXTRACTOR, not exemptions from the gate, and the
         // comment here said otherwise until 2026-09-04. `interrupt` requires
-        // the user's proof instead of reach, so it is a genuinely ungated
-        // control. `get_session_extensions` was this file's other one until
-        // QA's 2026-09-10 sweep gated it; `get_session_insights` and
-        // `running_sessions` replace it — machine-wide aggregates that name no
-        // chat — on the two sides of this file's gated handlers.
+        // the user's proof instead of reach — on a keyless daemon too, which is
+        // the one way it differs from the Stop beside it (SD-11a,
+        // `reply::authorize_steer`) — so it is a genuinely ungated control, and
+        // `pub fn routes(` sits on the far side of the rows reply.rs
+        // contributes. `get_session_extensions` was this file's other ungated
+        // control until QA's 2026-09-10 sweep gated it, which is why it can no
+        // longer serve as one; `get_session_insights` and `running_sessions`
+        // replace it — machine-wide aggregates that name no chat — on the two
+        // sides of this file's gated handlers.
         //
         // BOTH sides in `agent.rs`: `agent_remove_extension` sits after the two
         // gated handlers' neighbourhood and `update_agent_provider` before it,
         // and a control on one side only passes against an extractor that
         // over-reads towards the other.
         for (src, control) in [
+            (reply_rs, "fn attach_names_a_missing_turn("),
             (reply_rs, "pub async fn interrupt"),
+            (reply_rs, "pub fn routes("),
             (session_rs, "async fn get_session_insights("),
             (session_rs, "async fn running_sessions("),
             (agent_rs, "async fn agent_remove_extension"),
@@ -1688,11 +1731,16 @@ mod tests {
             (schedule_rs, "async fn pause_schedule("),
             (schedule_rs, "pub fn routes("),
         ] {
-            assert!(
-                !body_of(src, control).contains("session_reach("),
-                "the body scan is over-reading: {control} is not on the gated list and \
-                 reported the gate"
-            );
+            // Both spellings the rows above use, so a control is a control for
+            // every row it could be over-reading into.
+            let body = body_of(src, control);
+            for gate in ["session_reach(", "authorize_turn_control("] {
+                assert!(
+                    !body.contains(gate),
+                    "the body scan is over-reading: {control} is not on the gated list and \
+                     reported the gate (`{gate}`)"
+                );
+            }
         }
     }
 
@@ -4636,5 +4684,148 @@ mod bypass_tests {
             },
             handle,
         }
+    }
+
+    /// `DELETE /knowledge/bases/{id}` through the real router tree, with the
+    /// proof — as the Knowledge view sends it.
+    async fn delete_knowledge_base(state: Arc<AppState>, kb_id: &str) -> (StatusCode, String) {
+        let app = crate::routes::configure(state, "task-58-secret".to_string());
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/knowledge/bases/{kb_id}"))
+                    .header("X-User-Action", TEST_USER_ACTION_KEY)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn selection_json(body: &str) -> serde_json::Value {
+        serde_json::from_str(body).unwrap_or_else(|_| panic!("not a selection: {body}"))
+    }
+
+    /// QA 2026-09-10 F14, the daemon's half, end to end through the real router,
+    /// the reach gate and a PRIVATE chat — the configuration every chat on a
+    /// UCSF install is in.
+    ///
+    /// QA read the blank `.active-kb` it found after deleting the primary as
+    /// "the daemon does not repair the selection". The blank IS the repair for a
+    /// delete (D2 in `docs/knowledge-base/multi-kb-implementation-plan.md`):
+    /// hiding promotes to the next base, deleting clears to the explicit
+    /// no-primary, and a chat that merely inherited keeps inheriting. What this
+    /// pins is the rest of the contract the Knowledge view now relies on instead
+    /// of re-deriving it: nothing is left pointing at the deleted base, in any
+    /// scope, and the person at the keyboard can choose again — for a private
+    /// chat — and have it stick.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn deleting_the_primary_leaves_no_pointer_at_it_and_the_user_can_choose_again() {
+        use biorouter_mcp::knowledge::service::PrimaryUpdate;
+
+        install_test_user_action_key();
+        // A throwaway knowledge root: this test creates bases and moves
+        // pointers, which it must never do in a real one.
+        let knowledge_root = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_knowledge_root(knowledge_root.path().to_path_buf())
+            .await
+            .unwrap();
+        let svc = state.knowledge_service.clone();
+        let pinning = seed_private_chat(&state, "F14 pinning chat (test fixture)").await;
+        let inheriting = seed_private_chat(&state, "F14 inheriting chat (test fixture)").await;
+        svc.create_base("soul", "Soul", None).unwrap();
+        svc.create_base("doomed", "Doomed", None).unwrap();
+
+        // The machine default names the base about to go, so the inheriting
+        // chat shows it as its primary too; the other chat pins it itself — as
+        // the person does, with the proof, through the gate.
+        svc.set_selection(None, None, PrimaryUpdate::Set("doomed"))
+            .unwrap();
+        let (status, body) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "session_id": pinning.id(), "primary_kb": "doomed" }),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        for chat in [pinning.id(), inheriting.id()] {
+            let (status, body) =
+                get_knowledge_active(state.clone(), chat, Some(TEST_USER_ACTION_KEY)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(selection_json(&body)["primary_kb"], "doomed", "{body}");
+        }
+
+        let (status, body) = delete_knowledge_base(state.clone(), "doomed").await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        // No scope reports the deleted base, as primary or as a member…
+        for chat in [pinning.id(), inheriting.id()] {
+            let (status, body) =
+                get_knowledge_active(state.clone(), chat, Some(TEST_USER_ACTION_KEY)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let selection = selection_json(&body);
+            assert!(selection["primary_kb"].is_null(), "{body}");
+            assert_eq!(selection["kb_ids"], serde_json::json!(["soul"]), "{body}");
+        }
+        let machine = svc.selection(None).unwrap();
+        assert_eq!(machine.primary_kb, None);
+
+        // …and none is left STORING it. The two pointers that named it are the
+        // explicit no-primary — a blank file, which must not fall back to Soul —
+        // and the chat that only inherited was left inheriting: no file of its
+        // own was invented for it.
+        let active_kb = std::fs::read_to_string(knowledge_root.path().join(".active-kb")).unwrap();
+        assert_eq!(
+            active_kb.trim(),
+            "",
+            "the machine pointer still names something"
+        );
+        let sessions = knowledge_root.path().join(".active-kb-sessions");
+        let stored: Vec<String> = std::fs::read_dir(&sessions)
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(
+            stored,
+            vec![String::new()],
+            "exactly one chat pinned the base, and its pointer must now be blank"
+        );
+        assert_eq!(svc.get_primary_for_session(inheriting.id()).unwrap(), None);
+
+        // The person chooses again — for a PRIVATE chat, which needs the proof —
+        // and it sticks: in the answer, in a fresh read, and on disk.
+        let (status, body) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "session_id": inheriting.id(), "primary_kb": "soul" }),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(selection_json(&body)["primary_kb"], "soul", "{body}");
+        let (status, body) =
+            get_knowledge_active(state.clone(), inheriting.id(), Some(TEST_USER_ACTION_KEY)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(selection_json(&body)["primary_kb"], "soul", "{body}");
+        assert_eq!(
+            svc.get_primary_for_session(inheriting.id())
+                .unwrap()
+                .as_deref(),
+            Some("soul")
+        );
+
+        // The same write without the proof is still refused, and moves nothing.
+        let (status, _) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "session_id": pinning.id(), "primary_kb": "soul" }),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(svc.get_primary_for_session(pinning.id()).unwrap(), None);
     }
 }

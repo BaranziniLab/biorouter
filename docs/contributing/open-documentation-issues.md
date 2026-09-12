@@ -23,11 +23,11 @@ this worktree; `file:line` references point at real current lines.
 | Severity | Meaning | Open |
 |---|---|---|
 | [Correctness risk](#correctness-risk) | Documentation that would lead someone into an unsafe or wrong action | 8 |
-| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 16 |
+| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 15 |
 | [Dead references](#dead-references) | Cited documents, branches, artifacts, or paths that do not exist | 7 |
 | [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 7 |
 | [Cosmetic](#cosmetic) | Worth noting, not worth chasing | 8 |
-| **Total** | | **46** |
+| **Total** | | **45** |
 
 ## Correctness risk
 
@@ -117,20 +117,6 @@ page anywhere. UCSF users following either page will configure the wrong provide
 **Decision needed:** author the two `versa_*` sections and correct the conflation.
 
 ## Doc/code contradiction
-
-### Apps-SDK exact-origin pinning did not land; the loose loopback check is still there
-
-[Apps SDK v2 design](../apps-sdk/v2-design.md) Pillar 7 requires **both** exact-origin pinning
-of the `/apps/<id>/agent` upgrade (replacing the any-localhost check) **and** a per-app socket
-token. **Verified:** `crates/biorouter-server/src/routes/apps.rs:539-550` (`check_ws_auth`)
-still calls `super::is_local_origin(origin)`, which accepts any `http://localhost[:port]` or
-`http://127.0.0.1[:port]` (`crates/biorouter-server/src/routes/mod.rs:9-24`), and a client
-sending no `Origin` header passes that gate entirely. The **per-app token half did ship** —
-`ws_token_for()` at `apps.rs:513` mints a random 32-hex token per daemon run, embedded by
-`serve_index` at `apps.rs:174-182` and required at `apps.rs:278`. So the design's CSWSH
-mitigation is half-implemented, and [SDK reference](../apps-sdk/sdk-reference.md) describes the
-shipped half correctly. **Decision needed:** either land exact-origin pinning or amend the
-design to record that the token is deemed sufficient.
 
 ### `export_app` does ship Windows launchers — CLAUDE.md is the stale side
 

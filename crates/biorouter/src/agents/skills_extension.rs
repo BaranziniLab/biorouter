@@ -2,6 +2,7 @@ use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::agents::skill_catalog;
 use crate::catalog::{CatalogChangeReason, CatalogEntryChange, CatalogEvents, CatalogSkillChange};
+use crate::catalog_search::{self, Weight};
 use crate::config::paths::Paths;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -33,7 +34,7 @@ pub static EXTENSION_NAME: &str = "skills";
 const SKILL_OPERATION_GUIDANCE: &[(&str, &str)] = &[
     (
         "searchSkills",
-        "searchSkills lists installed skills, or filters them when you pass a query, and marks each one removable or not",
+        "searchSkills lists installed skills, or ranks those matching any word of a query you pass, and marks each one removable or not",
     ),
     ("loadSkill", "loadSkill reads an exact installed skill"),
     (
@@ -634,8 +635,10 @@ struct SessionSkillParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SearchSkillsParams {
-    /// Filter and rank installed skills by name, description or bundle. Omit to
-    /// page the whole catalog alphabetically.
+    /// Rank installed skills by the words of this query found in their name,
+    /// description or bundle: a skill matching any word is returned, those
+    /// matching the most words first. Omit to page the whole catalog
+    /// alphabetically.
     ///
     /// ⚠ The doc comment is the contract: schemars emits it as the property's
     /// `description`, and that is the only channel through which a Gemini-bound
@@ -711,6 +714,11 @@ struct SkillCatalogItem {
     /// `removable`. For a bundle member this is the BUNDLE, not the skill.
     #[serde(skip_serializing_if = "Option::is_none")]
     removal_target: Option<String>,
+    /// The query terms this skill matched, in query order — present only on a
+    /// search, so a model reading a long ranked page can tell a skill that
+    /// matched every word from one that matched a single common one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched_terms: Option<Vec<String>>,
 }
 
 /// Where a `SkillsClient` reads its skills from.
@@ -1363,44 +1371,18 @@ impl SkillsClient {
         (offset, limit)
     }
 
-    fn normalize_search_text(value: &str) -> String {
-        value
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    ' '
-                }
-            })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    fn search_score(skill: &Skill, query: &str, terms: &[&str]) -> usize {
-        let name = Self::normalize_search_text(&skill.metadata.name);
-        let description = Self::normalize_search_text(&skill.metadata.description);
-        let bundle = Self::normalize_search_text(skill.bundle_name.as_deref().unwrap_or_default());
-
-        if name == query {
-            100
-        } else if name.contains(query) {
-            90
-        } else if terms.iter().all(|term| name.contains(term)) {
-            80
-        } else if description.contains(query) {
-            70
-        } else if terms.iter().all(|term| description.contains(term)) {
-            60
-        } else if bundle.contains(query) {
-            50
-        } else if terms.iter().all(|term| bundle.contains(term)) {
-            40
-        } else {
-            0
+    /// What `searchSkills` matches a query against, and how much a match in
+    /// each place counts: the skill's own name most, then the bundle it ships
+    /// in — a label its author gave a whole group — then its description.
+    fn search_fields(skill: &Skill) -> Vec<(&str, Weight)> {
+        let mut fields = vec![
+            (skill.metadata.name.as_str(), Weight::Name),
+            (skill.metadata.description.as_str(), Weight::Prose),
+        ];
+        if let Some(bundle) = skill.bundle_name.as_deref() {
+            fields.push((bundle, Weight::Label));
         }
+        fields
     }
 
     /// The name `removeSkillPackage` takes for this skill, before the
@@ -1451,15 +1433,18 @@ impl SkillsClient {
             extension: source.extension,
             removal_target: if removable { removal_target } else { None },
             removable,
+            matched_terms: None,
         }
     }
 
-    fn catalog_response(
+    /// One page of the installed catalog — the listing's shape, which a search
+    /// extends rather than replaces.
+    fn catalog_page(
         total: usize,
         offset: usize,
         limit: usize,
         skills: Vec<SkillCatalogItem>,
-    ) -> Result<Vec<Content>, String> {
+    ) -> serde_json::Value {
         let returned = skills.len();
         let next_offset = if offset + returned < total {
             Some(offset + returned)
@@ -1467,15 +1452,18 @@ impl SkillsClient {
             None
         };
 
-        let response = serde_json::json!({
+        serde_json::json!({
             "total": total,
             "offset": offset,
             "limit": limit,
             "returned": returned,
             "next_offset": next_offset,
             "skills": skills,
-        });
-        serde_json::to_string_pretty(&response)
+        })
+    }
+
+    fn catalog_response(page: &serde_json::Value) -> Result<Vec<Content>, String> {
+        serde_json::to_string_pretty(page)
             .map(|text| vec![Content::text(text)])
             .map_err(|error| error.to_string())
     }
@@ -2057,20 +2045,65 @@ impl SkillsClient {
             .map(|(_, skill)| Self::catalog_item(skill, &sources))
             .collect();
 
-        Self::catalog_response(total, offset, limit, skills)
+        Self::catalog_response(&Self::catalog_page(total, offset, limit, skills))
     }
 
+    /// What an empty installed-skill search says instead of a bare `total: 0`
+    /// — the installed-catalog counterpart of
+    /// [`Self::no_marketplace_skill_matched`]. A bare zero let a model tell
+    /// the user nothing installed fit the job, when the miss was more often the
+    /// query's wording. `enabled` is what the conversation could have matched:
+    /// a skill switched off here is not searched, so it is not counted.
+    ///
+    /// Only `searchSkills` is named. The caller may hold nothing else — an app
+    /// agent is granted `searchSkills` and `loadSkill` alone — and this handler
+    /// cannot see the roster, so pointing at the marketplace here could teach a
+    /// tool the caller does not have.
+    fn no_installed_skill_matched(asked: &str, enabled: usize) -> String {
+        match enabled {
+            0 => format!(
+                "No installed skill matched {asked}: no skill is enabled in this conversation, \
+                 so there was nothing to search."
+            ),
+            1 => format!(
+                "No installed skill matched {asked}. 1 skill is enabled in this conversation, so \
+                 this does not mean it is irrelevant: try a shorter or more general term (one \
+                 tool, language or topic name), or call searchSkills with no query to list it."
+            ),
+            enabled => format!(
+                "No installed skill matched {asked}. {enabled} skills are enabled in this \
+                 conversation, so this does not mean none of them is relevant: try a shorter or \
+                 more general term (one tool, language or topic name), or call searchSkills with \
+                 no query to list them all."
+            ),
+        }
+    }
+
+    /// Search the skills this conversation has enabled.
+    ///
+    /// ⚠ **A query is ranked by its words, not filtered by all of them.** This
+    /// kept a skill only when its text held EVERY word of the query as a
+    /// substring, so the phrase a model composes on a user's behalf — `R
+    /// scripting ggplot visualization` — found nothing unless one skill said
+    /// all of it, and `r` matched nearly every skill there is. It is finding
+    /// F5's installed-skill twin, fixed the same way: through the one matcher
+    /// in [`crate::catalog_search`], never a copy of it.
+    ///
+    /// The conversation's switches ([`Self::enabled_skill_entries`]) run FIRST,
+    /// so a skill switched off here is never scored, returned or counted.
     async fn handle_search_skills(
         &self,
         arguments: Option<JsonObject>,
         over: &crate::agents::session_skills::SessionSkillOverride,
     ) -> Result<Vec<Content>, String> {
         let params: SearchSkillsParams = Self::parse_tool_args(arguments)?;
-        let query = Self::normalize_search_text(params.query.as_deref().unwrap_or_default().trim());
+        let query = params.query.as_deref().unwrap_or_default().trim();
         // ⚠ An absent or empty query is the LIST case, not an error. This tool
         // absorbed `listSkills`, whose entire schema was the two pagination
         // fields; refusing here would refuse the call the retired tool made.
-        if query.is_empty() {
+        // A query without a single letter or digit has no word to match, and
+        // it has always listed too.
+        if !query.chars().any(char::is_alphanumeric) {
             return self
                 .handle_list_skills(
                     Some(serde_json::Map::from_iter([
@@ -2082,41 +2115,44 @@ impl SkillsClient {
                 .await;
         }
 
-        let terms: Vec<&str> = query.split_whitespace().collect();
         let (offset, limit) = Self::parse_pagination(params.offset, params.limit);
         let skills = self.skills.skills();
-        let mut matches: Vec<_> = Self::enabled_skill_entries(&skills, over)
-            .into_iter()
-            .filter(|(_, skill)| {
-                let haystack = format!(
-                    "{} {} {}",
-                    Self::normalize_search_text(&skill.metadata.name),
-                    Self::normalize_search_text(&skill.metadata.description),
-                    Self::normalize_search_text(skill.bundle_name.as_deref().unwrap_or_default())
-                );
-                terms.iter().all(|term| haystack.contains(term))
-            })
-            .collect();
+        let enabled = Self::enabled_skill_entries(&skills, over);
+        // `enabled` is sorted by name, and the ranking is stable, so skills
+        // that rank equally stay in alphabetical order.
+        let search = catalog_search::rank(
+            query,
+            catalog_search::SKILL_NOISE,
+            enabled.iter().map(|&(_, skill)| skill),
+            Self::search_fields,
+        );
 
-        matches.sort_by(|(left_name, left_skill), (right_name, right_skill)| {
-            let left_score = Self::search_score(left_skill, &query, &terms);
-            let right_score = Self::search_score(right_skill, &query, &terms);
-            right_score
-                .cmp(&left_score)
-                .then_with(|| left_skill.metadata.name.cmp(&right_skill.metadata.name))
-                .then_with(|| left_name.cmp(right_name))
-        });
-
-        let total = matches.len();
+        let total = search.len();
         let sources = skill_catalog::root_sources();
-        let skills = matches
-            .into_iter()
+        let rows = search
+            .hits
+            .iter()
             .skip(offset)
             .take(limit)
-            .map(|(_, skill)| Self::catalog_item(skill, &sources))
+            .map(|hit| SkillCatalogItem {
+                matched_terms: Some(hit.matched_terms.clone()),
+                ..Self::catalog_item(hit.entry, &sources)
+            })
             .collect();
-
-        Self::catalog_response(total, offset, limit, skills)
+        let mut page = Self::catalog_page(total, offset, limit, rows);
+        if let Some(fields) = page.as_object_mut() {
+            fields.insert("terms".to_owned(), serde_json::json!(&search.terms));
+            if search.is_empty() {
+                fields.insert(
+                    "guidance".to_owned(),
+                    serde_json::Value::String(Self::no_installed_skill_matched(
+                        &search.describe_query(query),
+                        enabled.len(),
+                    )),
+                );
+            }
+        }
+        Self::catalog_response(&page)
     }
 
     async fn handle_load_skill(
@@ -2800,9 +2836,11 @@ impl SkillsClient {
                 indoc! {r#"
                     List or search the skills installed on this machine.
 
-                    Pass `query` to match a name, description or bundle; omit it to page the
-                    whole catalog alphabetically. Use this before loadSkill when you need a
-                    skill's exact name. Results are paginated.
+                    Pass `query` to search names, descriptions and bundles: a skill matching any
+                    of its words is returned, the skills matching the most words first, each with
+                    the `matchedTerms` it matched. Omit `query` to page the whole catalog
+                    alphabetically. Use this before loadSkill when you need a skill's exact name.
+                    Results are paginated.
 
                     Each result also says where the skill came from and whether it can be
                     uninstalled: `builtin` marks one Biorouter ships and re-seeds on startup,
@@ -3831,7 +3869,7 @@ Content
     }
 
     #[tokio::test]
-    async fn test_search_skills_filters_by_name_description_and_bundle() {
+    async fn test_search_skills_matches_name_description_and_bundle() {
         let temp_dir = TempDir::new().unwrap();
         let bundle_dir = temp_dir.path().join("bio-bundle");
         fs::create_dir(&bundle_dir).unwrap();
@@ -3928,8 +3966,21 @@ Content
         let text = &result.content[0].as_text().unwrap().text;
         let payload: serde_json::Value = serde_json::from_str(text).unwrap();
 
-        assert_eq!(payload["total"], 1);
+        // The bundle's name is searched too. Every skill here ships in
+        // `bio-bundle`, so each matches two of the three words, and the one that
+        // also says `rna` matched all three and ranks first. This asserted
+        // `total == 1` while the search kept only skills holding EVERY word —
+        // the filter that answered F5's phrase with nothing.
+        assert_eq!(payload["total"], 5, "{payload:#}");
         assert_eq!(payload["skills"][0]["name"], "rna-qc");
+        assert_eq!(
+            payload["skills"][0]["matchedTerms"],
+            serde_json::json!(["bio", "bundle", "rna"])
+        );
+        assert_eq!(
+            payload["skills"][1]["matchedTerms"],
+            serde_json::json!(["bio", "bundle"])
+        );
 
         let args = serde_json::json!({ "query": "systematic review PRISMA", "limit": 10 })
             .as_object()
@@ -3952,6 +4003,247 @@ Content
 
         assert_eq!(payload["total"], 2);
         assert_eq!(payload["skills"][0]["name"], "systematic-review-prisma");
+    }
+
+    /// Installed skills shaped like the ones finding F5's query was after, plus
+    /// two whose text is full of the letter r without ever naming R.
+    const F5_INSTALLED: &[(&str, &str)] = &[
+        (
+            "ggplot",
+            "Publication-quality ggplot2 visualization guide for R. Use when creating new \
+             ggplot figures, reviewing existing plots for publication readiness, or \
+             refactoring code to improve aesthetics.",
+        ),
+        (
+            "python-scripting",
+            "Applies Python naming, typing, error handling, and project structure \
+             conventions when writing Python code.",
+        ),
+        (
+            "r-scripting",
+            "Applies tidyverse conventions and documentation standards when writing or \
+             reviewing R code.",
+        ),
+        ("rna-qc", "Quality control for transcriptomics"),
+        ("variant-calling", "Call variants from sequencing reads"),
+    ];
+
+    /// A client whose whole catalog is `skills`, each written as a SKILL.md and
+    /// read back by the real scanner, so a search sees exactly the frontmatter an
+    /// installed skill carries. Keep the `TempDir` alive as long as the client.
+    fn client_over_installed(skills: &[(&str, &str)]) -> (TempDir, SkillsClient) {
+        let root = TempDir::new().unwrap();
+        for (name, description) in skills {
+            let skill_dir = root.path().join(name);
+            fs::create_dir(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nBody"),
+            )
+            .unwrap();
+        }
+        let mut client = SkillsClient::new(test_context()).unwrap();
+        client.skills =
+            SkillsClient::discover_skills_in_directories(&[root.path().to_path_buf()]).into();
+        (root, client)
+    }
+
+    /// One `searchSkills` page, dispatched the way the model calls it.
+    async fn search_installed(
+        client: &SkillsClient,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        let result = client
+            .call_tool(
+                "searchSkills",
+                arguments.as_object().cloned(),
+                McpMeta::new(
+                    "test-session",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        serde_json::from_str(&tool_text(&result)).unwrap()
+    }
+
+    /// [`search_installed`] under an explicit per-conversation override. It
+    /// calls the handler directly, because `call_tool` would read the override
+    /// from the session's row instead.
+    async fn search_installed_with(
+        client: &SkillsClient,
+        query: &str,
+        over: &crate::agents::session_skills::SessionSkillOverride,
+    ) -> serde_json::Value {
+        let arguments = serde_json::json!({ "query": query }).as_object().cloned();
+        let content = client.handle_search_skills(arguments, over).await.unwrap();
+        serde_json::from_str(&content[0].as_text().unwrap().text).unwrap()
+    }
+
+    fn page_names(page: &serde_json::Value) -> Vec<&str> {
+        page["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|skill| skill["name"].as_str().unwrap())
+            .collect()
+    }
+
+    /// Finding F5's installed-skill twin. `searchSkills` kept a skill only when
+    /// its text held EVERY word of the query as a substring, so the phrase a
+    /// model composes on a user's behalf found nothing unless one skill happened
+    /// to say all of it. Measured against these fixtures before the fix: the
+    /// phrase below returned `total: 0`, with a ggplot skill and an R-scripting
+    /// skill both installed.
+    ///
+    /// It now finds every skill matching any word of the phrase, ranked by how
+    /// many words each matched, and every row names the terms it matched — so
+    /// `python-scripting`, which matched only `scripting`, reads as the weak
+    /// hit it is.
+    #[tokio::test]
+    async fn an_installed_skill_search_ranks_every_skill_matching_a_word_of_the_phrase() {
+        let (_root, client) = client_over_installed(F5_INSTALLED);
+        let phrase = "R scripting ggplot visualization";
+
+        let page = search_installed(&client, serde_json::json!({ "query": phrase })).await;
+        assert_eq!(page["total"], 3, "measured before the fix: 0 — {page:#}");
+        assert_eq!(
+            page_names(&page),
+            ["ggplot", "r-scripting", "python-scripting"],
+            "three of the four terms, then two, then one; `rna-qc` and \
+             `variant-calling` are full of the letter r and match none"
+        );
+        assert_eq!(
+            page["terms"],
+            serde_json::json!(["r", "scripting", "ggplot", "visualization"])
+        );
+        assert_eq!(
+            page["skills"][0]["matchedTerms"],
+            serde_json::json!(["r", "ggplot", "visualization"])
+        );
+        assert_eq!(
+            page["skills"][1]["matchedTerms"],
+            serde_json::json!(["r", "scripting"])
+        );
+        assert_eq!(
+            page["skills"][2]["matchedTerms"],
+            serde_json::json!(["scripting"])
+        );
+        assert!(page.get("guidance").is_none(), "{page:#}");
+
+        // A single word still finds exactly what it names.
+        let control = search_installed(&client, serde_json::json!({ "query": "ggplot" })).await;
+        assert_eq!(page_names(&control), ["ggplot"], "{control:#}");
+
+        // A ranked row is the listing's row plus `matchedTerms` — provenance,
+        // `removable` and `removalTarget` come through the ranking unchanged.
+        let listed = search_installed(&client, serde_json::json!({})).await;
+        let listed_row = listed["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == "ggplot")
+            .unwrap()
+            .clone();
+        let mut ranked_row = page["skills"][0].clone();
+        ranked_row.as_object_mut().unwrap().remove("matchedTerms");
+        assert_eq!(ranked_row, listed_row);
+
+        // Pagination walks the ranking, not the alphabet.
+        let second = search_installed(
+            &client,
+            serde_json::json!({ "query": phrase, "offset": 1, "limit": 1 }),
+        )
+        .await;
+        assert_eq!(second["total"], 3);
+        assert_eq!(second["returned"], 1);
+        assert_eq!(second["next_offset"], 2);
+        assert_eq!(page_names(&second), ["r-scripting"]);
+    }
+
+    /// `r` has to mean the R language, and as a substring it is in nearly every
+    /// word. Two measurements against these fixtures, both returning all five
+    /// skills: the AND-of-substrings search, and then the shared matcher
+    /// itself, whose whole-query check was a substring test — the three extra
+    /// rows came back with `matchedTerms: []`, found by the letter alone.
+    #[tokio::test]
+    async fn a_one_letter_installed_skill_query_matches_whole_words_only() {
+        let (_root, client) = client_over_installed(F5_INSTALLED);
+
+        let page = search_installed(&client, serde_json::json!({ "query": "R" })).await;
+        assert_eq!(
+            page_names(&page),
+            ["r-scripting", "ggplot"],
+            "the name says R, then the description does; nothing else says R: {page:#}"
+        );
+    }
+
+    /// A search that matches nothing explains itself instead of returning the
+    /// bare `total: 0` that let a model tell the user no skill was installed
+    /// for the job, and says how many skills the conversation could have
+    /// matched. The listing — no query, or one with no word in it — is
+    /// untouched: no terms, no matchedTerms, no guidance.
+    #[tokio::test]
+    async fn an_installed_skill_search_that_matches_nothing_explains_itself() {
+        let (_root, client) = client_over_installed(F5_INSTALLED);
+
+        let none = search_installed(&client, serde_json::json!({ "query": "zzqx" })).await;
+        assert_eq!(none["total"], 0);
+        assert_eq!(none["terms"], serde_json::json!(["zzqx"]));
+        let guidance = none["guidance"]
+            .as_str()
+            .unwrap_or_else(|| panic!("an empty result explains itself: {none:#}"));
+        assert!(
+            guidance.contains("`zzqx`")
+                && guidance.contains("5 skills are enabled in this conversation")
+                && guidance.contains("searchSkills with no query"),
+            "{guidance}"
+        );
+
+        for arguments in [
+            serde_json::json!({}),
+            serde_json::json!({ "query": "  " }),
+            serde_json::json!({ "query": " - " }),
+        ] {
+            let listed = search_installed(&client, arguments.clone()).await;
+            assert_eq!(listed["total"], 5, "{arguments}: {listed:#}");
+            assert!(listed.get("terms").is_none(), "{listed:#}");
+            assert!(listed.get("guidance").is_none(), "{listed:#}");
+            assert!(
+                listed["skills"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row.get("matchedTerms").is_none()),
+                "{listed:#}"
+            );
+        }
+    }
+
+    /// The conversation's own switches run BEFORE the ranking: a skill switched
+    /// off here is neither returned nor counted, however well it matches.
+    #[tokio::test]
+    async fn an_installed_skill_search_ranks_only_what_the_conversation_has_enabled() {
+        let (_root, client) = client_over_installed(F5_INSTALLED);
+        let over = crate::agents::session_skills::SessionSkillOverride {
+            add: Vec::new(),
+            remove: vec!["ggplot".to_string()],
+        };
+
+        let page = search_installed_with(&client, "R scripting ggplot visualization", &over).await;
+        assert_eq!(
+            page_names(&page),
+            ["r-scripting", "python-scripting"],
+            "{page:#}"
+        );
+
+        let none = search_installed_with(&client, "zzqx", &over).await;
+        let guidance = none["guidance"].as_str().unwrap_or_default();
+        assert!(
+            guidance.contains("4 skills are enabled in this conversation"),
+            "the switched-off skill is not counted either: {none:#}"
+        );
     }
 
     // BR-71: `test_context()` builds a `SessionManager`, whose lazy sqlx pool
@@ -4442,6 +4734,29 @@ Working dir biorouter content
             serde_json::json!(false),
             "removeSkillPackage only deletes under the install root: {supplied:#}"
         );
+
+        // A query changes which rows come back and in what order, never what a
+        // row says about removal. (`my` is filler, so the one term is `package`.)
+        let searched = client
+            .handle_search_skills(
+                serde_json::json!({ "query": "my-package" })
+                    .as_object()
+                    .cloned(),
+                &crate::agents::session_skills::SessionSkillOverride::default(),
+            )
+            .await
+            .unwrap();
+        let searched: serde_json::Value =
+            serde_json::from_str(&searched[0].as_text().unwrap().text).unwrap();
+        assert_eq!(searched["total"], 1, "{searched:#}");
+        let ranked = &searched["skills"][0];
+        assert_eq!(ranked["removable"], serde_json::json!(true), "{ranked:#}");
+        assert_eq!(
+            ranked["removalTarget"],
+            serde_json::json!("my-package"),
+            "{ranked:#}"
+        );
+        assert_eq!(ranked["matchedTerms"], serde_json::json!(["package"]));
     }
 
     /// A bundle member's removal target is the BUNDLE's directory: a package is

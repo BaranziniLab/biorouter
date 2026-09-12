@@ -63,6 +63,12 @@ interface ProgressiveMessageListProps {
   lastMessageAt?: number;
   /** BR-61: a soft interrupt awaiting the agent, shown as a trailing chip. */
   pendingSteer?: PendingSteer;
+  /**
+   * Whether the reader can stop the running turn from this tab. Only a
+   * delegated subagent's tab in a browser answers false: it has no composer
+   * (SD-8), so the trailing indicator's nudge must not point at one.
+   */
+  canStopTurn?: boolean;
 }
 
 export default function ProgressiveMessageList({
@@ -85,6 +91,7 @@ export default function ProgressiveMessageList({
   turnStartedAt,
   lastMessageAt,
   pendingSteer,
+  canStopTurn = true,
 }: ProgressiveMessageListProps) {
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
@@ -344,7 +351,7 @@ export default function ProgressiveMessageList({
           rhythm matches exactly. */}
       {trailingActivity && (
         <div className="relative mt-4 assistant" data-testid="trailing-activity-container">
-          <TurnActivityIndicator activity={trailingActivity} />
+          <TurnActivityIndicator activity={trailingActivity} canStopHere={canStopTurn} />
         </div>
       )}
 

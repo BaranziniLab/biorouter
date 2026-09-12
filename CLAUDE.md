@@ -350,6 +350,29 @@ what did not" section first**; the rest of that document is the design, not the 
   held in place by repo-grep assertions — if you add a second call site for `raise_privacy`, `floor`
   or `.call_tool(`, a test will tell you, and the right fix is usually not to update the count.
 
+### Secret guard (BR-23, rebuilt for QA-C H1)
+
+The always-on floor that keeps credential files (`~/.aws/credentials`, SSH private keys,
+`secrets.yaml`, `.env`) away from the model in every chat, mode and tier. Reference:
+[`docs/security/secret-guard.md`](docs/security/secret-guard.md).
+
+- **Arguments are judged after resolution, never as raw tokens.** `crates/biorouter-mcp/src/secret_guard/`
+  (`lex` → `expand` → `resolve`) reads a command the way the shell will — `~`, `$VAR`, globs
+  against the real directory, `cd`/`pushd`, nested `sh -c`/`eval`/here-documents, symlinks,
+  case folded — and is shared by the dispatch scan (`secret_guard_denial`), `developer__shell`
+  (`validate_shell_command`, resolved from the directory the command really runs in) and
+  Computer Controller (`refuse_secret_access`).
+- ⚠ **Fail closed: a match is a refusal whether or not the file exists.** The old `exists()` gate
+  was asked of the *unexpanded* token, which is exactly how `cat ~/.aws/credentials` reached a
+  public model. Do not restore it to quiet a false positive — the refusal message and a
+  `.biorouterignore` negation are the escape hatch.
+- **Output is scanned too.** `guardrails/secret_output.rs` withholds private keys, AWS keys and
+  provider-store values from every tool result and error inside `dispatch_tool_call`'s future —
+  the one place the coding-agent bridge's results pass (they skip `guard_tool_result`).
+- **Tests:** `cargo test -p biorouter-mcp --lib -- secret_guard h1_` and
+  `cargo test -p biorouter --lib -- secret_output extension_manager`. The H1 tables use a fake
+  HOME; never point a test at the operator's real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
+
 ### Knowledge feature
 
 The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-buildout/*`) provides personal, LLM-maintained knowledge bases backed by markdown trees + git history.
@@ -358,7 +381,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 - **HTTP routes:** `crates/biorouter-server/src/routes/knowledge.rs` covers `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`, `/preview`, `/restore`, `/page`, `/active`, `/export`, `/import`.
 - **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). The chat-side KB chip lives at `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`.
 - **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`.
-- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
+- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted — and the two repairs differ (D2): hiding *promotes* to the first remaining base, deleting *clears* every pointer that named the base to that explicit blank, and a chat that only inherited the pointer is left inheriting. A blank `.active-kb` after a delete is the repair, not its absence. ⚠ The renderer adopts these repairs by re-reading; it never writes one (no `clear_primary` after a delete, no prune against its own base list), and every selection read from the desktop carries `userActionHeaders()`, because the gate refuses a private chat's selection without it. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
 
 When working on the Knowledge feature:
@@ -503,6 +526,13 @@ compliance page is required reading before research data goes near either.
   (`routes/coding_agents.rs`) backs the onboarding card
   `onboarding/CodingAgentInlineCard.tsx`, wired beside `LlamaServerInlineCard` in
   `ProviderGuard.tsx`. `CLAUDE_CODE_COMMAND` / `CODEX_COMMAND` override discovery.
+- **"Configured" means the key is saved AND the CLI resolves.** `check_provider_configured`
+  (`routes/utils.rs`) asks `discovery::resolve_configured` — the lookup the status probe
+  uses — so a command key naming a missing CLI is served `is_configured: false` with
+  `unavailable_reason`, and `SwitchModelModal` shows that row disabled with the reason rather
+  than offering a bind `from_env` would refuse. Sign-in is deliberately NOT part of it: learning
+  it spawns the CLI, and `GET /config/providers` runs for every provider. See
+  [`docs/desktop-ui/provider-catalog.md`](docs/desktop-ui/provider-catalog.md).
 - **Tests:** `cargo test -p biorouter --lib providers::coding_agent`,
   `cargo test -p biorouter-server --test tool_bridge_routes`, and the vitest
   suite for the onboarding card. The live end-to-end tests need the real vendor
@@ -1207,7 +1237,7 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 prints a URL. The daemon serves the SPA **on its own origin**, so nothing is proxied. This
 replaced a standalone `biorouter-headless` binary and its Linux tarball, both deleted
 2026-08-23; release assets went 11 → 10. Design and reasoning:
-[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-10),
+[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-11),
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
@@ -1231,6 +1261,20 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   operator-pinned-off extension and its ordinary path needs none. ⚠ Not a security change:
   nothing that was refused becomes permitted. The availability flag is sampled ONCE per roster
   and threaded, so a roster can never half-believe a person is reachable.
+- **Stop answers to the reach gate on a keyless daemon; steering does not** (SD-11).
+  `/agent/cancel` and the two `/agent/continuation/*` routes take the proof on a daemon that
+  holds a key, and on one that holds none gate through `authorize_agent_control` — the *same
+  call* `/agent/stop` makes — via `reply.rs::authorize_turn_control`. Tightening that gate
+  tightens who may press Stop in a browser. ⚠ **`/interrupt` is NOT one of them.** It keeps the
+  proof on both kinds of daemon: the keyless arm's whole argument is that the caller already
+  reaches the same effect through `/agent/stop` and `/reply`, and `/reply` is refused `409` by
+  the BR-33 single-turn lock in the exact state where a steer lands — so admitting it would add
+  silent mid-turn injection into a turn already in flight, which nothing else there can do
+  (`reply.rs::authorize_steer`). Its keyless refusal carries `STEER_NO_KEY` and is **never an
+  empty 403**, because an empty turn-control 403 is how `biorouter session attach` recognises a
+  daemon that holds a key and asks the person for it. A subagent's tab stays refused throughout.
+  ⚠ Keyless behaviour can only be tested in its own binary (the digest is a process-global
+  `OnceLock`): `cargo test -p biorouter-server --test turn_control_no_user_key`.
 - **Proof of a person is checked at the resolution choke point, not at one route.** Every door
   that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
   CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into
@@ -1257,9 +1301,24 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   `origin + '/headless'`). They had **no authentication at all** on the old
   binary and `fs_read` had no path validation; the port confines every filesystem handler to
   an allowlist and refuses credential stores by name.
-- **WebSocket origins**: `routes::origin_matches_host` compares `Origin` to the request's own
-  `Host`. That is a same-origin test, not a wildcard, and it is what lets a browser reach the
-  daemon at a LAN address `is_local_origin` has never heard of.
+- **WebSocket origins**: both socket gates (`/ui/workspace`, `/apps/{id}/agent`) ask
+  `routes::UpgradeOrigin::is_this_daemons` — the `Origin` must match the request's own `Host`
+  in **scheme, host and port** (`origin_matches_host`), which is what lets a browser reach the
+  daemon at a LAN address nobody enumerated. The scheme is `http` unless a proxy in front says
+  `X-Forwarded-Proto: https`, so a TLS proxy must forward both `Host` and that header. The one
+  other origin admitted is a renderer the launcher declares in `BIOROUTER_RENDERER_ORIGIN`:
+  `main.ts` declares the dev renderer's vite origin (loopback `http`) or, packaged, the literal
+  `file://`, and `just debug-server` declares vite's default. ⚠ **`file://` is admitted by NAME
+  but only where it was DECLARED**, and only on the workspace gate — an Electron `file:` page is
+  the one client that opens that socket, while an app's page is served by the daemon over http
+  and so is same-origin with its own. It used to be admitted by name on *every* daemon, which
+  meant a local `.html` opened in a browser cleared the origin gate on a `biorouter serve` host,
+  where `/ui/workspace` is one of only two paths exempt from `check_token`; `serve` now strips
+  the variable from the daemon it spawns. ⚠ Until QA-D F7 (2026-09-11) the gates also took
+  `is_local_origin` — any
+  loopback port, scheme ignored — so every local page's socket passed as the daemon's own.
+  `is_local_origin` is the **CORS** rule now and nothing else; do not hand it back to a socket
+  gate.
 - **`serve` owns its daemon's lifetime**, because the daemon honours the token and serves the
   shell carrying its secret for as long as it runs: stopping `serve` is the only revocation.
   Two layers. Every exit path after the spawn goes through `stop_daemon` (SIGTERM, a 10 s grace,

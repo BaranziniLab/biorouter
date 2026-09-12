@@ -816,3 +816,19 @@ describe('sandboxedSurface', () => {
     );
   });
 });
+
+/**
+ * Defect 3.5's other half, pinned rather than changed. The prose matcher was
+ * the only place a directory was rejected — the tool-call extractor has never
+ * applied an extension filter to a write tool's path argument, so a tool that
+ * creates a folder already yields it. Asserting that here keeps a future
+ * "tighten the collector" change from quietly re-introducing the same gap on
+ * the receipt side, where it would be much harder to notice.
+ */
+describe('fileArtifactPathsFromToolCall — a folder is a path like any other', () => {
+  it('keeps an extensionless write target', () => {
+    expect(
+      fileArtifactPathsFromToolCall('developer__write_file', { path: 'results' }, '/work')
+    ).toEqual(['/work/results']);
+  });
+});

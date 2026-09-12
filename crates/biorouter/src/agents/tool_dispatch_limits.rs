@@ -26,6 +26,18 @@
 //! circular waiting and the design is deadlock-free: a running tool only ever
 //! holds resources and runs to completion; it never waits on a resource a parked
 //! tool holds.
+//!
+//! ⚠ **That last sentence is a rule about the tools, not a property of this
+//! module**, and two things have broken it since. `workspace_watch` /
+//! `workspace_send_prompt` park on work in other sessions and are exempted from
+//! the permit by name (`agent::is_parking_workspace_tool`). `execute_code` parks
+//! on a *person* — since QA finding F7 a script's own tool calls raise approval
+//! cards — but it is not a do-nothing wrapper, and in the shipped Code Execution
+//! default it is very nearly the only tool there is, so exempting it by name
+//! would leave this semaphore bounding nothing at all. It instead hands the
+//! permit back for exactly the parked interval and queues for it again
+//! afterwards: [`ToolDispatchGuard::parking_handle`] and
+//! [`DispatchPermitHandle::while_parked`].
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -99,11 +111,77 @@ static PATH_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<AsyncMutex<()>>>>> =
 /// a session that touches thousands of distinct files does not leak map slots.
 const PATH_LOCK_PRUNE_THRESHOLD: usize = 1024;
 
+/// The concurrency permit, in a cell a tool that parks on a person can hand it
+/// back through. `None` means this dispatch holds no permit — an exempt tool, a
+/// closed semaphore in a test teardown, or a park in progress.
+type PermitCell = Arc<AsyncMutex<Option<OwnedSemaphorePermit>>>;
+
 /// RAII guard held for the lifetime of a tool's execution. Dropping it releases
 /// the concurrency permit and any write-path locks.
 pub struct ToolDispatchGuard {
-    _permit: Option<OwnedSemaphorePermit>,
+    permit: PermitCell,
+    /// The semaphore `permit` came from, so a [`DispatchPermitHandle`] queues for
+    /// the same one it handed a permit back to. A field rather than a reach for
+    /// the static, because the tests need their own.
+    semaphore: Arc<Semaphore>,
     _path_guards: Vec<OwnedMutexGuard<()>>,
+}
+
+impl ToolDispatchGuard {
+    /// A handle for a tool that **parks on a person** to hand its concurrency
+    /// permit back for the duration of the wait.
+    ///
+    /// Only for genuine parking — an approval card, an elicitation — never around
+    /// work. The permit exists to bound work, and a tool waiting on a human is
+    /// doing none; holding one there is what turns eight parked calls into a
+    /// stalled daemon (`Semaphore::new(8)`, shared by every session in the
+    /// process), which is the hazard `agent::is_parking_workspace_tool` was
+    /// added for.
+    pub fn parking_handle(&self) -> DispatchPermitHandle {
+        DispatchPermitHandle {
+            // Weak: a handle that outlives the dispatch it came from must not
+            // keep that dispatch's permit alive.
+            permit: Arc::downgrade(&self.permit),
+            semaphore: Arc::clone(&self.semaphore),
+        }
+    }
+}
+
+/// A tool's way of not holding its dispatch permit while it is parked on a
+/// person. See [`ToolDispatchGuard::parking_handle`].
+#[derive(Clone)]
+pub struct DispatchPermitHandle {
+    permit: Weak<AsyncMutex<Option<OwnedSemaphorePermit>>>,
+    semaphore: Arc<Semaphore>,
+}
+
+impl DispatchPermitHandle {
+    /// Await `parked` holding no concurrency permit, then queue for one again
+    /// before the tool resumes.
+    ///
+    /// Waiting for the permit back starves nobody: this call holds nothing while
+    /// it waits, which is the whole difference from the situation it replaces. If
+    /// `parked` is dropped part-way (a cancelled turn) the permit simply stays
+    /// released and the guard drops with nothing to free.
+    pub async fn while_parked<F: std::future::Future>(&self, parked: F) -> F::Output {
+        let Some(cell) = self.permit.upgrade() else {
+            // The dispatch this handle came from is already over.
+            return parked.await;
+        };
+        let handed_back = cell.lock().await.take();
+        if handed_back.is_none() {
+            // Nothing to hand back: an exempt dispatch, or an outer park already
+            // did. Never hold the cell's lock across the await below.
+            return parked.await;
+        }
+        drop(handed_back);
+
+        let outcome = parked.await;
+        if let Ok(permit) = self.semaphore.clone().acquire_owned().await {
+            *cell.lock().await = Some(permit);
+        }
+        outcome
+    }
 }
 
 /// Acquire the concurrency permit and any write-path locks for a tool call, in
@@ -117,7 +195,7 @@ pub async fn acquire(
     // 1. Bound total parallelism. The static Semaphore never closes, so a
     //    failure here can only mean a poisoned/closed sem in a test teardown —
     //    fail open (run the tool) rather than wedge the loop.
-    let permit = TOOL_SEMAPHORE.clone().acquire_owned().await.ok();
+    let permit = acquire_permit_cell(&TOOL_SEMAPHORE).await;
 
     // 2. Serialize overlapping write paths.
     let path_guards = if write_ordering_enabled() {
@@ -128,9 +206,17 @@ pub async fn acquire(
     };
 
     ToolDispatchGuard {
-        _permit: permit,
+        permit,
+        semaphore: TOOL_SEMAPHORE.clone(),
         _path_guards: path_guards,
     }
+}
+
+/// Take one permit from `semaphore` into a cell a park can hand it back through.
+async fn acquire_permit_cell(semaphore: &Arc<Semaphore>) -> PermitCell {
+    Arc::new(AsyncMutex::new(
+        semaphore.clone().acquire_owned().await.ok(),
+    ))
 }
 
 /// Take an exclusive lock on each path, in a stable sorted order so that two
@@ -449,6 +535,84 @@ mod tests {
         // Only asserts the compiled default; env override is process-global and
         // would race other tests, so it is not exercised here.
         assert_eq!(DEFAULT_MAX_CONCURRENT_TOOLS, 8);
+    }
+
+    /// A tool parked on a person holds no permit, and takes one back — queueing
+    /// if it must — before it resumes.
+    ///
+    /// Against its own one-permit semaphore rather than the process-global
+    /// `TOOL_SEMAPHORE`, so the assertions are exact instead of racing every other
+    /// test in this binary.
+    #[tokio::test]
+    async fn a_parked_tool_hands_its_permit_back_and_queues_for_it_again() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let guard = ToolDispatchGuard {
+            permit: acquire_permit_cell(&semaphore).await,
+            semaphore: Arc::clone(&semaphore),
+            _path_guards: Vec::new(),
+        };
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the tool holds the permit"
+        );
+
+        let handle = guard.parking_handle();
+        let (answer, parked) = tokio::sync::oneshot::channel::<()>();
+        let waiting = tokio::spawn(async move { handle.while_parked(parked).await });
+
+        for _ in 0..200 {
+            if semaphore.available_permits() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "a parked tool must hold no permit — eight of them would stall the daemon"
+        );
+
+        // Somebody else takes the freed permit, so resuming has to queue.
+        let other = Arc::clone(&semaphore)
+            .acquire_owned()
+            .await
+            .expect("a permit");
+        answer.send(()).expect("the park is still waiting");
+        drop(other);
+
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("the parked tool resumes once a permit frees")
+            .expect("the parked task completes")
+            .expect("the park resolves");
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the permit is taken back for the rest of the tool's work"
+        );
+        drop(guard);
+        assert_eq!(semaphore.available_permits(), 1, "…and freed on drop");
+    }
+
+    /// A handle whose dispatch is already over must not resurrect a permit.
+    #[tokio::test]
+    async fn a_handle_that_outlived_its_dispatch_is_inert() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let guard = ToolDispatchGuard {
+            permit: acquire_permit_cell(&semaphore).await,
+            semaphore: Arc::clone(&semaphore),
+            _path_guards: Vec::new(),
+        };
+        let handle = guard.parking_handle();
+        drop(guard);
+        assert_eq!(semaphore.available_permits(), 1);
+        handle.while_parked(std::future::ready(())).await;
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "an inert handle must not take a permit nobody will release"
+        );
     }
 
     #[tokio::test]

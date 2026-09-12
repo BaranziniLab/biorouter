@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SubagentTabHeader } from './SubagentTabHeader';
 import { GUARDRAIL_FRAME_CLOSE, GUARDRAIL_FRAME_OPEN } from '../../utils/guardrailFrame';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
+import { SUBAGENT_STOP_NEEDS_DESKTOP, SUBAGENT_TAB_READ_ONLY_REASON } from './subagentReadOnly';
 
 const props = {
   sessionId: 'child-1',
@@ -52,6 +54,50 @@ describe('SubagentTabHeader', () => {
   it('hides Stop when the child is idle', () => {
     render(<SubagentTabHeader {...props} running={false} />);
     expect(screen.queryByRole('button', { name: /stop subagent/i })).toBeNull();
+  });
+
+  describe('in a browser, where no Stop can work (SD-8, SD-11)', () => {
+    afterEach(() => {
+      delete document.documentElement.dataset.biorouterSurface;
+    });
+
+    it('offers no Stop, and says why where the button would be', () => {
+      // On a `biorouter serve` daemon `/agent/cancel` refuses a subagent's chat
+      // from every caller, so the button could only ever fail on click.
+      document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+      render(<SubagentTabHeader {...props} />);
+
+      expect(screen.queryByRole('button', { name: /stop subagent/i })).toBeNull();
+      const reason = screen.getByTestId('subagent-stop-unavailable');
+      expect(reason).toHaveTextContent(SUBAGENT_STOP_NEEDS_DESKTOP);
+      // The whole sentence is still reachable from the line itself.
+      expect(reason).toHaveAttribute('title', SUBAGENT_TAB_READ_ONLY_REASON);
+      fireEvent.click(reason);
+      expect(props.onStop).not.toHaveBeenCalled();
+    });
+
+    it('says nothing about Stop while the child is idle, as the desktop offers none', () => {
+      document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+      render(<SubagentTabHeader {...props} running={false} />);
+      expect(screen.queryByTestId('subagent-stop-unavailable')).toBeNull();
+    });
+
+    it('keeps everything that only reads: lineage, grants, spawn context', () => {
+      document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+      render(<SubagentTabHeader {...props} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Planning chat' }));
+      expect(props.onOpenParent).toHaveBeenCalledOnce();
+      expect(screen.getByTitle('developer, todo')).toHaveTextContent('2 extensions');
+      fireEvent.click(screen.getByRole('button', { name: /spawn context/i }));
+      expect(screen.getByText(/count the files/)).toBeTruthy();
+    });
+
+    it('is not what the desktop sees', () => {
+      // The same header, marker absent: the button is back and the line gone.
+      render(<SubagentTabHeader {...props} />);
+      expect(screen.getByRole('button', { name: /stop subagent/i })).toBeInTheDocument();
+      expect(screen.queryByTestId('subagent-stop-unavailable')).toBeNull();
+    });
   });
 
   it('the spawned-by name is the control that opens the parent', () => {

@@ -414,7 +414,7 @@ export default function ModelsBottomBar({
    * a user can now enter the app before configuring anything.
    *
    * ⚠ A plain button rather than a disabled dropdown: the menu's items are
-   * "Change Model" and "Lead/Worker Settings", both of which read as adjustments
+   * "Change model" and "Lead/worker settings", both of which read as adjustments
    * to a model that does not exist. One control, one meaning.
    */
   if (hasNoModelConfigured(modelConfigStatus, currentProvider)) {
@@ -606,7 +606,7 @@ export default function ModelsBottomBar({
               title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
               onClick={hostManaged ? undefined : () => setIsAddModelModalOpen(true)}
             >
-              <span>Change Model</span>
+              <span>Change model</span>
               <SlidersHorizontal className="ml-auto size-3.5" />
             </DropdownMenuItem>
             <DropdownMenuItem
@@ -615,7 +615,7 @@ export default function ModelsBottomBar({
               title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
               onClick={hostManaged ? undefined : () => setIsLeadWorkerModalOpen(true)}
             >
-              <span>Lead/Worker Settings</span>
+              <span>Lead/worker settings</span>
               <SlidersHorizontal className="ml-auto size-3.5" />
             </DropdownMenuItem>
           </div>

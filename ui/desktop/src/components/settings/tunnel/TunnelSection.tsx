@@ -145,7 +145,7 @@ export default function TunnelSection() {
     <>
       <Card className="rounded-element">
         <CardHeader className="pb-0">
-          <CardTitle className="mb-1">Remote Access</CardTitle>
+          <CardTitle className="mb-1">Remote access</CardTitle>
           <CardDescription className="flex flex-col gap-2">
             <div className="flex items-start gap-2 p-2 bg-background-info/10 border border-border-info/40 rounded">
               <Info className="h-4 w-4 text-text-info flex-shrink-0 mt-0.5" />
@@ -182,7 +182,7 @@ export default function TunnelSection() {
 
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-text-default text-xs">Tunnel Status</h3>
+              <h3 className="text-text-default text-xs">Tunnel status</h3>
               <p className="text-xs text-text-muted max-w-md mt-[2px]">
                 {STATUS_MESSAGES[tunnelInfo.state]}
               </p>
@@ -196,10 +196,10 @@ export default function TunnelSection() {
               ) : tunnelInfo.state === 'running' ? (
                 <>
                   <Button onClick={() => setShowQRModal(true)} variant="default" size="sm">
-                    Show QR Code
+                    Show QR code
                   </Button>
                   <Button onClick={handleToggleTunnel} variant="destructive" size="sm">
-                    Stop Tunnel
+                    Stop tunnel
                   </Button>
                 </>
               ) : (
@@ -223,7 +223,7 @@ export default function TunnelSection() {
       <Dialog open={showQRModal} onOpenChange={setShowQRModal}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>Remote Access Connection</DialogTitle>
+            <DialogTitle>Remote access connection</DialogTitle>
           </DialogHeader>
 
           {tunnelInfo.state === 'running' && (
@@ -244,7 +244,7 @@ export default function TunnelSection() {
                   onClick={() => setShowDetails(!showDetails)}
                   className="flex items-center justify-between w-full text-sm font-medium hover:opacity-70 transition-opacity"
                 >
-                  <span>Connection Details</span>
+                  <span>Connection details</span>
                   {showDetails ? (
                     <ChevronUp className="h-4 w-4" />
                   ) : (
@@ -272,7 +272,7 @@ export default function TunnelSection() {
                     </div>
 
                     <div>
-                      <h3 className="text-xs font-medium mb-1 text-text-muted">Secret Key</h3>
+                      <h3 className="text-xs font-medium mb-1 text-text-muted">Secret key</h3>
                       <div className="flex items-center gap-2">
                         <code className="flex-1 p-2 bg-background-medium rounded text-xs break-all overflow-hidden">
                           {tunnelInfo.secret}
@@ -304,7 +304,7 @@ export default function TunnelSection() {
               Close
             </Button>
             <Button variant="destructive" onClick={handleToggleTunnel}>
-              Stop Tunnel
+              Stop tunnel
             </Button>
           </DialogFooter>
         </DialogContent>

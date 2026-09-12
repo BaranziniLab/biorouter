@@ -7301,7 +7301,12 @@ stop: that is a different product decision and it is [Open question 15](#open-qu
 > open. On merged `main` at `7c96d796`, QA drove it end to end (finding H2): a public chat's shell
 > ran `ps eww`, took the secret, and `curl`ed `/knowledge/bases/{id}/page` for a private base's page.
 > The note also clashed with the tier route beside it, which already treated a caller holding only
-> the secret as "not a human" for changing a tier (AR-11/AR-15).
+> the secret as "not a human" for changing a tier — the recoverable secret
+> [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured, and the
+> posture that DR-16 built when it **retired**
+> [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials).
+> Neither is cited here as a live risk: AR-15 is closed, and it is closed *because* that route
+> demands a proof of user, which is the precedent this note should have followed.
 >
 > The user is now told apart the way every other private surface tells them apart: by the
 > user-action proof the desktop sends, or by the private capability a program states

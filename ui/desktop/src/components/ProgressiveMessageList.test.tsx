@@ -138,6 +138,35 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
     expect(indicatorIndex).toBeGreaterThan(lastMessageIndex);
   });
 
+  it("hands the indicator whether this tab can stop the turn, so the nudge can't lie", () => {
+    // Past the 45 s nudge threshold on a live turn. Desktop (the default)
+    // points at the composer; a subagent's tab in a browser has none (SD-8).
+    const longAgo = Date.now() - 46_000;
+    const { rerender } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        isStreamingMessage
+        chatState={ChatState.Streaming}
+        lastMessageAt={longAgo}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.getByText(/stop the turn from the composer/)).toBeInTheDocument();
+
+    rerender(
+      <ProgressiveMessageList
+        {...liveProps}
+        isStreamingMessage
+        chatState={ChatState.Streaming}
+        lastMessageAt={longAgo}
+        canStopTurn={false}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.getByText('Still working.')).toBeInTheDocument();
+    expect(screen.queryByText(/stop the turn from the composer/)).toBeNull();
+  });
+
   it('shows no indicator while the assistant is streaming visible prose', () => {
     const prose: Message = {
       id: 'assistant-2',

@@ -107,6 +107,8 @@ Marketplace installs never ask you for a file. **Extensions** → **Browse Exten
 
 The **Add Extension** button beside it is the local route, and that one does take a file: drag a `.brxt` onto it, or browse for one.
 
+Both marketplace browsers — **Browse Extensions**, and **Browse Skills** on the **Skills** page — search word by word: a phrase such as `R scripting ggplot visualization` lists every entry that matches any of its words, best match first, ranked the way the agent's own marketplace search ranks them. Clear the search box to browse the whole catalog again.
+
 If an extension needs an API key, passcode or token, Biorouter asks for it in its own dialog and stores it in your operating system's credential store. **Never type a credential into the chat** — it cannot configure anything from there, and it would be visible to every model that reads the conversation. The same is true of the command line: `biorouter extension install` prompts with echo off rather than taking a value as an argument. See [Installing an extension, and where its credentials go](installing-an-extension.md).
 
 ### Developing a custom extension

@@ -8,7 +8,7 @@ import { BROWSER_SURFACE_MARKER } from '../../../../utils/surface';
  * SD-1 at the composer's model chip — the surface a browser user is most likely
  * to reach first, because it is the only model control visible without opening
  * Settings. Both of its menu items write capability config keys:
- * "Change Model" through `/config/set_provider`, "Lead/Worker Settings" through
+ * "Change model" through `/config/set_provider`, "Lead/worker settings" through
  * `/config/upsert` on `BIOROUTER_PROVIDER` and `BIOROUTER_LEAD_*`.
  */
 
@@ -97,7 +97,7 @@ describe('ModelsBottomBar on a browser-served surface', () => {
   /**
    * ⚠ **Fails against today's code**: neither item carries `disabled`, so
    * neither renders `aria-disabled`, and `findByTestId` has no note to resolve.
-   * Today the chip offers "Change Model", the dialog opens, and the refusal
+   * Today the chip offers "Change model", the dialog opens, and the refusal
    * arrives as a toast written for an AI agent.
    */
   it('greys out both menu items and says who chose the model', async () => {
@@ -108,11 +108,11 @@ describe('ModelsBottomBar on a browser-served surface', () => {
     const note = await screen.findByTestId('host-managed-model-note');
     expect(note.textContent).toMatch(/biorouter serve/);
 
-    expect(screen.getByRole('menuitem', { name: /Change Model/ })).toHaveAttribute(
+    expect(screen.getByRole('menuitem', { name: /Change model/ })).toHaveAttribute(
       'aria-disabled',
       'true'
     );
-    expect(screen.getByRole('menuitem', { name: /Lead\/Worker Settings/ })).toHaveAttribute(
+    expect(screen.getByRole('menuitem', { name: /Lead\/worker settings/ })).toHaveAttribute(
       'aria-disabled',
       'true'
     );
@@ -132,7 +132,7 @@ describe('ModelsBottomBar on a browser-served surface', () => {
     openChip();
 
     await screen.findByTestId('host-managed-model-note');
-    fireEvent.click(screen.getByRole('menuitem', { name: /Change Model/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Change model/ }));
 
     expect(screen.queryByText('SWITCH-MODEL-MODAL')).toBeNull();
   });
@@ -147,7 +147,7 @@ describe('ModelsBottomBar on a browser-served surface', () => {
     renderBar();
     openChip();
 
-    const item = await screen.findByRole('menuitem', { name: /Change Model/ });
+    const item = await screen.findByRole('menuitem', { name: /Change model/ });
     expect(item).not.toHaveAttribute('aria-disabled', 'true');
     expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
 

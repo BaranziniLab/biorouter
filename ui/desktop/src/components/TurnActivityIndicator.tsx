@@ -11,6 +11,12 @@ export const NUDGE_MS = 45000;
 interface TurnActivityIndicatorProps {
   activity: TrailingActivity;
   className?: string;
+  /**
+   * Whether the reader can stop this turn from this tab. False on a delegated
+   * subagent's tab in a browser, which has no composer at all (SD-8) — so the
+   * nudge must not send the reader to one.
+   */
+  canStopHere?: boolean;
 }
 
 /**
@@ -30,7 +36,11 @@ interface TurnActivityIndicatorProps {
  * for everything; the pulse degrades to a static dot. Do not add a per-component
  * check here — that fights the global rule.
  */
-export default function TurnActivityIndicator({ activity, className }: TurnActivityIndicatorProps) {
+export default function TurnActivityIndicator({
+  activity,
+  className,
+  canStopHere = true,
+}: TurnActivityIndicatorProps) {
   const elapsedMs = useElapsedMs(activity.since);
   const showElapsed = elapsedMs !== null && elapsedMs >= ELAPSED_REVEAL_MS;
   const showNudge = elapsedMs !== null && elapsedMs >= NUDGE_MS;
@@ -103,7 +113,9 @@ export default function TurnActivityIndicator({ activity, className }: TurnActiv
 
       {showNudge && (
         <div className="pl-7 pt-0.5 text-xs text-text-muted/70">
-          Still working. You can stop the turn from the composer.
+          {canStopHere
+            ? 'Still working. You can stop the turn from the composer.'
+            : 'Still working.'}
         </div>
       )}
     </div>

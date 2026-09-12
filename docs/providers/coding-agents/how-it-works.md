@@ -246,6 +246,15 @@ the call instead: it mints an already-resolved `ToolRequest` / `ToolResponse` me
 exactly the kind every API provider produces, which the existing tool-card components render with no
 frontend change.
 
+⚠ **The mirror is also why the untrusted-output frame had to be added to the bridge.** Because the
+provider mirrors rather than dispatches, a bridged result never passes through
+`Agent::integrate_tool_result` — which was the guardrail's only call site, so the response half of
+the mirrored pair carried *raw* tool output where every other provider's carried
+`<tool-output untrusted="true" …>`. The frame is now applied in `BridgeGrant::call_for_child`, before
+the result is either kept for the mirror or handed to the child, so the pair this provider mints is
+byte-identical to the one an API provider would have produced. See
+[Tool output is framed as untrusted on this path too](tool-bridge.md#tool-output-is-framed-as-untrusted-on-this-path-too).
+
 Each half of the pair carries a marker — the reserved `biorouterProviderExecuted` key in the
 per-tool provider metadata, valued `bridged` or `child`
 (`crates/biorouter/src/providers/coding_agent/mirror.rs:63`). The agent loop honours it by

@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowseExtensionsModal from './BrowseExtensionsModal';
+import { MARKETPLACE_EXTENSIONS } from './marketplace.fixture';
 import type { BrxtEnvVar, BrxtManifest } from '../../types/brxt';
 
 /**
@@ -20,12 +21,12 @@ const loadRegistry = vi.hoisted(() => vi.fn());
 // Spread the real module rather than listing members: a partial factory means
 // every export this component newly reaches for (`effectivePrivacy`,
 // `catalogFreshnessLine`) arrives `undefined` and the modal dies at render, in a
-// test that has nothing to say about either. Only the two seams the test
-// actually controls are replaced.
+// test that has nothing to say about either. Only the seam the test actually
+// controls is replaced; the search is the real one, and no test here types a
+// query, so every entry is listed.
 vi.mock('./registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./registry')>()),
   loadRegistry,
-  extensionMatches: () => true,
 }));
 
 vi.mock('../ConfigContext', () => ({
@@ -351,5 +352,39 @@ describe('BrowseExtensionsModal — installed rows (issue #116)', () => {
 
     await screen.findByText('Installed');
     expect(screen.queryByRole('button', { name: 'Configure' })).toBeNull();
+  });
+});
+
+/** The extension names the list shows, top to bottom. */
+function shownExtensionNames(): string[] {
+  return Array.from(document.querySelectorAll('div.biorouter-modal-row')).map(
+    (row) => row.querySelector('span')?.textContent ?? ''
+  );
+}
+
+/// Finding F5 in the extensions catalog: the phrase occurs in no field
+/// verbatim, so the whole-phrase matcher this replaced listed nothing for it.
+/// The ranking itself is pinned in `search.test.ts`; this pins that the list
+/// on screen is the ranked one.
+describe('BrowseExtensionsModal — a multi-word search (finding F5)', () => {
+  it('lists what the phrase matches, best match first', async () => {
+    loadRegistry.mockResolvedValue({
+      live: true,
+      registry: { extensions: MARKETPLACE_EXTENSIONS, skills: [] },
+    });
+    const user = userEvent.setup();
+    renderModal();
+
+    await screen.findByText('SPOKEAgent');
+    expect(shownExtensionNames()).toEqual([
+      'CDWAgent',
+      'SPOKEAgent',
+      'CodeGraph Agent',
+      'PrimeKGAgent',
+    ]);
+
+    await user.type(screen.getByPlaceholderText(/Search extensions/), 'SPOKE knowledge graph');
+
+    expect(shownExtensionNames()).toEqual(['SPOKEAgent', 'PrimeKGAgent', 'CodeGraph Agent']);
   });
 });

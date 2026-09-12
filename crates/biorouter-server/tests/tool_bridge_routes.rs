@@ -152,6 +152,13 @@ fn marker_grant(marker: &str) -> bridge::BridgeGrant {
 /// The shape is `developer__shell`'s. Handing the child both blocks made it read
 /// every result twice, and the user block's `priority: 0.0` made codex-cli fail
 /// the call outright with "Unexpected response type".
+///
+/// **And A2 at the wire**: that view is now the *framed* result, and the copy
+/// kept for the transcript is the framed one too — the same bytes
+/// `Agent::integrate_tool_result` would have stored for any other provider.
+/// Before the fix this route answered raw text and stored raw text, so the same
+/// `date` call read framed under `versa_azure` and unframed under both coding
+/// agents.
 #[tokio::test]
 #[serial_test::serial]
 async fn the_child_is_answered_with_the_models_view_and_the_full_result_is_kept() {
@@ -166,6 +173,22 @@ async fn the_child_is_answered_with_the_models_view_and_the_full_result_is_kept(
             .with_audience(vec![rmcp::model::Role::User])
             .with_priority(0.0),
     ]);
+
+    // A2, at the HTTP layer: what a NON-bridged provider stores for this call —
+    // `Agent::integrate_tool_result`'s own expression, run with the same mode the
+    // grant sampled. Deriving the expectation rather than writing it out is what
+    // makes this row say the thing that matters ("the two providers agree")
+    // instead of pinning one spelling of the frame, and keeps it correct on a
+    // machine whose `BIOROUTER_TOOL_OUTPUT_GUARDRAIL` differs from CI's.
+    let mode = biorouter::guardrails::tool_output::ToolOutputGuardrailMode::from_config();
+    let (guarded, _) = biorouter::guardrails::tool_output::guard_tool_result(
+        Ok(shell.clone()),
+        Some("spokeagent__query_knowledge_graph"),
+        mode,
+    );
+    let guarded = guarded.expect("the guardrail passes an Ok through as Ok");
+    let expected_child = bridge::child_view(&guarded);
+
     let lease = bridge::issue(fixed_result_grant(shell.clone())).expect("issued");
     let nonce = lease.url().rsplit('/').next().expect("a nonce").to_string();
 
@@ -205,17 +228,30 @@ async fn the_child_is_answered_with_the_models_view_and_the_full_result_is_kept(
 
         assert_eq!(
             body["result"]["content"],
-            json!([{ "type": "text", "text": "Thu Sep 11" }]),
-            "the child gets the model's block, unannotated: {body}"
+            serde_json::to_value(&expected_child.content).expect("serialisable content"),
+            "the child gets the model's block, unannotated and framed exactly as \
+             a non-bridged provider's would be: {body}"
         );
         assert!(
             !body.to_string().contains("priority"),
             "codex-cli cannot parse a `priority` annotation: {body}"
         );
+        // Not vacuous: unless the operator turned the guardrail off, the frame
+        // really is on the wire. Before A2 this route answered raw text.
+        if mode != biorouter::guardrails::tool_output::ToolOutputGuardrailMode::Off {
+            assert!(
+                body["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with(biorouter::guardrails::tool_output::TOOL_OUTPUT_FRAME_OPEN),
+                "the child agent read unframed tool output over the bridge: {body}"
+            );
+        }
         assert_eq!(
             bridge::take_recorded_result(lease.url(), child_call_id),
-            Some(shell.clone()),
-            "the full result is kept for the transcript under {child_call_id}"
+            Some(guarded.clone()),
+            "the full result is kept for the transcript under {child_call_id}, \
+             framed the way every other provider's transcript entry is"
         );
     }
 }

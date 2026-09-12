@@ -6,7 +6,7 @@ pub fn classify_url(url: &str) -> Option<Credibility> {
         return Some(make(
             CredibilityTier::Preprint,
             0.9,
-            "Host is a recognised preprint server.",
+            "Host is a recognized preprint server.",
             Some(&host),
         ));
     }
@@ -22,7 +22,7 @@ pub fn classify_url(url: &str) -> Option<Credibility> {
         return Some(make(
             CredibilityTier::Web,
             0.6,
-            "Generic web URL with no recognised academic provenance.",
+            "Generic web URL with no recognized academic provenance.",
             Some(&host),
         ));
     }

@@ -102,7 +102,7 @@ export function WorkflowWarningModal({
             <Button variant="outline" onClick={onCancel}>
               Cancel
             </Button>
-            <Button onClick={onConfirm}>Trust and Execute</Button>
+            <Button onClick={onConfirm}>Trust and execute</Button>
           </DialogFooter>
         </DialogPrimitive.Content>
       </DialogPortal>

@@ -336,7 +336,19 @@ const REGISTRY: &[Guard] = &[
                        private-extension tool names, handed to a secret-only caller while \
                        `add_extension` on the same chat refused) and `GET \
                        /agent/callable_tool_count`, both of which mint an agent for the chat \
-                       they name",
+                       they name. \
+                       ⚠ The count went 4 → 6, and BOTH justifications are routes that had no \
+                       gate at all rather than second gates on guarded ones: `/agent/tools` \
+                       answered any caller that could name a chat, and the SD-8 review of #260 \
+                       found `callable_tool_count` doing the same through `get_or_create_agent`, \
+                       which CREATES an agent for a session that has none — so each fix is the \
+                       same reach gate, placed before the fetch for the reason \
+                       `agent_add_extension` states at its own. \
+                       On a daemon that holds no user-action key `authorize_agent_control` is \
+                       also the turn-control gate of `/agent/cancel` and the two continuation \
+                       routes (SD-11), reached from `routes::reply`'s `authorize_turn_control` \
+                       by name — so SD-11 added no call here. `/interrupt` keeps the proof on \
+                       every daemon and reaches neither gate",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
@@ -363,7 +375,11 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "`POST /reply`, which runs an agent turn with tools inside the named \
                        session, plus the explicit continuation takeover and group-abandon \
-                       recovery mutation",
+                       recovery mutation. `/agent/cancel` and `/agent/continuation/abandon` reach \
+                       the gate only on a keyless daemon, and through `authorize_agent_control` \
+                       in `routes/agent.rs` (SD-11), which is why they add nothing to this count; \
+                       `/interrupt` keeps the user-action proof on every daemon and reaches no \
+                       reach gate at all",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
@@ -873,9 +889,15 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter/src/privacy/mod.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`SessionClassification::bind_allowed`'s inherent-method form",
+                what: "`SessionClassification::bind_allowed`'s inherent-method form, plus \
+                       `tool_bind_allowed` — the model-facing predicate — which COMPOSES this \
+                       one rather than re-spelling its cells. The second call is deliberate and \
+                       is the point of that predicate's shape: `tool_bind_allowed` is Gate A's \
+                       rule AND DR-16's, and if it restated Gate A's half instead of calling it, \
+                       the two would be free to drift and this census would see only one of \
+                       them. Its own row is below",
             },
             Site {
                 file: "crates/biorouter/src/workflow/privacy.rs",
@@ -893,9 +915,36 @@ const REGISTRY: &[Guard] = &[
                        is a pre-flight, not the gate — `Agent::update_provider`'s conditional \
                        `WHERE` still decides when the change is applied — and it asks this \
                        predicate by name rather than re-spelling it, only when the write gate \
-                       resolved a classification (i.e. under enforcement)",
+                       resolved a classification (i.e. under enforcement). \
+                       ⚠ It is ALSO the only privacy check on this tool's provider bind at \
+                       the dispatch boundaries no inspector reaches — an `execute_code` \
+                       script's inner call and `POST /agent/call_tool` both go straight to \
+                       `ExtensionManager::dispatch_tool_call`, so the always-confirm card \
+                       named above does not run for either. Do not weaken this on the \
+                       reasoning that a card backs it up: for two of its callers, nothing does",
             },
         ],
+    },
+    Guard {
+        ident: "tool_bind_allowed",
+        defined_in: "crates/biorouter/src/privacy/mod.rs",
+        decides: "Gate A's rule PLUS DR-16's, for the surface a MODEL asks the bind on: it may \
+                  LOWER a conversation's capability, never RAISE it",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/workspace_extension.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`workspace_set_tools`' pre-flight, beside its `bind_allowed` sibling and \
+                   after it, so the more specific refusal owns the downward case. This is the \
+                   predicate's ONLY caller by design and not by accident: `bind_allowed` \
+                   permits every bind onto a public conversation (Gate A refuses only the \
+                   downward one), which let a public-tier model hand any conversation it \
+                   could write to a private provider — Private capability, and a permanent \
+                   ratchet of that conversation's stored `privacy_tier` on its next turn. If \
+                   this row ever reads ZERO calls, that hole is open again and no behavioural \
+                   test elsewhere will say so, because the predicate itself is still correct",
+        }],
     },
     Guard {
         ident: "privacy_refusal",

@@ -162,7 +162,9 @@ started `serve`.
 
 - **There is no transport encryption.** `serve` speaks plain HTTP. Over an untrusted network the
   token and everything else are readable in transit. For anything beyond a trusted local network,
-  put a TLS-terminating reverse proxy in front of it, or do not expose the port at all.
+  put a TLS-terminating reverse proxy in front of it, or do not expose the port at all. The proxy
+  must forward the original `Host` and set `X-Forwarded-Proto`; the
+  [headless Linux guide](headless-linux.md#decide-who-can-reach-the-port) has the configuration.
 - **There is one credential and no user accounts.** Everyone who opens the address is the same
   user, with the same files and the same history. Biorouter has no notion of separate accounts
   here.
@@ -217,6 +219,9 @@ differs:
 |---|---|
 | Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application, for everything public. **Private** chats and knowledge bases appear in History and the Knowledge view only when the provider you configured is private. Being listed does not by itself make a private chat openable from the browser. See [decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else). |
 | Workspace control, several conversations at once, live app agents | Work — these are WebSocket-backed daemon routes, reached on the same origin. |
+| Stopping a response, Stop and send | Work in an ordinary chat ([SD-11](serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)). |
+| Steering a response while it runs | **Not available.** Injecting text into a turn that is already running needs proof that a person acted, which only the desktop application holds. What you type is queued instead and sent when the turn ends, so nothing is lost — it simply does not redirect the answer in flight. |
+| A delegated subagent's own tab | **Read-only, and it says so before you try.** The tab shows the subagent's conversation and follows it while it works, but has no composer and no Stop button: sending to a subagent, steering it and stopping it need proof that a person acted, which only the desktop application holds. A note takes the composer's place, and one line takes the Stop button's ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | Model and provider selection | **Not available.** See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
 | File and folder pickers | No native dialog. You type a path, and it is a path **on the machine running the daemon**, not on the machine holding the browser. |
 | Artifacts and diagnostics bundles | The artifact side panel works as usual. Opening an artifact outside the panel opens a new tab; a diagnostics bundle downloads as a file. |
@@ -251,7 +256,11 @@ terminal.
 
 **The page loads but nothing connects.** Check that you are on the address `serve` printed. A
 browser reaching the daemon on a different origin is not the supported configuration — the
-interface is served at the root of the daemon's own origin and nowhere else.
+interface is served at the root of the daemon's own origin and nowhere else. Behind a TLS proxy,
+check that it forwards the original `Host` and sets `X-Forwarded-Proto`: the live views are
+WebSockets, and the daemon admits one only from the scheme, host and port the browser used. The
+daemon logs each refusal as `rejected workspace WS: cross-origin connect rejected`, with the
+origin it was given.
 
 **A file path the agent uses does not exist.** Paths are resolved on the serving machine. When the
 browser is on a different computer, its local files are not visible to the agent; copy them to the

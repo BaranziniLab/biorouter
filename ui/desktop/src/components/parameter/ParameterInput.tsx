@@ -112,7 +112,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
           {/* Controls row */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={labelCls}>Input Type</label>
+              <label className={labelCls}>Input type</label>
               <select
                 className={selectCls}
                 value={parameter.input_type || 'string'}
@@ -145,7 +145,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
           {/* Default value — only for optional */}
           {requirement === 'optional' && (
             <div>
-              <label className={labelCls}>Default Value</label>
+              <label className={labelCls}>Default value</label>
               <input
                 type="text"
                 value={defaultValue}

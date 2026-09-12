@@ -152,21 +152,64 @@ than `127.0.0.1`, so it can be pasted into a browser on another machine.
 Two existing checks constrain what that address may be, and both must be widened deliberately
 rather than relaxed:
 
-- `is_local_origin` (`crates/biorouter-server/src/routes/mod.rs:9`) accepts only
+- `is_local_origin` (`crates/biorouter-server/src/routes/mod.rs`) accepts only
   `http://localhost` and `http://127.0.0.1` on any port. It backs the daemon's cross-origin
-  policy.
+  policy, and nothing else.
 - The WebSocket routes carry their own origin checks, for cross-site WebSocket hijacking.
 
 Same-origin requests are unaffected by the first — a browser does not apply cross-origin rules
 to a page talking to its own origin — but the WebSocket origin gates are explicit checks in
 handler code, so both were taught the daemon's own serving origin.
 
-The rule is `origin_matches_host`: the request's `Origin` must equal its own `Host`. That is a
-same-origin test rather than a widening — the browser sets both headers and neither is reachable
-from script, so a page on any other origin cannot make them agree. It needs no configuration and
-no wildcard, and it holds for every address the interface is reached at, including ones the
-daemon could not have enumerated because it bound `0.0.0.0`. Both are compared whole, so a `Host`
-of `evil.com.attacker.net` does not admit an `Origin` of `http://evil.com`.
+The rule is `origin_matches_host`: the request's `Origin` must match its own `Host` in scheme,
+host and port. That is a same-origin test rather than a widening — the browser sets both headers
+and neither is reachable from script, so a page on any other origin cannot make them agree. It
+needs no configuration and no wildcard, and it holds for every address the interface is reached
+at, including ones the daemon could not have enumerated because it bound `0.0.0.0`. Both are
+compared whole, so a `Host` of `evil.com.attacker.net` does not admit an `Origin` of
+`http://evil.com`, and case is normalised once (`WebOrigin`), as RFC 6454 compares origins.
+
+The scheme is the one the client used to reach the daemon. The daemon speaks plain HTTP, so it is
+`http` unless a reverse proxy in front says `X-Forwarded-Proto: https` — the documented way to
+put TLS in front of `serve`.
+
+That header is taken on trust, and the reason is a property of the **client** rather than of the
+daemon, which is worth stating because the rate-limit key and the CORS predicate both refuse to
+trust `X-Forwarded-For`. They are not the same question: `X-Forwarded-For` is the only evidence of
+who a caller is, so forging it buys an attacker someone else's identity, while this header only
+decides how an `Origin` is compared to a `Host` — and that comparison exists solely to constrain a
+**browser** page on another origin, which cannot set this header on a WebSocket handshake at all. A
+client that can set it is not a browser and gains nothing by it: it may send no `Origin`, which both
+gates admit because their token is the authority there. A trusted-proxy allowlist would add
+configuration and close nothing. If the origin test ever becomes load-bearing for callers that are
+not browsers, that reasoning has to be revisited with it.
+
+When the header arrives with **several** comma-separated values — a proxy that appends rather than
+replaces — the daemon reads the **last**, the one written by the proxy nearest to it. Reading the
+first would take whatever the client sent: less trustworthy, since a client-written `https` would
+then survive a proxy that appends its own `http`, and less *available*, since a client-written
+`http` in front of a legitimate `https` page resolves to `http` and refuses every WebSocket upgrade
+from that deployment. Nearly every proxy replaces the header, where the two readings are the same
+value, so this matters only for a chain — and a chain whose outer hop is https should have its inner
+proxies preserve the value they are handed.
+
+Until QA-D F7 (2026-09-11) the gates also admitted `is_local_origin` — any loopback port, any
+scheme — so every other local page's socket passed as the daemon's own, and behind a TLS proxy a
+plain-`http` page at the same host passed the authority-only comparison. What remains beside the
+same-origin test is one **declared** renderer, and a `serve` daemon declares none. The desktop
+app's dev renderer is vite's page on its own port, so the Electron main process names that origin
+in `BIOROUTER_RENDERER_ORIGIN` when it spawns the daemon; packaged, it loads from a `file:` URL,
+whose WebSocket `Origin` is the literal `file://`, and it declares that instead. Anything else in
+that variable is refused with a warning.
+
+`file://` is matched by name, because it has no host and no port for a same-origin test to
+compare — which is why it has to be declared to be admitted at all. It was not: the workspace gate
+took that literal on every daemon, so a local `.html` opened in Chromium presents exactly that
+origin and cleared the gate on a `serve` host, leaving the `?secret=` query token as the whole
+authority on a path that is also exempt from `check_token`. `serve` now strips the variable from
+the daemon it spawns, so the allowance cannot be inherited from whoever's shell it ran in. The
+per-app agent socket has no such allowance and needs none — an app's page is served by this
+daemon over http, so it is same-origin with its own socket.
 
 ## How `serve` starts and stops the daemon
 

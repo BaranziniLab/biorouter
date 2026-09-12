@@ -166,7 +166,6 @@ use crate::config::Config;
 
 pub fn configure_tetrate(config: &Config, api_key: String) -> Result<()> {
     config.set_secret("TETRATE_API_KEY", &api_key)?;
-    config.set_biorouter_provider("tetrate")?;
-    config.set_biorouter_model(TETRATE_DEFAULT_MODEL)?;
+    config.set_biorouter_provider_and_model("tetrate", TETRATE_DEFAULT_MODEL)?;
     Ok(())
 }
