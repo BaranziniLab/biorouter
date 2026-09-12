@@ -134,7 +134,7 @@ fn permission_mode_label() -> &'static str {
 /// Clock times are this computer's local time because that is how the engine
 /// reads them (`Job::new_async_tz(.., Local)` in `scheduler.rs`), and day-of-week
 /// numbers follow the engine's parser (`croner`): 0 and 7 are Sunday.
-pub(crate) fn describe_cron(expression: &str) -> String {
+pub fn describe_cron(expression: &str) -> String {
     let quoted = || format!("on the cron schedule `{}`", expression.trim());
     let fields: Vec<&str> = expression.split_whitespace().collect();
     let (second, minute, hour, day, month, weekday) = match fields.as_slice() {

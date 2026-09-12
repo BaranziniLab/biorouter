@@ -50,6 +50,10 @@ pub(crate) mod reply_parts;
 pub mod resource_refs;
 pub mod retry;
 pub(crate) mod schedule_tool;
+/// A cron expression in words. Re-exported because the `biorouter schedule`
+/// confirmation says when a job will run, and saying it differently from the
+/// `manage_schedule` approval card would be two descriptions of one thing.
+pub use schedule_tool::describe_cron;
 mod session_blob_tool;
 // The session-row write for `enabled_extensions.v0`, plus the classifier that
 // says which catalog tools require it. `pub` because `agents::agent` is
