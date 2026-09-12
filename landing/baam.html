@@ -7,6 +7,9 @@
   <link rel="icon" href="icon-transparent.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="shared.css" />
   <script src="theme.js"></script>
+  <!-- The shelves' matcher. Blocking, like theme.js, because the inline script
+       at the foot of this page runs its first filter during init. -->
+  <script src="marketplace-search.js"></script>
   <style>
     /* Scroll progress — mirrors index.html (nav-edge coral fill) */
     #scroll-progress {
@@ -3784,6 +3787,51 @@ extensions: []</pre>
     else filterWorkflows(q);
   }
 
+  /* ── Text search (shared by all three shelves) ─────────────────
+     The matcher is landing/marketplace-search.js, a port of the app's own
+     crates/biorouter/src/marketplace/search.rs. Each shelf used to ask
+     `hay.indexOf(q) !== -1` — the whole query as one substring — so every
+     phrase a visitor typed returned an empty shelf.
+
+     Facet chips still match against `hay`, unchanged: they are exact values or
+     curated substrings a chip authored, not prose a person typed, and the
+     privacy facet's discrimination is pinned by baam-privacy-facet.test.mjs. */
+
+  /* The searched text of one card, weighted. Deliberately NOT `textContent`:
+     that sweeps in the download button, the licence chip and the org line, and
+     licence is not a searched field in the canonical matcher. */
+  function cardFields(card) {
+    var W = window.MarketplaceSearch.Weight;
+    var fields = [];
+    var push = function (el, weight) { if (el) fields.push([el.textContent, weight]); };
+    push(card.querySelector('h3'), W.Name);
+    // "User-invocable · /scientific-research" — carries the skill's slug.
+    push(card.querySelector('.skill-type'), W.Name);
+    push(card.querySelector('.ext-desc, .skill-desc, .wf-desc'), W.Prose);
+    push(card.querySelector('.ext-org'), W.Label);
+    if (card.dataset.tags) fields.push([card.dataset.tags, W.Label]);
+    // The visible chips, minus the two badges that answer facets rather than
+    // words, and minus the licence chip — identified by the card's own
+    // data-license rather than by a pattern, so a new licence needs no edit.
+    var licence = (card.dataset.license || '').toLowerCase();
+    card.querySelectorAll('.ext-tags .tag, .skill-tags .tag, .wf-tags .tag').forEach(function (chip) {
+      if (chip.hasAttribute('data-privacy-badge') || chip.hasAttribute('data-affiliation-badge')) return;
+      if (licence && chip.textContent.trim().toLowerCase() === licence) return;
+      fields.push([chip.textContent, W.Label]);
+    });
+    return fields;
+  }
+
+  /* The cards `q` matches, as a Set. An empty query matches everything, which
+     is what each caller's `!q ||` guard already assumed.
+
+     The shelves are NOT reordered by rank. Every hit is shown, inside curated
+     sections whose order is editorial, so DOM order — registry order, the
+     matcher's own last tiebreak — is what a visitor should keep seeing. */
+  function searchMatches(q, cards, noise) {
+    return window.MarketplaceSearch.matching(q, noise, cards, cardFields);
+  }
+
   /* ── Chip helpers (shared by both chip bars) ───────────────── */
   function onChipClick(bar, btn) {
     if (!btn.dataset.facet) {
@@ -4097,10 +4145,11 @@ extensions: []</pre>
     applyAdapterVisibility(filtering);
 
     const cards = document.querySelectorAll('#extensions-section .ext-card');
+    const hits = searchMatches(q, cards, window.MarketplaceSearch.EXTENSION_NOISE);
     let visible = 0;
     cards.forEach(c => {
       const hay = (c.textContent + ' ' + (c.dataset.tags || '') + ' ' + (c.dataset.license || '')).toLowerCase();
-      let show = (!q || hay.indexOf(q) !== -1);
+      let show = (!q || hits.has(c));
       if (show) {
         for (let i = 0; i < facets.length; i++) {
           const f = facets[i], vals = active[f];
@@ -4177,10 +4226,10 @@ extensions: []</pre>
     const filtering = !!q || facets.length > 0;
 
     const cards = document.querySelectorAll('#skills-section .skill-card');
+    const hits = searchMatches(q, cards, window.MarketplaceSearch.SKILL_NOISE);
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '') + ' ' + (c.dataset.license || '')).toLowerCase();
-      let show = (!q || hay.indexOf(q) !== -1);
+      let show = (!q || hits.has(c));
       if (show) {
         for (let i = 0; i < facets.length; i++) {
           const f = facets[i], vals = active[f];
@@ -4228,10 +4277,10 @@ extensions: []</pre>
   /* ── Workflows — static HTML ───────────────────────────────── */
   function filterWorkflows(q) {
     const cards = document.querySelectorAll('#workflows-section .wf-card');
+    const hits = searchMatches(q, cards, window.MarketplaceSearch.WORKFLOW_NOISE);
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '')).toLowerCase();
-      const show = !q || hay.indexOf(q) !== -1;
+      const show = !q || hits.has(c);
       c.style.display = show ? '' : 'none';
       if (show) visible++;
     });
