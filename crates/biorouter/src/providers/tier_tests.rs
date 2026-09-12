@@ -291,11 +291,11 @@ fn only_a_loopback_host_reads_as_this_machine() {
 #[test]
 fn versa_demotes_when_its_endpoint_is_not_the_ucsf_gateway() {
     use crate::privacy::ProviderTier::{Private, Public};
-    // versa_azure reads AZURE_OPENAI_ENDPOINT, the same key the public
-    // azure_openai provider reads, and versa_bedrock falls back to
-    // AWS_ENDPOINT_URL_BEDROCK_RUNTIME, which bedrock.rs sets PROCESS-GLOBALLY
-    // with std::env::set_var. The shipped constants are asserted rather than
-    // their text, so moving a default off the gateway fails here too.
+    // Both Versa endpoints are user-writable config (VERSA_AZURE_ENDPOINT,
+    // VERSA_BEDROCK_ENDPOINT), and until 2026-09-11 each also read the public
+    // card's keys: AZURE_OPENAI_ENDPOINT, and AWS_ENDPOINT_URL_BEDROCK plus the
+    // process environment. The shipped constants are asserted rather than their
+    // text, so moving a default off the gateway fails here too.
     assert_eq!(versa_tier_for_endpoint(VERSA_AZURE_ENDPOINT), Private);
     assert_eq!(
         versa_tier_for_endpoint("https://unified-api.ucsf.edu/general"),

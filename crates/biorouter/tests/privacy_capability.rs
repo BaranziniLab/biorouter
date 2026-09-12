@@ -136,18 +136,48 @@ const EXPECTED: &[Site] = &[
     Site {
         needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/workspace_inspector.rs",
-        count: 1,
-        what: "`WorkspaceCrossingInspector::inspect`, the first-crossing \
-               disclosure. A `ToolInspector` runs BEFORE the dispatch that would \
-               admit a capability — that is the point of an inspector — so there \
-               is none in scope to inherit, and the alternative to sampling here \
-               is not inheriting but deciding on `Config::global()`, which is the \
-               bug this type exists to prevent. Sampled ONCE per batch rather than \
-               per request, because two calls in one batch must not be able to \
-               gate on two different models, and only after a cheap name check \
-               has established that the batch contains a cross-session write at \
-               all: an ordinary turn must not pay a provider-mutex read for a \
-               disclosure that cannot apply to it",
+        count: 2,
+        what: "TWO inspectors in this file, each deciding for a batch it sees \
+               BEFORE the dispatch that would admit a capability — that is the \
+               point of an inspector — so neither has one in scope to inherit on \
+               the ordinary agent loop, and the alternative to sampling is not \
+               inheriting but deciding on `Config::global()`, which is the bug \
+               this type exists to prevent. \
+               (1) `WorkspaceCrossingInspector`, the first-crossing disclosure, \
+               sampled ONCE per batch rather than per request, because two calls \
+               in one batch must not be able to gate on two different models, and \
+               only after a cheap name check has established that the batch \
+               contains a cross-session write at all: an ordinary turn must not \
+               pay a provider-mutex read for a disclosure that cannot apply to \
+               it. \
+               (2) `WorkspaceMutationInspector`'s `workspace_set_tools` \
+               pre-flight (QA finding F4). The pair it samples is handed to \
+               `set_tools_preflight_refusal` → `preflight_set_tools`, which asks \
+               §7's write row (`refuse_unless_writable`), Gate F reach for each \
+               ADDED extension, the manageability refusal for each REMOVED one, \
+               and `privacy::bind_allowed` for a provider switch — so the answer \
+               is a Deny carrying the handler's own sentence, the always-confirm \
+               card when the change is one §5 asks about, or silence and on to \
+               dispatch; a card for a change this caller's model may not make \
+               asks the user to authorise nothing. It is NOT the \
+               gate: `handle_set_tools` re-runs the same pre-flight against the \
+               capability the call is finally admitted on, so a model swapped \
+               between inspection and dispatch can only make this sample stale in \
+               the fail-safe direction. \
+               ⚠ Each funnels into its OWN `inspect_with_pinned_capability`, \
+               and in both a pinned pair WINS and the provider mutex is never \
+               read — but by different mechanisms, so grep for the right one: (2) \
+               binds `let mut sampled = capability` up front and memoises into \
+               it, while (1) has no `sampled` binding at all and matches the \
+               `Option` once at its sample point, after the early return above. \
+               The only caller that pins a pair is the coding-agent bridge, which \
+               threads the one it fixed at issue time so a bridged child's calls \
+               cannot re-read the flag across the process boundary; the agent \
+               loop, the approval relay and the non-capability entry point pass \
+               `None`. (2) additionally samples LAZILY — inside the \
+               `is_set_tools_call` arm only — so a batch carrying no \
+               `workspace_set_tools` call samples nothing at all, and one \
+               carrying two still gates on one model",
     },
     Site {
         needle: "CallCapability::sample(",
