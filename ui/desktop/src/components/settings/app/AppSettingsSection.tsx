@@ -179,6 +179,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               checked={menuBarIconEnabled}
               onCheckedChange={handleMenuBarIconToggle}
               variant="mono"
+              aria-label="Menu bar icon"
             />
           </div>
 
@@ -195,13 +196,14 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 checked={dockIconEnabled}
                 onCheckedChange={handleDockIconToggle}
                 variant="mono"
+                aria-label="Dock icon"
               />
             </div>
           )}
 
           <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <p className="text-label text-text-default">Prevent Sleep</p>
+              <p className="text-label text-text-default">Prevent sleep</p>
               <p className="mt-0.5 max-w-md text-supporting text-text-muted">
                 Keep your computer awake while Biorouter is running a task (screen can still lock)
               </p>
@@ -210,13 +212,14 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               checked={wakelockEnabled}
               onCheckedChange={handleWakelockToggle}
               variant="mono"
+              aria-label="Prevent sleep"
             />
           </div>
 
           {COST_TRACKING_ENABLED && (
             <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
               <div className="min-w-0 flex-1">
-                <p className="text-label text-text-default">Cost Tracking</p>
+                <p className="text-label text-text-default">Cost tracking</p>
                 <p className="mt-0.5 max-w-md text-supporting text-text-muted">
                   Show model pricing and usage costs
                 </p>
@@ -225,6 +228,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 checked={showPricing}
                 onCheckedChange={handleShowPricingToggle}
                 variant="mono"
+                aria-label="Cost tracking"
               />
             </div>
           )}
