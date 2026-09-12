@@ -169,8 +169,7 @@ async fn handle_local_llamacpp_setup(config: &Config) -> anyhow::Result<()> {
     match test_provider_configuration("llamacpp", model, false, None).await {
         Ok(()) => {
             spin.stop(style("Llama Server is ready").green());
-            config.set_biorouter_provider("llamacpp")?;
-            config.set_biorouter_model(model)?;
+            config.set_biorouter_provider_and_model("llamacpp", model)?;
             print_config_file_saved()?;
             Ok(())
         }
@@ -817,8 +816,7 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     match test_provider_configuration(provider_name, &model, toolshim_enabled, toolshim_model).await
     {
         Ok(()) => {
-            config.set_biorouter_provider(provider_name)?;
-            config.set_biorouter_model(&model)?;
+            config.set_biorouter_provider_and_model(provider_name, &model)?;
             print_config_file_saved()?;
             Ok(true)
         }

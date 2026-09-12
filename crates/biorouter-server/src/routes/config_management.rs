@@ -1644,10 +1644,15 @@ pub async fn set_config_provider(
     create_with_default_model(&provider)
         .await
         .and_then(|_| {
-            let config = Config::global();
-            config
-                .set_biorouter_provider(provider)
-                .and_then(|_| config.set_biorouter_model(model))
+            // ⚠ ONE write, not two. `set_biorouter_provider` followed by
+            // `set_biorouter_model` left `config.yaml` holding the new provider
+            // beside the old model — measured at ~55 ms of `versa_azure` next
+            // to `gpt-6-astra` — and a chat started in that window binds a pair
+            // that was never chosen. The provider decides the session's privacy
+            // capability, so a mismatched pair is a privacy-relevant outcome,
+            // not only a cosmetic one.
+            Config::global()
+                .set_biorouter_provider_and_model(provider, model)
                 .map_err(|e| anyhow::anyhow!(e))
         })
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
@@ -1778,6 +1783,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
+
     use http::HeaderMap;
 
     use super::*;
