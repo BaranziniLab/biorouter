@@ -273,7 +273,8 @@ fn terms(query: &str, noise: &[&str]) -> Vec<String> {
 /// licence and the version were: `lab` alone would be fixed by dropping
 /// `organization`, and nothing can drop a name. What all three share is a
 /// three-letter term with no boundary on either side. On the skills shelf the
-/// same rule had `ing` matching 88 of 129, `ion` 84 and `ica` 33.
+/// same rule had `ing` matching 88 of 129 skills, `ica` 85, `ion` 84, `cal` 80
+/// and `tio` 77 — every one of them a morpheme.
 ///
 /// So an unanchored match needs either [`MIN_INFIX_CHARS`] characters, or half
 /// the word it sits in. Two arms rather than one number, because each closes a

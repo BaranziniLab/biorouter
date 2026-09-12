@@ -310,8 +310,9 @@ export function searchTerms(query: string, noise: readonly string[] = []): strin
  * infix of `baranzinilab` (the organization) and 33 each of `gen`'s and `age`'s
  * only as an infix of `…Agent` in the extension's own NAME — so this is a rule,
  * not a field: dropping `organization` fixes one of the three, and nothing can
- * drop a name. In Browse skills the same rule had `ing` matching 88 of 129, `ion`
- * 84 and `ica` 33.
+ * drop a name. In Browse skills the same rule had `ing` matching 88 of 129
+ * skills, `ica` 85, `ion` 84, `cal` 80 and `tio` 77 — every one of them a
+ * morpheme.
  *
  * So an unanchored match needs either {@link MIN_INFIX_CHARS} characters or half
  * the word it sits in. Two arms rather than one number, because each closes a
