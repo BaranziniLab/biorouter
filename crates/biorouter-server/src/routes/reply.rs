@@ -1782,7 +1782,7 @@ pub const STEER_NO_KEY: &str =
 /// The gate of `POST /agent/cancel`, `POST /agent/continuation/abandon` and
 /// `POST /agent/continuation/recover`, asked before any of them touches the
 /// turn. **`POST /interrupt` is deliberately not one of them** — see
-/// [`authorize_steer`], which says why the argument below does not reach it.
+/// [`steer_refusal`], which says why the argument below does not reach it.
 ///
 /// * **A daemon that holds a user-action key** — the desktop application's —
 ///   takes the proof and nothing else, exactly as before; `Unproven` is the
@@ -1860,15 +1860,23 @@ async fn authorize_turn_control(
 /// It takes no session id and asks nothing about the chat, so the refusal is
 /// byte-for-byte the same for every chat — which keeps a route no proof can ever
 /// satisfy from becoming a per-id oracle.
-fn authorize_steer(headers: &HeaderMap) -> Result<(), axum::response::Response> {
+///
+/// Returns the refusal rather than a `Result<(), Response>`: there is no success
+/// value to carry, and a `Response` is 128 bytes, which `clippy::result_large_err`
+/// refuses in a synchronous function. [`authorize_turn_control`] keeps the
+/// `Result` shape only because it is `async`, so the lint sees a future rather
+/// than the `Result`.
+fn steer_refusal(headers: &HeaderMap) -> Option<axum::response::Response> {
     match user_action_proof(headers) {
-        UserActionProof::Proven => Ok(()),
-        UserActionProof::Unproven => Err(StatusCode::FORBIDDEN.into_response()),
-        UserActionProof::NoKeyInstalled => Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "message": STEER_NO_KEY })),
-        )
-            .into_response()),
+        UserActionProof::Proven => None,
+        UserActionProof::Unproven => Some(StatusCode::FORBIDDEN.into_response()),
+        UserActionProof::NoKeyInstalled => Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "message": STEER_NO_KEY })),
+            )
+                .into_response(),
+        ),
     }
 }
 
@@ -1910,7 +1918,9 @@ pub async fn interrupt(
     headers: HeaderMap,
     Json(req): Json<InterruptRequest>,
 ) -> Result<(StatusCode, Json<InterruptAccepted>), axum::response::Response> {
-    authorize_steer(&headers)?;
+    if let Some(refusal) = steer_refusal(&headers) {
+        return Err(refusal);
+    }
     if req.text.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST.into_response());
     }
@@ -1938,9 +1948,9 @@ pub async fn interrupt(
     if !state.is_turn_active(&req.session_id) {
         return Err(StatusCode::CONFLICT.into_response());
     }
-    // `authorize_steer` above is the authority for this attribution, and it
-    // admits none but `Proven` — which is why the stamp is unconditional here on
-    // every daemon. Keep it independent of the session store: a live agent can
+    // `steer_refusal` above is the authority for this attribution, and it
+    // refuses everything but `Proven` — which is why the stamp is unconditional
+    // here on every daemon. Keep it independent of the session store: a live agent can
     // legitimately outlast or race its durable row, but an accepted human steer
     // must never lose its provenance because that auxiliary lookup failed.
     let provenance = Some(biorouter::conversation::message::MessageProvenance {

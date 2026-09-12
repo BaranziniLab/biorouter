@@ -26,7 +26,7 @@
 //!   [the gated list](self#the-gated-list). `POST /agent/cancel` requires
 //!   user-action proof on a daemon that holds a key and is on the list on one
 //!   that does not (SD-11); `POST /interrupt` requires the proof on **either**
-//!   kind and so is on neither (SD-11a — `routes::reply::authorize_steer` says
+//!   kind and so is on neither (SD-11a — `routes::reply::steer_refusal` says
 //!   why the steer did not move with the Stop); `GET
 //!   /sessions/{id}/extensions`, `GET /sessions/{id}/usage`, `PUT
 //!   /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_values` and
@@ -153,7 +153,7 @@
 //! | `POST /agent/continuation/recover` | Resumes a parked continuation in the named session. Gates directly. |
 //! | `POST /agent/update_from_session` | Adopts another session's provider configuration. Gates directly. |
 //! | `POST /agent/update_provider` · `restart` · `stop` · `remove_extension` | Gate through [`authorize_agent_control`](../agent/fn.authorize_agent_control.html), which calls [`session_reach`] and then reads the row. |
-//! | `POST /agent/cancel` · `/agent/continuation/abandon` | Stop and settle the named session's turn. **On a daemon that holds no user-action key only** (serve decision SD-11): there `routes::reply::authorize_turn_control` gates them through the same `authorize_agent_control` as the row above, so a Stop admits exactly the callers `/agent/stop` does. A daemon that holds a key asks them for the proof instead, which reaches every chat. `POST /interrupt` is NOT here: it asks for the proof on both kinds of daemon, so it never reaches this gate — see `routes::reply::authorize_steer`. |
+//! | `POST /agent/cancel` · `/agent/continuation/abandon` | Stop and settle the named session's turn. **On a daemon that holds no user-action key only** (serve decision SD-11): there `routes::reply::authorize_turn_control` gates them through the same `authorize_agent_control` as the row above, so a Stop admits exactly the callers `/agent/stop` does. A daemon that holds a key asks them for the proof instead, which reaches every chat. `POST /interrupt` is NOT here: it asks for the proof on both kinds of daemon, so it never reaches this gate — see `routes::reply::steer_refusal`. |
 //!
 //! ⚠ **Two spellings, one list.** The last two rows reach the gate through a
 //! helper rather than by naming it, which is why a scan for the literal
@@ -1201,7 +1201,7 @@ mod tests {
         // `get_session_extensions` are the genuinely ungated pair: `interrupt`
         // requires the user's proof instead — on a keyless daemon too, which is
         // the one way it differs from the Stop beside it (SD-11a,
-        // `reply::authorize_steer`) — and `get_session_extensions` is on the
+        // `reply::steer_refusal`) — and `get_session_extensions` is on the
         // module header's open residual. Two more reply.rs controls sit on
         // either side of the five rows that file contributes.
         //

@@ -438,7 +438,7 @@ changing direction. The nearest thing that caller already has is cancel-then-rep
 private chat to a public caller, and the subagent rule still refuses every child's chat — but it is
 a capability asymmetry, and the dominance argument is the only thing this record had to offer for
 it. Hence the exclusion. (Found in the security review of this change, before it merged;
-`reply.rs::authorize_steer` carries the same reasoning at the code.)
+`reply.rs::steer_refusal` carries the same reasoning at the code.)
 
 **Why the other three routes move together.** Stop-and-Send cancels with a continuation, and the
 continuation mints a lease that holds the chat for its replacement: until the lease is used or

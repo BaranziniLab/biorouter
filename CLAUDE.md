@@ -1250,7 +1250,7 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   reaches the same effect through `/agent/stop` and `/reply`, and `/reply` is refused `409` by
   the BR-33 single-turn lock in the exact state where a steer lands — so admitting it would add
   silent mid-turn injection into a turn already in flight, which nothing else there can do
-  (`reply.rs::authorize_steer`). Its keyless refusal carries `STEER_NO_KEY` and is **never an
+  (`reply.rs::steer_refusal`). Its keyless refusal carries `STEER_NO_KEY` and is **never an
   empty 403**, because an empty turn-control 403 is how `biorouter session attach` recognises a
   daemon that holds a key and asks the person for it. A subagent's tab stays refused throughout.
   ⚠ Keyless behaviour can only be tested in its own binary (the digest is a process-global

@@ -79,7 +79,7 @@ const SUBAGENT_USER_ACTION_REQUIRED: &str =
 /// and `session_reach::SESSION_REACH_NO_KEY` already use. Since SD-11 this is
 /// also what a keyless daemon answers a Stop aimed at a subagent's turn, because
 /// that route gates through [`authorize_agent_control`] there. A *steer* at the
-/// same turn is refused one step earlier, by `reply::authorize_steer`, which
+/// same turn is refused one step earlier, by `reply::steer_refusal`, which
 /// never reads the row — so the two sentences differ, and both open by naming
 /// this daemon rather than the caller.
 const SUBAGENT_CONTROL_NO_KEY: &str =
@@ -186,7 +186,7 @@ async fn read_update_session(
 /// callers `/agent/stop` admits. Tightening this therefore tightens those three
 /// too, which is the point — but it is a change to who may press Stop in a
 /// browser, and `tests/turn_control_no_user_key.rs` will say so. `/interrupt` is
-/// NOT among them: `reply::authorize_steer` keeps the proof on every daemon,
+/// NOT among them: `reply::steer_refusal` keeps the proof on every daemon,
 /// because the dominance argument that admits a Stop does not reach a steer.
 pub(crate) async fn authorize_agent_control(
     state: &AppState,
