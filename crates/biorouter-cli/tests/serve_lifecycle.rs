@@ -17,6 +17,10 @@
 //! cargo test -p biorouter-cli --test serve_lifecycle
 //! ```
 //!
+//! The same harness covers the browser token `serve` hands the daemon, because
+//! the only way to know which token a daemon ended up with is to present one and
+//! read the answer.
+//!
 //! Unix only: the second layer (`--exit-with-parent`) is Unix only, and there
 //! is no SIGTERM to send on Windows.
 #![cfg(unix)]
@@ -166,6 +170,14 @@ struct Served {
 
 impl Served {
     fn start() -> Self {
+        Self::start_with(&["--token", TOKEN], &[])
+    }
+
+    /// `serve` with `args` appended, and `env` set in its environment.
+    ///
+    /// Split out for the browser-token tests: what token the daemon is actually
+    /// holding cannot be read from the outside, only presented to.
+    fn start_with(args: &[&str], env: &[(&str, &str)]) -> Self {
         require_a_daemon_from_this_tree();
 
         let root = tempfile::tempdir().expect("temp dir");
@@ -181,10 +193,13 @@ impl Served {
         let log = std::fs::File::create(root.path().join("serve.log")).unwrap();
 
         let port = free_port();
-        let serve = Command::new(biorouter())
-            .args(["serve", "--port", &port.to_string(), "--token", TOKEN])
+        let mut command = Command::new(biorouter());
+        command
+            .args(["serve", "--port", &port.to_string()])
+            .args(args)
             .arg("--web-dir")
-            .arg(&web)
+            .arg(&web);
+        let serve = command
             // Nothing here may touch the developer's own configuration,
             // sessions or keychain.
             .env("HOME", &home)
@@ -194,6 +209,7 @@ impl Served {
             // leak into what is under test.
             .env_remove("BIOROUTER_SERVE_UI")
             .env_remove("BIOROUTER_BROWSER_TOKEN")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -303,6 +319,63 @@ impl Drop for Served {
                 .status();
         }
     }
+}
+
+/// The measured defect (2026-09-12): `BIOROUTER_BROWSER_TOKEN=<t> biorouter
+/// serve` printed a RANDOM token and answered `?t=<t>` with 401, so the systemd
+/// deployment in `docs/deployment/headless-linux.md` — an environment file whose
+/// whole purpose is a token that survives a restart — could not work as written.
+///
+/// The daemon holds the token and nothing reads it back, so the only honest
+/// check is to present the operator's token to the running daemon: 303 is the
+/// exchange for a cookie, 401 is a token it has never heard of.
+///
+/// Fails the shipped command with `Some(401)`.
+#[test]
+fn serve_hands_the_daemon_the_token_the_operator_set_in_its_environment() {
+    let served = Served::start_with(&[], &[("BIOROUTER_BROWSER_TOKEN", "token-from-the-file")]);
+    assert_eq!(
+        http_status(served.port, "/?t=token-from-the-file"),
+        Some(303),
+        "the operator's own token must open the interface:\n{}",
+        served.log()
+    );
+    assert_eq!(
+        http_status(served.port, "/?t=some-other-token"),
+        Some(401),
+        "and nothing else may"
+    );
+}
+
+/// `--token` outranks the environment it runs in, as a command line does.
+#[test]
+fn the_token_flag_outranks_the_environment() {
+    let served = Served::start_with(
+        &["--token", TOKEN],
+        &[("BIOROUTER_BROWSER_TOKEN", "from-the-file")],
+    );
+    assert_eq!(http_status(served.port, &format!("/?t={TOKEN}")), Some(303));
+    assert_eq!(http_status(served.port, "/?t=from-the-file"), Some(401));
+}
+
+/// `--no-token` is a refusal to have a gate. A token this shell exports must not
+/// put one back: the daemon would demand it while the URL `serve` printed
+/// carries none, so every open would be a 401 nothing on screen explains.
+///
+/// Fails a fix that honours the variable without removing it from the child's
+/// environment.
+#[test]
+fn no_token_is_not_undone_by_a_token_in_the_environment() {
+    let served = Served::start_with(
+        &["--no-token"],
+        &[("BIOROUTER_BROWSER_TOKEN", "from-the-file")],
+    );
+    assert_eq!(
+        http_status(served.port, "/"),
+        Some(200),
+        "--no-token means the bare address opens the interface:\n{}",
+        served.log()
+    );
 }
 
 #[test]

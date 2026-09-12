@@ -1616,7 +1616,11 @@ enum Command {
         port: u16,
 
         /// Use this access token instead of a freshly generated one
-        #[arg(long, help = "Use this access token instead of generating one")]
+        #[arg(
+            long,
+            help = "Use this access token instead of generating one. Takes precedence over \
+                    BIOROUTER_BROWSER_TOKEN, which is read when this is not given."
+        )]
         token: Option<String>,
 
         /// Serve without an access token

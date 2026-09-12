@@ -44,6 +44,18 @@
 //! Before this, the only thing that ever stopped the daemon was a terminal's
 //! Ctrl-C, which reaches the whole foreground process group and so the daemon
 //! directly. `kill <pid of serve>` from anywhere else left it running.
+//!
+//! # Where the browser token comes from
+//!
+//! `--token`, else `BIOROUTER_BROWSER_TOKEN` from this shell, else one minted
+//! for this launch — the same order [`resolve_web_dir`] uses for the interface
+//! directory, and for the same reason: a command line outranks the environment
+//! it runs in, and both outrank a default. The variable is what a service unit
+//! has to work with (a systemd `EnvironmentFile`, read only by the service
+//! user), and it is the one way an address stays valid across a restart that
+//! nobody is watching. It used to be ignored here and overwritten with a random
+//! token, so the documented service deployment printed an address the operator
+//! could not know and refused the one they had published.
 
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
 use anyhow::{bail, Context, Result};
@@ -94,11 +106,12 @@ pub async fn handle_serve(
 
     let web_dir = resolve_web_dir(web_dir)?;
 
-    let browser_token = if no_token {
-        None
-    } else {
-        Some(token.unwrap_or_else(|| random_hex(32)))
-    };
+    let browser_token = choose_browser_token(
+        token,
+        no_token,
+        std::env::var("BIOROUTER_BROWSER_TOKEN").ok(),
+        || random_hex(32),
+    );
     let secret_key = random_hex(32);
 
     // Fail on an occupied port here, with a clear message, rather than letting
@@ -121,16 +134,23 @@ pub async fn handle_serve(
     command
         .arg("--exit-with-parent")
         .arg(std::process::id().to_string());
+    match browser_token.value() {
+        Some(token) => {
+            command.env("BIOROUTER_BROWSER_TOKEN", token);
+        }
+        // ⚠ Removed, not merely unset. The child inherits this shell's
+        // environment, so `--no-token` in a shell that exports a token would
+        // leave the daemon demanding one while the URL printed below carries
+        // none: every open a 401, and nothing on screen to say why.
+        None => {
+            command.env_remove("BIOROUTER_BROWSER_TOKEN");
+        }
+    }
     let mut child = command
         .env("BIOROUTER_HOST", &host)
         .env("BIOROUTER_PORT", port.to_string())
         .env("BIOROUTER_SERVER__SECRET_KEY", &secret_key)
         .env("BIOROUTER_SERVE_UI", &web_dir)
-        .envs(
-            browser_token
-                .iter()
-                .map(|t| ("BIOROUTER_BROWSER_TOKEN", t.as_str())),
-        )
         // See the module documentation: no proof-of-user digest, on purpose.
         .stdin(Stdio::null())
         // A backstop for a panic unwinding through here. Every ordinary path
@@ -148,14 +168,8 @@ pub async fn handle_serve(
             }
         }
 
-        let url = browser_url(&host, port, browser_token.as_deref());
-        print_banner(
-            &url,
-            &host,
-            port,
-            browser_token.as_deref(),
-            bind_is_loopback,
-        );
+        let url = browser_url(&host, port, browser_token.value());
+        print_banner(&url, &host, port, &browser_token, bind_is_loopback);
         if open_browser {
             let _ = webbrowser::open(&url);
         }
@@ -183,7 +197,7 @@ fn print_banner(
     url: &str,
     host: &str,
     port: u16,
-    browser_token: Option<&str>,
+    browser_token: &BrowserToken,
     bind_is_loopback: bool,
 ) {
     println!("\n  Biorouter is serving at\n\n      {url}\n");
@@ -191,7 +205,7 @@ fn print_banner(
         match reachable_address(host) {
             Some(addr) => println!(
                 "  From another machine on this network:\n\n      {}\n",
-                browser_url(&addr, port, browser_token)
+                browser_url(&addr, port, browser_token.value())
             ),
             // The old implementation fell back to 127.0.0.1 here, which printed
             // a URL that could not possibly work from the other machine the user
@@ -203,11 +217,7 @@ fn print_banner(
             ),
         }
     }
-    if browser_token.is_none() {
-        println!("  No access token: anything that can reach this port can use it.\n");
-    } else {
-        println!("  The token above is shown once, and is new on every launch.\n");
-    }
+    println!("  {}\n", browser_token.provenance());
     println!("  The model is whichever `biorouter configure` chose; a browser cannot change it.");
     println!("  Press Ctrl-C to stop.\n");
 }
@@ -305,6 +315,83 @@ fn ask_to_stop(child: &Child) {
 /// passed.
 #[cfg(not(unix))]
 fn ask_to_stop(_child: &Child) {}
+
+/// The access token this launch will use, and where it came from.
+///
+/// The provenance is carried rather than recomputed because it changes what the
+/// operator is told: "shown once, and new on every launch" is true of a minted
+/// token and false of one they chose, and printing it over an operator's own
+/// token would be an instruction to go looking for a new address that does not
+/// exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BrowserToken {
+    /// `--no-token`: the gate is off. Only reachable for a loopback bind.
+    Off,
+    /// `--token <t>`.
+    Flag(String),
+    /// `BIOROUTER_BROWSER_TOKEN` in this shell.
+    Variable(String),
+    /// Minted for this launch, because nothing named one.
+    Minted(String),
+}
+
+impl BrowserToken {
+    /// The token itself, or `None` when there is no gate.
+    pub(crate) fn value(&self) -> Option<&str> {
+        match self {
+            BrowserToken::Off => None,
+            BrowserToken::Flag(t) | BrowserToken::Variable(t) | BrowserToken::Minted(t) => Some(t),
+        }
+    }
+
+    /// The line under the banner.
+    fn provenance(&self) -> &'static str {
+        match self {
+            BrowserToken::Off => "No access token: anything that can reach this port can use it.",
+            BrowserToken::Flag(_) => {
+                "The token above is the one --token named; it works until you change it."
+            }
+            BrowserToken::Variable(_) => {
+                "The token above came from BIOROUTER_BROWSER_TOKEN; it works until you change it."
+            }
+            BrowserToken::Minted(_) => "The token above is shown once, and is new on every launch.",
+        }
+    }
+}
+
+/// Decide the token: `--no-token`, else `--token`, else
+/// `BIOROUTER_BROWSER_TOKEN`, else one minted here.
+///
+/// `mint` is passed in so a test can state the order without matching a random
+/// string, and the variable is passed in rather than read here for the reason
+/// [`choose_web_dir`] gives: other tests in this binary read the process
+/// environment, and a test that sets one races them.
+///
+/// A blank variable reads as unset, exactly as `BIOROUTER_SERVE_UI`'s does. The
+/// value is trimmed: it arrives from an environment file, where a stray newline
+/// or a trailing space is a typo rather than part of a credential, and a token
+/// that differs from the published one by an invisible byte fails as a flat 401
+/// with nothing on screen to explain it.
+pub(crate) fn choose_browser_token(
+    flag: Option<String>,
+    no_token: bool,
+    variable: Option<String>,
+    mint: impl FnOnce() -> String,
+) -> BrowserToken {
+    // ⚠ First, and before the variable is even looked at. `--no-token` is a
+    // refusal to have a gate; a token this shell happens to export is not a
+    // reason to put one back that the printed URL would not carry.
+    if no_token {
+        return BrowserToken::Off;
+    }
+    if let Some(token) = flag {
+        return BrowserToken::Flag(token);
+    }
+    match variable.map(|t| t.trim().to_string()) {
+        Some(token) if !token.is_empty() => BrowserToken::Variable(token),
+        _ => BrowserToken::Minted(mint()),
+    }
+}
 
 /// The URL to open, with the browser token in it.
 ///
@@ -632,6 +719,115 @@ mod tests {
         assert_eq!(a.len(), 64, "32 bytes is 64 hex characters");
         assert_ne!(a, b);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    fn minted() -> String {
+        "minted".to_string()
+    }
+
+    /// The order, stated once: flag, then variable, then a minted token.
+    #[test]
+    fn the_token_comes_from_the_flag_then_the_variable_then_a_fresh_one() {
+        assert_eq!(
+            choose_browser_token(Some("from-the-flag".into()), false, None, minted),
+            BrowserToken::Flag("from-the-flag".into())
+        );
+        assert_eq!(
+            choose_browser_token(None, false, Some("from-the-file".into()), minted),
+            BrowserToken::Variable("from-the-file".into())
+        );
+        assert_eq!(
+            choose_browser_token(None, false, None, minted),
+            BrowserToken::Minted("minted".into())
+        );
+    }
+
+    /// A command line outranks the environment it runs in, as it does for
+    /// `--web-dir` against `BIOROUTER_SERVE_UI`.
+    #[test]
+    fn the_token_flag_takes_precedence_over_the_variable() {
+        assert_eq!(
+            choose_browser_token(
+                Some("from-the-flag".into()),
+                false,
+                Some("from-the-file".into()),
+                minted
+            ),
+            BrowserToken::Flag("from-the-flag".into())
+        );
+    }
+
+    /// The measured defect (2026-09-12): `BIOROUTER_BROWSER_TOKEN=<t> biorouter
+    /// serve` printed a random token and answered `?t=<t>` with 401, so the
+    /// systemd deployment in `docs/deployment/headless-linux.md` — whose whole
+    /// point is a token that survives a restart — could not work as written.
+    ///
+    /// Fails the shipped command, which minted a token here.
+    #[test]
+    fn an_operator_supplied_token_is_used_rather_than_overwritten() {
+        let chosen = choose_browser_token(None, false, Some("token-from-the-file".into()), || {
+            panic!("a token was named; nothing may be minted over it")
+        });
+        assert_eq!(chosen.value(), Some("token-from-the-file"));
+        assert!(
+            chosen.provenance().contains("BIOROUTER_BROWSER_TOKEN"),
+            "the operator must be told the token is theirs, not a new one: {}",
+            chosen.provenance()
+        );
+    }
+
+    /// Blank reads as unset, as it does for `BIOROUTER_SERVE_UI` — and a value
+    /// that is only whitespace is a mistake in an environment file, not a
+    /// credential.
+    #[test]
+    fn a_blank_token_variable_is_not_a_choice() {
+        for blank in ["", "  ", "\n"] {
+            assert_eq!(
+                choose_browser_token(None, false, Some(blank.into()), minted),
+                BrowserToken::Minted("minted".into()),
+                "{blank:?}"
+            );
+        }
+    }
+
+    /// A newline an environment file left behind is not part of the credential.
+    #[test]
+    fn a_token_from_the_environment_is_trimmed() {
+        assert_eq!(
+            choose_browser_token(None, false, Some("  tok\n".into()), minted),
+            BrowserToken::Variable("tok".into())
+        );
+    }
+
+    /// `--no-token` is a refusal to have a gate. An inherited token must not put
+    /// one back: the daemon would demand it and the URL printed here would not
+    /// carry it, so every open would be a 401 with nothing on screen to say why.
+    #[test]
+    fn no_token_beats_a_token_this_shell_happens_to_export() {
+        let chosen = choose_browser_token(None, true, Some("inherited".into()), || {
+            panic!("--no-token mints nothing")
+        });
+        assert_eq!(chosen, BrowserToken::Off);
+        assert_eq!(chosen.value(), None);
+    }
+
+    /// The tests above pass the variable in, so on their own they would pass
+    /// against a build that never read it. This one goes through the real
+    /// environment, exactly as `serve_reads_the_variable_it_documents` does for
+    /// the interface directory.
+    #[test]
+    fn serve_reads_the_token_variable_it_documents() {
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_BROWSER_TOKEN",
+            Some("token-from-the-environment".to_string()),
+        )]);
+        let chosen = choose_browser_token(
+            None,
+            false,
+            std::env::var("BIOROUTER_BROWSER_TOKEN").ok(),
+            minted,
+        );
+        assert_eq!(chosen.value(), Some("token-from-the-environment"));
     }
 
     /// The error is the only thing the reader has, so it must name every place

@@ -141,6 +141,12 @@ sudo chmod 600 /etc/biorouter/env
 
 Generate the token with something that is actually random, for example `openssl rand -hex 32`.
 
+`serve` reads `BIOROUTER_BROWSER_TOKEN` from the environment the unit gives it and uses that token
+as the address's `?t=`, so the URL below is the one it prints. (Until 2026-09 it did not: it minted
+a random token over the operator's own and answered the published address with 401. Pass `--token`
+only from an interactive shell — on a service's `ExecStart` it would be visible in `ps` to every
+user on the host.)
+
 ```ini
 # /etc/systemd/system/biorouter.service
 [Unit]
