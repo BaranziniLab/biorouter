@@ -329,10 +329,19 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
-            biorouter_server::routes::is_local_origin(origin.to_str().unwrap_or(""))
+            crate::routes::is_local_origin(origin.to_str().unwrap_or(""))
         }))
         .allow_methods(Any)
         .allow_headers(Any);
+
+    // The WebSocket gates admit the daemon's own origin and, beside it, at most
+    // one renderer origin its launcher declared: the dev renderer's vite page
+    // (QA-D F7). Resolved here rather than at the first upgrade, so a bad
+    // declaration is warned about at startup, and so the log says which origin
+    // a refused dev socket should have presented.
+    if let Some(renderer) = crate::routes::declared_renderer_origin() {
+        info!("the WebSocket gates admit the declared renderer origin {renderer}");
+    }
 
     let app = crate::routes::configure(app_state.clone(), secret_key.clone())
         .layer(middleware::from_fn_with_state(

@@ -1281,9 +1281,24 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   `origin + '/headless'`). They had **no authentication at all** on the old
   binary and `fs_read` had no path validation; the port confines every filesystem handler to
   an allowlist and refuses credential stores by name.
-- **WebSocket origins**: `routes::origin_matches_host` compares `Origin` to the request's own
-  `Host`. That is a same-origin test, not a wildcard, and it is what lets a browser reach the
-  daemon at a LAN address `is_local_origin` has never heard of.
+- **WebSocket origins**: both socket gates (`/ui/workspace`, `/apps/{id}/agent`) ask
+  `routes::UpgradeOrigin::is_this_daemons` — the `Origin` must match the request's own `Host`
+  in **scheme, host and port** (`origin_matches_host`), which is what lets a browser reach the
+  daemon at a LAN address nobody enumerated. The scheme is `http` unless a proxy in front says
+  `X-Forwarded-Proto: https`, so a TLS proxy must forward both `Host` and that header. The one
+  other origin admitted is a renderer the launcher declares in `BIOROUTER_RENDERER_ORIGIN`:
+  `main.ts` declares the dev renderer's vite origin (loopback `http`) or, packaged, the literal
+  `file://`, and `just debug-server` declares vite's default. ⚠ **`file://` is admitted by NAME
+  but only where it was DECLARED**, and only on the workspace gate — an Electron `file:` page is
+  the one client that opens that socket, while an app's page is served by the daemon over http
+  and so is same-origin with its own. It used to be admitted by name on *every* daemon, which
+  meant a local `.html` opened in a browser cleared the origin gate on a `biorouter serve` host,
+  where `/ui/workspace` is one of only two paths exempt from `check_token`; `serve` now strips
+  the variable from the daemon it spawns. ⚠ Until QA-D F7 (2026-09-11) the gates also took
+  `is_local_origin` — any
+  loopback port, scheme ignored — so every local page's socket passed as the daemon's own.
+  `is_local_origin` is the **CORS** rule now and nothing else; do not hand it back to a socket
+  gate.
 - **`serve` owns its daemon's lifetime**, because the daemon honours the token and serves the
   shell carrying its secret for as long as it runs: stopping `serve` is the only revocation.
   Two layers. Every exit path after the spawn goes through `stop_daemon` (SIGTERM, a 10 s grace,
