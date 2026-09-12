@@ -148,9 +148,40 @@ fn is_secret_name(name: &str) -> bool {
     })
 }
 
+/// A value that is unambiguously a **filesystem path**, and therefore not a
+/// credential — a secret name very often holds the *location* of the secret
+/// rather than the secret (`GOOGLE_APPLICATION_CREDENTIALS=/Users/me/.config/…`,
+/// `PRIVATE_KEY: /etc/ssl/private/server.key`, `CREDENTIALS: /etc/…/admin.conf`),
+/// and redacting those corrupts output the model needs without withholding
+/// anything.
+///
+/// The predicate is deliberately narrow, because it can only ever *permit*: it
+/// wants a leading separator **and** a `.` **and** two separators. No credential
+/// format [`DETECTORS`] recognises can satisfy it — an AWS 40-character secret
+/// is `[A-Za-z0-9/+]` and so has no `.`; `sk-ant-…`, `sk-proj-…`, `AIza…`,
+/// `ghp_…`, `github_pat_…`, `xox?-…` and `hf_…` neither begin with a separator
+/// nor contain a `.`; a JWT has dots but no leading separator. And a real
+/// `aws_secret_access_key = <40 chars>` is caught by the AWS detector, which has
+/// `needs_secret_name: false` and never reaches this function at all.
+fn looks_like_a_path(v: &str) -> bool {
+    let rooted = v.starts_with('/')
+        || v.starts_with("~/")
+        || v.starts_with("./")
+        || v.starts_with("../")
+        || v.starts_with('\\')
+        || {
+            let b = v.as_bytes();
+            b.len() > 2
+                && b[0].is_ascii_alphabetic()
+                && b[1] == b':'
+                && matches!(b[2], b'/' | b'\\')
+        };
+    rooted && v.contains('.') && v.chars().filter(|c| matches!(c, '/' | '\\')).count() >= 2
+}
+
 /// A value worth withholding: long enough to be a credential, and not a
-/// reference to one (`${X}`, `$X`, `<your key>`), a placeholder, or a marker
-/// this module already wrote.
+/// reference to one (`${X}`, `$X`, `<your key>`), a placeholder, a path, or a
+/// marker this module already wrote.
 ///
 /// A *quoted* value is a literal by construction. A bare one may be code — the
 /// model has to read `API_KEY = os.environ["API_KEY"]` or `TOKEN = settings.token`
@@ -165,6 +196,7 @@ fn is_credential_value(value: &str, quoted: bool) -> bool {
         || v.starts_with("[REDACTED")
         || v.eq_ignore_ascii_case("changeme")
         || v.chars().all(|c| matches!(c, '*' | 'x' | 'X' | '.'))
+        || looks_like_a_path(v)
     {
         return false;
     }
@@ -625,6 +657,173 @@ mod tests {
             "BIOROUTER_PROVIDER: versa_azure\nGOOSE_MODEL: gpt-5.5\n",
         ] {
             assert_eq!(redact_text(text), None, "redacted ordinary text: {text}");
+        }
+    }
+
+    /// **The direction no other test in this file looks at.**
+    ///
+    /// Every assertion above asks "did the secret go away?". None asks "did
+    /// anything else go away?" — and an over-matching redactor is invisible to
+    /// that question while being strictly worse than no redactor at all: it
+    /// silently rewrites output the model has to reason about, the model cannot
+    /// tell a value the tool never printed from one this module removed, and
+    /// the damage shows up as the agent being inexplicably wrong rather than as
+    /// a failing test.
+    ///
+    /// So the corpus below is high-entropy-looking but harmless text of the
+    /// kinds a tool call returns all day: git object ids, base64 image data,
+    /// UUIDs, content digests, build hashes, lockfile checksums. Every one of
+    /// them must come back byte-identical.
+    #[test]
+    fn high_entropy_but_harmless_output_passes_through_unmodified() {
+        let corpus: Vec<(&str, String)> = vec![
+            (
+                "git log --oneline",
+                "5181f544 Merge pull request #258 from BaranziniLab/fix\n\
+                 09053a37 Merge pull request #259 from BaranziniLab/census\n"
+                    .to_string(),
+            ),
+            (
+                "git show header (full 40-hex object ids)",
+                "commit 3f2a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a\n\
+                 Merge: 92dd1a42 5181f544\n\
+                 tree a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\n"
+                    .to_string(),
+            ),
+            (
+                "base64 image fragment in a data URI",
+                "<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB\
+                 CAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\">\n"
+                    .to_string(),
+            ),
+            (
+                "raw base64 blob lines",
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQ\n\
+                 DwAEhQGAhKmMIQAAAABJRU5ErkJggg==\n"
+                    .to_string(),
+            ),
+            (
+                "UUIDs, bare and in JSON",
+                "550e8400-e29b-41d4-a716-446655440000\n\
+                 {\"id\": \"da4d6bfb-19e6-42ac-a234-0480934e2617\", \"kind\": \"session\"}\n"
+                    .to_string(),
+            ),
+            (
+                "docker / OCI content digests",
+                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
+                 Digest: sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03\n"
+                    .to_string(),
+            ),
+            (
+                "cargo build artefact hashes",
+                "  Executable unittests src/lib.rs (target/debug/deps/biorouter_mcp-cdb0101110830826)\n"
+                    .to_string(),
+            ),
+            (
+                "Cargo.lock checksum block",
+                "[[package]]\nname = \"regex\"\nversion = \"1.11.1\"\n\
+                 checksum = \"b544ef1b4eac5dc2db33ea63606ae9ffcfac26c1416a2806ae0bf5f56b201191\"\n"
+                    .to_string(),
+            ),
+            (
+                "npm lockfile integrity",
+                "\"integrity\": \"sha512-Dj0Aq2rj3+VM8P7zW6mJkXbcx9Ep4+7uMZYRlHxPtiUoTNerBZ5pcXd4ndnw4kw==\"\n"
+                    .to_string(),
+            ),
+            (
+                "an ssh public key and a known_hosts line",
+                "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDFAKEFAKEFAKEFAKE tester@example\n"
+                    .to_string(),
+            ),
+            (
+                "a hex-encoded random value in prose",
+                "The nonce for this run was 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.\n"
+                    .to_string(),
+            ),
+            (
+                "an env dump of things that only look secret-adjacent",
+                "MAX_TOKENS=4096\nBUILD_ID=20260911.3\nPASSWORD_HASH=$2b$12$abcdefghijklmnop\n\
+                 TOKENIZER=tiktoken\nACCESS_LOG=/var/log/access.log\n"
+                    .to_string(),
+            ),
+            (
+                "a base64 artefact blob behind a non-secret name",
+                "IMAGE_DATA=iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ\n\
+                 ARTIFACT_BLOB: eyJraW5kIjoicmVwb3J0IiwidiI6Mn0K\n"
+                    .to_string(),
+            ),
+            // Measured over-matches, now fixed: a secret *name* very often
+            // holds the secret's LOCATION, and a path is not a credential.
+            // `GOOGLE_APPLICATION_CREDENTIALS` is the one that matters — the
+            // model needs that path — and its sibling
+            // `AWS_SHARED_CREDENTIALS_FILE` survived only because `_FILE` is
+            // not in `SECRET_NAME_SUFFIXES`, which is not a rule, it is luck.
+            (
+                "credential env vars whose value is a path",
+                "GOOGLE_APPLICATION_CREDENTIALS=/Users/me/.config/gcloud/application_default_credentials.json\n\
+                 AWS_SHARED_CREDENTIALS_FILE=/home/tester/.aws/credentials\n\
+                 CREDENTIALS: /etc/kubernetes/admin.conf\n\
+                 PRIVATE_KEY: /etc/ssl/private/server.key\n\
+                 SSL_CLIENT_SECRET: ../secrets/client.json\n\
+                 API_KEY: ~/.config/svc/api.key\n\
+                 TOKEN=C:\\Users\\me\\AppData\\Roaming\\svc\\token.txt\n"
+                    .to_string(),
+            ),
+        ];
+
+        let mangled: Vec<String> = corpus
+            .iter()
+            .filter_map(|(name, text)| {
+                redact_text(text).map(|(after, kinds)| {
+                    format!("  {name} — withheld as {kinds:?}\n    before: {text:?}\n    after:  {after:?}")
+                })
+            })
+            .collect();
+        assert!(
+            mangled.is_empty(),
+            "the redactor rewrote {} harmless tool output(s); over-matching \
+             corrupts what the model reads and no other test in this file can \
+             see it:\n{}",
+            mangled.len(),
+            mangled.join("\n")
+        );
+    }
+
+    /// The path exclusion above can only ever *permit*, so it needs the
+    /// opposite assertion beside it: a real credential under the same names is
+    /// still withheld. The predicate wants a leading separator **and** a `.`
+    /// **and** two separators, and no format this module recognises has all
+    /// three — an AWS 40-character secret has no `.` at all.
+    #[test]
+    fn the_path_exclusion_does_not_let_a_real_credential_through() {
+        let secret = fake_secret();
+        for text in [
+            // The AWS detector does not consult `is_credential_value` at all.
+            format!("aws_secret_access_key = {secret}\n"),
+            format!("AWS_SECRET_ACCESS_KEY={secret}\n"),
+            // Generic names, non-path values: still the generic detector's job.
+            format!("GOOGLE_APPLICATION_CREDENTIALS={secret}\n"),
+            format!("PRIVATE_KEY: {secret}\n"),
+            format!("CREDENTIALS: {secret}\n"),
+            // A base64 value that merely *contains* slashes is not a path: it
+            // has no leading separator.
+            "MY_SERVICE_TOKEN=ab/cd/efghijklmnopqrstuvwxyz0123456789\n".to_string(),
+            // A JWT has dots but no leading separator.
+            "SESSION_SECRET=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N\n"
+                .to_string(),
+            // Rooted and dotted, but only ONE separator: not path-shaped.
+            "CLIENT_SECRET=/abcdefghij.klmnopqrstuvwxyz0123456789\n".to_string(),
+        ] {
+            let redacted = redact_text(&text);
+            assert!(
+                redacted.is_some(),
+                "a credential was NOT withheld: {text}"
+            );
+            let (after, _) = redacted.expect("checked");
+            assert!(
+                !after.contains(&secret) && !after.contains("eyJzdWIi"),
+                "the value survived redaction: {after}"
+            );
         }
     }
 

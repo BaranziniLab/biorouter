@@ -588,8 +588,12 @@ mod tests {
         ShellEnv::with_vars([("HOME", "/h"), ("USER", "me"), ("DIR", "/data")])
     }
 
+    /// The POSIX reading, pinned — see `lex::lex_for`. These assertions are
+    /// about the unix grammar (`cred\entials` is an escape, not a path
+    /// separator) and they inverted on the Windows runner when the helper
+    /// followed the host.
     fn expand(word: &str) -> Vec<String> {
-        let tokens = lex::lex(word);
+        let tokens = lex::lex_for(word, false);
         let lex::Token::Word(w) = &tokens[0] else {
             panic!("not a word: {tokens:?}")
         };
@@ -657,7 +661,7 @@ mod tests {
 
     #[test]
     fn glob_activeness_follows_quoting() {
-        let tokens = lex::lex("\"*\"x* $DIR");
+        let tokens = lex::lex_for("\"*\"x* $DIR", false);
         let lex::Token::Word(w) = &tokens[0] else {
             panic!()
         };

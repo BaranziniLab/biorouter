@@ -922,13 +922,14 @@ pub(crate) mod h1_fixtures {
             ),
         ];
         rows.push(("ssh config by variable", "K=~/.ssh; cat \"$K\"/id_*".into()));
-        // `cred\entials` is a POSIX escape that resolves to `credentials`. On
-        // Windows `\` is a path separator, so the shell would look for
-        // `.aws/cred/entials` and never open the secret — it is not a bypass
-        // there, so the guard correctly does not match it. Windows backslash
-        // handling is covered by the dedicated `cd` tests and the lexer's
-        // `windows_backslash_is_a_separator_not_an_escape`.
-        #[cfg(not(windows))]
+        // `cred\entials` is a POSIX escape that resolves to `credentials`. This
+        // row was `#[cfg(not(windows))]` for one commit, on the reasoning that a
+        // Windows shell reads `\` as a separator and would look for
+        // `.aws/cred/entials` — true of the Windows grammar *alone*, and no
+        // longer true of the guard: a Windows build reads the input under both
+        // grammars (`resolve::grammars`) and the POSIX one still refuses this.
+        // The row therefore belongs on every platform, and its passing on
+        // Windows is independent evidence the union is wired up.
         rows.push(("backslash escape", "cat ~/.aws/cred\\entials".into()));
         rows
     }
@@ -1482,6 +1483,76 @@ mod tests {
         format!("'{}'", s.replace('\'', r"'\''"))
     }
 
+    /// The same 8-deep nesting as above, asked of a **Windows** build.
+    ///
+    /// This is the fail-open `92dd1a42` introduced and the union closes.
+    /// `shell_quote` splices quotes the POSIX way (`'\''`), which a
+    /// Windows-mode lexer keeps as four literal characters — so under that
+    /// reading the command is one flat `sh -c` with a long literal argument,
+    /// never nesting, and `MAX_NESTING` is never reached. A Windows host gets
+    /// POSIX command lines constantly (git-bash, WSL, MSYS, the coding-agent
+    /// bridge), so binding the grammar to `cfg!(windows)` let an unverifiable
+    /// command through on exactly the host the commit was written for.
+    ///
+    /// The first assertion pins the hole (the Windows reading alone does NOT
+    /// refuse); the second is the fix (the union does). Revert the union and
+    /// the second assertion fails — that is what makes it load-bearing rather
+    /// than decorative.
+    #[test]
+    fn h1_windows_grammar_alone_misses_the_nesting_the_union_refuses() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let bases = [resolve::Base::Dir(fake.project.clone())];
+        let mut command = "echo hi".to_string();
+        for _ in 0..8 {
+            command = format!("sh -c {}", shell_quote(&command));
+        }
+
+        // The bug, pinned: read only as Windows would, the nesting disappears.
+        assert!(
+            resolve::Resolver::new(&g, &env)
+                .under_one_grammar_for_tests(true, &command, &bases)
+                .is_ok(),
+            "the Windows reading was expected to MISS this nesting; if it now \
+             catches it, the union below is no longer what closes the hole and \
+             this test needs rewriting rather than deleting"
+        );
+
+        // The fix: a Windows *host* judges it under both readings, and the
+        // POSIX one reaches the depth limit.
+        assert!(
+            resolve::Resolver::new(&g, &env)
+                .scan_command_as_host(&command, &bases, true)
+                .is_err(),
+            "FAIL-OPEN: a Windows build did not refuse an 8-deep POSIX-quoted \
+             `sh -c` nesting it cannot verify"
+        );
+
+        // And a unix host is unaffected — one reading, still refused.
+        assert!(resolve::Resolver::new(&g, &env)
+            .scan_command_as_host(&command, &bases, false)
+            .is_err());
+    }
+
+    /// The union's two short-circuits, which are what keep it from costing
+    /// anything: a unix build never runs a second pass, and neither does a
+    /// Windows build on an input with no `\` in it (both readings of such an
+    /// input are the same token stream, because every site in `lex` that
+    /// consults the flag sits inside a `'\\'` match arm).
+    #[test]
+    fn h1_the_second_grammar_runs_only_when_it_can_differ() {
+        assert_eq!(
+            resolve::grammars_for_tests("cat ~/.aws/credentials", false),
+            1
+        );
+        assert_eq!(resolve::grammars_for_tests(r"cat c:\x", false), 1);
+        assert_eq!(
+            resolve::grammars_for_tests("cat ~/.aws/credentials", true),
+            1
+        );
+        assert_eq!(resolve::grammars_for_tests(r"cat c:\x", true), 2);
+    }
+
     /// `**` is found by a bounded walk, zsh-style: it does not descend into
     /// dot-directories, so it refuses exactly what the shell would reach.
     #[test]
@@ -1521,6 +1592,23 @@ mod tests {
     /// The scan runs on every tool call, so its cost has to stay flat: a long
     /// command, a large here-document and a big content field all finish well
     /// inside a budget no tool call would notice.
+    ///
+    /// **Two assertions, and only one of them is about time.** The wall clock is
+    /// a *hang detector* and nothing more — it cannot tell "the resolver got
+    /// twice as slow" from "the runner was busy", and reading it as a
+    /// performance gate is how its ceiling went 5 s → 30 s in one commit while
+    /// silently absorbing a real 2x growth in the workload. Measured 2026-09-11
+    /// on an idle M-series Mac: this whole workload is **10.5 s in a debug
+    /// build** (which is what CI runs: `rust.yml`'s `test` job is
+    /// `cargo test --lib --bins`) and **651 ms in release** (what ships). So
+    /// 30 s is ~2.9x an *idle* debug run, not headroom — treat it as the floor
+    /// under a hang, and do not widen it again without re-measuring.
+    ///
+    /// The assertion that actually catches a regression is the second one: the
+    /// whole workload against a typical single-command scan timed in the **same
+    /// process**, which is immune to a slow or loaded runner. Measured ratios
+    /// were 3200x (debug) and 1745x (release), so the 8000x bound leaves ~2.5x
+    /// of room while still failing on an algorithmic change.
     #[test]
     fn h1_scan_cost_stays_bounded() {
         let fake = FakeHome::new();
@@ -1542,13 +1630,30 @@ mod tests {
             None
         );
         let elapsed = started.elapsed();
-        // A generous ceiling on purpose: the failure this guards against is an
-        // accidental unbounded walk (minutes, or a hang), not a few hundred ms.
-        // A tight bound only flakes on a loaded or slow CI runner, so leave wide
-        // headroom while still catching a catastrophic blow-up.
         assert!(
             elapsed < std::time::Duration::from_secs(30),
-            "scanning took {elapsed:?}"
+            "scanning took {elapsed:?} — this ceiling is a hang detector, so \
+             reaching it means an unbounded walk, not a slow runner"
+        );
+
+        // The machine-independent half: one ordinary command line, timed here,
+        // is the unit the workload above is measured in.
+        let unit_command =
+            "cd src && grep -rn 'fn main' . | head -20 && python3 -c 'print(1)' > out.txt";
+        let unit_started = std::time::Instant::now();
+        const UNIT_RUNS: u32 = 20;
+        for _ in 0..UNIT_RUNS {
+            assert_eq!(scan_command(&g, &env, unit_command), None);
+        }
+        let unit = unit_started.elapsed() / UNIT_RUNS;
+        const MAX_RATIO: u32 = 8000;
+        assert!(
+            elapsed < unit * MAX_RATIO,
+            "the bounded workload cost {elapsed:?}, {} times one ordinary \
+             command scan ({unit:?}); the bound is {MAX_RATIO}x and it is \
+             machine-independent, so this is an algorithmic regression, not a \
+             slow runner",
+            elapsed.as_secs_f64() / unit.as_secs_f64()
         );
     }
 

@@ -69,23 +69,31 @@ pub(crate) enum Token {
     },
 }
 
-/// Lex a whole command line (or script).
-pub(crate) fn lex(input: &str) -> Vec<Token> {
-    lex_for(input, cfg!(windows))
-}
-
-/// [`lex`] for an explicit platform, so Windows path lexing can be exercised on
-/// any host. `windows` decides one thing: whether `\` is a POSIX escape (unix)
-/// or an ordinary character, i.e. a path separator (Windows). Everything else —
-/// quotes, `$VAR`, `~`, globs — is shared, because PowerShell honours `~` and
-/// `$VAR` and both Windows shells quote the same way; only backslash differs.
+/// Lex a whole command line (or script) under one grammar. `windows` decides
+/// one thing: whether `\` is a POSIX escape (`false`) or an ordinary character,
+/// i.e. a path separator (`true`). Everything else — quotes, `$VAR`, `~`, globs
+/// — is shared, because PowerShell honours `~` and `$VAR` and both Windows
+/// shells quote the same way; only backslash differs.
+///
+/// **There is deliberately no host-defaulting `lex()`.** It existed, it read
+/// `cfg!(windows)`, and that made the guard's verdict a property of the machine
+/// it was compiled on rather than of the command it was handed — which failed
+/// *open*: under the Windows reading a POSIX `'\''` splice stays four literal
+/// characters, so a nested `sh -c '…'` never parses as nesting, the resolver's
+/// depth limit never fires, and the command is not refused. A Windows host
+/// reaches both readings (`cmd.exe`/PowerShell, and git-bash / WSL / MSYS /
+/// the coding-agent bridge), so the caller judges the input under **each**
+/// grammar it could be read with and refuses if any of them lands on a secret.
+/// See `resolve::grammars`.
 pub(crate) fn lex_for(input: &str, windows: bool) -> Vec<Token> {
     Lexer::new(input, false, windows).run()
 }
 
 /// Lex the word inside `${X:-word}`, where blanks and operators are literal.
-fn lex_param_word(input: &str) -> Word {
-    let mut lexer = Lexer::new(input, true, cfg!(windows));
+/// `windows` is the enclosing lexer's grammar, never the host's: one pass has
+/// to read `\` the same way from end to end.
+fn lex_param_word(input: &str, windows: bool) -> Word {
+    let mut lexer = Lexer::new(input, true, windows);
     lexer.read_word().unwrap_or_default()
 }
 
@@ -468,7 +476,7 @@ impl Lexer {
             Some('{') => {
                 self.i += 1;
                 let body = self.take_until_close_brace();
-                pieces.push(parse_param_body(&body, quoted));
+                pieces.push(parse_param_body(&body, quoted, self.windows));
             }
             Some('\'') if !quoted => {
                 self.i += 1;
@@ -719,7 +727,7 @@ fn push_code(out: &mut String, value: Option<u32>, escape: char) {
 }
 
 /// Interpret the text between `${` and `}`.
-fn parse_param_body(body: &str, quoted: bool) -> Piece {
+fn parse_param_body(body: &str, quoted: bool, windows: bool) -> Piece {
     let opaque = |name: &str| Piece::Param {
         name: name.to_string(),
         op: ParamOp::Opaque,
@@ -760,9 +768,9 @@ fn parse_param_body(body: &str, quoted: bool) -> Piece {
         .or_else(|| rest.strip_prefix('-'))
         .or_else(|| rest.strip_prefix('='))
     {
-        ParamOp::OrDefault(lex_param_word(word))
+        ParamOp::OrDefault(lex_param_word(word, windows))
     } else if let Some(word) = rest.strip_prefix(":+").or_else(|| rest.strip_prefix('+')) {
-        ParamOp::IfSet(lex_param_word(word))
+        ParamOp::IfSet(lex_param_word(word, windows))
     } else {
         ParamOp::Opaque
     };
@@ -780,8 +788,11 @@ mod tests {
         }
     }
 
+    /// The POSIX reading, pinned. It must not follow the host: these
+    /// assertions are about the unix grammar and they inverted on the Windows
+    /// runner while the helper called a host-defaulting `lex()`.
     fn words(input: &str) -> Vec<Word> {
-        lex(input)
+        lex_for(input, false)
             .into_iter()
             .filter_map(|t| match t {
                 Token::Word(w) => Some(w),
@@ -897,7 +908,10 @@ mod tests {
 
     #[test]
     fn operators_and_redirects_split_commands() {
-        let tokens = lex("cd ~/.aws && head credentials; cat <x 2>/dev/null | wc");
+        let tokens = lex_for(
+            "cd ~/.aws && head credentials; cat <x 2>/dev/null | wc",
+            false,
+        );
         let ops: Vec<&str> = tokens
             .iter()
             .filter_map(|t| match t {
@@ -918,7 +932,10 @@ mod tests {
 
     #[test]
     fn heredoc_body_is_attached_to_its_redirect() {
-        let tokens = lex("bash <<'EOF'\ncat ~/.aws/credentials\nEOF\necho done");
+        let tokens = lex_for(
+            "bash <<'EOF'\ncat ~/.aws/credentials\nEOF\necho done",
+            false,
+        );
         let body = tokens.iter().find_map(|t| match t {
             Token::Redirect { op, body } if op == "<<" => body.clone(),
             _ => None,
@@ -941,7 +958,8 @@ mod tests {
             "(((",
             "\\",
         ] {
-            let _ = lex(input);
+            let _ = lex_for(input, false);
+            let _ = lex_for(input, true);
         }
     }
 }

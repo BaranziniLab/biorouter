@@ -56,6 +56,60 @@ const MAX_WALK_ENTRIES: usize = 8192;
 const MAX_WALK_DEPTH: usize = 8;
 const MAX_CODE_LITERALS: usize = 2048;
 
+/// The lexical grammars one input has to be judged under, most likely first.
+///
+/// `\` is a POSIX escape in `sh`/`bash`/`zsh` and an ordinary character — a
+/// path separator — in `cmd.exe`/PowerShell. A **Windows host reaches both**:
+/// `git-bash`, WSL, MSYS and the coding-agent bridge all hand the Developer
+/// server POSIX command lines, and the desktop app runs on the same machine as
+/// `cmd.exe`. Choosing one reading by `cfg!(windows)` therefore made the
+/// guard's answer a property of the host rather than of the input, and it chose
+/// wrongly in the direction that **fails open**: under the Windows reading a
+/// POSIX `'\''` splice stays four literal characters, so `sh -c '…sh -c '\''…'`
+/// never parses as nesting, [`MAX_NESTING`] is never reached, and a command the
+/// guard cannot verify is let through. (Measured as
+/// `h1_nesting_past_the_limit_fails_closed` failing on `test (windows-latest)`.)
+///
+/// So a Windows build judges the input under **both** readings and refuses if
+/// **either** lands on a secret — a union, never a choice. Two short-circuits
+/// keep that from costing anything measurable:
+///
+/// * an input with no `\` in it lexes **identically** under both readings —
+///   every site in [`super::lex`] that consults the flag is inside a `'\'`
+///   match arm — so there is nothing to gain from a second pass, and
+/// * the caller stops at the first grammar that refuses, so the second pass
+///   runs only when the first already said "allowed".
+///
+/// How many grammars [`grammars_for`] would run for this input on this host —
+/// the observable half of the two short-circuits, so a test can assert the
+/// second pass is not paid for when it cannot change the answer.
+#[cfg(test)]
+pub(crate) fn grammars_for_tests(input: &str, windows_host: bool) -> usize {
+    grammars_for(input, windows_host).len()
+}
+
+/// A unix build keeps exactly one reading, so its cost is unchanged.
+fn grammars(input: &str) -> &'static [bool] {
+    grammars_for(input, cfg!(windows))
+}
+
+/// [`grammars`] for an explicit host, so the union is exercisable on any
+/// machine — the same reason [`super::lex::lex_for`] takes its flag. Without
+/// this the Windows-only behaviour would be testable only on Windows, which is
+/// how the fail-open survived review in the first place.
+fn grammars_for(input: &str, windows_host: bool) -> &'static [bool] {
+    if !windows_host {
+        return &[false];
+    }
+    if input.contains('\\') {
+        // Host-native reading first: it is the likelier one and, when it
+        // refuses, the second pass never runs.
+        &[true, false]
+    } else {
+        &[true]
+    }
+}
+
 /// Where a relative path is resolved from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Base {
@@ -161,6 +215,10 @@ pub(crate) struct Resolver<'a> {
     /// `GLOBIGNORE`, `setopt globdots`, a zsh `(D)` qualifier), so `*` reaches
     /// `.env`. Once seen it stays on for the rest of the scan.
     dotglob: bool,
+    /// Which reading of `\` this pass is lexing under. Set by
+    /// [`Self::under_each_grammar`] for the length of one pass and never read
+    /// from the host: see [`grammars`].
+    windows_lexing: bool,
 }
 
 impl<'a> Resolver<'a> {
@@ -174,40 +232,114 @@ impl<'a> Resolver<'a> {
             secret_dirs: HashMap::new(),
             strict: true,
             dotglob: false,
+            windows_lexing: cfg!(windows),
         }
+    }
+
+    /// Run one scan under every grammar `input` could be read with, refusing if
+    /// **any** of them lands on a secret. See [`grammars`] for why this is a
+    /// union rather than a choice, and for the two short-circuits.
+    fn under_each_grammar(&mut self, input: &str, scan: impl FnMut(&mut Self) -> Scan) -> Scan {
+        self.under_grammars(grammars(input), scan)
+    }
+
+    fn under_grammars(
+        &mut self,
+        grammars: &[bool],
+        mut scan: impl FnMut(&mut Self) -> Scan,
+    ) -> Scan {
+        let mut result = Ok(());
+        for windows in grammars {
+            self.windows_lexing = *windows;
+            // Each grammar gets the WHOLE budget, not a share of it. Both
+            // budgets fail *open* when they run out — `denied_resolved` stops
+            // canonicalising and answers "not denied", and `list` stops reading
+            // directories — so a second pass running on the drain of the first
+            // would be a weaker check than the first, which is precisely the
+            // asymmetry the union exists to remove. The `listings` and
+            // `secret_dirs` caches are deliberately *not* reset: they memoise
+            // facts about the filesystem, which no grammar changes, so the
+            // second pass reuses them for free.
+            self.canonicalize_left = MAX_CANONICALIZE;
+            self.listings_left = MAX_LISTINGS;
+            result = scan(self);
+            if result.is_err() {
+                break;
+            }
+        }
+        result
     }
 
     /// A shell command line or script, run from any of `bases`.
     pub(crate) fn scan_command(&mut self, command: &str, bases: &[Base]) -> Scan {
+        self.scan_command_under(grammars(command), command, bases)
+    }
+
+    /// [`Self::scan_command`] against an explicit host's grammar set, so a test
+    /// on any machine can ask what a Windows build would do — both what the
+    /// Windows reading alone answers (the fail-open) and what the union
+    /// answers.
+    #[cfg(test)]
+    pub(crate) fn scan_command_as_host(
+        &mut self,
+        command: &str,
+        bases: &[Base],
+        windows_host: bool,
+    ) -> Scan {
+        self.scan_command_under(grammars_for(command, windows_host), command, bases)
+    }
+
+    /// One grammar, chosen by the caller: the shape the guard had before the
+    /// union, so a test can pin what a single reading misses.
+    #[cfg(test)]
+    pub(crate) fn under_one_grammar_for_tests(
+        &mut self,
+        windows: bool,
+        command: &str,
+        bases: &[Base],
+    ) -> Scan {
+        self.scan_command_under(&[windows], command, bases)
+    }
+
+    fn scan_command_under(&mut self, grammars: &[bool], command: &str, bases: &[Base]) -> Scan {
+        // Before any grammar runs, and for every entry point alike — a test
+        // asking what another host would do must not silently lose the
+        // dot-glob detection the production path performs.
         static DOT_QUALIFIER: Lazy<Regex> =
             Lazy::new(|| Regex::new(r"\([^()|]*D[^()|]*\)").expect("static regex"));
         if DOT_QUALIFIER.is_match(command) {
             self.dotglob = true;
         }
-        let mut state = State::new(bases);
-        self.walk(command, &mut state)?;
-        self.scan_code_in(command, &state)
+        self.under_grammars(grammars, |me| {
+            let mut state = State::new(bases);
+            me.walk(command, &mut state)?;
+            me.scan_code_in(command, &state)
+        })
     }
 
     /// A string a tool will treat as a path.
     pub(crate) fn scan_path_value(&mut self, value: &str, bases: &[Base]) -> Scan {
-        let state = State::new(bases);
         let trimmed = value.trim();
         if trimmed.is_empty() {
             return Ok(());
         }
-        // As the tool receives it (tools commonly expand a leading `~`)…
-        self.check_template(&expand::literal(trimmed), &state, trimmed)?;
-        // …and as a shell would read it, for `$HOME/…` and `~user/…`.
-        let word = lex_single_word(trimmed);
-        self.check_word(&word, &state, trimmed)
+        self.under_each_grammar(trimmed, |me| {
+            let state = State::new(bases);
+            // As the tool receives it (tools commonly expand a leading `~`)…
+            me.check_template(&expand::literal(trimmed), &state, trimmed)?;
+            // …and as a shell would read it, for `$HOME/…` and `~user/…`.
+            let word = lex_single_word(trimmed, me.windows_lexing);
+            me.check_word(&word, &state, trimmed)
+        })
     }
 
     /// Code in some other language (a Ruby or PowerShell script): every
     /// path-looking literal, and every string it hands to a shell.
     pub(crate) fn scan_code(&mut self, text: &str, bases: &[Base]) -> Scan {
-        let state = State::new(bases);
-        self.scan_code_in(text, &state)
+        self.under_each_grammar(text, |me| {
+            let state = State::new(bases);
+            me.scan_code_in(text, &state)
+        })
     }
 
     // ---- the walk ---------------------------------------------------------
@@ -223,7 +355,7 @@ impl<'a> Resolver<'a> {
         let mut words: Vec<Word> = Vec::new();
         let mut redirects: Vec<Redirect> = Vec::new();
         let mut awaiting_target = false;
-        for token in lex::lex(script) {
+        for token in lex::lex_for(script, self.windows_lexing) {
             match token {
                 Token::Word(word) => {
                     if awaiting_target {
@@ -731,7 +863,7 @@ impl<'a> Resolver<'a> {
                 if literal.len() < 2 || literal.contains("://") {
                     continue;
                 }
-                let word = lex_single_word(literal);
+                let word = lex_single_word(literal, self.windows_lexing);
                 for template in self.expand(&word, state, false) {
                     self.check_template(&template, state, literal)?;
                 }
@@ -1287,8 +1419,8 @@ fn split_assignment(word: &Word) -> Option<(String, Word, bool)> {
     Some((name.to_string(), value, append))
 }
 
-fn lex_single_word(text: &str) -> Word {
-    match lex::lex(text).into_iter().next() {
+fn lex_single_word(text: &str, windows: bool) -> Word {
+    match lex::lex_for(text, windows).into_iter().next() {
         Some(Token::Word(word)) => word,
         _ => vec![Piece::Lit {
             text: text.to_string(),
