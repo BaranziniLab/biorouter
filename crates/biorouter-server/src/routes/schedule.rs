@@ -634,10 +634,27 @@ fn classify_kill_error(error: &biorouter::scheduler::SchedulerError) -> (StatusC
 pub async fn inspect_running_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<InspectJobResponse>, StatusCode> {
+    headers: HeaderMap,
+) -> Result<Json<InspectJobResponse>, Response> {
     let scheduler = state.scheduler();
 
-    match scheduler.get_running_job_info(&id).await {
+    // Issue #56: this named the chat a schedule is running in, plus when the
+    // run started, to any holder of the daemon secret — precisely the
+    // association `GET /active_work` omits and `GET /schedule/list` now
+    // redacts. Resolved once, gated on that chat, and the resolved value is
+    // what the answer is built from: asking the scheduler a second time after
+    // the gate would be a second read of a fact that can change.
+    let info = scheduler.get_running_job_info(&id).await;
+    let owner = info
+        .as_ref()
+        .ok()
+        .and_then(|i| i.as_ref())
+        .map(|(session_id, _)| session_id.clone());
+    crate::routes::session_reach::work_reach(state.session_manager(), owner.as_deref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
+
+    match info {
         Ok(info) => {
             if let Some((session_id, start_time)) = info {
                 let duration = chrono::Utc::now().signed_duration_since(start_time);
@@ -657,8 +674,10 @@ pub async fn inspect_running_job(
         Err(e) => {
             eprintln!("Error inspecting running job '{}': {:?}", id, e);
             match e {
-                biorouter::scheduler::SchedulerError::JobNotFound(_) => Err(StatusCode::NOT_FOUND),
-                _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
+                biorouter::scheduler::SchedulerError::JobNotFound(_) => {
+                    Err(StatusCode::NOT_FOUND.into_response())
+                }
+                _ => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             }
         }
     }

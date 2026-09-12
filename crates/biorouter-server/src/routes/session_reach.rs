@@ -1614,6 +1614,13 @@ mod tests {
                 "kill_running_job_in_session(",
                 "the scheduler's kill of the run",
             ),
+            (
+                schedule_rs,
+                "pub async fn inspect_running_job(",
+                "work_reach(",
+                "InspectJobResponse {",
+                "the response naming the chat the run is in, and when it started",
+            ),
         ] {
             let handler = body_of(src, func);
             let gate = handler.find(gate_call).unwrap_or_else(|| {

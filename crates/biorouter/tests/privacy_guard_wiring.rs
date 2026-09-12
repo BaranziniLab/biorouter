@@ -367,15 +367,17 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
-                counts: c(0, 2, 0),
+                counts: c(0, 3, 0),
                 kind: SiteKind::Unrelated,
-                what: "the MODULE qualifier twice, on neither occasion this function. Once on \
+                what: "the MODULE qualifier three times, on no occasion this function. Once on \
                        `session_reach::http_caller`, which filters `GET /schedule/{id}/sessions` \
                        — a listing, gated by `lists_session`. Once on \
-                       `session_reach::work_reach`, which gates `POST /schedule/{id}/kill`: the \
-                       stop resolves the run to its chat and asks THAT function, exactly as \
-                       `POST /active_work/{id}/cancel` does for the same kill, so neither route \
-                       is the easier way to stop a private chat's run",
+                       `session_reach::work_reach` for `POST /schedule/{id}/kill`: the stop \
+                       resolves the run to its chat and asks THAT function, exactly as `POST \
+                       /active_work/{id}/cancel` does for the same kill, so neither route is \
+                       the easier way to stop a private chat's run. Once more on the same \
+                       function for `GET /schedule/{id}/inspect`, which hands back the chat a \
+                       run is in",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -598,7 +600,7 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /schedule/{id}/kill`, which stops the SAME run as the cancel route \
                        above, reached by the schedule id instead of the work handle. ⚠ This \
@@ -607,7 +609,10 @@ const REGISTRY: &[Guard] = &[
                        refused there re-issued the request one URL over and stopped the run \
                        anyway. Both now resolve the run to its chat first, and both pass that \
                        chat to `kill_running_job_in_session` so a run that changed under the \
-                       decision is refused rather than stopped",
+                       decision is refused rather than stopped. The second call is `GET \
+                       /schedule/{id}/inspect`, which answered any secret-holder with the chat \
+                       a schedule is running in — the association the listing beside it \
+                       redacts, handed over whole one route away",
             },
         ],
     },
