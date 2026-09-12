@@ -5,6 +5,7 @@ import useSidebarSessions, {
   appendSessionPage,
   SIDEBAR_SESSION_PAGE_SIZE,
 } from './useSidebarSessions';
+import { notifySessionListChanged } from '../../utils/sessionListCache';
 
 const mocks = vi.hoisted(() => ({
   listSidebarSessions: vi.fn(),
@@ -109,5 +110,58 @@ describe('useSidebarSessions', () => {
       query: { limit: 10, offset: 0 },
       throwOnError: true,
     });
+  });
+});
+
+/**
+ * M11. A deleted chat left History, the tab strip and the database immediately
+ * and stayed in the sidebar Recents until a renderer reload.
+ *
+ * Two independent breaks produced it, and BOTH have to be closed:
+ *   (a) the delete handler never announced membership at all, and
+ *   (b) `appendSessionPage` is additive — it appends and replaces by id, and
+ *       has no removal branch — so even a full re-read of the first page leaves
+ *       an id the server no longer returns sitting in the merged list.
+ *
+ * (b) cannot be fixed by inferring removals from a refetch: `loadPage(true)`
+ * re-reads only the FIRST page, and an entry can drop out of that window
+ * because other chats were touched, not because it was deleted. So the removal
+ * is announced explicitly, by id.
+ */
+describe('a deleted chat leaves Recents without a reload', () => {
+  it('drops the announced id, in this window and from a sibling window', async () => {
+    const firstPage = Array.from({ length: 10 }, (_, index) => makeSummary(index));
+    mocks.listSidebarSessions.mockResolvedValue({
+      data: { sessions: firstPage, has_more: false, next_offset: null },
+    });
+
+    const { result } = renderHook(() => useSidebarSessions());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(10));
+
+    act(() => notifySessionListChanged({ removed: 'session-3' }));
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(9));
+    expect(result.current.sessions.map((session) => session.id)).not.toContain('session-3');
+  });
+
+  // The scrolled-in pages are the thing a naive prune-on-refresh would destroy;
+  // `useSidebarSessions.test.ts`'s refresh case already pins that. Removing one
+  // id must not cost the others.
+  it('keeps every other loaded page', async () => {
+    const firstPage = Array.from({ length: 10 }, (_, index) => makeSummary(index));
+    const secondPage = Array.from({ length: 10 }, (_, index) => makeSummary(index + 10));
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({ data: { sessions: firstPage, has_more: true, next_offset: 10 } })
+      .mockResolvedValueOnce({ data: { sessions: secondPage, has_more: false, next_offset: null } });
+
+    const { result } = renderHook(() => useSidebarSessions());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(10));
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(20));
+
+    act(() => notifySessionListChanged({ removed: 'session-15' }));
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(19));
+    expect(result.current.sessions.map((session) => session.id)).toContain('session-19');
   });
 });
