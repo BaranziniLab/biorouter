@@ -6045,7 +6045,7 @@ mod tests {
                 "not-a-real-key".to_string(),
             ),
             (
-                "AZURE_OPENAI_ENDPOINT".to_string(),
+                "VERSA_AZURE_ENDPOINT".to_string(),
                 crate::providers::versa_azure::VERSA_AZURE_ENDPOINT.to_string(),
             ),
         ])
