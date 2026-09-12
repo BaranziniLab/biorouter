@@ -330,6 +330,29 @@ what did not" section first**; the rest of that document is the design, not the 
   held in place by repo-grep assertions — if you add a second call site for `raise_privacy`, `floor`
   or `.call_tool(`, a test will tell you, and the right fix is usually not to update the count.
 
+### Secret guard (BR-23, rebuilt for QA-C H1)
+
+The always-on floor that keeps credential files (`~/.aws/credentials`, SSH private keys,
+`secrets.yaml`, `.env`) away from the model in every chat, mode and tier. Reference:
+[`docs/security/secret-guard.md`](docs/security/secret-guard.md).
+
+- **Arguments are judged after resolution, never as raw tokens.** `crates/biorouter-mcp/src/secret_guard/`
+  (`lex` → `expand` → `resolve`) reads a command the way the shell will — `~`, `$VAR`, globs
+  against the real directory, `cd`/`pushd`, nested `sh -c`/`eval`/here-documents, symlinks,
+  case folded — and is shared by the dispatch scan (`secret_guard_denial`), `developer__shell`
+  (`validate_shell_command`, resolved from the directory the command really runs in) and
+  Computer Controller (`refuse_secret_access`).
+- ⚠ **Fail closed: a match is a refusal whether or not the file exists.** The old `exists()` gate
+  was asked of the *unexpanded* token, which is exactly how `cat ~/.aws/credentials` reached a
+  public model. Do not restore it to quiet a false positive — the refusal message and a
+  `.biorouterignore` negation are the escape hatch.
+- **Output is scanned too.** `guardrails/secret_output.rs` withholds private keys, AWS keys and
+  provider-store values from every tool result and error inside `dispatch_tool_call`'s future —
+  the one place the coding-agent bridge's results pass (they skip `guard_tool_result`).
+- **Tests:** `cargo test -p biorouter-mcp --lib -- secret_guard h1_` and
+  `cargo test -p biorouter --lib -- secret_output extension_manager`. The H1 tables use a fake
+  HOME; never point a test at the operator's real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
+
 ### Knowledge feature
 
 The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-buildout/*`) provides personal, LLM-maintained knowledge bases backed by markdown trees + git history.

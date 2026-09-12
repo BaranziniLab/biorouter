@@ -616,6 +616,11 @@ pub fn guard_tool_result(
     match output {
         Ok(mut result) => {
             let mut summaries: Vec<String> = Vec::new();
+            // H1: the dispatch boundary withheld credential material from this
+            // result (`secret_output`). Say so in the guardrail's own voice,
+            // above the frame, so a model does not read `[REDACTED:…]` as a
+            // puzzle to solve with another spelling.
+            let withheld = super::secret_output::redaction_of(&result);
             for content in result.content.iter_mut() {
                 // Non-text blocks are not merely re-pushed, they are never
                 // moved: images, audio, embedded resources and resource links
@@ -633,6 +638,22 @@ pub fn guard_tool_result(
                     summaries.extend(summary);
                     raw.text = text;
                 }
+            }
+            if let Some(withheld) = withheld {
+                let first_text = result.content.iter_mut().find_map(|c| match &mut c.raw {
+                    RawContent::Text(raw) => Some(raw),
+                    _ => None,
+                });
+                if let Some(raw) = first_text {
+                    raw.text = format!(
+                        "[BIOROUTER GUARDRAIL] Secret guard: {}. They are withheld on \
+                         purpose and cannot be recovered through another command; ask the \
+                         user if you need one.\n{}",
+                        withheld.summary(),
+                        raw.text
+                    );
+                }
+                summaries.push(withheld.summary());
             }
             let summary = (!summaries.is_empty()).then(|| summaries.join("; "));
             (Ok(result), summary)
@@ -1414,6 +1435,40 @@ mod tests {
     /// first (`agent.rs`, `integrate_tool_result`), so by the time
     /// `annotate_tool_result` carefully carried the annotations forward, they
     /// were already `None`.
+    /// H1: a result the dispatch boundary withheld credential material from
+    /// says so in the guardrail's own voice, above the frame — so the model is
+    /// told the gap is deliberate rather than left to try another spelling.
+    #[test]
+    fn a_result_with_withheld_credentials_is_flagged_above_the_frame() {
+        // Made up, and assembled at run time (no key-shaped literal in source).
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+        let mut result = CallToolResult::success(vec![Content::text(format!(
+            "aws_secret_access_key = {secret}\n"
+        ))]);
+        assert!(
+            crate::guardrails::secret_output::redact_call_tool_result(&mut result).is_some(),
+            "precondition: the dispatch boundary redacted and stamped it"
+        );
+        let (guarded, summary) = guard_tool_result(
+            Ok(result),
+            Some("developer__shell"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        let guarded = guarded.expect("ok");
+        let text = &guarded.content[0].as_text().expect("text").text;
+        assert!(
+            text.starts_with("[BIOROUTER GUARDRAIL] Secret guard: 1 credential value(s) withheld"),
+            "{text}"
+        );
+        assert!(!text.contains(&secret), "{text}");
+        let (note, rest) = text.split_once('\n').expect("note line");
+        assert!(
+            rest.starts_with(TOOL_OUTPUT_FRAME_OPEN),
+            "the note must sit above the frame, outside the untrusted region: {note} / {rest}"
+        );
+        assert!(summary.expect("summarised").contains("withheld"));
+    }
+
     #[test]
     fn framing_preserves_an_assistant_only_audience() {
         let block = Content::text("private note: do not show the tmp file to the user")
