@@ -1185,29 +1185,42 @@ function parseSkillGrid(id, category) {
   if (IS_REAL_RUN && cards.length === 0) {
     fail(`the element with id="${id}" holds no skill-card elements`);
   }
-  return cards.map(({ attrs, inner: card }) => {
-    const name = stripTags(first(/<h3>([\s\S]*?)<\/h3>/, card));
-    const type = stripTags(first(/<div class="skill-type">([\s\S]*?)<\/div>/, card));
-    const description = stripTags(first(/<p class="skill-desc">([\s\S]*?)<\/p>/, card));
-    const download = first(/<a href="([^"]+)"[^>]*class="skill-dl-btn"/, card);
-    const tags = allTags(/<div class="skill-tags">([\s\S]*?)<\/div>/, card);
-    const license = attrs['data-license'] || 'Apache-2.0';
-    const dataTags = String(attrs['data-tags'] ?? '')
-      .split(/\s+/)
-      .filter(Boolean);
-    return {
-      id: slugFromUrl(download),
-      name,
-      category,
-      type,
-      description,
-      tags,
-      keywords: dataTags,
-      download: absolutize(download),
-      filename: download.split('/').pop(),
-      license,
-    };
-  });
+  return cards.map((card) => readSkillCard(card, category));
+}
+
+/**
+ * One skill card, read as the registry row it becomes.
+ *
+ * Split out of `parseSkillGrid` so the featured strip below is read by the SAME
+ * code that builds the row, rather than by a second parser that could disagree
+ * with this one about what a card says — a differential whose two sides are
+ * measured differently reports its own skew as drift.
+ *
+ * `category` is not on the card: a grid card inherits it from the grid it sits
+ * in, and a featured card declares its own `data-cat`.
+ */
+function readSkillCard({ attrs, inner: card }, category) {
+  const name = stripTags(first(/<h3>([\s\S]*?)<\/h3>/, card));
+  const type = stripTags(first(/<div class="skill-type">([\s\S]*?)<\/div>/, card));
+  const description = stripTags(first(/<p class="skill-desc">([\s\S]*?)<\/p>/, card));
+  const download = first(/<a href="([^"]+)"[^>]*class="skill-dl-btn"/, card);
+  const tags = allTags(/<div class="skill-tags">([\s\S]*?)<\/div>/, card);
+  const license = attrs['data-license'] || 'Apache-2.0';
+  const dataTags = String(attrs['data-tags'] ?? '')
+    .split(/\s+/)
+    .filter(Boolean);
+  return {
+    id: slugFromUrl(download),
+    name,
+    category,
+    type,
+    description,
+    tags,
+    keywords: dataTags,
+    download: absolutize(download),
+    filename: download.split('/').pop(),
+    license,
+  };
 }
 
 const skills = [
@@ -1215,6 +1228,63 @@ const skills = [
   ...parseSkillGrid('dev-skill-grid', 'Developer'),
   ...parseSkillGrid('bio-skill-grid', 'Biomedical'),
 ];
+
+// ---- The featured strip repeats grid cards, so it must repeat them exactly --
+// `#skills-featured` is three hand-written copies of cards that also live in the
+// grids, and ONLY the grids reach the registry. A divergence is therefore
+// invisible to every other gate in this file while being the first thing a
+// visitor reads: the strip promises one thing, and the catalog the app installs
+// from — and the model searches — describes another.
+//
+// Measured on 2026-09-12, before this check existed, the three copies differed
+// from their twins in 8 fields. The worst was not prose. The featured `ggplot2
+// Visualization` advertised "User-invocable · /ggplot-visualization" for a skill
+// whose SKILL.md declares `user-invocable: false` — a slash command that does not
+// exist — and the shelf derives the type facet from that very text, so one skill
+// answered the "User-invocable" chip as a featured card and the "Auto-applied"
+// chip as a grid card.
+//
+// Real-run only, for the reason the grids above are: the fixtures beside this
+// script carry extension cards and no skills shelf at all.
+function assertFeaturedRepeatsItsGridTwin(rows) {
+  const section = elementById(html, 'skills-featured');
+  if (!section || section.inner === null) {
+    fail('no usable element with id="skills-featured" — the catalog lost its featured strip');
+    return;
+  }
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  for (const card of pickCards(section.inner, 'skill-card')) {
+    const featured = readSkillCard(card, String(card.attrs['data-cat'] ?? ''));
+    const twin = byId.get(featured.id);
+    if (!twin) {
+      fail(
+        `featured card "${featured.name || featured.id}" repeats no grid card: nothing in ` +
+          `the three grids downloads "${featured.filename || featured.id}". Every card in ` +
+          '#skills-featured must be a copy of one in the grids.'
+      );
+      continue;
+    }
+    for (const field of ['name', 'type', 'description', 'tags', 'keywords']) {
+      if (JSON.stringify(featured[field]) === JSON.stringify(twin[field])) continue;
+      fail(
+        `featured "${twin.id}" and its grid card disagree on ${field}: the strip says ` +
+          `${JSON.stringify(featured[field])}, the grid says ${JSON.stringify(twin[field])}. ` +
+          'The grid card is the one registry.json publishes, so it is the one to copy FROM.'
+      );
+    }
+    // Compared case-insensitively on purpose: the grid supplies the display name
+    // the registry row carries ("Core") and the strip its own chip slug ("core").
+    // Same axis, two spellings — and a copy filed under the wrong one is reachable
+    // from a category chip its twin is not.
+    if (featured.category.toLowerCase() !== twin.category.toLowerCase()) {
+      fail(
+        `featured "${twin.id}" declares data-cat="${featured.category}", but its grid card ` +
+          `sits in the ${twin.category} grid`
+      );
+    }
+  }
+}
+if (IS_REAL_RUN) assertFeaturedRepeatsItsGridTwin(skills);
 
 const registry = {
   version: 2,

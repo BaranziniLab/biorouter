@@ -801,3 +801,133 @@ test('a held generation lock is refused by name', () => {
     rmSync(lock, { force: true });
   }
 });
+
+// ---- The featured strip repeats grid cards -------------------------------
+// Driven by mutating the real catalog, for the reason the closed-private-set and
+// orphaned-institution tests above are: the fixtures carry extension cards and no
+// skills shelf, so the rule is only reachable on a real run. `--check` writes
+// nothing and exits on the violation drain before any comparison; the page is
+// restored in a `finally` and the restoration asserted afterwards.
+
+const FEATURED_PAGE = join(LANDING, 'baam.html');
+
+/**
+ * `original` with `from` → `to`, applied inside the `#skills-featured` strip ONLY.
+ *
+ * Every field in that strip now equals its grid twin's — that is the whole point
+ * of the rule — so a whole-page `replace` would edit whichever copy came first
+ * and prove nothing about the other. Windowing on the strip is what makes
+ * "mutated the featured card" a true statement rather than a hopeful one.
+ */
+function mutateFeatured(original, from, to) {
+  const start = original.indexOf('id="skills-featured"');
+  const end = original.indexOf('id="core-skill-grid"');
+  assert.ok(start !== -1 && end > start, 'the featured strip and the core grid must both be found');
+  const strip = original.slice(start, end);
+  assert.equal(
+    strip.split(from).length - 1,
+    1,
+    `the mutation anchor must be unique in the strip: ${from}`
+  );
+  const mutated = original.slice(0, start) + strip.replace(from, to) + original.slice(end);
+  assert.notEqual(mutated, original, 'the mutation must actually apply, or this proves nothing');
+  return mutated;
+}
+
+/** Run `--check` over a mutated page, restoring the page whatever happens. */
+function checkWithFeatured(mutate) {
+  const original = readFileSync(FEATURED_PAGE, 'utf8');
+  let r;
+  protectingArtifacts(() => {
+    try {
+      writeFileSync(FEATURED_PAGE, mutate(original));
+      r = run({ args: ['--check'] });
+    } finally {
+      writeFileSync(FEATURED_PAGE, original);
+    }
+  });
+  assert.equal(readFileSync(FEATURED_PAGE, 'utf8'), original, 'the real catalog must be restored');
+  return r;
+}
+
+test('the committed featured strip says exactly what its grid twins say', () => {
+  // The green half: the four mutations below all assert a REFUSAL, and a refusal
+  // means nothing if the unmutated page was already being refused for some
+  // unrelated reason.
+  //
+  // Stated plainly, because it is the kind of assertion that reads stronger than
+  // it is: this test is also green on a tree where the rule does not exist at all
+  // — no rule, no complaint, no "featured" in stderr. It is the four mutations
+  // that prove the rule fires; measured on origin/main, where the rule was
+  // missing, two of them failed on `--check` exiting 0 where 1 was required and
+  // two on the drifted copy no longer carrying the twin's text.
+  const r = run({ args: ['--check'] });
+  assert.equal(r.code, 0, r.both);
+  assert.doesNotMatch(r.stderr, /featured/, r.both);
+});
+
+test('a featured card that reworded its grid twin is refused, naming the field', () => {
+  // The defect this rule was written for: on 2026-09-12 the three copies differed
+  // from their twins in 8 fields, and nothing in this file or in CI could see it,
+  // because only the GRIDS reach registry.json. The strip is the first thing a
+  // visitor reads and the one thing no gate was reading.
+  const r = checkWithFeatured((original) =>
+    mutateFeatured(
+      original,
+      'scRNA-seq clustering, annotation, trajectory, and integration.',
+      'scRNA-seq analysis — QC, clustering, annotation, trajectory, and integration.'
+    )
+  );
+  assert.equal(r.code, 1, `a reworded featured card must be refused\n${r.both}`);
+  assert.match(r.stderr, /featured "single-cell" and its grid card disagree on description/);
+  // The repair is part of the rule: which of the two copies is canonical is the
+  // question a person hitting this has, and "they differ" does not answer it.
+  assert.match(r.stderr, /the one registry\.json publishes, so it is the one to copy FROM/);
+});
+
+test('a featured card whose keywords drifted is refused, not only its prose', () => {
+  // `data-tags` is the half a reader cannot see. It is what the card matches on
+  // in the shelf's own text search, so a strip-only keyword answers queries the
+  // registry row — and therefore the app's catalog and the model-facing search —
+  // does not, for the very same download.
+  const r = checkWithFeatured((original) =>
+    mutateFeatured(
+      original,
+      'data-tags="single-cell scanpy seurat scvi"',
+      'data-tags="single-cell scanpy seurat scvi clustering annotation"'
+    )
+  );
+  assert.equal(r.code, 1, `drifted featured keywords must be refused\n${r.both}`);
+  assert.match(r.stderr, /featured "single-cell" and its grid card disagree on keywords/);
+});
+
+test('a featured card filed under the wrong category chip is refused', () => {
+  // `data-cat` has no twin to compare against on the card itself — a grid card
+  // inherits its category from the grid — so this is the one field the rule has
+  // to reach for deliberately. Wrong, the copy answers a category chip its twin
+  // does not, which is the same skill appearing in two places and missing from one.
+  const r = checkWithFeatured((original) =>
+    mutateFeatured(original, 'data-cat="biomedical"', 'data-cat="core"')
+  );
+  assert.equal(r.code, 1, `a miscategorised featured card must be refused\n${r.both}`);
+  assert.match(
+    r.stderr,
+    /featured "single-cell" declares data-cat="core", but its grid card sits in the Biomedical grid/
+  );
+});
+
+test('a featured card that repeats nothing in the grids is refused by name', () => {
+  // The strip is defined as repeats. A card only there is a download the registry
+  // never publishes: the app's catalog cannot install it and the page's own search
+  // is the only place it exists.
+  const r = checkWithFeatured((original) =>
+    mutateFeatured(
+      original,
+      'skill-single-cell/single-cell.zip',
+      'skill-single-cell/not-a-published-skill.zip'
+    )
+  );
+  assert.equal(r.code, 1, `a featured card with no twin must be refused\n${r.both}`);
+  assert.match(r.stderr, /repeats no grid card/);
+  assert.match(r.stderr, /not-a-published-skill\.zip/);
+});
