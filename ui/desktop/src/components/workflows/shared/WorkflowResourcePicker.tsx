@@ -67,21 +67,22 @@ export function WorkflowResourcePicker({
     });
   }, [items, query, selected]);
 
+  // Switching an item on or off changes the selection, never the default: only
+  // the Default control names one. For knowledge bases the default becomes the
+  // primary of every chat the workflow starts, which is where KB-less writes
+  // go, and the daemon never infers that pointer (`plan_knowledge_selection`).
+  // So a base switched on is not made the default, and switching the default
+  // off leaves none rather than passing the role to the first base left.
   const toggleSelected = (id: string) => {
     if (selected.has(id)) {
-      const next = selectedIds.filter((selectedId) => selectedId !== id);
-      onSelectedIdsChange(next);
+      onSelectedIdsChange(selectedIds.filter((selectedId) => selectedId !== id));
       if (defaultId === id) {
-        onDefaultIdChange?.(next[0] ?? null);
+        onDefaultIdChange?.(null);
       }
       return;
     }
 
-    const next = [...selectedIds, id];
-    onSelectedIdsChange(next);
-    if (!defaultId) {
-      onDefaultIdChange?.(id);
-    }
+    onSelectedIdsChange([...selectedIds, id]);
   };
 
   return (
@@ -161,8 +162,12 @@ export function WorkflowResourcePicker({
                         )}
                       </div>
                       {onDefaultIdChange && isSelected && (
+                        // A toggle, so "selected, and no default" stays reachable
+                        // once a default has been named.
                         <button
                           type="button"
+                          aria-pressed={isDefault}
+                          aria-label={`Default ${noun}: ${item.label}`}
                           className={cn(
                             'inline-flex h-6 shrink-0 items-center gap-1 rounded-element px-1.5 text-supporting transition-colors',
                             isDefault
@@ -171,7 +176,7 @@ export function WorkflowResourcePicker({
                           )}
                           onClick={(event) => {
                             event.stopPropagation();
-                            onDefaultIdChange(item.id);
+                            onDefaultIdChange(isDefault ? null : item.id);
                           }}
                         >
                           {isDefault && <Check className="h-3 w-3" />}
