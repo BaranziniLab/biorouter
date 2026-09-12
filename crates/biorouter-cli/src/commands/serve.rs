@@ -165,11 +165,6 @@ pub async fn handle_serve(
         // value makes "a serve daemon never admits a `file:` page" a property of
         // the spawn rather than of whoever's shell this ran in.
         .env_remove("BIOROUTER_RENDERER_ORIGIN")
-        .envs(
-            browser_token
-                .iter()
-                .map(|t| ("BIOROUTER_BROWSER_TOKEN", t.as_str())),
-        )
         // See the module documentation: no proof-of-user digest, on purpose.
         .stdin(Stdio::null())
         // SD-12: and this daemon says so. The desktop launcher sets

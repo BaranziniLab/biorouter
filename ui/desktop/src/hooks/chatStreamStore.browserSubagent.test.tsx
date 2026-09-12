@@ -27,6 +27,11 @@ const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
   updateFromSession: vi.fn(async () => ({ data: {} })),
   updateSessionUserWorkflowValues: vi.fn(async () => ({ data: {} })),
+  // A browser surface states the host's provider on every reaching request
+  // (`userActionHeaders` → `hostConfiguredProvider`), so this spec reads
+  // `BIOROUTER_PROVIDER` the moment it sets `BROWSER_SURFACE_MARKER`. Stubbed
+  // here rather than left to the network guard, which is what caught it.
+  readConfig: vi.fn(async () => ({ data: 'openai' })),
 }));
 
 vi.mock('../api', async (importOriginal) => {
