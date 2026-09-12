@@ -436,6 +436,18 @@ is recorded rather than closed: on a daemon that cannot tell a person from a mod
 means a Stop button nobody can press. **Steering a running turn is the line this stops at**, for
 the reason above.
 
+**A daemon that is keyless by accident says so at startup.** Before this record, a desktop daemon
+that came up without its key announced itself at the first click: Stop answered `403` and the user
+complained. Now Stop works there, so the same misconfiguration is silent — a *weaker* daemon rather
+than a visibly broken one. `read_user_action_digest` therefore reports **why** it holds no key
+rather than returning one undifferentiated "none": stdin was a terminal, stdin closed with nothing
+on it (`serve`'s `Stdio::null()`), a writer held the pipe open and wrote nothing inside the 2 s
+bound, or the line was not a 32-byte hex digest. The last two are launcher faults and nothing
+Biorouter ships does either on purpose, so their warning says so and says to restart. Every arm
+names both consequences — what this daemon refuses, and what it now admits instead. The bound is
+unchanged: nothing measured says the desktop launcher misses it, and what was missing was the
+report, not the time.
+
 **Not decided here.** A subagent's tab in a browser still offers a composer, a steer and a Stop
 that all refuse; SD-8 requires them to say so before the click, and they do not yet. An ordinary
 browser chat's steer control is likewise still offered on a keyless daemon and still refuses — its
