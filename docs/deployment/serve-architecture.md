@@ -164,9 +164,27 @@ compared whole, so a `Host` of `evil.com.attacker.net` does not admit an `Origin
 
 The scheme is the one the client used to reach the daemon. The daemon speaks plain HTTP, so it is
 `http` unless a reverse proxy in front says `X-Forwarded-Proto: https` — the documented way to
-put TLS in front of `serve`. A browser page cannot set that header on a WebSocket handshake, and a
-client that can is not a browser: it may send no `Origin` at all, which both gates admit because
-their token is the authority there.
+put TLS in front of `serve`.
+
+That header is taken on trust, and the reason is a property of the **client** rather than of the
+daemon, which is worth stating because the rate-limit key and the CORS predicate both refuse to
+trust `X-Forwarded-For`. They are not the same question: `X-Forwarded-For` is the only evidence of
+who a caller is, so forging it buys an attacker someone else's identity, while this header only
+decides how an `Origin` is compared to a `Host` — and that comparison exists solely to constrain a
+**browser** page on another origin, which cannot set this header on a WebSocket handshake at all. A
+client that can set it is not a browser and gains nothing by it: it may send no `Origin`, which both
+gates admit because their token is the authority there. A trusted-proxy allowlist would add
+configuration and close nothing. If the origin test ever becomes load-bearing for callers that are
+not browsers, that reasoning has to be revisited with it.
+
+When the header arrives with **several** comma-separated values — a proxy that appends rather than
+replaces — the daemon reads the **last**, the one written by the proxy nearest to it. Reading the
+first would take whatever the client sent: less trustworthy, since a client-written `https` would
+then survive a proxy that appends its own `http`, and less *available*, since a client-written
+`http` in front of a legitimate `https` page resolves to `http` and refuses every WebSocket upgrade
+from that deployment. Nearly every proxy replaces the header, where the two readings are the same
+value, so this matters only for a chain — and a chain whose outer hop is https should have its inner
+proxies preserve the value they are handed.
 
 Until QA-D F7 (2026-09-11) the gates also admitted `is_local_origin` — any loopback port, any
 scheme — so every other local page's socket passed as the daemon's own, and behind a TLS proxy a

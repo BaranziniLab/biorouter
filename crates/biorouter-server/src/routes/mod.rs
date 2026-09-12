@@ -176,17 +176,41 @@ pub fn origin_matches_host(origin: &str, host: Option<&str>, scheme: &str) -> bo
 /// documented way to put TLS in front of `biorouter serve`. Such a proxy has to
 /// forward the original `Host` as well; the socket gates needed that already.
 ///
-/// A header is trusted here where `check_token` refuses to trust
-/// `X-Forwarded-For`, and the difference is who each one constrains. The socket
-/// gates' `Origin` test exists for a browser page on another origin, and a page
-/// cannot set this header on a WebSocket handshake. A client that can set it is
-/// not a browser, and needs no help: it may send no `Origin` at all, which
-/// every gate admits because its token is the authority there.
+/// ⚠ **The LAST value, not the first.** Nearly every proxy *replaces* this
+/// header (nginx's `proxy_set_header X-Forwarded-Proto $scheme`), and where one
+/// does the two readings are the same value. They differ only for a proxy that
+/// *appends*, and there the last entry is the one that proxy wrote while the
+/// first is whatever the client sent — so reading the first is worse twice over.
+/// It is less trustworthy: a client that writes `https` keeps that value even
+/// behind a proxy that appends its own `http`. And it is less **available**,
+/// which is how this was found: a client that writes `http` turns a legitimate
+/// https page's handshake into `"http, https"` → `http`, which then fails the
+/// same-origin comparison and refuses **every** WebSocket upgrade from that
+/// deployment. Fail-closed, but a LAN attacker could trigger it at will. What
+/// reading the last costs is a chain whose outer hop is https and whose inner
+/// hops are not, and such a deployment fixes that at the inner proxy by
+/// preserving the value it was handed.
+///
+/// ⚠ **It is trusted unconditionally, and the reason is a property of the
+/// CLIENT rather than of this daemon.** Worth writing down, because `auth.rs`'s
+/// rate-limit key and `commands::agent`'s CORS both explicitly REFUSE to trust
+/// `X-Forwarded-For` a module away, and the asymmetry reads as an oversight. It
+/// is not the same question. `X-Forwarded-For` is the only evidence of who a
+/// caller is, so forging it buys an attacker someone else's identity. This
+/// header only decides how an `Origin` is compared to a `Host`, and that
+/// comparison exists solely to constrain a **browser** page on another origin —
+/// which cannot set this header on a WebSocket handshake at all. A client that
+/// can set it is not a browser and gains nothing by it: it may simply send no
+/// `Origin`, which both socket gates admit by design, their token being the
+/// authority there. A trusted-proxy allowlist would add a configuration surface
+/// and close nothing. If the `Origin` test ever becomes load-bearing for callers
+/// that are not browsers, this is the line that has to change with it.
 pub(crate) fn request_scheme(headers: &HeaderMap) -> &'static str {
     let forwarded = headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
+        // The value the proxy NEAREST this daemon wrote; see above.
+        .and_then(|value| value.rsplit(',').next())
         .map(str::trim);
     match forwarded {
         Some(proto) if proto.eq_ignore_ascii_case("https") => "https",

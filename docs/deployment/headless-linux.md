@@ -205,7 +205,10 @@ reaching the port as equivalent to a shell account.
   ```
 
   `$http_host` rather than `$host`, which drops a non-default port and so no longer matches the
-  page's origin.
+  page's origin. `proxy_set_header` **replaces** the header, which is what you want: where a proxy
+  chain appends instead, the daemon reads the last value — the one the proxy nearest it wrote — so
+  an inner proxy that overwrites a correct `https` with its own `http` will refuse every WebSocket
+  upgrade. Have inner proxies pass the value through rather than re-derive it.
 - **Restrict the source addresses.** Scope a cloud security group or a host firewall rule to the
   addresses that need it, rather than relying on the token alone:
 
