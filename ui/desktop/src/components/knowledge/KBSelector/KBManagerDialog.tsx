@@ -169,10 +169,12 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     try {
       if (draftMode?.kind === 'rename') {
         setBusyId(draftMode.base.id);
-        const manifest = await rename(draftMode.base.id, trimmed);
-        if (primaryKbId === draftMode.base.id) {
-          setPrimaryKbId(manifest.id);
-        }
+        // No `setPrimaryKbId(manifest.id)` after this: a rename moves every
+        // pointer that named the base, machine default and chats alike, and
+        // `rename` ends by re-reading the selection. Re-pinning it from here
+        // turned a chat that only inherited the renamed base into one that
+        // pinned it.
+        await rename(draftMode.base.id, trimmed);
       }
       resetDraft();
       await refresh();

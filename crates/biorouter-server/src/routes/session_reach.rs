@@ -2207,4 +2207,147 @@ mod bypass_tests {
             "this 400 did not come from `set_selection`: only it echoes the kb id: {body}"
         );
     }
+
+    /// `DELETE /knowledge/bases/{id}` through the real router tree, with the
+    /// proof — as the Knowledge view sends it.
+    async fn delete_knowledge_base(state: Arc<AppState>, kb_id: &str) -> (StatusCode, String) {
+        let app = crate::routes::configure(state, "task-58-secret".to_string());
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/knowledge/bases/{kb_id}"))
+                    .header("X-User-Action", TEST_USER_ACTION_KEY)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn selection_json(body: &str) -> serde_json::Value {
+        serde_json::from_str(body).unwrap_or_else(|_| panic!("not a selection: {body}"))
+    }
+
+    /// QA 2026-09-10 F14, the daemon's half, end to end through the real router,
+    /// the reach gate and a PRIVATE chat — the configuration every chat on a
+    /// UCSF install is in.
+    ///
+    /// QA read the blank `.active-kb` it found after deleting the primary as
+    /// "the daemon does not repair the selection". The blank IS the repair for a
+    /// delete (D2 in `docs/knowledge-base/multi-kb-implementation-plan.md`):
+    /// hiding promotes to the next base, deleting clears to the explicit
+    /// no-primary, and a chat that merely inherited keeps inheriting. What this
+    /// pins is the rest of the contract the Knowledge view now relies on instead
+    /// of re-deriving it: nothing is left pointing at the deleted base, in any
+    /// scope, and the person at the keyboard can choose again — for a private
+    /// chat — and have it stick.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn deleting_the_primary_leaves_no_pointer_at_it_and_the_user_can_choose_again() {
+        use biorouter_mcp::knowledge::service::PrimaryUpdate;
+
+        install_test_user_action_key();
+        // A throwaway knowledge root: this test creates bases and moves
+        // pointers, which it must never do in a real one.
+        let knowledge_root = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_knowledge_root(knowledge_root.path().to_path_buf())
+            .await
+            .unwrap();
+        let svc = state.knowledge_service.clone();
+        let pinning = seed_private_chat(&state, "F14 pinning chat (test fixture)").await;
+        let inheriting = seed_private_chat(&state, "F14 inheriting chat (test fixture)").await;
+        svc.create_base("soul", "Soul", None).unwrap();
+        svc.create_base("doomed", "Doomed", None).unwrap();
+
+        // The machine default names the base about to go, so the inheriting
+        // chat shows it as its primary too; the other chat pins it itself — as
+        // the person does, with the proof, through the gate.
+        svc.set_selection(None, None, PrimaryUpdate::Set("doomed"))
+            .unwrap();
+        let (status, body) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "session_id": pinning.id(), "primary_kb": "doomed" }),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        for chat in [pinning.id(), inheriting.id()] {
+            let (status, body) =
+                get_knowledge_active(state.clone(), chat, Some(TEST_USER_ACTION_KEY)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(selection_json(&body)["primary_kb"], "doomed", "{body}");
+        }
+
+        let (status, body) = delete_knowledge_base(state.clone(), "doomed").await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        // No scope reports the deleted base, as primary or as a member…
+        for chat in [pinning.id(), inheriting.id()] {
+            let (status, body) =
+                get_knowledge_active(state.clone(), chat, Some(TEST_USER_ACTION_KEY)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let selection = selection_json(&body);
+            assert!(selection["primary_kb"].is_null(), "{body}");
+            assert_eq!(selection["kb_ids"], serde_json::json!(["soul"]), "{body}");
+        }
+        let machine = svc.selection(None).unwrap();
+        assert_eq!(machine.primary_kb, None);
+
+        // …and none is left STORING it. The two pointers that named it are the
+        // explicit no-primary — a blank file, which must not fall back to Soul —
+        // and the chat that only inherited was left inheriting: no file of its
+        // own was invented for it.
+        let active_kb = std::fs::read_to_string(knowledge_root.path().join(".active-kb")).unwrap();
+        assert_eq!(
+            active_kb.trim(),
+            "",
+            "the machine pointer still names something"
+        );
+        let sessions = knowledge_root.path().join(".active-kb-sessions");
+        let stored: Vec<String> = std::fs::read_dir(&sessions)
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(
+            stored,
+            vec![String::new()],
+            "exactly one chat pinned the base, and its pointer must now be blank"
+        );
+        assert_eq!(svc.get_primary_for_session(inheriting.id()).unwrap(), None);
+
+        // The person chooses again — for a PRIVATE chat, which needs the proof —
+        // and it sticks: in the answer, in a fresh read, and on disk.
+        let (status, body) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "session_id": inheriting.id(), "primary_kb": "soul" }),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(selection_json(&body)["primary_kb"], "soul", "{body}");
+        let (status, body) =
+            get_knowledge_active(state.clone(), inheriting.id(), Some(TEST_USER_ACTION_KEY)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(selection_json(&body)["primary_kb"], "soul", "{body}");
+        assert_eq!(
+            svc.get_primary_for_session(inheriting.id())
+                .unwrap()
+                .as_deref(),
+            Some("soul")
+        );
+
+        // The same write without the proof is still refused, and moves nothing.
+        let (status, _) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "session_id": pinning.id(), "primary_kb": "soul" }),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(svc.get_primary_for_session(pinning.id()).unwrap(), None);
+    }
 }

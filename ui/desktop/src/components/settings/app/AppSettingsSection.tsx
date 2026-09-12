@@ -348,7 +348,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               {/* `text-iconStandard` is not a token — it had no effect and no
                   definition. The two dialog titles now agree on 20px. */}
               <Settings size={20} />
-              How to Enable Notifications
+              How to enable notifications
             </DialogTitle>
           </DialogHeader>
 

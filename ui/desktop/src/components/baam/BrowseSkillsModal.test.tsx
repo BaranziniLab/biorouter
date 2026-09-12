@@ -1,5 +1,7 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MARKETPLACE_SKILLS } from './marketplace.fixture';
 
 const mocks = vi.hoisted(() => ({ loadRegistry: vi.fn() }));
 
@@ -91,5 +93,121 @@ describe('BrowseSkillsModal — the install label has one space between words', 
     // `textContent` rather than the accessible name, which normalises runs of
     // whitespace and would report the bug as fixed while it was still there.
     expect(button.textContent).toBe('Install skills');
+  });
+});
+
+/** The skill names the list shows, top to bottom: one checkbox per row. */
+function shownSkillNames(): string[] {
+  return screen
+    .queryAllByRole('checkbox')
+    .map((box) => box.closest('label')?.querySelector('span')?.textContent ?? '');
+}
+
+async function openWithMarketplaceSkills() {
+  mocks.loadRegistry.mockResolvedValue({
+    registry: { version: 2, source: 'test', extensions: [], skills: MARKETPLACE_SKILLS },
+    live: true,
+    fetchedAt: '2026-09-10T00:00:00Z',
+  });
+  const user = userEvent.setup();
+  render(<BrowseSkillsModal onClose={vi.fn()} onInstalled={vi.fn()} installedIds={new Set()} />);
+  await screen.findByText('R Scripting');
+  return { user, searchBox: screen.getByPlaceholderText(/Search skills/) };
+}
+
+/// Finding F5, in the desktop modal. The model-facing search (#242) and this one
+/// were the same defect in two languages: the WHOLE query had to occur inside a
+/// single field, so every word of `R scripting ggplot visualization` finds a
+/// skill on its own and the phrase found none.
+describe('BrowseSkillsModal — a multi-word search (finding F5)', () => {
+  it('shows the union of what each word finds, best match first', async () => {
+    const { user, searchBox } = await openWithMarketplaceSkills();
+
+    await user.type(searchBox, 'R scripting ggplot visualization');
+
+    expect(shownSkillNames()).toEqual([
+      'ggplot2 Visualization',
+      'R Scripting',
+      'Data Visualization',
+      'Python Scripting',
+      'Clinical Biostatistics',
+    ]);
+  });
+
+  /// The two single-word controls the QA run measured beside the phrase.
+  it('finds exactly the two ggplot skills for `ggplot`', async () => {
+    const { user, searchBox } = await openWithMarketplaceSkills();
+
+    await user.type(searchBox, 'ggplot');
+
+    expect(shownSkillNames()).toEqual(['ggplot2 Visualization', 'Data Visualization']);
+  });
+
+  it('puts the skill a query names first', async () => {
+    const { user, searchBox } = await openWithMarketplaceSkills();
+
+    await user.type(searchBox, 'r-scripting');
+
+    expect(shownSkillNames()[0]).toBe('R Scripting');
+  });
+});
+
+/** The section headings above the list, top to bottom. */
+function shownHeadings(): string[] {
+  return screen.queryAllByRole('heading', { level: 3 }).map((heading) => heading.textContent ?? '');
+}
+
+describe('BrowseSkillsModal — browsing is grouped, a search is ranked', () => {
+  it('groups the catalog under its category headings, in registry order', async () => {
+    await openWithMarketplaceSkills();
+
+    expect(shownHeadings()).toEqual(['Core skills (4)', 'Biomedical analysis (3)']);
+    expect(shownSkillNames()).toEqual([
+      'Scientific Visual Communication',
+      'ggplot2 Visualization',
+      'R Scripting',
+      'Python Scripting',
+      'Clinical Biostatistics',
+      'Data Visualization',
+      'Single-cell',
+    ]);
+  });
+
+  /// Under the category headings, Python Scripting (one term matched) would sit
+  /// above Data Visualization (two) only because Core is listed before
+  /// Biomedical — the ranking would be computed and then not shown.
+  it('shows a search as one list in rank order', async () => {
+    const { user, searchBox } = await openWithMarketplaceSkills();
+
+    await user.type(searchBox, 'R scripting ggplot visualization');
+
+    expect(shownHeadings()).toEqual(['Matches (5)']);
+  });
+
+  it('treats a query of only spaces as browsing', async () => {
+    const { user, searchBox } = await openWithMarketplaceSkills();
+
+    await user.type(searchBox, '   ');
+
+    expect(shownHeadings()).toEqual(['Core skills (4)', 'Biomedical analysis (3)']);
+  });
+
+  it('keeps the category filter under a search', async () => {
+    const { user, searchBox } = await openWithMarketplaceSkills();
+
+    await user.click(screen.getByRole('button', { name: 'Biomedical analysis' }));
+    await user.type(searchBox, 'R scripting ggplot visualization');
+
+    expect(shownSkillNames()).toEqual(['Data Visualization', 'Clinical Biostatistics']);
+  });
+
+  it('says so when nothing matches', async () => {
+    const { user, searchBox } = await openWithMarketplaceSkills();
+
+    await user.type(searchBox, 'xylophone');
+
+    expect(shownSkillNames()).toEqual([]);
+    expect(shownHeadings()).toEqual([]);
+    expect(screen.getByText('No skills match your search.')).toBeInTheDocument();
   });
 });

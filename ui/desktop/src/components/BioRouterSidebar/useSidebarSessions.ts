@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listSidebarSessions, type SessionSummary } from '../../api';
 import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
-import { subscribeSessionListChanges } from '../../utils/sessionListCache';
+import { subscribeSessionListChanges, subscribeSessionRemoved } from '../../utils/sessionListCache';
 
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
 
@@ -103,12 +103,29 @@ export default function useSidebarSessions(): SidebarSessionsState {
     // unrelated turn happened to finish. Now every list change re-reads.
     const unsubscribeList = subscribeSessionListChanges(scheduleRefresh);
 
+    // M11. A removal is the one membership change the nudge above cannot carry:
+    // `appendSessionPage` merges a re-read INTO what we hold and has no removal
+    // branch, so a deleted chat survived every refresh and cleared only on a
+    // renderer reload. Splice it out by id instead — exact, and with no risk of
+    // evicting a live chat that merely fell out of the first page.
+    //
+    // `nextOffsetRef` moves down with it: the server's list lost the same row,
+    // so leaving the offset alone would make the next `loadMore` skip one.
+    const unsubscribeRemoved = subscribeSessionRemoved((sessionId) => {
+      const remaining = sessionsRef.current.filter((session) => session.id !== sessionId);
+      if (remaining.length === sessionsRef.current.length) return;
+      sessionsRef.current = remaining;
+      setSessions(remaining);
+      nextOffsetRef.current = Math.max(0, nextOffsetRef.current - 1);
+    });
+
     window.addEventListener('session-created', scheduleRefresh);
     window.addEventListener('message-stream-finished', scheduleRefresh);
 
     return () => {
       unsubscribeNames();
       unsubscribeList();
+      unsubscribeRemoved();
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
       window.removeEventListener('session-created', scheduleRefresh);
       window.removeEventListener('message-stream-finished', scheduleRefresh);

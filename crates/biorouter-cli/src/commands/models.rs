@@ -233,8 +233,7 @@ pub async fn handle_models_set(provider_name: String, model: String) -> Result<(
     }
 
     let config = Config::global();
-    config.set_biorouter_provider(provider_name.clone())?;
-    config.set_biorouter_model(&model)?;
+    config.set_biorouter_provider_and_model(provider_name.clone(), &model)?;
 
     println!("Model configuration updated");
     println!("  provider: {}", style(provider_name).cyan());

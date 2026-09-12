@@ -77,7 +77,7 @@ describe('the model chip with no provider configured', () => {
 
   /**
    * ⚠ **The dropdown is replaced, not disabled.** Its two items are "Change
-   * Model" and "Lead/Worker Settings", which both read as adjustments to a model
+   * model" and "Lead/worker settings", which both read as adjustments to a model
    * that does not exist.
    */
   it('offers no model dropdown at all in that state', () => {

@@ -657,6 +657,13 @@ struct WorkspaceSetToolsParams {
     remove_skills: Vec<String>,
     /// Switch the conversation's provider. Required whenever `model` is given —
     /// a model name alone is ambiguous across providers.
+    ///
+    /// It must be a provider at the conversation's OWN privacy level: you may
+    /// move a public chat between public models and a private chat between
+    /// private ones, but you may not move a chat across that line in either
+    /// direction. Raising a conversation to a private model is the user's
+    /// decision (DR-16) — ask them to make it in that conversation's model
+    /// picker rather than calling this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     /// Switch the conversation's model. Validated against the provider's
@@ -3396,6 +3403,52 @@ impl WorkspaceClient {
         })])
     }
 
+    /// Decision 4: never park an approval prompt where nobody can see it. In
+    /// manual/smart-approval modes a detached turn's tool confirmations arrive
+    /// as ToolConfirmationRequest messages that only a GUI (or an observer) can
+    /// answer; with no GUI attached the turn would sit until its timeout with
+    /// no one watching. Refuse clearly instead — the caller can use
+    /// mode:"note", or the user can open the app.
+    async fn refuse_turn_no_one_could_approve(
+        &self,
+        services: &dyn workspace_services::WorkspaceServices,
+        target_session_id: &str,
+    ) -> Result<(), String> {
+        if !services.gui_attached() && self.target_mode_requires_approval(target_session_id).await {
+            return Err(format!(
+                "refusing to start a turn in session {target_session_id}: this machine is in an \
+                 approval permission mode and no desktop window is attached, so any \
+                 tool confirmation the turn raises would wait unseen until it timed \
+                 out. Use mode:\"note\" to leave the text as context, or ask the user \
+                 to open the Biorouter app."
+            ));
+        }
+        Ok(())
+    }
+
+    /// Count this caller's own in-flight injections and take a slot, or refuse.
+    ///
+    /// ⚠ The guard is RETURNED, not `_`-bound. A slot is occupied by a turn
+    /// that is *in flight*, and a `wait:"none"` call returns while its turn
+    /// runs on — so binding the guard to the call's stack frame would release
+    /// every fire-and-forget injection's slot the instant the tool answered,
+    /// and the cap would bound nothing at all (five, fifty, five hundred
+    /// detached turns all accepted under a cap of four). The caller moves it
+    /// into the reservation task instead, which releases it on the turn's own
+    /// terminal event.
+    fn reserve_injected_turn_slot(caller_session_id: &str) -> Result<InjectedTurnGuard, String> {
+        let (inflight, cap_guard) = InjectedTurnGuard::enter(caller_session_id);
+        if inflight > Self::injected_turn_cap() {
+            return Err(format!(
+                "this session already has {} injected turns in flight (cap {}); \
+                 wait for one to finish",
+                inflight - 1,
+                Self::injected_turn_cap()
+            ));
+        }
+        Ok(cap_guard)
+    }
+
     /// `mode:"turn"` — start the target's agent on the text, then either
     /// detach or park for its final message.
     ///
@@ -3416,44 +3469,12 @@ impl WorkspaceClient {
             "mode:\"turn\" requires the BioRouter daemon (no workspace services installed); \
              use mode:\"note\" to leave context headlessly",
         )?;
-        // Decision 4: never park an approval prompt where nobody can see
-        // it. In manual/smart-approval modes a detached turn's tool
-        // confirmations arrive as ToolConfirmationRequest messages that
-        // only a GUI (or an observer) can answer; with no GUI attached
-        // the turn would sit until its timeout with no one watching.
-        // Refuse clearly instead — the caller can use mode:"note", or
-        // the user can open the app.
-        if !services.gui_attached() && self.target_mode_requires_approval(&args.session_id).await {
-            return Err(format!(
-                "refusing to start a turn in session {}: this machine is in an \
-                 approval permission mode and no desktop window is attached, so any \
-                 tool confirmation the turn raises would wait unseen until it timed \
-                 out. Use mode:\"note\" to leave the text as context, or ask the user \
-                 to open the Biorouter app.",
-                args.session_id
-            ));
-        }
+        self.refuse_turn_no_one_could_approve(services.as_ref(), &args.session_id)
+            .await?;
         // Bounded fan-out, PER CALLING SESSION (§5): subscribe before
         // starting so completion is never missed, and count this
         // caller's own in-flight injections.
-        //
-        // ⚠ The guard is NOT `_`-bound. A slot is occupied by a turn that
-        // is *in flight*, and a `wait:"none"` call returns while its turn
-        // runs on — so binding the guard to the call's stack frame would
-        // release every fire-and-forget injection's slot the instant the
-        // tool answered, and the cap would bound nothing at all (five,
-        // fifty, five hundred detached turns all accepted under a cap of
-        // four). It is moved into the reservation task below instead, and
-        // released on the turn's own terminal event.
-        let (inflight, cap_guard) = InjectedTurnGuard::enter(caller_session_id);
-        if inflight > Self::injected_turn_cap() {
-            return Err(format!(
-                "this session already has {} injected turns in flight (cap {}); \
-                 wait for one to finish",
-                inflight - 1,
-                Self::injected_turn_cap()
-            ));
-        }
+        let cap_guard = Self::reserve_injected_turn_slot(caller_session_id)?;
 
         let wait_for_final = args.wait.as_deref() == Some("final_message");
         let slot_rx = session_events::subscribe(&args.session_id);
@@ -3514,17 +3535,31 @@ impl WorkspaceClient {
         );
         let waited = tokio::time::timeout(timeout, follower.run()).await;
 
-        // F3: every ending the caller can reach is one verdict in one shape, so
-        // a refusal can no longer read as a completion — see
-        // [`InjectedTurnVerdict`].
-        let report = match waited {
+        let report =
+            Self::parked_turn_report(&args.session_id, &turn_id, timeout, waited, &follower)?;
+        Ok(report.into_call_tool_result())
+    }
+
+    /// Fold every way the park above can end into ONE verdict in one shape.
+    ///
+    /// F3: a refusal can no longer read as a completion — see
+    /// [`InjectedTurnVerdict`]. `Err` is reserved for the single ending that
+    /// yields no verdict at all, the event stream itself failing.
+    fn parked_turn_report(
+        session_id: &str,
+        turn_id: &str,
+        timeout: std::time::Duration,
+        waited: Result<Result<TurnOutcome, String>, tokio::time::error::Elapsed>,
+        follower: &TurnFollower,
+    ) -> Result<InjectedTurnReport, String> {
+        Ok(match waited {
             Ok(Ok(TurnOutcome::Finished {
                 reason,
                 last_assistant,
                 tool_calls,
             })) => InjectedTurnReport::finished(
-                &args.session_id,
-                &turn_id,
+                session_id,
+                turn_id,
                 reason,
                 last_assistant,
                 tool_calls,
@@ -3534,24 +3569,23 @@ impl WorkspaceClient {
                 last_assistant,
                 tool_calls,
             })) => InjectedTurnReport::errored(
-                &args.session_id,
-                &turn_id,
+                session_id,
+                turn_id,
                 message,
                 last_assistant,
                 tool_calls,
             ),
             Ok(Err(e)) => return Err(format!("event stream error while waiting: {e}")),
             // The park gave up; the TURN did not. The independent slot follower
-            // above still owns the caller's reservation until the target emits
-            // this turn's terminal event.
+            // still owns the caller's reservation until the target emits this
+            // turn's terminal event.
             Err(_) => InjectedTurnReport::timed_out(
-                &args.session_id,
-                &turn_id,
+                session_id,
+                turn_id,
                 timeout,
                 follower.tool_calls.len(),
             ),
-        };
-        Ok(report.into_call_tool_result())
+        })
     }
 
     /// BR-71 `workspace_set_tools`: the one place an agent changes *what another
@@ -3591,26 +3625,43 @@ impl WorkspaceClient {
         // `target_mode_requires_approval` documents at length. A skills-only or
         // KB-only call must not pay that price for a target the user has not
         // opened.
-        let needs_agent =
-            !add_configs.is_empty() || !args.remove_extensions.is_empty() || new_provider.is_some();
-        let agent = if needs_agent {
+        //
+        // ⚠ **The EXTENSION dimension must not pay it either, which is why the
+        // peek comes first.** A bare agent's manager holds nothing, and
+        // `persist_extension_state` was a whole-key REPLACE of that snapshot —
+        // so a change to a conversation with no live agent wrote the one change
+        // as its ENTIRE roster and reported success. Measured on a cold chat
+        // holding three extensions: one `add_extensions` left it holding one,
+        // and one `remove_extensions` left it holding none. Data loss,
+        // announced as a change applied. A conversation with no live agent is
+        // now changed where its roster actually lives — the session row — and
+        // an agent is minted only for the provider switch, which genuinely
+        // needs one.
+        let touches_extensions = !add_configs.is_empty() || !args.remove_extensions.is_empty();
+        let (live, agent) = if touches_extensions || new_provider.is_some() {
             let agent_manager = crate::execution::manager::AgentManager::instance()
                 .await
                 .map_err(|e| e.to_string())?;
-            Some(
-                agent_manager
-                    .get_or_create_agent(args.session_id.clone())
-                    .await
-                    .map_err(|e| e.to_string())?,
-            )
+            let live = agent_manager.peek_agent(&args.session_id).await;
+            let agent = match (&live, new_provider.is_some()) {
+                (Some(live), _) => Some(std::sync::Arc::clone(live)),
+                (None, true) => Some(
+                    agent_manager
+                        .get_or_create_agent(args.session_id.clone())
+                        .await
+                        .map_err(|e| e.to_string())?,
+                ),
+                (None, false) => None,
+            };
+            (live, agent)
         } else {
-            None
+            (None, None)
         };
 
-        if let Some(agent) = &agent {
+        if touches_extensions {
             applied.extend(
-                Self::apply_extension_changes_gated(
-                    agent,
+                self.apply_extension_changes_gated(
+                    live.as_ref(),
                     cap,
                     &args.session_id,
                     add_configs,
@@ -3788,7 +3839,13 @@ impl WorkspaceClient {
         // F4: removals are judged HERE, before any approval — they used to be
         // judged only once the handler had fetched the target's agent, which is
         // after the card the user had already been asked to approve.
-        Self::preflight_extension_removals(cap, &args.session_id, &args.remove_extensions).await?;
+        Self::preflight_extension_removals(
+            self.context.session_manager.as_ref(),
+            cap,
+            &args.session_id,
+            &args.remove_extensions,
+        )
+        .await?;
         // Model/provider (decision b): resolve and validate here; apply later.
         let new_provider = Self::resolve_provider_switch(&args.provider, &args.model).await?;
         if let (Some((_, _, provider)), Some(classification)) = (&new_provider, write_target) {
@@ -3801,6 +3858,34 @@ impl WorkspaceClient {
                 return Err(format!(
                     "failed to switch provider: {}",
                     crate::privacy::refusal::PrivacyRefusal::PublicModelOnPrivateSession {
+                        session_id: args.session_id.clone(),
+                        provider: provider.get_name().to_string(),
+                    }
+                ));
+            }
+            // DR-16's half, which Gate A's predicate deliberately does not
+            // carry. `bind_allowed` refuses only the DOWNWARD bind, so on its
+            // own it lets a model put a PRIVATE provider in front of a public
+            // conversation — granting that conversation Private capability
+            // (chatrecall over private chats, private knowledge bases, an
+            // unfiltered Gate E roster) and, on its next turn, ratcheting its
+            // stored `privacy_tier` to Private for good.
+            //
+            // DR-16 rules that raise the user's alone, and its three enforcement
+            // sites are all HTTP routes, where `X-User-Action` can prove a
+            // person asked. Nothing proves that of a tool call, so this is a
+            // refusal and not a proof check — see `privacy::tool_bind_allowed`,
+            // which composes the two rules, and `PrivacyRefusal::ToolTierRaise`,
+            // which explains why a question here would be one the caller has no
+            // way to answer.
+            //
+            // Reached only when `bind_allowed` already passed, so the only way
+            // this can be false is the raise; the branch above owns the other
+            // sentence.
+            if !crate::privacy::tool_bind_allowed(provider.tier(), classification) {
+                return Err(format!(
+                    "failed to switch provider: {}",
+                    crate::privacy::refusal::PrivacyRefusal::ToolTierRaise {
                         session_id: args.session_id.clone(),
                         provider: provider.get_name().to_string(),
                     }
@@ -3837,7 +3922,21 @@ impl WorkspaceClient {
     /// "loaded" and "not loaded" stay the one sentence finding 13 requires.
     ///
     /// [`manageability_refusal`]: crate::agents::extension_manager::manageability_refusal
+    /// The one sentence for "that conversation has nothing under this name".
+    ///
+    /// Two branches answer it — a live conversation's loaded manager and a cold
+    /// one's saved roster — and two copies of one refusal is how the two
+    /// extension doors in this file drifted apart the last time.
+    fn nothing_to_remove(name: &str, target_session_id: &str) -> String {
+        format!(
+            "`{name}` is not enabled in conversation {target_session_id}, so there is \
+             nothing to remove. Nothing was changed; check the conversation's extensions \
+             with workspace_list."
+        )
+    }
+
     async fn preflight_extension_removals(
+        session_manager: &crate::session::SessionManager,
         cap: crate::privacy::CallCapability,
         target_session_id: &str,
         names: &[String],
@@ -3849,12 +3948,35 @@ impl WorkspaceClient {
             Ok(manager) => manager.peek_agent(target_session_id).await,
             Err(_) => None,
         };
+        // A conversation with no live agent still HAS a roster — in its session
+        // row — and this used to skip the existence half entirely for one,
+        // so a cold removal of a name the chat never had came back as `-name`.
+        // Read once, before anything is applied, so an unreadable roster refuses
+        // the call here rather than at the write (`saved_roster_of`).
+        let saved = match &live {
+            Some(_) => Vec::new(),
+            None => {
+                crate::agents::session_extensions::saved_roster(session_manager, target_session_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
+        };
         for name in names {
             let Some(agent) = &live else {
                 if let Some(refusal) =
                     crate::agents::extension_manager::manageability_refusal(name, None, cap)
                 {
                     return Err(refusal.message.to_string());
+                }
+                // The same sentence the live branch answers with — by name, not a
+                // second copy of it — and BELOW the privacy arm for the same
+                // reason: reachable only by a caller already entitled to see what
+                // that conversation has loaded.
+                if !saved.iter().any(|config| {
+                    crate::agents::extension_manager::normalize(&config.name())
+                        == crate::agents::extension_manager::normalize(name)
+                }) {
+                    return Err(Self::nothing_to_remove(name, target_session_id));
                 }
                 continue;
             };
@@ -3872,11 +3994,7 @@ impl WorkspaceClient {
                 .is_extension_enabled(&crate::agents::extension_manager::normalize(name))
                 .await
             {
-                return Err(format!(
-                    "`{name}` is not enabled in conversation {target_session_id}, so there is \
-                     nothing to remove. Nothing was changed; check the conversation's extensions \
-                     with workspace_list."
-                ));
+                return Err(Self::nothing_to_remove(name, target_session_id));
             }
         }
         Ok(())
@@ -3934,7 +4052,8 @@ impl WorkspaceClient {
     /// order it encodes (every removal entitled BEFORE anything is applied) is
     /// the part that must not be rearranged, and it is argued for inline.
     async fn apply_extension_changes_gated(
-        agent: &std::sync::Arc<crate::agents::Agent>,
+        &self,
+        live: Option<&std::sync::Arc<crate::agents::Agent>>,
         cap: crate::privacy::CallCapability,
         session_id: &str,
         add_configs: Vec<crate::agents::ExtensionConfig>,
@@ -3975,14 +4094,33 @@ impl WorkspaceClient {
         // so a refused removal cannot land after that function has already
         // applied the adds — the "resolve everything before mutating
         // anything" rule the add half states above, held across both halves.
+        //
+        // ⚠ **`live: None` asks the SAME predicate with the same `None`** the
+        // pre-flight's cold branch asks it with. A conversation with no live
+        // agent has nothing loaded, and judging its removals against the SAVED
+        // roster here would LOOSEN this gate rather than tighten it: an unknown
+        // name reads Private, and that inverted default is what stops the
+        // refusal being an existence oracle over exactly the private names
+        // Gate E hides. Existence is answered separately, below both privacy
+        // arms, in `preflight_extension_removals`.
         for name in remove_extensions {
-            agent
-                .extension_manager
-                .assert_extension_manageable(name, cap)
-                .await
-                .map_err(|e| e.message.to_string())?;
+            match live {
+                Some(agent) => agent
+                    .extension_manager
+                    .assert_extension_manageable(name, cap)
+                    .await
+                    .map_err(|e| e.message.to_string())?,
+                None => {
+                    if let Some(refusal) =
+                        crate::agents::extension_manager::manageability_refusal(name, None, cap)
+                    {
+                        return Err(refusal.message.to_string());
+                    }
+                }
+            }
         }
-        Self::apply_extension_changes(agent, session_id, add_configs, remove_extensions).await
+        self.apply_extension_changes(live, session_id, add_configs, remove_extensions)
+            .await
     }
 
     /// **Gate F1, at the workspace's own two enable doors** (issue #56,
@@ -4228,9 +4366,14 @@ impl WorkspaceClient {
         }
     }
 
-    /// The exact /agent/add_extension handler path (routes/agent.rs:744-767):
-    /// add on the live agent, persist only after a successful load. Returns the
-    /// `applied` labels for the extensions that changed.
+    /// Change the live agent's loaded set when there IS one, and the
+    /// conversation's saved roster either way. Returns the `applied` labels for
+    /// the extensions that changed.
+    ///
+    /// The live half is /agent/add_extension's handler path (routes/agent.rs):
+    /// add or remove on the agent, persist only after a successful load. The
+    /// persist half is deliberately NOT that handler's — see the delta note
+    /// below.
     ///
     /// ⚠ **This function decides nothing about privacy, and it has exactly one
     /// caller for that reason.** Both of its halves are gated at
@@ -4244,35 +4387,57 @@ impl WorkspaceClient {
     /// how this one came to be one. If you need this here, carry both gates with
     /// it or move them inside.
     async fn apply_extension_changes(
-        agent: &crate::agents::Agent,
+        &self,
+        live: Option<&std::sync::Arc<crate::agents::Agent>>,
         session_id: &str,
         add_configs: Vec<crate::agents::ExtensionConfig>,
         remove_extensions: &[String],
     ) -> Result<Vec<String>, String> {
         let mut applied = Vec::new();
         let mut extensions_changed = false;
-        for config in add_configs {
-            let name = config.name().to_string();
-            agent
-                .add_extension(config)
-                .await
-                .map_err(|e| format!("failed to add '{name}': {e}"))?;
-            applied.push(format!("+{name}"));
+        // The live half: only a conversation that is actually open has a
+        // manager to change. A cold one is changed on disk alone, below — it
+        // has no tool surface to keep in step, and `load_extensions_from_session`
+        // spawns the roster it finds the next time it is opened.
+        if let Some(agent) = live {
+            for config in &add_configs {
+                let name = config.name();
+                agent
+                    .add_extension(config.clone())
+                    .await
+                    .map_err(|e| format!("failed to add '{name}': {e}"))?;
+            }
+            for name in remove_extensions {
+                agent
+                    .remove_extension(name)
+                    .await
+                    .map_err(|e| format!("failed to remove '{name}': {e}"))?;
+            }
+        }
+        for config in &add_configs {
+            applied.push(format!("+{}", config.name()));
             extensions_changed = true;
         }
         for name in remove_extensions {
-            agent
-                .remove_extension(name)
-                .await
-                .map_err(|e| format!("failed to remove '{name}': {e}"))?;
             applied.push(format!("-{name}"));
             extensions_changed = true;
         }
         if extensions_changed {
-            agent
-                .persist_extension_state(session_id)
-                .await
-                .map_err(|e| format!("failed to persist extension state: {e}"))?;
+            // ⚠ **A DELTA on the saved roster, never a snapshot of the live
+            // manager.** `Agent::persist_extension_state` snapshots the manager,
+            // which is right for the reply loop and wrong here: this tool writes
+            // into conversations that are not open, whose manager is whatever
+            // bare agent happens to be cached under their id. See
+            // `session_extensions::apply_saved_roster_delta`, which also refuses
+            // loudly rather than replacing a roster it cannot read.
+            crate::agents::session_extensions::apply_saved_roster_delta(
+                self.context.session_manager.as_ref(),
+                session_id,
+                &add_configs,
+                remove_extensions,
+            )
+            .await
+            .map_err(|e| format!("failed to persist extension state: {e}"))?;
             // `workspace__workspace_set_tools` is NOT in `tool_catalog_mutation`,
             // so the reply loop's post-batch refresh never covered it: this tool
             // changes ANOTHER chat's extension set, and until now no consumer of
@@ -12188,6 +12353,186 @@ pub(crate) mod tests {
         );
     }
 
+    /// A conversation with a SAVED extension roster and no live agent — the
+    /// state every chat the user has not opened this session is in, and the one
+    /// `live_target` cannot produce (its `add_inprocess_server` fixtures are
+    /// filtered out of `get_extension_configs`, so they never reach a row).
+    async fn cold_target_with_roster(c: &WorkspaceClient, label: &str, names: &[&str]) -> String {
+        let target = seeded_target(c, label).await;
+        let configs: Vec<crate::agents::ExtensionConfig> = names
+            .iter()
+            .map(|name| crate::agents::ExtensionConfig::Stdio {
+                name: (*name).to_string(),
+                description: String::new(),
+                cmd: "true".to_string(),
+                args: Vec::new(),
+                envs: Default::default(),
+                env_keys: Vec::new(),
+                timeout: None,
+                bundled: None,
+                available_tools: Vec::new(),
+            })
+            .collect();
+        let value = serde_json::to_value(
+            crate::session::extension_data::EnabledExtensionsState::new(configs),
+        )
+        .unwrap();
+        c.context
+            .session_manager
+            .update_extension_state(&target, "enabled_extensions", "v0", move |_| Ok(value))
+            .await
+            .unwrap()
+            .expect("the seeded session exists");
+        assert!(
+            crate::execution::manager::AgentManager::instance()
+                .await
+                .unwrap()
+                .peek_agent(&target)
+                .await
+                .is_none(),
+            "the premise of every test below: this conversation has no live agent"
+        );
+        target
+    }
+
+    async fn saved_names(c: &WorkspaceClient, target: &str) -> Vec<String> {
+        let mut names: Vec<String> =
+            crate::agents::session_extensions::saved_roster(&c.context.session_manager, target)
+                .await
+                .unwrap()
+                .iter()
+                .map(|config| config.name())
+                .collect();
+        names.sort();
+        names
+    }
+
+    /// **A conversation the user has not opened keeps the extensions the call
+    /// did not name.**
+    ///
+    /// The handler fetched the target's agent with `get_or_create_agent`, whose
+    /// miss path mints a BARE one, and then persisted that empty manager's
+    /// snapshot as the conversation's entire roster —
+    /// `Agent::persist_extension_state` is a whole-key REPLACE by design.
+    /// Measured on `main`: a cold chat holding three extensions, one
+    /// `remove_extensions` naming one of them, and the saved roster came back
+    /// holding NONE. The two untouched extensions were gone and the call
+    /// answered `Applied to session …: -roster-beta.` — data loss reported as
+    /// success, which is why this is the worst shape in the batch: nothing at
+    /// the call site can tell.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_on_a_cold_conversation_keeps_the_extensions_it_did_not_name() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = cold_target_with_roster(
+            &c,
+            "cold-roster",
+            &["roster-alpha", "roster-beta", "roster-gamma"],
+        )
+        .await;
+
+        let result = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target, "remove_extensions": ["roster-beta"] }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&result);
+        crate::workspace_services::clear_test_override();
+        assert_ne!(result.is_error, Some(true), "{text}");
+
+        assert_eq!(
+            saved_names(&c, &target).await,
+            vec!["roster-alpha".to_string(), "roster-gamma".to_string()],
+            "one named removal replaced the whole saved roster"
+        );
+    }
+
+    /// The same door, the other direction: a cold removal of a name the
+    /// conversation does not have is refused, and nothing is written.
+    ///
+    /// The live branch has answered this since F4; the cold branch used to
+    /// `continue` past it, so the phantom came back as `-name` — and then took
+    /// the rest of the roster with it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_a_cold_conversation_a_removal_it_has_nothing_for() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = cold_target_with_roster(&c, "cold-phantom", &["roster-alpha"]).await;
+
+        let refused = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target, "remove_extensions": ["ghost-fixture"] }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("`ghost-fixture` is not enabled in conversation"),
+            "{text}"
+        );
+        assert_eq!(
+            saved_names(&c, &target).await,
+            vec!["roster-alpha".to_string()],
+            "a refused call still wrote"
+        );
+    }
+
+    /// A saved roster this build cannot parse is refused, not replaced.
+    ///
+    /// `EnabledExtensionsState::from_extension_data` ends in `.ok()`, so an
+    /// unreadable roster and an absent one are the same `None` to every reader
+    /// — and to a writer about to REPLACE the key they are opposites. A write
+    /// that destroys state must never report success.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_saved_roster_this_build_cannot_read_is_refused_rather_than_replaced() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = seeded_target(&c, "cold-unreadable").await;
+        let unreadable = serde_json::json!({ "extensions": "written by a newer build" });
+        let stored = unreadable.clone();
+        c.context
+            .session_manager
+            .update_extension_state(&target, "enabled_extensions", "v0", move |_| Ok(stored))
+            .await
+            .unwrap()
+            .expect("the seeded session exists");
+
+        let refused = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": target, "remove_extensions": ["roster-alpha"] }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains("cannot read"), "{text}");
+        let session = c
+            .context
+            .session_manager
+            .get_session(&target, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .extension_data
+                .get_extension_state("enabled_extensions", "v0"),
+            Some(&unreadable),
+            "the roster it could not read was overwritten anyway"
+        );
+    }
+
     /// Knowledge bases used to be validated LAST — after extensions, skills
     /// and the provider had already been applied — and an id with no base was
     /// dropped without a word. Now: a missing base, or a write target outside
@@ -12337,6 +12682,181 @@ pub(crate) mod tests {
             text_of(&result).contains("provider"),
             "got: {}",
             text_of(&result)
+        );
+    }
+
+    /// A provider the registry really builds and whose INSTANCE reports
+    /// `Private`, for the tier tests below.
+    ///
+    /// The instance, not the metadata: `llamacpp`'s tier is a property of what
+    /// the instance resolved (`None` external base = the loopback sidecar), and
+    /// a metadata-only check would pass on a machine where
+    /// `LLAMACPP_EXTERNAL_HOST` points somewhere public — i.e. exactly where the
+    /// test would stop testing a raise. It is resolved through
+    /// `providers::create`, the same call `resolve_provider_switch` makes, so
+    /// what the test asserts about is what the handler will see.
+    async fn a_private_provider() -> (
+        &'static str,
+        std::sync::Arc<dyn crate::providers::base::Provider>,
+    ) {
+        const NAME: &str = "llamacpp";
+        let registry = crate::providers::providers().await;
+        let metadata = registry
+            .iter()
+            .map(|(metadata, _)| metadata)
+            .find(|m| m.name == NAME)
+            .unwrap_or_else(|| panic!("'{NAME}' is no longer a registered provider"))
+            .clone();
+        let provider = crate::providers::create(
+            NAME,
+            crate::model::ModelConfig::new_or_fail(&metadata.default_model),
+        )
+        .await
+        .expect("the bundled local provider must construct with no credentials");
+        assert_eq!(
+            provider.tier(),
+            crate::privacy::ProviderTier::Private,
+            "'{NAME}' resolved PUBLIC, so nothing below is testing a tier raise. \
+             Unset LLAMACPP_EXTERNAL_HOST (or point it at loopback) and re-run."
+        );
+        (NAME, provider)
+    }
+
+    /// **DR-16 at the model-facing surface.** `workspace_set_tools` may LOWER a
+    /// conversation's capability, never RAISE it.
+    ///
+    /// Before this gate, `privacy::bind_allowed` was the only privacy predicate
+    /// on this path, and it answers `true` for every bind onto a public
+    /// conversation — it exists to refuse the DOWNWARD bind. So a model could
+    /// hand any conversation it can write to a private provider: Private
+    /// capability (chatrecall over private chats, private knowledge bases, an
+    /// unfiltered Gate E roster) and, on that conversation's next turn, a
+    /// PERMANENT ratchet of its stored `privacy_tier`, with no person having
+    /// asked for any of it.
+    ///
+    /// Asserted through `set_tools_preflight_refusal` — the function the
+    /// always-confirm inspector asks BEFORE it raises a card, and the same one
+    /// `handle_set_tools` runs — so a refusal here is also the proof that no
+    /// confirmation card is raised for a change that cannot happen (F4).
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_to_raise_a_public_conversation_onto_a_private_model() {
+        let f = tier_fixture().await;
+        let sm = f.client.context.session_manager.clone();
+        let (name, _provider) = a_private_provider().await;
+        let args = |session_id: &str| -> rmcp::model::JsonObject {
+            serde_json::from_value(serde_json::json!({
+                "session_id": session_id, "provider": name
+            }))
+            .unwrap()
+        };
+
+        // The headline: a PUBLIC conversation may not be raised, and the caller's
+        // own tier does not buy the raise — a private caller is refused too,
+        // because the rule is about the target, not about who asked.
+        for (label, caller) in [("public", public_caller()), ("private", private_caller())] {
+            let refusal = WorkspaceClient::set_tools_preflight_refusal(
+                sm.clone(),
+                "tier-caller",
+                caller.capability,
+                &args(&f.public_id),
+            )
+            .await
+            .unwrap_or_else(|| {
+                panic!("a {label} caller raised a public conversation to a private model")
+            });
+            assert!(
+                refusal.contains(&f.public_id) && refusal.contains(name),
+                "the refusal names neither what it refused nor where: {refusal}"
+            );
+            assert!(
+                refusal.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+                "a DR-16 refusal must say whose decision it is: {refusal}"
+            );
+        }
+
+        // The ratchet is permanent, so a refused raise that had already written
+        // would be unrecoverable. It did not write.
+        assert_eq!(
+            sm.get_session(&f.public_id, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            crate::privacy::SessionClassification::Public,
+            "a refused raise moved the ratchet anyway"
+        );
+
+        // The SIDEWAYS bind is untouched: a private conversation may still be
+        // moved between private models. Asserted as the absence of THIS gate's
+        // sentence rather than as success — the pre-flight has later phases that
+        // are not what this test is about.
+        let sideways = WorkspaceClient::set_tools_preflight_refusal(
+            sm.clone(),
+            "tier-caller",
+            private_caller().capability,
+            &args(&f.private_id),
+        )
+        .await
+        .unwrap_or_default();
+        assert!(
+            !sideways.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "private → private is sideways, not a raise: {sideways}"
+        );
+
+        // DR-15: with the feature off there is no tier to raise, so this gate
+        // must be silent — the same opt-out the storage gate honours, honoured
+        // here because the check lives inside the `Some(classification)` arm.
+        let opted_out = WorkspaceClient::set_tools_preflight_refusal(
+            sm.clone(),
+            "tier-caller",
+            opted_out_caller().capability,
+            &args(&f.public_id),
+        )
+        .await
+        .unwrap_or_default();
+        assert!(
+            !opted_out.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "DR-15's opt-out must reach this gate too: {opted_out}"
+        );
+    }
+
+    /// The same refusal, through the real tool — and **this is the test that
+    /// covers the un-inspected boundary**, which is where the hole actually was.
+    ///
+    /// It drives `WorkspaceClient::call_tool` with no `ToolInspectionManager`
+    /// anywhere, which is exactly the shape of a call made from inside an
+    /// `execute_code` script: `code_execution_extension.rs` hands a script's
+    /// inner calls straight to `ExtensionManager::dispatch_tool_call`, so
+    /// `WorkspaceMutationInspector`'s always-confirm — the only control that
+    /// stood on the provider switch — never runs. That file's
+    /// `uninspected_boundary_refusal` re-asks four boundaries and this is not one
+    /// of them; `workspace_inspector::uninspected_crossing_refusal`, the closest,
+    /// returns `None` on its first line for a PUBLIC caller and is about a
+    /// first crossing rather than a bind.
+    ///
+    /// With the pre-flight check removed, this test reported the handler's own
+    /// SUCCESS message — *"Applied to session …: model=llamacpp/gemma4-12b"* —
+    /// i.e. a public-tier caller had bound a private provider to another of the
+    /// user's conversations with no card and no proof. That is why the gate lives
+    /// in the handler's resolve phase and not in a fifth boundary refusal: the
+    /// choke point cannot be missed by a sixth door.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_tool_itself_refuses_the_raise() {
+        let f = tier_fixture().await;
+        let (name, _provider) = a_private_provider().await;
+        let result = call_as(
+            &f.client,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": f.public_id, "provider": name }),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&result);
+        assert_eq!(result.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(crate::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "{text}"
         );
     }
 

@@ -70,6 +70,47 @@ fn automation_script_command(
     cmd
 }
 
+/// Refuse a script body that reaches a file the secret guard denies (H1).
+///
+/// The dispatch boundary already scans the `script` argument, but this server
+/// is also spawned on its own (`biorouter mcp computercontroller`), where this
+/// is the only check — and a script runs from *this* process's working
+/// directory, which is where its relative paths resolve. A shell body is read
+/// the way the shell will read it; anything else (Ruby, PowerShell, Batch,
+/// AppleScript) has its path literals and its shell-outs (`do shell script
+/// "…"`, `system("…")`) judged.
+fn refuse_secret_access(script: &str, is_shell: bool) -> Result<(), ErrorData> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    refuse_secret_access_in(
+        script,
+        is_shell,
+        &cwd,
+        &crate::secret_guard::ShellEnv::from_process(),
+    )
+}
+
+fn refuse_secret_access_in(
+    script: &str,
+    is_shell: bool,
+    cwd: &std::path::Path,
+    env: &crate::secret_guard::ShellEnv,
+) -> Result<(), ErrorData> {
+    let guard = crate::secret_guard::SecretGuard::cached_for_dir(cwd);
+    let denied = if is_shell {
+        guard.find_denied_in_command(script, cwd, env)
+    } else {
+        guard.find_denied_in_code(script, cwd, env)
+    };
+    match denied {
+        Some(denied) => Err(ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            denied.message(),
+            None,
+        )),
+        None => Ok(()),
+    }
+}
+
 /// `web_scrape` HTTP hardening (issue #25): a browser-compatible UA (the old
 /// bare `biorouter/1.0` was bot-flagged into 403s), a request timeout (a hung
 /// server used to hang the tool indefinitely), and one retry on transient
@@ -875,6 +916,8 @@ impl ComputerControllerServer {
         let script = &params.script;
         let save_output = params.save_output;
 
+        refuse_secret_access(script, matches!(language, ScriptLanguage::Shell))?;
+
         // Create a temporary directory for the script
         let script_dir = tempfile::tempdir().map_err(|e| {
             ErrorData::new(
@@ -1091,6 +1134,8 @@ impl ComputerControllerServer {
         let params = params.0;
         let script = &params.script;
         let save_output = params.save_output;
+
+        refuse_secret_access(script, false)?;
 
         // Use platform-specific automation. execute_system_script returns Err
         // (with stderr + exit status) when the underlying osascript/PowerShell
@@ -1657,6 +1702,69 @@ impl ServerHandler for ComputerControllerServer {
         Ok(ReadResourceResult {
             contents: vec![resource.clone()],
         })
+    }
+}
+
+#[cfg(test)]
+mod secret_guard_tests {
+    use super::*;
+    use crate::secret_guard::h1_fixtures::{h1_leaking_spellings, h1_ordinary_commands, FakeHome};
+
+    /// H1, measured through `automation_script` as well as `developer__shell`:
+    /// the same rows, against a throwaway HOME, through this server's own check.
+    #[test]
+    fn h1_a_shell_script_body_is_refused_for_every_spelling() {
+        let fake = FakeHome::new();
+        let env = fake.env();
+        let leaked: Vec<String> = h1_leaking_spellings(&fake.home)
+            .into_iter()
+            .filter(|(_, script)| {
+                refuse_secret_access_in(script, true, &fake.project, &env).is_ok()
+            })
+            .map(|(name, script)| format!("  {name}: {script}"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "{} spelling(s) reached a secret through automation_script:\n{}",
+            leaked.len(),
+            leaked.join("\n")
+        );
+        for script in h1_ordinary_commands(&fake.home) {
+            assert!(
+                refuse_secret_access_in(&script, true, &fake.project, &env).is_ok(),
+                "refused an ordinary script: {script}"
+            );
+        }
+    }
+
+    /// Ruby, AppleScript and PowerShell are not shells: their path literals and
+    /// the strings they hand to a shell are what can be judged.
+    #[test]
+    fn h1_a_non_shell_script_is_refused_by_its_literals_and_shell_outs() {
+        let fake = FakeHome::new();
+        let env = fake.env();
+        for script in [
+            "puts File.read(File.expand_path('~/.aws/credentials'))",
+            "puts `cd ~/.aws && cat credentials`",
+            "do shell script \"cd ~/.aws && head credentials\"",
+            "Get-Content ~/.ssh/id_ed25519",
+            "system(\"cat $HOME/.config/biorouter/secrets.yaml\")",
+        ] {
+            assert!(
+                refuse_secret_access_in(script, false, &fake.project, &env).is_err(),
+                "a non-shell script reached a secret: {script}"
+            );
+        }
+        for script in [
+            "puts File.read('data.csv')",
+            "tell application \"Finder\" to activate",
+            "Get-ChildItem ~/Documents",
+        ] {
+            assert!(
+                refuse_secret_access_in(script, false, &fake.project, &env).is_ok(),
+                "refused an ordinary script: {script}"
+            );
+        }
     }
 }
 

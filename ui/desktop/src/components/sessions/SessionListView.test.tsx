@@ -4,7 +4,11 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionListView from './SessionListView';
-import { clearSessionListCache, updateCachedSessionList } from '../../utils/sessionListCache';
+import {
+  clearSessionListCache,
+  subscribeSessionRemoved,
+  updateCachedSessionList,
+} from '../../utils/sessionListCache';
 import type { Session } from '../../api';
 
 const mocks = vi.hoisted(() => ({
@@ -286,6 +290,48 @@ describe('SessionListView row actions', () => {
       path: { session_id: session.id },
       throwOnError: true,
     });
+  });
+
+  /**
+   * M11. The row left History, the tab strip and the database at once; only the
+   * sidebar Recents entry survived, clearing on a renderer reload. Delete was
+   * the one membership mutation that never announced itself on the list
+   * channel — create, diverge and import all do — and Recents reads a different
+   * endpoint and merges its re-reads, so it could not discover the removal on
+   * its own.
+   */
+  it('announces the removal by id on the session-list channel', async () => {
+    const user = userEvent.setup();
+    const session = {
+      id: 'session-1',
+      name: 'Deleted chat',
+      created_at: '2026-07-14T12:00:00Z',
+      updated_at: '2026-07-14T12:00:00Z',
+      extension_data: {},
+      message_count: 3,
+      working_dir: '/Users/wgu/Desktop',
+    };
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [session] } });
+    const removed: string[] = [];
+    const unsubscribe = subscribeSessionRemoved((id) => removed.push(id));
+
+    try {
+      render(
+        <MemoryRouter>
+          <SessionListView onSelectSession={vi.fn()} />
+        </MemoryRouter>
+      );
+
+      await user.click(
+        await screen.findByRole('button', { name: `More actions for ${session.name}` })
+      );
+      await user.click(await screen.findByRole('menuitem', { name: `Delete ${session.name}` }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm deletion' }));
+
+      await waitFor(() => expect(removed).toEqual(['session-1']));
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('the Show-subagent-runs toggle refetches with include_subagents and nests children', async () => {

@@ -8,10 +8,16 @@ import {
   useRef,
   useState,
 } from 'react';
-import { listBases, getActive, setActive } from '../../api';
-import { readHidden, readPrimary } from './knowledgeSelection';
+import { listBases, setActive } from '../../api';
+import {
+  fetchKnowledgeSelection,
+  readHidden,
+  readPrimary,
+  type SelectionPayload,
+} from './knowledgeSelection';
 import { briefSelectionFailure } from './selectionWarning';
 import { userActionHeaders } from '../../utils/userAction';
+import { toastError } from '../../toasts';
 /**
  * `KbListEntry` is `Manifest & { tier }` — the manifest the daemon stores plus
  * the privacy tier, which lives in `.kb-tiers` and not in `manifest.yaml`
@@ -52,6 +58,13 @@ type PrimaryUpdate =
   | { kind: 'clear' }
   | { kind: 'inherit' }
   | { kind: 'set'; id: string };
+
+/**
+ * The title of the one error a person sees when a selection change they made
+ * did not land. A console line is not a report: the person clicked, the chip
+ * moved, and without this nothing on screen would ever say it moved back.
+ */
+export const SELECTION_NOT_SAVED_TITLE = 'Knowledge base selection not saved';
 
 interface KnowledgeContextType {
   bases: KbListEntry[];
@@ -111,13 +124,16 @@ export function KnowledgeProvider({
 }) {
   const [bases, setBases] = useState<KbListEntry[]>([]);
   // Has a base list ever arrived? Until it has, `bases` being empty says nothing
-  // about which bases exist, so nothing may be pruned against it.
+  // about which bases exist, so no pointer may be judged missing against it.
   const [basesLoaded, setBasesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [basesError, setBasesError] = useState<string | null>(null);
   const storageKey = useMemo(() => storageKeyForSession(sessionId), [sessionId]);
   const hiddenStorageKey = useMemo(() => hiddenStorageKeyForSession(sessionId), [sessionId]);
-  const [primaryKbId, setPrimaryKbIdState] = useState<string | null>(() =>
+  // The pointer as last adopted — from the daemon, or optimistically from a
+  // click. What consumers see is `primaryKbId` below, which also hides a
+  // pointer at a base the list no longer holds.
+  const [storedPrimaryKbId, setPrimaryKbIdState] = useState<string | null>(() =>
     localStorage.getItem(storageKeyForSession(sessionId))
   );
   const [hiddenKbIds, setHiddenKbIdsState] = useState<string[]>(() => {
@@ -139,11 +155,23 @@ export function KnowledgeProvider({
   // would spend a request per chat switch on a value most chats never show.
   const [defaultPrimaryKbId, setDefaultPrimaryKbId] = useState<string | null>(null);
   const graphRefreshRef = useRef<(() => Promise<void>) | null>(null);
-  // Every selection round-trip — a write, its recovery read, a hydrate — takes a
-  // generation. Only the newest may write state back, so a slow answer cannot
-  // reinstate a selection the user has already clicked past.
+  // Every selection round-trip a USER starts — a write, its recovery read, the
+  // hydrate on a chat switch — takes a generation. Only the newest may write
+  // state back, so a slow answer cannot reinstate a selection the user has
+  // already clicked past. A background re-read (`resyncSelection`) takes none of
+  // its own; it may only land while the generation it started under is current.
   const selectionGenerationRef = useRef(0);
+  // How many user writes are waiting on the daemon. A background re-read that
+  // starts while one is out could be answered before the write commits, and
+  // would then put the pre-write selection back over the write's answer.
+  const writesInFlightRef = useRef(0);
 
+  /**
+   * Adopt a selection the DAEMON reported. `localStorage` is written here and
+   * nowhere else: it holds the last selection the daemon confirmed, never a
+   * guess, which is what lets a failed write fall back to it (QA 2026-09-10
+   * F14 found it holding `soul` while the daemon had never stored it).
+   */
   const applyPrimary = useCallback(
     (primary: string | null) => {
       setPrimaryKbIdState(primary);
@@ -161,30 +189,106 @@ export function KnowledgeProvider({
     [hiddenStorageKey]
   );
 
-  /** Re-read the authoritative selection after a write that did not land. */
-  const rehydrateSelection = useCallback(
-    async (generation: number) => {
+  /** Put back the last selection the daemon confirmed for this scope. */
+  const restoreConfirmedSelection = useCallback(() => {
+    setPrimaryKbIdState(localStorage.getItem(storageKey));
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem(hiddenStorageKey) ?? '[]');
+      setHiddenKbIdsState(
+        Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+      );
+    } catch {
+      setHiddenKbIdsState([]);
+    }
+  }, [hiddenStorageKey, storageKey]);
+
+  /**
+   * Re-read this scope's selection and adopt it, WITHOUT superseding anything
+   * the user is doing: skipped while a write is out, and dropped if a write or
+   * a chat switch starts while the read is.
+   *
+   * This is how the renderer follows a selection that moved underneath it — a
+   * base deleted (the daemon clears every pointer that named it), the agent's
+   * `kb_set_active`, another window — and it replaces two effects that used to
+   * "repair" this renderer's cache by WRITING: clearing a primary missing from
+   * the base list, and pruning the hidden set against it. Both installed a
+   * durable, session-scoped override the user never asked for, from whatever
+   * list this renderer happened to hold, in every window at once. The daemon
+   * already made the one repair the model allows (D2); the renderer reads it.
+   */
+  const resyncSelection = useCallback(async () => {
+    if (writesInFlightRef.current > 0) return;
+    const generation = selectionGenerationRef.current;
+    try {
+      const data = await fetchKnowledgeSelection(sessionId);
+      if (generation !== selectionGenerationRef.current) return;
+      applyPrimary(readPrimary(data));
+      const hidden = readHidden(data);
+      if (hidden) applyHidden(hidden);
+    } catch (err) {
+      // A failed read changes nothing on screen: it is not evidence the
+      // selection moved, and the next refresh or hydrate asks again.
+      console.warn('Knowledge selection not re-read:', briefSelectionFailure(err));
+    }
+  }, [applyHidden, applyPrimary, sessionId]);
+
+  const refreshBases = useCallback(async () => {
+    setLoading(true);
+    try {
+      // With the proof, for the reason `fetchKnowledgeSelection` gives: a daemon that
+      // filters what an unproven caller may see would otherwise hand this list
+      // back with the user's own private bases missing.
+      const res = await listBases({ headers: await userActionHeaders(), throwOnError: true });
+      setBases(res.data || []);
+      setBasesLoaded(true);
+      setBasesError(null);
+    } catch (err) {
+      // Keep the list we already had. A failed request is not a list of zero
+      // bases, and a consumer reading it as one would conclude every base it
+      // knows about is gone.
+      console.error('listBases failed:', err);
+      // …and say that it is stale, in a value that is never falsy on failure:
+      // an error reported as '' reads as "no failure" at every call site.
+      const message = err instanceof Error ? err.message : String(err);
+      setBasesError(message || 'Could not load knowledge bases.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  /**
+   * A write that did not land: say so, then show the truth.
+   *
+   * The daemon's answer is re-read (with the proof, so a private chat is not
+   * refused a second time for a different reason) and adopted. When even that
+   * fails, the last selection the daemon CONFIRMED comes back from
+   * `localStorage` — never the optimistic value, which is the one thing known
+   * not to have been stored. The list is re-read too: the likeliest reason a
+   * choice is refused is that the base it named went away in another window.
+   */
+  const recoverFromFailedWrite = useCallback(
+    async (generation: number, failure: unknown) => {
+      toastError({
+        title: SELECTION_NOT_SAVED_TITLE,
+        msg: briefSelectionFailure(failure),
+      });
+      void refreshBases();
       try {
-        const res = await getActive({
-          query: sessionId ? { session_id: sessionId } : undefined,
-          // The same proof the hydrate below sends, for the same reason.
-          headers: await userActionHeaders(),
-          throwOnError: true,
-        });
+        const data = await fetchKnowledgeSelection(sessionId);
         if (generation !== selectionGenerationRef.current) return;
-        applyPrimary(readPrimary(res.data));
-        const hidden = readHidden(res.data);
+        applyPrimary(readPrimary(data));
+        const hidden = readHidden(data);
         if (hidden) applyHidden(hidden);
       } catch (err) {
-        // Both the write and the recovery read failed. Keep what is on screen —
-        // there is nothing better to show, and the next hydrate will settle it.
+        if (generation !== selectionGenerationRef.current) return;
         console.warn(
           'Knowledge selection not re-read after a failed write:',
           briefSelectionFailure(err)
         );
+        restoreConfirmedSelection();
       }
     },
-    [applyHidden, applyPrimary, sessionId]
+    [applyHidden, applyPrimary, refreshBases, restoreConfirmedSelection, sessionId]
   );
 
   /**
@@ -221,18 +325,23 @@ export function KnowledgeProvider({
         );
       }
       if (nextHiddenKbIds) setHiddenKbIdsState(nextHiddenKbIds);
-      if (primary.kind === 'set') localStorage.setItem(storageKey, primary.id);
-      if (primary.kind === 'clear') localStorage.removeItem(storageKey);
-      if (nextHiddenKbIds) localStorage.setItem(hiddenStorageKey, JSON.stringify(nextHiddenKbIds));
-      // Issue #56 Task 58: this POST names a chat, and repointing a PRIVATE
-      // chat's knowledge bases needs the proof-of-user. `userActionHeaders`
-      // resolves to `{}` rather than rejecting when there is no bridge, so the
-      // chain below is unchanged in shape and the `.catch` still means what it
-      // meant.
-      void userActionHeaders()
-        .then((headers) =>
-          setActive({
-            headers,
+      // ⚠ **Nothing is written to `localStorage` here.** It used to take the
+      // optimistic value before the POST went out, so a write the daemon refused
+      // left it holding a selection the daemon never stored — and a later
+      // hydrate that could not reach the daemon then restored that guess as if
+      // it were the chat's (QA 2026-09-10 F14). `applyPrimary`/`applyHidden`
+      // persist the daemon's ANSWER, and only they do.
+      writesInFlightRef.current += 1;
+      void (async () => {
+        let data: SelectionPayload = undefined;
+        let failure: unknown = null;
+        try {
+          const res = await setActive({
+            // Issue #56 Task 58: this POST names a chat, and repointing a
+            // PRIVATE chat's knowledge bases needs the proof-of-user.
+            // `userActionHeaders` resolves to `{}` rather than rejecting when
+            // there is no bridge, and the daemon then refuses in words.
+            headers: await userActionHeaders(),
             body: {
               // The three primary gestures are mutually exclusive on the wire:
               // two of them in one body is a 400 naming both fields, not a
@@ -244,48 +353,55 @@ export function KnowledgeProvider({
               session_id: sessionId || undefined,
             },
             throwOnError: false,
-          })
-        )
-        .then((res) => {
-          // A newer edit is already in flight (or has already answered): this
-          // answer describes a selection the user has clicked past, so applying
-          // it would silently undo their newer choice.
-          if (generation !== selectionGenerationRef.current) return;
-          // The daemon owns the "primary must be a member" repair: hiding the
-          // primary promotes to the first remaining base, hiding everything
-          // clears it. Adopt its answer instead of re-implementing that rule
-          // here, where the two would silently drift apart.
-          const data = res?.data;
-          if (!data) {
-            // The write did not land. Keeping the optimistic value would leave
-            // the chip, the Knowledge view and the ingest target describing a
-            // selection the daemon never applied, with nothing to correct it —
-            // so re-read the truth instead of guessing at it.
-            console.warn('setActive (server sync) returned no selection:', res?.error);
-            void rehydrateSelection(generation);
-            return;
-          }
-          applyPrimary(readPrimary(data));
-          // Adopt the set too, not just the pointer: the repair moves both, and
-          // taking one half of it is how the renderer ends up holding a primary
-          // that is not a member of its own visible set.
-          const appliedHidden = readHidden(data);
-          if (appliedHidden) applyHidden(appliedHidden);
-        })
-        .catch((err) => {
-          if (generation !== selectionGenerationRef.current) return;
-          console.warn('setActive (server sync) failed:', err);
-          void rehydrateSelection(generation);
-        });
+          });
+          data = res?.data;
+          // An error envelope instead of a selection is a write that did not
+          // land, however politely it arrived.
+          if (!data) failure = res?.error ?? 'The daemon answered without a selection.';
+        } catch (err) {
+          failure = err;
+        } finally {
+          writesInFlightRef.current -= 1;
+        }
+        // A newer edit is already in flight (or has already answered): this
+        // answer describes a selection the user has clicked past, so applying
+        // it — or reporting it — would silently undo their newer choice.
+        if (generation !== selectionGenerationRef.current) return;
+        if (failure !== null) {
+          // Keeping the optimistic value would leave the chip, the Knowledge
+          // view and the ingest target describing a selection the daemon never
+          // applied, with nothing to correct it and nothing on screen to say so.
+          void recoverFromFailedWrite(generation, failure);
+          return;
+        }
+        // The daemon owns the "primary must be a member" repair: hiding the
+        // primary promotes to the first remaining base, hiding everything
+        // clears it. Adopt its answer instead of re-implementing that rule
+        // here, where the two would silently drift apart.
+        applyPrimary(readPrimary(data));
+        // Adopt the set too, not just the pointer: the repair moves both, and
+        // taking one half of it is how the renderer ends up holding a primary
+        // that is not a member of its own visible set.
+        const appliedHidden = readHidden(data);
+        if (appliedHidden) applyHidden(appliedHidden);
+      })();
     },
-    [applyHidden, applyPrimary, hiddenStorageKey, rehydrateSelection, sessionId, storageKey]
+    [applyHidden, applyPrimary, recoverFromFailedWrite, sessionId]
   );
 
   const setPrimaryKbId = useCallback(
     (id: string | null) => {
-      // The primary must be a member of the set, so making a base primary adds
-      // it to this chat in the same request — one gesture, one POST.
-      const nextHidden = id ? hiddenKbIds.filter((hiddenId) => hiddenId !== id) : hiddenKbIds;
+      // The primary must be a member of the set, so making a HIDDEN base
+      // primary adds it to this chat in the same request — one gesture, one
+      // POST, validated by the daemon against the state it produces.
+      //
+      // ⚠ Only then does the set travel. A base already in the chat needs no
+      // set edit, and echoing the resolved hidden list back would install a
+      // session-scoped override on a chat that is inheriting the machine-wide
+      // list — the very thing `syncSelection`'s `null` exists to avoid. It did
+      // exactly that on every "make primary" until 2026-09-11.
+      const nextHidden =
+        id && hiddenKbIds.includes(id) ? hiddenKbIds.filter((hiddenId) => hiddenId !== id) : null;
       syncSelection(id ? { kind: 'set', id } : { kind: 'clear' }, nextHidden);
     },
     [hiddenKbIds, syncSelection]
@@ -306,8 +422,7 @@ export function KnowledgeProvider({
       return;
     }
     try {
-      const res = await getActive({ query: undefined, throwOnError: true });
-      setDefaultPrimaryKbId(readPrimary(res.data));
+      setDefaultPrimaryKbId(readPrimary(await fetchKnowledgeSelection(null)));
     } catch (err) {
       // Keep the last known default: a failed read is not evidence that there
       // is none, and inventing one would offer a base nobody chose.
@@ -353,26 +468,25 @@ export function KnowledgeProvider({
     setHiddenKbIds([]);
   }, [setHiddenKbIds]);
 
+  // `refresh` stays referentially stable across chat switches: half a dozen
+  // consumers run it from an effect keyed on its identity, and one of them (the
+  // manager dialog) resets a half-typed form whenever that effect re-runs.
+  const resyncSelectionRef = useRef(resyncSelection);
+  resyncSelectionRef.current = resyncSelection;
+
+  /**
+   * Re-read the daemon: the base list and this scope's selection, together.
+   *
+   * This is the Knowledge feature's one change signal — the view calls it when
+   * it mounts, the picker and the manager when they open, every create, delete,
+   * rename and import when it lands, and the provider itself when a turn ends
+   * (below). The selection rides with the list because anything that moved one
+   * can have moved the other: deleting a base clears every pointer that named
+   * it, and the agent can create a base and pin it in one turn.
+   */
   const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await listBases({ throwOnError: true });
-      setBases(res.data || []);
-      setBasesLoaded(true);
-      setBasesError(null);
-    } catch (err) {
-      // Keep the list we already had. A failed request is not a list of zero
-      // bases, and emptying it here is what let the prune below read "every
-      // stored id names a base that no longer exists".
-      console.error('listBases failed:', err);
-      // …and say that it is stale, in a value that is never falsy on failure:
-      // an error reported as '' reads as "no failure" at every call site.
-      const message = err instanceof Error ? err.message : String(err);
-      setBasesError(message || 'Could not load knowledge bases.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    await Promise.all([refreshBases(), resyncSelectionRef.current()]);
+  }, [refreshBases]);
 
   const registerGraphRefresh = useCallback((fn: (() => Promise<void>) | null) => {
     graphRefreshRef.current = fn;
@@ -383,30 +497,25 @@ export function KnowledgeProvider({
   }, []);
 
   useEffect(() => {
-    void refresh();
+    // The list only: the hydrate below owns the selection on mount, and a
+    // second read racing it would be answered by the same daemon twice.
+    void refreshBases();
+  }, [refreshBases]);
+
+  useEffect(() => {
+    // QA 2026-09-10 F6. The agent creates, deletes and merges knowledge bases in
+    // a chat — directly, or from inside `execute_code`, where no knowledge tool
+    // call is visible to the renderer at all — and before this nothing told the
+    // composer's chip, which read "2 visible" over three bases until a remount.
+    // `message-stream-finished` is the app's existing end-of-turn signal: the
+    // sidebar, the extension chip and the tool count already re-read on it, so
+    // this is one more reader of a signal rather than a second subscription.
+    // Mounted with the provider, once per renderer — a subscription belongs to a
+    // mount, not to a lookup.
+    const onTurnFinished = () => void refresh();
+    window.addEventListener('message-stream-finished', onTurnFinished);
+    return () => window.removeEventListener('message-stream-finished', onTurnFinished);
   }, [refresh]);
-
-  useEffect(() => {
-    // A primary that names a base which no longer exists is cleared, not
-    // promoted — deleting a base is destructive, so re-pointing the write
-    // target at an unrelated one is the wrong default (D2).
-    if (basesLoaded && primaryKbId && !bases.some((b) => b.id === primaryKbId)) {
-      setPrimaryKbId(null);
-    }
-  }, [basesLoaded, primaryKbId, bases, setPrimaryKbId]);
-
-  useEffect(() => {
-    // Drop ids naming bases that no longer exist — but only once a list has
-    // actually arrived. Pruning against the empty list this starts out with
-    // would persist an empty set on every mount, erasing the session's working
-    // set before the daemon had said a word about which bases exist.
-    if (!basesLoaded) return;
-    const validIds = new Set(bases.map((base) => base.id));
-    const nextHiddenKbIds = hiddenKbIds.filter((id) => validIds.has(id));
-    if (nextHiddenKbIds.length !== hiddenKbIds.length) {
-      setHiddenKbIds(nextHiddenKbIds);
-    }
-  }, [basesLoaded, bases, hiddenKbIds, setHiddenKbIds]);
 
   useEffect(() => {
     const local = localStorage.getItem(storageKey);
@@ -436,20 +545,10 @@ export function KnowledgeProvider({
 
     void (async () => {
       try {
-        const res = await getActive({
-          query: sessionId ? { session_id: sessionId } : undefined,
-          // Issue #56 Task 58: a GET naming a PRIVATE chat is on the reach
-          // gate's list exactly as the POST in `syncSelection` is, and the
-          // desktop gets through it the same way — by proving the person. It
-          // reaches nothing new: the same proof already reads the chat's whole
-          // transcript through `getSession`, which says far more than which
-          // knowledge bases the chat uses.
-          headers: await userActionHeaders(),
-          throwOnError: true,
-        });
+        const data = await fetchKnowledgeSelection(sessionId);
         if (cancelled || generation !== selectionGenerationRef.current) return;
-        applyPrimary(readPrimary(res.data));
-        applyHidden(readHidden(res.data) ?? []);
+        applyPrimary(readPrimary(data));
+        applyHidden(readHidden(data) ?? []);
       } catch (err) {
         if (cancelled) return;
         // ⚠ One quiet line, deliberately: the gate's refusal is ~900
@@ -477,6 +576,16 @@ export function KnowledgeProvider({
     };
   }, [applyHidden, applyPrimary, hiddenStorageKey, sessionId, storageKey]);
 
+  // A pointer at a base the list does not hold is shown as no primary — the
+  // view, the ingest target and the graph must never aim at a base that is gone
+  // — but it is NOT written back as one. The daemon already cleared every
+  // pointer the delete touched (D2), and a durable "no primary" derived from
+  // this renderer's list would override a chat that merely inherits, from a
+  // list that may be the stale one. `refresh` re-reads the truth instead.
+  const primaryKbId =
+    basesLoaded && storedPrimaryKbId && !bases.some((b) => b.id === storedPrimaryKbId)
+      ? null
+      : storedPrimaryKbId;
   const primaryKb = useMemo(
     () => bases.find((b) => b.id === primaryKbId) ?? null,
     [bases, primaryKbId]

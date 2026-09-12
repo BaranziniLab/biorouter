@@ -24,9 +24,16 @@ const VERSA_BEDROCK_DEFAULTS = {
   VERSA_BEDROCK_REGION: 'us-west-2',
 };
 
+// ⚠ No deployment, deliberately. `versa_azure` posts each model to its own
+// deployment (`VERSA_AZURE_DEPLOYMENTS` in versa_azure.rs), so the model a chat
+// selects chooses it. A `VERSA_AZURE_DEPLOYMENT_NAME` that names a catalog
+// deployment is ignored, and any other value pins EVERY model to that one
+// deployment while the chat still shows the model it selected. This card used
+// to write the shipped default on every connect (ignored) and offer a box for
+// any other value (that trap, in a first-run form). An operator who needs a
+// deployment the catalog does not list yet sets the key in config instead.
 const VERSA_AZURE_DEFAULTS = {
   VERSA_AZURE_ENDPOINT: 'https://unified-api.ucsf.edu/general',
-  VERSA_AZURE_DEPLOYMENT_NAME: 'gpt-5.5-2026-04-24',
   VERSA_AZURE_API_VERSION: '2025-01-01-preview',
 };
 
@@ -69,9 +76,6 @@ export default function InstitutionalSetupCard({
   );
   const [bedrockRegion, setBedrockRegion] = useState(VERSA_BEDROCK_DEFAULTS.VERSA_BEDROCK_REGION);
   const [azureEndpoint, setAzureEndpoint] = useState(VERSA_AZURE_DEFAULTS.VERSA_AZURE_ENDPOINT);
-  const [azureDeployment, setAzureDeployment] = useState(
-    VERSA_AZURE_DEFAULTS.VERSA_AZURE_DEPLOYMENT_NAME
-  );
   const [azureApiVersion, setAzureApiVersion] = useState(
     VERSA_AZURE_DEFAULTS.VERSA_AZURE_API_VERSION
   );
@@ -103,7 +107,6 @@ export default function InstitutionalSetupCard({
       } else {
         await upsert('VERSA_AZURE_API_KEY', azureApiKey.trim(), true);
         await upsert('VERSA_AZURE_ENDPOINT', azureEndpoint.trim(), false);
-        await upsert('VERSA_AZURE_DEPLOYMENT_NAME', azureDeployment.trim(), false);
         await upsert('VERSA_AZURE_API_VERSION', azureApiVersion.trim(), false);
         await checkProvider({ body: { provider: 'versa_azure' }, throwOnError: true });
         await upsert('BIOROUTER_PROVIDER', 'versa_azure', false);
@@ -219,8 +222,7 @@ export default function InstitutionalSetupCard({
         <CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-default transition-colors duration-150">
           <span>{advancedOpen ? '▾' : '▸'}</span>
           <span>
-            Advanced (
-            {flavor === 'azure' ? 'endpoint, deployment, API version' : 'endpoint, region'})
+            Advanced ({flavor === 'azure' ? 'endpoint, API version' : 'endpoint, region'})
           </span>
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-2.5 pl-3.5 space-y-2.5 border-l border-border-default">
@@ -234,18 +236,6 @@ export default function InstitutionalSetupCard({
                   type="text"
                   value={azureEndpoint}
                   onChange={(e) => setAzureEndpoint(e.target.value)}
-                  className={advancedInputClass}
-                  disabled={isLoading}
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-text-muted mb-1">
-                  VERSA_AZURE_DEPLOYMENT_NAME
-                </label>
-                <input
-                  type="text"
-                  value={azureDeployment}
-                  onChange={(e) => setAzureDeployment(e.target.value)}
                   className={advancedInputClass}
                   disabled={isLoading}
                 />
