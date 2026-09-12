@@ -53,6 +53,25 @@
 //!   agent-created session may be answered by the agent that created it; a
 //!   script's ask always goes to a person. Asking a person instead of an agent
 //!   is never the weaker answer.
+//!
+//!   ⚠ That is about *who decides*, and it says nothing about *where the
+//!   question appears* — which is where D10 went wrong. A card parks on the
+//!   session that raised it, so a script's ask inside a **sub-agent** was
+//!   published to the child's own conversation and nowhere else: a person
+//!   watching the chat that delegated the work saw the `subagent` tool call stop
+//!   with no card and no explanation, and a child with no tab at all
+//!   (`visible: false`, a fan-out past the four-tab cap, a terminal session) had
+//!   no surface anywhere. The same call made *directly* by the child's model
+//!   already surfaces in the root chat — `approval_relay` publishes it there
+//!   when it reports `AwaitingHuman` — so in the shipped Code Execution default,
+//!   where nearly every call is a script's, the escalation was missing from the
+//!   path that carries almost all the traffic.
+//!   [`approval_relay::surface_where_a_person_is_watching`] closes that: the
+//!   same card, in the root of the delegation tree, answerable from either
+//!   surface, with no ancestor **agent** consulted and proof of user untouched.
+//!
+//! [`approval_relay::surface_where_a_person_is_watching`]:
+//!     crate::agents::approval_relay::surface_where_a_person_is_watching
 //! * **A hook's context is dropped, not injected.** A PreToolUse or
 //!   PermissionRequest hook's `additionalContext` / `systemMessage` has no
 //!   channel into a script that is still running, and left staged it would leak
@@ -112,7 +131,8 @@ use crate::conversation::message::ToolRequest;
 use crate::conversation::tool_preview::ToolPreview;
 use crate::hooks::{HookDecision, HookEvent, HookPayload, HooksManager};
 use crate::pending_user_action::{
-    PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+    PendingUserAction, PendingUserActions, ToolApprovalRequest, UserActionOutcome,
+    UserActionRequest,
 };
 use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::permission::Permission;
@@ -312,8 +332,18 @@ pub struct ScriptCallGate {
     /// be judged in two different modes.
     mode: BioRouterMode,
     /// The session whose turn dispatched the script: its working directory for
-    /// path arguments, and its id as the only surface an ask may be put on.
+    /// path arguments, and the home of every ask this judge raises.
     session: Session,
+    /// The store the delegation chain above [`Self::session`] is walked in, so a
+    /// card raised inside a sub-agent can also be shown where a person is
+    /// watching (D10).
+    ///
+    /// `None` only where there is no store to walk — a hand-built test gate. A
+    /// missing store degrades to today's behaviour (the child's own tab, and
+    /// nothing else) and says so in a log, rather than failing the call: a
+    /// script's ask that cannot be *escalated* is still an ask a person may
+    /// answer in the child's tab.
+    sessions: Option<Arc<crate::session::SessionManager>>,
     /// For the PreToolUse rewrites this gate's own inspection staged, and the
     /// PermissionRequest hooks consulted before a card.
     hooks: Arc<HooksManager>,
@@ -334,12 +364,14 @@ impl ScriptCallGate {
         mode: BioRouterMode,
         session: Session,
         hooks: Arc<HooksManager>,
+        sessions: Option<Arc<crate::session::SessionManager>>,
     ) -> Self {
         Self {
             inspections,
             mode,
             session,
             hooks,
+            sessions,
             parking_permit: Mutex::new(None),
         }
     }
@@ -556,6 +588,11 @@ impl ScriptCallGate {
             requires_user_proof: false,
         });
         let parked = PendingUserActions::global().park(Some(&self.session.id), None, request);
+        // D10: a card raised inside a delegated child is also shown to the person
+        // watching the conversation that delegated the work. Before the wait, so
+        // a user already looking at that chat cannot answer a card that has not
+        // been recorded as answerable there yet.
+        self.escalate_to_a_watching_conversation(&parked).await;
         // #246 review, finding 2. This wait is up to `approval_ttl()` long
         // (default 3600 s; `Duration::MAX` when `BIOROUTER_CONFIRMATION_TIMEOUT_SECS=0`),
         // and it happens INSIDE the `execute_code` tool body, which holds one of
@@ -570,6 +607,49 @@ impl ScriptCallGate {
             None => wait.await,
         };
         self.verdict_for_answer(call, outcome, cancel).await
+    }
+
+    /// **D10.** Show a delegated child's card in the conversation a person is
+    /// actually watching, as well as in the child's own tab.
+    ///
+    /// The policy — which conversation, and why the root rather than the
+    /// immediate parent — lives in
+    /// [`crate::agents::approval_relay::surface_where_a_person_is_watching`],
+    /// beside the direct-call escalation it mirrors, so the two cannot pick
+    /// different destinations. All this adds is the store to walk and the log
+    /// line.
+    ///
+    /// Failure is silent by design: no ancestor, or no store to walk, leaves the
+    /// ask exactly where it was before this existed — in the child's own tab,
+    /// which a person may still answer.
+    async fn escalate_to_a_watching_conversation(&self, parked: &PendingUserAction) {
+        if self.session.parent_session_id.is_none() {
+            return;
+        }
+        let Some(sessions) = self.sessions.as_deref() else {
+            tracing::warn!(
+                session_id = %self.session.id,
+                "a script's approval card inside a delegated conversation could not be \
+                 escalated: this judge holds no session store, so only that conversation's \
+                 own tab can answer it"
+            );
+            return;
+        };
+        if let Some(watching) = crate::agents::approval_relay::surface_where_a_person_is_watching(
+            sessions,
+            &self.session,
+            parked,
+        )
+        .await
+        {
+            tracing::debug!(
+                child_session_id = %self.session.id,
+                watching_session_id = %watching,
+                request_id = parked.id(),
+                "surfaced a delegated script's approval card in the conversation that \
+                 delegated the work"
+            );
+        }
     }
 
     /// The user's PermissionRequest hooks answer before any card, as they do for
@@ -825,12 +905,13 @@ pub(crate) mod test_support {
         inspections.add_inspector(Box::new(crate::hooks::HookInspector::new(Arc::clone(
             &hooks,
         ))));
-        let session = SessionManager::new(dir.join("sessions"))
+        let sessions = Arc::new(SessionManager::new(dir.join("sessions")));
+        let session = sessions
             .create_session(dir.to_path_buf(), "gate".into(), SessionType::User)
             .await
             .expect("a session");
         (
-            ScriptCallGate::new(Arc::new(inspections), mode, session, hooks),
+            ScriptCallGate::new(Arc::new(inspections), mode, session, hooks, Some(sessions)),
             permissions,
         )
     }
@@ -972,7 +1053,18 @@ mod tests {
         code: &str,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<(bool, String)> {
-        let dispatched = dispatch_script(f, code, cancel).await;
+        run_script_in(f, &f.session, code, cancel).await
+    }
+
+    /// As [`run_script`], but for a script the agent dispatches in `session` —
+    /// a delegated child, say — rather than in the fixture's own chat.
+    async fn run_script_in(
+        f: &Fixture,
+        session: &Session,
+        code: &str,
+        cancel: CancellationToken,
+    ) -> tokio::task::JoinHandle<(bool, String)> {
+        let dispatched = dispatch_script_in(f, session, code, cancel).await;
         tokio::spawn(async move {
             let result = dispatched
                 .result
@@ -987,6 +1079,15 @@ mod tests {
         code: &str,
         cancel: CancellationToken,
     ) -> crate::agents::tool_execution::ToolCallResult {
+        dispatch_script_in(f, &f.session, code, cancel).await
+    }
+
+    async fn dispatch_script_in(
+        f: &Fixture,
+        session: &Session,
+        code: &str,
+        cancel: CancellationToken,
+    ) -> crate::agents::tool_execution::ToolCallResult {
         let call = CallToolRequestParams {
             task: None,
             meta: None,
@@ -995,7 +1096,7 @@ mod tests {
         };
         let (_, dispatched) = f
             .agent
-            .dispatch_tool_call(call, "outer-execute-code".into(), Some(cancel), &f.session)
+            .dispatch_tool_call(call, "outer-execute-code".into(), Some(cancel), session)
             .await;
         dispatched.expect("execute_code dispatches")
     }
@@ -1053,10 +1154,27 @@ mod tests {
     }
 
     async fn answer(f: &Fixture, card: &Card, permission: Permission) {
-        let outcome = f
-            .agent
+        let outcome = answer_from(f, &f.session.id, card, permission).await;
+        assert_eq!(
+            outcome,
+            crate::agents::ConfirmationOutcome::Delivered,
+            "the card's decision must reach the parked call"
+        );
+    }
+
+    /// Answer `card` the way `POST /action-required/tool-confirmation` does when
+    /// the click happened in `from_session_id` — the one thing that distinguishes
+    /// a decision made in the child's own tab from one made where the card was
+    /// escalated to.
+    async fn answer_from(
+        f: &Fixture,
+        from_session_id: &str,
+        card: &Card,
+        permission: Permission,
+    ) -> crate::agents::ConfirmationOutcome {
+        f.agent
             .handle_confirmation_for_session(
-                &f.session.id,
+                from_session_id,
                 card.id.clone(),
                 PermissionConfirmation {
                     principal_type: PrincipalType::Tool,
@@ -1064,12 +1182,90 @@ mod tests {
                 },
                 DecisionAuthority::unproven(),
             )
-            .await;
+            .await
+    }
+
+    /// A delegated child of the fixture's own chat: a `SubAgent` row whose
+    /// `parent_session_id` names the conversation that spawned it, which is the
+    /// shape `create_subagent_session` writes.
+    ///
+    /// Read back from the store rather than mutated in place, because
+    /// `ScriptCallGate` snapshots the `Session` it is handed — a child whose
+    /// parent is only in the database is a child the gate cannot see.
+    async fn delegated_child(f: &Fixture) -> Session {
+        let sessions = &f.agent.config.session_manager;
+        let child = sessions
+            .create_session(
+                f.dir.path().to_path_buf(),
+                "delegated".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .expect("a child session");
+        sessions
+            .update(&child.id)
+            .parent_session_id(Some(f.session.id.clone()))
+            .apply()
+            .await
+            .expect("the child records its parent");
+        ActionRequiredManager::global().drain_requests(&child.id);
+        let child = sessions
+            .get_session(&child.id, false)
+            .await
+            .expect("the child reads back");
         assert_eq!(
-            outcome,
-            crate::agents::ConfirmationOutcome::Delivered,
-            "the card's decision must reach the parked call"
+            child.parent_session_id.as_deref(),
+            Some(f.session.id.as_str()),
+            "the fixture only discriminates if the child really is delegated"
         );
+        child
+    }
+
+    /// The next approval card to reach `watcher`, the bus feed `POST /reply` and
+    /// `GET /sessions/{id}/events` both drain — i.e. what a person watching that
+    /// conversation sees.
+    async fn card_on_bus(
+        watcher: &mut crate::session_events::Subscription,
+        within: Duration,
+    ) -> Option<Card> {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let remaining = deadline.checked_duration_since(tokio::time::Instant::now())?;
+            let Ok(Ok(event)) = tokio::time::timeout(remaining, watcher.recv()).await else {
+                return None;
+            };
+            let crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                message,
+            )) = event
+            else {
+                continue;
+            };
+            for content in &message.content {
+                let MessageContent::ActionRequired(action) = content else {
+                    continue;
+                };
+                if let ActionRequiredData::ToolConfirmation {
+                    id,
+                    tool_name,
+                    arguments,
+                    prompt,
+                    ..
+                } = &action.data
+                {
+                    assert!(
+                        !message.is_agent_visible(),
+                        "an escalated card must stay out of the watching agent's context: \
+                         the decision is the person's, not the parent model's"
+                    );
+                    return Some(Card {
+                        id: id.clone(),
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        prompt: prompt.clone(),
+                    });
+                }
+            }
+        }
     }
 
     async fn finish(script: tokio::task::JoinHandle<(bool, String)>) -> (bool, String) {
@@ -1777,6 +1973,221 @@ mod tests {
             !super::agent_loop_is_running_a_script(session),
             "the record must not outlive the bodies that took it"
         );
+    }
+
+    /// **D10.** A card a script raises inside a DELEGATED child must reach the
+    /// conversation the person is actually watching.
+    ///
+    /// Measured in the running app: a script's ask inside a subagent published
+    /// to the child's session and nowhere else, so a user watching the parent
+    /// saw the `subagent` tool call sit there with no card, no card anywhere in
+    /// that chat, and no explanation — and a child running without a tab (a
+    /// `visible: false` spawn, a fan-out past the four-tab cap, a terminal
+    /// session) had no surface at all. The card then sat out its full
+    /// `approval_ttl()` — 3600 s by default — and the run was lost.
+    ///
+    /// The same call made DIRECTLY by the child's model already escalates:
+    /// `approval_relay::begin_delegated_approval` returns
+    /// `AwaitingHuman { surfaced_in: root }` and `handle_approval_tool_requests`
+    /// publishes the identical card into that session's bus. This asserts the
+    /// script path does the same, because in the shipped Code Execution default
+    /// the script path is how nearly every tool call is made.
+    ///
+    /// The bus is the right place to assert: `POST /reply` and
+    /// `GET /sessions/{id}/events` BOTH drain it (`routes/reply.rs` +
+    /// `routes/session_events.rs`), so a frame published there is what the
+    /// parent's tab renders whether the user is driving that chat or observing
+    /// it.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_subagents_script_ask_surfaces_where_the_person_watching_the_parent_is() {
+        let f = fixture(BioRouterMode::Approve).await;
+        let child = delegated_child(&f).await;
+        // Subscribed BEFORE the script runs: `session_events::publish` is a pure
+        // lookup that creates no ring, so a card published to a session nobody
+        // is watching is dropped — subscribing afterwards would measure the
+        // race, not the behaviour.
+        let mut watching_the_parent = crate::session_events::subscribe(&f.session.id);
+
+        let mut script = run_script_in(
+            &f,
+            &child,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-DELEGATED" }));"#,
+            CancellationToken::new(),
+        )
+        .await;
+
+        let childs_card = card_or_completion(&child.id, &mut script)
+            .await
+            .unwrap_or_else(|(_, output)| panic!("the child's shell call must ask: {output}"));
+        assert_eq!(childs_card.tool_name, SHELL);
+
+        let escalated = card_on_bus(&mut watching_the_parent, Duration::from_secs(30))
+            .await
+            .expect(
+                "a script's approval card inside a subagent never reached the conversation the \
+                 person is watching: the parent's chat shows an unexplained stall while the \
+                 child parks for its whole time-to-live",
+            );
+        assert_eq!(
+            escalated.id, childs_card.id,
+            "the escalated card must be the SAME ask — one decision, two surfaces — not a \
+             second question with its own id"
+        );
+        assert_eq!(escalated.tool_name, SHELL);
+        assert_eq!(
+            escalated.arguments.get("command").and_then(|v| v.as_str()),
+            Some("echo SCRIPT-GATE-DELEGATED"),
+            "the watching person needs the call's own arguments to decide"
+        );
+        assert_eq!(
+            escalated.prompt, None,
+            "an ordinary script ask must not look like a security finding — the desktop \
+             draws any prompt as a warning banner and withholds Always allow"
+        );
+
+        answer(&f, &childs_card, Permission::AllowOnce).await;
+        let (is_error, output) = finish(script).await;
+        assert!(!is_error, "the allowed call runs: {output}");
+        assert!(output.contains("SCRIPT-GATE-DELEGATED"), "{output}");
+    }
+
+    /// The other half of D10, and the half that makes the card worth showing: a
+    /// person clicking Allow in the PARENT's chat resolves the child's parked
+    /// call.
+    ///
+    /// Publishing without this would be worse than the bug — a card the user can
+    /// see, click, and watch do nothing, because
+    /// `PendingUserActions::resolve_in_session` compares the posting session id
+    /// against the parked entry's and answers `Unknown` for anything else.
+    ///
+    /// Note what is NOT relaxed: the decision still comes from a person, through
+    /// the same `DecisionAuthority` the route samples from the request. Nothing
+    /// asks the parent AGENT, and `approval_relay`'s ancestor consultation is
+    /// not reached from here at all.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_person_watching_the_parent_can_answer_the_childs_card() {
+        let f = fixture(BioRouterMode::Approve).await;
+        let child = delegated_child(&f).await;
+        let mut watching_the_parent = crate::session_events::subscribe(&f.session.id);
+
+        let mut script = run_script_in(
+            &f,
+            &child,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-ANSWERED-ABOVE" }));"#,
+            CancellationToken::new(),
+        )
+        .await;
+        let card = card_or_completion(&child.id, &mut script)
+            .await
+            .unwrap_or_else(|(_, output)| panic!("the child's shell call must ask: {output}"));
+        // Drain the escalated copy so the assertion below is about answering it,
+        // not about whether it arrived — that is the test above.
+        card_on_bus(&mut watching_the_parent, Duration::from_secs(30))
+            .await
+            .expect("the escalated card must reach the parent first");
+
+        let outcome = answer_from(&f, &f.session.id, &card, Permission::AllowOnce).await;
+        assert_eq!(
+            outcome,
+            crate::agents::ConfirmationOutcome::Delivered,
+            "Allow clicked in the watching conversation must release the child's parked \
+             call; anything else leaves the user looking at a card that does nothing"
+        );
+
+        let (is_error, output) = finish(script).await;
+        assert!(!is_error, "the allowed call runs: {output}");
+        assert!(output.contains("SCRIPT-GATE-ANSWERED-ABOVE"), "{output}");
+    }
+
+    /// A decision may come from the child's own tab or from where it was
+    /// escalated — and from nowhere else. The escalation widens the answering
+    /// scope by exactly one session, so an unrelated chat that happens to know
+    /// the request id still resolves nothing (#40's rule, unchanged).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_unrelated_conversation_still_cannot_answer_the_childs_card() {
+        let f = fixture(BioRouterMode::Approve).await;
+        let child = delegated_child(&f).await;
+        let bystander = f
+            .agent
+            .config
+            .session_manager
+            .create_session(
+                f.dir.path().to_path_buf(),
+                "bystander".into(),
+                SessionType::User,
+            )
+            .await
+            .expect("a bystander session");
+
+        let mut script = run_script_in(
+            &f,
+            &child,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-BYSTANDER" }));"#,
+            CancellationToken::new(),
+        )
+        .await;
+        let card = card_or_completion(&child.id, &mut script)
+            .await
+            .unwrap_or_else(|(_, output)| panic!("the child's shell call must ask: {output}"));
+
+        let refused = answer_from(&f, &bystander.id, &card, Permission::AllowOnce).await;
+        assert_eq!(
+            refused,
+            crate::agents::ConfirmationOutcome::Unknown,
+            "a session that is neither the child nor an escalation surface must not be able \
+             to grant the child's call"
+        );
+
+        answer_from(&f, &child.id, &card, Permission::DenyOnce).await;
+        let (_, output) = finish(script).await;
+        assert!(
+            !output.contains("SCRIPT-GATE-BYSTANDER"),
+            "the bystander's Allow must not have run the command: {output}"
+        );
+    }
+
+    /// A root conversation has nowhere to escalate to, and must not gain a
+    /// second card: the one the drain yields IS the person's. Guards against an
+    /// escalation that fires for every session and shows every ordinary chat its
+    /// own card twice.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_root_chats_script_ask_is_published_once() {
+        let f = fixture(BioRouterMode::Approve).await;
+        assert!(
+            f.session.parent_session_id.is_none(),
+            "the fixture's chat must be a root for this to measure anything"
+        );
+        let mut watching = crate::session_events::subscribe(&f.session.id);
+
+        let mut script = run_script(
+            &f,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-ROOT-ONCE" }));"#,
+            CancellationToken::new(),
+        )
+        .await;
+        let card = card_or_completion(&f.session.id, &mut script)
+            .await
+            .unwrap_or_else(|(_, output)| panic!("the shell call must ask: {output}"));
+
+        assert!(
+            card_on_bus(&mut watching, Duration::from_millis(750))
+                .await
+                .is_none(),
+            "a root chat's own ask must not also be published to its bus as an escalation; \
+             the drain already yields it into that chat's stream"
+        );
+
+        answer(&f, &card, Permission::AllowOnce).await;
+        let (is_error, output) = finish(script).await;
+        assert!(!is_error, "{output}");
     }
 
     #[test]

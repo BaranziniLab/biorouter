@@ -60,6 +60,19 @@ If you typed into the tab, the parent is told. Its tool result carries `human_in
 
 The flag tracks **messages you sent**, so it is Steer that sets it, not Stop. Pressing Stop without typing cancels the run without marking the result as intervened.
 
+### When the child needs your permission
+
+Even in Completely Autonomous mode some operations always ask — a recursive delete of a directory the session did not create, a write into a credential store, anything the security floor stops. A subagent running one of those has to reach **you**, and a card that lives only in a conversation you are not looking at is the same thing as no card at all.
+
+So the ask appears in **two** places: the child's own tab, and the conversation *you* started — the top of the chain, if the work was delegated more than once, because every layer below it is itself an agent. It is one decision with one identity: answer it in either place and the child continues. That matters most where the child has no tab to answer in — a `visible: false` spawn, a child past the four-tab fan-out cap, a fan-out you never opened.
+
+Two things it is not:
+
+- **The parent agent is not asked.** The card is shown to a person, in the chat a person is watching; the delegating model never sees it and cannot answer it. An approval a security inspector raised may only ever be answered by a person, at any depth.
+- **It is not a record.** An approval card exists only while somebody has to answer it, so it is never written into the delegating conversation's history — answered or expired, it leaves nothing behind in a chat it was never part of.
+
+If nobody answers, nothing is quietly allowed: the call is refused, the child is told the approval expired, and it carries on without it.
+
 ### Visible by default
 
 Children are **visible by default** whenever the desktop app is open. To run one silently, ask for it — the agent passes `visible: false` on the spawn — and the child runs exactly as subagents did before, reachable only from History and from the parent's summary.
