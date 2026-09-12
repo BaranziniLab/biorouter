@@ -103,7 +103,11 @@ this section is the ledger.
   plan Phase 6). Tier asks *how sensitive*; affiliation asks *whose*. A UCSF-hosted model reaching
   another institution's private connector passes every gate above, because both endpoints are
   Private — the affiliation axis is what refuses it, or warns and lets the user accept it. Do not
-  reason about §9 as though tier were the only axis.
+  reason about §9 as though tier were the only axis. An acceptance (`cross_affiliation_grants`)
+  lives and dies with its chat: deleting the chat or resetting History removes it, the startup
+  reconcile retires any an earlier build left behind, and `privacy::grant::is_granted` refuses on
+  its own to read one recorded before the chat now holding its id existed. Session ids used to be
+  reissued (`<day>_<MAX(N)+1>`), and a chat that got a deleted chat's id inherited its acceptances.
 - **The cross-institution mixing policy (DR-27) and its accept control, in all three modes.** The
   setting is `open` / `standard` / `strict`, stored in its own record beside `config.yaml` for the
   master switch's reason, and *loosening* it costs the operating system's authentication while
@@ -2345,9 +2349,18 @@ CREATE TABLE classification_audit (
   app_version             TEXT NOT NULL,
   provider_name_at_change TEXT,
   privacy_reason_before   TEXT,
-  message_count_at_change INTEGER
+  message_count_at_change INTEGER,
+  session_incarnation     INTEGER          -- sessions.incarnation of the row declassified
 );
 ```
+
+`session_incarnation` was added after v1 shipped (by the startup reconcile, not a numbered migration)
+and is `NULL` on every row written before it. It exists because the ledger survives deletion and
+session ids were reissued: the backfill's declassification guard (`NOT_DECLASSIFIED_BY_USER` in
+`session_manager.rs`) matched on the bare id, so a deleted chat's declassification shielded the
+next chat to get its id from the backfill. The guard now requires the recorded incarnation to be
+the session row's own. A `NULL` row keeps the bare-id meaning it was written with, because
+reinterpreting it could only ever undo a declassification the user made.
 
 **And a transcript record**, following the BR-71 Task 32 pattern of a
 `user_visible: true / agent_visible: false` message written into the session's own conversation:

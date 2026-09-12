@@ -2433,7 +2433,8 @@ mod tests {
 
     /// ⚠ **Serialized, and it has to be.** The session bus is a process-global
     /// map keyed by session **id**, but ids are minted per *store* as
-    /// `<date>_<n>` (`INSERT … SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))`), so
+    /// `<date>_<n>` (`session_manager.rs`'s `CLAIM_NEXT_SESSION_N`, whose
+    /// high-water mark is per store and so starts at 1 in each one), so
     /// two tests that each stand up their own `TempDir` `SessionManager` both
     /// get `<today>_1` and publish into the *same* ring. Anything asserting on
     /// the sequence then reads another test's frames interleaved with its own.
