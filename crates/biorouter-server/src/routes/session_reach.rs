@@ -147,6 +147,7 @@
 //! | `POST /agent/add_extension` | Attaches tools to the session. |
 //! | `GET|POST /knowledge/active` | Reads or repoints the session's knowledge bases and write target. |
 //! | `POST /agent/resume` | Loads the session's stored conversation into a live agent. Gates directly, like the rows above. |
+//! | `GET /agent/callable_tool_count` | Counts the named session's MODEL-FACING tools, and answers through `get_or_create_agent` — so it CREATES an agent for a session that has none. Added 2026-09-12 by the SD-8 review of #260, which found it with no gate of any kind; the renderer had merely stopped calling it. ⚠ Its sibling `GET /agent/tools` is **deliberately** not here: that one is the unfiltered permission-editor surface, so a person can administer private tools a public model cannot see. |
 //! | `POST /agent/continuation/recover` | Resumes a parked continuation in the named session. Gates directly. |
 //! | `POST /agent/update_from_session` | Adopts another session's provider configuration. Gates directly. |
 //! | `POST /agent/update_provider` · `restart` · `stop` · `remove_extension` | Gate through [`authorize_agent_control`](../agent/fn.authorize_agent_control.html), which calls [`session_reach`] and then reads the row. |

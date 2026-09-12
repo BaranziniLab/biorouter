@@ -318,15 +318,23 @@ const REGISTRY: &[Guard] = &[
             // read as refs-only and stand out.
             Site {
                 file: "crates/biorouter-server/src/routes/agent.rs",
-                counts: c(4, 4, 0),
+                counts: c(5, 5, 0),
                 kind: SiteKind::Guard,
-                what: "`POST /agent/resume`, `POST /agent/update_from_session`, and `POST \
-                       /agent/update_working_dir`, plus the shared `authorize_agent_control` \
-                       gate used by provider, extension, stop, and restart mutations. On a \
+                what: "`POST /agent/resume`, `POST /agent/update_from_session`, `POST \
+                       /agent/update_working_dir` and `GET /agent/callable_tool_count`, plus \
+                       the shared `authorize_agent_control` gate used by provider, extension, \
+                       stop, and restart mutations. On a \
                        daemon that holds no user-action key that same gate is also the \
                        turn-control gate of `/agent/cancel`, `/interrupt` and the two \
                        continuation routes (SD-11), reached from `routes::reply`'s \
-                       `authorize_turn_control` by name — so SD-11 added no call here",
+                       `authorize_turn_control` by name — so SD-11 added no call here. \
+                       ⚠ The count went 4 → 5 on 2026-09-12, and the justification is a \
+                       ROUTE that had no gate at all rather than a second gate on a guarded \
+                       one: an SD-8 review of #260 found `callable_tool_count` answering any \
+                       caller that could name a chat, through `get_or_create_agent`, which \
+                       CREATES an agent for a session that has none — so the fix is the same \
+                       reach gate, placed before the fetch for the reason \
+                       `agent_add_extension` states at its own",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/mod.rs",
