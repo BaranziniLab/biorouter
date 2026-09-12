@@ -323,9 +323,9 @@ export default function ModelsBottomBar({
   // Determine which model to display. The pair's own answer outranks the app-wide
   // selection; a chat's own binding outranks both.
   //
-  // ⚠ `useCurrentModelInfo()` is NOT consulted: `CurrentModelContext` is created
-  // and read in `BaseChat.tsx` and never provided, so the branch that used to sit
-  // here could not run on any surface. See `leadWorkerLabel.ts`.
+  // ⚠ A branch used to sit here reading the live model from a React context in
+  // `BaseChat.tsx` that nothing ever provided, so it could not run on any
+  // surface. See `leadWorkerLabel.ts`.
   const displayModel =
     effectiveModel?.model ??
     chipPair.model ??

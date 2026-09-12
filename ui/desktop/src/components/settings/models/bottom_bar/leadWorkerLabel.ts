@@ -22,9 +22,11 @@
  * degenerate pair whose two halves name the same model. Every real pair read
  * `worker`, in every chat and on Home.
  *
- * ⚠ The `useCurrentModelInfo()` branch that looked like it rescued this is dead:
- * `CurrentModelContext` in `BaseChat.tsx` is created and read and **never
- * provided**, so the hook returns `null` on every surface. Do not reason from it.
+ * ⚠ A branch in the chip looked like it rescued this by reading the live model
+ * from a React context in `BaseChat.tsx`. That context was never provided, so
+ * the branch read `null` on every surface and could not run; it and the context
+ * are gone. `src/test/contextProviders.test.ts` now fails on the next context
+ * created without a provider.
  *
  * # What the renderer can actually know
  *

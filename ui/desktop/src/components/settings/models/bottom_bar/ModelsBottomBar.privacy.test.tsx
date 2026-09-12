@@ -47,10 +47,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
   }),
 }));
 
-// `BaseChat` is the whole chat surface; importing it for one dead context would
-// pull half the app into this suite.
-vi.mock('../../../BaseChat', () => ({ useCurrentModelInfo: () => null }));
-
 vi.mock('../subcomponents/SwitchModelModal', () => ({ SwitchModelModal: () => null }));
 vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 

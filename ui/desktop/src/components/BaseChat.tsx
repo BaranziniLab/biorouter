@@ -1,13 +1,4 @@
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { SearchView } from './conversation/SearchView';
 import ProgressiveMessageList from './ProgressiveMessageList';
@@ -112,10 +103,6 @@ import { composerSlotMode, subagentComposerKind } from './subagent/subagentReadO
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
 import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
 import { useChatGroups } from '../contexts/ChatGroupsContext';
-
-// Context for sharing current model info
-const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
-export const useCurrentModelInfo = () => useContext(CurrentModelContext);
 
 // How long after the agent last worked a render failure is still treated as part
 // of the current exchange (and worth auto-fixing). A figure the agent just made

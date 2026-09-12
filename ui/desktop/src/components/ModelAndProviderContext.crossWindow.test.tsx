@@ -83,8 +83,6 @@ vi.mock('./ConfigContext', () => ({
   usePrivacyTiersEnabled: () => true,
 }));
 
-// `BaseChat` is the whole chat surface; the chip imports it for one dead context.
-vi.mock('./BaseChat', () => ({ useCurrentModelInfo: () => null }));
 vi.mock('./settings/models/subcomponents/SwitchModelModal', () => ({
   SwitchModelModal: () => null,
 }));
