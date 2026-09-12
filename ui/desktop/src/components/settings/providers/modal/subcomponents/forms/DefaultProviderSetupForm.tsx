@@ -36,10 +36,6 @@ const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
     AZURE_OPENAI_DEPLOYMENT_NAME: 'gpt-5.5-2026-04-24',
     AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
   },
-  versa_bedrock: {
-    AWS_ENDPOINT_URL_BEDROCK: 'https://unified-api.ucsf.edu/general/awsai',
-    AWS_REGION: 'us-west-2',
-  },
 };
 
 const envToPrettyName = (envVar: string) => {

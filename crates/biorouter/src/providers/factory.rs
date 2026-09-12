@@ -510,7 +510,7 @@ pub(crate) mod tests {
             ),
             (
                 "versa_azure",
-                "Institution(ucsf): `ucsf_gateway_affiliation` on the resolved AZURE_OPENAI_ENDPOINT",
+                "Institution(ucsf): `ucsf_gateway_affiliation` on the resolved VERSA_AZURE_ENDPOINT",
             ),
         ];
         #[cfg(feature = "aws-providers")]
