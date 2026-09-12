@@ -467,8 +467,11 @@ mod keyless_report_tests {
                 "{empty:?}"
             );
         }
-        // Present and wrong, which a launcher fault also looks like.
-        for bad in ["not-hex", "abcd", &digest[..62], &format!("{digest}aa")] {
+        // Present and wrong, which a launcher fault also looks like: not hex at
+        // all, and hex of the wrong length in both directions.
+        let short = "a".repeat(62);
+        let long = "a".repeat(66);
+        for bad in ["not-hex", "abcd", short.as_str(), long.as_str()] {
             assert_eq!(
                 classify_digest_line(Some(bad.to_string())),
                 Err(NoUserActionKey::Malformed),
