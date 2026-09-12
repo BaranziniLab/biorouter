@@ -6797,7 +6797,8 @@ pub(crate) mod tests {
     ///
     /// `serial(agent_manager_pin)`: the pin is a process-global map keyed by
     /// session **id**, and ids are minted per *store* as `<date>_<n>`
-    /// (`session_manager.rs`'s `SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))`),
+    /// (`session_manager.rs`'s `CLAIM_NEXT_SESSION_N`, whose high-water mark is
+    /// per store and so starts at 1 in each one),
     /// so every test that stands up its own `TempDir` `SessionManager` and
     /// registers its FIRST session is fighting over the single key `<today>_1`.
     /// `subagent_handler`'s two real-subagent tests are the other claimants.

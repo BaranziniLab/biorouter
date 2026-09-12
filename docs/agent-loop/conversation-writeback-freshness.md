@@ -76,12 +76,14 @@ would mean a migration plus three write paths that must each bump it in their ow
 transaction — miss one and the token silently under-reports, which is exactly the bug
 `sessions.updated_at` had.
 
-The one column this did add is `sessions.incarnation` (#51 W3), because a session **id is
-reusable**: `create_session` allocates `YYYYMMDD_N` as `MAX(N) + 1` over the `sessions`
-table, so once that table is emptied the ids restart at 1, and a one-message session at
-`(1, 1)` is reproducible by an entirely different conversation. `incarnation` is minted per
-session row from `random()` and never reused, so a basis taken before a wipe can never match
-after one, whatever the rowids do. It is backfilled in place, and a legacy `0` compares equal
+The one column this did add is `sessions.incarnation` (#51 W3), because a session **id was
+reusable**: `create_session` allocated `YYYYMMDD_N` as `MAX(N) + 1` over the `sessions`
+table, so once that table was emptied the ids restarted at 1, and a one-message session at
+`(1, 1)` was reproducible by an entirely different conversation. `create_session` now takes
+`N` from a high-water mark that a wipe does not lower, but `incarnation` still has to close
+the ABA on its own: a build without the mark sharing the database, or a restored backup, can
+still hand an id out twice. `incarnation` is minted per session row from `random()` and never
+reused, so a basis taken before a wipe can never match after one, whatever the rowids do. It is backfilled in place, and a legacy `0` compares equal
 to a legacy `0` — degrading to the rowid guard alone on such a database rather than refusing
 every rewrite on it.
 

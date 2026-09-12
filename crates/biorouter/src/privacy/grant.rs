@@ -1022,6 +1022,12 @@ mod tests {
         assert!(is_granted(&sm, &id, "ucsfomopagent", bound_to("stanford")).await);
 
         sm.delete_session(&id).await.unwrap();
+        // `session_id_high_water` stops THIS build reissuing the id, so the
+        // reuse is arranged — as a build without the mark sharing the file, or a
+        // restored backup, really produces it. This refusal is what has to hold
+        // when that happens, and it must not be deleted on the grounds that ids
+        // are single-use now.
+        sm.forget_minted_session_ids_for_test().await.unwrap();
         let next = sm
             .create_session(PathBuf::from("."), "next".to_string(), SessionType::User)
             .await
@@ -1067,6 +1073,10 @@ mod tests {
             .await
             .unwrap();
 
+        // ...and the id has to come back for the grant to be misread as the new
+        // chat's at all. See the sibling test above for why forcing it is the
+        // honest fixture.
+        sm.forget_minted_session_ids_for_test().await.unwrap();
         let next = sm
             .create_session(PathBuf::from("."), "next".to_string(), SessionType::User)
             .await

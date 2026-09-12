@@ -280,6 +280,8 @@ The architecture follows a modular design with clear separation between the core
 
 Subagents are temporary instances that exist only for task execution. After the task is completed, no manual intervention is needed for cleanup.
 
+A subagent run is still recorded as its own session, and deleting the chat that started it does **not** delete the run: its transcript stays, and it moves to the top level of History (visible with **Show subagent runs** on) and of `biorouter session list --subagents`. A run can hold text you typed into it, so it is removed only when you remove it — from History, or with `biorouter session remove --session-id <id>`. The deleted chat's id is never given to a later chat, so no other chat can come to own the run.
+
 ## Subagent configuration
 
 Subagents use the following pre-configured settings, but you can override any defaults using natural language in your prompts.

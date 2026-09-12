@@ -47,6 +47,13 @@ renderer through the generated OpenAPI client — there is no second copy to kee
 - **A deleted or unknown id fails loudly, not silently.** Chat Recall's load mode answers
   `Failed to load session: …`; `workspace_open { session_id }` answers `no such session: …`
   (with the caveat in [Privacy](#privacy)). Nothing falls back to a title search.
+- **A deleted id is never minted again.** `create_session` takes `N` from a per-day high-water
+  mark (`session_id_high_water`) that neither a delete nor a History reset lowers, so a deleted
+  id keeps failing loudly instead of quietly resolving to a newer chat. It used to be
+  `MAX(N) + 1` over the rows that still existed, which handed the newest deleted id of the day
+  to the next chat — along with everything still keyed by it. A build without the mark that
+  shares the database, or a restored backup, can still reissue an id, so `delete_session` also
+  removes every row keyed by the chat's id rather than relying on this.
 - `external_key` is a separate, optional lookup handle used by durable app sessions
   (`get_or_create_by_external_key`). It is not the conversation's identity and is not what
   any surface shows.
