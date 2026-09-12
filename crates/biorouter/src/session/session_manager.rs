@@ -209,8 +209,33 @@ const CLAIM_NEXT_SESSION_N: &str = "INSERT INTO session_id_high_water (prefix, l
 /// `SUBSTR(id, 9, 1) = '_'` is the 8-characters-plus-underscore shape
 /// [`SessionStorage::id_prefix`] pins; an id of any other shape contributes
 /// nothing rather than a garbage `0`.
+///
+/// ⚠ **`checkpoints` is read as well as `sessions`, and that is what closes the
+/// FIRST-UPGRADE window.** An id an older build minted *and deleted* has no
+/// `sessions` row, so `sessions` alone cannot raise the mark above it and the
+/// very next chat takes it back — inheriting the one piece of that chat's state
+/// no per-table delete reaches, its shadow repository at
+/// `<data>/checkpoints/<id>/`. Its `checkpoints` ROWS do outlive it — that is
+/// precisely the leak [`SessionStorage::retire_side_rows_of_deleted_chats`]
+/// exists to clean up — so they are evidence the id was once minted.
+///
+/// The ordering in [`SessionStorage::reconcile_loop_schema`] is therefore
+/// load-bearing: this seed runs **before** that sweep, so it still sees the rows
+/// the sweep is about to delete. Moving the sweep earlier would silently reopen
+/// the window, and
+/// `the_mark_rises_above_an_id_that_only_a_leftover_checkpoint_names` is what
+/// goes red. Once raised the mark stays raised, so a later open that finds the
+/// rows gone loses nothing.
+///
+/// `messages_fts` and `cross_affiliation_grants` are deliberately NOT read here,
+/// for a plain reason rather than a principled one: both are created *later* in
+/// that same function, so at this point they need not exist.
 const SEED_SESSION_ID_HIGH_WATER: &str = "INSERT INTO session_id_high_water (prefix, last_n) \
-     SELECT SUBSTR(id, 1, 8), MAX(CAST(SUBSTR(id, 10) AS INTEGER)) FROM sessions \
+     SELECT SUBSTR(id, 1, 8), MAX(CAST(SUBSTR(id, 10) AS INTEGER)) FROM ( \
+         SELECT id FROM sessions \
+         UNION ALL \
+         SELECT session_id AS id FROM checkpoints \
+     ) \
       WHERE SUBSTR(id, 9, 1) = '_' AND CAST(SUBSTR(id, 10) AS INTEGER) > 0 \
       GROUP BY SUBSTR(id, 1, 8) \
      ON CONFLICT(prefix) DO UPDATE \
@@ -18360,6 +18385,61 @@ mod deleted_chat_side_rows_tests {
 
         let next = new_chat(&sm, &dir).await;
         assert_eq!(suffix(&next), 8);
+    }
+
+    /// The first-upgrade window, closed: an id that only a **leftover
+    /// checkpoint row** still names is minted above, not reissued.
+    ///
+    /// This is the one case the mark cannot reach from `sessions` alone. An
+    /// older build's `delete_session` removed the chat's row and left its
+    /// `checkpoints` rows behind, so on the first open by this build the seed
+    /// sees no `sessions` row for that id — and the next chat would take it
+    /// back, inheriting the shadow repository at `<data>/checkpoints/<id>/`,
+    /// which no per-table delete reaches. Seeding from `checkpoints` too is what
+    /// stops that, and it works only because the seed runs before
+    /// `retire_side_rows_of_deleted_chats` retires those very rows.
+    ///
+    /// The fixture is what an older build really left: a checkpoint written
+    /// while the chat existed, then the `sessions` row deleted directly (its own
+    /// delete path would now take the checkpoint with it), then the mark
+    /// forgotten — which is the state a database that has never been opened by
+    /// this build is in.
+    #[tokio::test]
+    async fn the_mark_rises_above_an_id_that_only_a_leftover_checkpoint_names() {
+        let dir = TempDir::new().unwrap();
+        let orphan = {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            let id = new_chat(&sm, &dir).await;
+            sm.insert_checkpoint(&checkpoint(&id, "cp-older-build"))
+                .await
+                .unwrap();
+            let pool = sm.storage().pool().await.unwrap();
+            sqlx::query("DELETE FROM sessions WHERE id = ?1")
+                .bind(&id)
+                .execute(pool)
+                .await
+                .unwrap();
+            // No `sessions` row, and no memory of the id having been minted.
+            forget_minted_session_ids(&sm).await;
+            assert_eq!(
+                rows(&sm, "checkpoints", &id).await,
+                1,
+                "the fixture must leave the checkpoint row, or it proves nothing"
+            );
+            sm.close().await;
+            id
+        };
+
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let next = new_chat(&sm, &dir).await;
+        assert_ne!(
+            next, orphan,
+            "an id whose checkpoint repository is still on disk was minted again"
+        );
+        assert!(
+            suffix(&next) > suffix(&orphan),
+            "expected an id above `{orphan}`, got `{next}`"
+        );
     }
 
     /// The id-reuse seam is `pub`, and this is what keeps it a *test* seam.
