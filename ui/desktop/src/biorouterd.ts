@@ -282,6 +282,8 @@ interface BiorouterProcessEnv {
   PATH: string;
   BIOROUTER_PORT: string;
   BIOROUTER_SERVER__SECRET_KEY?: string;
+  /** SD-12: this launcher sends a user-action digest on stdin. See the spawn. */
+  BIOROUTER_USER_ACTION_EXPECTED?: string;
   BIOROUTER_DISABLE_KEYRING?: string;
 }
 
@@ -353,6 +355,23 @@ export const startBiorouterd = async (
     PATH: `${path.dirname(resolvedBiorouterdPath)}${path.delimiter}${process.env.PATH || ''}`,
     BIOROUTER_PORT: String(port),
     BIOROUTER_SERVER__SECRET_KEY: serverSecret,
+    // Issue #56 DR-16 / SD-12. This launcher writes a user-action digest down
+    // stdin below, and says so here.
+    //
+    // ⚠ **Unconditional, including when there is no key to send.** That case is
+    // exactly the one worth naming: `UserActionProof::NoKeyInstalled` means only
+    // "this process read no valid digest", which a `biorouter serve` daemon (no
+    // key by design, `Stdio::null()`) and a desktop daemon whose key never
+    // arrived both satisfy. SD-12 lets the first start a new chat on a private
+    // model without a proof, because nobody there can ever give one; the second
+    // is a repairable fault and must keep refusing. Declaring the intent is what
+    // lets the daemon tell them apart — so a `if (userActionKey)` here would
+    // delete the signal in the only situation that needs it.
+    //
+    // Never the key or its digest: AR-11 measured the environment to be
+    // recoverable in-process. This is a boolean-shaped claim that authenticates
+    // nothing, and a value a model could only use to make the daemon stricter.
+    BIOROUTER_USER_ACTION_EXPECTED: '1',
     // Dev Electron rebuilds should not trigger macOS Keychain prompts; packaged
     // builds keep the normal OS credential-store behavior.
     BIOROUTER_DISABLE_KEYRING:

@@ -133,6 +133,16 @@ pub async fn handle_serve(
         )
         // See the module documentation: no proof-of-user digest, on purpose.
         .stdin(Stdio::null())
+        // SD-12: and this daemon says so. The desktop launcher sets
+        // `BIOROUTER_USER_ACTION_EXPECTED` to declare that it *does* send a
+        // digest, which makes a daemon that receives none refuse rather than
+        // exempt a private new chat. `serve` sends none by design, so an
+        // inherited value from the operator's shell would turn every private new
+        // chat here into a refusal nobody can clear — the failure SD-12 exists
+        // to remove. Cleared rather than trusted; the literal is defined once, in
+        // `biorouter_server::launch::USER_ACTION_EXPECTED_ENV` (this crate does
+        // not depend on `biorouter-server`).
+        .env_remove("BIOROUTER_USER_ACTION_EXPECTED")
         // A backstop for a panic unwinding through here. Every ordinary path
         // goes through `stop_daemon`, which asks before it insists.
         .kill_on_drop(true)
