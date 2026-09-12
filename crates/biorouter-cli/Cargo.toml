@@ -92,6 +92,10 @@ jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dev-dependencies]
 tempfile = "3"
+# `src/test_sandbox.rs` runs before `main`, which is the only placement that can
+# win the race against the one-shot cells (`GLOBAL_CONFIG`, `SHARED_STORE_ROOT`)
+# a test would otherwise pin at the developer's real config and session store.
+ctor = "0.2"
 temp-env = { version = "0.3.6", features = ["async_closure"] }
 test-case = "3.3"
 tokio = { workspace = true }

@@ -1132,20 +1132,28 @@ deleted, not kept in step.
 
 Tests: `cargo test -p biorouter --lib -- skill`,
 `cargo test -p biorouter-server --lib -- routes::skills`,
-`cargo test -p biorouter-cli --lib` (**needs an isolated `HOME` — and both `CARGO_HOME`
-and `RUSTUP_HOME` kept pointing at the real ones, as LITERAL paths**: cargo and rustup
-both derive their homes from `$HOME`, so a bare `HOME=$(mktemp -d) cargo test …` loses
-the crate registry and dies with `error[E0463]: can't find crate for \`biorouter\``. That
+`cargo test -p biorouter-cli --lib` (**the isolated `HOME` is no longer needed** — run it
+plain. `crates/biorouter-cli/src/test_sandbox.rs` points `BIOROUTER_PATH_ROOT` at a
+throwaway dir in a `#[ctor]`, before `main`, and freezes `Config::global()` and the session
+store's root there, so the DEFAULT invocation — what a developer types, and what an
+editor's test runner emits — reaches nothing real. Measured on this machine: a plain
+`cargo test -p biorouter-cli` is 503 passed in 35s with `~/.config/biorouter` and
+`~/.local/share/biorouter` byte-for-byte unchanged, where the same command on `main` at
+5a404ecd wrote `<HOME>/.config/biorouter/config.yaml`.
+
+⚠ If you prefix ANY cargo command with `HOME=$(mktemp -d)` for some other reason, keep both
+`CARGO_HOME` and `RUSTUP_HOME` pointing at the real ones as LITERAL paths. Cargo and rustup
+both derive their homes from `$HOME`, so a bare `HOME=$(mktemp -d) cargo test …` loses the
+crate registry and dies with `error[E0463]: can't find crate for \`biorouter\``. That
 surfaces as **rc=101 with zero failing tests**, which reads as a flake rather than as
 nothing having compiled — and a harness that greps for `test result:` reports the
-PREVIOUS build's count.
-
-⚠ **Do not write `CARGO_HOME="$HOME/.cargo"` in the same command.** This line said exactly
-that until 2026-09-01 and it is wrong in zsh: the assignments are applied left to right,
-so `$HOME` expands to the **new temp dir**, not the real one. The failure is not an error
-— it silently redirects `RUSTUP_HOME` as well, so cargo re-downloads the whole toolchain
-and every target recompiles from scratch (measured: `installing component 'rustc'` mid-run,
-and 11m38s for a single crate that normally takes seconds). Use literals:
+PREVIOUS build's count. And **do not write `CARGO_HOME="$HOME/.cargo"` in the same
+command**: this line said exactly that until 2026-09-01 and it is wrong in zsh, because the
+assignments are applied left to right, so `$HOME` expands to the **new temp dir**, not the
+real one. The failure is not an error — it silently redirects `RUSTUP_HOME` as well, so
+cargo re-downloads the whole toolchain and every target recompiles from scratch (measured:
+`installing component 'rustc'` mid-run, and 11m38s for a single crate that normally takes
+seconds). Use literals:
 
 ```bash
 HOME=$(mktemp -d) CARGO_HOME=/Users/wgu/.cargo RUSTUP_HOME=/Users/wgu/.rustup cargo test -p biorouter-cli

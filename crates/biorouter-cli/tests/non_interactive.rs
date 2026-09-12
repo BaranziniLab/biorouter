@@ -11,6 +11,14 @@
 //! `BIOROUTER_PATH_ROOT`, so nothing here can reach the developer's real
 //! configuration or session store, whatever the parent process was started with.
 
+// Each `tests/*.rs` is its own crate, so the lib's `#[cfg(test)] mod
+// test_sandbox;` is not compiled into this binary. Declare its own copy, so
+// anything here that reaches a process-global cell resolves under a throwaway
+// root rather than the developer's real config and session store. The children
+// this file spawns pass their own `BIOROUTER_PATH_ROOT`, which still wins.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
