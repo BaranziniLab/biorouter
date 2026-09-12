@@ -10,6 +10,7 @@ import {
   searchTerms,
   SKILL_NOISE,
   Weight,
+  writtenIn,
   type SearchField,
   type SearchResult,
 } from './search';
@@ -143,16 +144,50 @@ describe('marketplace search — matching and ranking', () => {
     expect(ids(rank('scripting'))).toEqual(['r-scripting', 'prose-only']);
   });
 
-  /// Everything the substring matcher found is still found: a query that
-  /// occurs verbatim in a field is a hit even when its terms are too short to
-  /// match on their own.
-  it('still finds a verbatim occurrence', () => {
-    expect(rank('s p').hits).toEqual([]);
-
-    const search = rank('dy');
-    // `dy` inside `Tidyverse`.
+  /// The query as written is held to the same edges as a short term. Until PR
+  /// #266 the whole-query check was a plain substring test, so a query that IS
+  /// one short term came back in through every word containing it: `r` alone
+  /// found `complex-plots` through "Draws" and `prose-only` through its own
+  /// name, each with no matched term at all.
+  it('reads a one-letter query as a whole word, not a letter inside one', () => {
+    const search = rank('R');
     expect(ids(search)).toEqual(['r-scripting']);
-    expect(search.hits[0].matchedTerms).toEqual([]);
+    expect(search.hits[0].matchedTerms).toEqual(['r']);
+  });
+
+  /// The query as written outranks any count of separate words, so it has to be
+  /// written there: `r scripting` inside "for scripting" is the tail of `for`
+  /// and then a word. Read as a substring it ranked the entry matching one of
+  /// the two words above the entry matching both.
+  it('does not read a phrase found only inside longer words as written', () => {
+    const entries: Entry[] = [
+      {
+        id: 'shell-snippets',
+        name: 'Shell Snippets',
+        description: 'Snippets for scripting the shell.',
+        tags: [],
+      },
+      {
+        id: 'tidy-style',
+        name: 'Tidy Style',
+        description: 'Scripting conventions for R.',
+        tags: ['R'],
+      },
+    ];
+    const search = rankEntries('R scripting', [], entries, fields);
+
+    expect(ids(search)).toEqual(['tidy-style', 'shell-snippets']);
+    expect(search.hits[0].matchedTerms).toEqual(['r', 'scripting']);
+    expect(search.hits[1].matchedTerms).toEqual(['scripting']);
+  });
+
+  /// A fragment of a word is not the query as written, so a query of nothing but
+  /// short terms finds nothing at all — `dy` is inside "Tidyverse", not a word of
+  /// it. The `s p` half held under the substring rule; the `dy` half is the leak
+  /// that rule asserted as a feature.
+  it('finds nothing for a query written only inside longer words', () => {
+    expect(rank('dy').hits).toEqual([]);
+    expect(rank('s p').hits).toEqual([]);
   });
 
   it('browses every entry in registry order for an empty query', () => {
@@ -197,19 +232,29 @@ describe('marketplace search — the score', () => {
     expect(twoTermsInProse.score).toBeGreaterThan(oneTermInTheName.score);
   });
 
-  /// Verbatim is a tier of its own, not one more term: here it wins while
-  /// matching FEWER terms, because `io` is too short to match inside `audio`.
-  it('ranks a verbatim match above every term match, even one matching more terms', () => {
-    const query = parseQuery('io pipe');
-    const verbatimInProse = scoreEntry(query, [['audio pipeline', Weight.Prose]]);
-    const bothTermsInNames = scoreEntry(query, [
-      ['IO', Weight.Name],
-      ['Pipe', Weight.Name],
+  /// The query as written is a tier of its own, not one more term. It can no
+  /// longer be pitted against a HIGHER term count, as the substring rule allowed
+  /// — a phrase written in a field has every one of its words in that field as a
+  /// whole word, so it always matches every term — so the weaker criterion it is
+  /// pitted against here is placement: prose against two names.
+  it('ranks the query as written above the same words scattered in weightier fields', () => {
+    const query = parseQuery('tidy code');
+    const writtenInProse = scoreEntry(query, [['Writes tidy code.', Weight.Prose]]);
+    const scatteredInNames = scoreEntry(query, [
+      ['Code Tidy', Weight.Name],
+      ['code-tidy', Weight.Name],
     ]);
 
-    expect(verbatimInProse.matchedTerms).toEqual(['pipe']);
-    expect(bothTermsInNames.matchedTerms).toEqual(['io', 'pipe']);
-    expect(verbatimInProse.score).toBeGreaterThan(bothTermsInNames.score);
+    expect(writtenInProse.matchedTerms).toEqual(['tidy', 'code']);
+    expect(scatteredInNames.matchedTerms).toEqual(['tidy', 'code']);
+    expect(writtenInProse.score).toBeGreaterThan(scatteredInNames.score);
+
+    // The same pair ranked, as `catalog_search.rs` asserts it.
+    const entries: Entry[] = [
+      { id: 'code-tidy', name: 'Code Tidy', description: 'Formatting rules.', tags: [] },
+      { id: 'styler', name: 'Styler', description: 'Writes tidy code.', tags: [] },
+    ];
+    expect(ids(rankEntries('tidy code', [], entries, fields))).toEqual(['styler', 'code-tidy']);
   });
 
   it('skips a field with no text rather than throwing', () => {
@@ -293,22 +338,17 @@ describe('rankSkills — the rules that keep a union useful', () => {
     ]);
   });
 
-  /// A one-letter query occurs verbatim inside most entries, and a verbatim hit
-  /// is kept so nothing the old matcher showed is lost. The whole-word rule
-  /// still decides the order: the three skills about R lead, and the verbatim-
-  /// only hits follow in registry order.
-  it('ranks the R skills first for `R` alone, above what merely contains an r', () => {
+  /// A one-letter query is the letter as a word: the three skills that are about
+  /// R, and nothing that merely contains an r. Until PR #266 this returned six —
+  /// these three, then scientific-visual-communication, python-scripting and
+  /// single-cell, each matching no term at all and kept only by the substring
+  /// test. Measured against the live registry rather than this fixture, that rule
+  /// returned 125 of 129 skills, 117 of them with no matched term.
+  it('finds only the R skills for `R` alone, not what merely contains an r', () => {
     const search = rankSkills(MARKETPLACE_SKILLS, 'R');
 
-    expect(ids(search)).toEqual([
-      'r-scripting',
-      'ggplot-visualization',
-      'clinical-biostatistics',
-      'scientific-visual-communication',
-      'python-scripting',
-      'single-cell',
-    ]);
-    expect(search.hits.map((hit) => hit.matchedTerms)).toEqual([['r'], ['r'], ['r'], [], [], []]);
+    expect(ids(search)).toEqual(['r-scripting', 'ggplot-visualization', 'clinical-biostatistics']);
+    expect(search.hits.map((hit) => hit.matchedTerms)).toEqual([['r'], ['r'], ['r']]);
   });
 
   it('finds a singular field word for a plural term', () => {
@@ -421,8 +461,46 @@ describe('the fields each catalog searches, and what a match in each is worth', 
   });
 });
 
+/**
+ * The word-boundary test the whole-query rank runs on, ported case for case from
+ * `written_in` in `catalog_search.rs`, and then pushed at the characters where
+ * JavaScript's own `\b` disagrees with Rust's `char::is_alphanumeric`. Those
+ * cases are why this is a hand-written scan over code points and not a regular
+ * expression — and every one of them is invisible to an ASCII fixture.
+ */
+describe('marketplace search — the query as written', () => {
+  it('reads a phrase as written only between word boundaries', () => {
+    expect(writtenIn('r scripting', 'r scripting')).toBe(true);
+    // The second `r`, the one that is a word of its own.
+    expect(writtenIn('tidy code for r.', 'r')).toBe(true);
+    expect(writtenIn('snippets for scripting', 'r scripting')).toBe(false);
+    expect(writtenIn('tidyverse', 'dy')).toBe(false);
+    // Written at the second `a`, which overlaps the refused first occurrence —
+    // so every position is tried, not only the first one a search would find.
+    expect(writtenIn('ba a a', 'a a')).toBe(true);
+    // An edge that is not a letter or digit is a boundary itself.
+    expect(writtenIn('c++ code', '++')).toBe(true);
+  });
+
+  it('reads a word character as Rust does, not as `\b` does', () => {
+    // `_` is a boundary here and a word character to `\b`, which would refuse
+    // this.
+    expect(writtenIn('snake_case', 'case')).toBe(true);
+    // `ï` is a word character here and a boundary to `\b`, which would accept
+    // this.
+    expect(writtenIn('naïve', 'naï')).toBe(false);
+    expect(writtenIn('naïve bayes', 'naïve')).toBe(true);
+    // A letter outside the BMP is ONE character, so it closes a word. Compared
+    // as UTF-16 units its trailing half is a lone surrogate, which matches no
+    // letter, and the phrase would be read as written.
+    expect(writtenIn('𝐚rna', 'rna')).toBe(false);
+    // A digit is a word character, the same way `words` keeps `ggplot2` whole.
+    expect(writtenIn('ggplot2 plots', 'ggplot')).toBe(false);
+  });
+});
+
 describe('rankExtensions — the same matcher over the extensions catalog', () => {
-  /// The phrase is in no field verbatim — SPOKEAgent says "SPOKE biomedical
+  /// No field holds the phrase as written — SPOKEAgent says "SPOKE biomedical
   /// knowledge graph" and "spoke-knowledge-graph" — so the matcher this replaced
   /// showed nothing for it.
   it('ranks a multi-word query by the terms each extension matches', () => {

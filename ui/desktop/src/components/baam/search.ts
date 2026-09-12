@@ -27,9 +27,9 @@
  * user happened to type, and an AND over a phrase is the same empty list with a
  * different cause. Precision comes from the ranking instead, best first:
  *
- * 1. an entry containing the query **verbatim** — what the old matcher found,
- *    so nothing it showed is lost, bar what only the license matched (no longer
- *    a searched field: see `rankSkills` in `registry.ts`);
+ * 1. an entry holding the query **as written** — its words, in that order, as
+ *    whole words, so `r scripting` is in "R scripting" but not in "for
+ *    scripting" — which no scatter of the same words outranks;
  * 2. then by **how many terms** it matched, so an entry matching every term
  *    precedes one matching some;
  * 3. then by **where** each term matched — the id or name outweighs a tag,
@@ -41,7 +41,15 @@
  * measured query itself:
  *
  * - **A term under three characters matches whole words only.** `r` has to find
- *   the R language; as a substring it matched nearly every entry.
+ *   the R language; as a substring it matched nearly every entry. The query as
+ *   written is held to the same edges (see {@link writtenIn}) — it counts only
+ *   where it starts and ends at a word boundary. Tested as a plain substring,
+ *   which is what this file did until PR #266, a query that IS one short term
+ *   came back in through every word containing it: measured over the live
+ *   `landing/registry.json`, `R` returned 125 of 129 skills, 117 of them
+ *   matching no term at all, and ranked `empirical-paper-submission-rr` above
+ *   `r-scripting`. Refusing that leak drops 198 hits across 76 searches and adds
+ *   none, and only a query whose every term is short changes at all.
  * - **Filler words are dropped** ("a skill about R" is `r`), because in a union
  *   a word like `for` or `and` inflates the term count of every entry whose
  *   prose happens to use it, which ranks noise above the real hit.
@@ -135,6 +143,20 @@ const MAX_TERM_QUALITY = 3 * Weight.Name;
 const WORD_BREAK = /[^\p{Alphabetic}\p{N}]+/u;
 
 /**
+ * One letter or digit: Rust's `char::is_alphanumeric` itself. The complement of
+ * {@link WORD_BREAK}, and it has to stay the complement — {@link words} splits a
+ * field on one and {@link writtenIn} tests the other, so a term and the query
+ * around it are held to the same edges.
+ *
+ * ⚠ **Not `\b`**, which JavaScript defines over `[A-Za-z0-9_]` alone. It reads
+ * `_` as a word character where Rust does not, and every non-ASCII letter — `é`,
+ * `π`, `中` — as a boundary where Rust reads a word character. On `-` and `.` the
+ * two agree, which is exactly why an ASCII fixture would pass over the
+ * disagreement.
+ */
+const WORD_CHAR = /[\p{Alphabetic}\p{N}]/u;
+
+/**
  * Lowercase words, split at every character that is not a letter or digit —
  * whitespace and punctuation alike, so `r-scripting` is `r` + `scripting` and
  * `ggplot2` stays one word.
@@ -149,6 +171,43 @@ function words(text: string): string[] {
 /** Length in characters rather than UTF-16 code units, like Rust's `chars().count()`. */
 function charCount(text: string): number {
   return Array.from(text).length;
+}
+
+/** Is `char` a letter or digit? The text's edge — `undefined` — is not. */
+function isWordChar(char: string | undefined): boolean {
+  return char !== undefined && WORD_CHAR.test(char);
+}
+
+/**
+ * Does `text` hold `phrase` as written — starting and ending at a word boundary,
+ * not inside a longer word? `r scripting` is in "R scripting" but not in "for
+ * scripting", where its `r` is the tail of `for`. Both are lowercase already.
+ *
+ * An edge of `phrase` that is not a letter or digit needs no boundary: it is
+ * one, so `++` is written in "c++".
+ *
+ * Every character position is tried, not only the occurrences `indexOf` would
+ * step through, because a refused occurrence can overlap an accepted one:
+ * `a a` in "ba a a" is written only from the second `a`.
+ *
+ * Compared as code points rather than UTF-16 units, like Rust's `char_indices`,
+ * so an astral character is one character on both sides of the port.
+ *
+ * Exported only so the boundary cases can be asserted directly, the way Rust
+ * asserts them from inside the module.
+ */
+export function writtenIn(text: string, phrase: string): boolean {
+  const chars = Array.from(text);
+  const wanted = Array.from(phrase);
+  const startsWord = isWordChar(wanted[0]);
+  const endsWord = isWordChar(wanted[wanted.length - 1]);
+  for (let start = 0; start < chars.length; start += 1) {
+    if (!wanted.every((want, offset) => chars[start + offset] === want)) continue;
+    const opens = !startsWord || !isWordChar(chars[start - 1]);
+    const closes = !endsWord || !isWordChar(chars[start + wanted.length]);
+    if (opens && closes) return true;
+  }
+  return false;
 }
 
 /**
@@ -196,7 +255,7 @@ function termStrength(term: string, word: string): number {
 
 /** A query as the matcher reads it. */
 export interface SearchQuery {
-  /** The whole query, trimmed and lowercased: what a verbatim match looks for. */
+  /** The whole query, trimmed and lowercased: what {@link writtenIn} looks for. */
   phrase: string;
   /** Its distinct words, without filler. See {@link searchTerms}. */
   terms: string[];
@@ -209,15 +268,17 @@ export function parseQuery(query: string, noise: readonly string[] = []): Search
 /** How one entry matched one query. */
 export interface EntryMatch {
   /**
-   * 0 is no match; otherwise higher ranks first. It packs the ranking —
-   * verbatim, then terms matched, then where and how well they matched — into
-   * one number whose scale depends on the query's term count, so it compares
-   * entries scored against the SAME query and means nothing across two.
+   * 0 is no match; otherwise higher ranks first. It packs the ranking — the
+   * query as written, then terms matched, then where and how well they matched —
+   * into one number whose scale depends on the query's term count, so it
+   * compares entries scored against the SAME query and means nothing across two.
    */
   score: number;
   /**
-   * The terms this entry matched, in query order. Empty for an entry that only
-   * the verbatim query found.
+   * The terms this entry matched, in query order. Empty only when the query holds
+   * no word at all (`++`), so that nothing but the query as written could have
+   * found the entry — a query written in a field has every one of its words in
+   * that field as a whole word, and so matches every term.
    */
   matchedTerms: string[];
 }
@@ -232,7 +293,7 @@ export function scoreEntry(query: SearchQuery, fields: readonly SearchField[]): 
   const present = fields.filter(
     (field): field is readonly [string, FieldWeight] => typeof field[0] === 'string'
   );
-  const verbatim = present.some(([text]) => text.toLowerCase().includes(query.phrase));
+  const written = present.some(([text]) => writtenIn(text.toLowerCase(), query.phrase));
   const entryWords = present.flatMap(([text, weight]) =>
     words(text).map((word) => ({ word, weight }))
   );
@@ -250,12 +311,13 @@ export function scoreEntry(query: SearchQuery, fields: readonly SearchField[]): 
     }
   }
 
-  // Lexicographic (verbatim, terms matched, quality) as one number. `quality`
-  // is at most MAX_TERM_QUALITY per term, so it stays below `scale`; the terms
-  // matched never exceed the term count, so a verbatim match outranks them.
+  // Lexicographic (written, terms matched, quality) as one number — the same key
+  // Rust sorts on. `quality` is at most MAX_TERM_QUALITY per term, so it stays
+  // below `scale`; the terms matched never exceed the term count, so the query
+  // as written outranks any scatter of its words.
   const termCount = query.terms.length;
   const scale = MAX_TERM_QUALITY * termCount + 1;
-  const tier = (verbatim ? termCount + 1 : 0) + matchedTerms.length;
+  const tier = (written ? termCount + 1 : 0) + matchedTerms.length;
   return { score: tier * scale + quality, matchedTerms };
 }
 
