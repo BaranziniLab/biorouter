@@ -40,8 +40,14 @@ on:
 # was actually wanted — a newer push supersedes an older push on the same ref —
 # without letting three unrelated kinds of run compete for one slot.
 concurrency:
-  group: rust-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  # A group holds at most ONE pending run by default: a newly queued run cancels
+  # the pending one, whatever cancel-in-progress says (that governs only the
+  # running one). Keyed by ref, a merge burst to main cancels its own queued
+  # runs and leaves those commits with no status at all. So only a PR's runs
+  # share a group, where the newest should win; any other run is keyed by
+  # run_id, not sha, which repeat dispatches of one commit share.
+  group: rust-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
