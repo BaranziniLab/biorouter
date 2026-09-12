@@ -55,7 +55,9 @@ function relativeTime(iso: string): string {
  */
 export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: Props) {
   const { primaryKbId, triggerGraphRefresh } = useKnowledge();
-  const { history, loading, error, restore } = useHistory(primaryKbId);
+  // Read on every open, not once at mount: the drawer stays mounted, hidden,
+  // for as long as the Knowledge view is, and a digest lands while it is shut.
+  const { history, loading, error, restore } = useHistory(primaryKbId, open);
   const [activeKinds, setActiveKinds] = useState<Set<ChangeKind>>(new Set(ALL_KINDS));
   const [restoring, setRestoring] = useState<string | null>(null);
   const [entryToRestore, setEntryToRestore] = useState<HistoryEntry | null>(null);

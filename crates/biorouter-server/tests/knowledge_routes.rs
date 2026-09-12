@@ -720,6 +720,134 @@ async fn history_write_restore_roundtrip() {
     );
 }
 
+/// QA 2026-09-10 F13: after a digest the Change log listed only `create
+/// knowledge base …`, while `git log` in the base held the two `[ingest]`
+/// commits that wrote every page. The drawer was at fault — it read once,
+/// before the digest (`ui/desktop/src/components/knowledge/hooks/useHistory.ts`)
+/// — but the obvious suspect was this route: does it filter by a commit-message
+/// prefix, or read a side-log instead of git? It does neither, and this pins
+/// that it keeps not doing so. Every commit the knowledge write paths make, of
+/// every kind, comes back, in `git log`'s order, the ingest pair included.
+#[tokio::test]
+async fn history_lists_every_commit_git_holds_ingest_included() {
+    use biorouter_mcp::knowledge::{git::GitRepo, types::ChangeKind};
+
+    let (_d, root, app) = build_test_router_with_root();
+    create_kb(app.clone(), "hist-f13", "History F13").await;
+
+    // What a digest does first: stage the source, which commits
+    // `[ingest] ingested <source id>`.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/hist-f13/raw")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "text": "Metformin is a biguanide used as first-line therapy.",
+                        "title": "Pasted knowledge"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let staged: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let source_id = staged["source_id"].as_str().unwrap().to_string();
+
+    // …then the digest itself: pages written on a transaction branch and
+    // squash-committed onto main as ONE commit, the way the ingest and lint
+    // macros commit.
+    let kb_root = root.join("hist-f13");
+    let repo = GitRepo::open(&kb_root).unwrap();
+    for (kind, label, summary, page) in [
+        (
+            ChangeKind::Ingest,
+            "ingest",
+            "ingest pasted-knowledge",
+            "metformin",
+        ),
+        (ChangeKind::Lint, "lint", "lint autofix", "biguanide"),
+    ] {
+        let txn = repo.begin_txn(label).unwrap();
+        let notes = kb_root.join("knowledge").join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(
+            notes.join(format!("{page}.md")),
+            valid_page("note", page, &format!("# {page}")),
+        )
+        .unwrap();
+        repo.commit_on_txn(&txn, "work in progress").unwrap();
+        repo.commit_txn(&txn, kind, summary, Some("+1 page"))
+            .unwrap();
+    }
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/hist-f13/history?limit=200")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let history: Vec<serde_json::Value> = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let listed: Vec<(String, String)> = history
+        .iter()
+        .map(|entry| {
+            (
+                entry["kind"].as_str().unwrap().to_string(),
+                entry["summary"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("lint", "lint autofix".to_string()),
+        ("ingest", "ingest pasted-knowledge".to_string()),
+        ("ingest", format!("ingested {source_id}")),
+        ("manual", "create knowledge base hist-f13".to_string()),
+    ]
+    .into_iter()
+    .map(|(kind, summary)| (kind.to_string(), summary))
+    .collect();
+    assert_eq!(listed, expected, "the history route must list every commit");
+
+    // …sha for sha, in the order `git log` prints them. The CLI is the ground
+    // truth QA compared against; it is optional here only so a machine without
+    // it does not fail a test about something else.
+    let shas: Vec<&str> = history
+        .iter()
+        .map(|entry| entry["commit_sha"].as_str().unwrap())
+        .collect();
+    match std::process::Command::new("git")
+        .arg("-C")
+        .arg(&kb_root)
+        .args(["log", "--format=%H"])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let log = String::from_utf8(out.stdout).unwrap();
+            assert_eq!(shas, log.lines().collect::<Vec<_>>());
+        }
+        _ => eprintln!("git CLI unavailable; compared with the commits this test made instead"),
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Task 8: POST /bases/:id/raw
 // ──────────────────────────────────────────────────────────────────────────────
