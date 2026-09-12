@@ -42,8 +42,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
   }),
 }));
 
-vi.mock('../../../BaseChat', () => ({ useCurrentModelInfo: () => null }));
-
 // Markers rather than `null`: the assertion that matters is whether a click
 // OPENED the dialog, which an empty stub cannot report.
 vi.mock('../subcomponents/SwitchModelModal', () => ({

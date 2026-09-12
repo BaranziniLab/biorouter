@@ -51,7 +51,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
   }),
 }));
 
-vi.mock('../../../BaseChat', () => ({ useCurrentModelInfo: () => null }));
 vi.mock('../subcomponents/SwitchModelModal', () => ({ SwitchModelModal: () => null }));
 vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
