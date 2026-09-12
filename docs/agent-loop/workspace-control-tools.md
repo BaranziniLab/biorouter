@@ -36,6 +36,8 @@ This page uses the bare names for readability.
 
 **Two tools park, and are exempt from the dispatch permit.** `workspace_watch` and `workspace_send_prompt` block on work happening in another session, so `is_parking_workspace_tool` (`agent.rs`) keeps them from holding a global tool-dispatch permit while they wait. Without that a parked watch would throttle the caller's own unrelated tool calls.
 
+⚠ **That exemption list is not the list of everything that parks.** `code_execution__execute_code` parks too — a script's own tool calls raise approval cards — and it is deliberately absent from it: unlike these two it is not a do-nothing wrapper, and with the Code Execution capability on it is very nearly the only tool the model calls, so exempting it would leave the semaphore bounding nothing. It releases the permit for the parked interval only, through `tool_dispatch_limits::DispatchPermitHandle::while_parked`. A new parking tool has to pick one of those two shapes deliberately; neither is the default.
+
 **Subagents are refused all seven `workspace_*` tools.** `is_workspace_tool_refused_for` (`agent.rs`) enumerates them and refuses when the calling session's type is `SubAgent`, in both the prefixed and bare name forms. `subagent` itself is refused inside a subagent by `is_spawn_tool_call`, so a child cannot spawn grandchildren.
 
 **What a missing daemon costs.** `workspace_services::get()` returns `None` in a process with no daemon (a plain `biorouter` terminal session). Each tool's entry names its own refusal; the summary is:

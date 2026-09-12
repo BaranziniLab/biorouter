@@ -476,7 +476,18 @@ export const BottomMenuExtensionSelection = ({
               // for a dense control — the override is explained once in
               // ChatInput.tsx, search "THE RAILS' TYPE".
               className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-supporting"
-              aria-label={`Manage extensions (${activeCount} enabled)`}
+              // ⚠ "added", not "enabled", and the distinction is the whole
+              // point. This label read "Manage extensions (0 enabled)" in chats
+              // where tools demonstrably worked, which a screen-reader user
+              // hears as "you have no tools" — and the count is not wrong, the
+              // verb is. `activeCount` deliberately excludes the shipped
+              // capabilities (see the docblock above it), because it has to
+              // count the same population as the list this button labels; a
+              // chat always has those, so "enabled" describes a state they
+              // share and the number cannot be read against. "Added" names the
+              // act the number actually measures, so zero of them is a true
+              // statement rather than a false one about capability.
+              aria-label={`Manage extensions (${activeCount} added)`}
             >
               <Puzzle className="mr-0.5 h-4 w-4" />
               <span>{activeCount}</span>

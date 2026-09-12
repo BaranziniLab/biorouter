@@ -70,6 +70,13 @@ const MESSAGES_FTS_INSERT: &str =
 /// because the two schema paths that create it run against different handles —
 /// `create_schema` against the pool, the reconcile against the one connection
 /// holding its write transaction.
+///
+/// `session_incarnation` is the `sessions.incarnation` of the row the entry is
+/// about, and `NULL` on every entry written before the column existed. The
+/// ledger outlives the chats it names, by design, and a session id does not
+/// identify one chat — see [`SessionStorage::NOT_DECLASSIFIED_BY_USER`].
+/// Existing ledgers gain it from [`CLASSIFICATION_AUDIT_INCARNATION_COLUMN`];
+/// no entry is rewritten.
 const CLASSIFICATION_AUDIT_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS classification_audit (
   id                      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,9 +90,24 @@ CREATE TABLE IF NOT EXISTS classification_audit (
   app_version             TEXT NOT NULL,
   provider_name_at_change TEXT,
   privacy_reason_before   TEXT,
-  message_count_at_change INTEGER
+  message_count_at_change INTEGER,
+  session_incarnation     INTEGER
 )
 "#;
+
+/// Adds `session_incarnation` to a ledger created before it existed. Additive
+/// and version-independent, so — like the grant store below — it runs from the
+/// idempotent reconcile (and ahead of the backfill that reads it), never from a
+/// numbered migration arm.
+const CLASSIFICATION_AUDIT_INCARNATION_COLUMN: &str =
+    "ALTER TABLE classification_audit ADD COLUMN session_incarnation INTEGER";
+
+/// The value both ledger writers record in `session_incarnation`: the row's
+/// incarnation, read in the writer's own transaction, with the legacy `0`
+/// ("unknown") stored as `NULL` so an entry never claims an identity nobody
+/// minted. Bound to `?1`, the session id.
+pub(crate) const LEDGER_SESSION_INCARNATION: &str =
+    "(SELECT NULLIF(incarnation, 0) FROM sessions WHERE id = ?1)";
 
 /// The user's cross-affiliation grants (issue #56, DR-26 / Task 49): one row per
 /// accepted (session, extension, model affiliation) triple. See
@@ -118,6 +140,114 @@ CREATE TABLE IF NOT EXISTS cross_affiliation_grants (
   PRIMARY KEY (session_id, extension, model_affiliation)
 )
 "#;
+
+/// The largest `N` ever minted under each id prefix — the store that makes a
+/// session id single-use.
+///
+/// `create_session` mints `<prefix>_<N>`, and `N` used to be `MAX(N) + 1` over
+/// the rows that **still existed**. Deleting the newest chat of the day
+/// therefore handed its id to the next one, and every store keyed by that id
+/// read the deleted chat's state as the new chat's: the tables
+/// [`SessionStorage::delete_chat_side_rows`] now clears, the ledger
+/// [`SessionStorage::NOT_DECLASSIFIED_BY_USER`] reads, and — outside this file,
+/// beyond the reach of any per-table delete — the daemon's cached agent, the
+/// knowledge base's per-chat selection and the renderer's chat state. Emptying
+/// the table restarted the ids at 1 outright, which is the #51 W3 ABA.
+///
+/// One row per prefix, and **nothing in the tree lowers it**. `delete_session`
+/// and `clear_all_sessions` name the tables they clear one by one and this is
+/// not among them, deliberately — it is the one thing in `sessions.db` that a
+/// History reset must leave standing, for the reason the AUTOINCREMENT counters
+/// beside it are left standing.
+///
+/// A constant for the same reason [`CLASSIFICATION_AUDIT_DDL`] is one: the two
+/// schema paths that create it run against different handles.
+///
+/// ⚠ **A floor under the old rule, never a ceiling on it.** The claim below
+/// takes the larger of this mark and the surviving `MAX(N)`, so an id another
+/// writer has already put on disk can never be minted a second time; a build
+/// without the mark sharing this file, or a restored backup, can only reissue
+/// an id this build had retired. That is why `delete_session` still removes
+/// every row keyed by the chat's id instead of relying on this.
+const SESSION_ID_HIGH_WATER_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS session_id_high_water (
+  prefix  TEXT PRIMARY KEY,
+  last_n  INTEGER NOT NULL
+)
+"#;
+
+/// Claim the next `N` under the prefix bound to `?1`, and record the claim.
+///
+/// **One statement**, so the claim and the record cannot come apart: two
+/// creators racing in separate transactions — the desktop daemon, a terminal
+/// `biorouter` and a scheduled job share the file — serialise on this row and
+/// receive different values.
+///
+/// `excluded.last_n` is `MAX(N) + 1` over the rows that survive;
+/// `session_id_high_water.last_n + 1` is one past the largest ever minted. The
+/// larger wins, which is `MAX(mark, surviving) + 1` written as an upsert.
+const CLAIM_NEXT_SESSION_N: &str = "INSERT INTO session_id_high_water (prefix, last_n) VALUES ( \
+        ?1, \
+        COALESCE( \
+            (SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER)) FROM sessions WHERE id LIKE ?1 || '_%'), \
+            0 \
+        ) + 1 \
+     ) \
+     ON CONFLICT(prefix) DO UPDATE \
+        SET last_n = MAX(excluded.last_n, session_id_high_water.last_n + 1) \
+     RETURNING last_n";
+
+/// Raise every prefix's mark to the largest `N` on disk under it.
+///
+/// Run from the reconcile on every startup, and idempotent because it only ever
+/// raises. It is what closes the one-mint window on **upgrade**: a database
+/// carrying `<prefix>_1..5` and no mark would otherwise have its first delete
+/// lower the surviving `MAX(N)` before anything had recorded 5, and the very
+/// next chat would take `_5` back. It also catches whatever an older build
+/// sharing this file minted while this one was not looking.
+///
+/// `SUBSTR(id, 9, 1) = '_'` is the 8-characters-plus-underscore shape
+/// [`SessionStorage::id_prefix`] pins; an id of any other shape contributes
+/// nothing rather than a garbage `0`.
+///
+/// ⚠ **`checkpoints` is read as well as `sessions`, and that is what closes the
+/// FIRST-UPGRADE window.** An id an older build minted *and deleted* has no
+/// `sessions` row, so `sessions` alone cannot raise the mark above it and the
+/// very next chat takes it back — inheriting the one piece of that chat's state
+/// no per-table delete reaches, its shadow repository at
+/// `<data>/checkpoints/<id>/`. Its `checkpoints` ROWS do outlive it — that is
+/// precisely the leak [`SessionStorage::retire_side_rows_of_deleted_chats`]
+/// exists to clean up — so they are evidence the id was once minted.
+///
+/// The ordering in [`SessionStorage::reconcile_loop_schema`] is therefore
+/// load-bearing: this seed runs **before** that sweep, so it still sees the rows
+/// the sweep is about to delete. Moving the sweep earlier would silently reopen
+/// the window, and
+/// `the_mark_rises_above_an_id_that_only_a_leftover_checkpoint_names` is what
+/// goes red. Once raised the mark stays raised, so a later open that finds the
+/// rows gone loses nothing.
+///
+/// `messages_fts` and `cross_affiliation_grants` are deliberately NOT read here,
+/// for a plain reason rather than a principled one: both are created *later* in
+/// that same function, so at this point they need not exist.
+const SEED_SESSION_ID_HIGH_WATER: &str = "INSERT INTO session_id_high_water (prefix, last_n) \
+     SELECT SUBSTR(id, 1, 8), MAX(CAST(SUBSTR(id, 10) AS INTEGER)) FROM ( \
+         SELECT id FROM sessions \
+         UNION ALL \
+         SELECT session_id AS id FROM checkpoints \
+     ) \
+      WHERE SUBSTR(id, 9, 1) = '_' AND CAST(SUBSTR(id, 10) AS INTEGER) > 0 \
+      GROUP BY SUBSTR(id, 1, 8) \
+     ON CONFLICT(prefix) DO UPDATE \
+        SET last_n = MAX(excluded.last_n, session_id_high_water.last_n)";
+
+/// Unwrapping shorthand for
+/// [`SessionManager::forget_minted_session_ids_for_test`], whose doc comment
+/// explains what the seam is for and why it is `pub`.
+#[cfg(test)]
+async fn forget_minted_session_ids(sm: &SessionManager) {
+    sm.forget_minted_session_ids_for_test().await.unwrap();
+}
 
 /// Usage of deleted chats, folded out of `token_events` when a chat is deleted
 /// (F10): one row per local calendar day, model and provider, holding sums and
@@ -1868,6 +1998,41 @@ impl SessionManager {
         self.storage.clear_all_sessions().await
     }
 
+    /// **A test seam, and the only way to build an id-reuse fixture honestly.**
+    /// Makes the store forget which ids it has already minted, so the next one
+    /// comes back.
+    ///
+    /// `create_session` takes `N` from [`SESSION_ID_HIGH_WATER_DDL`]'s mark, so
+    /// this build does not hand a deleted id out again. The mark is a floor,
+    /// though, not the barrier: a build without it sharing the file, a database
+    /// restored from a backup taken before an id was retired, a hand-edited one
+    /// — each leaves exactly the state this produces (the surviving ids on
+    /// disk, no memory of the ones that are gone), and the next claim then falls
+    /// back to `MAX(N) + 1` over the survivors, as the old allocator always did.
+    ///
+    /// So the guards that close the reuse must each hold WITHOUT the mark, and
+    /// the tests that prove them need the reuse to be reproducible:
+    /// `sessions.incarnation` (#51 W3), F10's usage delete, DR-26's grant read
+    /// (`privacy::grant::GRANT_IS_THE_CHATS_OWN`), the per-chat skill overrides
+    /// and this file's deleted-chat side rows. None of them may be deleted on
+    /// the grounds that ids are single-use now.
+    ///
+    /// ⚠ **`pub` only because two of those tests sit outside the lib's
+    /// `cfg(test)` scope** — one in an integration binary of this crate, one in
+    /// `biorouter-cli` — where a `#[cfg(test)]` item is not visible, and an
+    /// in-crate `pub(crate)` one would not be either. It is `#[doc(hidden)]`, it is named
+    /// for what it is, and `the_id_reuse_seam_is_only_used_by_tests` pins the
+    /// files that may call it. Nothing model-reachable does, and a new call site
+    /// outside a test is the thing that audit exists to catch.
+    #[doc(hidden)]
+    pub async fn forget_minted_session_ids_for_test(&self) -> Result<()> {
+        let pool = self.storage.pool().await?;
+        sqlx::query("DELETE FROM session_id_high_water")
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn count_all_sessions(&self) -> Result<u64> {
         self.storage.count_all_sessions().await
     }
@@ -2079,13 +2244,13 @@ impl SessionManager {
         // that means "was declassified" keys on `to_classification = 'public'`
         // (see `SessionStorage::NOT_DECLASSIFIED_BY_USER`), so an export row
         // cannot be mistaken for a declassification by anything that reads it.
-        sqlx::query(
+        sqlx::query(&format!(
             "INSERT INTO classification_audit ( \
                 session_id, from_classification, to_classification, reason, actor, actor_kind, \
                 app_version, provider_name_at_change, privacy_reason_before, \
-                message_count_at_change \
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        )
+                message_count_at_change, session_incarnation \
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, {LEDGER_SESSION_INCARNATION})"
+        ))
         .bind(session_id)
         .bind(SessionClassification::Private.as_sql())
         .bind(SessionClassification::Private.as_sql())
@@ -3442,6 +3607,13 @@ impl SessionStorage {
             .execute(pool)
             .await?;
 
+        // The session-id high-water mark, in the same two places and for the
+        // same reason: created here for a fresh database and by
+        // `ensure_session_id_high_water_schema` for every existing one. No seed
+        // is needed on this path — the table it would read from was created
+        // empty a few statements ago.
+        sqlx::query(SESSION_ID_HIGH_WATER_DDL).execute(pool).await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
@@ -3676,9 +3848,111 @@ impl SessionStorage {
         Self::create_checkpoints_table(pool).await?;
         Self::ensure_message_identity_schema(pool).await?;
         Self::ensure_session_incarnation_schema(pool).await?;
+        Self::ensure_session_id_high_water_schema(pool).await?;
         Self::ensure_privacy_schema(pool).await?;
         Self::create_and_backfill_messages_fts(pool, false).await?;
         Self::create_message_blobs_table(pool).await?;
+        // Last: every table it sweeps exists by now.
+        Self::retire_side_rows_of_deleted_chats(pool).await?;
+        Ok(())
+    }
+
+    /// Retire the rows earlier builds left behind when they deleted a chat —
+    /// the rows [`Self::delete_chat_side_rows`] now removes with it.
+    ///
+    /// ⚠ **A startup sweep, not a numbered migration arm**, for the reasons
+    /// [`Self::prune_orphaned_token_events`] gives: it is idempotent, safe in
+    /// either merge order, and keeps repairing what a build without the delete
+    /// fix leaves while it shares this file. `BEGIN IMMEDIATE`, so no message,
+    /// checkpoint or grant can be written between a test here and its delete.
+    async fn retire_side_rows_of_deleted_chats(pool: &Pool<Sqlite>) -> Result<()> {
+        let mut connection = pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+        let result = Self::retire_side_rows_of_deleted_chats_locked(&mut connection).await;
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT").execute(&mut *connection).await?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn retire_side_rows_of_deleted_chats_locked(
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<()> {
+        // Recall text is tested against its MESSAGE, not its chat. A row mirrors
+        // exactly one message, and message rowids are AUTOINCREMENT — never
+        // minted twice — so "its message still exists" is exact, and it also
+        // finds a deleted chat's text filed under an id that is live again,
+        // which existence of the chat cannot. Every writer inserts the row in
+        // its message's own transaction, and this holds the write lock, so no
+        // live row can be caught between the two. It is a full scan of the
+        // index: 0.12–0.13 s end to end, measured in a fresh process against a
+        // 557 MB file holding 100,000 rows and 200 MB of indexed text.
+        let recall = if Self::messages_fts_exists(&mut *connection).await {
+            sqlx::query(
+                "DELETE FROM messages_fts WHERE message_id NOT IN (SELECT id FROM messages)",
+            )
+            .execute(&mut *connection)
+            .await?
+            .rows_affected()
+        } else {
+            0
+        };
+
+        // Checkpoints are tested on existence alone, as F10's usage rows are:
+        // one left under an id that is live again cannot be told from the new
+        // chat's own without a timestamp guess, and a wrong guess would delete
+        // somebody's undo point for good.
+        let checkpoints = sqlx::query(
+            "DELETE FROM checkpoints \
+              WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = checkpoints.session_id)",
+        )
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+
+        // Grants get the timestamp test that checkpoints do not, for the
+        // opposite reason: a grant recorded before the chat now holding its id
+        // cannot be that chat's, and deleting one by mistake costs the user one
+        // question asked again — the reader already refuses exactly these
+        // rows (`GRANT_IS_THE_CHATS_OWN`), so this changes nothing a gate sees.
+        //
+        // Shape-guarded like the rest of the reconcile: a `sessions` table
+        // without `created_at` (the experimental v11–v14 shapes) must cost the
+        // age test, not the startup.
+        let sessions_have_created_at: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'created_at'",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        let live_grant = if sessions_have_created_at > 0 {
+            crate::privacy::grant::GRANT_IS_THE_CHATS_OWN
+        } else {
+            "1 = 1"
+        };
+        let grants = sqlx::query(&format!(
+            "DELETE FROM cross_affiliation_grants \
+              WHERE rowid NOT IN (SELECT g.rowid FROM cross_affiliation_grants g \
+                                    JOIN sessions s ON s.id = g.session_id \
+                                   WHERE {live_grant})"
+        ))
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+
+        if recall + checkpoints + grants > 0 {
+            info!(
+                recall,
+                checkpoints, grants, "Retired side rows whose chat no longer exists"
+            );
+        }
         Ok(())
     }
 
@@ -4303,6 +4577,25 @@ impl SessionStorage {
         Ok(())
     }
 
+    /// Create the session-id high-water mark and raise it to what is already on
+    /// disk. Idempotent and version-independent, like the rest of
+    /// `reconcile_loop_schema`, and for the reason
+    /// [`SESSION_ID_HIGH_WATER_DDL`] gives: a numbered arm would never run on
+    /// the databases that most need this, because they already stand at
+    /// `CURRENT_SCHEMA_VERSION`.
+    ///
+    /// The seed runs on **every** open, not only the one that creates the
+    /// table. That is what makes the mark hold against a build without it
+    /// sharing the file: whatever that build minted is on disk by the time this
+    /// one opens the store, and the mark rises to meet it.
+    async fn ensure_session_id_high_water_schema(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(SESSION_ID_HIGH_WATER_DDL).execute(pool).await?;
+        sqlx::query(SEED_SESSION_ID_HIGH_WATER)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     /// Issue #56's columns, added idempotently and **version-independently**.
     ///
     /// The precedent is [`Self::ensure_session_incarnation_schema`], and the
@@ -4380,6 +4673,17 @@ impl SessionStorage {
         sqlx::query(CLASSIFICATION_AUDIT_DDL)
             .execute(&mut *connection)
             .await?;
+        let ledger_has_incarnation: i32 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('classification_audit') \
+              WHERE name = 'session_incarnation'",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        if ledger_has_incarnation == 0 {
+            sqlx::query(CLASSIFICATION_AUDIT_INCARNATION_COLUMN)
+                .execute(&mut *connection)
+                .await?;
+        }
         // Task 49's grant store, in the same idempotent, version-independent,
         // BEGIN IMMEDIATE-serialised place as the ledger above. A database that
         // already stands at `CURRENT_SCHEMA_VERSION` reaches this and no numbered
@@ -4472,8 +4776,29 @@ impl SessionStorage {
     /// more than once, which is what lets arm 20 repair arm 19's rows at all.
     /// `the_repair_arm_reruns_the_backfill_without_undoing_a_declassification`
     /// is the behavioural proof, and it fails if this clause is deleted.
+    ///
+    /// ⚠ **An entry names a session ROW, and `ca.session_id` alone cannot say
+    /// which one.** The ledger outlives the chats it names, by design (§12.5), and
+    /// `create_session` minted `<day>_<MAX(N)+1>`: deleting the newest chat of the
+    /// day handed its id to the next one, and an entry keyed on the bare id then
+    /// shielded that next chat — one the user never declassified — from the
+    /// statement whose job is to raise it. So an entry counts only for the
+    /// incarnation it recorded (`sessions.incarnation`, #51 W3's reuse-proof row
+    /// identity), which holds whatever mints the ids — an older build sharing
+    /// this file and a restored backup included.
+    ///
+    /// An entry written before the column existed records `NULL` and keeps the
+    /// bare-id meaning it was written with. Reinterpreting it could only ever
+    /// re-privatise a chat the user declassified, and the only databases that
+    /// can still hold one when a backfill arm runs are development databases
+    /// from before arm 20: no release shipped schema 18 or 19, so on every
+    /// released upgrade the ladder ran arms 18–20 in one launch against a ledger
+    /// arm 18 had just created empty.
+    /// `a_deleted_chats_declassification_does_not_shield_the_next_chat_to_get_its_id`
+    /// fails if the incarnation clause is deleted.
     const NOT_DECLASSIFIED_BY_USER: &str = "NOT EXISTS (SELECT 1 FROM classification_audit \
-         ca WHERE ca.session_id = sessions.id AND ca.to_classification = 'public')";
+         ca WHERE ca.session_id = sessions.id AND ca.to_classification = 'public' \
+         AND (ca.session_incarnation IS NULL OR ca.session_incarnation = sessions.incarnation))";
 
     /// The **turn-ledger** raise — issue #56 finding 9.
     ///
@@ -4662,6 +4987,25 @@ impl SessionStorage {
         // on every launch anyway, and a database with no ledger has by
         // construction recorded no declassification for the guard to miss.
         sqlx::query(CLASSIFICATION_AUDIT_DDL).execute(pool).await?;
+        // ...and the guard also names `ca.session_incarnation`, which a ledger
+        // created before that column has not got. Added here for the same
+        // reason the table is: this arm must not assume an earlier one ran,
+        // and `no such column` is a failed startup.
+        if !Self::table_has_column(pool, "classification_audit", "session_incarnation").await? {
+            sqlx::query(CLASSIFICATION_AUDIT_INCARNATION_COLUMN)
+                .execute(pool)
+                .await?;
+        }
+        // ...and the guard names `sessions.incarnation` as well, which is the
+        // OTHER half of the same comparison and arrives from a different place:
+        // `ensure_session_incarnation_schema`, in the reconcile, which runs
+        // AFTER the numbered arms. Every database upgrading from schema ≤ 17
+        // therefore reached the backfill without that column and died with
+        // `no such column: sessions.incarnation` — a failed startup, on the one
+        // path (upgrade) that no fresh-database test exercises. Calling the
+        // idempotent helper is the repair, not a second `ALTER`: one definition
+        // of the column, one backfill of its value.
+        Self::ensure_session_incarnation_schema(pool).await?;
 
         // The turn ledger is older still (`token_events` at migration 9, its
         // `provider` column at 11, `event_key`/`billed_total_tokens` at 12-14),
@@ -5042,27 +5386,27 @@ impl SessionStorage {
         let mut tx = pool.begin().await?;
 
         let today = self.id_prefix();
+
+        // `N` comes from the high-water mark, not from `MAX(N)` over the rows
+        // that survive — see [`SESSION_ID_HIGH_WATER_DDL`] for what inherited a
+        // deleted chat's id back when it did. The claim is the transaction's
+        // FIRST statement, which also takes the write lock up front: `begin()`
+        // is DEFERRED, and a read that has to upgrade later is refused with
+        // SQLITE_BUSY_SNAPSHOT without consulting the busy handler, exactly as
+        // `delete_session` records.
+        let next_n: i64 = sqlx::query_scalar(CLAIM_NEXT_SESSION_N)
+            .bind(&today)
+            .fetch_one(&mut *tx)
+            .await?;
+
         let session = sqlx::query_as(
             r#"
                 INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, incarnation)
-                VALUES (
-                    ? || '_' || CAST(COALESCE((
-                        SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))
-                        FROM sessions
-                        WHERE id LIKE ? || '_%'
-                    ), 0) + 1 AS TEXT),
-                    ?,
-                    FALSE,
-                    ?,
-                    ?,
-                    '{}',
-                    random()
-                )
+                VALUES (?, ?, FALSE, ?, ?, '{}', random())
                 RETURNING *
                 "#,
         )
-            .bind(&today)
-            .bind(&today)
+            .bind(format!("{today}_{next_n}"))
             .bind(&name)
             .bind(session_type.to_string())
             .bind(working_dir.to_string_lossy().as_ref())
@@ -6608,6 +6952,11 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
 
+        // ...and every other row that exists only for this chat, for the same
+        // reason: its text in the recall index, its checkpoints, and the
+        // cross-institution flows the user accepted in it.
+        Self::delete_chat_side_rows(&mut tx, session_id).await?;
+
         let removed = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
@@ -6620,7 +6969,93 @@ impl SessionStorage {
         }
 
         tx.commit().await?;
+        self.remove_checkpoint_repository(session_id).await;
         Ok(())
+    }
+
+    /// Delete every row of one chat outside `messages`, `message_blobs` and
+    /// `token_events`, inside the caller's transaction.
+    ///
+    /// Each table is keyed by the chat's id, and a row that outlived the chat
+    /// was not merely retained: `create_session` minted `<day>_<MAX(N)+1>`, so
+    /// the next chat to be handed the id read the row as its own.
+    ///
+    /// - `messages_fts` — the recall index's copy of the chat's user-visible
+    ///   text, word for word (BR-17). `replace_conversation` and
+    ///   `truncate_conversation` already kept it in step; a delete left all of
+    ///   it on disk. Recall joins `messages`, whose rowids are never minted
+    ///   twice, so no search could reach it — but the text of a chat the user
+    ///   deleted, possibly PHI, stayed in `sessions.db`.
+    /// - `checkpoints` — BR-43's records. A new chat under the id listed them,
+    ///   and restoring one would have rolled that chat back to a point in
+    ///   another. The shadow repository they point into is a directory, and
+    ///   goes after the commit: [`Self::remove_checkpoint_repository`].
+    /// - `cross_affiliation_grants` — issue #56 DR-26. The one table here that
+    ///   is an authorisation rather than a record: a new chat under the id was
+    ///   let through Gate C for flows accepted in a chat the user deleted.
+    ///   `privacy::grant::GRANT_IS_THE_CHATS_OWN` also refuses such a grant at
+    ///   read time, for the ones this delete never sees.
+    ///
+    /// Not here, deliberately: `classification_audit` survives deletion by
+    /// design (privacy-tiers §12.5) — it records what has ever been
+    /// declassified on this machine — so it is the reader,
+    /// [`Self::NOT_DECLASSIFIED_BY_USER`], that has to tell one chat under an id
+    /// from another. A deleted chat's subagent runs are sessions of their own
+    /// and are kept, for the reasons
+    /// `deleted_chat_side_rows_tests::a_deleted_chats_subagent_runs_are_kept_and_never_adopted`
+    /// gives.
+    async fn delete_chat_side_rows(
+        connection: &mut sqlx::SqliteConnection,
+        session_id: &str,
+    ) -> Result<()> {
+        if Self::messages_fts_exists(&mut *connection).await {
+            sqlx::query("DELETE FROM messages_fts WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut *connection)
+                .await?;
+        }
+        for table in ["checkpoints", "cross_affiliation_grants"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
+                .bind(session_id)
+                .execute(&mut *connection)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Remove a deleted chat's BR-43 shadow repository — snapshots of its
+    /// working tree, file contents and all — from
+    /// [`crate::checkpoint::repository_dir`] beside the session database.
+    /// `CheckpointManager::gc` was written to do this "on session delete" and
+    /// nothing ever called it, so every repository outlived its chat and the
+    /// next chat to be handed the id opened it and committed on top.
+    ///
+    /// After the commit, and best-effort: the rows are already gone, so a
+    /// failure leaves unreferenced files rather than a half-deleted chat, and is
+    /// logged rather than returned as a failed delete the user would retry
+    /// against a chat that no longer exists.
+    async fn remove_checkpoint_repository(&self, session_id: &str) {
+        let Some(dir) = self
+            .session_dir
+            .parent()
+            .and_then(|data_dir| crate::checkpoint::repository_dir(data_dir, session_id))
+        else {
+            return;
+        };
+        let removal = tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err((dir, error)),
+            _ => Ok(()),
+        })
+        .await;
+        match removal {
+            Ok(Ok(())) => {}
+            Ok(Err((dir, error))) => warn!(
+                %error,
+                dir = %dir.display(),
+                "could not remove a deleted chat's checkpoint repository"
+            ),
+            Err(error) => warn!(%error, "the checkpoint repository removal task failed"),
+        }
     }
 
     async fn count_all_sessions(&self) -> Result<u64> {
@@ -6643,12 +7078,16 @@ impl SessionStorage {
                 .execute(&mut *tx)
                 .await?;
         }
+        // `cross_affiliation_grants` belong to chats like every other table here
+        // (issue #56 DR-26); `classification_audit` does not — it survives
+        // deletion by design (privacy-tiers §12.5).
         for table in [
             "message_blobs",
             "checkpoints",
             "messages",
             "token_events",
             "deleted_chat_usage",
+            "cross_affiliation_grants",
             "sessions",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
@@ -6666,6 +7105,13 @@ impl SessionStorage {
         // ledger's own dedupe, and there is nothing to gain from replaying
         // them. A cleared database is empty either way; only the two counters
         // survive, at 8 bytes each.
+        //
+        // `session_id_high_water` is absent from the list above for the same
+        // reason and it is the load-bearing one: a reset that lowered it would
+        // hand the first chat afterwards the id — and with it every store keyed
+        // by that id outside this file — of a chat the user had just wiped.
+        // `neither_a_history_reset_nor_a_reopen_restarts_the_ids` is what fails
+        // if it is ever added here.
         tx.commit().await?;
         Ok(count as u64)
     }
@@ -9006,6 +9452,10 @@ mod tests {
             .unwrap());
         sm.delete_session(&first.id).await.unwrap();
 
+        // The reuse is arranged now — `session_id_high_water` stops this build
+        // reissuing an id — but it still has to be PROVEN against, because a
+        // build without the mark or a restored backup can still produce it.
+        forget_minted_session_ids(&sm).await;
         let second = sm
             .create_session(temp_dir.path().into(), "Second".into(), SessionType::User)
             .await
@@ -12709,6 +13159,12 @@ mod tests {
         // ...and while it is still working, the user wipes History from /reset.
         sm.clear_all_sessions().await.unwrap();
 
+        // A reset does NOT lower `session_id_high_water`, so this build alone
+        // would hand the next chat a fresh id and the ABA would not arise. The
+        // guard still has to hold without that, because a build sharing the
+        // file without the mark, or a restored backup, can reissue the id
+        // anyway — so the fixture reproduces exactly what those leave behind.
+        forget_minted_session_ids(&sm).await;
         let new = revision_session(&sm).await;
         assert_eq!(new, old, "the ABA needs the session id to be reused");
         sm.add_message(&new, &umsg(2, "second incarnation"))
@@ -12754,12 +13210,16 @@ mod tests {
         let (known, basis) = snapshot(&sm, &old).await;
 
         sm.clear_all_sessions().await.unwrap();
-        // Rewind the message sequence behind the store's back.
+        // Rewind the message sequence behind the store's back...
         let pool = sm.storage().pool().await.unwrap();
         sqlx::query("DELETE FROM sqlite_sequence WHERE name = 'messages'")
             .execute(pool)
             .await
             .unwrap();
+        // ...and the id mark with it, which is what a build without the mark or
+        // a restored backup leaves. Both halves are needed for the ABA: the
+        // rowids replay only if the id comes back to replay them under.
+        forget_minted_session_ids(&sm).await;
 
         let new = revision_session(&sm).await;
         assert_eq!(new, old);
@@ -13438,6 +13898,9 @@ mod tests {
         let basis = sm.conversation_revision(&old).await.unwrap();
 
         sm.clear_all_sessions().await.unwrap();
+        // The mark survives a reset by design, so the reuse is arranged the way
+        // a build without it — or a restored backup — really produces it.
+        forget_minted_session_ids(&sm).await;
         let new = revision_session(&sm).await;
         assert_eq!(new, old);
         sm.add_message(&new, &umsg(2, "second incarnation"))
@@ -16755,7 +17218,8 @@ mod tests {
         #[test]
         fn the_backfill_statement_raises_and_nothing_else() {
             let guard = "NOT EXISTS (SELECT 1 FROM classification_audit ca \
-                 WHERE ca.session_id = sessions.id AND ca.to_classification = 'public')";
+                 WHERE ca.session_id = sessions.id AND ca.to_classification = 'public' \
+                 AND (ca.session_incarnation IS NULL OR ca.session_incarnation = sessions.incarnation))";
             assert_eq!(
                 SessionStorage::backfill_update_sql(),
                 format!(
@@ -16822,6 +17286,11 @@ mod tests {
                 "classification_audit",
                 "ca.session_id = sessions.id",
                 "ca.to_classification = 'public'",
+                // The entry has to be about THIS row, not merely this id: the
+                // ledger outlives the chats it names and an id can be handed
+                // out twice, so without this a deleted chat's declassification
+                // shields whichever chat holds its id next.
+                "ca.session_incarnation = sessions.incarnation",
             ] {
                 assert!(
                     guard.contains(required),
@@ -17276,5 +17745,831 @@ mod pin_persistence_tests {
                 .count(),
             1
         );
+    }
+}
+
+/// What a deleted chat leaves behind in the side tables keyed by its id, and
+/// what the next chat to hold that id inherits from them.
+///
+/// `delete_session` removed a chat's `messages`, `message_blobs` and — since
+/// F10 — `token_events`, and nothing else keyed by its id. Session ids are
+/// reissued (`create_session` mints `<day>_<MAX(N)+1>`), so a row that outlives
+/// its chat is not merely retained: it is read as the next chat's. These tests
+/// cover the recall index (`messages_fts`), the BR-43 checkpoints (rows and
+/// shadow repository) and the cross-affiliation grants (DR-26), each through
+/// the delete, through `clear_all_sessions`, and through the startup sweep that
+/// repairs what earlier builds left behind.
+#[cfg(test)]
+mod deleted_chat_side_rows_tests {
+    use super::*;
+    use crate::checkpoint::{CheckpointKind, CheckpointRecord};
+    use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+    use crate::privacy::grant;
+    use tempfile::TempDir;
+
+    fn stanford() -> Option<ModelAffiliation> {
+        Some(ModelAffiliation::institution(InstitutionId::new(
+            "stanford",
+        )))
+    }
+
+    async fn new_chat(sm: &SessionManager, dir: &TempDir) -> String {
+        sm.create_session(dir.path().into(), "chat".into(), SessionType::User)
+            .await
+            .unwrap()
+            .id
+    }
+
+    /// Delete `id` and start the next chat, which takes the same id. Asserted,
+    /// because a test of what a reissued id inherits proves nothing if the id
+    /// did not come back.
+    ///
+    /// ⚠ **The reuse has to be FORCED now, and that is the point of these
+    /// tests, not a weakness in them.** `create_session` takes `N` from
+    /// `session_id_high_water`, so this build does not hand a deleted id out
+    /// again — `deleting_the_newest_chat_does_not_hand_its_id_to_the_next_one`
+    /// is that property. The mark is a floor, not the barrier: a build without
+    /// it sharing this file, a restored backup, a hand-edited database. Dropping
+    /// the row is precisely the state any of those leaves behind — the ids on
+    /// disk, no memory of the ones that are gone — and the next claim then falls
+    /// back to `MAX(N) + 1` over the survivors, exactly as the old allocator
+    /// did.
+    ///
+    /// So these tests keep asking the question that matters after the allocator
+    /// lands: when an id **does** come back, does it bring anything with it?
+    /// That is what `delete_chat_side_rows`, `GRANT_IS_THE_CHATS_OWN` and the
+    /// incarnation clause in [`SessionStorage::NOT_DECLASSIFIED_BY_USER`]
+    /// answer, and none of them may be deleted on the grounds that ids are
+    /// single-use now.
+    async fn delete_and_reissue(sm: &SessionManager, dir: &TempDir, id: &str) -> String {
+        sm.delete_session(id).await.unwrap();
+        forget_minted_session_ids(sm).await;
+        let next = new_chat(sm, dir).await;
+        assert_eq!(
+            next, id,
+            "the fixture must reproduce the id reuse, or this test proves nothing"
+        );
+        next
+    }
+
+    fn checkpoint(session_id: &str, id: &str) -> CheckpointRecord {
+        CheckpointRecord {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            turn_index: 0,
+            anchor_ts: 1,
+            kind: CheckpointKind::PreStep,
+            commit_sha: "commit".to_string(),
+            tree_sha: "tree".to_string(),
+            changed_paths: Vec::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    async fn rows(sm: &SessionManager, table: &str, session_id: &str) -> i64 {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {table} WHERE session_id = ?1"
+        ))
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The recall index mirrors what the user saw in the chat, word for word.
+    /// `replace_conversation` and `truncate_conversation` already keep it in
+    /// step; deleting the chat left all of it on disk — measured on 2026-09-11
+    /// against a real daemon, two `messages_fts` rows after an HTTP delete that
+    /// had removed every `messages` row. Recall could not reach them (it joins
+    /// `messages`, whose rowids are never reissued), but the text of a chat the
+    /// user deleted — possibly PHI — stayed in `sessions.db`.
+    #[tokio::test]
+    async fn deleting_a_chat_deletes_its_recall_index_rows() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let deleted = new_chat(&sm, &dir).await;
+        let kept = new_chat(&sm, &dir).await;
+        for id in [&deleted, &kept] {
+            sm.add_message(id, &Message::user().with_text("patient MRN 12345"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            rows(&sm, "messages_fts", &deleted).await,
+            1,
+            "the fixture must index the message, or this test proves nothing"
+        );
+
+        sm.delete_session(&deleted).await.unwrap();
+
+        assert_eq!(
+            rows(&sm, "messages_fts", &deleted).await,
+            0,
+            "a deleted chat's text stayed in the recall index"
+        );
+        assert_eq!(
+            rows(&sm, "messages_fts", &kept).await,
+            1,
+            "the delete is scoped to the chat being deleted"
+        );
+    }
+
+    /// BR-43. `delete_checkpoints` existed and nothing on the delete path called
+    /// it, so the next chat to hold a deleted chat's id listed that chat's
+    /// checkpoints as its own — and restoring one would roll the new chat's
+    /// working directory and transcript back to a point in a different chat.
+    #[tokio::test]
+    async fn a_reissued_session_id_does_not_list_the_deleted_chats_checkpoints() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = new_chat(&sm, &dir).await;
+        sm.insert_checkpoint(&checkpoint(&id, "cp-deleted"))
+            .await
+            .unwrap();
+
+        let next = delete_and_reissue(&sm, &dir, &id).await;
+
+        assert_eq!(rows(&sm, "checkpoints", &next).await, 0);
+        assert!(
+            sm.list_checkpoints(&next).await.unwrap().is_empty(),
+            "a new chat listed a deleted chat's checkpoints"
+        );
+    }
+
+    /// **The acceptance criterion: a reissued id inherits nothing.**
+    ///
+    /// The tests above take one table each, which is how a regression in a
+    /// fourth one hides — each passes while the chat as a whole still carries
+    /// over. This is the whole-chat statement: one chat given all three kinds
+    /// of side row at once, deleted, and its id forced back (see
+    /// [`delete_and_reissue`] for why forcing it is the honest fixture now).
+    ///
+    /// The grant is the security-relevant one and the reason this is filed as a
+    /// privacy fix rather than a hygiene one. `cross_affiliation_grants` is not
+    /// a record of what happened; it is a standing **authorisation** — the
+    /// first-crossing approval `privacy::crossing` remembers per (caller,
+    /// target) pair, which the user answered once, in a chat that no longer
+    /// exists. Inheriting it silently pre-approves a cross-institution flow the
+    /// new chat's user was never shown, and DR-26's whole premise is that HIPAA
+    /// compliance does not transfer between institutions. So the grant is
+    /// checked twice over: the row is gone, AND `is_granted` — the function
+    /// every gate actually calls — answers false.
+    ///
+    /// ⚠ **The read guard alone does not close this, and this test is where
+    /// that was measured.** Deleting the per-chat rows from `delete_session` and
+    /// running this leaves it failing on the `is_granted` assertion, not on a
+    /// row count: `GRANT_IS_THE_CHATS_OWN` compares
+    /// `datetime(g.granted_at) >= datetime(s.created_at)`, which is
+    /// second-granular, so a grant recorded in the same second the replacement
+    /// chat is created ties — and a tie reads as "the chat's own". The sibling
+    /// test in `privacy::grant` backdates its fixture by an hour to avoid
+    /// exactly that; a real user deleting a chat and starting another needs no
+    /// backdating. The row having been deleted is what actually closes it, and
+    /// the read guard is the second line for rows this build never saw.
+    #[tokio::test]
+    async fn a_reissued_id_inherits_no_grant_no_recall_text_and_no_checkpoint() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = new_chat(&sm, &dir).await;
+
+        grant::record_for_test(&sm, &id, "ucsfomopagent", stanford())
+            .await
+            .unwrap();
+        sm.add_message(&id, &Message::user().with_text("patient MRN 12345"))
+            .await
+            .unwrap();
+        sm.insert_checkpoint(&checkpoint(&id, "cp-deleted"))
+            .await
+            .unwrap();
+
+        // Every one of the three is present first. A test of what does not
+        // carry over proves nothing if nothing was there to carry.
+        assert!(
+            grant::is_granted(&sm, &id, "ucsfomopagent", stanford()).await,
+            "the fixture must record the grant, or this test proves nothing"
+        );
+        assert_eq!(rows(&sm, "messages_fts", &id).await, 1);
+        assert_eq!(rows(&sm, "checkpoints", &id).await, 1);
+
+        let next = delete_and_reissue(&sm, &dir, &id).await;
+
+        assert!(
+            !grant::is_granted(&sm, &next, "ucsfomopagent", stanford()).await,
+            "a chat handed a deleted chat's id inherited its cross-institution approval"
+        );
+        assert_eq!(
+            rows(&sm, "cross_affiliation_grants", &next).await,
+            0,
+            "the deleted chat's grant row outlived it"
+        );
+        assert_eq!(
+            rows(&sm, "messages_fts", &next).await,
+            0,
+            "the deleted chat's text stayed in the recall index under the new chat's id"
+        );
+        assert_eq!(
+            rows(&sm, "checkpoints", &next).await,
+            0,
+            "the deleted chat's checkpoints became the new chat's"
+        );
+
+        // ...and the text is gone from the file, not merely filed under an id
+        // nothing reads: the delete is what removes it, so nothing is left for
+        // a later reader — or a backup — to find.
+        let pool = sm.storage().pool().await.unwrap();
+        let indexed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?1")
+                .bind("12345")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(indexed, 0, "a deleted chat's text is still searchable");
+    }
+
+    /// The other half of a checkpoint: the shadow git repository at
+    /// `<data dir>/checkpoints/<id>/`, which holds snapshots of the chat's working
+    /// tree — file contents, not just a record. `CheckpointManager::gc` removes
+    /// it "on session delete" and nothing ever called it, so the repository stayed
+    /// and the next chat to hold the id opened it and committed on top of it.
+    #[tokio::test]
+    async fn deleting_a_chat_removes_its_checkpoint_repository() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let deleted = new_chat(&sm, &dir).await;
+        let kept = new_chat(&sm, &dir).await;
+        let repo = |id: &str| dir.path().join("checkpoints").join(id);
+        for id in [&deleted, &kept] {
+            std::fs::create_dir_all(repo(id).join("git")).unwrap();
+            std::fs::write(repo(id).join("git").join("HEAD"), "ref: refs/heads/main").unwrap();
+        }
+
+        sm.delete_session(&deleted).await.unwrap();
+
+        assert!(
+            !repo(&deleted).exists(),
+            "a deleted chat's checkpoint repository stayed on disk"
+        );
+        assert!(
+            repo(&kept).join("git").join("HEAD").exists(),
+            "the delete is scoped to the chat being deleted"
+        );
+    }
+
+    /// The repository is found by joining the session id onto a directory, so
+    /// an id that is not one plain path component must never reach
+    /// `remove_dir_all`. No id `create_session` mints can be one, but the column
+    /// is free text and a restored or hand-edited database can hold anything:
+    /// `.` would name every chat's repository at once and `..` the data
+    /// directory itself.
+    #[tokio::test]
+    async fn an_id_that_is_not_one_path_component_removes_no_directory() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let bystander = dir.path().join("checkpoints").join("20260101_1");
+        std::fs::create_dir_all(bystander.join("git")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        for id in [".", "..", "../outside", "a/b", ""] {
+            sqlx::query("INSERT INTO sessions (id, name, working_dir) VALUES (?1, 'odd', '/tmp')")
+                .bind(id)
+                .execute(pool)
+                .await
+                .unwrap();
+            sm.delete_session(id).await.unwrap();
+        }
+
+        assert!(
+            bystander.join("git").exists(),
+            "another chat's repository went"
+        );
+        assert!(outside.exists(), "a directory outside `checkpoints/` went");
+        assert!(dir.path().join(SESSIONS_FOLDER).join(DB_NAME).exists());
+    }
+
+    /// Issue #56 DR-26. A reset of History (`clear_all_sessions`) empties every
+    /// table keyed by a chat — and left the user's cross-affiliation grants, the
+    /// one table in that family that is an authorisation rather than a record.
+    /// Ids restart after a wipe, so the first chats created afterwards would
+    /// have held acceptances their user never gave.
+    #[tokio::test]
+    async fn clearing_history_removes_cross_affiliation_grants() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = new_chat(&sm, &dir).await;
+        grant::record_for_test(&sm, &id, "ucsfomopagent", stanford())
+            .await
+            .unwrap();
+
+        sm.clear_all_sessions().await.unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cross_affiliation_grants")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "a History reset kept the user's grants");
+    }
+
+    /// The rows every earlier build left behind are retired by the reconcile that
+    /// runs each time a store is opened — the F10 shape, for the same reasons
+    /// `prune_orphaned_token_events` gives, and never by a numbered migration
+    /// arm. Pinned here:
+    ///
+    /// - a grant, recall text and checkpoint whose chat is gone go;
+    /// - so do the leftovers a deleted chat left under an id that is live
+    ///   again — a grant older than the live chat, and recall text for a
+    ///   message the live chat never had — which existence alone cannot see;
+    /// - the live chat's own rows are never touched;
+    /// - a second open changes nothing.
+    #[tokio::test]
+    async fn reopening_the_store_retires_side_rows_whose_chat_is_gone() {
+        let dir = TempDir::new().unwrap();
+        let live = {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            let live = new_chat(&sm, &dir).await;
+            sm.add_message(
+                &live,
+                &Message::user().with_text("the live chat's own text"),
+            )
+            .await
+            .unwrap();
+            grant::record_for_test(&sm, &live, "ucsfomopagent", stanford())
+                .await
+                .unwrap();
+            sm.insert_checkpoint(&checkpoint(&live, "cp-live"))
+                .await
+                .unwrap();
+
+            // Grants go through the real writer even here: a second statement
+            // that inserts into the grant store would fail
+            // `grant::tests::exactly_one_statement_in_the_tree_writes_a_cross_affiliation_grant`,
+            // and rightly — that audit cannot tell a fixture from a door.
+            //
+            // A deleted chat's rows, exactly as the pre-fix delete left them.
+            grant::record_for_test(&sm, "gone", "ucsfomopagent", stanford())
+                .await
+                .unwrap();
+            let pool = sm.storage().pool().await.unwrap();
+            for statement in [
+                "INSERT INTO messages_fts (text, session_id, message_id) \
+                 VALUES ('text of a deleted chat', 'gone', 900001)",
+                "INSERT INTO checkpoints \
+                     (id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha) \
+                 VALUES ('cp-gone', 'gone', 0, 1, 'pre_step', 'commit', 'tree')",
+            ] {
+                sqlx::query(statement).execute(pool).await.unwrap();
+            }
+            // A deleted chat's rows under an id that is live again: a grant
+            // recorded a day before the live chat existed...
+            grant::record_for_test(&sm, &live, "cdwagent", stanford())
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE cross_affiliation_grants SET granted_at = datetime('now', '-1 day') \
+                  WHERE session_id = ?1 AND extension = 'cdwagent'",
+            )
+            .bind(&live)
+            .execute(pool)
+            .await
+            .unwrap();
+            // ...and recall text for a message the live chat never had.
+            sqlx::query(
+                "INSERT INTO messages_fts (text, session_id, message_id) \
+                 VALUES ('text of an older chat under this id', ?1, 900002)",
+            )
+            .bind(&live)
+            .execute(pool)
+            .await
+            .unwrap();
+            sm.close().await;
+            live
+        };
+
+        for open in 1..=2 {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            for table in ["cross_affiliation_grants", "messages_fts", "checkpoints"] {
+                assert_eq!(
+                    rows(&sm, table, "gone").await,
+                    0,
+                    "open {open}: {table} kept a row whose chat is gone"
+                );
+            }
+
+            assert!(
+                grant::is_granted(&sm, &live, "ucsfomopagent", stanford()).await,
+                "open {open}: the live chat's own grant was swept"
+            );
+            assert_eq!(
+                rows(&sm, "cross_affiliation_grants", &live).await,
+                1,
+                "open {open}: a grant older than the chat holding its id survived"
+            );
+            let pool = sm.storage().pool().await.unwrap();
+            let recall_text: Vec<String> =
+                sqlx::query_scalar("SELECT text FROM messages_fts WHERE session_id = ?1")
+                    .bind(&live)
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                recall_text,
+                vec!["the live chat's own text".to_string()],
+                "open {open}: the live chat's recall index is exactly its own messages"
+            );
+            assert_eq!(
+                sm.list_checkpoints(&live).await.unwrap().len(),
+                1,
+                "open {open}: the live chat's checkpoint was swept"
+            );
+            sm.close().await;
+        }
+    }
+
+    /// A chat bound to a private provider and still public — the one shape the
+    /// issue #56 backfill exists to raise.
+    async fn bind_ollama(sm: &SessionManager, id: &str) {
+        sm.update(id).provider_name("ollama").apply().await.unwrap();
+    }
+
+    async fn tier(sm: &SessionManager, id: &str) -> SessionClassification {
+        sm.get_session(id, false).await.unwrap().privacy_tier
+    }
+
+    /// Issue #56 §12.5 keeps `classification_audit` when a chat is deleted, by
+    /// design: it answers "what has ever been declassified on this machine".
+    /// But the backfill's declassification guard (`NOT_DECLASSIFIED_BY_USER`)
+    /// asked that question by bare session id, so once the id came back the
+    /// deleted chat's declassification shielded the next chat to hold it — a
+    /// chat the user never declassified, skipped by a statement whose whole
+    /// job is to raise it. The guard now matches the incarnation of the row
+    /// the user actually declassified (#51 W3's reuse-proof identity).
+    #[tokio::test]
+    async fn a_deleted_chats_declassification_does_not_shield_the_next_chat_to_get_its_id() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = new_chat(&sm, &dir).await;
+        sm.add_message(&id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        sm.update(&id)
+            .provider_name("ollama")
+            .raise_privacy(SessionClassification::Private, "turn:ollama")
+            .apply()
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::privacy::declassify::declassify_for_test(&sm, &id)
+                .await
+                .unwrap(),
+            crate::privacy::declassify::DeclassifyOutcome::Declassified
+        );
+
+        let next = delete_and_reissue(&sm, &dir, &id).await;
+        bind_ollama(&sm, &next).await;
+
+        let pool = sm.storage().pool().await.unwrap();
+        let counts = SessionStorage::backfill_privacy_from_recorded_provenance(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            tier(&sm, &next).await,
+            SessionClassification::Private,
+            "a deleted chat's declassification shielded the next chat to get its id"
+        );
+        assert_eq!(counts.private, 1);
+        assert_eq!(counts.declassified_skipped, 0);
+    }
+
+    /// ...while a ledger row written before rows carried an incarnation keeps
+    /// the meaning it was written with. It cannot say which incarnation it was
+    /// about, so it is not reinterpreted: it still shields the chat whose id it
+    /// names, exactly as before. Undoing a declassification on a guess is the
+    /// outcome the guard exists to prevent.
+    #[tokio::test]
+    async fn a_declassification_recorded_without_an_incarnation_still_shields_its_chat() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = new_chat(&sm, &dir).await;
+        bind_ollama(&sm, &id).await;
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO classification_audit \
+                 (session_id, from_classification, to_classification, reason, actor, \
+                  actor_kind, app_version) \
+             VALUES (?1, 'private', 'public', 'declassified_by_user', 'user', 'user', 'old')",
+        )
+        .bind(&id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let counts = SessionStorage::backfill_privacy_from_recorded_provenance(pool)
+            .await
+            .unwrap();
+        assert_eq!(tier(&sm, &id).await, SessionClassification::Public);
+        assert_eq!(counts.declassified_skipped, 1);
+    }
+
+    /// Item 5 of the F10 follow-up: a subagent run is its own session, and
+    /// deleting the chat that spawned it does not delete it. That is left as it
+    /// was — History and `session list --subagents` show an orphan at the top
+    /// level "so nothing becomes unreachable", and a run can hold text the user
+    /// typed into it — and it is safe from adoption: no later chat is ever
+    /// handed the deleted parent's id, so the orphan's `parent_session_id`
+    /// cannot come to name an unrelated chat, which would otherwise inherit its
+    /// supervision, its approval routing and its place under that chat in
+    /// History.
+    #[tokio::test]
+    async fn a_deleted_chats_subagent_runs_are_kept_and_never_adopted() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let parent = new_chat(&sm, &dir).await;
+        let child = sm
+            .create_session(dir.path().into(), "run".into(), SessionType::SubAgent)
+            .await
+            .unwrap()
+            .id;
+        sm.update(&child)
+            .parent_session_id(Some(parent.clone()))
+            .apply()
+            .await
+            .unwrap();
+        sm.add_message(&child, &Message::user().with_text("a subagent's task"))
+            .await
+            .unwrap();
+
+        sm.delete_session(&parent).await.unwrap();
+        let next = new_chat(&sm, &dir).await;
+
+        assert_ne!(next, parent, "a later chat was handed the parent's id");
+        let orphan = sm.get_session(&child, true).await.unwrap();
+        assert_eq!(orphan.parent_session_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(orphan.conversation.map(|c| c.len()), Some(1));
+    }
+
+    fn suffix(id: &str) -> i64 {
+        id.rsplit_once('_')
+            .and_then(|(_, n)| n.parse().ok())
+            .unwrap_or_else(|| panic!("`{id}` is not `<prefix>_<N>`"))
+    }
+
+    fn prefix(id: &str) -> &str {
+        id.rsplit_once('_').map(|(p, _)| p).unwrap()
+    }
+
+    /// The root cause, closed: an id is never minted twice. Deleting the newest
+    /// chat of the day used to hand its id to the next one, and every store
+    /// keyed by that id — tables, the daemon's cached agent, the knowledge
+    /// base's per-chat selection, the renderer's chat state — read the deleted
+    /// chat's state as the new chat's. The per-table deletes above are still
+    /// what removes a deleted chat's data; this is what stops any store anyone
+    /// adds from inheriting it.
+    #[tokio::test]
+    async fn deleting_the_newest_chat_does_not_hand_its_id_to_the_next_one() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let first = new_chat(&sm, &dir).await;
+        sm.delete_session(&first).await.unwrap();
+
+        let second = new_chat(&sm, &dir).await;
+
+        assert_ne!(second, first, "a deleted chat's id was minted again");
+        assert_eq!(prefix(&second), prefix(&first));
+        assert_eq!(suffix(&second), suffix(&first) + 1);
+    }
+
+    /// ...across a History reset too — the case #51 W3 found, where every id of
+    /// the day came back at once — and across reopening the store, since the
+    /// daemon, a terminal `biorouter` and a scheduled job each open it afresh.
+    #[tokio::test]
+    async fn neither_a_history_reset_nor_a_reopen_restarts_the_ids() {
+        let dir = TempDir::new().unwrap();
+        let last = {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            new_chat(&sm, &dir).await;
+            let last = new_chat(&sm, &dir).await;
+            sm.clear_all_sessions().await.unwrap();
+            sm.close().await;
+            last
+        };
+
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let next = new_chat(&sm, &dir).await;
+        assert_eq!(prefix(&next), prefix(&last));
+        assert_eq!(
+            suffix(&next),
+            suffix(&last) + 1,
+            "the ids restarted after a reset and a reopen"
+        );
+    }
+
+    /// A build without the high-water mark still mints `MAX(N)+1` over the rows
+    /// it can see, and it shares this file. Whatever it minted, the next id is
+    /// above it: the mark is a floor under the existing rule, never a ceiling.
+    #[tokio::test]
+    async fn the_next_id_is_above_every_id_an_older_build_minted() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let first = new_chat(&sm, &dir).await;
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, name, working_dir) VALUES (?1, 'older build', '/tmp')",
+        )
+        .bind(format!("{}_7", prefix(&first)))
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let next = new_chat(&sm, &dir).await;
+        assert_eq!(suffix(&next), 8);
+    }
+
+    /// The first-upgrade window, closed: an id that only a **leftover
+    /// checkpoint row** still names is minted above, not reissued.
+    ///
+    /// This is the one case the mark cannot reach from `sessions` alone. An
+    /// older build's `delete_session` removed the chat's row and left its
+    /// `checkpoints` rows behind, so on the first open by this build the seed
+    /// sees no `sessions` row for that id — and the next chat would take it
+    /// back, inheriting the shadow repository at `<data>/checkpoints/<id>/`,
+    /// which no per-table delete reaches. Seeding from `checkpoints` too is what
+    /// stops that, and it works only because the seed runs before
+    /// `retire_side_rows_of_deleted_chats` retires those very rows.
+    ///
+    /// The fixture is what an older build really left: a checkpoint written
+    /// while the chat existed, then the `sessions` row deleted directly (its own
+    /// delete path would now take the checkpoint with it), then the mark
+    /// forgotten — which is the state a database that has never been opened by
+    /// this build is in.
+    #[tokio::test]
+    async fn the_mark_rises_above_an_id_that_only_a_leftover_checkpoint_names() {
+        let dir = TempDir::new().unwrap();
+        let orphan = {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            let id = new_chat(&sm, &dir).await;
+            sm.insert_checkpoint(&checkpoint(&id, "cp-older-build"))
+                .await
+                .unwrap();
+            let pool = sm.storage().pool().await.unwrap();
+            sqlx::query("DELETE FROM sessions WHERE id = ?1")
+                .bind(&id)
+                .execute(pool)
+                .await
+                .unwrap();
+            // No `sessions` row, and no memory of the id having been minted.
+            forget_minted_session_ids(&sm).await;
+            assert_eq!(
+                rows(&sm, "checkpoints", &id).await,
+                1,
+                "the fixture must leave the checkpoint row, or it proves nothing"
+            );
+            sm.close().await;
+            id
+        };
+
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let next = new_chat(&sm, &dir).await;
+        assert_ne!(
+            next, orphan,
+            "an id whose checkpoint repository is still on disk was minted again"
+        );
+        assert!(
+            suffix(&next) > suffix(&orphan),
+            "expected an id above `{orphan}`, got `{next}`"
+        );
+    }
+
+    /// The id-reuse seam is `pub`, and this is what keeps it a *test* seam.
+    ///
+    /// [`SessionManager::forget_minted_session_ids_for_test`] exists because two
+    /// of the tests that prove an id-reuse guard sit outside the lib's
+    /// `cfg(test)` scope — one in an integration binary of this crate, one in
+    /// `biorouter-cli` — where a `#[cfg(test)]` item cannot be seen. The price
+    /// is a public method that lowers `session_id_high_water`, and the only
+    /// thing between it and a non-test caller is this list.
+    ///
+    /// Each row names one file and says which guard it is there to exercise.
+    /// **Extend a row, never add a second for the same file.** A NEW file here
+    /// is the signal: someone reached for the seam outside a test, and the
+    /// question to ask is why — not how to lengthen the list.
+    #[test]
+    fn the_id_reuse_seam_is_only_reached_from_tests() {
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                if path.is_dir() {
+                    if name != "target" && name != "node_modules" && name != ".git" {
+                        rs_files(&path, out);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        assert!(
+            crates.is_dir(),
+            "the audit walks {}; if that path is wrong it passes for the wrong reason",
+            crates.display()
+        );
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(crates).unwrap().flatten() {
+            // `tests/` as well as `src/`: the seam is `pub` precisely so an
+            // integration binary can reach it, so an audit that read only
+            // `src/` would be blind to the call sites that motivated it.
+            for sub in ["src", "tests"] {
+                let dir = entry.path().join(sub);
+                if dir.is_dir() {
+                    rs_files(&dir, &mut files);
+                }
+            }
+        }
+        assert!(
+            files.len() > 400,
+            "the audit found only {} .rs files under crates/*/{{src,tests}}, too few to have \
+             walked the workspace",
+            files.len()
+        );
+
+        // Every file that may name the seam, and the guard it exercises there.
+        let allowed = [
+            // the definition, its unwrapping shorthand, and this audit
+            "biorouter/src/session/session_manager.rs",
+            // DR-26: a deleted chat's cross-affiliation grant is not the next
+            // chat's — `GRANT_IS_THE_CHATS_OWN`
+            "biorouter/src/privacy/grant.rs",
+            // a reused id does not inherit the previous occupant's per-chat
+            // skill overrides
+            "biorouter/src/agents/session_skills.rs",
+            // #51 W3: a rewrite basis cannot cross a wipe that recycled the id
+            "biorouter/tests/conversation_writeback_stress.rs",
+            // the terminal's shell-history cut is refused on a recycled id
+            "biorouter-cli/src/commands/term.rs",
+        ];
+        let seam = "forget_minted_session_ids_for_test";
+        let mut offenders = Vec::new();
+        let mut found = 0usize;
+        for file in &files {
+            let Ok(source) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            if !source.contains(seam) {
+                continue;
+            }
+            found += 1;
+            let relative = file.strip_prefix(crates).unwrap().to_string_lossy();
+            let relative = relative.replace('\\', "/");
+            if !allowed.contains(&relative.as_str()) {
+                offenders.push(relative.to_string());
+            }
+        }
+        assert_eq!(
+            found,
+            allowed.len(),
+            "the seam is named in {found} files and the list has {}; a file that stopped \
+             using it should lose its row, and a new one should be questioned",
+            allowed.len()
+        );
+        assert!(
+            offenders.is_empty(),
+            "`{seam}` lowers the id high-water mark and is reachable outside a test in: \
+             {offenders:?}"
+        );
+    }
+
+    /// Ids are minted inside one write transaction each, so concurrent creators
+    /// — the desktop daemon, a terminal `biorouter` and a scheduled job share
+    /// the file — never receive the same one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_creates_never_mint_the_same_id() {
+        let dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let sm = Arc::clone(&sm);
+            let working_dir = dir.path().to_path_buf();
+            tasks.push(tokio::spawn(async move {
+                sm.create_session(working_dir, "c".into(), SessionType::User)
+                    .await
+                    .unwrap()
+                    .id
+            }));
+        }
+        let mut ids = Vec::new();
+        for task in tasks {
+            ids.push(task.await.unwrap());
+        }
+        let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(distinct.len(), ids.len(), "duplicate ids minted: {ids:?}");
     }
 }

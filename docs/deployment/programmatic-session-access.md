@@ -175,6 +175,7 @@ one of them resolves the target's tier **before** it touches the session, so a r
 | `POST /agent/update_working_dir` | Repoints the session at a directory. |
 | `POST /agent/add_extension` · `remove_extension` | Attaches or detaches tools. |
 | `GET`/`POST /knowledge/active` | Reads or repoints the session's knowledge bases. |
+| `POST /agent/cancel` · `POST /agent/continuation/abandon` · `recover` | Stops or settles the session's running turn — **on a daemon that holds no user-action key only**, such as `biorouter serve` or a hand-run `biorouterd` ([SD-11](serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)). There they admit exactly the callers `POST /agent/stop` admits, a subagent's session excepted. `POST /interrupt` is **not** among them: it takes the proof on either kind of daemon, because injecting text into a turn already running is the one thing no other route on a keyless daemon can do. |
 
 ## What the header does *not* cover
 
@@ -186,7 +187,8 @@ it would be wrong:
 
 | Route | What guards it instead |
 |---|---|
-| `POST /interrupt`, `POST /agent/cancel`, `POST /agent/continuation/abandon` | `X-User-Action` — steering a turn is the user's decision, not a capability. |
+| `POST /interrupt` | `X-User-Action` on **every** daemon — steering a turn that is already running is the user's decision, not a capability, and no other route on a keyless daemon reaches into a turn in flight. A keyless daemon's refusal says so in words rather than with an empty `403`. |
+| `POST /agent/cancel`, `POST /agent/continuation/abandon` · `recover` | On a daemon that holds a user-action key — the desktop application's — `X-User-Action` and nothing else. A daemon that holds no key cannot check the proof at all, so these routes honour the header there instead (the table above). |
 | `POST /sessions/{id}/declassify`, `POST /sessions/{id}/diverge`, `POST /sessions/{id}/edit_message` | `X-User-Action` — these change or copy a classification, which no model may decide. |
 | `POST /agent/cross_affiliation_grant`, `POST /action-required/tool-confirmation` | `X-User-Action`, plus a decision-authority check on the resolving surface. |
 | `POST /knowledge/bases/{id}/ingest-conversation` | Its own Gate G: capability is derived from the model named in the request body, and every selected conversation is checked against it before a transcript is rendered. |
@@ -233,8 +235,11 @@ not evidence the session exists.
 **`403` saying the daemon was started without a user-action key.** A different state: this daemon
 holds no key with which to verify a human, which is normal for `just run-server`, a hand-run
 `biorouterd agent`, and `biorouter serve`. The capability header is unaffected and still admits a
-private chat on that daemon — a capable caller never reaches this message, because capability is
-checked before proof. If you are seeing it, your caller is public.
+private chat on that daemon — a capable caller never reaches the reach gate's version of this
+message, because capability is checked before proof. If you are seeing it, your caller is public,
+or the session is a delegated subagent's: changing, stopping or steering a subagent from its tab
+needs proof that a person acted, whatever the capability, and that refusal says so in its own
+words.
 
 **The header worked yesterday and now does not.** The tier came from the daemon's own registry, so a
 provider removed from `config.yaml`, or renamed, now resolves public.

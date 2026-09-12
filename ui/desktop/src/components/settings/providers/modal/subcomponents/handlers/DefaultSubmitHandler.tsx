@@ -5,8 +5,9 @@ import { coerceConfigKeyValue } from '../../../configKeyValue';
  * Standalone function to submit provider configuration
  * Useful for components that don't want to use the hook
  *
- * Every value arriving here is a string — the setup form renders each key as an
- * `<input type="text">`. `/config/upsert` writes what it is given verbatim, so a
+ * Every value arriving here is a string — the setup form renders each key as a
+ * text field (masked for a secret, but a string all the same). `/config/upsert`
+ * writes what it is given verbatim, so a
  * string lands in `config.yaml` quoted (`LLAMACPP_PORT: '11543'`) and the
  * backend's typed `get_param::<usize>()` / `get_param::<bool>()` cannot read it
  * back, silently falling through to the default. `coerceConfigKeyValue` turns

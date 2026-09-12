@@ -26,6 +26,7 @@ vi.mock('./SidebarUpdateButton', () => ({
 }));
 
 import AppSidebar from './AppSidebar';
+import { SAME_ROUTE_RESET_EVENT } from '../../hooks/useSameRouteReset';
 
 const session: SessionSummary = {
   id: 'session-1',
@@ -312,5 +313,64 @@ describe('AppSidebar — actions do not stay lit (§4.1.3)', () => {
     // mid-rail with no visible focus and nowhere obvious to resume from.
     fireEvent.click(newSession, { detail: 0 });
     expect(document.activeElement).toBe(newSession);
+  });
+});
+
+/**
+ * Defect 3.3. Clicking a sidebar item you are already on did nothing at all:
+ * react-router reconciles a same-path navigation rather than remounting, so a
+ * page holding sub-state (a schedule's run detail) stayed exactly where it was
+ * and only the in-page Back escaped. The row is lit — the user reads that as
+ * "this is the destination" and expects the destination, not the sub-view they
+ * drilled into.
+ */
+describe('clicking the sidebar item you are already on', () => {
+  // Scheduler lives behind the collapsed `Components` disclosure.
+  beforeEach(() => {
+    window.localStorage.setItem('biorouter:sidebar-components-expanded', 'true');
+  });
+
+  it('announces a reset for that route instead of being a dead click', () => {
+    const seen: string[] = [];
+    const listener = (event: Event) =>
+      seen.push((event as CustomEvent<{ path: string }>).detail.path);
+    window.addEventListener(SAME_ROUTE_RESET_EVENT, listener);
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/schedules']}>
+          <SidebarHarness />
+        </MemoryRouter>
+      );
+
+      fireEvent.click(screen.getByTestId('sidebar-scheduler-button'));
+
+      expect(seen).toEqual(['/schedules']);
+    } finally {
+      window.removeEventListener(SAME_ROUTE_RESET_EVENT, listener);
+    }
+  });
+
+  // Navigating somewhere else is a navigation, not a reset — otherwise every
+  // arrival would clear state the destination is entitled to keep.
+  it('says nothing when the click is a real navigation', () => {
+    const seen: string[] = [];
+    const listener = () => seen.push('reset');
+    window.addEventListener(SAME_ROUTE_RESET_EVENT, listener);
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/']}>
+          <SidebarHarness />
+        </MemoryRouter>
+      );
+
+      fireEvent.click(screen.getByTestId('sidebar-scheduler-button'));
+
+      expect(seen).toEqual([]);
+      expect(screen.getByTestId('location-state')).toHaveTextContent('/schedules');
+    } finally {
+      window.removeEventListener(SAME_ROUTE_RESET_EVENT, listener);
+    }
   });
 });

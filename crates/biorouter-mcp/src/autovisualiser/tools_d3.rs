@@ -12,7 +12,7 @@ pub struct NetworkNode {
     /// Display label (defaults to id)
     #[serde(default)]
     pub label: Option<String>,
-    /// Group/cluster for colouring
+    /// Group/cluster for coloring
     #[serde(default)]
     pub group: Option<String>,
     /// Relative size
@@ -260,7 +260,7 @@ impl AutoVisualiserRouter {
         name = "render_network",
         description = r#"Render an interactive force-directed network (node-link) graph. Ideal for knowledge graphs, gene/protein interaction networks, dependency graphs.
 
-- nodes (required): [{id, label?, group?, value?}]; group colours nodes, value sizes them
+- nodes (required): [{id, label?, group?, value?}]; group colors nodes, value sizes them
 - links (required): [{source, target, value?, label?}]; source/target reference node ids
 - directed (optional, default false): draw arrowheads
 - title (optional)
@@ -304,10 +304,10 @@ Example:
         )
     }
 
-    /// Heatmap (matrix as a colour grid)
+    /// Heatmap (matrix as a color grid)
     #[tool(
         name = "render_heatmap",
-        description = r#"Render a heatmap of a matrix as a coloured grid (expression matrices, correlation matrices, confusion matrices).
+        description = r#"Render a heatmap of a matrix as a colored grid (expression matrices, correlation matrices, confusion matrices).
 
 - xLabels (required): column labels
 - yLabels (required): row labels

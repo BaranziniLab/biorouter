@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Input } from '../../../../../ui/input';
+import { SecretInput } from '../../../../../ui/secret-input';
 import { Select } from '../../../../../ui/Select';
 import { Button } from '../../../../../ui/button';
 import { SecureStorageNotice } from '../SecureStorageNotice';
@@ -180,9 +181,11 @@ export default function CustomProviderForm({
           API Key
           {!isLocalModel && !initialData && <span className="text-text-danger ml-1">*</span>}
         </label>
-        <Input
+        {/* The same primitive the built-in providers' form uses for every secret
+            parameter, so the two forms mask — and reveal — a key the same way. */}
+        <SecretInput
           id="api-key"
-          type="password"
+          revealLabel="API Key"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder={initialData ? 'Leave blank to keep existing key' : 'Your API key'}

@@ -44,17 +44,56 @@ type ListListener = () => void;
 const listChangeListeners = new Set<ListListener>();
 let listChannel: BroadcastChannel | null = null;
 
+/**
+ * What changed, when the change is more specific than "something did".
+ *
+ * M11: a plain "re-read now" nudge is enough to ADD a session and not enough to
+ * remove one. The sidebar Recents merges each re-read into what it already holds
+ * (`appendSessionPage` appends and replaces by id, and has no removal branch),
+ * so a deleted chat survived every refresh and cleared only on a renderer
+ * reload. Removals are therefore announced BY ID rather than inferred from a
+ * refetch — `loadPage(true)` re-reads only the first page, and an entry can drop
+ * out of that window because other chats were touched rather than because it was
+ * deleted, so inference would evict live chats.
+ */
+export interface SessionListChange {
+  /** The id of a session that no longer exists. */
+  removed?: string;
+}
+
+type RemovalListener = (sessionId: string) => void;
+const removalListeners = new Set<RemovalListener>();
+
+function fanOutRemoval(sessionId: string | undefined): void {
+  if (!sessionId) return;
+  for (const l of removalListeners) l(sessionId);
+}
+
 function getListChannel(): BroadcastChannel | null {
   if (listChannel) return listChannel;
   if (typeof BroadcastChannel === 'undefined') return null;
   listChannel = new BroadcastChannel('biorouter:session-list');
-  listChannel.onmessage = () => {
+  listChannel.onmessage = (event: MessageEvent) => {
     // Another window changed the set. Refresh this window's own cache (so its
     // See-all/Home update) and fan out to hooks that fetch their own way.
+    fanOutRemoval((event.data as SessionListChange | undefined)?.removed);
     void refreshSessionList().catch(() => undefined);
     for (const l of listChangeListeners) l();
   };
   return listChannel;
+}
+
+/**
+ * Subscribe to session REMOVALS specifically, by id. For a surface that keeps
+ * its own merged list and cannot discover a deletion by re-reading — see
+ * {@link SessionListChange}.
+ */
+export function subscribeSessionRemoved(listener: RemovalListener): () => void {
+  getListChannel();
+  removalListeners.add(listener);
+  return () => {
+    removalListeners.delete(listener);
+  };
 }
 
 /**
@@ -75,10 +114,14 @@ export function subscribeSessionListChanges(listener: ListListener): () => void 
  * delete or import. Refreshes this window's cache immediately and notifies every
  * other window to do the same.
  */
-export function notifySessionListChanged(): void {
+export function notifySessionListChanged(change: SessionListChange = {}): void {
+  // Removals go out FIRST and synchronously. The nudge below is debounced by
+  // most subscribers, so a listener that splices by id must not be racing a
+  // re-read that would merge the doomed row straight back in.
+  fanOutRemoval(change.removed);
   void refreshSessionList().catch(() => undefined);
   for (const l of listChangeListeners) l();
-  getListChannel()?.postMessage({ at: Date.now() });
+  getListChannel()?.postMessage({ at: Date.now(), ...change });
 }
 
 export function getCachedSessionList(): Session[] | null {

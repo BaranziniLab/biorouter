@@ -183,13 +183,18 @@ impl CheckpointManager {
         })
     }
 
-    /// Remove a session's shadow repo + checkpoint rows (called on session
-    /// delete).
+    /// Remove a session's shadow repo + checkpoint rows.
+    ///
+    /// Deleting a chat does not come through here: `SessionStorage::delete_session`
+    /// removes the rows in the chat's own transaction and the same
+    /// [`super::repository_dir`] after it commits, which is what reaches the CLI
+    /// and every other caller that never builds a `CheckpointManager`.
     pub async fn gc(&self, session_id: &str) -> Result<()> {
-        let dir = self.data_root.join("checkpoints").join(session_id);
-        // BR-57: removing a whole shadow git repo is blocking file I/O — keep
-        // it off the async runtime like the rest of the checkpoint file work.
-        let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&dir)).await;
+        if let Some(dir) = super::repository_dir(&self.data_root, session_id) {
+            // BR-57: removing a whole shadow git repo is blocking file I/O — keep
+            // it off the async runtime like the rest of the checkpoint file work.
+            let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&dir)).await;
+        }
         self.session_manager.delete_checkpoints(session_id).await
     }
 }

@@ -150,6 +150,32 @@ the catalog, and never per row; it runs on mount and on an explicit "Check again
 a timer. `ProviderCatalog.test.tsx` asserts the call count across a tab change and a minute
 of fake timers.
 
+### One row, one answer about "installed"
+
+An agent row carries two statements from two routes: the status pill from
+`/coding_agents/status`, and the **Configured** check from `is_configured` on
+`/config/providers`. They used to disagree on one line — *"Codex · Not installed ✓ Configured"*
+(the 2026-09-10 provider QA run, F6) — because `is_configured` asked only whether the command key
+was saved. Three things now keep them together:
+
+- **The daemon asks the same question twice.** `check_provider_configured`
+  (`routes/utils.rs`) grants a coding agent `is_configured` only when
+  `discovery::resolve_configured` finds its CLI, which is the lookup the status probe uses. A
+  saved key naming a missing CLI is served `is_configured: false` **with**
+  `unavailable_reason` — the sentence a turn would have failed with.
+- **"Check again" re-reads the provider list.** The catalog reads that list once, when the page
+  opens; a re-check that changed "installed" has changed `is_configured` too, so the hook's
+  `onRechecked` hands it the page's `refreshProviders`. The mount probe does not — the page
+  fetched the list at the same moment.
+- **The model picker disables the row instead of dropping it.** `SwitchModelModal` lists
+  every usable provider plus every row with an `unavailable_reason`, the latter as react-select's
+  own `aria-disabled` option with the reason as its detail line — the private-chat pre-flight's
+  shape, one level up. A dialog that opens *on* such a provider (the bound one) says why and
+  will not submit.
+
+Sign-in is not folded into `is_configured`: learning it spawns the CLI, and
+`/config/providers` runs for every provider on every settings open. The pill carries it.
+
 ## Entering without a provider
 
 "Explore Biorouter first →" (under the header and repeated at the foot of the first-run
@@ -205,8 +231,12 @@ Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`,
 `ProviderCatalog.browserSurface.test.tsx`, `providerOrdering.test.ts`,
 `ProviderGuard.test.tsx`, `ProviderGuard.browserSurface.test.tsx`,
 `composerNoProvider.test.ts`, `ChatInput.noProvider.test.tsx`,
-`ModelsBottomBar.noProvider.test.tsx`; and on the Rust side
-`cargo test -p biorouter --lib -- providers::versa providers::base::type_level_institution`.
+`ModelsBottomBar.noProvider.test.tsx`, `SwitchModelModal.unavailable.test.tsx`; and on the Rust
+side `cargo test -p biorouter --lib -- providers::versa providers::base::type_level_institution`
+and `cargo test -p biorouter-server --lib -- routes::utils routes::config_management`.
+⚠ Several filters go **after** `--`: cargo's own `TESTNAME` is a single positional, so
+`cargo test … routes::utils routes::config_management` stops at
+`unexpected argument 'routes::config_management'` without running anything.
 
 ⚠ **Radix's `TabsTrigger` activates on `mousedown`, not on a synthetic `click`.** A
 `fireEvent.click` alone leaves the panel untouched — and because an unopened panel renders

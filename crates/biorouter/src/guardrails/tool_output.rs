@@ -616,6 +616,11 @@ pub fn guard_tool_result(
     match output {
         Ok(mut result) => {
             let mut summaries: Vec<String> = Vec::new();
+            // H1: the dispatch boundary withheld credential material from this
+            // result (`secret_output`). Say so in the guardrail's own voice,
+            // above the frame, so a model does not read `[REDACTED:…]` as a
+            // puzzle to solve with another spelling.
+            let withheld = super::secret_output::redaction_of(&result);
             for content in result.content.iter_mut() {
                 // Non-text blocks are not merely re-pushed, they are never
                 // moved: images, audio, embedded resources and resource links
@@ -633,6 +638,22 @@ pub fn guard_tool_result(
                     summaries.extend(summary);
                     raw.text = text;
                 }
+            }
+            if let Some(withheld) = withheld {
+                let first_text = result.content.iter_mut().find_map(|c| match &mut c.raw {
+                    RawContent::Text(raw) => Some(raw),
+                    _ => None,
+                });
+                if let Some(raw) = first_text {
+                    raw.text = format!(
+                        "[BIOROUTER GUARDRAIL] Secret guard: {}. They are withheld on \
+                         purpose and cannot be recovered through another command; ask the \
+                         user if you need one.\n{}",
+                        withheld.summary(),
+                        raw.text
+                    );
+                }
+                summaries.push(withheld.summary());
             }
             let summary = (!summaries.is_empty()).then(|| summaries.join("; "));
             (Ok(result), summary)
@@ -1305,35 +1326,72 @@ mod tests {
         assert!(out.is_err());
     }
 
-    /// The frame is only unconditional if the choke point is unconditional.
+    /// The frame is only unconditional if every choke point is.
     ///
-    /// [`guard_tool_result`] is called from exactly one place,
-    /// `Agent::integrate_tool_result`, which every completed tool call passes
-    /// through on its way into the conversation. A second tool-result path that
-    /// forgot to call it would be a silent hole, so the count is asserted here
-    /// rather than left to reviewers. If this fails because you added a call
-    /// site, the right fix is usually to route through the existing funnel, not
-    /// to bump the number.
+    /// There are **two**, because a tool result reaches a model context by two
+    /// structurally different routes, and each has exactly one funnel:
+    ///
+    /// | Route | Funnel |
+    /// | --- | --- |
+    /// | the parent model's own calls | `Agent::integrate_tool_result` |
+    /// | a coding agent's child, over the MCP bridge | `BridgeGrant::call_for_child` |
+    ///
+    /// A bridged call never enters the agent's turn loop — the vendor CLI calls
+    /// `POST /tool_bridge/{nonce}` and the provider lifts the kept result
+    /// straight into the transcript — so `integrate_tool_result` alone left the
+    /// child agent reading raw, unscanned third-party text and stored raw text
+    /// in the transcript where every other provider stored a frame (A2).
+    ///
+    /// A third tool-result path that forgot to call this would be the same
+    /// silent hole again, so the counts are asserted here rather than left to
+    /// reviewers. If this fails because you added a call site, the right fix is
+    /// usually to route through one of the two existing funnels, not to bump a
+    /// number.
     #[test]
-    fn the_guardrail_has_exactly_one_call_site() {
-        let agent_rs = include_str!("../agents/agent.rs");
-        let calls = agent_rs
-            .matches("guardrails::tool_output::guard_tool_result(")
-            .count();
-        assert_eq!(
-            calls, 1,
-            "expected exactly one guard_tool_result call site in agent.rs, found {calls}"
-        );
-        // And it must be inside the result-integration funnel, not somewhere a
-        // path could branch around.
-        let funnel = agent_rs
-            .split("async fn integrate_tool_result(")
-            .nth(1)
-            .expect("integrate_tool_result must exist");
-        assert!(
-            funnel.contains("guardrails::tool_output::guard_tool_result("),
-            "the call site moved out of integrate_tool_result"
-        );
+    fn the_guardrail_has_one_call_site_in_each_of_its_two_funnels() {
+        for (file, source, funnel, signature) in [
+            (
+                "agents/agent.rs",
+                include_str!("../agents/agent.rs"),
+                "integrate_tool_result",
+                "async fn integrate_tool_result(",
+            ),
+            (
+                "providers/coding_agent/bridge.rs",
+                include_str!("../providers/coding_agent/bridge.rs"),
+                "call_for_child",
+                "pub async fn call_for_child(",
+            ),
+        ] {
+            // ⚠ The count is over the file's PRODUCTION half only. `bridge.rs`'s
+            // own suite calls the guardrail directly, to build the frame a
+            // non-bridged provider stores and compare the two — a test proving
+            // the funnel works must not read as a second funnel. Each file has
+            // exactly one `mod tests {` at column 0.
+            let production = source
+                .split("\nmod tests {")
+                .next()
+                .expect("split always yields a first part");
+            // `bridge.rs` imports the function by name and `agent.rs` spells
+            // the whole path, so the needle is the bare name — and it carries
+            // its opening paren, which is what keeps an import or a doc link
+            // from being counted as a call.
+            let calls = production.matches("guard_tool_result(").count();
+            assert_eq!(
+                calls, 1,
+                "expected exactly one guard_tool_result call site in {file}, found {calls}"
+            );
+            // And it must be inside the funnel, not somewhere a path could
+            // branch around.
+            let body = production
+                .split(signature)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{funnel} must exist in {file}"));
+            assert!(
+                body.contains("guard_tool_result("),
+                "the call site moved out of {funnel} in {file}"
+            );
+        }
     }
 
     // ── the frame rewrites `text`, and nothing else ──
@@ -1377,6 +1435,40 @@ mod tests {
     /// first (`agent.rs`, `integrate_tool_result`), so by the time
     /// `annotate_tool_result` carefully carried the annotations forward, they
     /// were already `None`.
+    /// H1: a result the dispatch boundary withheld credential material from
+    /// says so in the guardrail's own voice, above the frame — so the model is
+    /// told the gap is deliberate rather than left to try another spelling.
+    #[test]
+    fn a_result_with_withheld_credentials_is_flagged_above_the_frame() {
+        // Made up, and assembled at run time (no key-shaped literal in source).
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+        let mut result = CallToolResult::success(vec![Content::text(format!(
+            "aws_secret_access_key = {secret}\n"
+        ))]);
+        assert!(
+            crate::guardrails::secret_output::redact_call_tool_result(&mut result).is_some(),
+            "precondition: the dispatch boundary redacted and stamped it"
+        );
+        let (guarded, summary) = guard_tool_result(
+            Ok(result),
+            Some("developer__shell"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        let guarded = guarded.expect("ok");
+        let text = &guarded.content[0].as_text().expect("text").text;
+        assert!(
+            text.starts_with("[BIOROUTER GUARDRAIL] Secret guard: 1 credential value(s) withheld"),
+            "{text}"
+        );
+        assert!(!text.contains(&secret), "{text}");
+        let (note, rest) = text.split_once('\n').expect("note line");
+        assert!(
+            rest.starts_with(TOOL_OUTPUT_FRAME_OPEN),
+            "the note must sit above the frame, outside the untrusted region: {note} / {rest}"
+        );
+        assert!(summary.expect("summarised").contains("withheld"));
+    }
+
     #[test]
     fn framing_preserves_an_assistant_only_audience() {
         let block = Content::text("private note: do not show the tmp file to the user")

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage};
 use super::errors::ProviderError;
 use super::retry::{ProviderRetry, RetryConfig};
@@ -11,7 +9,6 @@ use async_trait::async_trait;
 use aws_sdk_bedrockruntime::config::ProvideCredentials;
 use aws_sdk_bedrockruntime::{types as bedrock, Client};
 use rmcp::model::Tool;
-use serde_json::Value;
 
 use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput as ConverseStreamResponse;
 
@@ -69,26 +66,28 @@ impl BedrockProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        // Attempt to load config and secrets to get AWS_ prefixed keys
-        // to re-export them into the environment for aws_config to use as fallback
-        let set_aws_env_vars = |res: Result<HashMap<String, Value>, _>| {
-            if let Ok(map) = res {
-                map.into_iter()
-                    .filter(|(key, _)| key.starts_with("AWS_"))
-                    .filter_map(|(key, value)| value.as_str().map(|s| (key, s.to_string())))
-                    .for_each(|(key, s)| std::env::set_var(key, s));
-            }
-        };
-
-        set_aws_env_vars(config.all_values());
-        set_aws_env_vars(config.all_secrets());
+        // The `AWS_*` keys BioRouter's own stores hold, read WITHOUT touching the
+        // process environment.
+        //
+        // ⚠ This used to be a closure over `config.all_values()` and
+        // `config.all_secrets()` that called `std::env::set_var` on every `AWS_`
+        // key. `all_secrets()` is the keyring, so the closure exported the user's
+        // real `AWS_SECRET_ACCESS_KEY` — and every process spawned afterwards
+        // inherits the environment, the agent's own `developer__shell` included.
+        // A chat on a public model could read the credential straight out of it.
+        // `set_var` is also unsound in a multi-threaded process, which is why
+        // Rust 2024 made it `unsafe`. The settings now reach the SDK through the
+        // client builder instead; see `providers::aws_stored_settings` for the
+        // precedence rule it preserves (the store still beats the environment).
+        let stored = crate::providers::aws_stored_settings::StoredAwsSettings::read(config);
 
         // ⚠ `AWS_ENDPOINT_URL_BEDROCK` is not an endpoint for this provider. The
         // AWS SDK aims Bedrock Runtime at `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`,
-        // from the environment or from `config.yaml` through the export above,
-        // or at an AWS profile's `services` section; that is how a VPC endpoint
-        // or a proxy is meant to be set. `AWS_ENDPOINT_URL_BEDROCK` is the name
-        // the SDK derives for a different service, the Bedrock control plane.
+        // from the environment, or from `config.yaml` through the `stored.apply`
+        // below, or at an AWS profile's `services` section; that is how a VPC
+        // endpoint or a proxy is meant to be set. `AWS_ENDPOINT_URL_BEDROCK` is
+        // the name the SDK derives for a different service, the Bedrock control
+        // plane.
         //
         // This used to promote it to `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, added
         // on 2026-04-12 for configs and setup scripts that used the short name,
@@ -123,6 +122,23 @@ impl BedrockProvider {
         if let Some(timeout_config) = super::formats::bedrock::bedrock_timeout_config(config) {
             loader = loader.timeout_config(timeout_config);
         }
+
+        // LAST, so the store still outranks the environment the way the export
+        // did: `set_var` overwrote, and an explicit value on the loader beats
+        // what the SDK would have read for itself. A store holding nothing sets
+        // nothing, and the SDK's own chain (env, SSO, profile, IMDS) runs
+        // untouched — two rows in `bedrock_namespace_tests` depend on that.
+        //
+        // `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` is this service's variable, per the
+        // note above; `AWS_ENDPOINT_URL` is the SDK's cross-service fallback.
+        let loader = stored.apply(
+            loader,
+            "BedrockStoredSettings",
+            &[
+                "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+                crate::providers::aws_stored_settings::ENDPOINT_URL,
+            ],
+        );
 
         let sdk_config = loader.load().await;
 

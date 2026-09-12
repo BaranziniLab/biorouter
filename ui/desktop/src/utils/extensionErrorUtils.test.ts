@@ -4,6 +4,7 @@ import {
   setFocusedChatSession,
   resetExtensionToastState,
 } from './extensionErrorUtils';
+import { resetExtensionLoadFailuresForTests } from './extensionLoadFailures';
 import { toastService } from '../toasts';
 
 vi.mock('../toasts', () => ({
@@ -21,6 +22,10 @@ describe('showExtensionLoadResults — multi-chat toast rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetExtensionToastState();
+    // The standing failure record is persistent BY DESIGN and deliberately
+    // survives `resetExtensionToastState` — that is the whole fix — so it has
+    // to be cleared explicitly or one case's failure silences the next one's.
+    resetExtensionLoadFailuresForTests();
     vi.mocked(toastService.isExtensionToastActive).mockReturnValue(false);
   });
 
@@ -234,5 +239,34 @@ describe('showExtensionLoadResults — multi-chat toast rules', () => {
     const [statuses, , , builtinFailures] = vi.mocked(toastService.extensionLoading).mock.calls[0];
     expect(statuses.map((s) => s.name)).toEqual(['cdwagent']);
     expect(builtinFailures).toEqual(['knowledge']);
+  });
+});
+
+/**
+ * Defect 1 (2026-09-12). "1 of 2 extensions loaded / Failed: Cdwagent"
+ * reappeared after EVERY renderer load once dismissed. The only caller of
+ * `showExtensionLoadResults` is `/agent/resume`, which a renderer load always
+ * performs — so the toast announced something the user did not do, and
+ * announced it again every time. The failure is real news exactly once; after
+ * that it belongs on a persistent surface, not in the transient layer.
+ */
+describe('a failure is announced once, not on every renderer load', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetExtensionToastState();
+    resetExtensionLoadFailuresForTests();
+  });
+
+  it('stays silent for a failure the user has already been shown', () => {
+    showExtensionLoadResults([ok('medcp'), bad('cdwagent')], 'chat-a');
+    expect(toastService.extensionLoading).toHaveBeenCalledTimes(1);
+
+    // A renderer reload: every module-level toast latch is fresh, and
+    // `/agent/resume` reports the same failure again.
+    vi.clearAllMocks();
+    resetExtensionToastState();
+    showExtensionLoadResults([ok('medcp'), bad('cdwagent')], 'chat-a');
+
+    expect(toastService.extensionLoading).not.toHaveBeenCalled();
   });
 });

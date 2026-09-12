@@ -135,7 +135,12 @@ async fn call_tool(
     };
 
     // The child is answered with the model's view of the result: the blocks a
-    // model is sent, unannotated (`bridge::child_view`, QA-E F4).
+    // model is sent, unannotated (`bridge::child_view`, QA-E F4), and framed as
+    // untrusted data + scanned for injection and PII first (A2). The child is a
+    // whole agent reading third-party bytes, so the guardrail applies to it for
+    // the same reason it applies to the parent model; `call_for_child` is the
+    // bridge's half of that funnel, and the copy it keeps for the transcript is
+    // framed too, so a coding agent's transcript matches every other provider's.
     match grant.call_for_child(call, child_call_id).await {
         Ok(result) => rpc_ok(
             id,

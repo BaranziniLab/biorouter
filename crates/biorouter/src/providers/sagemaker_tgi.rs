@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -43,20 +42,38 @@ impl SageMakerTgiProvider {
             anyhow::anyhow!("SAGEMAKER_ENDPOINT_NAME is required for SageMaker TGI provider")
         })?;
 
-        // Attempt to load config and secrets to get AWS_ prefixed keys
-        let set_aws_env_vars = |res: Result<HashMap<String, Value>, _>| {
-            if let Ok(map) = res {
-                map.into_iter()
-                    .filter(|(key, _)| key.starts_with("AWS_"))
-                    .filter_map(|(key, value)| value.as_str().map(|s| (key, s.to_string())))
-                    .for_each(|(key, s)| std::env::set_var(key, s));
-            }
-        };
+        // The `AWS_*` keys BioRouter's own stores hold, read WITHOUT touching the
+        // process environment.
+        //
+        // ⚠ This used to be a closure over `config.all_values()` and
+        // `config.all_secrets()` that called `std::env::set_var` on every `AWS_`
+        // key — the same code `bedrock.rs` carried, with the same two defects:
+        // `set_var` is unsound in a multi-threaded process, and it published the
+        // user's real `AWS_SECRET_ACCESS_KEY` to every subprocess spawned
+        // afterwards, the agent's own shell included. See
+        // `providers::aws_stored_settings` for the replacement and for the
+        // precedence rule it preserves.
+        let stored = crate::providers::aws_stored_settings::StoredAwsSettings::read(config);
 
-        set_aws_env_vars(config.all_values());
-        set_aws_env_vars(config.all_secrets());
-
-        let aws_config = aws_config::load_from_env().await;
+        // `defaults(...)` rather than `load_from_env()` so the stored settings
+        // have a builder to be applied to. Both resolve the same chain; the
+        // difference is only that this one can be added to.
+        //
+        // Applied LAST, for the reason given in `aws_stored_settings`: the
+        // export overwrote the environment, so the store outranked it, and an
+        // explicit value on the loader is what keeps that true. A store holding
+        // nothing sets nothing.
+        let aws_config = stored
+            .apply(
+                aws_config::defaults(aws_config::BehaviorVersion::latest()),
+                "SageMakerStoredSettings",
+                &[
+                    "AWS_ENDPOINT_URL_SAGEMAKER_RUNTIME",
+                    crate::providers::aws_stored_settings::ENDPOINT_URL,
+                ],
+            )
+            .load()
+            .await;
 
         // Validate credentials
         aws_config

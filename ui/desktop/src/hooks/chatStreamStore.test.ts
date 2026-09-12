@@ -595,6 +595,77 @@ describe('ChatStreamRegistry', () => {
     });
   });
 
+  /**
+   * Defect 3.1. Retry after "Connection dropped" took TWO presses, and the
+   * first press replaced the card with a scarier "Model turn ended
+   * unexpectedly".
+   *
+   * The pointer `ambiguousRetryTurnId` makes the first press an ATTACH, which
+   * returns before the resubmit. When the daemon answers that attach with its
+   * synthesized `stream_ended_without_terminal` — `TurnStream::close` for a
+   * turn with no writer — the ambiguity is RESOLVED: the turn is over and
+   * produced nothing. The press should carry on to the resubmit rather than
+   * paint an internal-scope failure and stop.
+   *
+   * ⚠ Only for that authoritative answer. An attach that could not be made at
+   * all (the daemon is unreachable) leaves the outcome genuinely ambiguous, and
+   * resubmitting there could double-run a turn that is still alive server-side.
+   * That path keeps its second press; see the case below it.
+   */
+  it('resubmits in ONE press when the daemon says the turn ended without a result', async () => {
+    const sessionId = 'retry-dead-turn';
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply)
+      // 1. the send whose response was lost after the daemon accepted it
+      .mockRejectedValueOnce(new TypeError('Response lost after accept'))
+      // 2. the attach: the daemon closes the turn with no result
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          yield {
+            type: 'Error',
+            error: 'The stream for this turn ended without a result. Please retry.',
+            code: 'stream_ended_without_terminal',
+            scope: 'internal',
+            retryable: true,
+          } as MessageEvent;
+        })(),
+      } as never)
+      // 3. the resubmit this press should reach on its own
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+        })(),
+      } as never);
+
+    const controller = registry.getController(sessionId);
+    await controller.handleSubmit('do the thing');
+
+    await controller.retryTurn();
+
+    expect(reply).toHaveBeenCalledTimes(3);
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+    expect(controller.getSnapshot().messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('still takes a second press when the attach itself could not be made', async () => {
+    const sessionId = 'retry-attach-unreachable';
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply)
+      .mockRejectedValueOnce(new TypeError('Response lost after accept'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const controller = registry.getController(sessionId);
+    await controller.handleSubmit('do the thing');
+
+    await controller.retryTurn();
+
+    // Two calls, not three: the turn may still be alive on the daemon, and a
+    // blind resubmit would run it twice.
+    expect(reply).toHaveBeenCalledTimes(2);
+  });
+
   it('attaches to a still-running ambiguous turn instead of starting another one', async () => {
     const sessionId = 'retry-running-attach';
     const registry = new ChatStreamRegistry();

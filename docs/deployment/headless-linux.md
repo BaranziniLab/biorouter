@@ -186,6 +186,29 @@ reaching the port as equivalent to a shell account.
   nginx, Caddy or another reverse proxy on the public port. Serve it at the **root of a hostname**,
   not under a path prefix; the interface is served at `/` and a subpath is not supported
   ([decision SD-4](serve-decisions.md)).
+
+  The proxy must also pass WebSocket upgrades through, forward the browser's original `Host`,
+  and set `X-Forwarded-Proto`. The daemon's socket gates admit a page only from the origin the
+  browser reached it at, in scheme, host and port, and the scheme is `http` unless that header
+  says `https` — so without it, the interface loads over `https` and its live views never
+  connect. Caddy does all three by default. For nginx:
+
+  ```nginx
+  location / {
+      proxy_pass http://127.0.0.1:8765;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Forwarded-Proto $scheme;
+  }
+  ```
+
+  `$http_host` rather than `$host`, which drops a non-default port and so no longer matches the
+  page's origin. `proxy_set_header` **replaces** the header, which is what you want: where a proxy
+  chain appends instead, the daemon reads the last value — the one the proxy nearest it wrote — so
+  an inner proxy that overwrites a correct `https` with its own `http` will refuse every WebSocket
+  upgrade. Have inner proxies pass the value through rather than re-derive it.
 - **Restrict the source addresses.** Scope a cloud security group or a host firewall rule to the
   addresses that need it, rather than relying on the token alone:
 

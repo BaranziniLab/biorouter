@@ -91,13 +91,13 @@ describe('LeadWorkerSettings', () => {
 
     // Wait for modal content (not loading)
     await waitFor(() => {
-      expect(screen.getByText('Lead/Worker Mode')).toBeInTheDocument();
+      expect(screen.getByText('Lead/worker mode')).toBeInTheDocument();
     });
 
     // Labels should be present with back-to-list controls
     await waitFor(() => {
-      expect(screen.getByText('Lead Model')).toBeInTheDocument();
-      expect(screen.getByText('Worker Model')).toBeInTheDocument();
+      expect(screen.getByText('Lead model')).toBeInTheDocument();
+      expect(screen.getByText('Worker model')).toBeInTheDocument();
       // Back to model list appears for each section when in custom mode
       const backLinks = screen.getAllByText('Back to model list');
       expect(backLinks.length).toBeGreaterThanOrEqual(2);
@@ -110,7 +110,7 @@ describe('LeadWorkerSettings', () => {
     expect(workerInput.value).toBe('my-custom-worker');
 
     // Save settings
-    const saveBtn = screen.getByRole('button', { name: 'Save Settings' });
+    const saveBtn = screen.getByRole('button', { name: 'Save settings' });
     expect(saveBtn).toBeEnabled();
     fireEvent.click(saveBtn);
 
@@ -130,7 +130,7 @@ describe('LeadWorkerSettings', () => {
     render(<LeadWorkerSettings isOpen={true} onClose={onClose} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Lead/Worker Mode')).toBeInTheDocument();
+      expect(screen.getByText('Lead/worker mode')).toBeInTheDocument();
     });
 
     // Toggle off. The enable control is a Radix Switch (role="switch"),
@@ -140,7 +140,7 @@ describe('LeadWorkerSettings', () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-checked', 'false');
 
-    const saveBtn = screen.getByRole('button', { name: 'Save Settings' });
+    const saveBtn = screen.getByRole('button', { name: 'Save settings' });
     expect(saveBtn).toBeEnabled();
     fireEvent.click(saveBtn);
 
