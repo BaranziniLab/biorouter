@@ -21,6 +21,9 @@ import { BrxtInstallModal } from '../BrxtInstallModal';
 import BrowseExtensionsModal from '../baam/BrowseExtensionsModal';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { PageHeader } from '../Layout/PageHeader';
+import { ExtensionLoadFailureNotice } from './ExtensionLoadFailureNotice';
+import { startNewSession } from '../../sessions';
+import { getInitialWorkingDir } from '../../utils/workingDir';
 
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -33,6 +36,7 @@ export function getExtensionScrollBehavior(): 'auto' | 'smooth' {
 }
 
 export default function ExtensionsView({
+  setView,
   viewOptions,
 }: {
   onClose: () => void;
@@ -199,6 +203,13 @@ export default function ExtensionsView({
         />
 
         <ReadableContent size="chat" className="px-6 pt-6 pb-8">
+          {/* Above the list, because it is about an extension the list may not
+              contain. The toast that used to carry this news pointed here and
+              the page answered "No extensions yet" — the destination denied the
+              failure existed. */}
+          <ExtensionLoadFailureNotice
+            onAskBiorouter={(hints) => startNewSession(getInitialWorkingDir(), hints, setView)}
+          />
           <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search extensions...">
             <ExtensionsSection
               key={refreshKey}

@@ -10,11 +10,20 @@
 //! **What they shared.** Versa declared the public card's `AWS_REGION` and an
 //! `AWS_ENDPOINT_URL_BEDROCK` key as its own, read both (and then the process
 //! environment) as overrides, and its setup surfaces wrote both. `bedrock.rs`
-//! exports every `AWS_*` config value and secret into the process environment
+//! exported every `AWS_*` config value and secret into the process environment
 //! and promoted `AWS_ENDPOINT_URL_BEDROCK` to the variable the AWS SDK reads, so
 //! the UCSF gateway Versa persisted became the public provider's endpoint. And
 //! the SDK reads `AWS_BEARER_TOKEN_BEDROCK` from the environment on its own, and
 //! authenticates with it instead of signing whenever it is there.
+//!
+//! **The export is gone** (A1). `bedrock.rs` and `sagemaker_tgi.rs` hand their
+//! stored `AWS_*` settings to the client builder instead
+//! ([`super::aws_stored_settings`]), because exporting them published the user's
+//! real `AWS_SECRET_ACCESS_KEY` to every subprocess — the agent's own shell
+//! included — and `std::env::set_var` is unsound here besides. The rows below
+//! that pinned the *routing* consequences of the export are unchanged and still
+//! pass; `a_process_the_agent_spawns_never_sees_a_stored_aws_secret` pins the
+//! credential half.
 //!
 //! **How each row measures.** Every provider is built the way production builds
 //! it, through `from_env`, and only its HTTP transport is then swapped for the
@@ -27,12 +36,12 @@
 //!
 //! The config rows pin their inputs with `with_config_overrides`, which
 //! `get_param` consults before the environment and the file. The environment
-//! rows cannot: the SDK reads the environment through its own shim, and the
-//! public provider's `std::env::set_var` is part of what is under test. Calling
-//! it in this multi-threaded binary is unsound, and its writes would leak into
-//! every test running beside it. So those rows re-execute this test binary and
-//! run in a child process that STARTS with the environment the scenario
-//! describes and a config root of its own, as
+//! rows cannot: the SDK reads the environment through its own shim, and what a
+//! provider does or does not write to the environment is part of what is under
+//! test. Writing it from this multi-threaded binary is unsound, and the writes
+//! would leak into every test running beside it. So those rows re-execute this
+//! test binary and run in a child process that STARTS with the environment the
+//! scenario describes and a config root of its own, as
 //! `workflow::local_workflows::tests::listing_workflows_survives_a_deleted_working_directory`
 //! does for a deleted working directory.
 
@@ -464,6 +473,218 @@ async fn public_bound() -> BedrockProvider {
     .unwrap_or_else(|e| panic!("the public provider must construct from env credentials: {e}"))
 }
 
+// -------------------------------------------- the credential never leaves (A1)
+
+/// A secret that exists ONLY in BioRouter's own store. Nothing puts it in the
+/// environment, so a process that can read it read it from an export.
+const STORE_ONLY_SECRET: &str = "store-only-secret-must-never-be-exported";
+
+/// What a process spawned after the provider was bound could see, and what the
+/// provider sent — both, because the fix is only a fix if it keeps working.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Leak {
+    /// Every `AWS_*` variable visible to a process this one spawned.
+    spawned_env: std::collections::BTreeMap<String, String>,
+    sent: Sent,
+}
+
+/// **The leak, and the property that closes it.**
+///
+/// Binding a provider must not publish the user's AWS credentials to every
+/// process the agent later spawns. One of those processes is the agent's own
+/// `developer__shell`, so before this was fixed a chat on a **public** model
+/// could print the user's real `AWS_SECRET_ACCESS_KEY` — a credential the
+/// privacy lattice never sees, because its gates decide which model may read a
+/// conversation, not what a shell may read out of its own environment.
+///
+/// The scenario is the one an installed user is actually in: the credentials
+/// live in BioRouter's credential store and **nowhere else**. The child starts
+/// with no `AWS_*` variables at all (the harness scrubs them), binds the public
+/// provider exactly as production does, and only then spawns a grandchild —
+/// which inherits whatever binding the provider left behind.
+///
+/// **Fail-before evidence.** With `bedrock.rs`'s `set_aws_env_vars` closure in
+/// place this row fails on its first assertion, reporting
+/// `AWS_SECRET_ACCESS_KEY` among `spawned_env`.
+///
+/// The second half matters as much as the first: the same credential must still
+/// reach the SDK. A fix that merely stopped exporting would break every install
+/// whose keys live in the store, and would pass an assertion that only looked
+/// for absence. So the row also measures the request the provider signed.
+#[tokio::test]
+async fn a_process_the_agent_spawns_never_sees_a_stored_aws_secret() {
+    const SCENARIO: &str = "public-then-spawn";
+    const SPAWNED: &str = "public-then-spawn/spawned";
+
+    // Innermost: the process standing in for anything the agent starts. It
+    // reports the AWS view of its own environment and nothing else.
+    if child_scenario().as_deref() == Some(SPAWNED) {
+        report_as(&aws_environment());
+        return;
+    }
+
+    if child_scenario().as_deref() == Some(SCENARIO) {
+        let sent = public_sent(public_bound().await).await;
+        report_as(&Leak {
+            spawned_env: spawn_and_read_environment(
+                "a_process_the_agent_spawns_never_sees_a_stored_aws_secret",
+                SPAWNED,
+            ),
+            sent,
+        });
+        return;
+    }
+
+    let leaked: Leak = run_child_reporting(
+        "a_process_the_agent_spawns_never_sees_a_stored_aws_secret",
+        SCENARIO,
+        "AWS_REGION: us-west-2\n",
+        Some(&format!(
+            "AWS_ACCESS_KEY_ID: {PUBLIC_ACCESS_KEY}\n\
+             AWS_SECRET_ACCESS_KEY: {STORE_ONLY_SECRET}\n"
+        )),
+        &[],
+    );
+
+    assert!(
+        !leaked
+            .spawned_env
+            .values()
+            .any(|value| value == STORE_ONLY_SECRET),
+        "binding the provider published the user's AWS secret to every process \
+         it spawns afterwards — `developer__shell` included: {:?}",
+        leaked.spawned_env
+    );
+    assert!(
+        leaked.spawned_env.is_empty(),
+        "binding the provider must not write ANY `AWS_*` variable into the \
+         process environment: {:?}",
+        leaked.spawned_env
+    );
+    assert_eq!(
+        leaked.sent.signed_by(),
+        Some((PUBLIC_ACCESS_KEY, "us-west-2")),
+        "the stored credential must still reach the SDK: {:?}",
+        leaked.sent
+    );
+}
+
+/// The same store, and an `AWS_BEARER_TOKEN_BEDROCK` in the environment beside
+/// it: the scheme the SDK picks must not change.
+///
+/// The SDK reads that variable itself and prefers bearer auth over signing
+/// unless a scheme was chosen in code. Under the export the stored keys landed
+/// in the environment, where the bearer token still outranked them — so a fix
+/// that pinned `sigv4` "while it was in there" would change which credential an
+/// existing install authenticates with. `versa_bedrock` pins it because its
+/// endpoint and keys are institutional; the public card must not.
+#[tokio::test]
+async fn a_stored_credential_does_not_change_which_auth_scheme_the_sdk_picks() {
+    const SCENARIO: &str = "public-store-beside-a-bearer-token";
+    if child_scenario().as_deref() == Some(SCENARIO) {
+        report(Observed {
+            resolved: None,
+            sent: public_sent(public_bound().await).await,
+        });
+        return;
+    }
+
+    let observed = run_child_reporting::<Observed>(
+        "a_stored_credential_does_not_change_which_auth_scheme_the_sdk_picks",
+        SCENARIO,
+        "AWS_REGION: us-west-2\n",
+        Some(&format!(
+            "AWS_ACCESS_KEY_ID: {PUBLIC_ACCESS_KEY}\n\
+             AWS_SECRET_ACCESS_KEY: {STORE_ONLY_SECRET}\n"
+        )),
+        &[("AWS_BEARER_TOKEN_BEDROCK", PUBLIC_BEARER_TOKEN)],
+    );
+    assert!(
+        observed.sent.authorization.contains(PUBLIC_BEARER_TOKEN)
+            && observed.sent.signed_by().is_none(),
+        "the environment's bearer token still wins the scheme, as it did when \
+         the stored keys were exported into the environment beside it: {:?}",
+        observed.sent
+    );
+}
+
+/// The `AWS_*` variables this process can see, which is exactly what it would
+/// pass to anything it spawns.
+fn aws_environment() -> std::collections::BTreeMap<String, String> {
+    std::env::vars()
+        .filter(|(name, _)| name.starts_with("AWS_"))
+        // The harness sets these three itself to isolate the child from the
+        // developer's own AWS profile files and from instance metadata. They are
+        // the test rig, not anything the provider wrote.
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "AWS_CONFIG_FILE" | "AWS_SHARED_CREDENTIALS_FILE" | "AWS_EC2_METADATA_DISABLED"
+            )
+        })
+        .collect()
+}
+
+/// Spawn one more copy of this binary — the stand-in for anything the agent
+/// starts — and read back the AWS view of the environment it inherited.
+///
+/// Re-executing the test binary rather than running a shell keeps this row
+/// working on Windows, where the workspace's `--lib` job also runs.
+fn spawn_and_read_environment(
+    test: &str,
+    scenario: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "--nocapture",
+            &format!("providers::bedrock_namespace_tests::{test}"),
+        ])
+        // Nothing else is set: the whole measurement is what this process
+        // passes on by inheritance.
+        .env(CHILD, scenario)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(REPORT))
+        .unwrap_or_else(|| {
+            panic!(
+                "the spawned half of `{test}` reported nothing.\n--- stdout ---\n{stdout}\n\
+                 --- stderr ---\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+    serde_json::from_str(line).unwrap()
+}
+
+/// Neither public AWS provider may write the process environment again.
+///
+/// The closure this replaced was copied verbatim from one file into the other,
+/// which is how one review missed it twice. A grep over both sources is the
+/// only assertion that survives a third copy.
+#[test]
+fn neither_aws_provider_exports_anything_into_the_environment() {
+    // Assembled, not written, so this line cannot match itself.
+    let needle = concat!("set_", "var");
+    for (name, source) in [
+        ("bedrock.rs", include_str!("bedrock.rs")),
+        ("sagemaker_tgi.rs", include_str!("sagemaker_tgi.rs")),
+    ] {
+        let writes = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(needle))
+            .count();
+        assert_eq!(
+            writes, 0,
+            "{name} writes the process environment; hand the value to the \
+             client builder instead (see `providers::aws_stored_settings`)"
+        );
+    }
+}
+
 // ------------------------------------------------------------ child process
 
 /// Names the scenario a re-executed copy of this binary is to run. A
@@ -476,7 +697,11 @@ fn child_scenario() -> Option<String> {
 }
 
 fn report(observed: Observed) {
-    println!("{REPORT}{}", serde_json::to_string(&observed).unwrap());
+    report_as(&observed);
+}
+
+fn report_as<T: serde::Serialize>(observed: &T) {
+    println!("{REPORT}{}", serde_json::to_string(observed).unwrap());
 }
 
 /// Re-run `test`, a test in this module, as a child process whose half of the
@@ -484,6 +709,23 @@ fn report(observed: Observed) {
 /// Bedrock settings this process inherited, over a config root of its own that
 /// holds `config_yaml`, with no AWS profile files and no instance metadata.
 fn run_child(test: &str, scenario: &str, config_yaml: &str, env: &[(&str, &str)]) -> Observed {
+    run_child_reporting(test, scenario, config_yaml, None, env)
+}
+
+/// [`run_child`], for a scenario that reports something other than [`Observed`]
+/// and may seed the child's **secret** store as well as its config file.
+///
+/// `secrets_yaml` lands at `<root>/config/secrets.yaml`, which is where
+/// `Config::all_secrets` reads under `BIOROUTER_DISABLE_KEYRING=true` — the one
+/// way a test can put a value in front of the code paths that handle real
+/// credentials without touching the developer's own Keychain.
+fn run_child_reporting<T: serde::de::DeserializeOwned>(
+    test: &str,
+    scenario: &str,
+    config_yaml: &str,
+    secrets_yaml: Option<&str>,
+    env: &[(&str, &str)],
+) -> T {
     // A child that reached a parent half would spawn its own child, and so on:
     // stop at the first one rather than fork without end.
     assert!(
@@ -494,6 +736,9 @@ fn run_child(test: &str, scenario: &str, config_yaml: &str, env: &[(&str, &str)]
     let config_dir = root.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(config_dir.join("config.yaml"), config_yaml).unwrap();
+    if let Some(secrets) = secrets_yaml {
+        std::fs::write(config_dir.join("secrets.yaml"), secrets).unwrap();
+    }
 
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command.args([

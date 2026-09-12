@@ -218,7 +218,7 @@ edges:
 
 # Tocilizumab
 
-An IL-6 receptor antagonist, trialled in severe COVID-19.
+An IL-6 receptor antagonist, trialed in severe COVID-19.
 ```
 
 ## Pitfalls

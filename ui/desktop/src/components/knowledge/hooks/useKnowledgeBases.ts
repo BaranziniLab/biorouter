@@ -5,7 +5,7 @@ import type { KbFormat, Manifest } from '../../../api/types.gen';
 import { knowledgeFetch } from './knowledgeRequest';
 
 export function useKnowledgeBases() {
-  const { refresh, setPrimaryKbId, primaryKbId } = useKnowledge();
+  const { refresh, setPrimaryKbId } = useKnowledge();
 
   /**
    * Create a base.
@@ -60,13 +60,24 @@ export function useKnowledgeBases() {
     [refresh]
   );
 
+  /**
+   * Delete a base, then read back what the daemon made of the selection.
+   *
+   * ⚠ **No `setPrimaryKbId(null)` here, and there must not be one.** The delete
+   * itself is the repair (D2): the daemon clears every pointer that named the
+   * base — the machine default and each chat that had pinned it — to the
+   * explicit "no primary", and leaves a chat that merely inherited following the
+   * default. Writing `clear_primary` from here on top of that installed a
+   * durable "this chat has no primary" in a chat that never pinned the base,
+   * from a pointer this renderer may only have had cached (QA 2026-09-10 F14).
+   * `refresh` re-reads both the list and the selection.
+   */
   const remove = useCallback(
     async (id: string): Promise<void> => {
       await apiDelete({ throwOnError: true, path: { id } });
-      if (primaryKbId === id) setPrimaryKbId(null);
       await refresh();
     },
-    [refresh, primaryKbId, setPrimaryKbId]
+    [refresh]
   );
 
   const exportArchive = useCallback(async (id: string, name: string): Promise<void> => {

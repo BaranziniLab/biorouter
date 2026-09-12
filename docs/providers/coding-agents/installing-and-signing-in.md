@@ -126,6 +126,23 @@ Find the real path with `which claude` or `which codex` in the terminal where it
 > and never appear in the model picker. `llamacpp` solves the same problem the same way with
 > `LLAMACPP_PORT`.
 
+### What "Configured" means for these two
+
+A saved key is necessary but not sufficient. `GET /config/providers` reports a coding agent as
+configured only when its key is saved **and** the command it names resolves — the same lookup
+`GET /coding_agents/status` uses for its **Not installed** state, so the pill and the
+**Configured** check on one row can no longer disagree. Point `CODEX_COMMAND` at a path that does
+not exist and the row loses its check; the model picker keeps Codex in its list, disabled, with
+the reason on the row (*"Codex is not installed, or is not on a path Biorouter searches"*),
+instead of offering a provider whose bind would fail. Fix the path, or install the CLI and press
+**Check again**, and both come back — the re-check re-reads the provider list as well as the
+status.
+
+Sign-in is deliberately **not** part of "configured". Learning it means running the CLI, and
+`GET /config/providers` runs for every provider on every settings open, under the three-second
+budget described below. The pill says whether you are signed in; a turn that reaches a signed-out
+CLI fails with the vendor's own login command.
+
 ## Verifying from the command line
 
 ```bash

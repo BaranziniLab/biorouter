@@ -201,13 +201,13 @@ touch points are unrelated: `frontend.yml`'s `shelf` job installs chromium for t
 BAAM privacy facet, its `preview-panel` job runs `scripts/preview-panel-e2e.mjs`, and
 `apps-smoke.yml` installs chromium for a `cargo test`.
 
-The `preview-panel` job (`.github/workflows/frontend.yml:299-318`) is the right template
+The `preview-panel` job (`.github/workflows/frontend.yml:312-331`) is the right template
 and the only place in the repo that already downloads Electron for a test:
 
 - **A `macos-latest` runner.** The suite launches the real Electron runtime, and the
   packaged variant is macOS-specific.
 - **`env -u ELECTRON_SKIP_BINARY_DOWNLOAD npm ci`.** The workflow-level environment sets
-  `ELECTRON_SKIP_BINARY_DOWNLOAD: "1"` (`frontend.yml:44`) so vitest never downloads a
+  `ELECTRON_SKIP_BINARY_DOWNLOAD: "1"` (`frontend.yml:48`) so vitest never downloads a
   ~150 MB binary; a Playwright-Electron job has to opt back in, exactly as `preview-panel`
   does.
 - **A `VERSA_AZURE_API_KEY` secret**, for any LIVE spec. This is the decision, not a

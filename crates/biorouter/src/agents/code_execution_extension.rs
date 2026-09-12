@@ -90,6 +90,35 @@ type ToolCallRequest = (
     tokio::sync::oneshot::Sender<Result<String, String>>,
 );
 
+/// Whether a dispatched name reaches this extension's `execute_code`: the
+/// prefixed form, or the bare one `ExtensionManager::prefixed_tool_name`
+/// resolves, because models strip prefixes. The agent loop asks this to decide
+/// which of its calls need a judge for the calls they make (QA finding F7).
+pub(crate) fn is_execute_code_call(name: &str) -> bool {
+    name == "execute_code"
+        || name
+            .strip_prefix(EXTENSION_NAME)
+            .and_then(|rest| rest.strip_prefix("__"))
+            == Some("execute_code")
+}
+
+/// QA finding F7: the agent's judge for one script's calls, and the grades of
+/// the script's own catalogue it judges them with. See `script_call_gate`.
+struct ScriptJudge {
+    gate: Arc<crate::agents::script_call_gate::ScriptCallGate>,
+    risks: crate::permission::tool_risk::ToolRiskRegistry,
+}
+
+/// A script's call refused before dispatch, by whichever check owed it.
+struct PreDispatchRefusal {
+    /// The executed-calls record's failure class.
+    kind: &'static str,
+    /// User-safe text for the executed-calls view; `None` shows only `kind`.
+    user_note: Option<&'static str>,
+    /// What the script is told.
+    error: String,
+}
+
 struct SandboxHooks;
 
 impl HostHooks for SandboxHooks {
@@ -1776,6 +1805,20 @@ impl CodeExecutionClient {
         &self,
         admitted: Option<crate::privacy::CallCapability>,
     ) -> Vec<ToolInfo> {
+        self.get_catalogue(admitted)
+            .await
+            .iter()
+            .filter_map(ToolInfo::from_mcp_tool)
+            .collect()
+    }
+
+    /// The catalogue as MCP tools, annotations included — what
+    /// [`Self::get_tool_infos`] renders into import bindings, and what a script's
+    /// calls are risk-graded from (QA finding F7, `script_call_gate`).
+    async fn get_catalogue(
+        &self,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> Vec<McpTool> {
         let Some(manager) = self
             .context
             .extension_manager
@@ -1785,15 +1828,10 @@ impl CodeExecutionClient {
             return Vec::new();
         };
 
-        match manager
+        manager
             .get_prefixed_tools_excluding(EXTENSION_NAME, admitted)
             .await
-        {
-            Ok(tools) if !tools.is_empty() => {
-                tools.iter().filter_map(ToolInfo::from_mcp_tool).collect()
-            }
-            _ => Vec::new(),
-        }
+            .unwrap_or_default()
     }
 
     async fn handle_execute_code(
@@ -1810,10 +1848,50 @@ impl CodeExecutionClient {
             .ok_or("Missing required parameter: code")?
             .to_string();
 
-        let tools = self.get_tool_infos(Some(cap)).await;
+        let catalogue = self.get_catalogue(Some(cap)).await;
+        let tools: Vec<ToolInfo> = catalogue
+            .iter()
+            .filter_map(ToolInfo::from_mcp_tool)
+            .collect();
+        // QA finding F7: the judge the agent loop installed around this call,
+        // if it was the agent loop that dispatched it. Read HERE, on the task
+        // the scope covers — the handler below is spawned, and a task-local does
+        // not follow a spawn. See `script_call_gate`.
+        //
+        // ⚠ An absent judge is never read as "nothing to judge". `judge_for`
+        // tells a person-driven dispatch (benign, unchanged) apart from an
+        // agent-loop dispatch whose scope was lost (a defect, and every call the
+        // script makes would go past the permission system), and the second
+        // refuses the whole script rather than running it unjudged.
+        let judge = match crate::agents::script_call_gate::judge_for(session_id) {
+            crate::agents::script_call_gate::ScriptJudging::By(gate) => {
+                let risks = crate::permission::tool_risk::ToolRiskRegistry::new();
+                // Graded from the exact list the script's imports are built from,
+                // so every call it can make has its own tool's grade.
+                risks.refresh_from_tools(&catalogue);
+                Some(ScriptJudge { gate, risks })
+            }
+            crate::agents::script_call_gate::ScriptJudging::PersonDriven => None,
+            crate::agents::script_call_gate::ScriptJudging::JudgeLost => {
+                tracing::error!(
+                    counter.biorouter.script_call_judge_lost = 1,
+                    session = %session_id,
+                    "an execute_code call dispatched by the agent loop reached the handler with \
+                     no script-call judge installed; refusing the script rather than running its \
+                     tool calls unjudged (a task-local does not survive a tokio::spawn — see \
+                     agents::script_call_gate)"
+                );
+                return Err(crate::agents::script_call_gate::JUDGE_LOST_REFUSAL.to_string());
+            }
+        };
+        // …and whether a person can be asked at all. Also a task-local, also
+        // lost across the spawn: without this a scheduled run's script would
+        // park an ask nobody can answer until its time-to-live, where every other
+        // ask in that run is refused at once (`user_surface`).
+        let no_human_surface = crate::user_surface::no_human_surface();
         let collected_artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
         let (call_tx, call_rx) = mpsc::unbounded_channel();
-        let tool_handler = tokio::spawn(Self::run_tool_handler(
+        let handler = Self::run_tool_handler(
             session_id.to_string(),
             // Issue #56: the capability this `execute_code` call was admitted
             // on, carried down to every sub-call the script makes. The bridge
@@ -1821,11 +1899,19 @@ impl CodeExecutionClient {
             // is nothing here it could sample even if it wanted to — which is
             // the point: a script's tool call inherits the script's permission.
             cap,
+            judge,
             call_rx,
             self.context.extension_manager.clone(),
             Arc::clone(&collected_artifacts),
             cancellation_token.clone(),
-        ));
+        );
+        let tool_handler = tokio::spawn(async move {
+            if no_human_surface {
+                crate::user_surface::without_human_surface(handler).await;
+            } else {
+                handler.await;
+            }
+        });
 
         let js_task = tokio::task::spawn_blocking(move || run_js_module(&code, &tools, call_tx));
         let js_result = tokio::select! {
@@ -2204,15 +2290,20 @@ impl CodeExecutionClient {
     /// Refuse one sub-call before it is dispatched: record the failure for
     /// telemetry and hand the script its error.
     ///
-    /// The two pre-dispatch guards (the tool-call limit and the global-memory
-    /// consent boundary) do the same three things in the same order, and both
-    /// must record *before* answering the script — a refusal the record misses
-    /// is a call the transparency view never shows.
+    /// The pre-dispatch guards (the tool-call limit, the uninspected-boundary
+    /// refusals and the permission judge) do the same three things in the same
+    /// order, and all must record *before* answering the script — a refusal the
+    /// record misses is a call the transparency view never shows.
+    ///
+    /// `user_note` is what the executed-calls view shows. It must already be safe
+    /// to show the user — see [`ToolCallRecord::failed`]; `None` shows only the
+    /// failure class.
     async fn refuse_sub_call(
         collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
         tool_name: &str,
         arguments: &str,
         failure_kind: &'static str,
+        user_note: Option<&str>,
         error: String,
         response_tx: tokio::sync::oneshot::Sender<Result<String, String>>,
     ) {
@@ -2222,10 +2313,57 @@ impl CodeExecutionClient {
             .push_tool_call(ToolCallRecord::failed(
                 tool_name,
                 arguments,
-                None,
+                user_note,
                 failure_kind,
             ));
         let _ = response_tx.send(Err(error));
+    }
+
+    /// QA finding F7: put one script call to the agent's judge, if there is one.
+    ///
+    /// `Ok` is the arguments to dispatch — the script's own, or a PreToolUse
+    /// hook's rewrite of them, because what runs is what was judged. `Err` is the
+    /// refusal the script gets instead, as the same sentence a direct call gets.
+    ///
+    /// `None` here is a *decision already taken*, not an absence:
+    /// `handle_execute_code` asked `script_call_gate::judge_for` once, at the one
+    /// place that can tell a person-driven dispatch from an agent-loop dispatch
+    /// whose judge was lost, and only the first reaches here. ⚠ Do not re-derive
+    /// that meaning — a second polarity decision is how the two collapse back
+    /// into one silent fail-open.
+    async fn judged_arguments(
+        judge: Option<&ScriptJudge>,
+        cap: crate::privacy::CallCapability,
+        tool_name: &str,
+        arguments: String,
+        cancellation_token: &CancellationToken,
+    ) -> Result<String, crate::agents::script_call_gate::ScriptCallRefusal> {
+        use crate::agents::script_call_gate::ScriptCallVerdict;
+
+        let Some(judge) = judge else {
+            return Ok(arguments);
+        };
+        // Parsed exactly as `dispatch_sub_call` parses them, so the call that is
+        // judged is the call that would be dispatched.
+        let parsed: Option<JsonObject> = serde_json::from_str(&arguments).ok();
+        let call = CallToolRequestParams {
+            task: None,
+            name: tool_name.to_string().into(),
+            arguments: parsed.clone(),
+            meta: None,
+        };
+        match judge
+            .gate
+            .judge(call, cap, &judge.risks, cancellation_token)
+            .await
+        {
+            ScriptCallVerdict::Run(approved) if approved.arguments == parsed => Ok(arguments),
+            ScriptCallVerdict::Run(approved) => Ok(serde_json::to_string(
+                &approved.arguments.unwrap_or_default(),
+            )
+            .unwrap_or(arguments)),
+            ScriptCallVerdict::Refuse(refusal) => Err(refusal),
+        }
     }
 
     /// Dispatch one sub-call and report how it went.
@@ -2322,8 +2460,12 @@ impl CodeExecutionClient {
     /// The JS sandbox hands a script's inner tool calls straight to
     /// `ExtensionManager::dispatch_tool_call`, so the whole inspector stack —
     /// which is where the global-memory consent gate, the session-store refusal
-    /// and issue #56's first-crossing disclosure all live — is simply not on
-    /// this path. Each of the three is therefore re-asked here, against the
+    /// and issue #56's first-crossing disclosure all live — was not on this
+    /// path. Since QA finding F7 it is, when the agent loop dispatched the
+    /// script (`script_call_gate`); it is still not when a person ran the script
+    /// through `POST /agent/call_tool`, and these refusals run FIRST either way,
+    /// so none of them becomes an approval card. Each of the three is therefore
+    /// re-asked here, against the
     /// **already-evaluated** arguments rather than against the script text: a
     /// path or a payload the script computed at runtime is fully assembled by
     /// the time it arrives, which is what makes these boundary checks strictly
@@ -2385,9 +2527,87 @@ impl CodeExecutionClient {
         None
     }
 
+    /// Every check a script's call passes before it is dispatched, in order.
+    ///
+    /// `Ok` is the arguments to dispatch. `Err` is the one refusal the loop
+    /// answers with, from whichever check owed it — one refusal branch, however
+    /// many checks feed it.
+    async fn admit_sub_call(
+        session_id: &str,
+        cap: crate::privacy::CallCapability,
+        judge: Option<&ScriptJudge>,
+        tool_name: &str,
+        arguments: &str,
+        cancellation_token: &CancellationToken,
+    ) -> Result<String, PreDispatchRefusal> {
+        // Issue #63 review, finding 3. A script's tool calls go straight to
+        // the extension manager below, and until F7 no `ToolInspector` — the
+        // global-memory consent gate included — saw them at all; none still
+        // does when no agent loop dispatched the script (`judge` is `None`).
+        // The gate had compensated by scanning the *script text* for an
+        // embedded memory call, which a runtime-assembled call walks past
+        // (`is_global: flag`). This is the same decision taken where there
+        // is nothing left to compute: the dispatched name and the evaluated
+        // arguments. A boundary that cannot ask the user refuses — and it keeps
+        // refusing when a judge below could ask: turning one of these refusals
+        // into a card is a decision of its own, not a side effect of F7.
+        // Every boundary refusal this door owes, asked in one place. See
+        // `uninspected_boundary_refusal` for why a door that no
+        // `ToolInspector` reaches has to carry its own.
+        Self::boundary_check(cap, session_id, tool_name, arguments).await?;
+        // QA finding F7: the call faces the permission decision it would face
+        // as a direct call — the agent's inspectors, its mode, and the user's
+        // allow/deny entries under THIS tool's name — and an ask goes to the
+        // person on a card naming it. After the boundary refusals, so nothing
+        // they refuse becomes something a card can allow.
+        let admitted = Self::judged_arguments(
+            judge,
+            cap,
+            tool_name,
+            arguments.to_string(),
+            cancellation_token,
+        )
+        .await
+        .map_err(|refusal| PreDispatchRefusal {
+            kind: refusal.kind,
+            user_note: Some(refusal.user_note),
+            error: attribute_sub_call_error(tool_name, refusal.message),
+        })?;
+        // …and that holds for what actually RUNS. A PreToolUse hook may have
+        // rewritten the arguments, and the refusals above only ever saw the
+        // script's own; a rewrite must not be the one way a call that names the
+        // global memory store or the transcript database reaches a card instead
+        // of this refusal.
+        if admitted != arguments {
+            Self::boundary_check(cap, session_id, tool_name, &admitted).await?;
+        }
+        Ok(admitted)
+    }
+
+    /// [`Self::uninspected_boundary_refusal`] on one set of arguments, as the
+    /// refusal the loop answers with.
+    async fn boundary_check(
+        cap: crate::privacy::CallCapability,
+        session_id: &str,
+        tool_name: &str,
+        arguments: &str,
+    ) -> Result<(), PreDispatchRefusal> {
+        let evaluated = serde_json::from_str::<serde_json::Value>(arguments).ok();
+        let evaluated = evaluated.as_ref().and_then(serde_json::Value::as_object);
+        match Self::uninspected_boundary_refusal(cap, session_id, tool_name, evaluated).await {
+            Some((kind, refusal)) => Err(PreDispatchRefusal {
+                kind,
+                user_note: None,
+                error: refusal,
+            }),
+            None => Ok(()),
+        }
+    }
+
     async fn run_tool_handler(
         session_id: String,
         cap: crate::privacy::CallCapability,
+        judge: Option<ScriptJudge>,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
         extension_manager: Option<std::sync::Weak<crate::agents::ExtensionManager>>,
         collected_artifacts: Arc<Mutex<CollectedArtifacts>>,
@@ -2415,39 +2635,38 @@ impl CodeExecutionClient {
                     &tool_name,
                     &arguments,
                     "call_limit",
+                    None,
                     format!("JavaScript exceeded the {MAX_JS_TOOL_CALLS} tool-call limit"),
                     response_tx,
                 )
                 .await;
                 continue;
             }
-            // Issue #63 review, finding 3. A script's tool calls go straight to
-            // the extension manager below, so no `ToolInspector` — the
-            // global-memory consent gate included — ever sees them. The gate
-            // compensated by scanning the *script text* for an embedded memory
-            // call, which a runtime-assembled call walks past
-            // (`is_global: flag`). This is the same decision taken where there
-            // is nothing left to compute: the dispatched name and the evaluated
-            // arguments. A boundary that cannot ask the user refuses.
-            let evaluated = serde_json::from_str::<serde_json::Value>(&arguments).ok();
-            let evaluated = evaluated.as_ref().and_then(serde_json::Value::as_object);
-            // Every boundary refusal this door owes, asked in one place. See
-            // `uninspected_boundary_refusal` for why a door that no
-            // `ToolInspector` reaches has to carry its own.
-            if let Some((kind, refusal)) =
-                Self::uninspected_boundary_refusal(cap, &session_id, &tool_name, evaluated).await
+            let arguments = match Self::admit_sub_call(
+                &session_id,
+                cap,
+                judge.as_ref(),
+                &tool_name,
+                &arguments,
+                &cancellation_token,
+            )
+            .await
             {
-                Self::refuse_sub_call(
-                    &collected_artifacts,
-                    &tool_name,
-                    &arguments,
-                    kind,
-                    refusal,
-                    response_tx,
-                )
-                .await;
-                continue;
-            }
+                Ok(admitted) => admitted,
+                Err(refusal) => {
+                    Self::refuse_sub_call(
+                        &collected_artifacts,
+                        &tool_name,
+                        &arguments,
+                        refusal.kind,
+                        refusal.user_note,
+                        refusal.error,
+                        response_tx,
+                    )
+                    .await;
+                    continue;
+                }
+            };
             let (result, mut failure_kind, user_error, todo_task) = Self::dispatch_sub_call(
                 &session_id,
                 cap,
@@ -2740,6 +2959,54 @@ mod tests {
     use rmcp::object;
     use std::sync::Arc;
     use test_case::test_case;
+
+    /// QA finding F7. A PreToolUse hook's rewrite is what runs, so the boundary
+    /// refusals have to see the rewrite as well as the script's own arguments:
+    /// a hook that turns a harmless command into one naming the machine-wide
+    /// memory store must meet the outright refusal the script's own call would
+    /// have met — not a card, and not a dispatch.
+    #[tokio::test]
+    async fn a_hook_rewrite_cannot_carry_a_scripts_call_past_the_boundary_refusals() {
+        use crate::agents::script_call_gate::test_support::{gate, hooks_rewriting_shell_to};
+
+        // The store is resolved TWICE — here, and inside the boundary check —
+        // and both follow the process-global `BIOROUTER_PATH_ROOT`, which other
+        // tests change under `env_lock`. Measured flaking without this. Hold
+        // env_lock's one global mutex, writing NOTHING: pinning the variable to
+        // a value read outside the lock (`pinned_store_root`'s shape) can catch
+        // another holder's transient root and republish it to every unguarded
+        // reader for the length of this test.
+        let _env = env_lock::lock_env(Vec::<(&str, Option<&str>)>::new());
+
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let store = biorouter_mcp::global_memory_dir().join("probe.txt");
+        let hooks = hooks_rewriting_shell_to(&format!("cat '{}'", store.display()));
+        // Auto mode, and no memory inspector in this gate: the judge itself lets
+        // the rewrite through, so a refusal can only come from the boundary.
+        let (gate, _permissions) =
+            gate(dir.path(), crate::config::BioRouterMode::Auto, hooks, false).await;
+        let judge = ScriptJudge {
+            gate: Arc::new(gate),
+            risks: crate::permission::tool_risk::ToolRiskRegistry::new(),
+        };
+
+        let refusal = CodeExecutionClient::admit_sub_call(
+            "boundary-after-rewrite",
+            crate::privacy::CallCapability::for_test_restricted(),
+            Some(&judge),
+            "developer__shell",
+            r#"{"command":"echo harmless"}"#,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("a rewrite naming the global memory store must be refused");
+        assert_eq!(refusal.kind, "global_memory_consent");
+        assert!(
+            refusal.error.contains("global memory store"),
+            "{}",
+            refusal.error
+        );
+    }
 
     /// Issue #141. A script naming a `platform__*` tool used to fall through to
     /// `ExtensionManager::dispatch_tool_call`, which does not know these tools
@@ -3421,6 +3688,7 @@ mod tests {
         let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
             "cancel-session".to_string(),
             crate::privacy::CallCapability::for_test_restricted(),
+            None,
             call_rx,
             None,
             Arc::clone(&collected),
@@ -3442,6 +3710,7 @@ mod tests {
         let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
             "telemetry-session".to_string(),
             crate::privacy::CallCapability::for_test_restricted(),
+            None,
             call_rx,
             None,
             Arc::clone(&collected),
@@ -3567,6 +3836,7 @@ mod tests {
         let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
             session.id,
             crate::privacy::CallCapability::for_test_restricted(),
+            None,
             call_rx,
             Some(Arc::downgrade(&manager)),
             Arc::clone(&collected),

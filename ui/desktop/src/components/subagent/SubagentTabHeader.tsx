@@ -6,10 +6,20 @@
  * resolves the parent's tool call as Incomplete (the backend path — the button
  * merely posts /agent/cancel via onStop). Closing the tab never kills the
  * child; Stop is the only kill switch here.
+ *
+ * ⚠ In a browser there is no Stop to offer. The daemon behind `biorouter serve`
+ * holds no user-action key, so it refuses `/agent/cancel` for a subagent's chat
+ * from every caller (SD-11), and SD-8 wants that said before the click rather
+ * than after it. The header therefore puts one line of explanation where the
+ * button would be, as `ToolCallConfirmation` does for Allow and Deny. It asks
+ * the surface itself rather than taking a prop: every header this component
+ * draws is a subagent's, so there is no chat it could be wrong about, and no
+ * caller that could forget to pass it.
  */
 import { useState } from 'react';
 import { Button } from '../ui/button';
 import { unwrapGuardrailFrame } from '../../utils/guardrailFrame';
+import { SUBAGENT_STOP_NEEDS_DESKTOP, subagentTabReadOnlyReason } from './subagentReadOnly';
 
 export function SubagentTabHeader({
   sessionId,
@@ -34,6 +44,7 @@ export function SubagentTabHeader({
 }) {
   const [expanded, setExpanded] = useState(false);
   const spawnContextId = `subagent-spawn-context-${sessionId}`;
+  const stopUnavailable = subagentTabReadOnlyReason();
   return (
     <>
       <div
@@ -98,17 +109,29 @@ export function SubagentTabHeader({
             spawn context
           </button>
         )}
-        {running && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto flex-none"
-            onClick={onStop}
-            aria-label="Stop subagent"
-          >
-            Stop subagent
-          </Button>
-        )}
+        {running &&
+          (stopUnavailable ? (
+            // Text, not a disabled button: a disabled control hides its reason
+            // behind a hover it may never get. The full sentence is in `title`,
+            // and in the note that takes the composer's place below.
+            <span
+              className="ml-auto flex-none text-supporting text-text-subtle"
+              title={stopUnavailable}
+              data-testid="subagent-stop-unavailable"
+            >
+              {SUBAGENT_STOP_NEEDS_DESKTOP}
+            </span>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto flex-none"
+              onClick={onStop}
+              aria-label="Stop subagent"
+            >
+              Stop subagent
+            </Button>
+          ))}
       </div>
       {/* Below the band, not inside it: the band is a fixed `h-chrome` so it
           stays exactly as tall as the ordinary chat header whether this is open

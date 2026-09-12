@@ -3,12 +3,13 @@ import { Button } from '../ui/button';
 import { toastSuccess, toastError } from '../../toasts';
 import {
   loadRegistry,
-  skillMatches,
+  rankSkills,
   catalogFreshnessLine,
   type BaamRegistry,
   type RegistrySkill,
   type SkillCategory,
 } from './registry';
+import { isBrowseQuery } from './search';
 import { installRegistrySkill } from './installSkill';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 
@@ -76,19 +77,28 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const isInstalled = (s: RegistrySkill) =>
     installedIds.has(s.id.toLowerCase()) || installedIds.has(s.name.toLowerCase());
 
+  /** Best match first under a query; registry order when there is none. */
   const filtered = useMemo(() => {
     if (!registry) return [];
-    return registry.skills.filter(
-      (s) => (filter === 'All' || s.category === filter) && skillMatches(s, search)
-    );
+    const inCategory = registry.skills.filter((s) => filter === 'All' || s.category === filter);
+    return rankSkills(inCategory, search).hits.map((hit) => hit.entry);
   }, [registry, filter, search]);
 
-  const grouped = useMemo(() => {
-    const map = new Map<SkillCategory, RegistrySkill[]>();
-    for (const cat of CATEGORY_ORDER) map.set(cat, []);
-    for (const s of filtered) map.get(s.category)?.push(s);
-    return map;
-  }, [filtered]);
+  /**
+   * Browsing groups the catalog under its category headings. A search is one
+   * list in rank order instead: under the headings, a Core skill matching one
+   * word of the query would sit above a Biomedical skill matching all of them.
+   */
+  const sections = useMemo(() => {
+    if (!isBrowseQuery(search)) {
+      return filtered.length > 0 ? [{ key: 'matches', label: 'Matches', items: filtered }] : [];
+    }
+    return CATEGORY_ORDER.map((cat) => ({
+      key: cat,
+      label: CATEGORY_LABELS[cat],
+      items: filtered.filter((s) => s.category === cat),
+    })).filter((section) => section.items.length > 0);
+  }, [filtered, search]);
 
   const selectableFiltered = filtered.filter((s) => !isInstalled(s));
   const allFilteredSelected =
@@ -237,13 +247,11 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
             </p>
           )}
           {registry &&
-            CATEGORY_ORDER.map((cat) => {
-              const items = grouped.get(cat) ?? [];
-              if (items.length === 0) return null;
+            sections.map(({ key, label, items }) => {
               return (
-                <div key={cat} className="mb-4">
+                <div key={key} className="mb-4">
                   <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
-                    {CATEGORY_LABELS[cat]} ({items.length})
+                    {label} ({items.length})
                   </h3>
                   <div className="flex flex-col gap-1.5">
                     {items.map((skill) => {

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   setHiddenKbIds: vi.fn(),
   hideAllKnowledgeBases: vi.fn(),
   showAllKnowledgeBases: vi.fn(),
+  refresh: vi.fn(async () => {}),
   state: { bases: [] as { id: string; name: string }[], hiddenKbIds: [] as string[] },
 }));
 
@@ -46,6 +47,7 @@ vi.mock('../knowledge/KnowledgeContext', () => ({
         mocks.showAllKnowledgeBases();
         commit([]);
       },
+      refresh: mocks.refresh,
     };
   },
 }));

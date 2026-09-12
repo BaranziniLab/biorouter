@@ -44,6 +44,11 @@ export default function ProviderConfigurationModal({
   );
 
   const isConfigured = provider.is_configured;
+  // Something is SAVED for this provider even when it cannot run — a coding
+  // agent whose command key names a CLI that is not installed is served
+  // `is_configured: false` with a reason. Removing that saved key is still the
+  // user's to do; keying "Remove" on `is_configured` alone would strand it.
+  const hasSavedSetup = isConfigured || Boolean(provider.unavailable_reason);
   const headerText = showDeleteConfirmation
     ? `Delete configuration for ${provider.metadata.display_name}`
     : `Configure ${provider.metadata.display_name}`;
@@ -201,7 +206,7 @@ export default function ProviderConfigurationModal({
                 setIsActiveProvider(false);
                 setShowDeleteConfirmation(false);
               }}
-              canDelete={isConfigured && !isActiveProvider}
+              canDelete={hasSavedSetup && !isActiveProvider}
               providerName={provider.metadata.display_name}
               isActiveProvider={isActiveProvider}
             />

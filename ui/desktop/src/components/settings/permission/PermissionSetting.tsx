@@ -87,7 +87,7 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
                 <circle cx="7.5" cy="15.5" r="5.5" />
               </svg>
             </div>
-            <h1 className="text-title text-text-default mt-4">Permission Rules</h1>
+            <h1 className="text-title text-text-default mt-4">Permission rules</h1>
             <p className="text-text-muted">
               Hidden instructions that will be passed to the provider to help direct and add context
               to your responses.

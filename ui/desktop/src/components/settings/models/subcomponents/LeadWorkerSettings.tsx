@@ -206,7 +206,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
       <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
         <DialogContent aria-describedby={undefined} className="p-0 sm:max-w-[560px]">
           <DialogHeader className="px-5 pb-2 pt-5">
-            <DialogTitle>Lead/Worker Mode</DialogTitle>
+            <DialogTitle>Lead/worker mode</DialogTitle>
           </DialogHeader>
           <div className="px-5 pb-5 text-sm text-text-muted">Loading...</div>
         </DialogContent>
@@ -218,7 +218,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto p-0 sm:max-w-[620px]">
         <DialogHeader className="px-5 pb-2 pt-5">
-          <DialogTitle>Lead/Worker Mode</DialogTitle>
+          <DialogTitle>Lead/worker mode</DialogTitle>
         </DialogHeader>
         <div className="space-y-5 px-5 pb-5">
           <DialogDescription className="text-sm text-text-muted">
@@ -247,7 +247,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           <div className={`space-y-4 ${!isEnabled ? 'opacity-60' : ''}`}>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-text-default">Lead Model</label>
+                <label className="text-sm font-medium text-text-default">Lead model</label>
                 {isLeadCustomModel && (
                   <button
                     onClick={() => setIsLeadCustomModel(false)}
@@ -296,7 +296,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-text-default">Worker Model</label>
+                <label className="text-sm font-medium text-text-default">Worker model</label>
                 {isWorkerCustomModel && (
                   <button
                     onClick={() => setIsWorkerCustomModel(false)}
@@ -346,7 +346,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             <div className="biorouter-modal-panel grid grid-cols-3 gap-3 rounded-container p-3">
               <div className="space-y-2">
                 <label className="flex items-center gap-1 text-sm font-medium text-text-default">
-                  Initial Lead Turns
+                  Initial lead turns
                 </label>
                 <Input
                   type="number"
@@ -362,7 +362,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
 
               <div className="space-y-2">
                 <label className="flex items-center gap-1 text-sm font-medium text-text-default">
-                  Failure Threshold
+                  Failure threshold
                 </label>
                 <Input
                   type="number"
@@ -378,7 +378,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
 
               <div className="space-y-2">
                 <label className="flex items-center gap-1 text-sm font-medium text-text-default">
-                  Fallback Turns
+                  Fallback turns
                 </label>
                 <Input
                   type="number"
@@ -403,7 +403,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
               disabled={hostManaged || (isEnabled && (!leadModel || !workerModel))}
               title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
             >
-              Save Settings
+              Save settings
             </Button>
           </div>
         </div>
