@@ -313,6 +313,35 @@ struct Entry {
     owner: Option<String>,
     request: UserActionRequest,
     tx: Option<oneshot::Sender<UserActionOutcome>>,
+    /// Other sessions this same card was published into, and from which a
+    /// decision is therefore accepted (D10).
+    ///
+    /// One entry today: the conversation that delegated the work, for a card
+    /// raised inside a sub-agent. `session_id` is still the card's **home** —
+    /// the session that owns the parked call and whose tab always shows it —
+    /// and this list only widens *who may answer*, never who may raise.
+    ///
+    /// ⚠ Publishing and recording are one operation
+    /// ([`PendingUserAction::also_surface_in`]) because each half alone is a
+    /// bug with its own symptom: a recorded surface that was never published is
+    /// an approval nobody can see, and a published card that was never recorded
+    /// is a card the user clicks and watches do nothing —
+    /// [`Self::answerable_in`] answers `Unknown` for every session but this
+    /// one.
+    escalated_to: Vec<String>,
+}
+
+impl Entry {
+    /// May a decision posted from `session_id` release this call?
+    ///
+    /// The card's home, plus any session it was escalated into. Deliberately
+    /// NOT "any session": #40's rule is that an authorization belongs to the
+    /// exact surfaces that showed it, and a card another conversation could
+    /// answer merely by knowing the id is a cross-session approval leak.
+    fn answerable_in(&self, session_id: &str) -> bool {
+        self.session_id.as_deref() == Some(session_id)
+            || self.escalated_to.iter().any(|surface| surface == session_id)
+    }
 }
 
 /// The process-global registry of parked user actions.
@@ -426,6 +455,7 @@ impl PendingUserActions {
                 owner: owner.map(str::to_string),
                 request: request.clone(),
                 tx: Some(tx),
+                escalated_to: Vec::new(),
             },
         );
 
@@ -455,7 +485,7 @@ impl PendingUserActions {
         authority: DecisionAuthority,
     ) -> ResolveOutcome {
         self.resolve_matching(id, outcome, authority, |entry| {
-            entry.session_id.as_deref() == Some(session_id)
+            entry.answerable_in(session_id)
         })
     }
 
@@ -579,7 +609,7 @@ impl PendingUserActions {
     pub fn pending_cards_for_session(&self, session_id: &str) -> Vec<Message> {
         self.lock()
             .iter()
-            .filter(|(_, entry)| entry.session_id.as_deref() == Some(session_id))
+            .filter(|(_, entry)| entry.answerable_in(session_id))
             .map(|(id, entry)| request_message(id, &entry.request))
             .filter(is_ephemeral_card)
             .collect()
@@ -589,7 +619,7 @@ impl PendingUserActions {
     /// action. A foreign session learns nothing and cannot satisfy the check.
     pub fn requires_user_proof_in_session(&self, session_id: &str, id: &str) -> bool {
         self.lock().get(id).is_some_and(|entry| {
-            entry.session_id.as_deref() == Some(session_id)
+            entry.answerable_in(session_id)
                 && matches!(
                     &entry.request,
                     UserActionRequest::ToolApproval(request) if request.requires_user_proof
@@ -637,6 +667,26 @@ impl PendingUserActions {
         released
     }
 
+    /// Also accept a decision for `id` posted from `session_id`.
+    ///
+    /// `false` when nothing is parked on `id` (already answered, already gone)
+    /// or when `session_id` is the card's own home, so the caller can decline
+    /// to publish a second copy rather than showing a chat the same card twice.
+    /// Idempotent in the session: two calls add one surface.
+    fn record_escalation(&self, id: &str, session_id: &str) -> bool {
+        let mut entries = self.lock();
+        let Some(entry) = entries.get_mut(id) else {
+            return false;
+        };
+        if entry.session_id.as_deref() == Some(session_id) {
+            return false;
+        }
+        if !entry.escalated_to.iter().any(|surface| surface == session_id) {
+            entry.escalated_to.push(session_id.to_string());
+        }
+        true
+    }
+
     /// Drop the entry for `id` without a decision. Idempotent.
     fn forget(&self, id: &str) {
         self.lock().remove(id);
@@ -670,6 +720,50 @@ impl PendingUserAction {
 
     pub fn request(&self) -> &UserActionRequest {
         &self.request
+    }
+
+    /// Show this same card in `session_id` as well, and accept the answer from
+    /// there (D10).
+    ///
+    /// The card a sub-agent raises is published to the sub-agent's own session
+    /// and nowhere else, so a person watching the conversation that *delegated*
+    /// the work sees a tool call that has silently stopped — and a child running
+    /// without a tab at all (`visible: false`, a fan-out past the four-tab cap,
+    /// a terminal session) has no surface anywhere. This is how a caller hands
+    /// the decision to the conversation a person is actually looking at.
+    ///
+    /// **What this does not do.** It does not ask the parent *agent* anything —
+    /// no [`crate::agents::approval_relay`] consultation, no model-produced
+    /// permission — and it does not touch proof of user: `resolve_matching`
+    /// still refuses an *allow* on a proof-backed approval from a surface that
+    /// cannot prove a person acted, whichever session it was posted from. The
+    /// only thing that widens is which conversation's card a **person** may
+    /// click.
+    ///
+    /// Published with [`request_message`], the same function `park` published
+    /// the original with, so the two surfaces carry a byte-identical card — and
+    /// therefore the same request id, which is what makes them one decision
+    /// rather than two questions. `user_only`, so the watching agent never reads
+    /// a question it must not answer.
+    ///
+    /// `false` when nothing was registered (`park` declined because no person
+    /// could be asked), when the call has already been answered, or when
+    /// `session_id` is this card's own home. Nothing is published in any of
+    /// those cases.
+    pub fn also_surface_in(&self, session_id: &str) -> bool {
+        if self.declined || self.rx.is_none() {
+            return false;
+        }
+        if !self.registry.record_escalation(&self.id, session_id) {
+            return false;
+        }
+        crate::session_events::publish(
+            session_id,
+            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                request_message(&self.id, &self.request),
+            )),
+        );
+        true
     }
 
     /// Park until a human answers, `ttl` elapses, or `cancel` trips.
@@ -1416,6 +1510,126 @@ mod decision_authority_tests {
                 "{outcome:?} must land from an unproven surface"
             );
         }
+    }
+
+    /// **D10, and the line that must not move.** A card escalated into the
+    /// conversation a person is watching widens who may SEE and CLICK it. It must
+    /// not widen what a click without proof may grant.
+    ///
+    /// The gate keys on the authority of the answering request, never on the
+    /// session it came from, so the escalation surface is refused exactly as the
+    /// card's own home is — and the caller stays parked for a surface that can
+    /// prove a person.
+    #[tokio::test]
+    async fn an_escalated_card_refuses_an_unproven_allow_exactly_as_its_home_does() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("child"), None, a_proof_backed_approval());
+        let id = parked.id().to_string();
+        assert!(parked.also_surface_in("parent"));
+
+        assert_eq!(
+            registry.resolve_in_session("parent", &id, allow(), DecisionAuthority::unproven()),
+            ResolveOutcome::Unproven,
+            "escalating a card must not create a door that grants without proof"
+        );
+        assert!(registry.is_pending(&id));
+        assert_eq!(
+            registry.resolve_in_session(
+                "parent",
+                &id,
+                allow(),
+                DecisionAuthority::for_test_proven()
+            ),
+            ResolveOutcome::Delivered,
+            "a proven person at the escalation surface may still answer"
+        );
+        drop(parked);
+    }
+
+    /// The route asks `requires_user_proof_in_session` BEFORE it resolves, to
+    /// choose between a 403 that says "the user decides this" and one that says
+    /// "this control is unavailable here". Answered for the card's home only, an
+    /// escalated card would be reported as needing no proof, the route would skip
+    /// its check, and the person would get a bare `refused` from the gate below
+    /// with no sentence attached.
+    #[tokio::test]
+    async fn the_proof_requirement_is_reported_at_the_escalation_surface_too() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("child"), None, a_proof_backed_approval());
+        let id = parked.id().to_string();
+        assert!(parked.also_surface_in("parent"));
+
+        assert!(registry.requires_user_proof_in_session("child", &id));
+        assert!(registry.requires_user_proof_in_session("parent", &id));
+        assert!(
+            !registry.requires_user_proof_in_session("bystander", &id),
+            "a session the card was never shown in must learn nothing about it"
+        );
+        drop(parked);
+    }
+
+    /// Exactly one session is added, and only a session that was asked for. An
+    /// escalation is not a licence for any conversation that knows the id (#40).
+    #[tokio::test]
+    async fn escalating_widens_the_answering_scope_by_exactly_one_session() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("child"), None, an_ordinary_approval());
+        let id = parked.id().to_string();
+        assert!(parked.also_surface_in("parent"));
+
+        assert_eq!(
+            registry.resolve_in_session("bystander", &id, allow(), DecisionAuthority::unproven()),
+            ResolveOutcome::Unknown,
+            "a bystander conversation must not be able to grant this call"
+        );
+        assert!(registry.is_pending(&id));
+        assert_eq!(
+            registry.resolve_in_session("parent", &id, allow(), DecisionAuthority::unproven()),
+            ResolveOutcome::Delivered
+        );
+        let _ = parked.wait(Duration::from_secs(5), None).await;
+    }
+
+    /// Two calls add one surface, and a card is never escalated into its own
+    /// home — otherwise the chat that raised it renders the same ask twice.
+    #[tokio::test]
+    async fn escalation_is_idempotent_and_never_targets_the_cards_own_home() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("child"), None, an_ordinary_approval());
+
+        assert!(
+            !parked.also_surface_in("child"),
+            "the card's home already shows it"
+        );
+        assert!(parked.also_surface_in("parent"));
+        assert!(
+            parked.also_surface_in("parent"),
+            "a second call is a no-op, not a second surface"
+        );
+        assert_eq!(
+            registry.pending_cards_for_session("parent").len(),
+            1,
+            "one ask, one card at that surface"
+        );
+        drop(parked);
+    }
+
+    /// A park that registered nothing — `park` declined because no person could
+    /// be asked — has nothing to escalate, and must publish nothing. Without the
+    /// guard an unattended run would broadcast a card for a call it is about to
+    /// refuse anyway.
+    #[tokio::test]
+    async fn a_park_nobody_could_answer_is_not_escalated() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = crate::user_surface::without_human_surface(async {
+            registry.park(Some("child"), None, an_ordinary_approval())
+        })
+        .await;
+        assert!(!parked.also_surface_in("parent"));
+        assert!(
+            registry.pending_cards_for_session("parent").is_empty(),
+            "a declined park must leave no card anywhere"
+        );
     }
 
     #[tokio::test]

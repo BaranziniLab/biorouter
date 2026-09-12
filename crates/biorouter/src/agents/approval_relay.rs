@@ -585,6 +585,46 @@ pub async fn begin_delegated_approval(
     Delegation::AwaitingHuman { surfaced_in: root }
 }
 
+/// **D10.** Show a card raised inside an agent-created conversation to the person
+/// watching the root of its tree as well, and accept the answer from there.
+///
+/// This is the [`crate::pending_user_action`] counterpart of the
+/// [`Delegation::AwaitingHuman`] half of [`begin_delegated_approval`], and
+/// deliberately *only* that half. Same destination (the root of the delegation
+/// tree — every layer between is itself an agent, and the layer with no layer
+/// above it is where a person is), same "one ask, two surfaces, one request id"
+/// shape, and the same reason: a card that lives only in a conversation nobody is
+/// looking at is an unexplained stall.
+///
+/// **No ancestor agent is consulted.** [`DelegationPolicy`] is not reached from
+/// here, so decisions 30 and 31 keep their single home and this path cannot
+/// produce a permission at all — it widens who may *see and click*, never who
+/// may decide. Proof of user is equally untouched:
+/// `PendingUserActions::resolve_matching` gates an allow on a proof-backed
+/// approval by the authority of the answering request, not by the session it came
+/// from.
+///
+/// Returns the session the card was also surfaced in, for the caller's log:
+/// `None` for a root conversation (which is already where the person is), for a
+/// chain that reads back empty, and for a card that is no longer parked.
+///
+/// ⚠ Callers: this is for a card whose decision **must** reach a person —
+/// everything [`crate::pending_user_action::PendingUserActions::park`] raises
+/// inside a delegated child. Do not reach for it from a door that has an
+/// ancestor-agent path available; that is [`begin_delegated_approval`].
+pub(crate) async fn surface_where_a_person_is_watching(
+    session_manager: &SessionManager,
+    session: &Session,
+    parked: &crate::pending_user_action::PendingUserAction,
+) -> Option<String> {
+    // A root conversation IS where the person is; surfacing into it would show
+    // that chat the same card twice.
+    session.parent_session_id.as_ref()?;
+    let chain = ancestor_chain(session_manager, session).await;
+    let root = chain.last()?;
+    parked.also_surface_in(root).then(|| root.clone())
+}
+
 /// Hand a decision to the prompt that is parked on it. Reuses BR-62's routing
 /// wholesale: `handle_confirmation` finds the `oneshot` `register_confirmation`
 /// created and `await_confirmation` is already waiting on it, so the turn loop
