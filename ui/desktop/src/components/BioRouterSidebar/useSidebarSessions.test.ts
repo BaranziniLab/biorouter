@@ -152,7 +152,9 @@ describe('a deleted chat leaves Recents without a reload', () => {
     const secondPage = Array.from({ length: 10 }, (_, index) => makeSummary(index + 10));
     mocks.listSidebarSessions
       .mockResolvedValueOnce({ data: { sessions: firstPage, has_more: true, next_offset: 10 } })
-      .mockResolvedValueOnce({ data: { sessions: secondPage, has_more: false, next_offset: null } });
+      .mockResolvedValueOnce({
+        data: { sessions: secondPage, has_more: false, next_offset: null },
+      });
 
     const { result } = renderHook(() => useSidebarSessions());
     await waitFor(() => expect(result.current.sessions).toHaveLength(10));

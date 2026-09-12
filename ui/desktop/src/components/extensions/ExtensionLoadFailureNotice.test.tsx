@@ -66,10 +66,7 @@ describe('ExtensionLoadFailureNotice', () => {
    * mock that can keep passing after the line is deleted.
    */
   it('is mounted by the Extensions page — the surface the failure is about', () => {
-    const source = fs.readFileSync(
-      path.join(__dirname, 'ExtensionsView.tsx'),
-      'utf8'
-    );
+    const source = fs.readFileSync(path.join(__dirname, 'ExtensionsView.tsx'), 'utf8');
     expect(source).toContain('<ExtensionLoadFailureNotice');
   });
 });

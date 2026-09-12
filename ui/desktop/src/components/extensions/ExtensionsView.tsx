@@ -24,7 +24,6 @@ import { PageHeader } from '../Layout/PageHeader';
 import { ExtensionLoadFailureNotice } from './ExtensionLoadFailureNotice';
 import { startNewSession } from '../../sessions';
 import { getInitialWorkingDir } from '../../utils/workingDir';
-import { useNavigation } from '../../hooks/useNavigation';
 
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -37,6 +36,7 @@ export function getExtensionScrollBehavior(): 'auto' | 'smooth' {
 }
 
 export default function ExtensionsView({
+  setView,
   viewOptions,
 }: {
   onClose: () => void;
@@ -58,7 +58,6 @@ export default function ExtensionsView({
   const highlightTimerRef = useRef<number | null>(null);
   const highlightedElementRef = useRef<HTMLElement | null>(null);
   const { addExtension, getExtensions } = useConfig();
-  const setView = useNavigation();
 
   // Track configured extension names so Browse can flag what's already installed.
   useEffect(() => {
