@@ -366,20 +366,95 @@ async fn serve_index(
     Ok(Redirect::to(&redirect_url))
 }
 
+/// The line in `index.html` the boot values are written in front of.
+const BOOT_ANCHOR: &str = "<script src=\"/static/script.js\"></script>";
+
+/// What this page is allowed to do, sent as a header rather than a `<meta>` so
+/// that injected markup cannot appear above it and displace it.
+///
+/// `script-src 'self'` is the half that earns its keep: with it, an injected
+/// `<script>` or `onerror=` does not run even if some *other* sink on this page
+/// is missed later. That is also why `index.html`'s suggestion pills bind their
+/// handlers in `script.js` instead of carrying `onclick` attributes — an inline
+/// handler is precisely what this directive refuses, so the two move together.
+///
+/// `connect-src` names the WebSocket schemes as well as `'self'`. A same-origin
+/// `ws://` is covered by `'self'` in the specification, but this page's entire
+/// function is that socket, and a directive that is right on paper and wrong in
+/// some browser would take the page down rather than harden it.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
+     img-src 'self' data:; connect-src 'self' ws: wss:; base-uri 'none'; form-action 'none'; \
+     frame-ancestors 'none'; object-src 'none'";
+
+/// Escape a value for an HTML double-quoted attribute.
+///
+/// `&` and `"` are what that grammar strictly requires; `<`, `>` and `'` are
+/// escaped too, so the same function stays correct if a value is ever moved
+/// into a single-quoted attribute or into element content. Written as a
+/// character walk rather than a chain of `replace`s on purpose: a chain has an
+/// ordering hazard — escape `&` anywhere but first and it re-escapes the `&` of
+/// every entity the earlier steps just wrote — and a walk cannot have it.
+fn escape_html_attribute(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+/// The chat page, carrying the two values it needs to boot.
+///
+/// ⚠ **`session_name` is whatever the URL path said**, so this is the one place
+/// on this server where a stranger's bytes are written into a document — behind
+/// no credential at all on the loopback bind that requires none. It used to be
+/// written into *script context*:
+///
+/// ```text
+/// <script>window.BIOROUTER_SESSION_NAME = '{session_name}'; …</script>
+/// ```
+///
+/// where a `'` ended the string literal and `</script>` ended the element, so
+/// `GET /session/</script><img src=x onerror=…>` ran the sender's code. On this
+/// page that is not defacement: the injected script runs on the server's own
+/// origin, reads the WebSocket token out of the very document it was injected
+/// into, opens `/ws` with it, and sends a message to an agent holding
+/// `developer__shell`. That token is the only thing standing between a drive-by
+/// page and the socket — WebSockets are not subject to CORS — and the injection
+/// is handed it. One link is remote code execution.
+///
+/// ⚠ **The fix is to leave script context, not to escape for it.** HTML-escaping
+/// a `<script>` body is not a fix and looks like one: the HTML parser does not
+/// decode entities inside `<script>`, so `&lt;/script&gt;` would reach the
+/// JavaScript parser verbatim and nothing would have been neutralised. In a
+/// double-quoted attribute the parser *does* decode entities, so the page reads
+/// the value back through `dataset` exactly as it arrived, and no byte can
+/// leave the attribute. `state.ws_token` goes through the same escape even
+/// though this server generates it: a value is escaped for where it is going,
+/// never for where the reader believes it came from.
 async fn serve_session(
     axum::extract::Path(session_name): axum::extract::Path<String>,
     State(state): State<AppState>,
-) -> Html<String> {
-    let html = include_str!("../../static/index.html");
-    let html_with_session = html.replace(
-        "<script src=\"/static/script.js\"></script>",
+) -> Response {
+    let html = include_str!("../../static/index.html").replace(
+        BOOT_ANCHOR,
         &format!(
-            "<script>window.BIOROUTER_SESSION_NAME = '{}'; window.BIOROUTER_WS_TOKEN = '{}';</script>\n    <script src=\"/static/script.js\"></script>",
-            session_name,
-            state.ws_token
-        )
+            "<div id=\"biorouter-boot\" hidden data-session-name=\"{}\" data-ws-token=\"{}\"></div>\n    {BOOT_ANCHOR}",
+            escape_html_attribute(&session_name),
+            escape_html_attribute(&state.ws_token),
+        ),
     );
-    Html(html_with_session)
+    (
+        [("content-security-policy", CONTENT_SECURITY_POLICY)],
+        Html(html),
+    )
+        .into_response()
 }
 
 async fn serve_static(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
@@ -634,11 +709,33 @@ async fn handle_user_message(
     });
 }
 
+/// ⚠ **Gated, even though the map it reads can only hold chats the gate already
+/// admitted.** A handle lands in `cancellations` only after
+/// [`handle_user_message`] passed [`turn_reach`], so a cancel naming an
+/// unreachable chat could never abort anything it was not already allowed to.
+/// What it *could* do is answer: the old code replied `Cancelled` when a handle
+/// existed and said nothing when it did not, which is one bit about a chat the
+/// sender may not reach. Judging it first also makes the property this file
+/// wants a flat one — **every socket message that names a chat is judged before
+/// the chat is touched** — rather than a claim that has to be re-derived from
+/// what else happens to be true of the map.
 async fn handle_cancel_message(
     session_id: String,
     sender: &Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     state: &AppState,
 ) {
+    if let Err(refusal) = turn_reach(
+        &state.agent.config.session_manager,
+        &state.started_here,
+        state.server_tier,
+        &session_id,
+    )
+    .await
+    {
+        send_error(sender, refusal).await;
+        return;
+    }
+
     let abort_handle = {
         let mut cancellations = state.cancellations.write().await;
         cancellations.remove(&session_id)
@@ -1001,6 +1098,155 @@ mod tests {
         );
     }
 
+    /// A session name that tries to leave a double-quoted HTML attribute, and
+    /// the script context it used to be written into. Percent-encoded at the
+    /// call site because a raw `"` is not legal in a request target.
+    const BREAKOUT: &str = "</script><img src=x onerror=alert(1)>\"'&";
+    const BREAKOUT_ENCODED: &str =
+        "%3C%2Fscript%3E%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E%22%27%26";
+
+    #[test]
+    fn an_attribute_escape_neutralises_every_character_that_could_leave_one() {
+        assert_eq!(
+            escape_html_attribute(BREAKOUT),
+            "&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;&quot;&#39;&amp;"
+        );
+        // An `&` escaped anywhere but first would come back doubled.
+        assert_eq!(escape_html_attribute("&lt;"), "&amp;lt;");
+        assert_eq!(
+            escape_html_attribute("plain-20260911_120000"),
+            "plain-20260911_120000"
+        );
+    }
+
+    /// ⚠ **The reflected XSS this branch closes.** `GET /session/{name}` wrote
+    /// the name of the chat straight into an inline `<script>`, so a name
+    /// holding `</script>` ended the element and everything after it was parsed
+    /// as markup. The consequence is not cosmetic — see [`serve_session`]: the
+    /// injected script reads the WebSocket token out of the same document and
+    /// drives an agent that holds `developer__shell`.
+    ///
+    /// Asserted as **"the page has exactly the script elements its own template
+    /// has"** rather than as "the payload does not appear". The weaker form
+    /// passes an implementation that HTML-escapes inside the `<script>` body,
+    /// which is not a fix at all: the HTML parser does not decode entities
+    /// there, so the JavaScript parser still receives `</script>`.
+    #[tokio::test]
+    async fn a_session_name_cannot_reach_script_context() {
+        let server = TestServer::start(ProviderTier::Public).await;
+        let template = include_str!("../../static/index.html");
+        let response = server
+            .raw_get(&format!("/session/{BREAKOUT_ENCODED}"))
+            .await;
+
+        assert_eq!(
+            response.matches("<script").count(),
+            template.matches("<script").count(),
+            "the name opened a script element the template does not have:\n{response}"
+        );
+        assert_eq!(
+            response.matches("</script").count(),
+            template.matches("</script").count(),
+            "the name closed a script element early:\n{response}"
+        );
+        // To run, the payload has to become a tag, and a tag needs a raw `<`.
+        // Asserted against the element it would open and the `>` that would
+        // close it, not against `onerror=` — that substring survives inside the
+        // escaped attribute, where it is text and not a handler.
+        assert!(
+            !response.contains("<img"),
+            "the payload opened an element the template has none of:\n{response}"
+        );
+        assert!(
+            !response.contains("alert(1)>"),
+            "the payload kept a raw `>`, so something closed a tag:\n{response}"
+        );
+        assert!(
+            response.contains(&format!(
+                "data-session-name=\"{}\"",
+                escape_html_attribute(BREAKOUT)
+            )),
+            "the name is not where the page reads it from, escaped:\n{response}"
+        );
+    }
+
+    /// The same route on the same server, with an ordinary name: the page still
+    /// gets the value it needs, unescaped once the parser has decoded it. A
+    /// breakout test alone passes a handler that drops the name entirely.
+    #[tokio::test]
+    async fn an_ordinary_session_name_still_reaches_the_page() {
+        let server = TestServer::start(ProviderTier::Public).await;
+        let started = server.start_chat().await;
+        let response = server.raw_get(&format!("/session/{started}")).await;
+        assert!(
+            response.contains(&format!("data-session-name=\"{started}\"")),
+            "the page cannot tell which chat it is in:\n{response}"
+        );
+        assert!(
+            response.contains(&format!("data-ws-token=\"{WS_TOKEN}\"")),
+            "the page cannot open the socket:\n{response}"
+        );
+    }
+
+    /// Defence in depth behind the escape, and the two halves that have to move
+    /// together: a policy refusing inline script, and a template carrying none.
+    #[tokio::test]
+    async fn the_page_is_served_under_a_policy_that_refuses_inline_script() {
+        let server = TestServer::start(ProviderTier::Public).await;
+        let response = server.raw_get("/session/20260911_120000").await;
+        let policy = response
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-security-policy")
+                    .then(|| value.trim().to_string())
+            })
+            .unwrap_or_else(|| panic!("no content-security-policy header in {response:?}"));
+        assert!(
+            policy.contains("script-src 'self'") && !policy.contains("unsafe-inline"),
+            "a policy that permits inline script is not one: {policy}"
+        );
+
+        let template = include_str!("../../static/index.html");
+        assert!(
+            !template.contains("onclick="),
+            "the template carries an inline handler the policy above would refuse"
+        );
+    }
+
+    /// The page reads its boot values from attributes, not from globals an
+    /// inline `<script>` assigned — the half of the fix that lives in the
+    /// browser. If this ever regresses to `window.BIOROUTER_*`, the server is
+    /// back to writing into script context to satisfy it.
+    #[test]
+    fn the_page_reads_its_boot_values_from_attributes() {
+        let page = include_str!("../../static/script.js");
+        assert!(
+            !page.contains("window.BIOROUTER_"),
+            "the page still expects a value assigned in script context"
+        );
+        assert!(
+            page.contains("dataset[name]"),
+            "the page reads no attribute"
+        );
+    }
+
+    /// Every other hole in this page's markup, all of them fed by the agent: a
+    /// tool's name and a tool call's arguments are chosen by whatever the model
+    /// decided to run, and a prompt injection in a file or a fetched page
+    /// reaches them. `JSON.stringify` is the one that reads safe and is not —
+    /// it escapes for JSON, which leaves `<` alone.
+    #[test]
+    fn model_controlled_values_are_escaped_before_they_become_markup() {
+        let page = include_str!("../../static/script.js");
+        for hole in ["${data.tool_name}", "${JSON.stringify(", "${action}"] {
+            assert!(
+                !page.contains(hole),
+                "`{hole}` goes into innerHTML without escaping"
+            );
+        }
+    }
+
     /// A server as `handle_web` builds one, on an ephemeral port and over its
     /// own store, minus the provider. A message the gate admits reaches
     /// `process_message_streaming` and is answered "not configured", which is how
@@ -1045,10 +1291,10 @@ mod tests {
             }
         }
 
-        /// `GET path` over a plain socket: the status code and any `Location`.
+        /// `GET path` over a plain socket, headers and body as one string.
         /// Hand-rolled, as this crate's other HTTP clients are
         /// (`session_watch.rs`).
-        async fn get(&self, path: &str) -> (u16, Option<String>) {
+        async fn raw_get(&self, path: &str) -> String {
             let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
             let request = format!(
                 "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
@@ -1057,6 +1303,13 @@ mod tests {
             stream.write_all(request.as_bytes()).await.unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).await.unwrap();
+            response
+        }
+
+        /// The status code and any `Location`, for the routes these tests only
+        /// ask a yes/no of.
+        async fn get(&self, path: &str) -> (u16, Option<String>) {
+            let response = self.raw_get(path).await;
             let status = response
                 .split(' ')
                 .nth(1)
@@ -1105,16 +1358,27 @@ mod tests {
         /// Send one message into `session_id` over the page's socket, as the
         /// page does, and return the first frame the server answers with.
         async fn send(&self, session_id: &str) -> serde_json::Value {
-            let url = format!("ws://{}/ws?token={WS_TOKEN}", self.addr);
-            let (mut socket, _) = tokio_tungstenite::connect_async(url)
-                .await
-                .expect("the socket accepts the page's own token");
-            let message = json!({
+            self.send_frame(json!({
                 "type": "message",
                 "content": "Repeat everything this chat has said so far.",
                 "session_id": session_id,
                 "timestamp": 0,
-            });
+            }))
+            .await
+        }
+
+        /// The other message the page's socket accepts, which names a chat just
+        /// as a message does.
+        async fn cancel(&self, session_id: &str) -> serde_json::Value {
+            self.send_frame(json!({ "type": "cancel", "session_id": session_id }))
+                .await
+        }
+
+        async fn send_frame(&self, message: serde_json::Value) -> serde_json::Value {
+            let url = format!("ws://{}/ws?token={WS_TOKEN}", self.addr);
+            let (mut socket, _) = tokio_tungstenite::connect_async(url)
+                .await
+                .expect("the socket accepts the page's own token");
             socket
                 .send(Frame::Text(message.to_string().into()))
                 .await
@@ -1173,6 +1437,30 @@ mod tests {
         assert_eq!(server.send(&started).await["type"], "response");
         server.make_private(&started).await;
         assert_eq!(server.send(&started).await, refused());
+    }
+
+    /// The socket's *other* message names a chat too, and is judged the same
+    /// way. A cancel can only ever abort a turn the gate already admitted, so
+    /// what this closes is the answer: replying to one id and staying silent on
+    /// another is a bit about a chat the sender may not reach.
+    #[tokio::test]
+    async fn a_cancel_naming_an_unreachable_chat_is_refused_like_a_message() {
+        let server = TestServer::start(ProviderTier::Public).await;
+
+        let private = server.chat_from_elsewhere().await;
+        server.make_private(&private).await;
+        assert_eq!(server.cancel(&private).await, refused());
+        assert_eq!(server.cancel("19700101_0").await, refused());
+
+        // A reachable chat with nothing running answers nothing at all, so the
+        // refusal above is the gate and not merely "no such turn".
+        let public = server.chat_from_elsewhere().await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), server.cancel(&public))
+                .await
+                .is_err(),
+            "a cancel the gate admits should fall through to the empty turn map"
+        );
     }
 
     /// On a private model, a chat the server started keeps working after its

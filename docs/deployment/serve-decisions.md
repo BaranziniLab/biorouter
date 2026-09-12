@@ -353,6 +353,68 @@ count came from the transcript route. Implemented in `crates/biorouter-cli/src/c
 tests, three of which drive the real router and WebSocket handler over a socket, against a real
 session store.
 
+### The same page reflected the URL into script context
+
+**Ruling (2026-09-11).** `GET /session/{name}` no longer writes anything into a `<script>` body.
+The two values the page needs to boot — the chat's id and the WebSocket token — are written as
+HTML attributes on a `<div id="biorouter-boot">` and read back through `dataset`. The response
+carries a `Content-Security-Policy` whose `script-src` is `'self'`, and the template it is built
+from carries no inline event handler for that policy to refuse.
+
+**Why.** The handler built the page like this:
+
+```rust
+"<script>window.BIOROUTER_SESSION_NAME = '{}'; …</script>", session_name
+```
+
+`session_name` is a path segment, so it is whatever the sender typed — behind no credential at
+all on the loopback bind that requires none. A `'` ended the string literal and a `</script>`
+ended the element. `GET /session/</script><img src=x onerror=…>` was served back as:
+
+```html
+<script>window.BIOROUTER_SESSION_NAME = '</script><img src=x onerror=alert(1)>…
+```
+
+On this page that is not defacement. The injected script runs on the server's own origin, reads
+`data-ws-token` out of the very document it was injected into, opens `/ws` with it, and sends a
+message to an agent that holds `developer__shell`. WebSockets are not subject to the same-origin
+policy, so that token is the only thing standing between a drive-by page and the socket — and the
+injection is handed it. One link the operator clicks is remote code execution as the operator.
+
+**Displaced alternatives.**
+
+- *HTML-escape the value inside the `<script>`.* Rejected, and it is the trap: the HTML parser
+  does not decode entities inside `<script>`, so `&lt;/script&gt;` reaches the JavaScript parser
+  verbatim and nothing has been neutralised. A fix that looks right and is not.
+- *Serialize it as JSON into a `<script type="application/json">` block.* Rejected. `serde_json`
+  escapes for JSON, which says nothing about HTML: it leaves `<` and `/` alone, so a value
+  holding `</script` still ends the element. It would need a second, HTML-specific escape on top
+  — which is the attribute answer with an extra step.
+- *Validate the id's shape and 404 anything else.* Rejected as the primary fix. It is a guess
+  about a format that has changed before, it would refuse ids this route currently serves, and a
+  correct escape does not need it. Nothing stops it being added later as depth.
+
+**What this is NOT.** The `Content-Security-Policy` is depth behind the escape, not the fix. It is
+what makes the *next* missed sink on this page inert, and it is why `index.html`'s suggestion
+pills bind their handlers in `script.js` — an inline `onclick` is exactly what `script-src 'self'`
+refuses, so the two move together or neither does.
+
+**Also fixed, same page, same class.** Four holes in `static/script.js` put model-controlled text
+into `innerHTML` unescaped: a tool's name (twice) and a tool call's arguments through
+`JSON.stringify` (twice). A prompt injection in a file the agent reads reaches all four. They are
+escaped now; `escapeHtml` is adequate for them and only because every one sits in element content
+rather than in an attribute value, which it does not escape for.
+
+**Not closed, and a maintainer's call.** `build_cors_layer` allow-lists `http://localhost:3000`
+and `http://127.0.0.1:3000` whenever no `--auth-token` is passed, so a page served from port 3000
+of the same machine can read `/session/…` cross-origin and lift the WebSocket token out of it.
+That is a far higher bar than clicking a link, and removing it may break a frontend-dev workflow
+this command was once used for, so it is recorded rather than changed here.
+
+**The standing recommendation.** This command is deprecated in favour of `biorouter serve`, which
+serves the real interface. Every hole above lives in a page nothing else uses, and deleting the
+command would close all of them permanently and retire this record's whole surface with it.
+
 ---
 
 ## Related documentation

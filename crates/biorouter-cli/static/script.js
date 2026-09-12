@@ -12,13 +12,28 @@ const connectionStatus = document.getElementById('connection-status');
 // Track if we're currently processing
 let isProcessing = false;
 
+// The values the server writes into this page, read from HTML attributes rather
+// than from globals an inline <script> assigned.
+//
+// The session name is whatever the URL path said, and script context is not a
+// place to put a stranger's bytes: a `'` used to end the string literal and a
+// `</script>` used to end the element. See `serve_session` in
+// crates/biorouter-cli/src/commands/web.rs for the full account. The HTML parser
+// decodes entities inside an attribute, so what `dataset` hands back here is the
+// value exactly as it arrived, with no byte able to escape the attribute.
+function bootValue(name) {
+    const boot = document.getElementById('biorouter-boot');
+    return (boot && boot.dataset[name]) || '';
+}
+
 // Get session ID - either from URL parameter, injected session name, or generate new one
 function getSessionId() {
-    // Check if session name was injected by server (for /session/:name routes)
-    if (window.BIOROUTER_SESSION_NAME) {
-        return window.BIOROUTER_SESSION_NAME;
+    // Check if a session name was written into the page (for /session/:name routes)
+    const injected = bootValue('sessionName');
+    if (injected) {
+        return injected;
     }
-    
+
     // Check URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const sessionParam = urlParams.get('session') || urlParams.get('name');
@@ -138,7 +153,7 @@ function removeThinkingIndicator() {
 // Connect to WebSocket
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const token = window.BIOROUTER_WS_TOKEN || '';
+    const token = bootValue('wsToken');
     const wsUrl = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
     
     socket = new WebSocket(wsUrl);
@@ -261,24 +276,32 @@ function handleToolRequest(data) {
     
     const headerDiv = document.createElement('div');
     headerDiv.className = 'tool-header';
-    headerDiv.innerHTML = `🔧 <strong>${data.tool_name}</strong>`;
-    
+    // Every one of these interpolations is model-controlled: a tool name and a
+    // tool call's arguments are chosen by whatever the agent decided to run, and
+    // a prompt injection in a file or a web page reaches them. `escapeHtml` is
+    // adequate here and only here because every hole below sits in element
+    // content, never inside an attribute value — it does not escape `"`.
+    headerDiv.innerHTML = `🔧 <strong>${escapeHtml(data.tool_name)}</strong>`;
+
     const contentDiv = document.createElement('div');
     contentDiv.className = 'tool-content';
-    
+
     // Format the arguments
     if (data.tool_name === 'developer__shell' && data.arguments.command) {
         contentDiv.innerHTML = `<pre><code>${escapeHtml(data.arguments.command)}</code></pre>`;
     } else if (data.tool_name === 'developer__text_editor') {
         const action = data.arguments.command || 'unknown';
         const path = data.arguments.path || 'unknown';
-        contentDiv.innerHTML = `<div class="tool-param"><strong>action:</strong> ${action}</div>`;
+        contentDiv.innerHTML = `<div class="tool-param"><strong>action:</strong> ${escapeHtml(action)}</div>`;
         contentDiv.innerHTML += `<div class="tool-param"><strong>path:</strong> ${escapeHtml(path)}</div>`;
         if (data.arguments.file_text) {
             contentDiv.innerHTML += `<div class="tool-param"><strong>content:</strong> <pre><code>${escapeHtml(data.arguments.file_text.substring(0, 200))}${data.arguments.file_text.length > 200 ? '...' : ''}</code></pre></div>`;
         }
     } else {
-        contentDiv.innerHTML = `<pre><code>${JSON.stringify(data.arguments, null, 2)}</code></pre>`;
+        // `JSON.stringify` escapes for JSON, which says nothing about HTML: it
+        // leaves `<` and `/` alone, so an argument holding `<img src=x
+        // onerror=…>` arrived here as live markup.
+        contentDiv.innerHTML = `<pre><code>${escapeHtml(JSON.stringify(data.arguments, null, 2))}</code></pre>`;
     }
     
     toolDiv.appendChild(headerDiv);
@@ -343,8 +366,8 @@ function handleToolConfirmation(data) {
     confirmDiv.innerHTML = `
         <div class="tool-confirm-header">⚠️ Tool Confirmation Required</div>
         <div class="tool-confirm-content">
-            <strong>${data.tool_name}</strong> wants to execute with:
-            <pre><code>${JSON.stringify(data.arguments, null, 2)}</code></pre>
+            <strong>${escapeHtml(data.tool_name)}</strong> wants to execute with:
+            <pre><code>${escapeHtml(JSON.stringify(data.arguments, null, 2))}</code></pre>
         </div>
         <div class="tool-confirm-note">Auto-approved in web mode (UI coming soon)</div>
     `;
@@ -455,6 +478,17 @@ function sendSuggestion(text) {
 
 // Event listeners
 sendButton.addEventListener('click', sendMessage);
+
+// The welcome pills, bound here rather than through an `onclick` attribute in
+// index.html: the page is served under `script-src 'self'`, which refuses inline
+// handlers. Delegated from the container because the welcome block is removed
+// once the first message is sent.
+messagesContainer.addEventListener('click', (e) => {
+    const pill = e.target.closest('.suggestion-pill[data-suggestion]');
+    if (pill) {
+        sendSuggestion(pill.dataset.suggestion);
+    }
+});
 
 messageInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
