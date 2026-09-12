@@ -550,6 +550,15 @@ fn check_ws_auth(
     // what refuses a page on any other origin, another loopback port included.
     // An exported app's `serve.mjs` forwards the browser's `Host` verbatim, so
     // its page is same-origin with its socket too.
+    // An `Origin` that was SENT and cannot be read is refused, not treated as
+    // absent. The `is_some()` below admits an upgrade with no `Origin` because a
+    // client that is not a browser has none and the token guards it — and
+    // degrading "present and unparseable" into that case skips this gate
+    // entirely, which is what it did until the security review of QA-D F7.
+    // `Host` fails closed in the same situation.
+    if upgrade.origin_unreadable {
+        return Err("unreadable Origin header rejected");
+    }
     if upgrade.origin.is_some() && !upgrade.is_this_daemons() {
         return Err("cross-origin connect rejected");
     }
@@ -7861,6 +7870,7 @@ mod tests {
     ) -> super::super::UpgradeOrigin<'a> {
         super::super::UpgradeOrigin {
             origin,
+            origin_unreadable: false,
             host,
             scheme: "http",
             renderer: None,

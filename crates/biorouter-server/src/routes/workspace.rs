@@ -36,6 +36,15 @@ fn check_workspace_ws_auth(
     token: Option<&str>,
     expected: &str,
 ) -> Result<(), &'static str> {
+    // An `Origin` that was SENT and cannot be read is refused, not treated as
+    // absent. The test below admits an upgrade with no `Origin` because a client
+    // that is not a browser has none to send and its token is the authority
+    // there — and degrading "present and unparseable" into that case skips this
+    // gate entirely, which is what it did until the security review of QA-D F7.
+    // `Host` fails closed in the same situation, and the two must not disagree.
+    if upgrade.origin_unreadable {
+        return Err("unreadable Origin header rejected");
+    }
     if upgrade.origin.is_some() {
         // The packaged renderer is loaded from a `file:` URL
         // (`ui/desktop/src/main.ts`, `pathToFileURL`), so it presents
@@ -304,6 +313,7 @@ mod tests {
     fn upgrade<'a>(origin: Option<&'a str>, host: Option<&'a str>) -> UpgradeOrigin<'a> {
         UpgradeOrigin {
             origin,
+            origin_unreadable: false,
             host,
             scheme: "http",
             renderer: None,

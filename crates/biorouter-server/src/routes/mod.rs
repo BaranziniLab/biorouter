@@ -303,6 +303,18 @@ pub(crate) fn declared_renderer_origin() -> Option<&'static DeclaredRenderer> {
 pub(crate) struct UpgradeOrigin<'a> {
     /// The browser-set `Origin`. A non-browser client sends none.
     pub origin: Option<&'a str>,
+    /// An `Origin` header WAS sent and could not be read as a string.
+    ///
+    /// Kept apart from `origin: None`, which means nothing sent one at all.
+    /// Both socket gates admit an upgrade with no `Origin`, because their token
+    /// is the authority for a client that is not a browser — so folding a
+    /// present-but-unreadable header into that case skips the gate entirely,
+    /// which is how it behaved until the security review of QA-D F7. `Host`
+    /// fails CLOSED in the same situation ([`origin_matches_host`] refuses a
+    /// `None` host rather than guessing), and the two must not disagree about
+    /// what an unreadable header means. A browser cannot produce one — they
+    /// punycode hosts — which is exactly why refusing costs nothing.
+    pub origin_unreadable: bool,
     /// The `Host` the upgrade was addressed to.
     pub host: Option<&'a str>,
     /// The scheme the client used; see [`request_scheme`].
@@ -314,10 +326,10 @@ pub(crate) struct UpgradeOrigin<'a> {
 
 impl<'a> UpgradeOrigin<'a> {
     pub(crate) fn from_headers(headers: &'a HeaderMap) -> Self {
+        let origin = headers.get(axum::http::header::ORIGIN);
         Self {
-            origin: headers
-                .get(axum::http::header::ORIGIN)
-                .and_then(|value| value.to_str().ok()),
+            origin: origin.and_then(|value| value.to_str().ok()),
+            origin_unreadable: origin.is_some_and(|value| value.to_str().is_err()),
             host: headers
                 .get(axum::http::header::HOST)
                 .and_then(|value| value.to_str().ok()),
@@ -622,12 +634,50 @@ mod origin_tests {
 
     /// The whole question both socket gates ask, with and without a declared
     /// renderer.
+    /// A header that was SENT and cannot be read is not the same as no header,
+    /// and `from_headers` is where the difference has to be preserved: both gates
+    /// admit `origin: None`, so anything folded into it skips them.
+    #[test]
+    fn a_present_but_unreadable_origin_is_not_an_absent_one() {
+        let mut headers = HeaderMap::new();
+        // Valid as a header value (obs-text permits 0x80..=0xFF) and not UTF-8,
+        // so `HeaderValue::to_str` fails on it.
+        headers.insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"http://\xff.example").unwrap(),
+        );
+        let upgrade = UpgradeOrigin::from_headers(&headers);
+        assert_eq!(upgrade.origin, None);
+        assert!(
+            upgrade.origin_unreadable,
+            "an unreadable Origin must be distinguishable from an absent one, or the gates \
+             that admit `None` admit it too"
+        );
+
+        // Nothing sent one: the case both gates deliberately admit.
+        let no_headers = HeaderMap::new();
+        let absent = UpgradeOrigin::from_headers(&no_headers);
+        assert_eq!(absent.origin, None);
+        assert!(!absent.origin_unreadable);
+
+        // And a readable one is unaffected.
+        let mut ok = HeaderMap::new();
+        ok.insert(
+            axum::http::header::ORIGIN,
+            "http://127.0.0.1:9380".parse().unwrap(),
+        );
+        let readable = UpgradeOrigin::from_headers(&ok);
+        assert_eq!(readable.origin, Some("http://127.0.0.1:9380"));
+        assert!(!readable.origin_unreadable);
+    }
+
     #[test]
     fn an_upgrade_is_this_daemons_when_same_origin_or_the_declared_renderer() {
         let vite =
             DeclaredRenderer::LoopbackHttp(WebOrigin::parse("http://localhost:5173").unwrap());
         let upgrade = |origin, renderer| UpgradeOrigin {
             origin,
+            origin_unreadable: false,
             host: Some("127.0.0.1:9380"),
             scheme: "http",
             renderer,
@@ -657,6 +707,7 @@ mod origin_tests {
             DeclaredRenderer::LoopbackHttp(WebOrigin::parse("http://localhost:5173").unwrap());
         let upgrade = |origin, renderer| UpgradeOrigin {
             origin,
+            origin_unreadable: false,
             host: Some("127.0.0.1:9380"),
             scheme: "http",
             renderer,
