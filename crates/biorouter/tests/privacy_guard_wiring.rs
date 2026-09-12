@@ -164,8 +164,18 @@ const REGISTRY: &[Guard] = &[
         ident: "may_read",
         defined_in: VISIBILITY,
         decides: "READ ⇔ VIS: whether a caller of tier C may read a session classified T",
-        status: Status::WiredThrough("refuse_unless_readable"),
+        // It was `WiredThrough("refuse_unless_readable")` until `biorouter web` became
+        // its first caller outside this file; the in-file row below still holds.
+        status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-cli/src/commands/web.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`refuse_turn_unless_reachable`, the gate on `biorouter web`'s WebSocket: \
+                       a message there runs a turn in whichever chat it names, so the page must \
+                       be able to read that chat. Plus its import",
+            },
             Site {
                 file: "crates/biorouter-mcp/src/memory/mod.rs",
                 counts: c(2, 0, 0),
@@ -238,12 +248,21 @@ const REGISTRY: &[Guard] = &[
                   spawned, read everything else — is retired: an agent may inject into any \
                   conversation, and the tier is the only boundary",
         status: Status::Wired,
-        sites: &[Site {
-            file: "crates/biorouter/src/agents/workspace_extension.rs",
-            counts: c(1, 0, 0),
-            kind: SiteKind::Guard,
-            what: "the shared writable adapter used by send_prompt, set_tools and close",
-        }],
+        sites: &[
+            Site {
+                file: "crates/biorouter-cli/src/commands/web.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`refuse_turn_unless_reachable`, the write half: a `biorouter web` message \
+                       is written into the chat it names. Plus its import",
+            },
+            Site {
+                file: "crates/biorouter/src/agents/workspace_extension.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the shared writable adapter used by send_prompt, set_tools and close",
+            },
+        ],
     },
     Guard {
         ident: "requires_first_crossing_approval",

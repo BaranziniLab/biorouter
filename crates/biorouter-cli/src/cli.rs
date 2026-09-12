@@ -532,6 +532,24 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
     }
 }
 
+/// ⚠ **An empty token is not a token, and `--auth-token ""` used to be accepted
+/// as one.** Passing it made `validate_network_auth` see `Some(_)` and let
+/// `--host 0.0.0.0` through, while `commands::web`'s middleware would then admit
+/// anyone who sent `Authorization: Bearer ` with nothing after it — so the one
+/// check whose entire job is to insist on protection was satisfied by its
+/// absence. Refused here, at parse time, so the mistake cannot reach a bind; a
+/// whitespace-only value is refused for the same reason.
+pub(crate) fn parse_auth_token(s: &str) -> Result<String, String> {
+    if s.trim().is_empty() {
+        return Err(
+            "an empty --auth-token is not a token; omit the flag to run without one (loopback \
+             binds only), or pass a real secret"
+                .to_string(),
+        );
+    }
+    Ok(s.to_string())
+}
+
 #[derive(Subcommand)]
 enum SessionCommand {
     #[command(about = "List all available sessions")]
@@ -1672,7 +1690,11 @@ enum Command {
         open: bool,
 
         /// Authentication token for both Basic Auth (password) and Bearer token
-        #[arg(long, help = "Authentication token to secure the web interface")]
+        #[arg(
+            long,
+            value_parser = parse_auth_token,
+            help = "Authentication token to secure the web interface"
+        )]
         auth_token: Option<String>,
 
         /// Allow running without authentication when exposed on the network (unsafe)

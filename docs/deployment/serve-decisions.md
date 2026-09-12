@@ -3,8 +3,9 @@
 > **What this is.** The decision records governing browser-served Biorouter — why the daemon
 > serves the interface itself, why a browser session cannot change its model yet starts every
 > chat on the one the operator chose, why the standalone `biorouter-headless` binary was
-> retired, and how long the launch token stays good for. Each record states the ruling, the
-> alternatives it displaced, and the consequence a future change would have to accept.
+> retired, how long the launch token stays good for, and which chats the deprecated
+> `biorouter web` may still open. Each record states the ruling, the alternatives it
+> displaced, and the consequence a future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
 > changes anywhere near the serving path.
@@ -744,6 +745,211 @@ chats started in the desktop application on the same machine, which it was refus
 the reach rule — *the caller's capability must be at least the chat's classification* — admitting
 it, exactly as it admits `biorouter session` configured with the same model. On a host configured
 with a public model nothing changes, and private chats stay out of the browser's reach.
+
+## SD-13 — `biorouter web` serves no transcripts, and opens no private chat it did not start
+
+**Ruling (2026-09-11).** The deprecated `biorouter web` command no longer serves
+`GET /api/sessions` or `GET /api/sessions/{id}`. The one way into a chat it keeps — a WebSocket
+message, which runs a turn in whichever chat it names — is judged before anything touches that
+chat. The page is a **public** caller, except in a chat this server started itself through
+`GET /`, where it holds the tier of the provider the server was started on. A chat it may not
+reach is refused with one sentence, identical for a private chat and for an id that names
+nothing.
+
+**Why.** Both routes predate the privacy tiers (issue #56) and never learned them. The list
+returned every user and scheduled chat on the machine with its title and working directory; the
+transcript route returned any chat's full conversation, private ones included. The only
+credential in front of them was the page's own, and it held nothing back:
+
+- **Without `--auth-token`** — the default, and all a loopback bind requires — the auth
+  middleware lets every request through, so anything that can reach the port reads every chat.
+  A model with a shell does it with `curl`.
+- **With `--auth-token`**, the token is a command-line argument. Any process running as the same
+  user reads it with `ps -axww -o args` (measured on macOS), and on Linux `/proc/<pid>/cmdline`
+  is readable by every user unless `/proc` is mounted with `hidepid`. That is
+  [AR-11](../security/privacy-tiers-execution-plan.md#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)'s
+  recovery of the daemon's secret, through a channel that is more open than the environment.
+
+The page read the transcript route for a message count and a tab title, and never read the list.
+Gating them would have kept two routes nobody needed, so both were deleted.
+
+The WebSocket could not be deleted, because it is the chat; it is gated instead. It was the
+larger way in, and it was open as well. A message naming a private chat started anywhere else
+ran a turn there — Gate B rebinds the one shared agent to the private model that chat's row
+names — and streamed the reply, which can quote the whole conversation, back to whoever held
+the socket. That is the daemon's `POST /reply` under another name, and `/reply` heads the
+daemon's gated list because it dominates every read route. Deleting the transcript route alone
+would have closed the smaller way in and left this one.
+
+**How the page's capability is decided.** Nothing on the socket names the model or the person on
+the other end, so the page is a public caller, which is also how the daemon treats a caller that
+states no capability. A chat this server started is the exception, reached at the tier of the
+provider the server was started on. Without it, a server on a private model would give one reply
+per chat: the first reply ratchets the chat to private, and the next message would be refused.
+On a public model the exception changes nothing, so a chat this server started that was taken
+private somewhere else is refused like any other.
+
+**Displaced alternatives.**
+
+- *Gate the two routes: list public chats only, and refuse a private transcript.* Rejected. It
+  keeps a list nothing reads and a transcript the page never showed, and every route kept is one
+  more place the reach rule has to be right.
+- *Give the page the server's tier for every chat.* Rejected. On a private model, any process
+  that can reach the port — a public-model chat's shell included — would reach every private
+  chat on the machine without stating anything. The daemon's residual at least requires the
+  caller to name a private provider.
+- *Refuse every private chat.* Rejected. It breaks the command on the second message of every
+  chat for exactly the operator who chose a private model.
+
+**What this is NOT.** It is not authentication. The page's credential is still within any local
+process's reach — served to whoever can reach the port without `--auth-token`, read from argv
+with it — so a local process can still drive public chats and the chats this server started, as
+it could before; issue #47 is unchanged. Nothing that was refused before is permitted now: the
+change removes two routes and refuses turns, and grants nothing.
+
+**Consequence to accept.** A chat is known as started here only for the life of the process.
+After a restart it counts as started elsewhere, and a private one must be continued in the
+desktop app. The page also stops showing "Session resumed: N messages loaded", because that
+count came from the transcript route. Implemented in `crates/biorouter-cli/src/commands/web.rs`
+(`turn_reach`, `page_capability` and `refuse_turn_unless_reachable`) and pinned by that module's
+tests, three of which drive the real router and WebSocket handler over a socket, against a real
+session store.
+
+### The same page reflected the URL into script context
+
+**Ruling (2026-09-11).** `GET /session/{name}` no longer writes anything into a `<script>` body.
+The two values the page needs to boot — the chat's id and the WebSocket token — are written as
+HTML attributes on a `<div id="biorouter-boot">` and read back through `dataset`. The response
+carries a `Content-Security-Policy` whose `script-src` is `'self'`, and the template it is built
+from carries no inline event handler for that policy to refuse.
+
+**Why.** The handler built the page like this:
+
+```rust
+"<script>window.BIOROUTER_SESSION_NAME = '{}'; …</script>", session_name
+```
+
+`session_name` is a path segment, so it is whatever the sender typed — behind no credential at
+all on the loopback bind that requires none. A `'` ended the string literal and a `</script>`
+ended the element. `GET /session/</script><img src=x onerror=…>` was served back as:
+
+```html
+<script>window.BIOROUTER_SESSION_NAME = '</script><img src=x onerror=alert(1)>…
+```
+
+On this page that is not defacement. The injected script runs on the server's own origin, reads
+`data-ws-token` out of the very document it was injected into, opens `/ws` with it, and sends a
+message to an agent that holds `developer__shell`. WebSockets are not subject to the same-origin
+policy, so that token is the only thing standing between a drive-by page and the socket — and the
+injection is handed it. One link the operator clicks is remote code execution as the operator.
+
+**Displaced alternatives.**
+
+- *HTML-escape the value inside the `<script>`.* Rejected, and it is the trap: the HTML parser
+  does not decode entities inside `<script>`, so `&lt;/script&gt;` reaches the JavaScript parser
+  verbatim and nothing has been neutralised. A fix that looks right and is not.
+- *Serialize it as JSON into a `<script type="application/json">` block.* Rejected. `serde_json`
+  escapes for JSON, which says nothing about HTML: it leaves `<` and `/` alone, so a value
+  holding `</script` still ends the element. It would need a second, HTML-specific escape on top
+  — which is the attribute answer with an extra step.
+- *Validate the id's shape and 404 anything else.* Rejected as the primary fix. It is a guess
+  about a format that has changed before, it would refuse ids this route currently serves, and a
+  correct escape does not need it. Nothing stops it being added later as depth.
+
+**What this is NOT.** The `Content-Security-Policy` is depth behind the escape, not the fix. It is
+what makes the *next* missed sink on this page inert, and it is why `index.html`'s suggestion
+pills bind their handlers in `script.js` — an inline `onclick` is exactly what `script-src 'self'`
+refuses, so the two move together or neither does.
+
+**Also fixed, same page, same class.** Four holes in `static/script.js` put model-controlled text
+into `innerHTML` unescaped: a tool's name (twice) and a tool call's arguments through
+`JSON.stringify` (twice). A prompt injection in a file the agent reads reaches all four. They are
+escaped now; `escapeHtml` is adequate for them and only because every one sits in element content
+rather than in an attribute value, which it does not escape for.
+
+**Also closed: no other origin may read the page the token is in.** `build_cors_layer`
+allow-listed `http://localhost:3000`, `http://127.0.0.1:3000` and this server's own origin
+whenever no `--auth-token` was passed. Without a token the auth middleware lets every request
+through, so a cross-origin `fetch` of `/session/…` that the browser permits *reads the page* — and
+`data-ws-token` is in it. From there: open `/ws` with the token, which CORS does not govern, and
+send a message to an agent holding `developer__shell`. **That is the same capability the
+reflection above gave, by a different route**, so escaping one and leaving the other would have
+closed the sink and left the outcome. No origin but the server's own is granted a read now.
+
+The grant's shape is worth recording, because it looks harmless until the port moves. `--port`
+**defaults to 3000**, so on a default run all three entries are this server and the allowance
+means nothing. On any other port it hands `http://…:3000` — a frontend dev server, or a page the
+operator was talked into opening — read access to a chat page on, say, `:8080`. `--port 8080` is
+one of this command's documented invocations.
+
+**Displaced alternative: keep the allowance behind an opt-in flag.** Rejected, and the reason is
+this record's own first half. The two routes a cross-origin browser client could have wanted,
+`/api/sessions` and `/api/sessions/{id}`, are the ones deleted above; what is left is the page,
+`/static/*`, a static `/api/health` and the WebSocket, which CORS does not govern. Nothing in the
+repository reads any of it from another origin — `scripts/test_web.sh` uses `curl`, which ignores
+CORS entirely. An opt-in would therefore be an opt-in to the token leak and to nothing else.
+
+**What this leaves.** The token is still in the page, because the page needs it; what changed is
+that no other origin is told it may read that page. The remaining ways to it are same-origin
+(where the question does not arise) and local process inspection, which is issue #47 and unchanged.
+
+### The socket itself gets an origin check, and its token is no longer optional
+
+**Ruling (2026-09-11).** `websocket_handler` refuses a handshake whose `Origin` is not this very
+server, and checks the socket token on **every** path rather than only when `--auth-token` is
+absent. `handle_web` always generates that token, and an empty expected token is refused outright.
+An empty `--auth-token` is rejected at argument-parse time.
+
+**Why the origin check.** `/ws` is the chat: a message on it runs a turn and streams the reply.
+CORS does not govern a WebSocket handshake, so a page on *any* origin that held the token could
+drive an agent carrying `developer__shell` — classic cross-site WebSocket hijacking. The tree's
+other two upgrade sites, `routes/workspace.rs` and `routes/apps.rs`, have had such a check all
+along; this one had none on any path. Closing the reflected XSS above on the grounds that the
+injected script could read the token and drive the socket, while leaving the socket reachable from
+any origin, would have closed the sink and left the capability.
+
+The rule is the **strict core** of the daemon's `routes::origin_matches_host` — the `Origin` must
+match this request's own `Host` — with neither of that helper's exceptions:
+
+- **No `is_local_origin` widening.** PR #233 is removing exactly that from the daemon's socket
+  gates ("`is_local_origin` is the CORS rule now and nothing else; do not hand it back to a
+  socket"), and here it would re-open the allowance closed immediately above, by admitting a page
+  on `localhost:3000`.
+- **No `file://` and no declared-renderer origin.** Those exist for the Electron renderer, which
+  reaches the daemon from another local origin. This server serves its own page from its own
+  origin and has no such client, so an opaque origin is refused like any other.
+
+⚠ **It is a duplicate of that rule, not a call to it, and that is a crate boundary rather than a
+preference.** `biorouter-cli` does not depend on `biorouter-server` — SD-7 is why `serve` *spawns*
+`biorouterd` instead of linking it — so the rule is mirrored, exactly as `token_matches` already
+mirrors the daemon's `secret_matches` in this same file. If the two ever need to be one symbol, the
+move is into the `biorouter` core library that both already depend on; adding a
+command-line-interface-to-server dependency to share a six-line comparison would undo SD-7.
+
+A client that sends no `Origin` is still let past this gate, as the daemon's gates let one past: it
+is a non-browser client, and the token guards it.
+
+⚠ **Why "make the token check unconditional" is a trap on its own.** The check was skipped whenever
+`--auth-token` was set, and `handle_web` made `ws_token` the empty string in exactly that mode —
+so the skip was load-bearing. `token_matches("", "")` is `true`, which means deleting the `if`
+without also changing the generation would have admitted **every** socket while reading like a
+tightening. The generation is unconditional now, the check is unconditional, and an empty expected
+token is refused, so the pair cannot be half-fixed.
+
+**And an empty `--auth-token` is not a token.** `Some("")` satisfied the network-exposure guard, so
+`--host 0.0.0.0 --auth-token ""` bound to every interface; `auth_middleware` would then admit
+anyone who sent `Authorization: Bearer ` with nothing after it. The one check whose entire job is
+to insist on protection was satisfied by its absence. `cli.rs` refuses an empty or whitespace-only
+value at parse time, and `validate_network_auth` treats one as absent as well, because
+`handle_web` is a public function and the guard must not rely on its caller having been careful.
+
+**Sequencing.** This record's reach gate keys on a session **id**. PR #264 establishes that ids
+were being reissued after a delete and adds a high-water allocator; until it lands, a reissued id
+defeats the gate. #264 merges first.
+
+**The standing recommendation.** This command is deprecated in favour of `biorouter serve`, which
+serves the real interface. Every hole above lives in a page nothing else uses, and deleting the
+command would close all of them permanently and retire this record's whole surface with it.
 
 ---
 

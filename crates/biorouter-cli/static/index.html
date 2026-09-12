@@ -19,12 +19,19 @@
                     <h2>Welcome to biorouter!</h2>
                     <p>I'm your AI assistant. How can I help you today?</p>
 
+                    <!--
+                        No `onclick` here, deliberately. The page is served under
+                        `script-src 'self'` (see CONTENT_SECURITY_POLICY in
+                        commands/web.rs), which refuses inline event handlers —
+                        the same rule that makes an injected `onerror=` inert.
+                        script.js binds these by their `data-suggestion`.
+                    -->
                     <div class="suggestion-pills">
-                        <div class="suggestion-pill" onclick="sendSuggestion('What can you do?')">What can you do?</div>
-                        <div class="suggestion-pill" onclick="sendSuggestion('Demo writing and reading files')">Demo writing and reading files</div>
-                        <div class="suggestion-pill" onclick="sendSuggestion('Make a snake game in a new folder')">Make a snake game in a new folder</div>
-                        <div class="suggestion-pill" onclick="sendSuggestion('List files in my current directory')">List files in my current directory</div>
-                        <div class="suggestion-pill" onclick="sendSuggestion('Take a screenshot and summarize')">Take a screenshot and summarize</div>
+                        <div class="suggestion-pill" data-suggestion="What can you do?">What can you do?</div>
+                        <div class="suggestion-pill" data-suggestion="Demo writing and reading files">Demo writing and reading files</div>
+                        <div class="suggestion-pill" data-suggestion="Make a snake game in a new folder">Make a snake game in a new folder</div>
+                        <div class="suggestion-pill" data-suggestion="List files in my current directory">List files in my current directory</div>
+                        <div class="suggestion-pill" data-suggestion="Take a screenshot and summarize">Take a screenshot and summarize</div>
                     </div>
                 </div>
             </div>
