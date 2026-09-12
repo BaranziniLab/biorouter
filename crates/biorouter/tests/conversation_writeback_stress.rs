@@ -1390,6 +1390,12 @@ async fn a_rewrite_basis_cannot_cross_a_wipe_that_recycled_the_session_id() {
 
     // ...and while it is away, the user resets their history and starts again.
     sm.clear_all_sessions().await.unwrap();
+    // A reset does not lower `session_id_high_water`, so this build alone gives
+    // the new chat a fresh id and the ABA never arises. The rewrite guard still
+    // has to close it on its own, because a build without the mark sharing the
+    // file — or a restored backup — can hand the id back; forcing the reuse is
+    // reproducing exactly what those leave behind.
+    sm.forget_minted_session_ids_for_test().await.unwrap();
     let second = sm
         .create_session(
             PathBuf::from("/tmp/stress"),

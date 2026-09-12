@@ -160,7 +160,7 @@ describe('Settings > Models — Lead/Worker', () => {
     browser();
     render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
 
-    const save = await screen.findByRole('button', { name: 'Save Settings' });
+    const save = await screen.findByRole('button', { name: 'Save settings' });
     expect(save).toBeDisabled();
     expect(screen.getByTestId('host-managed-model-note')).toBeInTheDocument();
   });
@@ -173,7 +173,7 @@ describe('Settings > Models — Lead/Worker', () => {
     browser();
     render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Save Settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(mocks.read).toHaveBeenCalled());
     expect(mocks.upsert).not.toHaveBeenCalled();
     expect(mocks.remove).not.toHaveBeenCalled();
@@ -188,7 +188,7 @@ describe('Settings > Models — Lead/Worker', () => {
   it('still saves in the desktop application', async () => {
     render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
 
-    const save = await screen.findByRole('button', { name: 'Save Settings' });
+    const save = await screen.findByRole('button', { name: 'Save settings' });
     expect(save).toBeEnabled();
     expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
 

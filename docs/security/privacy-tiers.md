@@ -103,7 +103,11 @@ this section is the ledger.
   plan Phase 6). Tier asks *how sensitive*; affiliation asks *whose*. A UCSF-hosted model reaching
   another institution's private connector passes every gate above, because both endpoints are
   Private — the affiliation axis is what refuses it, or warns and lets the user accept it. Do not
-  reason about §9 as though tier were the only axis.
+  reason about §9 as though tier were the only axis. An acceptance (`cross_affiliation_grants`)
+  lives and dies with its chat: deleting the chat or resetting History removes it, the startup
+  reconcile retires any an earlier build left behind, and `privacy::grant::is_granted` refuses on
+  its own to read one recorded before the chat now holding its id existed. Session ids used to be
+  reissued (`<day>_<MAX(N)+1>`), and a chat that got a deleted chat's id inherited its acceptances.
 - **The cross-institution mixing policy (DR-27) and its accept control, in all three modes.** The
   setting is `open` / `standard` / `strict`, stored in its own record beside `config.yaml` for the
   master switch's reason, and *loosening* it costs the operating system's authentication while
@@ -1324,6 +1328,15 @@ close the read in any case: `candidate_is_denied` (`secret_guard.rs:278-292`) is
 existence-gated, so a computed path or a shell expression walks past it. Stated honestly, it raises
 the cost and does not close the read.
 
+> ⚠ **Changed 2026-09-11 (QA-C H1).** The sentence above described the scan as it then was, and
+> QA-C measured exactly that hole on the credential floor: `~/.aws/credentials`, `$HOME/…`, a glob
+> and `cd … && head` all reached a public model. The scan now resolves a command the way the shell
+> will (`~`, variables, globs, `cd`, nested `sh -c`) and refuses a match **whether or not the file
+> exists**, and tool output is scanned for credential material on the way back — see
+> [secret guard](secret-guard.md). The conclusion of this paragraph still stands: a path a
+> *program* assembles at run time is invisible to any text scan, so a floor pattern still raises
+> the cost of reading `sessions.db` without closing the read.
+
 **The answer is §9.5** — a read-deny on the tools, conditioned on the session's capability. Note
 which half of §9.5 answers which half of the objection: the *capability-conditional* part is what
 makes it scoped rather than an always-on floor, and the *in-process barrier at the dispatch choke
@@ -1474,6 +1487,13 @@ variable indirection. The module's own doc-comment concedes it is "conservative 
 rely on it for the opt-out: hold the authoritative value in daemon memory from startup and require
 the GUI IPC path to change it, or read it from a trusted file using the `managed/trust.rs`
 `verify_trusted` pattern — noting `verify_trusted` is a **no-op on Windows**.
+
+> ⚠ **Changed 2026-09-11 (QA-C H1)** — the mechanism, not the advice. The scan no longer needs a
+> literal existing token: it follows `cd`, variables and nested shells and refuses a match whether
+> or not the file exists ([secret guard](secret-guard.md)). The advice stands for a different
+> reason: `config.yaml` and `privacy-tiers.json` are not in the floor, and a path a program
+> assembles at run time is invisible to any text scan, so SecretGuard is still not a control for
+> the opt-out.
 
 **C2 — a scheduled job created from a private session becomes permanently, silently broken.**
 `scheduler.rs:844-866` builds its provider from `Config::global()`, creates a fresh `Scheduled`
@@ -2329,9 +2349,18 @@ CREATE TABLE classification_audit (
   app_version             TEXT NOT NULL,
   provider_name_at_change TEXT,
   privacy_reason_before   TEXT,
-  message_count_at_change INTEGER
+  message_count_at_change INTEGER,
+  session_incarnation     INTEGER          -- sessions.incarnation of the row declassified
 );
 ```
+
+`session_incarnation` was added after v1 shipped (by the startup reconcile, not a numbered migration)
+and is `NULL` on every row written before it. It exists because the ledger survives deletion and
+session ids were reissued: the backfill's declassification guard (`NOT_DECLASSIFIED_BY_USER` in
+`session_manager.rs`) matched on the bare id, so a deleted chat's declassification shielded the
+next chat to get its id from the backfill. The guard now requires the recorded incarnation to be
+the session row's own. A `NULL` row keeps the bare-id meaning it was written with, because
+reinterpreting it could only ever undo a declassification the user made.
 
 **And a transcript record**, following the BR-71 Task 32 pattern of a
 `user_visible: true / agent_visible: false` message written into the session's own conversation:

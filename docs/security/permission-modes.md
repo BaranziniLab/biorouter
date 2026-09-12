@@ -83,6 +83,29 @@ Two things these approvals are guaranteed against, so that "put to you" means wh
 
 An administrator's [managed policy](managed-policy.md) can add further tools to this list.
 
+## Scripts: every call is decided on its own
+
+With the [Code Execution capability](../extensions/built-in/code-execution.md) on — the default
+— the model reaches most tools by writing a short script (`code_execution__execute_code`) rather
+than calling each tool directly. Your mode and your per-tool settings still apply to **every
+call the script makes, under that tool's own name**:
+
+- In **Manual Approval** a script's `developer__shell` call gets its own card, naming
+  `developer__shell` and showing the command, even when the script itself is on your
+  **Always allow** list. **Always allow** or **Never allow** for `developer__shell` applies
+  inside a script exactly as it does outside one.
+- In **Smart Approval** each call is graded by that tool's own risk annotations, so a read-only
+  lookup runs and anything else asks.
+- In **Completely Autonomous** the calls run without a card, apart from the operations in the
+  table above, which ask in every mode — inside a script too.
+- A refused or declined call does not run; the script receives it as an error it can catch.
+
+So an **Always allow** entry for `code_execution__execute_code` means "do not ask me before
+running a script" and nothing more — it is not a grant for the tools the script calls. It is
+also never a default: the entry exists in your `permission.yaml` only if you added it. See
+[the Code Execution guide](../extensions/built-in/code-execution.md#permissions-every-call-a-script-makes-is-decided-on-its-own)
+for the full table, including what **Always allow** on a script's card records.
+
 ## Changing the mode in the desktop app
 
 You can change modes before or during a session, and the change takes effect immediately.
@@ -177,5 +200,7 @@ To set the default mode, use `biorouter configure`:
   persisted mode and `permission.yaml` live.
 - [Hooks reference](../agent-loop/hooks/hooks-reference.md) — lifecycle hooks, which gate tool
   calls independently of the permission mode.
+- [Code Execution capability](../extensions/built-in/code-execution.md) — scripts, and how each
+  call inside one is decided.
 - [Data privacy and patient data](data-privacy-and-phi.md) — the other decision that matters
   before a session touches sensitive data.

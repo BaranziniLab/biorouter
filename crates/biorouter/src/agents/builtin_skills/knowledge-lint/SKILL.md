@@ -36,7 +36,7 @@ being read, rendered or linked — it will. So do not "fix" a diagnostic by dele
 content or by loosening the page until the report goes quiet. Fix the thing it names, or
 decide deliberately not to and say why.
 
-Two corollaries worth internalising:
+Two corollaries worth internalizing:
 
 - A base that predates both formats is not linted at all — `kb_lint` **refuses** it,
   because that retired pre-OKF storage is purged on startup. `kb_read_page` and

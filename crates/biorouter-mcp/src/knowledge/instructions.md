@@ -39,7 +39,7 @@ Common operations:
   retracted or too weak for the claims resting on them. Writes nothing and fixes
   nothing. Run it after a batch of edits, and before exporting or sharing a base. Read
   `diagnostics.total`, not `items.len()` — the list is capped.
-- `kb_get_graph` — derived nodes+edges for visualisation. The graph is
+- `kb_get_graph` — derived nodes+edges for visualization. The graph is
   rebuilt automatically whenever you `kb_write_page`, so pages you author show
   up in the Knowledge tab without any extra step.
 - `kb_export` — export a knowledge base to a `.brkb` archive file on disk

@@ -265,6 +265,8 @@ biorouter session remove -r ".*migration.*"
 
 Removing a session also removes its per-turn usage records — which model and provider answered each reply, when, and how many tokens it used — whether you remove it here or delete it from the desktop app's chat history. The tokens it spent are first added to an anonymous total, kept per day, model and provider with nothing that identifies the chat, so `biorouter usage` and the desktop app's Usage panel still match your provider's own billing meter. The Home heatmap and its token tiles count only the chats that still exist.
 
+It removes the rest of what was kept under the session's ID too: the chat's text in the search index that Chat Recall reads, its checkpoints (the records and the snapshots of its working directory), and any cross-institution data flow you accepted in it. Biorouter also no longer hands a removed session's ID to the next session it creates, so nothing still kept under that ID can be read as a newer chat's. (Before, removing the newest chat of the day and starting another gave the new chat the same ID.) Subagent runs the chat started are separate sessions and are kept; `session list --subagents` shows them, and you can remove them with `--session-id` or `--regex ... --subagents`.
+
 ### session export [options]
 
 Export sessions in different formats for backup, sharing, migration, or documentation purposes.

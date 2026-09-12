@@ -70,17 +70,50 @@ pub struct UpdateFromSessionRequest {
 const SUBAGENT_USER_ACTION_REQUIRED: &str =
     "Changing or resuming a subagent from its tab requires proof that the request came from the person at the keyboard.";
 
+/// …and when the daemon holds no user-action key at all.
+///
+/// A separate sentence, per Task 18A's open question 23 and SD-8: telling a
+/// person at a `biorouter serve` page that their request "requires proof" sends
+/// them hunting for a permission this daemon can never grant anyone. It names
+/// the daemon as the reason, in the register `CROSS_AFFILIATION_GRANT_NO_KEY`
+/// and `session_reach::SESSION_REACH_NO_KEY` already use. Since SD-11 this is
+/// also what a keyless daemon answers a Stop aimed at a subagent's turn, because
+/// that route gates through [`authorize_agent_control`] there. A *steer* at the
+/// same turn is refused one step earlier, by `reply::authorize_steer`, which
+/// never reads the row — so the two sentences differ, and both open by naming
+/// this daemon rather than the caller.
+const SUBAGENT_CONTROL_NO_KEY: &str =
+    "This daemon was started without a user-action key, so it cannot verify that a request came \
+     from the person at the keyboard, and changing, resuming, stopping or steering a subagent from \
+     its tab requires that proof. Nothing was changed. This control is unavailable on this \
+     daemon; use the desktop app.";
+
+/// A 424 in the shape every other refusal in this file has, so that gating a
+/// route which used to answer bare status codes does not change the body a client
+/// sees for the failures it already handled.
+fn agent_not_initialized(message: &str) -> ErrorResponse {
+    ErrorResponse {
+        message: message.to_string(),
+        status: StatusCode::FAILED_DEPENDENCY,
+    }
+}
+
 fn refuse_subagent_unless_user(
     session: &Session,
     headers: &HeaderMap,
 ) -> Result<(), ErrorResponse> {
-    if session.session_type == SessionType::SubAgent && !is_user_action(headers) {
-        return Err(ErrorResponse {
-            message: SUBAGENT_USER_ACTION_REQUIRED.to_string(),
-            status: StatusCode::FORBIDDEN,
-        });
+    if session.session_type != SessionType::SubAgent {
+        return Ok(());
     }
-    Ok(())
+    let message = match user_action_proof(headers) {
+        UserActionProof::Proven => return Ok(()),
+        UserActionProof::Unproven => SUBAGENT_USER_ACTION_REQUIRED,
+        UserActionProof::NoKeyInstalled => SUBAGENT_CONTROL_NO_KEY,
+    };
+    Err(ErrorResponse {
+        message: message.to_string(),
+        status: StatusCode::FORBIDDEN,
+    })
 }
 
 #[async_trait::async_trait]
@@ -146,7 +179,16 @@ async fn read_update_session(
 /// Authorize an HTTP control-plane operation before it can touch an agent or a
 /// queued child handle. The daemon bearer proves only that the caller reached
 /// this process; it does not prove that a person chose to mutate a subagent.
-async fn authorize_agent_control(
+///
+/// ⚠ **Also the turn-control gate on a daemon with no user-action key** (SD-11):
+/// `routes::reply`'s `authorize_turn_control` calls this for `/agent/cancel` and
+/// the two continuation routes there, so that stopping a turn admits exactly the
+/// callers `/agent/stop` admits. Tightening this therefore tightens those three
+/// too, which is the point — but it is a change to who may press Stop in a
+/// browser, and `tests/turn_control_no_user_key.rs` will say so. `/interrupt` is
+/// NOT among them: `reply::authorize_steer` keeps the proof on every daemon,
+/// because the dominance argument that admits a Stop does not reach a steer.
+pub(crate) async fn authorize_agent_control(
     state: &AppState,
     session_id: &str,
     headers: &HeaderMap,
@@ -1259,22 +1301,48 @@ async fn get_tools(
     responses(
         (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent, and an unproven caller \
+                                      is told the same thing for both) and the request carried \
+                                      neither a capability that covers it nor proof it came from \
+                                      the user"),
         (status = 424, description = "Agent not initialized")
     )
 )]
 async fn get_callable_tool_count(
     State(state): State<Arc<AppState>>,
+    // Before `Query`, which is fine either way here, but keeps the extractor
+    // order the rest of this file uses.
+    headers: axum::http::HeaderMap,
     Query(query): Query<CallableToolCountQuery>,
-) -> Result<Json<CallableToolCountResponse>, StatusCode> {
+) -> Result<Json<CallableToolCountResponse>, ErrorResponse> {
     let session_id = query.session_id;
+    // Issue #56 Task 58 / #47. FIRST, before the agent is fetched, for the reason
+    // `agent_add_extension` states at length: `get_agent_for_route` CREATES an
+    // agent for a session that has none, so a gate below it would let an unproven
+    // caller materialise one for a chat it may not address — and this route's own
+    // 424 would then tell it what it had found. `session_id` is a request
+    // parameter, not a credential; see `routes::session_reach`.
+    //
+    // ⚠ This route had NO gate of any kind, and PR #260's renderer merely stopped
+    // calling it for a subagent's chat, which left the route exactly as open as
+    // it was. Routing a client around an ungated route does not gate it.
+    crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+        .await?;
     let child_initializing = biorouter::agents::subagent_handle::is_child_initializing(&session_id);
     let agent = if child_initializing {
         state
             .peek_agent(&session_id)
             .await
-            .ok_or(StatusCode::FAILED_DEPENDENCY)?
+            .ok_or_else(|| agent_not_initialized("that chat's runtime is not ready yet"))?
     } else {
-        state.get_agent_for_route(session_id.clone()).await?
+        state
+            .get_agent_for_route(session_id.clone())
+            .await
+            .map_err(|status| ErrorResponse {
+                message: "could not load that chat".to_string(),
+                status,
+            })?
     };
 
     // This endpoint drives a model-context warning. Count the final model-facing
@@ -1285,7 +1353,7 @@ async fn get_callable_tool_count(
     let count = agent
         .callable_tool_count(&session_id)
         .await
-        .map_err(|_| StatusCode::FAILED_DEPENDENCY)?;
+        .map_err(|_| agent_not_initialized("that chat's tools could not be counted"))?;
     Ok(Json(CallableToolCountResponse { count }))
 }
 
@@ -2244,7 +2312,9 @@ pub(crate) async fn apply_working_dir_update(
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
                                       the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
-                                      proof it came from the user"),
+                                      proof it came from the user; or the named chat is a delegated \
+                                      subagent's, whose working directory only the person at the \
+                                      keyboard may repoint (SD-8)"),
         (status = 404, description = "Session not found"),
         (
             status = 409,
@@ -2268,6 +2338,46 @@ async fn update_working_dir(
     // request parameter, not a credential. See `routes::session_reach`.
     crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
         .await?;
+
+    // SD-8, and the one write to a subagent's chat this daemon did not refuse.
+    // This route repoints the named chat at a directory of the caller's choosing
+    // and restarts its agent there, which for a delegated child is a change to
+    // the thing the parent is being told about. Every other write to a
+    // subagent's chat already asks for the proof — `/reply` inline,
+    // `/agent/resume` through `read_resume_session`, and provider, extension,
+    // stop and restart through `authorize_agent_control` — and this one did not,
+    // which made the shipped SD-8 claim that "the daemon refuses every write to
+    // it" false.
+    //
+    // ⚠ **`session_reach` above does not cover it, and cannot.** That gate is the
+    // PRIVACY slice and is deliberately inert for a public session; a delegated
+    // subagent's chat is normally public. The two 409s below are not the boundary
+    // either: `try_update_working_dir_if_empty` refuses a chat that has messages
+    // and the turn lock refuses one that is busy, and a just-spawned or queued
+    // child is neither — which is exactly the window in which a subagent's tab
+    // is interesting.
+    //
+    // AFTER the reach gate and BEFORE the turn lock, so the three refusals stay
+    // in the order the rest of this file uses: a chat this caller may not reach
+    // is refused without disclosing that it is a subagent's, and a subagent's is
+    // refused without disclosing whether it is busy.
+    //
+    // Not `authorize_agent_control`, which would call `session_reach` a second
+    // time, and not `read_update_session`, whose read failure is a 500 — this
+    // route documents (and the desktop handles) a 404 for a session that is not
+    // there.
+    let target = state
+        .session_manager()
+        .get_session(&session_id, false)
+        .await
+        .map_err(|error| {
+            error!("Failed to get session before working dir update: {}", error);
+            ErrorResponse {
+                message: format!("Failed to get session: {}", error),
+                status: StatusCode::NOT_FOUND,
+            }
+        })?;
+    refuse_subagent_unless_user(&target, &headers)?;
 
     // Serialize with `/reply`'s per-session turn lock (BR-33) by claiming the
     // turn slot for the whole update + restart. Without it, a first message
@@ -3175,17 +3285,24 @@ mod resume_update_security_tests {
     fn openapi_describes_the_agent_route_failures_clients_must_handle() {
         let schema: serde_json::Value =
             serde_json::from_str(&crate::openapi::generate_schema()).unwrap();
-        for (path, statuses) in [
-            ("/agent/start", &["409"][..]),
-            ("/agent/resume", &["403", "404"][..]),
-            ("/agent/update_from_session", &["403", "500"][..]),
-            ("/agent/restart", &["424"][..]),
+        for (method, path, statuses) in [
+            ("post", "/agent/start", &["409"][..]),
+            ("post", "/agent/resume", &["403", "404"][..]),
+            ("post", "/agent/update_from_session", &["403", "500"][..]),
+            ("post", "/agent/restart", &["424"][..]),
+            // The two the SD-8 review gated. A client that has only ever seen a
+            // 200/424 from the tool count, or a 400/404/409 from the working-dir
+            // switch, now has a 403 to handle, and the generated TS client is
+            // where it has to be visible.
+            ("post", "/agent/update_working_dir", &["403"][..]),
+            ("get", "/agent/callable_tool_count", &["403", "424"][..]),
         ] {
-            let responses = &schema["paths"][path]["post"]["responses"];
+            let responses = &schema["paths"][path][method]["responses"];
             for status in statuses {
                 assert!(
                     responses.get(*status).is_some(),
-                    "POST {path} is missing its {status} OpenAPI response"
+                    "{} {path} is missing its {status} OpenAPI response",
+                    method.to_uppercase()
                 );
             }
         }
@@ -3398,6 +3515,13 @@ mod resume_update_security_tests {
             "/agent/stop" | "/agent/restart" => serde_json::json!({
                 "session_id": session_id,
             }),
+            // An existing directory, deliberately: a path that does not exist is
+            // rejected with a 400 before the boundary is ever consulted, so a
+            // test written with one passes against an ungated route.
+            "/agent/update_working_dir" => serde_json::json!({
+                "session_id": session_id,
+                "working_dir": std::env::temp_dir().to_string_lossy(),
+            }),
             _ => panic!("unexpected route in test: {path}"),
         };
         let mut request = Request::builder()
@@ -3416,6 +3540,61 @@ mod resume_update_security_tests {
             .await
             .unwrap()
             .status()
+    }
+
+    /// `GET /agent/callable_tool_count?session_id=`, with the status AND the body:
+    /// the body is what separates a gate from a 424 that happens to look like one.
+    async fn get_callable_tool_count_response(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        let mut request = Request::builder().method("GET").uri(format!(
+            "/agent/callable_tool_count?session_id={session_id}"
+        ));
+        if let Some(key) = user_action {
+            request = request.header("X-User-Action", key);
+        }
+        let response = routes(state)
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// One agent route, one session id, no proof — status and body, so a test can
+    /// compare two refusals for sameness rather than merely for their code.
+    async fn post_agent_route_response(
+        state: Arc<AppState>,
+        path: &str,
+        session_id: &str,
+    ) -> (StatusCode, String) {
+        let response = routes(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "session_id": session_id,
+                            "load_model_and_extensions": false,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
     }
 
     async fn get_agent_tools(state: Arc<AppState>, session_id: &str) -> StatusCode {
@@ -3644,6 +3823,179 @@ mod resume_update_security_tests {
                 );
             }
         }
+    }
+
+    /// SD-8 review finding 1. `/agent/update_working_dir` is a WRITE to the named
+    /// chat — it repoints the session at a directory of the caller's choosing and
+    /// restarts its agent there — and it used to consult only `session_reach`,
+    /// which is **deliberately inert for a public session**. A delegated
+    /// subagent's chat is normally public, so a caller holding nothing but the
+    /// daemon secret could repoint a child, while the shipped SD-8 record said
+    /// the daemon "refuses every write" to a subagent's chat.
+    ///
+    /// ⚠ **The public arm is the one that fails without the gate.** The private
+    /// arm was already refused, by `session_reach`, for a reason that has nothing
+    /// to do with subagents — so a test written on a private child alone passes
+    /// against the hole.
+    ///
+    /// The directory is read back rather than trusting the status code: the two
+    /// 409s this route already had (a chat with messages, a turn in flight) are
+    /// not the subagent boundary and must not be mistaken for it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn bearer_only_cannot_repoint_a_subagents_working_directory() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+
+        for private in [false, true] {
+            let child = seed(&state, SessionType::SubAgent, private).await;
+            let before = state
+                .session_manager()
+                .get_session(child.id(), false)
+                .await
+                .unwrap()
+                .working_dir;
+
+            assert_eq!(
+                post_agent_route(
+                    Arc::clone(&state),
+                    "/agent/update_working_dir",
+                    child.id(),
+                    None,
+                )
+                .await,
+                StatusCode::FORBIDDEN,
+                "/agent/update_working_dir accepted bearer-only repointing of a {} child",
+                if private { "private" } else { "public" }
+            );
+            assert_eq!(
+                state
+                    .session_manager()
+                    .get_session(child.id(), false)
+                    .await
+                    .unwrap()
+                    .working_dir,
+                before,
+                "the refused request still moved the {} child's working directory",
+                if private { "private" } else { "public" }
+            );
+            assert!(
+                state.peek_agent(child.id()).await.is_none(),
+                "/agent/update_working_dir restarted an agent before refusing the request"
+            );
+        }
+    }
+
+    /// SD-8 review finding 2. `/agent/callable_tool_count` had no gate of any
+    /// kind: not `session_reach`, not the subagent refusal. It is a read of the
+    /// named session's model-facing tool surface, and it answers through
+    /// `get_agent_for_route`, which **creates** an agent for a session that has
+    /// none — the same hazard `agent_add_extension` gates against and says so.
+    ///
+    /// PR #260's renderer stopped calling it for a subagent's chat, which left
+    /// the route exactly as open as it was. Gated the way its tier-bearing
+    /// siblings are (`GET /sessions/{id}`, `POST /agent/resume`): the privacy
+    /// reach gate, first, before the agent is fetched.
+    ///
+    /// The `peek_agent` assertion is not decoration — a gate placed below the
+    /// fetch would pass the status assertion and still mint the agent.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn callable_tool_count_refuses_an_unproven_caller_naming_a_private_chat() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed(&state, SessionType::User, true).await;
+
+        let (status, body) =
+            get_callable_tool_count_response(Arc::clone(&state), private.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "/agent/callable_tool_count answered an unproven caller about a private chat: {body}"
+        );
+        assert!(
+            state.peek_agent(private.id()).await.is_none(),
+            "/agent/callable_tool_count materialized an agent for a chat it may not address"
+        );
+
+        // And the proof is sufficient, so the desktop's own tool-count alert is
+        // unaffected: whatever this answers, it is not the reach refusal.
+        let (proven, _) = get_callable_tool_count_response(
+            Arc::clone(&state),
+            private.id(),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_ne!(
+            proven,
+            StatusCode::FORBIDDEN,
+            "/agent/callable_tool_count refused a request carrying the user-action proof"
+        );
+    }
+
+    /// SD-8 review finding 4, recorded as a MEASUREMENT rather than closed as a
+    /// bug — see `docs/deployment/serve-decisions.md`.
+    ///
+    /// The refusal bodies do differ: a **public** subagent is told it is a
+    /// subagent, an unknown id is told only that it is out of reach. That pair
+    /// would be an existence oracle for subagent ids if it were the only way to
+    /// learn the fact. It is not, and the fourth row here is why: the same
+    /// unproven caller is answered **200** for a public chat that is not a
+    /// subagent's, and `GET /sessions/{id}` — inert for public chats by the same
+    /// rule — hands it the whole row, `session_type` included. The differing body
+    /// discloses nothing that a 200 next door does not.
+    ///
+    /// What must hold, and is asserted here, is that the pair collapses wherever
+    /// the 200 is *not* available: for a **private** subagent the two refusals are
+    /// identical, because `session_reach` fires first and its one sentence answers
+    /// "private" and "no such chat" alike.
+    ///
+    /// ⚠ With privacy tiers OFF `session_reach` returns `Ok` before its store
+    /// read, so the private row joins the public one and the whole pair separates
+    /// again. That is the master switch's pre-existing blast radius, not this
+    /// route's, and it is not closed here.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_private_subagent_and_an_unknown_id_are_refused_in_the_same_words() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private_child = seed(&state, SessionType::SubAgent, true).await;
+        let public_child = seed(&state, SessionType::SubAgent, false).await;
+        let public_chat = seed(&state, SessionType::User, false).await;
+
+        let (unknown_status, unknown_body) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", "19700101_404").await;
+        let (private_status, private_body) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", private_child.id())
+                .await;
+        assert_eq!(unknown_status, StatusCode::FORBIDDEN);
+        assert_eq!(private_status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            private_body, unknown_body,
+            "a private subagent is distinguishable from a nonexistent id by its refusal"
+        );
+        assert!(
+            unknown_body.contains(crate::routes::session_reach::SESSION_OUT_OF_REACH),
+            "the shared refusal is no longer the reach sentence: {unknown_body}"
+        );
+
+        // The dominating disclosure, measured in the same run so the argument
+        // above cannot rot into an assumption.
+        let (public_child_status, public_child_body) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", public_child.id()).await;
+        assert_eq!(public_child_status, StatusCode::FORBIDDEN);
+        assert!(
+            public_child_body.contains(SUBAGENT_USER_ACTION_REQUIRED),
+            "a public subagent is no longer told why it is refused: {public_child_body}"
+        );
+        let (public_chat_status, _) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", public_chat.id()).await;
+        assert_eq!(
+            public_chat_status,
+            StatusCode::OK,
+            "an unproven caller is refused an ordinary public chat, which would make the \
+             subagent body the only existence signal and turn finding 4 into a real oracle"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

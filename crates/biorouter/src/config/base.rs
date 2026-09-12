@@ -1862,6 +1862,50 @@ impl Config {
         self.save_values(values)
     }
 
+    /// Write several non-secret configuration values as **one** config write.
+    ///
+    /// Two `set_param` calls are two writes, and between them the file holds
+    /// one new value beside one stale one. For `BIOROUTER_PROVIDER` and
+    /// `BIOROUTER_MODEL` that window is not cosmetic: a chat started inside it
+    /// binds a provider to a model that is not its own, and on this product the
+    /// PROVIDER is what decides the privacy capability a session starts at.
+    /// Measured at ~55 ms of `versa_azure` beside `gpt-6-astra` during one
+    /// switch through `POST /config/set_provider`.
+    ///
+    /// ⚠ **The same mechanism as [`Self::set_param`], not a second one.**
+    /// `guard` is held across the read and the write, exactly one
+    /// [`Self::save_values`] runs, and that is where the atomicity actually
+    /// lives — staged under a per-process, per-call name and renamed into
+    /// place (see [`Self::staging_path`], and the shared-`config.tmp` race its
+    /// doc records). Reaching for a second temp-file-and-rename here would
+    /// reintroduce exactly that.
+    pub fn set_params<V: Serialize>(&self, pairs: &[(&str, V)]) -> Result<(), ConfigError> {
+        let _guard = self.guard.lock().unwrap();
+        let mut values = self.load()?;
+        for (key, value) in pairs {
+            values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
+        }
+        self.save_values(values)
+    }
+
+    /// The default provider and the model it is to be used with, written
+    /// together or not at all.
+    ///
+    /// The generated `set_biorouter_provider` / `set_biorouter_model` pair is
+    /// still there and still correct on its own; what is wrong is calling both
+    /// in sequence, which every one of the six switch sites used to do. Use
+    /// this instead — the two keys only ever mean anything as a pair.
+    pub fn set_biorouter_provider_and_model(
+        &self,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Result<(), ConfigError> {
+        self.set_params(&[
+            ("BIOROUTER_PROVIDER", provider.into()),
+            ("BIOROUTER_MODEL", model.into()),
+        ])
+    }
+
     /// Atomically read, mutate, and persist one non-secret configuration value
     /// with respect to every writer in this process.
     pub(crate) fn update_param<T, R, F>(&self, key: &str, update: F) -> Result<R, ConfigError>
@@ -3634,6 +3678,56 @@ mod tests {
             config.io_probe.config_writes(),
             1,
             "an unwritable config directory must be hammered once, not once per lookup"
+        );
+    }
+
+    /// **The provider and its model reach the file together or not at all.**
+    ///
+    /// `set_biorouter_provider` followed by `set_biorouter_model` is two
+    /// `save_values` calls, and between them `config.yaml` holds the new
+    /// provider beside the OLD model — measured at ~55 ms of `versa_azure`
+    /// next to `gpt-6-astra` during one switch through
+    /// `POST /config/set_provider`. A chat started in that window binds a pair
+    /// nobody chose, and the provider is what decides the privacy capability a
+    /// session starts at, so the mismatch is not cosmetic.
+    ///
+    /// The write COUNT is the assertion, because it is the mechanism: two
+    /// writes is a window by construction and one write has none. Reading the
+    /// file back cannot see this — the final state was always correct, which
+    /// is exactly why the gap survived.
+    #[test]
+    fn the_default_provider_and_its_model_are_one_config_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+        config.set_param("A_KEY_ALREADY_HERE", "keep me").unwrap();
+
+        let before = config.io_probe.config_writes();
+        config
+            .set_biorouter_provider_and_model("versa_azure", "gpt-6-astra")
+            .unwrap();
+        assert_eq!(
+            config.io_probe.config_writes() - before,
+            1,
+            "the pair was written in more than one pass, so config.yaml held a mixed \
+             provider/model pair in between"
+        );
+
+        assert_eq!(
+            config.get_biorouter_provider().unwrap(),
+            "versa_azure".to_string()
+        );
+        assert_eq!(
+            config.get_biorouter_model().unwrap(),
+            "gpt-6-astra".to_string()
+        );
+        assert_eq!(
+            config.get_param::<String>("A_KEY_ALREADY_HERE").unwrap(),
+            "keep me".to_string(),
+            "one write for two keys must still be a read-modify-write of the whole file"
         );
     }
 

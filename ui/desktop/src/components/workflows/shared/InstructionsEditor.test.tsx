@@ -31,11 +31,11 @@ describe('InstructionsEditor', () => {
     }
 
     render(<Harness />);
-    expect(screen.getByText('Instructions Editor')).toBeInTheDocument();
+    expect(screen.getByText('Instructions editor')).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
 
-    await waitFor(() => expect(screen.queryByText('Instructions Editor')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Instructions editor')).not.toBeInTheDocument());
     expect(screen.getByText('Workflow editor')).toBeInTheDocument();
   });
 });

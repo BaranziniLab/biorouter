@@ -143,6 +143,41 @@ pub enum PrivacyRefusal {
     )]
     TierRaiseNeedsUser { requested: String },
 
+    /// DR-16 at the **model-facing tool** surface: `workspace_set_tools` was
+    /// asked to bind a private provider to a conversation classified public,
+    /// which raises that conversation's capability to Private.
+    ///
+    /// ⚠ **Refused outright, with no user-proof branch, and the difference from
+    /// [`Self::TierRaiseNeedsUser`] is the point.** That sibling guards an HTTP
+    /// route, where the very same request *can* arrive carrying `X-User-Action`
+    /// — so it asks a question the caller has a way to answer. This one guards
+    /// a tool the model calls: there is no person on the other end of a tool
+    /// call, so `is_user_action` is false on every one of them and a proof
+    /// check here could only ever refuse. A check that can only ever refuse is
+    /// a refusal wearing a question's clothes, and SD-8's ruling — *a control
+    /// that can never work here says so, before it is touched* — says to write
+    /// the refusal.
+    ///
+    /// It names the conversation because, unlike the HTTP sibling, it is about
+    /// a chat **other** than the caller's: "this chat is unchanged" would name
+    /// the wrong one, and a model told the wrong conversation was refused
+    /// retries against the right one. §14.4 is satisfied — an id and a provider
+    /// name, no conversation content — and the caller already held both (it
+    /// passed them in), so nothing is disclosed that it did not itself supply.
+    #[error(
+        "Conversation '{session_id}' is a public chat, and switching it to '{provider}' — a \
+         private model — would raise what that conversation is allowed to reach. That {}. It is \
+         unchanged and still on its current model. Do not retry; the same call will be refused \
+         again, and it is refused the same way through every workspace tool. If that \
+         conversation genuinely needs a private model, stop and ask the user to switch it \
+         themselves, in that conversation's own model picker.",
+        USER_ACTION_REFUSAL_MARKER
+    )]
+    ToolTierRaise {
+        session_id: String,
+        provider: String,
+    },
+
     /// DR-16 / Task 18A: `POST /agent/add_extension` was asked to attach a
     /// private extension to a session running on a public model.
     ///
@@ -351,6 +386,12 @@ impl PrivacyRefusal {
         match self {
             Self::PublicModelOnPrivateSession { .. } => Some(SessionClassification::Private),
             Self::TierRaiseNeedsUser { .. }
+            // Same reasoning as its HTTP sibling directly above: DR-16 is about
+            // WHO may raise a tier, not about a stored transcript that collided
+            // with a model, so there is no (classification, tier) pair to put on
+            // a repair card — and a card offering to repair it would offer the
+            // model the very act the refusal exists to keep out of its hands.
+            | Self::ToolTierRaise { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
             // A spawn refusal is about the CAPABILITY the parent has, not about
@@ -375,6 +416,7 @@ impl PrivacyRefusal {
             Self::PrivateChildOfPublicParent { requested }
             | Self::PublicChildOfPrivateParent { requested } => Some(*requested),
             Self::TierRaiseNeedsUser { .. }
+            | Self::ToolTierRaise { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
             // The refused bind was necessarily private (a raise is the only
@@ -397,6 +439,12 @@ impl PrivacyRefusal {
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::PublicModelOnPrivateSession { session_id, .. } => Some(session_id),
+            // The one DR-16 variant that HAS a session to name, because it is
+            // the one about a conversation other than the caller's. Reporting it
+            // seeds no card — `session_classification` above is `None`, and
+            // `routes/agent.rs`'s repair needs the pair — it just answers the
+            // question this accessor asks truthfully.
+            Self::ToolTierRaise { session_id, .. } => Some(session_id),
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
@@ -1391,6 +1439,63 @@ mod tests {
                 "a refusal the model will retry is a loop: {msg}"
             );
         }
+    }
+
+    /// The tool-surface raise refusal: it names what it refused, marks itself as
+    /// a DR-16 refusal, and deliberately does NOT end in
+    /// [`ASK_THE_USER_TO_SWITCH`].
+    ///
+    /// That constant reads *"ask the user to switch **this chat** to a private
+    /// model … with the model chip in the composer"*, and this is the one DR-16
+    /// refusal about a conversation **other** than the caller's. Ending on it
+    /// would send the user to the wrong composer — and, worse, send the model to
+    /// the one chat whose model it does not need changed, which is a retry loop
+    /// dressed as a way out. The equivalent sentence is written for the target
+    /// instead.
+    #[test]
+    fn the_tool_raise_refusal_names_the_target_and_sends_the_user_to_it() {
+        let refusal = PrivacyRefusal::ToolTierRaise {
+            session_id: "s-target".into(),
+            provider: "llamacpp".into(),
+        };
+        let msg = refusal.to_string();
+
+        // Names both halves of what it refused — the rule this repo states as
+        // "a refusal names what it refused".
+        assert!(msg.contains("s-target"), "{msg}");
+        assert!(msg.contains("llamacpp"), "{msg}");
+
+        // Same disclosure bound as its siblings: it may name what the caller
+        // itself passed in, and nothing else.
+        for other in ["versa_azure", "versa_bedrock", "ollama"] {
+            assert!(
+                !msg.contains(other),
+                "refusal leaked the classification of {other}"
+            );
+        }
+
+        assert!(msg.contains(USER_ACTION_REFUSAL_MARKER), "{msg}");
+        assert!(
+            msg.contains("Do not retry"),
+            "a refusal the model will retry is a loop: {msg}"
+        );
+        assert!(
+            !msg.contains(ASK_THE_USER_TO_SWITCH),
+            "that sentence points at THIS chat's composer, and the chat that needs switching is \
+             a different one: {msg}"
+        );
+        // The way out it does carry is the target's own picker.
+        assert!(
+            msg.contains("ask the user to switch it themselves"),
+            "a refusal with no way out is a dead end: {msg}"
+        );
+
+        // A raise is about who may act, not about a transcript that collided
+        // with a model, so there is no pair for `routes/agent.rs` to build a
+        // repair card from — but the session it IS about is still reportable.
+        assert_eq!(refusal.session_classification(), None);
+        assert_eq!(refusal.provider_tier(), None);
+        assert_eq!(refusal.session_id(), Some("s-target"));
     }
 
     /// R4's refusal, which Task 23's spawn gate is the only caller of. §14.4:

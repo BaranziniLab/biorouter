@@ -18,7 +18,26 @@ pub use manager::CheckpointManager;
 pub use store::{Caps, ShadowRepo};
 
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
+
+/// The directory holding one chat's shadow repository and nothing else:
+/// `<data_root>/checkpoints/<session_id>` (the repository itself is its `git/`).
+///
+/// `None` unless the id is exactly one plain path component, because the id
+/// comes from a free-text column and the result is handed to
+/// `remove_dir_all`: `.` would name every chat's repository at once, `..` the
+/// data directory, and `a/.` would name chat `a`'s. No id `create_session`
+/// mints is any of those, but a restored or hand-edited database can hold one.
+pub(crate) fn repository_dir(data_root: &Path, session_id: &str) -> Option<PathBuf> {
+    let mut components = Path::new(session_id).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) if name == std::ffi::OsStr::new(session_id) => {
+            Some(data_root.join("checkpoints").join(session_id))
+        }
+        _ => None,
+    }
+}
 
 /// Which snapshot boundary produced a checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

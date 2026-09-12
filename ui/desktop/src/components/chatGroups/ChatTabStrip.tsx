@@ -274,12 +274,35 @@ export function ChatTabStrip({
     // Keyed on the rendered order string — the DOM is the dependency here.
   }, [orderKey]);
 
+  // Feature-detected: scrollIntoView is absent in jsdom, and keeping the
+  // focused tab visible must never be able to take the strip down.
+  const revealActiveTab = useCallback(() => {
+    activeTabRef.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, []);
+
   // Keep the focused tab in view as the strip scrolls past its shrink floor.
   useEffect(() => {
-    // Feature-detected: scrollIntoView is absent in jsdom, and keeping the
-    // focused tab visible must never be able to take the strip down.
-    activeTabRef.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  }, [activeTabId, tabs.length]);
+    revealActiveTab();
+  }, [activeTabId, tabs.length, revealActiveTab]);
+
+  // ⚠ **And again when the BOX changes, which the deps above cannot see.** The
+  // strip is a CSS scroll box whose `clientWidth` and left gutter both move on a
+  // window resize (the gutter flips when `AppLayout` auto-collapses the
+  // sidebar), and the browser preserves `scrollLeft` across that — so a resize
+  // scrolled the active tab out of sight and nothing put it back. This is the
+  // same division of labour `useTabStripOverflow` documents one file over: the
+  // observer catches the box changing, the effect above catches the content
+  // changing, and neither implies the other.
+  //
+  // No feedback loop to fear: `scrollIntoView` moves `scrollLeft`, which is not
+  // a size, so it cannot re-trigger the observer that called it.
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(revealActiveTab);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [revealActiveTab]);
 
   /**
    * Rung 3 of the yield ladder (D-32): shrink to the TAB_MIN_WIDTH floor (the
@@ -294,14 +317,22 @@ export function ChatTabStrip({
    */
   const showOverflowMenu = useTabStripOverflow(stripRef, tabs.length);
 
-  const handleOverflowSelect = useCallback(
+  /**
+   * Selecting a tab must also SHOW it — the menu is a way to reach a
+   * scrolled-out tab, so landing on it without showing it is half an answer.
+   *
+   * ⚠ The effect above does that for a tab that was not already active, and
+   * ONLY for one: its deps are `activeTabId` and `tabs.length`, both unchanged
+   * when you pick the tab you are already on. That made the one documented way
+   * back a no-op for exactly the tab a resize had pushed off-screen. Revealing
+   * explicitly here closes it, for the ▾ menu and for a click on the tab itself.
+   */
+  const handleSelect = useCallback(
     (tabId: ChatTabId) => {
-      // Selecting scrolls it into view through the effect above — the menu is a
-      // way to REACH a scrolled-out tab, so landing on it without showing it
-      // would be half an answer.
       onSelect(tabId);
+      if (tabId === activeTabId) revealActiveTab();
     },
-    [onSelect]
+    [onSelect, activeTabId, revealActiveTab]
   );
 
   // getSessionTitlePadding moved here from BaseChat: the strip is now its only
@@ -515,7 +546,7 @@ export function ChatTabStrip({
                       // Swallow the synthetic click that ends a drag — otherwise
                       // dropping a tab also activates whatever you dropped it on.
                       if (guardClick()) return;
-                      onSelect(tab.tabId);
+                      handleSelect(tab.tabId);
                     }}
                   >
                     {/* ⚠ The leading glyph now carries BOTH what the tab is and
@@ -628,7 +659,7 @@ export function ChatTabStrip({
               <DropdownMenuItem
                 key={tab.tabId}
                 data-testid={`chat-tab-overflow-item-${tab.tabId}`}
-                onSelect={() => handleOverflowSelect(tab.tabId)}
+                onSelect={() => handleSelect(tab.tabId)}
                 className={cn('gap-2', tab.tabId === activeTabId && 'font-medium')}
               >
                 {/* The overflow menu draws the SAME glyph as the strip: a tab

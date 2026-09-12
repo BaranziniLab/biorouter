@@ -64,7 +64,6 @@ function renderPalette() {
  */
 describe('the / palette in a private chat', () => {
   let savedElectron: unknown;
-  let savedScrollIntoView: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -72,14 +71,12 @@ describe('the / palette in a private chat', () => {
     Object.assign(window, {
       electron: { getUserActionKey: vi.fn(async () => USER_ACTION_KEY) },
     });
-    // jsdom has no `scrollIntoView`, and the palette scrolls its selected row
-    // into view on every render — an effect that throws unmounts the palette.
-    savedScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      configurable: true,
-      writable: true,
-      value: vi.fn(),
-    });
+    // The palette scrolls its selected row into view on every render, and jsdom
+    // implements no `scrollIntoView`. The polyfill is installed ONCE in
+    // src/test/setup.ts and deliberately not re-installed here: that scroll runs
+    // from a PASSIVE effect, which React can flush after this file's `afterEach`
+    // has run, so a polyfill with a per-test lifetime is removed while an effect
+    // that needs it is still queued. See the note in setup.ts.
     mocks.getSlashCommands.mockResolvedValue({ data: { commands: [] } });
     mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } });
     mocks.listBases.mockResolvedValue({
@@ -105,11 +102,6 @@ describe('the / palette in a private chat', () => {
 
   afterEach(() => {
     Object.assign(window, { electron: savedElectron });
-    if (savedScrollIntoView) {
-      Object.defineProperty(Element.prototype, 'scrollIntoView', savedScrollIntoView);
-    } else {
-      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
-    }
   });
 
   it("offers this chat's knowledge bases, not every base, and names its primary", async () => {

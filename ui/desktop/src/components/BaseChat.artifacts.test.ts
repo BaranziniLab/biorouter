@@ -1076,3 +1076,56 @@ describe('shouldAutoRepairArtifact', () => {
     expect(shouldAutoRepairArtifact(ChatState.Idle, 0, now)).toBe(false);
   });
 });
+
+/**
+ * Defect 3.5. Four sibling FILES named in the assistant's prose were offered as
+ * artifacts and the DIRECTORY holding them was not. Nothing downstream is at
+ * fault — `looksLikePreviewableFile` accepts a folder, the main process stats
+ * the path and answers `kind: 'directory'`, and the panel has
+ * `DirectoryTreePreview` ready for it. The gap is in collection:
+ * `PREVIEWABLE_TEXT_ARTIFACT_RE` requires a literal `.` plus an extension from
+ * a closed allowlist, and a directory has neither.
+ *
+ * The signal used is a TRAILING SLASH, not "any extensionless path". A bare
+ * `/usr/bin` is indistinguishable from an extensionless file and would drag
+ * every command path and prose fragment into the tab strip; `results/` is the
+ * convention the assistant actually writes when it means a folder.
+ */
+describe('a directory named in prose', () => {
+  it('is offered alongside its siblings', () => {
+    const messages = [
+      visibleMessage([
+        {
+          type: 'text',
+          text: 'Everything landed in /work/results/ — see /work/results/plot.png for the figure.',
+        },
+      ]),
+    ];
+
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
+      { kind: 'file', title: 'results', path: '/work/results', mentionedOnly: true },
+      { kind: 'file', title: 'plot.png', path: '/work/results/plot.png', mentionedOnly: true },
+    ]);
+  });
+
+  it('anchors a relative folder against the working dir, and drops it without one', () => {
+    const messages = [visibleMessage([{ type: 'text', text: 'Wrote them all to ./results/.' }])];
+
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
+      { kind: 'file', title: 'results', path: '/work/results', mentionedOnly: true },
+    ]);
+    expect(collectArtifactsFromMessages(messages)).toEqual([]);
+  });
+
+  // The discipline the trailing slash buys. Without it every one of these
+  // becomes a tab.
+  it('does not treat a bare extensionless word as a folder', () => {
+    const messages = [
+      visibleMessage([
+        { type: 'text', text: 'It is on the PATH at /usr/bin and the ratio was 3/4.' },
+      ]),
+    ];
+
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([]);
+  });
+});

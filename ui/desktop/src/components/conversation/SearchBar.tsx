@@ -223,7 +223,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             onClick={toggleCaseSensitive}
             variant="ghost"
             className={`no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] ${caseSensitive ? 'bg-background-medium text-text-default hover:bg-background-strong' : 'text-text-muted hover:text-text-default hover:bg-background-medium'}`}
-            title="Case Sensitive"
+            title="Case sensitive"
           >
             <span className="text-sm font-normal">Aa</span>
           </Button>

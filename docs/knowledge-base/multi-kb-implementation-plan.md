@@ -162,6 +162,14 @@ It is shown **only when following the default would visibly change something**: 
 
 The gesture carries **no optimistic pointer** and **omits `hidden_kbs`**. The daemon resolves which base the chat lands on, so guessing would guess at the rule the gesture defers to; and a chat may be inheriting the machine-wide hidden list, so echoing the resolved list back would install a set override from a gesture that means "stop overriding here".
 
+**Amendment (2026-09-11, QA F14): the renderer never writes a selection on its own initiative.** D12 already said the GUI takes the primary from the daemon's answer rather than re-deriving the repair in TypeScript; three code paths still re-derived it by *writing*. Two effects in `KnowledgeContext` "repaired" the renderer's cache — `clear_primary` for a primary missing from its base list, and a pruned `hidden_kbs` — and `useKnowledgeBases.remove` sent `clear_primary` after every delete of the primary. Each installed a durable, session-scoped override from whatever list one renderer held, in every open window, including in a chat the daemon had deliberately left inheriting (D2). Now:
+
+- `refresh` re-reads the base list **and** the selection, and is what a delete, a rename, the view's mount, opening the chat chip and the end of every turn (`message-stream-finished`) call. The last two exist for QA F6: the agent creates and deletes bases from inside a turn, sometimes from `execute_code` where no knowledge tool call is visible, and the chip read "2 visible" over three bases until a remount. The daemon's repair is adopted, never re-made.
+- A pointer at a base the list lacks is *shown* as no primary and is not persisted as one.
+- `localStorage` holds only what the daemon confirmed. A write that fails is reported to the person, and the view falls back to the daemon's re-read, or to that last confirmed value.
+- "Make primary" sends `hidden_kbs` only when it has to un-hide the base, for the reason the paragraph above gives.
+- Every selection read carries `userActionHeaders()`. `GET /knowledge/active` naming a private chat is gated exactly as the POST is, and the reads used to go unproven, so on a UCSF install, where every chat is private, the renderer's cache stood in for the chat's selection.
+
 ### Policies this plan deliberately does **not** change
 
 - **KB-less `kb_search` keeps meaning "every base in this session."** Under the merged model that sentence is both today's behaviour and the literal ask. No `scope` parameter, no narrowing, no regression.

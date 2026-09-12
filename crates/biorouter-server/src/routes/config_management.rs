@@ -1,4 +1,4 @@
-use crate::routes::utils::check_provider_configured;
+use crate::routes::utils::{check_provider_configured, provider_readiness, ProviderReadiness};
 use crate::state::AppState;
 use axum::routing::put;
 use axum::{
@@ -129,6 +129,20 @@ pub struct ProviderDetails {
     /// `extensionPairingRefused` documents the same rule on its side.
     #[serde(default)]
     pub resolved_tier: Option<ProviderTier>,
+    /// Why a provider the user HAS set up cannot run right now: a one-line
+    /// sentence for the model picker to print on the row it disables.
+    ///
+    /// Set only when [`Self::is_configured`] is false for a reason other than a
+    /// missing key — today, a coding agent whose command key is saved and whose
+    /// CLI does not resolve (see `routes::utils::provider_readiness`). `None` for
+    /// every usable provider and for every provider that is simply not set up,
+    /// which the picker leaves out rather than greys out.
+    ///
+    /// ⚠ **Only what can be learned without spawning.** A signed-out CLI is not
+    /// reported here: finding that out means running it, and this route runs
+    /// for every provider on every settings open.
+    #[serde(default)]
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -665,20 +679,25 @@ pub async fn remove_config(
     }
 }
 
-const SECRET_MASK_SHOW_LEN: usize = 8;
+/// The one string `POST /config/read` serves in place of a secret.
+///
+/// Fixed, and carrying **none** of the secret's own bytes. It used to reveal
+/// the first `min(len / 2, 8)` characters, so a 40-character key came back as
+/// eight real characters followed by asterisks — a partial credential inside
+/// the one response whose entire purpose is not to contain one, and a prefix
+/// long enough to identify the key and to narrow a search for the rest.
+///
+/// The LENGTH is fixed for the same reason the bytes are: how long a stored
+/// credential is fingerprints which kind it is. Nothing renders this as
+/// anything but placeholder text — `DefaultProviderSetupForm.tsx` puts it
+/// straight into a field — so there is no caller that needs it to resemble
+/// the value.
+const SECRET_MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
 
-fn mask_secret(secret: Value) -> String {
-    let as_string = match secret {
-        Value::String(s) => s,
-        _ => serde_json::to_string(&secret).unwrap_or_else(|_| secret.to_string()),
-    };
-
-    let chars: Vec<_> = as_string.chars().collect();
-    let show_len = std::cmp::min(chars.len() / 2, SECRET_MASK_SHOW_LEN);
-    let visible: String = chars.iter().take(show_len).collect();
-    let mask = "*".repeat(chars.len() - show_len);
-
-    format!("{}{}", visible, mask)
+/// See [`SECRET_MASK`]. The secret is taken and deliberately not looked at:
+/// this is the shape a masking helper has to have to be one.
+fn mask_secret(_secret: &Value) -> String {
+    SECRET_MASK.to_string()
 }
 
 #[utoipa::path(
@@ -727,7 +746,7 @@ pub async fn read_config(
         Ok(value) => {
             if query.is_secret {
                 ConfigValueResponse::MaskedValue(MaskedSecret {
-                    masked_value: mask_secret(value),
+                    masked_value: mask_secret(&value),
                 })
             } else {
                 ConfigValueResponse::Value(value)
@@ -991,29 +1010,12 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, StatusCode> {
     // Concurrently, because each row may construct a provider and a serial pass
     // would add every constructor's latency together on a route the settings
     // grid blocks on.
-    let providers_response: Vec<ProviderDetails> =
-        futures::future::join_all(providers.into_iter().map(
-            |(metadata, provider_type)| async move {
-                let is_configured = check_provider_configured(&metadata, provider_type);
-                // Issue #56, DR-26. Both resolved from the instance, never from
-                // the name — see `resolve_provider_axes`.
-                let (resolved_tier, affiliation) = if is_configured {
-                    resolve_provider_axes(&metadata).await
-                } else {
-                    (None, None)
-                };
-
-                ProviderDetails {
-                    name: metadata.name.clone(),
-                    metadata,
-                    is_configured,
-                    provider_type,
-                    affiliation,
-                    resolved_tier,
-                }
-            },
-        ))
-        .await;
+    let providers_response: Vec<ProviderDetails> = futures::future::join_all(
+        providers
+            .into_iter()
+            .map(|(metadata, provider_type)| provider_details(metadata, provider_type)),
+    )
+    .await;
 
     Ok(Json(providers_response))
 }
@@ -1042,6 +1044,35 @@ fn declared_model_names(metadata: &biorouter::providers::base::ProviderMetadata)
         .iter()
         .map(|model| model.name.clone())
         .collect()
+}
+
+/// One row of `GET /config/providers`.
+async fn provider_details(
+    metadata: ProviderMetadata,
+    provider_type: ProviderType,
+) -> ProviderDetails {
+    let (is_configured, unavailable_reason) = match provider_readiness(&metadata, provider_type) {
+        ProviderReadiness::Configured => (true, None),
+        ProviderReadiness::NotConfigured => (false, None),
+        ProviderReadiness::Unavailable(reason) => (false, Some(reason)),
+    };
+    // Issue #56, DR-26. Both resolved from the instance, never from the name —
+    // see `resolve_provider_axes`.
+    let (resolved_tier, affiliation) = if is_configured {
+        resolve_provider_axes(&metadata).await
+    } else {
+        (None, None)
+    };
+
+    ProviderDetails {
+        name: metadata.name.clone(),
+        metadata,
+        is_configured,
+        provider_type,
+        affiliation,
+        resolved_tier,
+        unavailable_reason,
+    }
 }
 
 #[utoipa::path(
@@ -1102,8 +1133,10 @@ pub async fn get_provider_models(
         // ⚠ **`None` means "this provider has no LIVE fetch", not "this provider
         // has no models"** — and answering `[]` said the second. Nine of the
         // twenty-three builtins do not override `fetch_supported_models`, so its
-        // `Ok(None)` default reached here; six of those nine ship a curated
-        // `with_models(...)` catalog that the settings grid visibly renders. The
+        // `Ok(None)` default reached here; ALL NINE declare a catalog the
+        // settings grid visibly renders — measured off `known_models`, not by
+        // grepping `with_models`, which undercounts by three (see
+        // `declared_model_names`). The
         // route was therefore reporting an empty model list for a provider whose
         // models were on screen, under a name and a `200 Models fetched
         // successfully` that both promise the model list.
@@ -1694,10 +1727,15 @@ pub async fn set_config_provider(
     create_with_default_model(&provider)
         .await
         .and_then(|_| {
-            let config = Config::global();
-            config
-                .set_biorouter_provider(provider)
-                .and_then(|_| config.set_biorouter_model(model))
+            // ⚠ ONE write, not two. `set_biorouter_provider` followed by
+            // `set_biorouter_model` left `config.yaml` holding the new provider
+            // beside the old model — measured at ~55 ms of `versa_azure` next
+            // to `gpt-6-astra` — and a chat started in that window binds a pair
+            // that was never chosen. The provider decides the session's privacy
+            // capability, so a mismatched pair is a privacy-relevant outcome,
+            // not only a cosmetic one.
+            Config::global()
+                .set_biorouter_provider_and_model(provider, model)
                 .map_err(|e| anyhow::anyhow!(e))
         })
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
@@ -1828,6 +1866,57 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
+    /// **A masked secret carries none of the secret.**
+    ///
+    /// `POST /config/read` with `is_secret: true` answered
+    /// `{"maskedValue":"Y2EzNTgy********…"}` — `min(len / 2, 8)` real
+    /// characters of the credential, in the one response whose whole purpose is
+    /// not to contain one. Eight characters is enough to identify which key is
+    /// stored and to narrow a search for the rest.
+    ///
+    /// The prefix loop is the fail-before: a `!= secret` assertion passes
+    /// against the old helper, and so does "contains asterisks".
+    #[test]
+    fn a_masked_secret_reveals_nothing_of_it() {
+        for secret in [
+            "ca3582deadbeefcafe0123456789abcdef01234567",
+            "sk-proj-AAAABBBBCCCCDDDDEEEEFFFF",
+            "short",
+            "x",
+        ] {
+            let masked = super::mask_secret(&serde_json::json!(secret));
+            // `chars().take(n)`, not `&secret[..n]`: a byte slice of a string is
+            // `clippy::string_slice`, and the property under test is about
+            // characters anyway.
+            for n in 1..=secret.chars().count() {
+                let prefix: String = secret.chars().take(n).collect();
+                assert!(
+                    !masked.contains(&prefix),
+                    "the mask carries the first {n} characters of the secret: {masked}"
+                );
+            }
+            assert!(
+                !masked.chars().any(|c| secret.contains(c)),
+                "the mask shares characters with the secret: {masked}"
+            );
+        }
+
+        // …and it is the same length whatever it hides: how long a stored
+        // credential is fingerprints which kind it is.
+        assert_eq!(
+            super::mask_secret(&serde_json::json!("x")),
+            super::mask_secret(&serde_json::json!(
+                "ca3582deadbeefcafe0123456789abcdef01234567"
+            )),
+            "the mask's length still leaks the secret's"
+        );
+        // A non-string secret is masked too, not serialized into the response.
+        assert_eq!(
+            super::mask_secret(&serde_json::json!({ "token": "abc123" })),
+            super::SECRET_MASK
+        );
+    }
+
     use http::HeaderMap;
 
     use super::*;
@@ -2320,6 +2409,7 @@ mod affiliation_wire_tests {
             provider_type: ProviderType::Builtin,
             affiliation,
             resolved_tier,
+            unavailable_reason: None,
         }
     }
 
@@ -2498,5 +2588,84 @@ mod privacy_disclosure_tests {
             served.title_template,
             biorouter::privacy::disclosure::COPY_TITLE_TEMPLATE
         );
+    }
+}
+
+/// F6 of the 2026-09-10 provider QA run, at the route: a coding agent whose CLI
+/// is missing is served `is_configured: false` WITH the reason the model picker
+/// prints on the row it disables — and an ordinary row carries an explicit
+/// `null` in the same key.
+///
+/// ⚠ Exercised through `provider_details`, the one function `providers()` maps
+/// over, rather than through the whole route: `GET /config/providers` builds
+/// every configured provider in the developer's real config, which no unit test
+/// should do. The command key is pinned through the environment under
+/// `env_lock`, so the real config file never decides the outcome.
+#[cfg(test)]
+mod readiness_wire_tests {
+    use super::*;
+    use biorouter::providers::base::Provider;
+    use biorouter::providers::codex::CodexProvider;
+    use biorouter::providers::coding_agent::CodingAgentKind;
+
+    #[tokio::test]
+    async fn a_codex_row_whose_cli_is_missing_is_unconfigured_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nonexistent").join("codex");
+        let _env = env_lock::lock_env([("CODEX_COMMAND", Some(missing.to_str().unwrap()))]);
+
+        let row = provider_details(CodexProvider::metadata(), ProviderType::Builtin).await;
+
+        assert!(
+            !row.is_configured,
+            "the badge and the picker both key on this"
+        );
+        assert_eq!(
+            row.unavailable_reason.as_deref(),
+            Some(CodingAgentKind::Codex.not_installed_summary().as_str())
+        );
+        // Nothing was constructed for a provider that cannot be bound.
+        assert!(row.resolved_tier.is_none() && row.affiliation.is_none());
+
+        let json = serde_json::to_value(row).unwrap();
+        assert_eq!(json["is_configured"], serde_json::json!(false));
+        assert_eq!(
+            json["unavailable_reason"],
+            serde_json::json!(CodingAgentKind::Codex.not_installed_summary())
+        );
+    }
+
+    /// The control: a codex row whose CLI resolves is configured and carries no
+    /// reason — so the test above cannot pass for a route that refuses Codex
+    /// outright.
+    #[tokio::test]
+    async fn a_codex_row_whose_cli_resolves_is_configured_with_no_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("codex");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        let _env = env_lock::lock_env([("CODEX_COMMAND", Some(exe.to_str().unwrap()))]);
+
+        let row = provider_details(CodexProvider::metadata(), ProviderType::Builtin).await;
+
+        assert!(row.is_configured);
+        assert_eq!(row.unavailable_reason, None);
+    }
+
+    /// Usable and not-set-up rows alike serve the key as `null`, never omit it:
+    /// an absent key is indistinguishable from a daemon that predates the field.
+    #[test]
+    fn a_row_with_nothing_to_explain_serialises_an_explicit_null() {
+        let row = ProviderDetails {
+            name: "openai".to_string(),
+            metadata: ProviderMetadata::empty(),
+            is_configured: false,
+            provider_type: ProviderType::Builtin,
+            affiliation: None,
+            resolved_tier: None,
+            unavailable_reason: None,
+        };
+        let json = serde_json::to_value(row).unwrap();
+        assert!(json.as_object().unwrap().contains_key("unavailable_reason"));
+        assert!(json["unavailable_reason"].is_null());
     }
 }

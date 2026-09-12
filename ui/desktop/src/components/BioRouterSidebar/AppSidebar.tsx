@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Home, Plus, Settings } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { announceSameRouteReset } from '../../hooks/useSameRouteReset';
 import {
   SidebarContent,
   SidebarFooter,
@@ -202,6 +203,18 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     if (path === '/pair') {
       chatContext?.resetChat();
       navigateWithViewTransition(navigate, '/pair', { newChat: true });
+      return;
+    }
+
+    // Re-selecting the destination you are already on used to do NOTHING.
+    // React Router reconciles a same-path navigation rather than remounting
+    // the route element, so a page holding sub-state — a schedule's run detail,
+    // and the session history nested inside that — stayed exactly where it was
+    // and only the in-page Back escaped. The row is lit the whole time, which
+    // is this rail telling the user "you are here"; pressing it should get them
+    // here, not leave them three levels down with no visible way out.
+    if (path === currentPath) {
+      announceSameRouteReset(path);
       return;
     }
 

@@ -223,7 +223,7 @@ Add any other context about the problem here.
               <AlertTriangle size={20} />
             </div>
             <div className="min-w-0 flex-1">
-              <DialogTitle>Report a Problem</DialogTitle>
+              <DialogTitle>Report a problem</DialogTitle>
               <DialogDescription className="mt-2">
                 You can download a diagnostics zip file to share with the team, or file a bug
                 directly on GitHub with your system details pre-filled. A diagnostics report
