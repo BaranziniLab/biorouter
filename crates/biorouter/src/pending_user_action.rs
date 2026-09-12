@@ -764,7 +764,13 @@ impl PendingUserAction {
     /// could be asked), when the call has already been answered, or when
     /// `session_id` is this card's own home. Nothing is published in any of
     /// those cases.
-    pub fn also_surface_in(&self, session_id: &str) -> bool {
+    ///
+    /// `pub(crate)` on purpose. Widening where a card may be answered is a
+    /// decision about the delegation tree, so it belongs to the one function
+    /// that knows the tree — `approval_relay::surface_where_a_person_is_watching`,
+    /// which is itself crate-private. A door outside this crate that needs the
+    /// behaviour should go through that, not invent a second destination.
+    pub(crate) fn also_surface_in(&self, session_id: &str) -> bool {
         if self.declined || self.rx.is_none() {
             return false;
         }
