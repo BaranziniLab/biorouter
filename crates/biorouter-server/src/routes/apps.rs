@@ -6438,7 +6438,7 @@ mod tests {
     use serde_json::json;
 
     // NOTE — the four `run_bounded_turn` tests below call `AppState::new()`,
-    // which opens the developer's REAL session database (via
+    // which opens the ONE session DB this binary shares (via
     // `AgentManager::instance()` → `SessionManager::instance()`), exactly as the
     // `workspace::turn` tests warn. They create rows named "worker",
     // "worker-text", "worker-abandoned" and "worker-cancelled". Keep the names
@@ -9921,11 +9921,13 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn the_app_capability_report_follows_the_manifests_provider_not_the_global_one() {
-            // Warm the process-global `SessionManager` against the REAL path root
-            // BEFORE the env lock relocates it — otherwise this test could be the
-            // one that creates the session database inside a `TempDir` that is
-            // then unlinked, breaking every sibling test in the binary.
-            let _warm = crate::state::AppState::new().await.unwrap();
+            // This test used to warm the process-global `SessionManager` here,
+            // before the env lock relocates the path root, so that it could not
+            // be the one that creates the session database inside a `TempDir`
+            // that is then unlinked. `src/test_sandbox.rs` now freezes that path
+            // in a `#[ctor]` for the whole binary — the same fix, without having
+            // to be remembered at each new call site, which is why the flake
+            // outlived the warm-up.
 
             // Both inversions, because each is silent on its own and a fix that
             // hardcodes either literal passes one of them. In each row the agent
@@ -10397,11 +10399,13 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn an_apps_skill_grant_is_bounded_to_search_and_load() {
-            // Warm the process-global `SessionManager` against the REAL path
-            // root BEFORE the env lock relocates it — otherwise this test could
+            // This test used to warm the process-global `SessionManager` here,
+            // before the env lock relocates the path root, so that it could not
             // be the one that creates the session database inside a `TempDir`
-            // that is then unlinked, breaking every sibling test in the binary.
-            let _warm = crate::state::AppState::new().await.unwrap();
+            // that is then unlinked. `src/test_sandbox.rs` now freezes that path
+            // in a `#[ctor]` for the whole binary — the same fix, without having
+            // to be remembered at each new call site, which is why the flake
+            // outlived the warm-up.
 
             let world = skill_world(&["app-skill"]);
             let dir = world.path();
@@ -10733,10 +10737,13 @@ mod tests {
         /// Run the real arming step against a sandboxed root and return what it
         /// refused to arm.
         async fn withheld(manifest: &Manifest) -> Vec<String> {
-            // Warm the process-global `SessionManager` against the REAL path
-            // root before the env lock relocates it — same reason as
-            // `an_apps_skill_grant_is_bounded_to_search_and_load`.
-            let _warm = crate::state::AppState::new().await.unwrap();
+            // This test used to warm the process-global `SessionManager` here,
+            // before the env lock relocates the path root, so that it could not
+            // be the one that creates the session database inside a `TempDir`
+            // that is then unlinked. `src/test_sandbox.rs` now freezes that path
+            // in a `#[ctor]` for the whole binary — the same fix, without having
+            // to be remembered at each new call site, which is why the flake
+            // outlived the warm-up.
             let root = tempfile::TempDir::new().unwrap();
             let _env = lock_env_for(root.path(), PUBLIC_HOST);
             let state = crate::state::AppState::new_with_knowledge_root(root.path().join("kb"))
@@ -11519,11 +11526,13 @@ mod tests {
         #[tokio::test]
         #[serial_test::serial]
         async fn configure_main_provider_cannot_raise_a_live_app_sessions_capability() {
-            // Warm the process-global `SessionManager` against the REAL path root
-            // BEFORE the env lock relocates it — otherwise this test could be the
-            // one that creates the session database inside a `TempDir` that is
-            // then unlinked, breaking every sibling test in the binary.
-            let _warm = crate::state::AppState::new().await.unwrap();
+            // This test used to warm the process-global `SessionManager` here,
+            // before the env lock relocates the path root, so that it could not
+            // be the one that creates the session database inside a `TempDir`
+            // that is then unlinked. `src/test_sandbox.rs` now freezes that path
+            // in a `#[ctor]` for the whole binary — the same fix, without having
+            // to be remembered at each new call site, which is why the flake
+            // outlived the warm-up.
             let dir = tempfile::TempDir::new().unwrap();
             let _env = lock_env_for(dir.path(), PRIVATE_HOST);
 

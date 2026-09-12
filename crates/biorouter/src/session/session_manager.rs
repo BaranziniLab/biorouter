@@ -426,8 +426,42 @@ impl std::str::FromStr for SessionType {
     }
 }
 
+/// The data directory the process-global session store lives under, resolved
+/// **once** per process.
+///
+/// Split out of [`SESSION_STORAGE`] on purpose, and the split is the whole fix
+/// for a Windows CI flake that rotated through the route tests. Resolving the
+/// path and building the pool used to be one `LazyLock`, so the path was frozen
+/// at the instant the first caller touched the store — an instant nothing owns,
+/// because the tests run in parallel. A test that relocates
+/// `BIOROUTER_PATH_ROOT` under a `TempDir` (for config/skills isolation) could
+/// therefore win that race and pin the whole process's `sessions.db` inside a
+/// directory that is unlinked when its `TempDir` drops.
+///
+/// The symptom is nothing like the cause. After the unlink the pool's already
+/// open connection keeps answering — SQLite on POSIX does not care that its
+/// inode has no name any more — so a *serial* query still succeeds. It is the
+/// moment two tasks want the pool at once, and it has to open a **second**
+/// connection, that the vanished directory bites: `(code: 14) unable to open
+/// database file`. Every caller turns that into its own failure, and
+/// `GET /sessions/activity` turns it into a 500, which is what
+/// `activity_clamps_an_absurd_window` measured as `left: 500 right: 200`. The
+/// victim is whichever test queried next, so the failing name rotates and the
+/// same test can pass in one binary and fail in another.
+///
+/// Freezing the path separately lets a test binary pin it — cheaply, with no
+/// pool, no I/O and no runtime — *before* the first test runs, via
+/// [`SessionManager::shared_store_root`]. See `src/test_sandbox.rs` in this
+/// crate and in `biorouter-server`.
+///
+/// Production behaviour is unchanged: nothing outside a test mutates
+/// `BIOROUTER_PATH_ROOT` after start, so this resolves to the same directory it
+/// always did, and it was already effectively frozen — only the instant it is
+/// captured moved earlier.
+static SHARED_STORE_ROOT: LazyLock<PathBuf> = LazyLock::new(Paths::data_dir);
+
 static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
-    LazyLock::new(|| Arc::new(SessionStorage::new(Paths::data_dir())));
+    LazyLock::new(|| Arc::new(SessionStorage::new(SHARED_STORE_ROOT.clone())));
 
 pub const DEFAULT_SESSION_NAME: &str = "New chat";
 
@@ -1608,6 +1642,23 @@ impl SessionManager {
         Self {
             storage: Arc::clone(&SESSION_STORAGE),
         }
+    }
+
+    /// The data directory [`SessionManager::instance`]'s store resolves
+    /// `sessions/sessions.db` under, resolved once per process (see
+    /// [`SHARED_STORE_ROOT`]).
+    ///
+    /// Reading it is what *freezes* it, and that side effect is the point of the
+    /// call in a test binary's `#[ctor]`: it costs one environment read and a
+    /// `PathBuf`, builds no pool, touches no disk and needs no async runtime, so
+    /// it is safe to run before `main`. Once frozen, no later relocation of
+    /// `BIOROUTER_PATH_ROOT` can move the process's session database into a
+    /// directory that test owns and then deletes.
+    ///
+    /// In production this is a plain accessor — the daemon's data dir does not
+    /// move while it runs.
+    pub fn shared_store_root() -> &'static Path {
+        &SHARED_STORE_ROOT
     }
 
     pub fn storage(&self) -> &Arc<SessionStorage> {
@@ -16437,13 +16488,15 @@ mod tests {
         fn no_copy_path_hand_rolls_its_own_builder_any_more() {
             // The enumeration test, aimed at the three functions that matter
             // rather than at all 104 `create_session` call sites.
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            let src = include_str!("session_manager.rs");
             for f in [
                 "copy_session",
                 "diverge_session_for_edit",
                 "diverge_session",
             ] {
-                let body = fn_body(&src, f);
+                let body = fn_body(src, f);
                 assert!(
                     body.contains("create_derived_session"),
                     "{f} does not use the shared helper"
@@ -16694,7 +16747,9 @@ mod tests {
         /// **values**, and the scan below pins that those four **names** are what
         /// the function hands to `info!`.
         fn fn_body(name: &str) -> String {
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            let src = include_str!("session_manager.rs");
             let start = src
                 .find(&format!("fn {name}("))
                 .unwrap_or_else(|| panic!("no `fn {name}(` in the file"));
@@ -17273,9 +17328,11 @@ mod tests {
             // out of this string — the cut below, and the `\n            }`
             // that closes a match arm in the caller — is written with `\n`. A
             // raw read therefore fails on Windows alone, which is what it did.
-            let src = std::fs::read_to_string("src/session/session_manager.rs")
-                .unwrap()
-                .replace("\r\n", "\n");
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            // The CRLF normalisation below is a separate concern and still needed —
+            // `include_str!` hands back whatever the checkout holds.
+            let src = include_str!("session_manager.rs").replace("\r\n", "\n");
             let cut = src
                 .find("\n#[cfg(test)]\nmod tests {")
                 .expect("this file's main test module moved");

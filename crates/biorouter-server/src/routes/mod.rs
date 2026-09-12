@@ -403,7 +403,7 @@ pub(crate) fn secret_matches(candidate: &str, expected: &str) -> bool {
 ///
 /// It is the ONE span a structural assertion about a handler is allowed to read.
 /// Several route facts in this crate cannot be asserted behaviourally —
-/// `AppState::new()` opens the developer's REAL session database — and the
+/// `AppState::new()` opens the ONE session DB this binary shares — and the
 /// failure mode of a whole-file `contains` is that it finds the fact in the
 /// handler *next door*. A second copy of this extractor is how two scans start
 /// disagreeing about where a function ends, so there is one, and every test

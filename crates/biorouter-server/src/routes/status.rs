@@ -270,7 +270,7 @@ mod tests {
     /// *sends* what `refusal_body` composes.
     ///
     /// A source scan, and for the reason `session_reach`'s own census gives —
-    /// `AppState::new()` opens the developer's REAL session database, so this
+    /// `AppState::new()` opens the ONE session DB this binary shares, so this
     /// handler cannot be driven from a unit test. Driving it over HTTP does not
     /// help either: the keyless arm is reached only when `USER_ACTION_DIGEST` was
     /// never set, and it is a `OnceLock` that any other serial test in this crate

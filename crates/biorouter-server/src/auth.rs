@@ -49,8 +49,8 @@ pub fn install_user_action_digest(digest: Option<[u8; 32]>) {
 ///
 /// Pure, so the whole rule is testable without a process global or a server —
 /// which matters here because the alternative home for these assertions is an
-/// `AppState`-backed HTTP test, and `AppState::new()` opens the developer's REAL
-/// session database (see `routes::agent::working_dir_lock_tests`).
+/// `AppState`-backed HTTP test, and `AppState::new()` opens the ONE session DB this
+/// binary shares (see `routes::agent::working_dir_lock_tests`).
 ///
 /// `expected: None` is "this daemon was handed no key" and fails closed: `just
 /// run-server`, a hand-run `biorouterd agent` and every headless deployment land
