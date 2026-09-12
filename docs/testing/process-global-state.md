@@ -69,17 +69,18 @@ The four highest-traffic literal keys are `BIOROUTER_PATH_ROOT` (6 sites), `PATH
 
 ### Production code that writes the environment
 
-Five sites, and they are not a test concern — they mutate the environment of a multi-threaded daemon.
+Four sites, and they are not a test concern — they mutate the environment of a multi-threaded daemon.
 
 | Site | What it writes |
 |---|---|
 | `providers/bedrock.rs:79` | every `AWS_*` config value **and secret**, from `from_env` |
-| `providers/bedrock.rs:90-92` | an unlocked read-then-write promoting `AWS_ENDPOINT_URL_BEDROCK` |
 | `providers/sagemaker_tgi.rs:52` | the same `AWS_*` dump |
 | `config/base.rs:1504` | `BIOROUTER_DISABLE_KEYRING=1` on keyring fallback; races `Config::default`'s read at `:225`, which `GLOBAL_CONFIG` then freezes |
 | `agents/test_sandbox.rs:37` | safe twice over — a `#[ctor]` that runs before `main`, in a module gated at its declaration site |
 
 The two `AWS_*` dumps leak credentials into every subprocess spawned afterwards, which is the exact unsoundness the `CONFIG_OVERRIDES` task-local was introduced to avoid.
+
+A fifth site, an unlocked read-then-write at `providers/bedrock.rs:90-92` that promoted `AWS_ENDPOINT_URL_BEDROCK` to `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, was removed on 2026-09-11. It is how the UCSF gateway that Versa Bedrock's setup persisted became the public `aws_bedrock` provider's endpoint; see `providers/bedrock_namespace_tests.rs`.
 
 ### Test writers
 
@@ -130,6 +131,7 @@ Verdicts: **fixed**, **live** (a reader can observe another test's write today),
 | `pending_user_action::USER_PROOF_AVAILABLE` | 6 lib readers | none in `--lib` | **latent** |
 | `SkillsClient::new` resolving `Paths::config_dir()` | `agents/skills_extension.rs:807` | — | **accepted** — PR #193 calls the synchronous constructor read "the property we want": the root a client seeds into is the one that was ambient when it was built |
 | `AWS_*` written by production | any `env::var` reader in the process | `providers/bedrock.rs:79`, `sagemaker_tgi.rs:52` | **open** — not a test hazard; recorded here because it is the same mechanism |
+| `AWS_BEARER_TOKEN_BEDROCK` | the AWS SDK itself: Bedrock Runtime's `From<&SdkConfig>` reads it and prefers bearer auth unless the auth scheme was chosen in code, reached from `VersaBedrockProvider::from_resolved` | a shell, or `providers/bedrock.rs:79`'s export | **fixed** 2026-09-11 — Versa's loader chooses SigV4 in code. A reader inside a dependency is invisible to every `env::var` scan in this document. |
 
 ### `<config>/skills`, spelled eleven ways
 
