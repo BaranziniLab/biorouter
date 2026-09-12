@@ -4389,6 +4389,10 @@ export type GetCallableToolCountErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried neither a capability that covers it nor proof it came from the user
+     */
+    403: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;

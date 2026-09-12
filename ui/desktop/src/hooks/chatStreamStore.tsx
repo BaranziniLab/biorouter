@@ -2078,6 +2078,11 @@ class ChatStreamController {
    *   reads of AGENT state, and `/agent/callable_tool_count` answers through
    *   `get_or_create_agent` — on a miss it would mint a bare placeholder agent
    *   under the child's session id, on the process default provider.
+   *   ⚠ **Not calling it is not the same as it being gated**, and the review of
+   *   this change said so: that route now consults `session_reach` itself,
+   *   before the agent is fetched (`routes/agent.rs`). This flag stays false
+   *   anyway — a browser tab has no agent here to describe — but the daemon no
+   *   longer depends on the renderer's restraint.
    *
    * The tab's controls follow from the same predicate (`isReadOnlySubagentChat`):
    * no composer and no Stop, with the reason in their place (SD-8).

@@ -245,6 +245,13 @@ another name), `PUT /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_valu
 sentence claiming the API surface as a whole is closed would be [#47](https://github.com/BaranziniLab/biorouter/issues/47)'s
 claim to make, and #47 is open.
 
+**`GET /agent/callable_tool_count` was gated in the same pass**, and for a reason worth separating
+from the tab: the renderer stopped *calling* it for a subagent's chat (below), and a client that
+avoids an ungated route leaves it ungated. It answers through `get_or_create_agent`, so an unproven
+caller naming any chat could mint an agent for it, and the route's own 424 would then report what
+it had found. It now consults `session_reach` before the agent is fetched, like `GET
+/sessions/{id}` and `POST /agent/resume`.
+
 It could not even be read. The renderer loaded every chat through `/agent/resume`, so a subagent's
 tab rendered *"Could not load this chat"* over the daemon's refusal — including the tab the daemon
 itself opens to show a subagent it has just spawned. Measured against a real `biorouter serve`:

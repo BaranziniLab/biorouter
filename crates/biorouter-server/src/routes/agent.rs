@@ -85,6 +85,16 @@ const SUBAGENT_CONTROL_NO_KEY: &str =
      its tab requires that proof. Nothing was changed. This control is unavailable on this \
      daemon; use the desktop app.";
 
+/// A 424 in the shape every other refusal in this file has, so that gating a
+/// route which used to answer bare status codes does not change the body a client
+/// sees for the failures it already handled.
+fn agent_not_initialized(message: &str) -> ErrorResponse {
+    ErrorResponse {
+        message: message.to_string(),
+        status: StatusCode::FAILED_DEPENDENCY,
+    }
+}
+
 fn refuse_subagent_unless_user(
     session: &Session,
     headers: &HeaderMap,
@@ -1275,22 +1285,48 @@ async fn get_tools(
     responses(
         (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent, and an unproven caller \
+                                      is told the same thing for both) and the request carried \
+                                      neither a capability that covers it nor proof it came from \
+                                      the user"),
         (status = 424, description = "Agent not initialized")
     )
 )]
 async fn get_callable_tool_count(
     State(state): State<Arc<AppState>>,
+    // Before `Query`, which is fine either way here, but keeps the extractor
+    // order the rest of this file uses.
+    headers: axum::http::HeaderMap,
     Query(query): Query<CallableToolCountQuery>,
-) -> Result<Json<CallableToolCountResponse>, StatusCode> {
+) -> Result<Json<CallableToolCountResponse>, ErrorResponse> {
     let session_id = query.session_id;
+    // Issue #56 Task 58 / #47. FIRST, before the agent is fetched, for the reason
+    // `agent_add_extension` states at length: `get_agent_for_route` CREATES an
+    // agent for a session that has none, so a gate below it would let an unproven
+    // caller materialise one for a chat it may not address — and this route's own
+    // 424 would then tell it what it had found. `session_id` is a request
+    // parameter, not a credential; see `routes::session_reach`.
+    //
+    // ⚠ This route had NO gate of any kind, and PR #260's renderer merely stopped
+    // calling it for a subagent's chat, which left the route exactly as open as
+    // it was. Routing a client around an ungated route does not gate it.
+    crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+        .await?;
     let child_initializing = biorouter::agents::subagent_handle::is_child_initializing(&session_id);
     let agent = if child_initializing {
         state
             .peek_agent(&session_id)
             .await
-            .ok_or(StatusCode::FAILED_DEPENDENCY)?
+            .ok_or_else(|| agent_not_initialized("that chat's runtime is not ready yet"))?
     } else {
-        state.get_agent_for_route(session_id.clone()).await?
+        state
+            .get_agent_for_route(session_id.clone())
+            .await
+            .map_err(|status| ErrorResponse {
+                message: "could not load that chat".to_string(),
+                status,
+            })?
     };
 
     // This endpoint drives a model-context warning. Count the final model-facing
@@ -1301,7 +1337,7 @@ async fn get_callable_tool_count(
     let count = agent
         .callable_tool_count(&session_id)
         .await
-        .map_err(|_| StatusCode::FAILED_DEPENDENCY)?;
+        .map_err(|_| agent_not_initialized("that chat's tools could not be counted"))?;
     Ok(Json(CallableToolCountResponse { count }))
 }
 
@@ -3238,10 +3274,12 @@ mod resume_update_security_tests {
             ("post", "/agent/resume", &["403", "404"][..]),
             ("post", "/agent/update_from_session", &["403", "500"][..]),
             ("post", "/agent/restart", &["424"][..]),
-            // Gated by the SD-8 review. A client that has only ever seen a
-            // 400/404/409 from the working-dir switch now has a 403 to handle,
-            // and the generated TS client is where it has to be visible.
+            // The two the SD-8 review gated. A client that has only ever seen a
+            // 200/424 from the tool count, or a 400/404/409 from the working-dir
+            // switch, now has a 403 to handle, and the generated TS client is
+            // where it has to be visible.
             ("post", "/agent/update_working_dir", &["403"][..]),
+            ("get", "/agent/callable_tool_count", &["403", "424"][..]),
         ] {
             let responses = &schema["paths"][path][method]["responses"];
             for status in statuses {
@@ -3486,6 +3524,30 @@ mod resume_update_security_tests {
             .await
             .unwrap()
             .status()
+    }
+
+    /// `GET /agent/callable_tool_count?session_id=`, with the status AND the body:
+    /// the body is what separates a gate from a 424 that happens to look like one.
+    async fn get_callable_tool_count_response(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        let mut request = Request::builder().method("GET").uri(format!(
+            "/agent/callable_tool_count?session_id={session_id}"
+        ));
+        if let Some(key) = user_action {
+            request = request.header("X-User-Action", key);
+        }
+        let response = routes(state)
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
     }
 
     async fn get_agent_tools(state: Arc<AppState>, session_id: &str) -> StatusCode {
@@ -3775,6 +3837,53 @@ mod resume_update_security_tests {
                 "/agent/update_working_dir restarted an agent before refusing the request"
             );
         }
+    }
+
+    /// SD-8 review finding 2. `/agent/callable_tool_count` had no gate of any
+    /// kind: not `session_reach`, not the subagent refusal. It is a read of the
+    /// named session's model-facing tool surface, and it answers through
+    /// `get_agent_for_route`, which **creates** an agent for a session that has
+    /// none — the same hazard `agent_add_extension` gates against and says so.
+    ///
+    /// PR #260's renderer stopped calling it for a subagent's chat, which left
+    /// the route exactly as open as it was. Gated the way its tier-bearing
+    /// siblings are (`GET /sessions/{id}`, `POST /agent/resume`): the privacy
+    /// reach gate, first, before the agent is fetched.
+    ///
+    /// The `peek_agent` assertion is not decoration — a gate placed below the
+    /// fetch would pass the status assertion and still mint the agent.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn callable_tool_count_refuses_an_unproven_caller_naming_a_private_chat() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed(&state, SessionType::User, true).await;
+
+        let (status, body) =
+            get_callable_tool_count_response(Arc::clone(&state), private.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "/agent/callable_tool_count answered an unproven caller about a private chat: {body}"
+        );
+        assert!(
+            state.peek_agent(private.id()).await.is_none(),
+            "/agent/callable_tool_count materialized an agent for a chat it may not address"
+        );
+
+        // And the proof is sufficient, so the desktop's own tool-count alert is
+        // unaffected: whatever this answers, it is not the reach refusal.
+        let (proven, _) = get_callable_tool_count_response(
+            Arc::clone(&state),
+            private.id(),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_ne!(
+            proven,
+            StatusCode::FORBIDDEN,
+            "/agent/callable_tool_count refused a request carrying the user-action proof"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
