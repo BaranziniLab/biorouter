@@ -145,11 +145,12 @@ fn transport_http1_only(mode: &str) -> ProbeResult<bool> {
 impl Settings {
     fn load() -> ProbeResult<Self> {
         let config = Config::global();
-        let endpoint = configured_string(config, "AWS_ENDPOINT_URL_BEDROCK")
-            .or_else(|| nonempty_env("AWS_ENDPOINT_URL_BEDROCK_RUNTIME"))
+        // Versa's own keys only, as `VersaBedrockProvider::from_env` reads them:
+        // the `AWS_*` ones belong to the public Amazon Bedrock card.
+        let endpoint = configured_string(config, "VERSA_BEDROCK_ENDPOINT")
             .unwrap_or_else(|| VERSA_BEDROCK_DEFAULT_ENDPOINT.into());
         validate_endpoint(&endpoint)?;
-        let region = configured_string(config, "AWS_REGION")
+        let region = configured_string(config, "VERSA_BEDROCK_REGION")
             .unwrap_or_else(|| VERSA_BEDROCK_DEFAULT_REGION.into());
         if region.len() > 32
             || !region
