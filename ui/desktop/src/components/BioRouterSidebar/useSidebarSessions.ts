@@ -38,7 +38,7 @@ export default function useSidebarSessions(): SidebarSessionsState {
   const [hasMore, setHasMore] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const sessionsRef = useRef<SessionSummary[]>([]);
-  const nextOffsetRef = useRef(0);
+  const nextCursorRef = useRef<string | null>(null);
   const hasMoreRef = useRef(true);
   const hasLoadedRef = useRef(false);
   const loadingRef = useRef(false);
@@ -46,7 +46,7 @@ export default function useSidebarSessions(): SidebarSessionsState {
   const loadPage = useCallback(async (reset: boolean) => {
     if (loadingRef.current || (!reset && !hasMoreRef.current)) return;
 
-    const offset = reset ? 0 : nextOffsetRef.current;
+    const cursor = reset ? null : nextCursorRef.current;
     loadingRef.current = true;
     setIsLoading(true);
 
@@ -54,7 +54,7 @@ export default function useSidebarSessions(): SidebarSessionsState {
       // With the user's proof: without it the daemon pages a view with every
       // private chat omitted (issue #56, QA 2026-09-10 M1).
       const response = await listSidebarSessions<true>({
-        query: { limit: SIDEBAR_SESSION_PAGE_SIZE, offset },
+        query: { limit: SIDEBAR_SESSION_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
         headers: await userActionHeaders(),
         throwOnError: true,
       });
@@ -65,9 +65,16 @@ export default function useSidebarSessions(): SidebarSessionsState {
 
       sessionsRef.current = mergedSessions;
       setSessions(mergedSessions);
-      nextOffsetRef.current = reset
-        ? mergedSessions.length
-        : (page.next_offset ?? offset + page.sessions.length);
+      // `next_cursor` is opaque and names the last row of the page that
+      // returned it, so — unlike the offset this replaced — it cannot be
+      // recomputed from the list we hold. A refresh re-reads the HEAD of the
+      // list; the tail we already paged through is still held, and the cursor we
+      // already have still points just past it. So a reset keeps it, and only a
+      // list that has none (first load, or one that had reached the end) adopts
+      // the one this page carries.
+      nextCursorRef.current = reset
+        ? (nextCursorRef.current ?? page.next_cursor ?? null)
+        : (page.next_cursor ?? null);
       hasMoreRef.current = pageHasMore;
       hasLoadedRef.current = true;
       setHasMore(pageHasMore);
@@ -113,14 +120,19 @@ export default function useSidebarSessions(): SidebarSessionsState {
     // renderer reload. Splice it out by id instead — exact, and with no risk of
     // evicting a live chat that merely fell out of the first page.
     //
-    // `nextOffsetRef` moves down with it: the server's list lost the same row,
-    // so leaving the offset alone would make the next `loadMore` skip one.
+    // ⚠ **Nothing is adjusted alongside it, and that is the keyset's doing.**
+    // This handler arrived while the page resumed from an OFFSET, and it had to
+    // decrement that offset by one: the server's list had lost the same row, so
+    // a position left alone would make the next `loadMore` skip a chat. A
+    // cursor names the sort key of the last row a page RETURNED, so it is a
+    // boundary compared against values, not a count of rows — the row it names
+    // does not have to exist for the comparison to put the next page in the
+    // right place, including when the deleted row is that very one.
     const unsubscribeRemoved = subscribeSessionRemoved((sessionId) => {
       const remaining = sessionsRef.current.filter((session) => session.id !== sessionId);
       if (remaining.length === sessionsRef.current.length) return;
       sessionsRef.current = remaining;
       setSessions(remaining);
-      nextOffsetRef.current = Math.max(0, nextOffsetRef.current - 1);
     });
 
     window.addEventListener('session-created', scheduleRefresh);

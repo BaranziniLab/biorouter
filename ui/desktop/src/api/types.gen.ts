@@ -3504,7 +3504,11 @@ export type Severity = 'error' | 'warning' | 'info';
 
 export type SidebarSessionListResponse = {
     has_more: boolean;
-    next_offset?: number | null;
+    /**
+     * Where the next page resumes — pass it back as `cursor`, unchanged, and do
+     * not parse it. `null` when this was the last page.
+     */
+    next_cursor?: string | null;
     sessions: Array<SessionSummary>;
 };
 
@@ -4413,7 +4417,7 @@ export type GetCallableToolCountErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried neither a capability that covers it nor proof it came from the user. It is the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
      */
     403: unknown;
     /**
@@ -5789,6 +5793,10 @@ export type CreateBaseErrors = {
      * Duplicate id, invalid id, or unknown format
      */
     400: unknown;
+    /**
+     * This caller may not mint a knowledge-base id: it is a public model and the request carried no proof it came from the person at the keyboard. The same answer for every id, taken or free, so that creating is not a way to ask which private bases exist (body = plain text)
+     */
+    403: unknown;
 };
 
 export type CreateBaseResponses = {
@@ -7416,9 +7424,9 @@ export type ListSidebarSessionsData = {
          */
         limit?: number | null;
         /**
-         * Number of session summaries to skip
+         * The previous page's `next_cursor`, passed back unchanged. Omit for the first page; an unrecognised value is answered 400
          */
-        offset?: number | null;
+        cursor?: string | null;
         /**
          * Include sub_agent sessions (grouped under parent_session_id); default false
          */
@@ -7428,6 +7436,10 @@ export type ListSidebarSessionsData = {
 };
 
 export type ListSidebarSessionsErrors = {
+    /**
+     * The `cursor` was not one this route issued
+     */
+    400: unknown;
     /**
      * Unauthorized - Invalid or missing API key
      */
@@ -7440,7 +7452,7 @@ export type ListSidebarSessionsErrors = {
 
 export type ListSidebarSessionsResponses = {
     /**
-     * Paginated lightweight session summaries for the sidebar, holding only the sessions this caller could open (see `GET /sessions`). `next_offset` is where the next page starts; for a caller shown every session it is `offset + limit` as before, and for one shown a filtered view it is a position in the underlying ordering, so pass it back as given rather than computing it
+     * Paginated lightweight session summaries for the sidebar, holding only the sessions this caller could open (see `GET /sessions`). `next_cursor` is an OPAQUE continuation token: pass it back as `cursor` and do not parse it. It is not a position and not a count — it names the last row this page returned, so it says nothing about rows that were filtered out
      */
     200: SidebarSessionListResponse;
 };

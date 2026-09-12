@@ -1481,9 +1481,12 @@ async fn permission_editor_tools(
     responses(
         (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
-                                      word, that `GET /sessions/{session_id}` gives (body = plain \
-                                      text)"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent, and an unproven caller \
+                                      is told the same thing for both) and the request carried \
+                                      neither a capability that covers it nor proof it came from \
+                                      the user. It is the same refusal, word for word, that \
+                                      `GET /sessions/{session_id}` gives (body = plain text)"),
         (status = 424, description = "Agent not initialized")
     )
 )]
@@ -1512,7 +1515,11 @@ async fn get_callable_tool_count(
     // `ErrorResponse`, which would wrap the same words in a JSON envelope.** One
     // boundary has one body (see the module header of `routes::session_reach`),
     // and that is the only reason the gate lives in this wrapper and the work
-    // lives in the function below rather than all in one body.
+    // lives in the function below rather than all in one body — `get_tools`
+    // beside it has the same shape for the same reason. A caller must not be
+    // able to tell the gated routes apart by their envelopes, which is what
+    // `every_route_that_names_a_private_chat_refuses_it_exactly_as_the_read_does`
+    // measures: it fails on the wrapping alone, with the words unchanged.
     if let Err(refusal) = crate::routes::session_reach::session_reach(
         state.session_manager(),
         &query.session_id,

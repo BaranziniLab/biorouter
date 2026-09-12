@@ -177,6 +177,7 @@ one of them resolves the target's tier **before** it touches the session, so a r
 | `POST /reply` | Runs an agent turn, with tools, in the named session. |
 | `POST /agent/continuation/recover` | Resumes a parked continuation. |
 | `POST /agent/resume` · `restart` · `stop` | Lifecycle control of the session's agent. |
+| `POST /agent/cancel` · `POST /agent/continuation/abandon` · `recover` | Stops or settles the session's running turn — **on a daemon that holds no user-action key only**, such as `biorouter serve` or a hand-run `biorouterd` ([SD-11](serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)). There they admit exactly the callers `POST /agent/stop` admits, a subagent's session excepted. `POST /interrupt` is **not** among them: it takes the proof on either kind of daemon, because injecting text into a turn already running is the one thing no other route on a keyless daemon can do. |
 | `POST /agent/update_provider` | Rebinds the model (also needs `X-User-Action` to raise a tier). |
 | `POST /agent/update_from_session` | Adopts another session's provider configuration. |
 | `POST /agent/update_working_dir` | Repoints the session at a directory. |
@@ -205,7 +206,7 @@ the caller could not open:
 | Route | What a caller without the header or the proof gets |
 |---|---|
 | `GET /schedule/list` | **Every** schedule, including idle and paused ones — but with `current_session_id` and `creator_session_id` omitted from any row naming a chat the caller could not open. ⚠ The one listing that REDACTS FIELDS instead of dropping rows, because a schedule is not a chat: it names chats, and an idle one names none, so a row-level rule would empty the Schedules view for every ordinary caller rather than close an association. |
-| `GET /sessions`, `GET /sessions/sidebar`, `GET /schedule/{id}/sessions` | The public chats only. A private chat is omitted, never redacted. It is not shown with its title removed. The sidebar still pages cleanly: follow `next_offset` as returned rather than computing it. |
+| `GET /sessions`, `GET /sessions/sidebar`, `GET /schedule/{id}/sessions` | The public chats only. A private chat is omitted, never redacted. It is not shown with its title removed. The sidebar still pages cleanly: follow `next_cursor` as returned and do not parse it: it names the last row the page returned, so it is not a position and counts nothing that was left out. |
 | Every `/knowledge/bases/{id}…` route: pages, graph, history, location, export, preview, and the writes | A private base is refused with a knowledge-base twin of the chat refusal. A base that does not exist, and a malformed id, get the same refusal. |
 | `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
 | `GET /active_work` | The running work of public chats only. Each row carries its chat's `sessionId` and a `title` and `detail` holding the shell command or task prompt, which is the chat's content. A row whose chat is private, or cannot be read, is omitted. So is a row that names no chat at all (see below). |

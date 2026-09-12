@@ -32,18 +32,32 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 
-/// Build the knowledge router.  The router owns an `Arc<KnowledgeService>` directly so
-/// it can be tested without constructing a full `AppState`.
+/// Every route that names a knowledge base by `{id}`, and nothing else —
+/// **ungated**, because the one place that consumes it applies
+/// [`session_reach::gate_knowledge_base`](crate::routes::session_reach::gate_knowledge_base)
+/// to the value it returns (issue #56, QA 2026-09-10 H2).
 ///
-/// ⚠ **Every route that names a base by `{id}` lives in `base_routes`, and
-/// nothing else does.** That sub-router carries
-/// `session_reach::gate_knowledge_base` as a `route_layer`, so each of its
-/// routes — and any added to it later — answers a caller who may not reach the
-/// named base with the same refusal before its handler runs (issue #56, QA
-/// 2026-09-10 H2). A route that names a base and is registered on the outer
-/// router instead is ungated: put it here.
-pub fn router(svc: Arc<KnowledgeService>) -> Router {
-    let base_routes = Router::new()
+/// ⚠ **`Router::route_layer` is a SNAPSHOT, not a rule the router keeps.** It
+/// consumes the routes present *at the moment it is called* and returns a map of
+/// wrapped ones; a route registered afterwards is not wrapped, silently. The doc
+/// on this pair used to claim that a route "added to it later" was gated, which
+/// is not something axum offers — and because the `.route_layer(...)` sat last
+/// in this chain, the natural way to add a route (append one more `.route(…)`)
+/// produced an **ungated** `/bases/{id}` route that looked right.
+///
+/// So the layer is no longer part of the chain. Appending a `.route(…)` here —
+/// anywhere, including after the last one — is gated, because the gate is
+/// applied to whatever this function returns. Appending to the *call site*
+/// instead is visibly outside the gate, which is the point: the mistake is now
+/// one you can see.
+///
+/// Pinned from two directions by
+/// `every_route_that_names_a_base_is_inside_the_gated_sub_router` — which reads
+/// this file's own source rather than trusting the sentence above — and by
+/// `base_addressing_routes`, whose probe list must cover every route registered
+/// here and which the H2 tests drive against a real private base.
+fn base_routes() -> Router<Arc<KnowledgeService>> {
+    Router::new()
         .route(
             "/bases/{id}",
             get(get_base).put(update_base).delete(delete_base),
@@ -73,11 +87,17 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             "/bases/{id}/sources/{sid}/credibility",
             put(override_credibility),
         )
-        .route_layer(axum::middleware::from_fn_with_state(
-            svc.clone(),
-            crate::routes::session_reach::gate_knowledge_base,
-        ));
+}
 
+/// Build the knowledge router.  The router owns an `Arc<KnowledgeService>` directly so
+/// it can be tested without constructing a full `AppState`.
+///
+/// ⚠ **No route registered on THIS router may name a base by `{id}`** — those
+/// live in [`base_routes`], which is gated on the line below. A `{id}` route
+/// added here is ungated, and
+/// `every_route_that_names_a_base_is_inside_the_gated_sub_router` fails when one
+/// is.
+pub fn router(svc: Arc<KnowledgeService>) -> Router {
     Router::new()
         .route("/bases", get(list_bases).post(create_base))
         .route(
@@ -89,7 +109,14 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/expand-path", post(expand_path))
         .route("/active", get(get_active).post(set_active))
         .route("/check-model", post(check_model))
-        .merge(base_routes)
+        // The gate is applied HERE, to the whole of `base_routes()`, rather than
+        // inside it — see that function for why the position is load-bearing.
+        .merge(
+            base_routes().route_layer(axum::middleware::from_fn_with_state(
+                svc.clone(),
+                crate::routes::session_reach::gate_knowledge_base,
+            )),
+        )
         .with_state(svc)
 }
 
@@ -501,18 +528,46 @@ pub async fn list_bases(
     ))
 }
 
+// `POST /knowledge/bases` — mint a base.
+//
+// ⚠ **Gated, and gated on the namespace rather than on `body.id`** (adversarial
+// security review 2026-09-12, MEDIUM). Create refuses an id that is taken, so
+// before this it was an existence oracle for exactly the ids
+// `KNOWLEDGE_BASE_OUT_OF_REACH` exists to withhold: a secret-only caller POSTed
+// a guessed id and read `400 kb '<id>' already exists at <the machine's absolute
+// knowledge path>` when a **private** base had it, and `200` when nothing did.
+// KB ids are user-authored names, so a short dictionary enumerated the private
+// bases on the machine by name — with the path as a bonus.
+//
+// `HttpCaller::mints_knowledge_base` takes no id, which is what makes the answer
+// the same for every id, including one that does not exist. See its doc for what
+// the refusal costs.
+//
+// Deliberately `//` and not `///`: utoipa publishes a doc comment here as the
+// operation's `description`, and this is a note to the next engineer rather than
+// API reference for a client. The wire contract is in the `responses` below.
 #[utoipa::path(
     post, path = "/knowledge/bases",
     request_body = CreateBaseBody,
     responses(
         (status = 200, description = "Created knowledge base", body = Manifest),
         (status = 400, description = "Duplicate id, invalid id, or unknown format"),
+        (status = 403, description = "This caller may not mint a knowledge-base id: it is a \
+                                      public model and the request carried no proof it came from \
+                                      the person at the keyboard. The same answer for every id, \
+                                      taken or free, so that creating is not a way to ask which \
+                                      private bases exist (body = plain text)"),
     )
 )]
 pub async fn create_base(
     State(svc): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
     Json(body): Json<CreateBaseBody>,
 ) -> Result<Json<Manifest>, (StatusCode, String)> {
+    crate::routes::session_reach::http_caller(&headers)
+        .await
+        .mints_knowledge_base()
+        .map_err(|refusal| (refusal.status, refusal.message.to_string()))?;
     // Refused before anything is created: `create_base_in` writes the manifest,
     // the scaffolded tree and `schema.md` in one transaction precisely because
     // those are three statements about one base, and a request this route

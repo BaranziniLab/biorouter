@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 fn build_test_router() -> (tempfile::TempDir, Router) {
+    tier_route::install_test_user_action_key();
     let dir = tempfile::tempdir().unwrap();
     let svc = Arc::new(KnowledgeService::new(dir.path().to_path_buf()));
     let router = biorouter_server::routes::knowledge::router(svc);
@@ -81,6 +82,7 @@ async fn get_active(app: &Router, session_id: Option<&str>) -> serde_json::Value
 /// can seed files directly on disk (needed for routes that read from `raw/`
 /// where there is no write API).
 fn build_test_router_with_root() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+    tier_route::install_test_user_action_key();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let svc = Arc::new(KnowledgeService::new(root.clone()));
@@ -98,6 +100,7 @@ async fn get_location_returns_kb_path() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -195,6 +198,7 @@ async fn create_then_get_base() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -277,6 +281,7 @@ async fn update_base_metadata_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -366,6 +371,7 @@ async fn get_graph_returns_ok_on_new_kb() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -407,6 +413,7 @@ async fn list_pages_empty_on_new_kb() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -457,6 +464,7 @@ async fn a_page_written_over_http_reaches_the_graph() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -520,6 +528,7 @@ async fn write_then_read_page_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -579,6 +588,7 @@ async fn read_page_on_missing_path_returns_404() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -618,6 +628,7 @@ async fn history_write_restore_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -901,6 +912,7 @@ async fn add_raw_source_text() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -951,6 +963,7 @@ async fn add_raw_source_html_multipart_uses_part_mime() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -1126,6 +1139,7 @@ async fn add_raw_source_rejects_empty_body() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -1165,6 +1179,7 @@ async fn export_then_import_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -1381,6 +1396,7 @@ async fn reclassify_route_returns_credibility() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -1450,6 +1466,7 @@ async fn create_kb(app: Router, id: &str, name: &str) {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -1765,6 +1782,7 @@ async fn read_page_returns_markdown_body() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -1867,6 +1885,7 @@ async fn read_page_returns_raw_source_md() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -2047,6 +2066,7 @@ async fn active_kb_roundtrip() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -2185,6 +2205,7 @@ async fn primary_kb_can_be_scoped_per_session() {
                 Request::builder()
                     .method("POST")
                     .uri("/bases")
+                    .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                     .header("content-type", "application/json")
                     .body(Body::from(create_body))
                     .unwrap(),
@@ -2240,6 +2261,7 @@ async fn create_bases(app: &Router, ids: &[&str]) {
                 Request::builder()
                     .method("POST")
                     .uri("/bases")
+                    .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                     .header("content-type", "application/json")
                     .body(Body::from(body))
                     .unwrap(),
@@ -2451,6 +2473,7 @@ async fn primary_must_be_a_member_of_the_resulting_set() {
                 Request::builder()
                     .method("POST")
                     .uri("/bases")
+                    .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                     .header("content-type", "application/json")
                     .body(Body::from(create_body))
                     .unwrap(),
@@ -2487,6 +2510,7 @@ async fn set_only_edit_keeps_the_primary_until_it_leaves_the_set() {
                 Request::builder()
                     .method("POST")
                     .uri("/bases")
+                    .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                     .header("content-type", "application/json")
                     .body(Body::from(create_body))
                     .unwrap(),
@@ -2595,6 +2619,7 @@ async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule()
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(create_body))
                 .unwrap(),
@@ -3056,6 +3081,7 @@ mod tier_route {
     /// so a test against it would assert that a route nobody guards lets everyone
     /// through.
     pub(super) fn guarded_router() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+        install_test_user_action_key();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let svc = Arc::new(biorouter_mcp::knowledge::service::KnowledgeService::new(
@@ -3109,6 +3135,7 @@ mod tier_route {
                 Request::builder()
                     .method("POST")
                     .uri("/bases")
+                    .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                     .header("content-type", "application/json")
                     .header("X-Secret-Key", TEST_SECRET)
                     .body(Body::from(
@@ -3320,6 +3347,7 @@ mod okf_surface {
                 Request::builder()
                     .method("POST")
                     .uri("/bases")
+                    .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_vec(&body).unwrap()))
                     .unwrap(),
@@ -3713,6 +3741,7 @@ mod merge_route {
                 Request::builder()
                     .method("POST")
                     .uri("/bases")
+                    .header("X-User-Action", tier_route::TEST_USER_ACTION_KEY)
                     .header("content-type", "application/json")
                     .header("X-Secret-Key", TEST_SECRET)
                     .body(Body::from(
