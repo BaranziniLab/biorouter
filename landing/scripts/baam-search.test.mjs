@@ -469,14 +469,19 @@ if (!existsSync(PLAYWRIGHT)) {
    * ⚠ The skills comparison reads the three GRIDS, not the whole shelf.
    * `build-registry.mjs` derives every registry row from `#core-skill-grid`,
    * `#dev-skill-grid` and `#bio-skill-grid`, so those cards stand one-to-one
-   * against the rows. The `#skills-featured` strip above them repeats three of
-   * those skills as hand-written cards, and the copies have DRIFTED — measured on
-   * the live page, the featured `ggplot2 Visualization` reads "Publication-quality
-   * ggplot2 figures in R — font sizing, palettes, themes" where its grid twin
-   * reads "Applies ggplot2 best-practice style", and carries a `Figures` tag and
-   * seven `data-tags` the grid card has none of. That is prose the registry does
-   * not describe, so a differential against the registry cannot speak about it: it
-   * is a content divergence on the page, not a matcher one.
+   * against the rows. The `#skills-featured` strip above them REPEATS three of
+   * those skills, so `#skills-section .skill-card` draws 132 cards against 129
+   * rows and the identity this comparison uses — the download link — collides on
+   * three of them. That is what keeps the selector on the grids: a repeat is not
+   * a second catalog entry, and counting it as one breaks the row-for-row
+   * comparison below before it can say anything.
+   *
+   * What the copies SAY is no longer a reason. They had drifted — 8 fields across
+   * the three, measured 2026-09-12 — so a query could reach a featured card
+   * through words its registry row did not carry. They are now held identical to
+   * their twins by a real-run rule in `build-registry.mjs`
+   * (`assertFeaturedRepeatsItsGridTwin`) that `--check` enforces in CI and on the
+   * landing deploy, so the strip answers exactly the queries its twins do.
    */
   for (const [label, shelf, selector, key, fields, noise] of [
     ['extensions', 'extensions', '#extensions-section .ext-card', 'extensions', extensionFields, Search.EXTENSION_NOISE],

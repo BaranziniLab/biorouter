@@ -2040,7 +2040,16 @@
         "R",
         "ggplot2"
       ],
-      "keywords": [],
+      "keywords": [
+        "ggplot-visualization",
+        "ggplot2",
+        "r",
+        "plotting",
+        "style",
+        "theme",
+        "palette",
+        "export"
+      ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ggplot-visualization/ggplot-visualization.zip",
       "filename": "ggplot-visualization.zip",
       "license": "Apache-2.0"
