@@ -34,6 +34,7 @@ const IZE_STEMS = [
   'formali',
   'generali',
   'initiali',
+  'internali',
   'maximi',
   'minimi',
   'moderni',
@@ -139,6 +140,8 @@ const OTHER_PAIRS: VariantPair[] = [
   ['signaling', 'signalling'],
   ['skillful', 'skilful'],
   ['traveled', 'travelled'],
+  ['trialed', 'trialled'],
+  ['trialing', 'trialling'],
   ['traveling', 'travelling'],
   // one-offs
   ['aging', 'ageing'],
@@ -147,6 +150,11 @@ const OTHER_PAIRS: VariantPair[] = [
   ['artifacts', 'artefacts'],
   ['catalog', 'catalogue'],
   ['catalogs', 'catalogues'],
+  // ⚠ The matcher is `(?<![A-Za-z])catalogue(?![A-Za-z])`, so the pair above
+  // does NOT cover `catalogued`/`cataloguing` — the trailing letter defeats the
+  // boundary. One shipped skill said "catalogued" for months because of it.
+  ['cataloged', 'catalogued'],
+  ['cataloging', 'cataloguing'],
   ['dialog', 'dialogue'],
   ['dialogs', 'dialogues'],
   ['gray', 'grey'],

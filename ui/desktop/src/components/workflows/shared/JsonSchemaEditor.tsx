@@ -98,7 +98,7 @@ export default function JsonSchemaEditor({
                 size="sm"
                 className="text-supporting"
               >
-                Insert Example
+                Insert example
               </Button>
             </div>
             <DialogDescription className="text-supporting text-text-muted mb-3">
@@ -136,7 +136,7 @@ export default function JsonSchemaEditor({
             Cancel
           </Button>
           <Button type="button" onClick={handleSave} variant="default">
-            Save Schema
+            Save schema
           </Button>
         </div>
       </DialogContent>

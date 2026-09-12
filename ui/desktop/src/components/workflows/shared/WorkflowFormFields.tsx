@@ -358,7 +358,7 @@ export function WorkflowFormFields({
               <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
             )}
 
-            {/* Instructions Editor Modal */}
+            {/* Instructions editor modal */}
             <InstructionsEditor
               isOpen={showInstructionsEditor}
               onClose={() => setShowInstructionsEditor(false)}

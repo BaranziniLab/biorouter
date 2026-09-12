@@ -416,7 +416,7 @@ Example:
 - All observations must be finite; negative-log p-values and thresholds must be non-negative. Supply already-transformed values; the renderer does not adjust p-values.
 - title (optional)
 
-Points are coloured up/down/non-significant against the thresholds.
+Points are colored up/down/non-significant against the thresholds.
 
 Example:
 {"title":"Tumor vs Normal","points":[{"label":"TP53","log2fc":2.4,"negLog10P":6.1},{"label":"GAPDH","log2fc":0.1,"negLog10P":0.3}]}"#
@@ -463,7 +463,7 @@ Example:
 - Positions, negative-log p-values and the threshold must be finite and non-negative.
 - title (optional)
 
-Points are grouped and coloured by chromosome along a cumulative x-axis.
+Points are grouped and colored by chromosome along a cumulative x-axis.
 
 Example:
 {"title":"GWAS","points":[{"chrom":"1","pos":12345,"negLog10P":3.2},{"chrom":"1","pos":98765,"negLog10P":8.1,"label":"rs123"},{"chrom":"2","pos":4567,"negLog10P":2.0}]}"#
