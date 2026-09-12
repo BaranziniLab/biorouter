@@ -12316,20 +12316,21 @@ impl Agent {
 
         // A malformed parameter list must not lose the whole workflow: the
         // instructions and activities are the expensive part and are already
-        // parsed. Drop the parameters, say so, keep the rest.
+        // parsed. Nor must ONE malformed parameter lose the list — this used to
+        // be a single `from_value::<Vec<WorkflowParameter>>`, which is
+        // all-or-nothing, and a `number` parameter's natural default
+        // (`"default": 80`) was enough to take every parameter with it. See
+        // `parse_generated_parameters` for what a single bad element costs now.
         let parameters = json_content
             .as_ref()
             .and_then(|json| json.get("parameters"))
-            .and_then(|value| {
-                serde_json::from_value::<Vec<crate::workflow::WorkflowParameter>>(value.clone())
-                    .map_err(|err| {
-                        tracing::warn!(
-                            "Dropping generated workflow parameters that did not parse: {err}"
-                        );
-                    })
-                    .ok()
-            })
-            .filter(|parameters: &Vec<_>| !parameters.is_empty());
+            .map(crate::workflow::parse_generated_parameters)
+            .and_then(|(parameters, notes)| {
+                for note in notes {
+                    tracing::warn!("Generated workflow parameters: {note}");
+                }
+                (!parameters.is_empty()).then_some(parameters)
+            });
 
         let mut workflow_builder = Workflow::builder()
             .title(title)

@@ -519,3 +519,348 @@ parameters:
         "the other half of the pair, unchanged: {message}"
     );
 }
+
+/// A generation whose parameters carry the natural JSON for their own
+/// `input_type`.
+///
+/// `WorkflowParameter.default` is `Option<String>`, but `input_type` may be
+/// `number`, `boolean` or `date` — and a model asked for a number writes
+/// `"default": 80`, not `"default": "80"`. That is not a malformed generation;
+/// it is the only shape a `number` parameter's default can sensibly take.
+const GENERATED_JSON_WITH_TYPED_DEFAULTS: &str = r#"{
+  "title": "Gene association summary",
+  "description": "Looks a gene up and summarises its disease associations.",
+  "instructions": "Query the graph and report the strongest associations first.",
+  "activities": ["Summarise APOE"],
+  "prompt": "Summarise at most {{ max_results }} disease associations for {{ gene_symbol }}, preclinical ones included: {{ include_preclinical }}.",
+  "parameters": [
+    {
+      "key": "gene_symbol",
+      "input_type": "string",
+      "requirement": "user_prompt",
+      "description": "HGNC gene symbol"
+    },
+    {
+      "key": "max_results",
+      "input_type": "number",
+      "requirement": "optional",
+      "description": "How many associations to report",
+      "default": 80
+    },
+    {
+      "key": "include_preclinical",
+      "input_type": "boolean",
+      "requirement": "optional",
+      "description": "Whether to include preclinical associations",
+      "default": true
+    }
+  ],
+  "skills": []
+}"#;
+
+/// A `number` or `boolean` default must not take the whole parameter list down.
+///
+/// `Agent::create_workflow` deserialized `parameters` with a single
+/// `serde_json::from_value::<Vec<WorkflowParameter>>`, which is all-or-nothing:
+/// the first scalar the `Option<String>` field refused lost EVERY parameter,
+/// including the well-formed ones beside it. Measured live on 2026-09-12 the
+/// daemon logged `invalid type: integer 80, expected a string` and saved a
+/// workflow with no parameters at all — and, because the prompt still said
+/// `{{ gene_symbol }}`, one that `POST /workflows/save` then refused.
+///
+/// Values render into the minijinja template as strings whatever their declared
+/// type, so a scalar default is accepted and stored in its string form.
+#[tokio::test]
+async fn a_number_or_boolean_default_survives_instead_of_losing_every_parameter() {
+    let h = harness_generating(GENERATED_JSON_WITH_TYPED_DEFAULTS).await;
+    let session = h
+        .agent
+        .config
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap();
+
+    let workflow = h
+        .agent
+        .create_workflow(session.conversation.clone().unwrap())
+        .await
+        .expect("the capture");
+
+    let parameters = workflow.parameters.clone().unwrap_or_default();
+    let keys: Vec<&str> = parameters.iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec!["gene_symbol", "max_results", "include_preclinical"],
+        "one typed default must not drop the parameters beside it"
+    );
+
+    let default_of = |key: &str| {
+        parameters
+            .iter()
+            .find(|p| p.key == key)
+            .unwrap_or_else(|| panic!("{key} survives"))
+            .default
+            .clone()
+    };
+    assert_eq!(
+        default_of("max_results"),
+        Some("80".to_string()),
+        "a numeric default is kept in its string form, not discarded"
+    );
+    assert_eq!(
+        default_of("include_preclinical"),
+        Some("true".to_string()),
+        "a boolean default is kept in its string form, not discarded"
+    );
+
+    // And the capture is SAVABLE. Losing the list is not merely lossy: the
+    // prompt still refers to all three keys, so a parameterless document is
+    // refused by the same validator `POST /workflows/save` runs.
+    service::validate(&workflow).unwrap_or_else(|err| {
+        panic!(
+            "a workflow captured from a chat must save: {err}\n\n{}",
+            workflow.to_yaml().unwrap_or_default()
+        )
+    });
+}
+
+/// A generation with exactly one parameter the schema cannot accept.
+///
+/// `integer` is not a `WorkflowParameterInputType` (the enum has `number`), and
+/// the third entry has no `key` at all.
+const GENERATED_JSON_WITH_ONE_UNPARSABLE_PARAMETER: &str = r#"{
+  "title": "Gene association summary",
+  "description": "Looks a gene up and summarises its disease associations.",
+  "instructions": "Query the graph and report the strongest associations first.",
+  "activities": ["Summarise APOE"],
+  "prompt": "Summarise the disease associations for {{ gene_symbol }} scoring above {{ score_cutoff }}.",
+  "parameters": [
+    {
+      "key": "gene_symbol",
+      "input_type": "string",
+      "requirement": "user_prompt",
+      "description": "HGNC gene symbol"
+    },
+    {
+      "key": "score_cutoff",
+      "input_type": "integer",
+      "requirement": "optional",
+      "description": "Minimum association score",
+      "default": 0.5
+    },
+    {
+      "input_type": "string",
+      "requirement": "user_prompt",
+      "description": "no key at all, so nothing in the document can refer to it"
+    }
+  ],
+  "skills": []
+}"#;
+
+/// One parameter the schema refuses must cost one parameter, not all of them.
+///
+/// The two halves of the decision, which is the whole point of parsing the
+/// array element by element:
+///
+///   * An element that still names a `key` is REPAIRED, not dropped, to the
+///     most permissive definition that is still valid — because the document
+///     may refer to `{{ key }}`, and dropping it alone would leave that
+///     reference dangling and trip `validate_parameters_in_template`'s "Missing
+///     definitions for parameters in the workflow file" arm. That is the exact
+///     mirror of the unsavable-capture bug `drop_unreferenced_parameters` was
+///     added for, and it would be a strictly worse outcome than today's.
+///     A repaired parameter nothing refers to costs nothing: the existing
+///     `drop_unreferenced_parameters` at the end of `create_workflow` prunes it.
+///   * An element with no readable `key` is dropped outright — there is nothing
+///     a template could refer to, so there is no reference to leave dangling.
+#[tokio::test]
+async fn one_unparsable_parameter_costs_one_parameter_and_not_the_list() {
+    let h = harness_generating(GENERATED_JSON_WITH_ONE_UNPARSABLE_PARAMETER).await;
+    let session = h
+        .agent
+        .config
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap();
+
+    let workflow = h
+        .agent
+        .create_workflow(session.conversation.clone().unwrap())
+        .await
+        .expect("the capture");
+
+    let parameters = workflow.parameters.clone().unwrap_or_default();
+    let keys: Vec<&str> = parameters.iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec!["gene_symbol", "score_cutoff"],
+        "the well-formed parameter beside the bad one survives, the keyless \
+         entry does not"
+    );
+
+    let repaired = parameters
+        .iter()
+        .find(|p| p.key == "score_cutoff")
+        .expect("the referenced parameter is repaired rather than dropped");
+    assert_eq!(
+        repaired.input_type.to_string(),
+        "string",
+        "an `input_type` the enum does not have degrades to `string`, which is \
+         what minijinja renders every value as anyway"
+    );
+    assert_eq!(
+        repaired.default,
+        Some("0.5".to_string()),
+        "its default is kept in string form"
+    );
+
+    service::validate(&workflow).unwrap_or_else(|err| {
+        panic!(
+            "a workflow captured from a chat must save: {err}\n\n{}",
+            workflow.to_yaml().unwrap_or_default()
+        )
+    });
+}
+
+/// The same typed default, arriving as JSON rather than as a generation.
+///
+/// `Agent::create_workflow` is not the only strict reader of `default`: every
+/// `Workflow` that crosses the HTTP API is `serde_json`-deserialized — the
+/// `Json<…>` body of `POST /workflows/save`, `/workflows/encode` and
+/// `/workflows/scan` — and `workflow_deeplink::decode` is a
+/// `serde_json::from_str::<Workflow>` over the base64 in a pasted
+/// `biorouter://workflow?config=…` link. `"default": 80` failed all of them,
+/// and failed the whole DOCUMENT rather than one parameter.
+///
+/// So the fix belongs on the field and not only in the generator's element-wise
+/// parse: repairing a refused element at capture time would leave every other
+/// reader of the very same document still refusing it.
+///
+/// ⚠ This test is what makes the field's `deserialize_with` load-bearing.
+/// `parse_generated_parameters` repairs a refused element by itself, so the two
+/// capture tests above pass with the field left exactly as it was — measured by
+/// deleting the attribute and re-running the binary: 7 passed, and this was the
+/// only failure, `invalid type: integer `80`, expected a string`, which is
+/// word for word what the live daemon logged on 2026-09-12.
+///
+/// The YAML half is deliberately asserted too, and deliberately NOT claimed as
+/// a fix: `serde_yaml` hands a plain scalar to a `String` field as its own
+/// source text, so `default: 80` in a `.yaml` always worked. That asymmetry
+/// between the two readers of one struct is the thing worth pinning.
+#[test]
+fn a_typed_default_is_read_from_json_as_well_as_yaml() {
+    const JSON: &str = r#"{
+  "version": "1.0.0",
+  "title": "Association report",
+  "description": "Reports associations.",
+  "instructions": "Report at most {{ max_results }} associations, preclinical included: {{ include_preclinical }}.",
+  "parameters": [
+    {
+      "key": "max_results",
+      "input_type": "number",
+      "requirement": "optional",
+      "description": "How many associations to report",
+      "default": 80
+    },
+    {
+      "key": "include_preclinical",
+      "input_type": "boolean",
+      "requirement": "optional",
+      "description": "Whether to include preclinical associations",
+      "default": true
+    }
+  ]
+}"#;
+
+    let defaults = |workflow: &biorouter::workflow::Workflow| -> Vec<Option<String>> {
+        workflow
+            .parameters
+            .iter()
+            .flatten()
+            .map(|parameter| parameter.default.clone())
+            .collect()
+    };
+
+    // What `POST /workflows/save` and a pasted deeplink both run.
+    let from_json = serde_json::from_str::<biorouter::workflow::Workflow>(JSON)
+        .expect("a number or a boolean default is a default, not a type error");
+    assert_eq!(
+        defaults(&from_json),
+        vec![Some("80".to_string()), Some("true".to_string())],
+        "a typed default is read and kept in the string form the template \
+         renders it as"
+    );
+    service::validate(&from_json).expect("and the document is savable");
+
+    // A deeplink is that same JSON round-tripped, so the fix has to survive
+    // being re-serialized: the string form is what goes back out.
+    let link = biorouter::workflow_deeplink::encode(&from_json).expect("encode");
+    let round_tripped = biorouter::workflow_deeplink::decode(&link).expect("decode");
+    assert_eq!(defaults(&round_tripped), defaults(&from_json));
+
+    // And the YAML reader, which never had the defect, still agrees.
+    const YAML: &str = r#"
+version: 1.0.0
+title: Association report
+description: Reports associations.
+instructions: >-
+  Report at most {{ max_results }} associations, preclinical included:
+  {{ include_preclinical }}.
+parameters:
+  - key: max_results
+    input_type: number
+    requirement: optional
+    description: How many associations to report
+    default: 80
+  - key: include_preclinical
+    input_type: boolean
+    requirement: optional
+    description: Whether to include preclinical associations
+    default: true
+"#;
+    let from_yaml = biorouter::workflow::Workflow::from_content(YAML).expect("the YAML reader");
+    assert_eq!(
+        defaults(&from_yaml),
+        defaults(&from_json),
+        "the two readers of one struct must agree about a typed default"
+    );
+}
+
+/// A parameter with no `default` at all still parses.
+///
+/// ⚠ The guard for the trap in the fix above: `deserialize_with` on an `Option`
+/// field makes a MISSING key a hard error unless `#[serde(default)]` sits
+/// beside it — which would break every workflow document in existence, none of
+/// which is required to declare a default. Removing that one attribute and
+/// re-running the binary was measured: 5 of the 8 tests here fail, this one
+/// with `Failed to parse workflow: parameters[0]: missing field `default` at
+/// line 7 column 5`.
+#[test]
+fn a_parameter_without_a_default_still_parses() {
+    let content = r#"
+version: 1.0.0
+title: Association report
+description: Reports associations.
+instructions: Report the associations for {{ gene_symbol }}.
+parameters:
+  - key: gene_symbol
+    input_type: string
+    requirement: user_prompt
+    description: HGNC gene symbol
+"#;
+
+    let workflow = biorouter::workflow::Workflow::from_content(content)
+        .expect("a parameter is not required to declare a default");
+    assert_eq!(
+        workflow
+            .parameters
+            .iter()
+            .flatten()
+            .map(|parameter| parameter.default.clone())
+            .collect::<Vec<_>>(),
+        vec![None],
+        "an absent default reads as absent, not as an error"
+    );
+}

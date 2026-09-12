@@ -197,16 +197,178 @@ impl fmt::Display for WorkflowParameterInputType {
     }
 }
 
+/// `Null` is "no default"; a string is itself; every other scalar is its JSON
+/// form, which for a number or a boolean is exactly what it looks like (`80`,
+/// `true`).
+fn scalar_as_string(value: Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(string) => Some(string),
+        other => Some(other.to_string()),
+    }
+}
+
+/// Accept a default of any scalar type and store its string form.
+///
+/// `default` is typed `Option<String>` while `input_type` may be `number`,
+/// `boolean` or `date`, so the natural document for a numeric parameter is
+/// `"default": 80`. This struct has two readers and they disagreed about that:
+/// `serde_yaml` hands a plain YAML scalar to a `String` field as its own source
+/// text, so a `.yaml` on disk always worked, while `serde_json` — every
+/// `Workflow` crossing the HTTP API, `workflow_deeplink::decode`, and the
+/// generated JSON `Agent::create_workflow` parses — refused the whole document
+/// with `invalid type: integer `80`, expected a string`.
+///
+/// Nothing downstream needs a `String` for any reason except this field's
+/// declaration: values are substituted into a minijinja template, which renders
+/// every one of them as text whatever the declared type. So the strict reader is
+/// the one that was wrong, and it is brought into line with the lenient one
+/// rather than the other way round.
+///
+/// In the spirit of `deserialize_value_map_as_string` above, and for the same
+/// reason: what a model — or a person — writes for a typed field should not
+/// have to be quoted to be read.
+fn deserialize_scalar_as_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // ⚠ `deserialize_with` on an `Option` field turns a MISSING key into a
+    // "missing field" error unless `#[serde(default)]` sits beside it — see the
+    // attribute below. Every workflow file without a default goes through here.
+    let raw: Option<Value> = Option::deserialize(deserializer)?;
+    Ok(raw.and_then(scalar_as_string))
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct WorkflowParameter {
     pub key: String,
     pub input_type: WorkflowParameterInputType,
     pub requirement: WorkflowParameterRequirement,
     pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_scalar_as_string"
+    )]
     pub default: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
+}
+
+/// Parse a generated `parameters` array one element at a time, repairing what
+/// can be repaired.
+///
+/// `serde_json::from_value::<Vec<WorkflowParameter>>` is all-or-nothing: one
+/// element the schema refuses loses EVERY parameter beside it, and the capture
+/// that produced them is then either unparameterised or — because the generated
+/// `prompt` still says `{{ key }}` — refused outright by
+/// `validate_parameters_in_template`.
+///
+/// The two halves of the decision about a single bad element:
+///
+///   * An element that still names a `key` is REPAIRED rather than dropped.
+///     The document may refer to `{{ key }}`, and dropping it alone leaves that
+///     reference dangling — "Missing definitions for parameters in the workflow
+///     file", the exact mirror of the unsavable capture
+///     `service::drop_unreferenced_parameters` exists to prevent. A repaired
+///     parameter nothing refers to costs nothing: that same pruner removes it.
+///   * An element with no readable `key` is dropped. There is nothing a
+///     template could refer to, so there is no reference to leave dangling.
+///
+/// Returns the parameters to keep, and one human-readable note per element that
+/// was repaired or dropped for the caller to log.
+pub fn parse_generated_parameters(value: &Value) -> (Vec<WorkflowParameter>, Vec<String>) {
+    let Some(elements) = value.as_array() else {
+        return (
+            Vec::new(),
+            vec!["dropped `parameters`: it is not an array".to_string()],
+        );
+    };
+
+    let mut kept = Vec::new();
+    let mut notes = Vec::new();
+    for (index, element) in elements.iter().enumerate() {
+        match serde_json::from_value::<WorkflowParameter>(element.clone()) {
+            Ok(parameter) => kept.push(parameter),
+            Err(err) => match repair_generated_parameter(element) {
+                Some(parameter) => {
+                    notes.push(format!("repaired parameter `{}`: {err}", parameter.key));
+                    kept.push(parameter);
+                }
+                None => notes.push(format!("dropped parameter #{index}: {err}")),
+            },
+        }
+    }
+    (kept, notes)
+}
+
+/// Rebuild one refused parameter as the most permissive definition that is
+/// still valid, keeping only what can be read off the raw value.
+///
+/// `None` when there is no usable `key` — the one field a repair cannot invent,
+/// because it is the name the template refers to.
+fn repair_generated_parameter(raw: &Value) -> Option<WorkflowParameter> {
+    let object = raw.as_object()?;
+    let key = object.get("key")?.as_str()?.trim().to_string();
+    if key.is_empty() {
+        return None;
+    }
+
+    // An `input_type` the enum does not have (`integer`, `text`, `enum`, …)
+    // becomes `string`: minijinja renders every value as text anyway, so this
+    // costs the input widget's hint and nothing else.
+    let input_type = object
+        .get("input_type")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or(WorkflowParameterInputType::String);
+
+    let mut default = object.get("default").cloned().and_then(scalar_as_string);
+    // `validate_optional_parameters` refuses a file parameter that carries a
+    // default, to keep a shared workflow from importing somebody else's file. A
+    // repair must not manufacture the one shape the validator rejects.
+    if matches!(input_type, WorkflowParameterInputType::File) {
+        default = None;
+    }
+
+    // An unreadable `requirement` follows the default: `optional` is refused
+    // without one, so a parameter that has no default has to be asked for.
+    let requirement = object
+        .get("requirement")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or(if default.is_some() {
+            WorkflowParameterRequirement::Optional
+        } else {
+            WorkflowParameterRequirement::UserPrompt
+        });
+
+    // Not invented when it is missing: an empty description reads as "nobody
+    // wrote one", which is true, where a synthesised one reads as the model's.
+    let description = object
+        .get("description")
+        .cloned()
+        .and_then(scalar_as_string)
+        .unwrap_or_default();
+
+    let options = object
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .cloned()
+                .filter_map(scalar_as_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|options| !options.is_empty());
+
+    Some(WorkflowParameter {
+        key,
+        input_type,
+        requirement,
+        description,
+        default,
+        options,
+    })
 }
 
 /// Builder for creating Workflow instances
