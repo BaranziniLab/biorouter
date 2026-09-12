@@ -146,7 +146,18 @@ impl AgentManager {
                 let max_sessions = Config::global()
                     .get_biorouter_max_active_agents()
                     .unwrap_or(DEFAULT_MAX_SESSION);
-                let schedule_file_path = Paths::data_dir().join("schedule.json");
+                // The SAME data directory the process-global session store uses,
+                // asked for once rather than resolved a second time. In the
+                // daemon the two reads agree — nothing moves
+                // `BIOROUTER_PATH_ROOT` while it runs — so this is a no-op
+                // there. In a test binary a second read of a process-global
+                // variable at an instant nobody owns is the bug documented in
+                // `AgentManager::new` below (PR #191) and the one that made
+                // `sessions.db` land in a `TempDir` a sibling test deleted; see
+                // `SHARED_STORE_ROOT` in `session_manager.rs`. `schedule.json`
+                // and `sessions/sessions.db` are meant to be siblings, so taking
+                // the store's own answer is also the more honest statement.
+                let schedule_file_path = SessionManager::shared_store_root().join("schedule.json");
                 let session_manager = Arc::new(SessionManager::instance());
                 let manager =
                     Self::new(session_manager, schedule_file_path, Some(max_sessions)).await?;

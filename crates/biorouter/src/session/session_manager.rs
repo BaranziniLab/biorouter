@@ -197,6 +197,96 @@ const CLAIM_NEXT_SESSION_N: &str = "INSERT INTO session_id_high_water (prefix, l
         SET last_n = MAX(excluded.last_n, session_id_high_water.last_n + 1) \
      RETURNING last_n";
 
+/// Every session id this process has minted, and the store that minted it, so a
+/// duplicate fails **loudly** and immediately.
+///
+/// The point is the failure mode rather than the check. A duplicated session id
+/// does not fail where it is caused: the second owner silently inherits the
+/// first's entries in `subagent_handle::HANDLES`, `session_events`' bus and
+/// `AgentManager`'s pin, and the symptom is a turn that never returns, in a test
+/// that has nothing to do with session ids. That shape has cost this repository
+/// whole CI jobs — 40 minutes to a cancelled `test (ubuntu-latest)` on #273 with
+/// ~4000 passing results discarded, and nothing in the log naming a cause. A
+/// panic naming both stores is the difference between five minutes and a week.
+///
+/// ⚠ **Scoped to this crate's own unit tests, deliberately, and NOT to
+/// `debug_assertions`.** The invariant it checks is only true where
+/// [`SessionStorage::id_prefix`] gives each store its own prefix, which is this
+/// same `cfg(test)`. Built without it the prefix is the date, two stores in one
+/// process both mint `<date>_1`, and the guard would fire on a duplicate that is
+/// real but that nothing in this change fixes — see
+/// `two_stores_in_one_process_never_mint_the_same_id` for the measurement and
+/// the reason that gap is left open rather than half-closed here.
+#[cfg(test)]
+static MINTED_IDS: LazyLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Panic if `id` was already minted by a *different* store. See [`MINTED_IDS`].
+///
+/// A re-mint by the SAME store is a quiet return, not a clash: that is exactly
+/// what `forget_minted_session_ids_for_test` produces, and the fixtures that use
+/// it are reproducing a real production state (a restored backup, or a build
+/// whose high-water mark is absent, handing a freed id back).
+///
+/// ⚠ **Never panics while holding the lock, and never trusts it to be
+/// unpoisoned.** Both halves are load-bearing and the first draft had neither: a
+/// panic inside the guard poisons the mutex, and the next six tests to mint then
+/// die with `PoisonError` instead of their own result — one genuine detection
+/// became seven failures, six of them meaningless. Measured, in
+/// `conversation_writeback_stress`.
+#[cfg(test)]
+fn record_minted_id(id: &str, session_dir: &Path) {
+    let mut minted = MINTED_IDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let clash = match minted.get(id) {
+        Some(first) if first != session_dir => Some(first.clone()),
+        Some(_) => return,
+        None => None,
+    };
+    minted.insert(id.to_string(), session_dir.to_path_buf());
+    drop(minted);
+    if let Some(first) = clash {
+        panic!(
+            "session id {id} was minted twice in one process: first by the store \
+             at {}, now by the store at {}. Session ids key process-global \
+             registries (subagent_handle::HANDLES, session_events, AgentManager's \
+             pin), so the second owner inherits the first's entries and a turn \
+             that waits on one of them never returns. Fix the mint, not the \
+             caller: see SessionStorage::id_prefix.",
+            first.display(),
+            session_dir.display()
+        );
+    }
+}
+
+/// The 8-character prefix bound to one store directory, allocated from a
+/// process-wide counter.
+///
+/// Free rather than a method so a test can exercise it over thousands of paths
+/// without standing up a `SessionStorage` for each (the constructor creates the
+/// store directory, so the paths would have to be real). See
+/// [`SessionStorage::id_prefix`] for why it is allocated rather than hashed.
+#[cfg(test)]
+fn allocate_store_prefix(session_dir: &Path) -> String {
+    static ALLOCATED: LazyLock<std::sync::Mutex<HashMap<PathBuf, String>>> =
+        LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut allocated = ALLOCATED.lock().expect("test id prefixes poisoned");
+    if let Some(prefix) = allocated.get(session_dir) {
+        return prefix.clone();
+    }
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        n <= u32::MAX as u64,
+        "ran out of 8-character store prefixes ({n}); the prefix must stay 8 \
+         characters because the counter is read back with SUBSTR(id, 10)"
+    );
+    let prefix = format!("{n:08x}");
+    allocated.insert(session_dir.to_path_buf(), prefix.clone());
+    prefix
+}
+
 /// Raise every prefix's mark to the largest `N` on disk under it.
 ///
 /// Run from the reconcile on every startup, and idempotent because it only ever
@@ -426,8 +516,42 @@ impl std::str::FromStr for SessionType {
     }
 }
 
+/// The data directory the process-global session store lives under, resolved
+/// **once** per process.
+///
+/// Split out of [`SESSION_STORAGE`] on purpose, and the split is the whole fix
+/// for a Windows CI flake that rotated through the route tests. Resolving the
+/// path and building the pool used to be one `LazyLock`, so the path was frozen
+/// at the instant the first caller touched the store — an instant nothing owns,
+/// because the tests run in parallel. A test that relocates
+/// `BIOROUTER_PATH_ROOT` under a `TempDir` (for config/skills isolation) could
+/// therefore win that race and pin the whole process's `sessions.db` inside a
+/// directory that is unlinked when its `TempDir` drops.
+///
+/// The symptom is nothing like the cause. After the unlink the pool's already
+/// open connection keeps answering — SQLite on POSIX does not care that its
+/// inode has no name any more — so a *serial* query still succeeds. It is the
+/// moment two tasks want the pool at once, and it has to open a **second**
+/// connection, that the vanished directory bites: `(code: 14) unable to open
+/// database file`. Every caller turns that into its own failure, and
+/// `GET /sessions/activity` turns it into a 500, which is what
+/// `activity_clamps_an_absurd_window` measured as `left: 500 right: 200`. The
+/// victim is whichever test queried next, so the failing name rotates and the
+/// same test can pass in one binary and fail in another.
+///
+/// Freezing the path separately lets a test binary pin it — cheaply, with no
+/// pool, no I/O and no runtime — *before* the first test runs, via
+/// [`SessionManager::shared_store_root`]. See `src/test_sandbox.rs` in this
+/// crate and in `biorouter-server`.
+///
+/// Production behaviour is unchanged: nothing outside a test mutates
+/// `BIOROUTER_PATH_ROOT` after start, so this resolves to the same directory it
+/// always did, and it was already effectively frozen — only the instant it is
+/// captured moved earlier.
+static SHARED_STORE_ROOT: LazyLock<PathBuf> = LazyLock::new(Paths::data_dir);
+
 static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
-    LazyLock::new(|| Arc::new(SessionStorage::new(Paths::data_dir())));
+    LazyLock::new(|| Arc::new(SessionStorage::new(SHARED_STORE_ROOT.clone())));
 
 pub const DEFAULT_SESSION_NAME: &str = "New chat";
 
@@ -1610,6 +1734,23 @@ impl SessionManager {
         }
     }
 
+    /// The data directory [`SessionManager::instance`]'s store resolves
+    /// `sessions/sessions.db` under, resolved once per process (see
+    /// [`SHARED_STORE_ROOT`]).
+    ///
+    /// Reading it is what *freezes* it, and that side effect is the point of the
+    /// call in a test binary's `#[ctor]`: it costs one environment read and a
+    /// `PathBuf`, builds no pool, touches no disk and needs no async runtime, so
+    /// it is safe to run before `main`. Once frozen, no later relocation of
+    /// `BIOROUTER_PATH_ROOT` can move the process's session database into a
+    /// directory that test owns and then deletes.
+    ///
+    /// In production this is a plain accessor — the daemon's data dir does not
+    /// move while it runs.
+    pub fn shared_store_root() -> &'static Path {
+        &SHARED_STORE_ROOT
+    }
+
     pub fn storage(&self) -> &Arc<SessionStorage> {
         &self.storage
     }
@@ -2077,6 +2218,14 @@ impl SessionManager {
     /// for what it is, and `the_id_reuse_seam_is_only_used_by_tests` pins the
     /// files that may call it. Nothing model-reachable does, and a new call site
     /// outside a test is the thing that audit exists to catch.
+    ///
+    /// ⚠ **[`MINTED_IDS`] needs no exemption here, and adding one would be dead
+    /// code.** That guard turns a duplicated id into a panic at the mint, and the
+    /// reuse this seam produces is the one duplicate that is deliberate — but it
+    /// is always the SAME store re-minting, and the guard's clash test is
+    /// `first != session_dir`. A clearing hook was written for this and deleted
+    /// when `the_reuse_seam_hands_one_stores_own_id_back_without_tripping_the_guard`
+    /// passed with it removed. If that ever changes, that test is what says so.
     #[doc(hidden)]
     pub async fn forget_minted_session_ids_for_test(&self) -> Result<()> {
         let pool = self.storage.pool().await?;
@@ -5450,15 +5599,22 @@ impl SessionStorage {
     /// ⚠ The prefix MUST stay 8 characters. `create_session` reads the counter
     /// back with `SUBSTR(id, 10)`, which assumes 8 + the underscore.
     ///
-    /// Derived from the store's own directory, so it is stable for one manager
-    /// (the counter still increments correctly) and distinct between managers
-    /// (each test has its own `TempDir`).
+    /// Bound to the store's own directory, so it is stable for one manager (the
+    /// counter still increments correctly) and distinct between managers (each
+    /// test has its own `TempDir`).
+    ///
+    /// ⚠ **Allocated, not hashed.** This was `DefaultHasher(session_dir)`
+    /// truncated to `u32`, which is a *probabilistic* answer to a question that
+    /// has an exact one: two stores whose paths happened to collide in 32 bits
+    /// both minted `<prefix>_1`, silently, and the symptom is a turn that never
+    /// returns rather than anything naming an id. Measured: a brute force over
+    /// realistic `TempDir`-shaped paths found a colliding pair after 11,213
+    /// candidates, and one lib-test run allocates thousands of stores. A counter
+    /// cannot collide at all, costs a map lookup, and removes the only place
+    /// where whether CI hangs was a question of luck.
     #[cfg(test)]
     fn id_prefix(&self) -> String {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.session_dir.hash(&mut hasher);
-        format!("{:08x}", hasher.finish() as u32)
+        allocate_store_prefix(&self.session_dir)
     }
 
     #[cfg(not(test))]
@@ -5489,6 +5645,10 @@ impl SessionStorage {
             .fetch_one(&mut *tx)
             .await?;
 
+        let id = format!("{today}_{next_n}");
+        #[cfg(test)]
+        record_minted_id(&id, &self.session_dir);
+
         let session = sqlx::query_as(
             r#"
                 INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, incarnation)
@@ -5496,7 +5656,7 @@ impl SessionStorage {
                 RETURNING *
                 "#,
         )
-            .bind(format!("{today}_{next_n}"))
+            .bind(id)
             .bind(&name)
             .bind(session_type.to_string())
             .bind(working_dir.to_string_lossy().as_ref())
@@ -16437,13 +16597,15 @@ mod tests {
         fn no_copy_path_hand_rolls_its_own_builder_any_more() {
             // The enumeration test, aimed at the three functions that matter
             // rather than at all 104 `create_session` call sites.
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            let src = include_str!("session_manager.rs");
             for f in [
                 "copy_session",
                 "diverge_session_for_edit",
                 "diverge_session",
             ] {
-                let body = fn_body(&src, f);
+                let body = fn_body(src, f);
                 assert!(
                     body.contains("create_derived_session"),
                     "{f} does not use the shared helper"
@@ -16694,7 +16856,9 @@ mod tests {
         /// **values**, and the scan below pins that those four **names** are what
         /// the function hands to `info!`.
         fn fn_body(name: &str) -> String {
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            let src = include_str!("session_manager.rs");
             let start = src
                 .find(&format!("fn {name}("))
                 .unwrap_or_else(|| panic!("no `fn {name}(` in the file"));
@@ -17273,9 +17437,11 @@ mod tests {
             // out of this string — the cut below, and the `\n            }`
             // that closes a match arm in the caller — is written with `\n`. A
             // raw read therefore fails on Windows alone, which is what it did.
-            let src = std::fs::read_to_string("src/session/session_manager.rs")
-                .unwrap()
-                .replace("\r\n", "\n");
+            // `include_str!` rather than a relative `read_to_string`: the latter
+            // resolves against the process working directory, which no test owns.
+            // The CRLF normalisation below is a separate concern and still needed —
+            // `include_str!` hands back whatever the checkout holds.
+            let src = include_str!("session_manager.rs").replace("\r\n", "\n");
             let cut = src
                 .find("\n#[cfg(test)]\nmod tests {")
                 .expect("this file's main test module moved");
@@ -18833,5 +18999,260 @@ mod deleted_chat_side_rows_tests {
         }
         let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
         assert_eq!(distinct.len(), ids.len(), "duplicate ids minted: {ids:?}");
+    }
+}
+
+/// A minted session id is unique in the *process*, which is the scope every
+/// registry keyed by one actually uses — and a duplicate says so at the mint.
+///
+/// Pinned here rather than left to each test's own convention, because the
+/// convention is what kept getting lost. Before this module the tree carried
+/// FIVE separate hand-rolled defences against one collision — a per-store hashed
+/// prefix, `subagent_tool`'s `reserve_child_session_ids` spacer bands,
+/// `workspace_extension`'s `seeded_target` band counter and `unique_id`, and two
+/// `serial_test` keys (`subagent_session_bus`, `agent_manager_pin`) whose doc
+/// comments instruct the next author to join them. Each protects exactly one
+/// registry, so a new test that forgets any of them reopens the hole — as a
+/// 40-minute CI timeout with nothing in the log naming a cause.
+#[cfg(test)]
+mod session_id_uniqueness_tests {
+    use super::*;
+
+    /// What [`SessionStorage::id_prefix`] used to be: `DefaultHasher` over the
+    /// store directory, truncated to 32 bits.
+    fn truncated_hash_prefix(session_dir: &Path) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        session_dir.hash(&mut hasher);
+        format!("{:08x}", hasher.finish() as u32)
+    }
+
+    /// Two store directories whose truncated hash is the SAME, found by brute
+    /// force over `TempDir`-shaped paths (a colliding pair turned up after
+    /// 11,213 candidates).
+    const COLLIDING_A: &str = "/var/folders/zz/claude-test/T/.tmp008779/sessions";
+    const COLLIDING_B: &str = "/var/folders/zz/claude-test/T/.tmp011213/sessions";
+
+    /// Two stores that the old hashed prefix could not tell apart get different
+    /// prefixes now, so they cannot mint the same id.
+    ///
+    /// This is the whole defect in one assertion. Truncating a hash to 32 bits
+    /// answers "which store is this?" *probabilistically*, and the losing case
+    /// is silent: both stores start from an empty `sessions` table, so both mint
+    /// `<prefix>_1`, and the symptom surfaces much later as a turn that waits
+    /// forever on a process-global handle belonging to a test that has finished.
+    ///
+    /// ⚠ If the FIRST assertion fails, `DefaultHasher` has changed and the
+    /// fixture pair no longer collides — re-brute-force a pair rather than
+    /// deleting the test, because the second assertion is only meaningful for
+    /// inputs the old scheme actually confused.
+    #[test]
+    fn two_stores_the_old_hashed_prefix_confused_now_get_different_prefixes() {
+        let a = Path::new(COLLIDING_A);
+        let b = Path::new(COLLIDING_B);
+        assert_eq!(
+            truncated_hash_prefix(a),
+            truncated_hash_prefix(b),
+            "the fixture is stale: these two paths no longer collide under a \
+             32-bit-truncated DefaultHasher, so this test would pass vacuously. \
+             Brute-force a fresh colliding pair and replace COLLIDING_A/B."
+        );
+        assert_ne!(
+            allocate_store_prefix(a),
+            allocate_store_prefix(b),
+            "two distinct stores share a prefix, so both will mint <prefix>_1 and \
+             the second session silently inherits the first's entries in every \
+             process-global registry keyed by session id"
+        );
+    }
+
+    /// The allocation is exact, and stable per directory.
+    ///
+    /// Asking for the same store twice must give the same answer — a prefix that
+    /// changed per call would restart that store's counter and collide with its
+    /// own earlier ids — and N distinct stores must yield N distinct prefixes at
+    /// a scale where a 32-bit hash is *expected* to collide (over 200k paths the
+    /// birthday probability is ~99%).
+    #[test]
+    fn the_store_prefix_is_exact_at_a_scale_where_a_32_bit_hash_is_not() {
+        const STORES: usize = 200_000;
+        let paths: Vec<PathBuf> = (0..STORES)
+            .map(|i| PathBuf::from(format!("/exact/{i}")).join(SESSIONS_FOLDER))
+            .collect();
+
+        let mut prefixes = std::collections::HashSet::with_capacity(STORES);
+        for path in &paths {
+            let prefix = allocate_store_prefix(path);
+            assert_eq!(
+                prefix.len(),
+                8,
+                "the prefix must stay 8 characters: {prefix}"
+            );
+            assert_eq!(
+                prefix,
+                allocate_store_prefix(path),
+                "one store must keep one prefix, or its own counter restarts"
+            );
+            prefixes.insert(prefix);
+        }
+        assert_eq!(
+            prefixes.len(),
+            STORES,
+            "the allocator produced a duplicate prefix, which a counter cannot do"
+        );
+
+        let hashed: std::collections::HashSet<String> =
+            paths.iter().map(|p| truncated_hash_prefix(p)).collect();
+        assert!(
+            hashed.len() < STORES,
+            "the 32-bit hash happened not to collide over {STORES} stores this \
+             time, so it is not demonstrating the difference here — raise STORES"
+        );
+    }
+
+    /// End to end: two stores in one process never mint the same id.
+    ///
+    /// The property the two tests above are components of, asserted through
+    /// `create_session` itself so a future change that keeps the allocator and
+    /// breaks the mint still goes red.
+    ///
+    /// ⚠ **This holds in THIS binary and not in every one.**
+    /// [`SessionStorage::id_prefix`]'s per-store branch is `#[cfg(test)]`, so it
+    /// is compiled only for this crate's own unit tests. Every integration
+    /// binary in the workspace — `crates/biorouter/tests/*.rs`, and every test in
+    /// `biorouter-server`, `biorouter-mcp` and `biorouter-cli` — links this crate
+    /// built WITHOUT `cfg(test)`, prefixes ids with the date, and mints
+    /// `<date>_1` from every store. That is not a theory: building with
+    /// [`MINTED_IDS`] active outside `cfg(test)` makes `tests/agent.rs` fail four
+    /// tests and `tests/conversation_writeback_stress.rs` eight, each reporting
+    /// `session id 20260912_1 was minted twice in one process` between two named
+    /// TempDir stores. CI runs those binaries.
+    ///
+    /// That gap is deliberately NOT closed here. The two ways to close it are to
+    /// give later stores a non-date prefix in non-test builds — which changes
+    /// user-visible ids on a real production path (`biorouter-acp`'s server
+    /// constructs its own manager) — or to floor the numeric part
+    /// process-wide, which was written, measured and removed: it breaks every
+    /// fixture that replays id reuse, because
+    /// `a_rewrite_basis_cannot_cross_a_wipe_that_recycled_the_session_id`
+    /// asserts the wipe hands *the same id* back. Both are a maintainer's call,
+    /// not a bug fix's.
+    #[tokio::test]
+    async fn two_stores_in_one_process_never_mint_the_same_id() {
+        let a = tempfile::TempDir::new().unwrap();
+        let b = tempfile::TempDir::new().unwrap();
+        let mut ids = Vec::new();
+        for dir in [&a, &b] {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            for _ in 0..4 {
+                ids.push(
+                    sm.create_session(dir.path().to_path_buf(), "u".into(), SessionType::User)
+                        .await
+                        .unwrap()
+                        .id,
+                );
+            }
+        }
+        let distinct: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            ids.len(),
+            "two stores in one process minted the same id: {ids:?}"
+        );
+    }
+
+    /// The guard fires, and says which two stores.
+    ///
+    /// Pinning the panic rather than the absence of one, because the guard's
+    /// whole value is what it does on the bad path: a version that recorded the
+    /// clash and returned would be indistinguishable here from a correct one,
+    /// and would restore the silent failure it exists to replace. The two named
+    /// stores are part of the contract — a bare "duplicate id" would leave the
+    /// reader exactly where #273's log left them.
+    #[test]
+    #[should_panic(expected = "was minted twice in one process")]
+    fn the_duplicate_guard_panics_and_names_both_stores() {
+        let id = format!("guardcheck_{}", std::process::id());
+        record_minted_id(&id, Path::new("/guard/one/sessions"));
+        record_minted_id(&id, Path::new("/guard/two/sessions"));
+    }
+
+    /// One store re-minting its own id is NOT a clash.
+    ///
+    /// The same-store branch has to be a quiet return rather than a panic, or the
+    /// guard would fire on the reuse the seam exists to allow — and it must not
+    /// depend on the seam having been called first, because `clear_all_sessions`
+    /// plus a build whose mark is absent reaches the same state.
+    #[test]
+    fn one_store_re_minting_its_own_id_is_not_a_clash() {
+        let id = format!("samestore_{}", std::process::id());
+        record_minted_id(&id, Path::new("/same/store/sessions"));
+        record_minted_id(&id, Path::new("/same/store/sessions"));
+    }
+
+    /// The id-reuse seam still works, and the guard does not fire on it.
+    ///
+    /// [`MINTED_IDS`] and `forget_minted_session_ids_for_test` pull in opposite
+    /// directions by design — one forbids a duplicate id, the other exists to
+    /// produce one — and the seam is what resolves them. Deliberate reuse
+    /// *within one store* is allowed; a different store taking the same id is
+    /// not. Without this test the guard silently breaks seven id-reuse fixtures
+    /// across four modules, each failing on its own setup rather than on its
+    /// subject.
+    #[tokio::test]
+    async fn the_reuse_seam_hands_one_stores_own_id_back_without_tripping_the_guard() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let first = sm
+            .create_session(temp.path().to_path_buf(), "first".into(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        sm.clear_all_sessions().await.unwrap();
+        sm.forget_minted_session_ids_for_test().await.unwrap();
+        let second = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "second".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(
+            second, first,
+            "the seam must hand the freed id back, or every id-reuse fixture in \
+             the tree is testing nothing"
+        );
+    }
+
+    /// A single store still numbers from 1 with no gaps.
+    ///
+    /// This is the production case — one process, one store — and nothing in
+    /// this change may perturb it. `id_prefix` decides the *prefix* and must
+    /// never touch the counter; if this goes red, shipped session ids have
+    /// started skipping numbers.
+    #[tokio::test]
+    async fn one_store_still_numbers_from_one_without_gaps() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            ids.push(
+                sm.create_session(temp.path().to_path_buf(), "floor".into(), SessionType::User)
+                    .await
+                    .unwrap()
+                    .id,
+            );
+        }
+        let ns: Vec<i64> = ids
+            .iter()
+            .map(|id| id.rsplit('_').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(
+            ns,
+            vec![1, 2, 3, 4, 5],
+            "one store must still number 1..n with no gaps; got {ids:?}"
+        );
     }
 }

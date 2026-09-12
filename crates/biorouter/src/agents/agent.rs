@@ -7504,6 +7504,9 @@ impl Agent {
                 self.config.biorouter_mode,
                 session.clone(),
                 Arc::clone(&self.hooks_manager),
+                // D10: the store the judge walks to find the conversation a
+                // person is watching, when this session is a delegated child.
+                Some(Arc::clone(&self.config.session_manager)),
             ))
         });
 

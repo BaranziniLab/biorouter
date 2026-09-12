@@ -678,16 +678,22 @@ mod tests {
     /// NOTE — what these tests share with the rest of this crate's unit tests,
     /// and what they deliberately do not.
     ///
-    /// * `AppState::new()` opens the **REAL user session database** (through
+    /// * `AppState::new()` opens the **ONE shared session database** (through
     ///   `AgentManager::instance()` → `SessionManager::instance()`, both
     ///   process-global `OnceCell`s with no path seam). `workspace/turn.rs`,
     ///   `routes/session.rs`, `routes/session_events.rs` and `state.rs` all
-    ///   carry the same warning: these tests create rows in the developer's own
-    ///   history. Keep session names unique and never assert on row counts.
-    ///   Relocating it would mean `BIOROUTER_PATH_ROOT` being set before the
-    ///   `LazyLock<SESSION_STORAGE>` resolves `Paths::data_dir()`
-    ///   (`session_manager.rs`), i.e. before whichever test touches the manager
-    ///   first — which libtest's parallel scheduling does not let a test decide.
+    ///   carry the same warning: every test in the binary creates rows in the
+    ///   same store. Keep session names unique and never assert on row counts.
+    ///
+    ///   It is **not** the developer's own history. This bullet used to argue
+    ///   relocating it was impossible — "`BIOROUTER_PATH_ROOT` being set before
+    ///   the `LazyLock` resolves `Paths::data_dir()` … which libtest's parallel
+    ///   scheduling does not let a test decide" — which is right about a
+    ///   `#[test]` and wrong about a constructor. `src/test_sandbox.rs`'s
+    ///   `#[ctor]` runs before `main`, so it cannot lose that race: it points
+    ///   the data root at a throwaway directory and freezes the store there.
+    ///   Leaving the claim standing cost a Windows CI flake; read that file's
+    ///   pinning section before touching anything that relocates the path root.
     ///   Fixing that is a crate-wide change (a path seam on `SessionManager`),
     ///   not a Task 9 one.
     /// * **Extensions are always passed explicitly**, never `None`. `None`

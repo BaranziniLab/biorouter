@@ -2341,37 +2341,6 @@ mod tests {
 
     // --- the pending queue ------------------------------------------------
 
-    /// Burn `spacers` session ids in this test's own store, so the child it
-    /// spawns next cannot share an id with another test's child.
-    ///
-    /// Session ids are `<YYYYMMDD>_<n>` counted **per store** (the INSERT in
-    /// `session_manager` reads `MAX(...) + 1`), and every test here gets a fresh
-    /// `TempDir` — so each test's FIRST child is `<today>_1`. The handle registry
-    /// is process-GLOBAL and `queue_initializing_child_input` locates a child by
-    /// that id alone, so two tests in one process hand each other's pre-start
-    /// steering to the wrong handle. Observed, not theorised: this test read a
-    /// completed run with `human_intervened == false` and no recovery row,
-    /// because its steer had been queued onto a sibling test's parked child.
-    ///
-    /// Each caller passes a DIFFERENT count, which is the whole point — one
-    /// shared offset would only move every test's collision to a higher number.
-    async fn reserve_child_session_ids(
-        session_manager: &crate::session::SessionManager,
-        working_dir: &std::path::Path,
-        spacers: usize,
-    ) {
-        for _ in 0..spacers {
-            session_manager
-                .create_session(
-                    working_dir.to_path_buf(),
-                    "session id spacer".into(),
-                    crate::session::session_manager::SessionType::SubAgent,
-                )
-                .await
-                .expect("the scratch store accepts a spacer session");
-        }
-    }
-
     /// Poll `cond` until it holds, with a ceiling so a wiring mistake fails as a
     /// timeout instead of hanging the suite.
     async fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
@@ -2577,7 +2546,6 @@ mod tests {
         );
         let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
             std::sync::Arc::new(SuccessfulQueuedChildProvider);
-        reserve_child_session_ids(&session_manager, &root, 40).await;
         let task_config = TaskConfig::new(provider, "queued-parent", &root, vec![]);
 
         let started = handle_subagent_tool(
@@ -2711,7 +2679,6 @@ mod tests {
         );
         let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
             std::sync::Arc::new(SuccessfulQueuedChildProvider);
-        reserve_child_session_ids(&session_manager, &root, 80).await;
         let task_config = TaskConfig::new(provider, "unverified-parent", &root, vec![]);
 
         let started = handle_subagent_tool(
@@ -2824,7 +2791,6 @@ mod tests {
         );
         let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
             std::sync::Arc::new(SuccessfulQueuedChildProvider);
-        reserve_child_session_ids(&session_manager, &root, 120).await;
         let task_config = TaskConfig::new(provider, "cancelled-parent", &root, vec![]);
 
         let started = handle_subagent_tool(
@@ -3004,7 +2970,6 @@ mod tests {
         // into another test's observer. Observed: it fed two steering messages
         // into `the_run_holds_the_server_turn_lease_for_its_whole_run`, whose
         // first-event assertion then reported a bracket bug that did not exist.
-        reserve_child_session_ids(&session_manager, &root, 160).await;
         let session = session_manager
             .create_session(
                 root,

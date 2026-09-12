@@ -1787,6 +1787,31 @@ pub fn routes(state: Arc<AppState>) -> Router {
 // second module and takes this one instead.
 #[cfg(test)]
 pub(crate) mod diverge_tests {
+    //! ⚠ **If a test in here fails with a 500 where it asserted a 200, suspect
+    //! the session store's PATH before you suspect this file.**
+    //!
+    //! Several of these are read-only route tests over one process-global
+    //! session store, and they were the rotating victims of a
+    //! `test (windows-latest)` flake: `activity_clamps_an_absurd_window`
+    //! answering 500 on one run, `sidebar_route_…` or a `/usage` route on the
+    //! next, and — measured in one job of PR #240 — the same test `... ok` in the
+    //! `biorouter_server` lib binary and `... FAILED` in the `biorouterd` bin
+    //! binary 61 s later, off identical source (`main.rs` and `lib.rs` both
+    //! declare `mod routes`).
+    //!
+    //! The 500 is honest: `get_activity(..).map_err(|_| INTERNAL_SERVER_ERROR)`
+    //! reporting a real database error. The database had been moved out from
+    //! under the process — a sibling test relocated `BIOROUTER_PATH_ROOT` under a
+    //! `TempDir`, won the race to be the first to touch the store, and then
+    //! unlinked it. The already-open connection kept answering, so it only bit
+    //! when the pool had to open a *second* one: `(code: 14) unable to open
+    //! database file`.
+    //!
+    //! `src/test_sandbox.rs` now freezes the store's directory before any test
+    //! runs, and `tests/session_store_survives_a_relocated_path_root.rs` holds
+    //! that closed. Read the pinning section of the first before changing
+    //! anything that relocates the path root.
+
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
@@ -1949,7 +1974,7 @@ pub(crate) mod diverge_tests {
     /// `/sessions/activity` must not be swallowed by the `/sessions/{session_id}`
     /// wildcard registered next to it, and the payload must be camelCase.
     ///
-    /// NOTE: `AppState::new()` opens the REAL user session database, so a route
+    /// NOTE: `AppState::new()` opens the ONE shared session database, so a route
     /// test here must be READ-ONLY. The behaviour of the activity aggregation is
     /// covered by `session_manager`'s unit tests, which use a `TempDir`.
     #[tokio::test(flavor = "multi_thread")]
@@ -2186,7 +2211,7 @@ pub(crate) mod diverge_tests {
     /// totalTokens, turns}`, with the unknown bucket carrying `null`.
     ///
     /// This is a pure serialization assertion rather than a live round-trip:
-    /// `AppState::new()` opens the REAL shared session DB, whose token-ledger
+    /// `AppState::new()` opens the ONE shared session DB, whose token-ledger
     /// contents (and, across parallel worktrees, whose schema) are not stable
     /// enough for a write-then-read route test. The aggregation SQL itself is
     /// covered by `session_manager`'s `TempDir` unit tests.
@@ -2275,6 +2300,44 @@ pub(crate) mod diverge_tests {
 
         let (status, _) = get_usage(state, "29990101_99999").await;
         assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// A genuine database failure on `/sessions/activity` is still a **500**.
+    ///
+    /// ⚠ This is here because of the flake in the module note, not in spite of
+    /// it. That 500 was *correct* — the store really had been moved out from
+    /// under the process — so the only legitimate fix was to make the store
+    /// sound. Making this route quieter instead (an empty `ActivityWindow`, a
+    /// 200 with zeroes, an `unwrap_or_default`) would have turned the same green
+    /// suite into a daemon that answers the Home heatmap with silence when its
+    /// database is unreadable. Nothing else asserts that mapping, because it
+    /// cannot be driven from here: the handler reads the process-global store,
+    /// and there is no seam to hand it a broken one.
+    ///
+    /// A source scan over the handler's own span, with the negative control
+    /// [`crate::routes::body_of`] requires of every caller.
+    #[test]
+    fn a_database_failure_on_activity_is_reported_as_500() {
+        const SOURCE: &str = include_str!("session.rs");
+        let handler = crate::routes::body_of(SOURCE, "async fn get_session_activity(");
+
+        // Two `contains`, not the whole line: the exact closure spelling is not
+        // the claim (`|_|` vs `|_e|` is a rename, not a behaviour change), and a
+        // test that fails on a rename gets relaxed rather than read. The claim is
+        // that the error is still MAPPED and that what it maps to is 500.
+        assert!(
+            handler.contains(".map_err("),
+            "the activity route stopped mapping its database error:\n{handler}"
+        );
+        assert!(
+            handler.contains("StatusCode::INTERNAL_SERVER_ERROR"),
+            "the activity route stopped reporting a database failure as 500:\n{handler}"
+        );
+        assert!(
+            !handler.contains("SessionModelUsageResponse"),
+            "body_of over-read past get_session_activity into the /usage route, so \
+             the assertion above may have matched a different handler"
+        );
     }
 
     /// `days` is attacker-controlled; the server clamps it rather than building a
@@ -2721,10 +2784,19 @@ pub(crate) mod diverge_tests {
     /// route test, so the structural assertion is what stands in for it.
     #[test]
     fn both_copy_handlers_take_the_second_read() {
-        let src = std::fs::read_to_string("src/routes/session.rs").unwrap();
+        // `include_str!`, not `read_to_string("src/routes/session.rs")`. A
+        // relative read resolves against the process's working directory, which
+        // is ambient state no test owns: `cargo test` happens to set it to the
+        // package root, so the relative form works under cargo and fails with
+        // `NotFound` the moment the same binary is run any other way — under a
+        // debugger, from a load harness, or from a wrapper that runs the binary
+        // directly. That is the same class of bug as the session-store path this
+        // module's note describes, and `include_str!` closes it by resolving at
+        // compile time relative to THIS file.
+        let src = include_str!("session.rs");
         for signature in ["async fn diverge_session(", "async fn edit_message("] {
             assert!(
-                fn_body(&src, signature).contains("minted_capability_without_proof"),
+                fn_body(src, signature).contains("minted_capability_without_proof"),
                 "{signature} gates on the source it read before the copy and never \
                  re-checks the child it minted"
             );
@@ -2734,7 +2806,7 @@ pub(crate) mod diverge_tests {
         // `edit_in_place` truncates the LIVE session and copies nothing, so it
         // mints no capability and must not be carrying this gate.
         assert!(
-            !fn_body(&src, "async fn edit_in_place(").contains("minted_capability_without_proof"),
+            !fn_body(src, "async fn edit_in_place(").contains("minted_capability_without_proof"),
             "fn_body is not returning one function's body"
         );
     }
@@ -2864,7 +2936,7 @@ pub(crate) mod diverge_tests {
 /// LIVE session. These pin the preconditions that make that safe — the same
 /// discipline `/reply` applies to `conversation_so_far`.
 ///
-/// NOTE: `AppState::new()` opens the REAL user session database, so each test
+/// NOTE: `AppState::new()` opens the ONE shared session database, so each test
 /// creates its own session and deletes it again, exactly like `diverge_tests`.
 #[cfg(test)]
 mod edit_message_tests {

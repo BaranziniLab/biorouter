@@ -6961,15 +6961,15 @@ pub(crate) mod tests {
     /// ⚠ **Two keys, and both are load-bearing.**
     ///
     /// `serial(agent_manager_pin)`: the pin is a process-global map keyed by
-    /// session **id**, and ids are minted per *store* as `<date>_<n>`
-    /// (`session_manager.rs`'s `CLAIM_NEXT_SESSION_N`, whose high-water mark is
-    /// per store and so starts at 1 in each one),
-    /// so every test that stands up its own `TempDir` `SessionManager` and
-    /// registers its FIRST session is fighting over the single key `<today>_1`.
-    /// `subagent_handler`'s two real-subagent tests are the other claimants.
-    /// Unserialized, this test can pass on one of THEIR pins (vacuous) or their
-    /// poll can expire against ours (a flake) — the same `<today>_1` collision
-    /// that already had to be fixed one layer down on the session bus.
+    /// session **id**. ⚠ This key was added because ids collided —
+    /// every store minted `<today>_1`, so this test could pass on another
+    /// test's pin (vacuous) or lose its own to theirs (a flake). **That cause is
+    /// closed**: `session_manager`'s per-store `SessionStorage::id_prefix` makes
+    /// a minted id unique in this binary's process, and a duplicate panics at the
+    /// mint naming both stores. Do not cite `<today>_1` as a reason to join this
+    /// key. What it still buys is ordering against `subagent_handler`'s two
+    /// real-subagent runs, which register and deregister agents in the same pin
+    /// this test polls.
     ///
     /// `parallel(workspace_services)`: this test READS the process-global
     /// services slot and needs the headless answer — `running` false for every
@@ -10280,48 +10280,29 @@ pub(crate) mod tests {
     ///   to a private one, which is the anti-oracle rule and therefore not
     ///   negotiable. A made-up id is no longer a valid injection target;
     /// * the id must be unique in the PROCESS, because `session_events` and
-    ///   `AgentManager` are keyed by session id process-wide while
-    ///   `create_session` numbers ids `YYYYMMDD_N` **within one database file**
-    ///   — and `client()` hands every test its own temp directory, so the first
-    ///   session of every test would be `<today>_1`. That collision is exactly
-    ///   why these tests reached for [`unique_id`] in the first place, and it is
-    ///   a real hazard: one test's bus event would wake another's watcher.
+    ///   `AgentManager` are keyed by session id process-wide.
     ///
-    /// So reserve one number from a process-wide counter and burn the store's
-    /// id sequence up to it. The n-th row created in a fresh store is
-    /// `<today>_n`, so a distinct n per call yields a real row with an id no
-    /// other test can mint. Overshooting is asserted rather than tolerated: it
-    /// would silently reintroduce the collision this exists to avoid.
+    /// The second property is now the mint's own guarantee rather than this
+    /// helper's — `session_manager`'s per-store `SessionStorage::id_prefix` makes
+    /// every minted id unique in the process, and a duplicate panics at the mint
+    /// naming both stores. So this is just "create a row".
+    ///
+    /// ⚠ It used to reserve a number from a process-wide band and burn the
+    /// store's id sequence up to it, which is worth recording because the cost
+    /// was invisible: the k-th caller created 15 + k sessions, so 46 call sites
+    /// cost **1771** `create_session` transactions to allocate 46 ids. Do not
+    /// reintroduce a band here; if ids ever collide again, fix the mint.
     async fn seeded_target(c: &WorkspaceClient, label: &str) -> String {
-        // Starts above any test's own pre-created rows, so the assert below is
-        // a tripwire rather than a routine failure.
-        static BAND: AtomicUsize = AtomicUsize::new(16);
-        let want = BAND.fetch_add(1, Ordering::SeqCst);
-        let sm = c.context.session_manager.clone();
-        loop {
-            let id = sm
-                .create_session(
-                    std::env::temp_dir(),
-                    format!("{label}-seed"),
-                    crate::session::session_manager::SessionType::User,
-                )
-                .await
-                .unwrap()
-                .id;
-            let n: usize = id
-                .rsplit('_')
-                .next()
-                .and_then(|n| n.parse().ok())
-                .unwrap_or_else(|| panic!("session id numbering changed: {id}"));
-            assert!(
-                n <= want,
-                "this test consumed its reserved band before asking for a target \
-                 ({n} > {want}); raise BAND's start"
-            );
-            if n == want {
-                return id;
-            }
-        }
+        c.context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                format!("{label}-seed"),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id
     }
 
     #[tokio::test]
