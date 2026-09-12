@@ -171,10 +171,20 @@ their token is the authority there.
 Until QA-D F7 (2026-09-11) the gates also admitted `is_local_origin` — any loopback port, any
 scheme — so every other local page's socket passed as the daemon's own, and behind a TLS proxy a
 plain-`http` page at the same host passed the authority-only comparison. What remains beside the
-same-origin test is one declared renderer: the desktop app's dev renderer is vite's page on its
-own port, so the Electron main process names that origin in `BIOROUTER_RENDERER_ORIGIN` when it
-spawns the daemon (loopback `http` only; anything else is refused with a warning). The packaged
-renderer loads from `file://`, which the workspace gate admits by name.
+same-origin test is one **declared** renderer, and a `serve` daemon declares none. The desktop
+app's dev renderer is vite's page on its own port, so the Electron main process names that origin
+in `BIOROUTER_RENDERER_ORIGIN` when it spawns the daemon; packaged, it loads from a `file:` URL,
+whose WebSocket `Origin` is the literal `file://`, and it declares that instead. Anything else in
+that variable is refused with a warning.
+
+`file://` is matched by name, because it has no host and no port for a same-origin test to
+compare — which is why it has to be declared to be admitted at all. It was not: the workspace gate
+took that literal on every daemon, so a local `.html` opened in Chromium presents exactly that
+origin and cleared the gate on a `serve` host, leaving the `?secret=` query token as the whole
+authority on a path that is also exempt from `check_token`. `serve` now strips the variable from
+the daemon it spawns, so the allowance cannot be inherited from whoever's shell it ran in. The
+per-app agent socket has no such allowance and needs none — an app's page is served by this
+daemon over http, so it is same-origin with its own socket.
 
 ## How `serve` starts and stops the daemon
 

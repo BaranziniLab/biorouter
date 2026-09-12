@@ -1364,16 +1364,22 @@ const createChat = async (
   const windowWorkingDir = path.resolve(path.normalize(dir || os.homedir()));
 
   // The daemon's WebSocket gates admit a page only from the daemon's own
-  // origin, and the dev renderer is vite's page on another port, so the daemon
-  // is told which origin that is (QA-D F7; `routes::RENDERER_ORIGIN_ENV`).
-  // Packaged, the renderer loads from a `file:` URL, which the workspace gate
-  // admits by name, and nothing is declared: the explicit `undefined` also keeps
-  // a value inherited from the environment off a packaged app's daemon.
+  // origin and, beside it, the one renderer its launcher declares (QA-D F7;
+  // `routes::RENDERER_ORIGIN_ENV`). We are that launcher, and we know which of
+  // the two renderers we loaded: in dev it is vite's page on another port, and
+  // packaged it is a `file:` URL, whose WebSocket `Origin` Chromium serializes
+  // as exactly `file://`.
+  //
+  // ⚠ The packaged case is DECLARED rather than assumed. `routes/workspace.rs`
+  // used to admit `file://` by name on every daemon, which meant a local `.html`
+  // opened in a browser cleared that gate on a `biorouter serve` host too. The
+  // literal is hardcoded because `new URL('file:///…').origin` is `'null'` in
+  // Node — not what the browser sends, and refused by name.
   const rendererEntry = rendererEntryUrl();
   const daemonEnv = {
     BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT,
     BIOROUTER_RENDERER_ORIGIN:
-      rendererEntry.protocol === 'file:' ? undefined : rendererEntry.origin,
+      rendererEntry.protocol === 'file:' ? 'file://' : rendererEntry.origin,
   };
 
   const biorouterdResult = useSharedDaemon
@@ -5543,10 +5549,11 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
  *   `Origin` on `fetch` and Electron does not CORS-check a `file://` initiator
  *   (measured: a fetch to loopback returns 200 with no
  *   `Access-Control-Allow-Origin` in the response at all). Its WebSocket sends
- *   `Origin: file://`, which `routes/workspace.rs` admits by name; the dev
- *   renderer sends `http://localhost:517x`, which the daemon admits as the
- *   renderer origin this process declares when it spawns it
- *   (`BIOROUTER_RENDERER_ORIGIN`, set beside the `startBiorouterd` calls).
+ *   `Origin: file://` and the dev renderer sends `http://localhost:517x`; the
+ *   daemon admits whichever of the two this process declared when it spawned it
+ *   (`BIOROUTER_RENDERER_ORIGIN`, set beside the `startBiorouterd` calls) — the
+ *   `file://` literal included, since QA-D F7's review, so that a daemon nobody
+ *   declared it to (a `biorouter serve` one) admits no local file's socket.
  *   Every gate already passes on the renderer's real origin.
  * - Extending it would be strictly worse. The daemon's socket gates are
  *   same-origin tests (`origin_matches_host`) against the browser-set `Origin`;

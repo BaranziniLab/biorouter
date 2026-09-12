@@ -170,11 +170,22 @@ async fn the_mounted_socket_authenticates_and_carries_frames_both_ways() {
     // admitted until then — the first two by "any loopback origin", which is
     // why this test's own success case used to connect from port 5173. Nothing
     // here declares a renderer origin, so vite's page is just another port.
+    //
+    // ⚠ `file://` is in that list, and it is the one the security review of QA-D
+    // F7 added. This binary declares no renderer — `BIOROUTER_RENDERER_ORIGIN`
+    // is unset, which is what `biorouter serve` and a hand-run `biorouterd` look
+    // like — and the gate used to admit that literal by name on EVERY daemon, so
+    // a local `.html` opened in Chromium cleared it here. The packaged app's own
+    // page is admitted by DECLARING it, which `routes::workspace`'s unit tests
+    // cover: the declaration is read once into a process-global `LazyLock`, so it
+    // cannot be varied per connection from one test binary.
     for origin in [
         "http://127.0.0.1:1".to_string(),
         "http://127.0.0.1:5173".to_string(),
         format!("https://{addr}"),
         format!("http://localhost:{}", addr.port()),
+        "file://".to_string(),
+        "null".to_string(),
     ] {
         assert_eq!(
             refusal_status(

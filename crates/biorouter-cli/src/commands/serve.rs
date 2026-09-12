@@ -126,6 +126,14 @@ pub async fn handle_serve(
         .env("BIOROUTER_PORT", port.to_string())
         .env("BIOROUTER_SERVER__SECRET_KEY", &secret_key)
         .env("BIOROUTER_SERVE_UI", &web_dir)
+        // The daemon's WebSocket gates admit, beside its own origin, the one
+        // renderer its launcher declares — and for the packaged desktop app that
+        // declaration is the literal `file://`, which `routes/workspace.rs`
+        // matches by name. `serve`'s interface is served by the daemon itself, so
+        // it is same-origin and needs no declaration; stripping an inherited
+        // value makes "a serve daemon never admits a `file:` page" a property of
+        // the spawn rather than of whoever's shell this ran in.
+        .env_remove("BIOROUTER_RENDERER_ORIGIN")
         .envs(
             browser_token
                 .iter()

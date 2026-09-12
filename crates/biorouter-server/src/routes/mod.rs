@@ -197,39 +197,77 @@ pub(crate) fn request_scheme(headers: &HeaderMap) -> &'static str {
 /// The environment variable a launcher sets to name the renderer that drives
 /// this daemon from an origin other than the daemon's own.
 ///
-/// The one such renderer is the desktop app in development: vite serves it from
-/// its own port (5173, or the next free one), so its sockets present
-/// `http://localhost:517x` while the daemon sits on an ephemeral port. The
-/// Electron main process knows the exact URL it loaded and declares its origin
-/// when it spawns the daemon, and `just debug-server` declares vite's default.
-/// The packaged app loads from `file://`, which the workspace gate admits by
-/// name, and declares nothing.
+/// There are two such renderers and both are the desktop app. In development
+/// vite serves it from its own port (5173, or the next free one), so its
+/// sockets present `http://localhost:517x` while the daemon sits on an
+/// ephemeral port; packaged, Electron loads it from a `file:` URL and its
+/// sockets present [`ELECTRON_FILE_ORIGIN`]. The Electron main process knows
+/// which of the two it loaded and declares it when it spawns the daemon, and
+/// `just debug-server` declares vite's default. `biorouter serve` declares
+/// nothing and strips an inherited value, so a `serve` daemon admits only its
+/// own origin.
 pub const RENDERER_ORIGIN_ENV: &str = "BIOROUTER_RENDERER_ORIGIN";
 
-/// A declared renderer origin, if the value names one this daemon will admit.
+/// The `Origin` a page loaded from a `file:` URL presents on a WebSocket
+/// handshake, as Chromium serializes it.
 ///
-/// Only plain `http` to `localhost` or `127.0.0.1` — exactly the origins the
-/// socket gates admitted on every port before QA-D F7 — so a declaration can
-/// only ever narrow them back to one port, never admit anything they refused.
-/// An unset or empty value declares nothing; anything else is refused with a
-/// warning rather than guessed at.
-pub(crate) fn declared_renderer(value: Option<&str>) -> Option<WebOrigin> {
+/// Not `null`: that is the opaque origin of a *sandboxed* frame — including the
+/// agent-authored figures this app renders in its artifact panel — and
+/// `routes::workspace`'s gate refuses it by name.
+pub(crate) const ELECTRON_FILE_ORIGIN: &str = "file://";
+
+/// What a launcher declared with [`RENDERER_ORIGIN_ENV`]: the one page this
+/// daemon admits a socket from that its own origin does not account for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeclaredRenderer {
+    /// The dev renderer: vite's page on its own loopback port.
+    LoopbackHttp(WebOrigin),
+    /// The packaged desktop renderer, loaded from a `file:` URL.
+    ///
+    /// [`WebOrigin`] cannot hold it, and should not: `file://` has no host and
+    /// no port, so there is nothing for a same-origin test to compare. It can
+    /// only ever be matched by name — and, since the security review of QA-D
+    /// F7, only on a daemon whose launcher said it has such a renderer.
+    ElectronFile,
+}
+
+impl std::fmt::Display for DeclaredRenderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LoopbackHttp(origin) => write!(f, "{origin}"),
+            Self::ElectronFile => f.write_str(ELECTRON_FILE_ORIGIN),
+        }
+    }
+}
+
+/// The renderer a launcher declared, if the value names one this daemon admits.
+///
+/// Either the exact literal [`ELECTRON_FILE_ORIGIN`], or plain `http` to
+/// `localhost` or `127.0.0.1` — exactly the origins the socket gates admitted on
+/// every port before QA-D F7 — so a declaration can only ever narrow them back
+/// to one port, never admit anything they refused. An unset or empty value
+/// declares nothing; anything else is refused with a warning rather than guessed
+/// at.
+pub(crate) fn declared_renderer(value: Option<&str>) -> Option<DeclaredRenderer> {
     let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+    if value == ELECTRON_FILE_ORIGIN {
+        return Some(DeclaredRenderer::ElectronFile);
+    }
     match WebOrigin::parse(value).filter(WebOrigin::is_loopback_http) {
-        Some(origin) => Some(origin),
+        Some(origin) => Some(DeclaredRenderer::LoopbackHttp(origin)),
         None => {
             tracing::warn!(
-                "{RENDERER_ORIGIN_ENV}={value:?} is not an http origin on localhost or \
-                 127.0.0.1; no renderer origin is admitted"
+                "{RENDERER_ORIGIN_ENV}={value:?} is neither {ELECTRON_FILE_ORIGIN:?} nor an http \
+                 origin on localhost or 127.0.0.1; no renderer origin is admitted"
             );
             None
         }
     }
 }
 
-/// This process's declared renderer origin, read once.
-pub(crate) fn declared_renderer_origin() -> Option<&'static WebOrigin> {
-    static DECLARED: LazyLock<Option<WebOrigin>> =
+/// This process's declared renderer, read once.
+pub(crate) fn declared_renderer_origin() -> Option<&'static DeclaredRenderer> {
+    static DECLARED: LazyLock<Option<DeclaredRenderer>> =
         LazyLock::new(|| declared_renderer(std::env::var(RENDERER_ORIGIN_ENV).ok().as_deref()));
     DECLARED.as_ref()
 }
@@ -245,9 +283,9 @@ pub(crate) struct UpgradeOrigin<'a> {
     pub host: Option<&'a str>,
     /// The scheme the client used; see [`request_scheme`].
     pub scheme: &'static str,
-    /// The renderer origin this daemon's launcher declared, if any; see
+    /// The renderer this daemon's launcher declared, if any; see
     /// [`RENDERER_ORIGIN_ENV`].
-    pub renderer: Option<&'a WebOrigin>,
+    pub renderer: Option<&'a DeclaredRenderer>,
 }
 
 impl<'a> UpgradeOrigin<'a> {
@@ -275,9 +313,26 @@ impl<'a> UpgradeOrigin<'a> {
             return false;
         };
         origin_matches_host(origin, self.host, self.scheme)
-            || self
-                .renderer
-                .is_some_and(|renderer| WebOrigin::parse(origin).as_ref() == Some(renderer))
+            || matches!(
+                self.renderer,
+                Some(DeclaredRenderer::LoopbackHttp(renderer))
+                    if WebOrigin::parse(origin).as_ref() == Some(renderer)
+            )
+    }
+
+    /// Is this upgrade the **packaged desktop renderer's own page**, on a daemon
+    /// whose launcher said it has one?
+    ///
+    /// Asked only by `routes::workspace`, which is the only socket an Electron
+    /// `file:` page opens. `routes::apps` neither asks nor should: an app's page
+    /// is served by this daemon over http, so it is same-origin with its own
+    /// socket and has never needed an allowance by name. That asymmetry is why
+    /// this is a separate question rather than another arm inside
+    /// [`Self::is_this_daemons`] — folding it in would silently widen the apps
+    /// gate to admit a `file:` page too.
+    pub(crate) fn is_declared_electron_renderer(&self) -> bool {
+        self.origin == Some(ELECTRON_FILE_ORIGIN)
+            && matches!(self.renderer, Some(DeclaredRenderer::ElectronFile))
     }
 }
 
@@ -341,8 +396,8 @@ pub(crate) fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
 #[cfg(test)]
 mod origin_tests {
     use super::{
-        declared_renderer, is_local_origin, origin_matches_host, request_scheme, UpgradeOrigin,
-        WebOrigin,
+        declared_renderer, is_local_origin, origin_matches_host, request_scheme, DeclaredRenderer,
+        UpgradeOrigin, WebOrigin,
     };
     use axum::http::HeaderMap;
 
@@ -483,28 +538,56 @@ mod origin_tests {
         assert_eq!(request_scheme(&HeaderMap::new()), "http");
         assert_eq!(with("https"), "https");
         assert_eq!(with("HTTPS"), "https");
-        // Chained proxies: the first value is the client's.
-        assert_eq!(with("https, http"), "https");
         assert_eq!(with("http"), "http");
         assert_eq!(with("gopher"), "http");
+
+        // A proxy that APPENDS rather than replaces: the value it wrote is the
+        // last one, and whatever the client sent sits in front of it. Reading
+        // the first refused every upgrade from a proxied https deployment whose
+        // client had written `http` — fail-closed, and triggerable at will.
+        assert_eq!(with("http, https"), "https");
+        // …and symmetrically, a client-written `https` does not survive a proxy
+        // that appends the truth after it.
+        assert_eq!(with("https, http"), "http");
+        assert_eq!(with("https , http"), "http");
+        assert_eq!(with("http,https"), "https");
+        // One value, which is what a replacing proxy sends, reads the same
+        // either way — that is why this choice is free for every ordinary
+        // deployment.
+        assert_eq!(with(" https "), "https");
     }
 
-    /// The declaration can only name an origin the socket gates admitted on
-    /// every port before QA-D F7, so it narrows them back to one port and can
-    /// never admit anything they refused.
+    /// The declaration names either the packaged renderer's `file:` page or a
+    /// loopback-http origin the socket gates admitted on every port before QA-D
+    /// F7 — so it narrows them back to one port and can never admit anything
+    /// they refused.
     #[test]
-    fn a_renderer_can_only_be_declared_on_loopback_http() {
+    fn a_renderer_is_declared_as_loopback_http_or_the_electron_file_page() {
         assert_eq!(
             declared_renderer(Some("http://localhost:5173")),
-            WebOrigin::parse("http://localhost:5173")
+            WebOrigin::parse("http://localhost:5173").map(DeclaredRenderer::LoopbackHttp)
         );
         assert!(declared_renderer(Some(" http://127.0.0.1:5174 ")).is_some());
+        // The packaged app's own page. Admitted by NAME, which is why it has to
+        // be declared to be admitted at all.
+        assert_eq!(
+            declared_renderer(Some("file://")),
+            Some(DeclaredRenderer::ElectronFile)
+        );
+        assert_eq!(
+            declared_renderer(Some(" file:// ")),
+            Some(DeclaredRenderer::ElectronFile)
+        );
         for refused in [
             "https://localhost:5173",
             "http://example.org:5173",
             "http://[::1]:5173",
             "http://localhost:5173/",
-            "file://",
+            // Neither the opaque origin of a sandboxed frame nor a file URL
+            // with a path is the packaged renderer's origin.
+            "null",
+            "file:///",
+            "file:///Users/me/evil.html",
             "localhost:5173",
         ] {
             assert_eq!(declared_renderer(Some(refused)), None, "{refused:?}");
@@ -517,7 +600,8 @@ mod origin_tests {
     /// renderer.
     #[test]
     fn an_upgrade_is_this_daemons_when_same_origin_or_the_declared_renderer() {
-        let vite = WebOrigin::parse("http://localhost:5173").unwrap();
+        let vite =
+            DeclaredRenderer::LoopbackHttp(WebOrigin::parse("http://localhost:5173").unwrap());
         let upgrade = |origin, renderer| UpgradeOrigin {
             origin,
             host: Some("127.0.0.1:9380"),
@@ -532,6 +616,43 @@ mod origin_tests {
         assert!(!upgrade(Some("http://localhost:5173"), None).is_this_daemons());
         // No Origin is not "this daemon's"; each gate decides that case itself.
         assert!(!upgrade(None, Some(&vite)).is_this_daemons());
+    }
+
+    /// The packaged renderer's `file:` page is a DIFFERENT question from
+    /// `is_this_daemons`, asked only by the workspace gate, and answered only on
+    /// a daemon whose launcher declared such a renderer.
+    ///
+    /// Before the security review of QA-D F7, `routes::workspace` compared the
+    /// origin to the literal `"file://"` with nothing else asked — so a local
+    /// `.html` opened in Chromium cleared that gate on every daemon, `biorouter
+    /// serve` included.
+    #[test]
+    fn the_electron_file_page_is_admitted_only_where_it_was_declared() {
+        let electron = DeclaredRenderer::ElectronFile;
+        let vite =
+            DeclaredRenderer::LoopbackHttp(WebOrigin::parse("http://localhost:5173").unwrap());
+        let upgrade = |origin, renderer| UpgradeOrigin {
+            origin,
+            host: Some("127.0.0.1:9380"),
+            scheme: "http",
+            renderer,
+        };
+        assert!(upgrade(Some("file://"), Some(&electron)).is_declared_electron_renderer());
+        // Nothing declared — `biorouter serve`, or a hand-run `biorouterd`.
+        assert!(!upgrade(Some("file://"), None).is_declared_electron_renderer());
+        // A dev daemon declares vite's page, not a file page.
+        assert!(!upgrade(Some("file://"), Some(&vite)).is_declared_electron_renderer());
+        // And the declaration admits that one literal and nothing near it.
+        for origin in ["null", "file:///", "file:///Users/me/evil.html", "FILE://"] {
+            assert!(
+                !upgrade(Some(origin), Some(&electron)).is_declared_electron_renderer(),
+                "{origin:?}"
+            );
+        }
+        assert!(!upgrade(None, Some(&electron)).is_declared_electron_renderer());
+        // It is not `is_this_daemons`, which is what `routes::apps` asks — so
+        // declaring an Electron renderer must not widen the apps socket's gate.
+        assert!(!upgrade(Some("file://"), Some(&electron)).is_this_daemons());
     }
 }
 

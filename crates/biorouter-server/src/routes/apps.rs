@@ -7827,6 +7827,32 @@ mod tests {
 
     // --- WS auth (origin + per-app socket token) --------------------------
 
+    /// **Finding 3.** An `Origin` that was SENT and cannot be read must refuse,
+    /// not degrade into the no-`Origin` case this gate deliberately admits — the
+    /// same reading `routes::workspace` depends on, asserted here too because the
+    /// two gates share `UpgradeOrigin::from_headers` and must not disagree.
+    #[test]
+    fn an_unreadable_origin_refuses_where_an_absent_one_is_admitted() {
+        use super::check_ws_auth;
+        let mut headers = axum::http::HeaderMap::new();
+        // Valid as a header value (obs-text permits 0x80..=0xFF), not UTF-8.
+        headers.insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"http://\xff.example").unwrap(),
+        );
+        headers.insert(axum::http::header::HOST, "127.0.0.1:9380".parse().unwrap());
+        let unreadable = super::super::UpgradeOrigin::from_headers(&headers);
+        assert!(
+            check_ws_auth(&unreadable, Some("tok"), "tok").is_err(),
+            "a present-but-unreadable Origin must refuse rather than skip the gate"
+        );
+
+        let mut absent = axum::http::HeaderMap::new();
+        absent.insert(axum::http::header::HOST, "127.0.0.1:9380".parse().unwrap());
+        let absent = super::super::UpgradeOrigin::from_headers(&absent);
+        assert!(check_ws_auth(&absent, Some("tok"), "tok").is_ok());
+    }
+
     /// An app-socket upgrade as the gate sees it: plain HTTP, no declared
     /// renderer.
     fn upgrade<'a>(

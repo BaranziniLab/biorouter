@@ -36,14 +36,34 @@ fn check_workspace_ws_auth(
     token: Option<&str>,
     expected: &str,
 ) -> Result<(), &'static str> {
-    if let Some(origin) = upgrade.origin {
+    if upgrade.origin.is_some() {
         // The packaged renderer is loaded from a `file:` URL
-        // (`ui/desktop/src/main.ts`, `pathToFileURL`), so it presents this
-        // origin. The dev renderer presents vite's `http://localhost:517x`, and
-        // is admitted as the renderer its launcher declared
-        // (`routes::RENDERER_ORIGIN_ENV`) — and only as that, since QA-D F7: it
-        // used to be admitted as "any loopback port", which admitted every other
-        // local page's socket too.
+        // (`ui/desktop/src/main.ts`, `pathToFileURL`), so it presents
+        // `file://`. The dev renderer presents vite's `http://localhost:517x`.
+        // **Both are admitted only as the renderer this daemon's launcher
+        // declared** (`routes::RENDERER_ORIGIN_ENV`), and only as that; before
+        // QA-D F7 the second was admitted as "any loopback port", which admitted
+        // every other local page's socket too.
+        //
+        // ⚠ **`file://` used to be admitted by NAME, on every daemon**, and the
+        // security review of QA-D F7 found what that meant. Nothing here asks
+        // whether Electron launched this daemon, `routes::configure` mounts these
+        // routes on all of them, and `/ui/workspace` is one of only two paths
+        // exempt from `check_token` — so the origin test plus the `?secret=`
+        // query token are the whole authority on it. A local `.html` opened in
+        // Chromium serializes its origin as exactly `file://` and sends it on a
+        // WebSocket handshake, so such a page cleared this gate on a `biorouter
+        // serve` host, where the secret it is then left alone with is the literal
+        // `test` under `just debug-server`. It is DECLARED now, so a `serve`
+        // daemon never carries the allowance: `commands/serve.rs` strips the
+        // variable from the daemon it spawns, and `ui/desktop/src/main.ts` sets
+        // it to `file://` exactly when the renderer it loaded is a `file:` page.
+        //
+        // It was NOT removed outright — the packaged app's workspace channel *is*
+        // that `file:` page's socket. `apps::check_ws_auth` living without such
+        // an allowance is not evidence that this one can: an app's page is
+        // **served by this daemon over http**, so it is same-origin with its own
+        // socket and never needed one.
         //
         // **"null" is NOT admitted.** It is the opaque origin of any sandboxed
         // frame — including the agent-authored figures this very app renders in
@@ -63,7 +83,7 @@ fn check_workspace_ws_auth(
         // that the daemon serves its own interface (`routes::web_ui`). A page
         // on any other origin cannot match, a page on another loopback port
         // included, and `null` is refused because it is not an origin at all.
-        if origin != "file://" && !upgrade.is_this_daemons() {
+        if !upgrade.is_declared_electron_renderer() && !upgrade.is_this_daemons() {
             return Err("cross-origin connect rejected");
         }
     }
@@ -277,7 +297,7 @@ pub fn routes(state: Arc<AppState>, secret_key: String) -> Router {
 /// **Run it too:** `cargo test -p biorouter-server --test workspace_socket`.
 #[cfg(test)]
 mod tests {
-    use super::super::{UpgradeOrigin, WebOrigin};
+    use super::super::{DeclaredRenderer, UpgradeOrigin, WebOrigin};
     use super::*;
 
     /// An upgrade as the gate sees it: plain HTTP, no declared renderer.
@@ -309,7 +329,8 @@ mod tests {
         .is_ok());
         // The dev renderer is vite's page on another loopback port. It is
         // admitted as the renderer its launcher declared, and only as that.
-        let dev = WebOrigin::parse("http://localhost:5173").unwrap();
+        let dev =
+            DeclaredRenderer::LoopbackHttp(WebOrigin::parse("http://localhost:5173").unwrap());
         let declared = UpgradeOrigin {
             renderer: Some(&dev),
             ..upgrade(Some("http://localhost:5173"), daemon)
@@ -323,12 +344,32 @@ mod tests {
             secret
         )
         .is_err());
-        // Decision 3's Electron allowance, kept to ONE measured literal: the
-        // packaged renderer loads from a file: URL (main.ts `pathToFileURL`).
+        // Decision 3's Electron allowance, kept to ONE measured literal — the
+        // packaged renderer loads from a file: URL (main.ts `pathToFileURL`) —
+        // and, since the security review of QA-D F7, admitted only on a daemon
+        // whose launcher DECLARED such a renderer.
+        let electron = DeclaredRenderer::ElectronFile;
+        let packaged = UpgradeOrigin {
+            renderer: Some(&electron),
+            ..upgrade(Some("file://"), daemon)
+        };
+        assert!(check_workspace_ws_auth(&packaged, Some(secret), secret).is_ok());
+        // ⚠ And refused where nothing declared one. This is the finding: these
+        // routes are mounted on EVERY daemon, `/ui/workspace` is one of only two
+        // paths exempt from `check_token`, and a local `.html` opened in Chromium
+        // presents exactly this origin — so on a `biorouter serve` host such a
+        // page used to clear this gate and be left alone with the secret.
         assert!(
             check_workspace_ws_auth(&upgrade(Some("file://"), daemon), Some(secret), secret)
-                .is_ok()
+                .is_err(),
+            "`file://` must be admitted only where a launcher declared an Electron renderer"
         );
+        // A daemon that declared the DEV renderer has not declared a file page.
+        let dev_only = UpgradeOrigin {
+            renderer: Some(&dev),
+            ..upgrade(Some("file://"), daemon)
+        };
+        assert!(check_workspace_ws_auth(&dev_only, Some(secret), secret).is_err());
         // "null" is REFUSED. It is the opaque origin of every sandboxed frame,
         // including the agent-authored figures this app renders in its artifact
         // side panel (a srcDoc iframe carrying `sandbox="allow-scripts
@@ -354,6 +395,65 @@ mod tests {
             check_workspace_ws_auth(&upgrade(None, None), Some("test-secreT"), secret).is_err()
         );
         assert!(check_workspace_ws_auth(&upgrade(None, None), Some("test-secre"), secret).is_err());
+    }
+
+    /// An upgrade as the real handler sees one: parsed off headers, so the
+    /// reading of a malformed `Origin` is the reading under test rather than one
+    /// a test helper chose.
+    fn upgrade_from(origin: Option<&[u8]>, host: &str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        if let Some(origin) = origin {
+            headers.insert(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_bytes(origin).unwrap(),
+            );
+        }
+        headers.insert(axum::http::header::HOST, host.parse().unwrap());
+        headers
+    }
+
+    /// **Finding 1.** `file://` is matched by NAME, so it must be admitted only
+    /// where a launcher declared a renderer that presents it.
+    ///
+    /// Nothing here asks whether Electron launched this daemon, `routes::configure`
+    /// mounts these routes on all of them, and `/ui/workspace` is one of only two
+    /// paths exempt from `check_token` — so on a `biorouter serve` host the origin
+    /// test plus the `?secret=` query token were the whole authority, and a local
+    /// `.html` opened in Chromium presents exactly this origin.
+    #[test]
+    fn the_electron_file_origin_is_refused_where_no_renderer_was_declared() {
+        let secret = "test-secret";
+        let daemon = Some("127.0.0.1:9380");
+        assert!(
+            check_workspace_ws_auth(&upgrade(Some("file://"), daemon), Some(secret), secret)
+                .is_err(),
+            "`file://` must be admitted only where a launcher declared an Electron renderer"
+        );
+    }
+
+    /// **Finding 3.** An `Origin` that was SENT and cannot be read must refuse,
+    /// not degrade into the no-`Origin` case this gate deliberately admits.
+    ///
+    /// Driven through `UpgradeOrigin::from_headers`, because the degradation is in
+    /// that reading: `HeaderValue::to_str` fails and the `Option` it produces is
+    /// indistinguishable from "no browser sent one". `Host` fails closed in the
+    /// same situation, and the two must not disagree. Unreachable from a browser,
+    /// which punycodes hosts — which is the argument for refusing it.
+    #[test]
+    fn an_unreadable_origin_refuses_where_an_absent_one_is_admitted() {
+        let secret = "test-secret";
+        // Valid as a header value (obs-text permits 0x80..=0xFF) and not UTF-8.
+        let unreadable = upgrade_from(Some(b"http://\xff.example"), "127.0.0.1:9380");
+        let unreadable = super::super::UpgradeOrigin::from_headers(&unreadable);
+        assert!(
+            check_workspace_ws_auth(&unreadable, Some(secret), secret).is_err(),
+            "a present-but-unreadable Origin must refuse rather than skip the gate"
+        );
+        // …while nothing sent one stays admitted: that is a client which is not a
+        // browser, and its token is the authority.
+        let absent = upgrade_from(None, "127.0.0.1:9380");
+        let absent = super::super::UpgradeOrigin::from_headers(&absent);
+        assert!(check_workspace_ws_auth(&absent, Some(secret), secret).is_ok());
     }
 
     /// The daemon serves its own interface now (`routes::web_ui`), so a browser
