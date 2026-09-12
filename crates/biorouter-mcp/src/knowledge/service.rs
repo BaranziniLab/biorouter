@@ -3002,6 +3002,30 @@ impl KnowledgeService {
         Ok(staged)
     }
 
+    /// Is a base publication for `id` staged under this root **right now**?
+    ///
+    /// A base is built in a sibling directory (`.creating-<id>-<uuid>`, or
+    /// `.importing-…`) and moved into place with one rename, so `<root>/<id>`
+    /// appears only at the very END of the transaction. The two observables
+    /// therefore say opposite things, and mistaking one for the other is easy:
+    ///
+    /// * `paths::kb_root(root, id).exists()` — the publication has **finished**
+    ///   and the base is installed.
+    /// * `publication_in_progress(id)` — a publication holds the root lock
+    ///   right now and the base is **not installed yet**.
+    ///
+    /// This is the one a concurrent caller can wait on to be *inside* another
+    /// creation rather than after it, and it deliberately takes no lock: the
+    /// whole point is to observe while somebody else holds it. It costs one
+    /// `read_dir` of the knowledge root and never waits on a subprocess, so
+    /// waiting for it does not become a bet on how long `git init` takes —
+    /// which is what waiting for the installed base is.
+    pub fn publication_in_progress(&self, id: &str) -> bool {
+        self.staged_publication_paths_unlocked()
+            .map(|staged| staged.iter().any(|(staged_id, _)| staged_id == id))
+            .unwrap_or(false)
+    }
+
     fn session_primary_references_unlocked(&self, id: &str) -> Result<bool> {
         let dir = paths::primary_kb_sessions_dir(self.root());
         if !dir.exists() {
@@ -4972,6 +4996,88 @@ mod tests {
         let bases = svc.list_bases().unwrap();
         assert_eq!(bases.len(), 1);
         assert_eq!(bases[0].name, "MS Patient Analysis");
+    }
+
+    /// The two observables a concurrent caller can wait on mean OPPOSITE
+    /// things, and a test elsewhere in this repo waited on the wrong one for
+    /// three weeks.
+    ///
+    /// `create_base` builds the base in `.creating-<id>-<uuid>` and publishes
+    /// it with a single rename, so `<root>/<id>` exists only once the whole
+    /// transaction — `git init`, the initial commit, the graph cache, the
+    /// classification stamp, the registry row — is done and the root lock is
+    /// about to be released. A caller that waits for the base *directory* has
+    /// therefore waited for the creation to FINISH, and anything it does next
+    /// runs after the window, not inside it.
+    /// `KnowledgeService::publication_in_progress` is the marker that means
+    /// inside, and it is true from the first write of the transaction.
+    ///
+    /// Both halves are asserted from within the transaction itself, through the
+    /// creation's own checkpoints, because that is the only place the claim is
+    /// observable.
+    #[test]
+    fn a_creation_is_visible_as_staged_long_before_its_base_directory_exists() {
+        let (_dir, svc) = svc();
+        let kb_root = paths::kb_root(svc.root(), "midflight");
+        let mut seen: Vec<(CreateCheckpoint, bool, bool)> = Vec::new();
+        svc.create_base_as_with_checkpoint(
+            CreateBaseSpec {
+                id: "midflight",
+                name: "midflight",
+                color: None,
+                format: KbFormat::default(),
+            },
+            false,
+            &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+            |checkpoint| {
+                seen.push((
+                    checkpoint,
+                    svc.publication_in_progress("midflight"),
+                    kb_root.exists(),
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let before_publication = [
+            CreateCheckpoint::Files,
+            CreateCheckpoint::Repository,
+            CreateCheckpoint::GraphCache,
+            CreateCheckpoint::Classification,
+            CreateCheckpoint::Registry,
+        ];
+        for checkpoint in before_publication {
+            let (_, staged, installed) = seen
+                .iter()
+                .copied()
+                .find(|(seen, _, _)| *seen == checkpoint)
+                .unwrap_or_else(|| panic!("the creation must reach {checkpoint:?}"));
+            assert!(
+                staged,
+                "at {checkpoint:?} the creation holds the root lock and must read as staged, \
+                 or nothing can wait for the window it is in"
+            );
+            assert!(
+                !installed,
+                "at {checkpoint:?} the base directory must NOT exist yet — a caller waiting for \
+                 it would be waiting for this whole transaction to finish, subprocesses included"
+            );
+        }
+
+        let (_, staged, installed) = seen
+            .iter()
+            .copied()
+            .find(|(seen, _, _)| *seen == CreateCheckpoint::Published)
+            .expect("the creation must reach Published");
+        assert!(!staged, "publication consumes the staging directory");
+        assert!(
+            installed,
+            "publication is what makes the base directory exist"
+        );
+
+        assert!(!svc.publication_in_progress("midflight"));
+        assert!(kb_root.exists());
     }
 
     // -----------------------------------------------------------------------

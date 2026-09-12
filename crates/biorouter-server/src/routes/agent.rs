@@ -6032,12 +6032,41 @@ mod knowledge_selection_tests {
     /// so a base created in that window was in nobody's hidden list and joined
     /// a workflow session the workflow had never mentioned.
     ///
-    /// The race is staged deterministically: the creator takes the root lock
-    /// first (`create_base` holds it for the whole git init), and the apply
-    /// starts a few ms later. `list_bases` takes no lock, so the old code read
-    /// its inventory straight through the creator's lock and missed `gamma`;
-    /// the locked write blocks until the base is fully installed and then hides
-    /// it like any other undeclared base.
+    /// The race is staged on an OBSERVABLE, never on the clock, and the
+    /// observable has to be the right one. `create_base` builds the base in
+    /// `.creating-<id>-<uuid>` and publishes it with a single rename, so the
+    /// base's own directory appears only at the END of the transaction —
+    /// `KnowledgeService::publication_in_progress` is what means "the creator
+    /// holds the root lock and the base is not installed yet", which is the
+    /// window the apply must survive. Listing the bases takes no lock, so the
+    /// old code read its inventory straight through the creator's lock and
+    /// missed the new base; the locked write blocks until it is fully installed
+    /// and then hides it like any other undeclared base.
+    ///
+    /// ⚠ Both previous stagings were wrong, in opposite directions, and the
+    /// second looked like a fix for the first:
+    ///
+    /// * A fixed 10 ms sleep staged the window correctly but bet the creator
+    ///   thread would be scheduled within it, which it is not on a loaded
+    ///   Windows runner.
+    /// * Waiting for the base DIRECTORY to exist waits for the publishing
+    ///   rename — i.e. for the creation to *finish*. That un-staged the race
+    ///   entirely (with the base already installed, the buggy unlocked
+    ///   inventory would have seen it too, so the test could no longer fail on
+    ///   the regression it is named for) and made the 5 s budget a bet on
+    ///   `git init` plus a commit plus a graph derive returning in time. It
+    ///   lost that bet on `main` on 2026-09-12 and failed a PR with no Rust
+    ///   changes the same day.
+    ///
+    /// So: no budget on anything legitimate. The stage loop ends when the
+    /// creation becomes observable (proceed) or when the creator thread finishes
+    /// (the window was missed — stage a fresh one, and never assert into an
+    /// unstaged run). Both conditions are events, so being starved for a whole
+    /// second only makes this slower, never red. The one clock left is
+    /// [`WEDGE`]: a creation that neither publishes nor returns is not a slow
+    /// runner, it is a held root lock, and that must be a sentence rather than
+    /// a hung job. `publication_in_progress`'s two halves are pinned in
+    /// `knowledge::service`, from inside the transaction.
     #[test]
     fn applying_a_workflow_hides_a_base_that_lands_mid_call() {
         let dir = tempfile::tempdir().unwrap();
@@ -6057,23 +6086,48 @@ mod knowledge_selection_tests {
             visible: ids(&["alpha"]),
         });
 
-        let creator = {
-            let svc = Arc::clone(&svc);
-            std::thread::spawn(move || svc.create_base("gamma", "gamma", None).unwrap())
-        };
-        // Wait for an observable write that happens only after `create_base`
-        // has taken the root lock. A fixed sleep lost this race on slower
-        // Windows runners: the apply could finish before the creator thread was
-        // scheduled, making `gamma` legitimately visible when it landed later.
-        let gamma_root = biorouter_mcp::knowledge::paths::kb_root(svc.root(), "gamma");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !gamma_root.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the creator must begin writing gamma while the test is waiting"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
+        // Not a race budget: 100x the slowest whole `create_base` anyone has
+        // measured, and only reachable when the creation can neither finish nor
+        // publish — i.e. something else is holding the knowledge root lock.
+        const WEDGE: std::time::Duration = std::time::Duration::from_secs(600);
+
+        let mut staged = None;
+        for attempt in 0..8 {
+            let id = format!("gamma{attempt}");
+            let creator = {
+                let svc = Arc::clone(&svc);
+                let id = id.clone();
+                std::thread::spawn(move || svc.create_base(&id, &id, None).unwrap())
+            };
+            let wedged_at = std::time::Instant::now() + WEDGE;
+            let mut inside = false;
+            while !creator.is_finished() {
+                if svc.publication_in_progress(&id) {
+                    inside = true;
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < wedged_at,
+                    "creating {id} neither published nor returned in {WEDGE:?}: the knowledge \
+                     root lock is held by something that is not this creation"
+                );
+                std::thread::yield_now();
+            }
+            if inside {
+                staged = Some(creator);
+                break;
+            }
+            // The whole creation landed before this thread looked even once.
+            // Nothing is asserted against that run: it would be the vacuous
+            // pass this staging exists to stop. Its base stays installed and
+            // undeclared, so the assertion below covers it too.
+            creator.join().unwrap();
         }
+        let creator = staged.expect(
+            "every creation finished before the test could observe it mid-flight, so the \
+             mid-call window was never staged",
+        );
+
         apply_workflow_knowledge_selection(&svc, "s1", &workflow).unwrap();
         creator.join().unwrap();
 
