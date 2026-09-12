@@ -78,6 +78,27 @@ describe("BaseChat — a subagent's composer in a browser", () => {
     );
   });
 
+  it('withholds the two writes a read-only tab can still make', () => {
+    // The PR author's own follow-up. Neither is reachable from the composer, so
+    // removing the composer never closed them.
+    //
+    // 5.1 — an elicitation card lives INSIDE the transcript and posts `/reply`.
+    // `BioRouterMessage` renders the form only when handed a submit callback.
+    const list = /<ProgressiveMessageList\b[\s\S]*?\/>/.exec(source);
+    expect(list, 'BaseChat no longer renders ProgressiveMessageList').not.toBeNull();
+    expect(list![0]).toMatch(
+      /submitElicitationResponse=\{\s*subagentTabReadOnly \? undefined : submitElicitationResponse\s*\}/
+    );
+    // 5.2 — artifact auto-repair feeds a broken figure back to the child on a
+    // render error, with no click at all. `ArtifactViewer` installs the
+    // postMessage listener only when handed the callback.
+    const viewer = /<ArtifactViewer\b[\s\S]*?\/>/.exec(source);
+    expect(viewer, 'BaseChat no longer renders ArtifactViewer').not.toBeNull();
+    expect(viewer![0]).toMatch(
+      /onRenderError=\{subagentTabReadOnly \? undefined : handleArtifactRenderError\}/
+    );
+  });
+
   it("tells the transcript's activity nudge that this tab cannot stop the turn", () => {
     // With the composer gone, "You can stop the turn from the composer" would
     // send the reader to a control that is not there.

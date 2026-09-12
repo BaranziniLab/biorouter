@@ -298,6 +298,15 @@ the two states that could turn withholding into a lockout are resolved deliberat
 session id yet (the empty tab before a first message) and a chat the store could not load at all
 both count as "not a subagent".
 
+**Two writes the missing composer never reached**, both inside the transcript rather than under it,
+and so both still live on a read-only tab until they were withheld by the same flag: an
+**elicitation card**, which posts its answer through `/reply` exactly as the composer does, and
+**artifact auto-repair**, which needs no click at all — a figure that fails to render is the
+trigger, and `shouldAutoRepairArtifact` is satisfied by a subagent's chat because that chat really
+is live. Both are withheld by passing no callback, which is how the read-only transcript surfaces
+already withhold them: `BioRouterMessage` renders the elicitation form only when handed a submit
+callback, and `ArtifactViewer` installs its `postMessage` listener only when handed `onRenderError`.
+
 **Why.** SD-1 already required that *"the interface must explain the refusal rather than appear
 broken"*, and stated it about the model picker. The same argument covers every proof-backed
 control, and an approval card is the worst case: three buttons that look live, a bare 403 on

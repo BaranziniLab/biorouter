@@ -2518,7 +2518,18 @@ function BaseChatContent({
                               canStopTurn={!subagentTabReadOnly}
                               onRenderingComplete={handleRenderingComplete}
                               onMessageUpdate={onMessageUpdate}
-                              submitElicitationResponse={submitElicitationResponse}
+                              // Finding 5.1 (the PR author's own follow-up).
+                              // `ElicitationRequest` posts its answer through
+                              // `/reply` — the same write the composer makes —
+                              // and it lives INSIDE the transcript, so removing
+                              // the composer never reached it.
+                              // `BioRouterMessage` renders the form only when it
+                              // is handed a submit callback, so withholding the
+                              // callback withholds the control rather than
+                              // leaving a Submit that 403s.
+                              submitElicitationResponse={
+                                subagentTabReadOnly ? undefined : submitElicitationResponse
+                              }
                               onOpenArtifact={handleOpenArtifact}
                               onRunInTerminal={handleRunInTerminal}
                               workingDir={sessionWorkingDir}
@@ -2608,7 +2619,16 @@ function BaseChatContent({
               // Chat-only, and the reason the panel's repair listener exists at
               // all: a read-only transcript passes nothing here, so
               // ArtifactViewer never installs the postMessage listener.
-              onRenderError={handleArtifactRenderError}
+              //
+              // Finding 5.2 (the PR author's own follow-up). A subagent's tab in
+              // a browser is a LIVE chat by every other measure, so
+              // `shouldAutoRepairArtifact` would happily fire inside the child's
+              // running turn and feed the broken figure back to it through
+              // `/reply`. That is the one write the composer's removal could not
+              // reach, because nobody clicks it — a figure failing to render is
+              // the trigger. Same instrument as the read-only transcripts: pass
+              // nothing, and the listener is never installed.
+              onRenderError={subagentTabReadOnly ? undefined : handleArtifactRenderError}
               onLiveBrowserShareChange={setLiveBrowserShare}
               onFilePreviewRevisionChange={setFilePreviewRevision}
               refreshRevision={artifactRefreshRevision}
