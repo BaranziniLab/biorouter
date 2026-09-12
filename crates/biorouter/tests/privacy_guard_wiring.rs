@@ -331,15 +331,18 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
-                counts: c(1, 6, 0),
+                counts: c(1, 7, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /knowledge/bases/{id}/ingest-conversation`, one call inside the \
                        loop over the chats the request names, before any transcript is read: \
                        the route streams what a model makes of those chats back to its caller, \
                        and a caller holding only the daemon secret could name a private model \
-                       (QA 2026-09-10 H2). The other five refs are the MODULE qualifier on \
-                       `session_reach::gate_knowledge_base`, `http_caller` (three handlers) and \
-                       `HttpCaller` — names that live beside the gate, not the gate",
+                       (QA 2026-09-10 H2). The other seven refs are the MODULE qualifier on \
+                       `session_reach::gate_knowledge_base`, `http_caller` (FOUR handlers \
+                       since the adversarial review of 2026-09-12 gated `POST \
+                       /knowledge/bases`) and `HttpCaller` — names that live beside the gate, \
+                       not the gate. `calls` is unmoved: the create gate asks \
+                       `mints_knowledge_base`, its own row below, not this function",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/mod.rs",
@@ -458,13 +461,18 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(3, 0, 0),
+            counts: c(4, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach` itself, which is this predicate plus the two lookups that \
                    feed it; and since QA's 2026-09-10 sweep `HttpCaller::lists_session` (a \
                    listing is the rows this decision admits, one at a time) and \
                    `HttpCaller::reach_knowledge_base` (the same decision with a knowledge \
-                   base as the target). ONE decision, three subjects: a second spelling of it \
+                   base as the target). The fourth, from the adversarial review of \
+                   2026-09-12, is `HttpCaller::mints_knowledge_base`: whether a caller may \
+                   TAKE a base id, asked at `TargetTier::Unreadable` and without the id, \
+                   because create refuses one that is taken and an answer that varied with \
+                   the id would say which private bases exist. ONE decision, four subjects: a \
+                   second spelling of it \
                    is what this census exists to stop",
         }],
     },
@@ -478,11 +486,13 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
-                counts: c(3, 0, 0),
+                counts: c(4, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /knowledge/bases` (a private base omitted from a caller that \
-                       cannot open it) and both halves of `/knowledge/active` (the selection \
-                       filtered, and a write unable to move what its caller cannot see)",
+                       cannot open it), both halves of `/knowledge/active` (the selection \
+                       filtered, and a write unable to move what its caller cannot see), and \
+                       `POST /knowledge/bases` — which refused a taken id and so answered \
+                       whether a PRIVATE base held it (adversarial review 2026-09-12)",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
@@ -528,13 +538,32 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
-                counts: c(3, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`GET /sessions`, and `GET /sessions/sidebar` twice: once to take the \
-                       one-query fast path for a caller shown every row, once per row of the \
-                       scan that pages a filtered view without ragged pages or a count oracle",
+                what: "`GET /sessions`, filtered row by row, and `GET /sessions/sidebar` ONCE \
+                       — it now asks whether this caller is shown private chats and hands the \
+                       answer to SQL as a predicate. It used to ask per row of a scan over the \
+                       unfiltered ordering and resume from the position it reached, which made \
+                       the continuation value a count of the rows it hid (adversarial review \
+                       2026-09-12)",
             },
         ],
+    },
+    Guard {
+        ident: "mints_knowledge_base",
+        defined_in: SESSION_REACH,
+        decides: "whether a caller may take a knowledge-base id at all — asked WITHOUT the id, \
+                  because create refuses one that is taken and an answer that varied with the id \
+                  would say which private bases exist",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/knowledge.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`POST /knowledge/bases`, before `create_base_in` reads the id — which used \
+                   to answer a guessed private id with `400 … already exists at <absolute \
+                   path>` to a caller holding nothing but the daemon secret",
+        }],
     },
     Guard {
         ident: "reach_knowledge_base",

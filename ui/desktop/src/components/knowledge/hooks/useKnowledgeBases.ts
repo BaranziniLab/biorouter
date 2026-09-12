@@ -15,6 +15,13 @@ export function useKnowledgeBases() {
    * that has no opinion still gets the daemon's default rather than the
    * renderer asserting one on its behalf — `CreateBaseBody.format` is
    * `Option<KbFormat>` on the wire for exactly that reason.
+   *
+   * ⚠ **With the user's proof, like `remove` below.** Since the adversarial
+   * review of 2026-09-12, `POST /knowledge/bases` is gated like every other
+   * base-naming route: it refuses a taken id, and answering that for a private
+   * base told a caller holding only the daemon secret which private bases
+   * exist. A request that forgot the header is refused outright rather than
+   * degraded, so this is not optional.
    */
   const create = useCallback(
     async (
@@ -24,6 +31,7 @@ export function useKnowledgeBases() {
     ): Promise<Manifest | undefined> => {
       const res = await apiCreate({
         throwOnError: true,
+        headers: await userActionHeaders(),
         body: {
           id,
           name,

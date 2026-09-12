@@ -2000,6 +2000,9 @@
           },
           "400": {
             "description": "Duplicate id, invalid id, or unknown format"
+          },
+          "403": {
+            "description": "This caller may not mint a knowledge-base id: it is a public model and the request carried no proof it came from the person at the keyboard. The same answer for every id, taken or free, so that creating is not a way to ask which private bases exist (body = plain text)"
           }
         }
       }
@@ -4099,15 +4102,13 @@
             }
           },
           {
-            "name": "offset",
+            "name": "cursor",
             "in": "query",
-            "description": "Number of session summaries to skip",
+            "description": "The previous page's `next_cursor`, passed back unchanged. Omit for the first page; an unrecognised value is answered 400",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "int32",
-              "nullable": true,
-              "minimum": 0
+              "type": "string",
+              "nullable": true
             }
           },
           {
@@ -4123,7 +4124,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated lightweight session summaries for the sidebar, holding only the sessions this caller could open (see `GET /sessions`). `next_offset` is where the next page starts; for a caller shown every session it is `offset + limit` as before, and for one shown a filtered view it is a position in the underlying ordering, so pass it back as given rather than computing it",
+            "description": "Paginated lightweight session summaries for the sidebar, holding only the sessions this caller could open (see `GET /sessions`). `next_cursor` is an OPAQUE continuation token: pass it back as `cursor` and do not parse it. It is not a position and not a count — it names the last row this page returned, so it says nothing about rows that were filtered out",
             "content": {
               "application/json": {
                 "schema": {
@@ -4131,6 +4132,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "The `cursor` was not one this route issued"
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
@@ -12444,11 +12448,10 @@
           "has_more": {
             "type": "boolean"
           },
-          "next_offset": {
-            "type": "integer",
-            "format": "int32",
-            "nullable": true,
-            "minimum": 0
+          "next_cursor": {
+            "type": "string",
+            "description": "Where the next page resumes — pass it back as `cursor`, unchanged, and do\nnot parse it. `null` when this was the last page.",
+            "nullable": true
           },
           "sessions": {
             "type": "array",

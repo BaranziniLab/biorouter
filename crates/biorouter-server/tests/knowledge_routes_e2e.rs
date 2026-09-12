@@ -15,7 +15,20 @@ use biorouter_mcp::knowledge::{page_fixtures::valid_page, service::KnowledgeServ
 use std::sync::Arc;
 use tower::ServiceExt;
 
+/// Issue #56 / the adversarial review of 2026-09-12: `POST /bases` is gated like
+/// every other base-naming route, because refusing a taken id told a secret-only
+/// caller which PRIVATE ids were taken. So every test here that mints a base
+/// speaks as the person at the keyboard — which is who mints one in the product.
+const TEST_USER_ACTION_KEY: &str = "knowledge-e2e-user-action-key";
+
+fn install_test_user_action_key() {
+    let digest: [u8; 32] =
+        <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
+    biorouter_server::auth::install_user_action_digest(Some(digest));
+}
+
 fn build_app() -> (tempfile::TempDir, axum::Router) {
+    install_test_user_action_key();
     let dir = tempfile::tempdir().unwrap();
     let svc = Arc::new(KnowledgeService::new(dir.path().to_path_buf()));
     let app = biorouter_server::routes::knowledge::router(svc);
@@ -40,6 +53,7 @@ async fn e2e_create_raw_history_graph_export_import() {
             Request::builder()
                 .method("POST")
                 .uri("/bases")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({"id": "e2e", "name": "E2E"})).unwrap(),

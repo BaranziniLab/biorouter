@@ -1829,7 +1829,16 @@ impl KnowledgeService {
         paths::validate_kb_id(id)?;
         let kb_root = paths::kb_root(&self.root, id);
         if kb_root.exists() {
-            anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
+            // ⚠ **No path in this message** (adversarial security review
+            // 2026-09-12, MEDIUM). `POST /knowledge/bases` returns whatever this
+            // says verbatim, and it used to end `… at
+            // /Users/<user>/.config/biorouter/knowledge/<id>` — the machine's
+            // absolute config path, handed to whoever asked. The caller supplied
+            // the id and already knows the root if it is entitled to know
+            // anything here, so the path added nothing but the disclosure. The
+            // route's own gate is what stops an unentitled caller reaching this
+            // line at all; this is the second layer.
+            anyhow::bail!("kb '{id}' already exists");
         }
         let metadata = BasePublicationSnapshot::capture(&self.root)?;
         // #158: this is the guard a user actually hits, and a bare "already
@@ -1840,6 +1849,11 @@ impl KnowledgeService {
         //
         // `registry::register` carries the same distinction for its own callers;
         // this one exists because create refuses here first and never reaches it.
+        //
+        // ⚠ It names the registry FILE and not its absolute path, for the reason
+        // the bail above does: this string is a `POST /knowledge/bases` response
+        // body. The file sits in the knowledge root, which whoever can act on
+        // this message already has.
         if let Some(stale) = registry::load(&self.root)?
             .into_iter()
             .find(|entry| entry.id == id)
@@ -1848,11 +1862,13 @@ impl KnowledgeService {
                 anyhow::bail!("kb-id '{id}' already registered");
             }
             anyhow::bail!(
-                "kb-id '{id}' is registered but its directory is missing ({}). The row is \
-                 stale, which is why this id is neither listed nor creatable. Remove it from \
-                 {} to free the id.",
-                stale.path.display(),
-                registry::registry_path(&self.root).display()
+                "kb-id '{id}' is registered but its directory is missing. The row is stale, \
+                 which is why this id is neither listed nor creatable. Remove the '{id}' entry \
+                 from '{}' in your Biorouter knowledge directory to free the id.",
+                registry::registry_path(&self.root)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "the knowledge registry".to_string()),
             );
         }
         let staged_root = self

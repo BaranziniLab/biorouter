@@ -38,7 +38,7 @@ export default function useSidebarSessions(): SidebarSessionsState {
   const [hasMore, setHasMore] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const sessionsRef = useRef<SessionSummary[]>([]);
-  const nextOffsetRef = useRef(0);
+  const nextCursorRef = useRef<string | null>(null);
   const hasMoreRef = useRef(true);
   const hasLoadedRef = useRef(false);
   const loadingRef = useRef(false);
@@ -46,7 +46,7 @@ export default function useSidebarSessions(): SidebarSessionsState {
   const loadPage = useCallback(async (reset: boolean) => {
     if (loadingRef.current || (!reset && !hasMoreRef.current)) return;
 
-    const offset = reset ? 0 : nextOffsetRef.current;
+    const cursor = reset ? null : nextCursorRef.current;
     loadingRef.current = true;
     setIsLoading(true);
 
@@ -54,7 +54,7 @@ export default function useSidebarSessions(): SidebarSessionsState {
       // With the user's proof: without it the daemon pages a view with every
       // private chat omitted (issue #56, QA 2026-09-10 M1).
       const response = await listSidebarSessions<true>({
-        query: { limit: SIDEBAR_SESSION_PAGE_SIZE, offset },
+        query: { limit: SIDEBAR_SESSION_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
         headers: await userActionHeaders(),
         throwOnError: true,
       });
@@ -65,9 +65,16 @@ export default function useSidebarSessions(): SidebarSessionsState {
 
       sessionsRef.current = mergedSessions;
       setSessions(mergedSessions);
-      nextOffsetRef.current = reset
-        ? mergedSessions.length
-        : (page.next_offset ?? offset + page.sessions.length);
+      // `next_cursor` is opaque and names the last row of the page that
+      // returned it, so — unlike the offset this replaced — it cannot be
+      // recomputed from the list we hold. A refresh re-reads the HEAD of the
+      // list; the tail we already paged through is still held, and the cursor we
+      // already have still points just past it. So a reset keeps it, and only a
+      // list that has none (first load, or one that had reached the end) adopts
+      // the one this page carries.
+      nextCursorRef.current = reset
+        ? (nextCursorRef.current ?? page.next_cursor ?? null)
+        : (page.next_cursor ?? null);
       hasMoreRef.current = pageHasMore;
       hasLoadedRef.current = true;
       setHasMore(pageHasMore);

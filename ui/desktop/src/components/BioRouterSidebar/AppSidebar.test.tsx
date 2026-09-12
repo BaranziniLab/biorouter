@@ -56,7 +56,7 @@ beforeAll(() => {
 beforeEach(() => {
   mocks.listSessions.mockResolvedValue({ data: { sessions: [session] } });
   mocks.listSidebarSessions.mockResolvedValue({
-    data: { sessions: [session], has_more: false, next_offset: null },
+    data: { sessions: [session], has_more: false, next_cursor: null },
   });
 });
 
