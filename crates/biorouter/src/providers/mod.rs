@@ -8,6 +8,8 @@ pub mod azureauth;
 pub mod base;
 #[cfg(feature = "aws-providers")]
 pub mod bedrock;
+#[cfg(all(test, feature = "aws-providers"))]
+mod bedrock_namespace_tests;
 pub mod canonical;
 pub mod claude_code;
 pub mod codex;
@@ -134,11 +136,11 @@ pub(crate) fn is_loopback_host(url: &str) -> bool {
 
 /// The tier of a provider that reaches the UCSF gateway and nothing else.
 ///
-/// Demotion only, never promotion: `versa_azure` shares all three
-/// `AZURE_OPENAI_*` keys with the public `azure_openai` provider, and
-/// `bedrock.rs` sets `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` process-globally, so an
-/// endpoint that is not the gateway means the transcript is going somewhere
-/// this build cannot vouch for.
+/// Demotion only, never promotion: each Versa provider's endpoint is
+/// user-writable config (`VERSA_AZURE_ENDPOINT`, `VERSA_BEDROCK_ENDPOINT`), and
+/// until 2026-09-11 each also read the public card's keys, so an endpoint that
+/// is not the gateway means the transcript is going somewhere this build cannot
+/// vouch for.
 pub(crate) fn ucsf_gateway_tier(endpoint: &str) -> ProviderTier {
     if host_of(endpoint).as_deref() == Some(UCSF_GATEWAY_HOST) {
         ProviderTier::Private
@@ -166,10 +168,8 @@ pub(crate) fn self_hosted_tier(base_url: &str) -> ProviderTier {
 /// ones a test thought to list. A name-keyed table (`versa_* => ucsf`) would
 /// keep claiming the institution for a Versa module repointed at another host,
 /// which `tier()` had already demoted to Public: a private-looking badge on a
-/// public flow. The three `AZURE_OPENAI_*` keys are shared with the public
-/// `azure_openai` provider and `bedrock.rs` sets
-/// `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` process-globally, so that repointing is a
-/// config edit away.
+/// public flow. Each Versa endpoint is user-writable config, so that repointing
+/// is a config edit away.
 pub(crate) fn ucsf_gateway_affiliation(endpoint: &str) -> Option<ModelAffiliation> {
     match ucsf_gateway_tier(endpoint) {
         ProviderTier::Private => Some(*UCSF_AFFILIATION),
