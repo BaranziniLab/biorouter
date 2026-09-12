@@ -1788,6 +1788,116 @@ mod tests {
         assert!(lock_npx_esbuild("esbuild").is_none());
     }
 
+    /// What the kernel can still tell us about a pid that is **not** our child.
+    ///
+    /// `kill(pid, 0)` cannot answer this on its own: it succeeds for a process
+    /// that has already died but has not yet been `wait()`ed by its new parent,
+    /// so a zombie is indistinguishable from a live process.
+    #[cfg(unix)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum DescendantState {
+        /// Reaped: the pid no longer resolves.
+        Gone,
+        /// Dead, but not yet reaped by whoever inherited it. Only Linux can
+        /// name this state (see `zombie_aware_state`), so elsewhere the variant
+        /// is matched but never constructed.
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+        Zombie,
+        /// Still a live process.
+        Alive,
+    }
+
+    /// Pull the state letter out of one `/proc/<pid>/stat` line.
+    ///
+    /// Deliberately compiled on every unix rather than behind the Linux `cfg`
+    /// that uses it, so the only real parsing here is exercised by the macOS
+    /// CI run too -- a `cfg`-gated parser is only ever compiled by the one job
+    /// that can also fail on it.
+    #[cfg(unix)]
+    fn proc_stat_state(stat: &str) -> Option<char> {
+        // `comm` is parenthesised and may itself contain spaces and
+        // parentheses, so the state letter is the first field after the LAST
+        // ')' -- never the third whitespace-separated field.
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .next()?
+            .chars()
+            .next()
+    }
+
+    /// Linux exposes the state letter directly, so a zombie is nameable even
+    /// where nothing ever reaps it -- a container whose pid 1 is not a
+    /// subreaper never turns the orphan below into `Gone`.
+    #[cfg(all(unix, target_os = "linux"))]
+    fn zombie_aware_state(pid: i32) -> DescendantState {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // Z is "zombie", X is "dead": terminated, awaiting a reaper.
+            Ok(stat) => match proc_stat_state(&stat) {
+                Some('Z' | 'X') => DescendantState::Zombie,
+                _ => DescendantState::Alive,
+            },
+            // Reaped between the kill() and this read.
+            Err(_) => DescendantState::Gone,
+        }
+    }
+
+    /// Everywhere else, a pid that still resolves is reported as alive.
+    ///
+    /// macOS reveals a zombie only through `sysctl(KERN_PROC_PID)`'s
+    /// `kinfo_proc`, which the `libc` crate does not expose on Apple targets --
+    /// reading `p_stat` would mean hard-coding a struct offset into a test.
+    /// It buys nothing here, because launchd reaps an orphan in milliseconds,
+    /// so the poll below resolves this to `Gone` long before its deadline.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn zombie_aware_state(_pid: i32) -> DescendantState {
+        DescendantState::Alive
+    }
+
+    #[cfg(unix)]
+    fn descendant_state(pid: i32) -> DescendantState {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return if io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                DescendantState::Gone
+            } else {
+                // EPERM and friends: the pid resolves to something we may not
+                // signal, which still counts as present.
+                DescendantState::Alive
+            };
+        }
+        zombie_aware_state(pid)
+    }
+
+    /// Poll until `pid` stops being a live process, or `deadline` expires.
+    #[cfg(unix)]
+    fn await_descendant_death(pid: i32, deadline: Duration) -> DescendantState {
+        let started = Instant::now();
+        loop {
+            let state = descendant_state(pid);
+            if state != DescendantState::Alive || started.elapsed() >= deadline {
+                return state;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn proc_stat_state_reads_the_letter_after_a_comm_holding_spaces_and_parens() {
+        // The ordinary shape.
+        assert_eq!(
+            proc_stat_state("42 (sleep) Z 1 42 42 0 -1 4194560"),
+            Some('Z')
+        );
+        // A comm may contain both spaces and a ')', which is why the split is
+        // on the LAST ')' and not on whitespace.
+        assert_eq!(proc_stat_state("42 (od) ah) R 1 42 42"), Some('R'));
+        assert_eq!(proc_stat_state("42 (x) X 1"), Some('X'));
+        // Nothing parseable must not be reported as a state.
+        assert_eq!(proc_stat_state("garbage"), None);
+        assert_eq!(proc_stat_state("42 (sleep)"), None);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_timed_out_esbuild_reaps_its_whole_process_group() {
@@ -1808,29 +1918,55 @@ mod tests {
         let entry = dir.path().join("main.ts");
         let out = dir.path().join("app.js");
         std::fs::write(&entry, "const ok = true;").unwrap();
-        let started = Instant::now();
-        let error = run_esbuild_with_timeout(
-            shim.to_str().unwrap(),
-            &[descendant_pid.to_string_lossy().into_owned()],
-            &entry,
-            &out,
-            Duration::from_secs(1),
-        )
-        .expect_err("the hung compiler must time out");
+        // Under load the shim can be killed before it reaches its
+        // `echo "$!" > "$pidfile"`, leaving that file absent or truncated. Such
+        // an attempt established no descendant at all, so it proves nothing in
+        // either direction -- it is a harness miss, not a reaper failure. Retry
+        // it instead of reading a pid that was never written.
+        const ATTEMPTS: usize = 5;
+        let mut descendant = None;
+        for _ in 0..ATTEMPTS {
+            let _ = std::fs::remove_file(&descendant_pid);
+            let started = Instant::now();
+            let error = run_esbuild_with_timeout(
+                shim.to_str().unwrap(),
+                &[descendant_pid.to_string_lossy().into_owned()],
+                &entry,
+                &out,
+                Duration::from_secs(1),
+            )
+            .expect_err("the hung compiler must time out");
 
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(3));
-        let pid: i32 = std::fs::read_to_string(descendant_pid)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_ne!(
-            unsafe { libc::kill(pid, 0) },
-            0,
-            "the compiler's descendant survived the timeout"
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(started.elapsed() < Duration::from_secs(3));
+
+            descendant = std::fs::read_to_string(&descendant_pid)
+                .ok()
+                .and_then(|recorded| recorded.trim().parse::<i32>().ok());
+            if descendant.is_some() {
+                break;
+            }
+        }
+        let pid = descendant.unwrap_or_else(|| {
+            panic!(
+                "the shim never recorded a descendant pid in {ATTEMPTS} attempts, so this run \
+                 never observed a process group at all -- a harness failure, not a reaper one"
+            )
+        });
+        // The descendant is a GRANDCHILD: the shim backgrounds `sleep` and
+        // waits on it, so `terminate_esbuild`'s `child.wait()` reaps the shim
+        // and nothing else. The grandchild is re-parented to init/launchd and
+        // stays a zombie until that reaps it -- and `kill(pid, 0)` succeeds for
+        // a zombie, so checking once, here, races the reaper. Poll for the pid
+        // to actually stop being a live process instead.
+        const DEADLINE: Duration = Duration::from_secs(2);
+        let state = await_descendant_death(pid, DEADLINE);
+        assert!(
+            matches!(state, DescendantState::Gone | DescendantState::Zombie),
+            "the compiler's descendant (pid {pid}) was still {state:?} {DEADLINE:?} after \
+             terminate_esbuild returned; the SIGKILL to the process group must leave it \
+             dead (Zombie, awaiting its new parent's wait) or reaped (Gone)"
         );
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 
     #[test]
