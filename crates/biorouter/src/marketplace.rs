@@ -1229,8 +1229,8 @@ mod tests {
                 .len();
             assert!(
                 now <= 8,
-                "`{query}` returned {now} of {shelf}; it returned {was} before the infix rule \
-                 required half the word"
+                "`{query}` returned {now} of {shelf}; it returned {was} before an unanchored \
+                 match had to be four characters or half its word"
             );
         }
 
