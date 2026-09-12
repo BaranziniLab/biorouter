@@ -3661,6 +3661,7 @@ mod bypass_tests {
     /// scanner that reads prose as code is the failure mode `privacy_guard_wiring`
     /// was written to avoid; the same applies here. Nothing in these bodies puts
     /// `//` inside a string literal, which is the case this does not handle.
+    #[allow(clippy::string_slice)] // every index comes from `find`: a char boundary
     fn top_level_fn_body(source: &str, signature: &str) -> String {
         let start = source
             .find(signature)
@@ -3685,6 +3686,7 @@ mod bypass_tests {
 
     /// Every `.route("<path>", <verbs>)` in a router-builder body, as
     /// `(path, methods)`.
+    #[allow(clippy::string_slice)] // every index comes from `find`: a char boundary
     fn registered_routes(body: &str) -> Vec<(String, Vec<String>)> {
         body.split(".route(")
             .skip(1)

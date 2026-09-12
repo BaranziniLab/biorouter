@@ -1812,6 +1812,47 @@ impl KnowledgeService {
         )
     }
 
+    /// Refuse an id the registry already holds, distinguishing a live row from an
+    /// **orphan** one.
+    ///
+    /// #158: a bare "already registered" is a dead end when the directory is gone
+    /// — `kb_list_bases` does not show the base, so the id can be neither seen,
+    /// read, deleted nor re-created. Naming the stale row gives the refusal
+    /// somewhere to point. (`registry::register` carries the same distinction for
+    /// its own callers; this exists because create refuses here first and never
+    /// reaches it.)
+    ///
+    /// ⚠ **It names the registry FILE, not its absolute path** (adversarial
+    /// security review 2026-09-12, MEDIUM), for the same reason the
+    /// already-exists bail alongside it stopped naming one: this string is a
+    /// `POST /knowledge/bases` response body. The file sits in the knowledge
+    /// root, which whoever can act on the message already has.
+    ///
+    /// Lifted out of [`Self::create_base_as_with_checkpoint`] rather than left
+    /// inline: spelling the message this carefully pushed that function past
+    /// `clippy::too_many_lines`, and a self-contained refusal is the part of it
+    /// that was never about creating anything.
+    fn refuse_if_the_id_is_registered(&self, id: &str) -> Result<()> {
+        let Some(stale) = registry::load(&self.root)?
+            .into_iter()
+            .find(|entry| entry.id == id)
+        else {
+            return Ok(());
+        };
+        if stale.path.exists() {
+            anyhow::bail!("kb-id '{id}' already registered");
+        }
+        anyhow::bail!(
+            "kb-id '{id}' is registered but its directory is missing. The row is stale, \
+             which is why this id is neither listed nor creatable. Remove the '{id}' entry \
+             from '{}' in your Biorouter knowledge directory to free the id.",
+            registry::registry_path(&self.root)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "the knowledge registry".to_string()),
+        );
+    }
+
     fn create_base_as_with_checkpoint(
         &self,
         spec: CreateBaseSpec<'_>,
@@ -1841,36 +1882,7 @@ impl KnowledgeService {
             anyhow::bail!("kb '{id}' already exists");
         }
         let metadata = BasePublicationSnapshot::capture(&self.root)?;
-        // #158: this is the guard a user actually hits, and a bare "already
-        // registered" is a dead end when the row is an ORPHAN — the directory is
-        // gone (checked immediately above), so `kb_list_bases` does not show the
-        // base and the id can be neither seen, read, deleted nor re-created.
-        // Name the stale row and where it lives so the refusal points somewhere.
-        //
-        // `registry::register` carries the same distinction for its own callers;
-        // this one exists because create refuses here first and never reaches it.
-        //
-        // ⚠ It names the registry FILE and not its absolute path, for the reason
-        // the bail above does: this string is a `POST /knowledge/bases` response
-        // body. The file sits in the knowledge root, which whoever can act on
-        // this message already has.
-        if let Some(stale) = registry::load(&self.root)?
-            .into_iter()
-            .find(|entry| entry.id == id)
-        {
-            if stale.path.exists() {
-                anyhow::bail!("kb-id '{id}' already registered");
-            }
-            anyhow::bail!(
-                "kb-id '{id}' is registered but its directory is missing. The row is stale, \
-                 which is why this id is neither listed nor creatable. Remove the '{id}' entry \
-                 from '{}' in your Biorouter knowledge directory to free the id.",
-                registry::registry_path(&self.root)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "the knowledge registry".to_string()),
-            );
-        }
+        self.refuse_if_the_id_is_registered(id)?;
         let staged_root = self
             .root
             .join(format!(".creating-{id}-{}", uuid::Uuid::new_v4()));
