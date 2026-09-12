@@ -107,7 +107,7 @@ Inspectors do not vote. Their decisions merge toward greater restriction: deny o
 
 **Approval identity.** The approval request is registered before the UI event and keyed by request ID. The card carries a risk grade plus a tool-specific preview, command, or diff. One-shot delivery prevents a late answer from approving another call.
 
-> **Secrets have a second boundary.** The extension dispatcher's `SecretGuard` rejects arguments that directly name known credential files such as `.env`, private keys, and cloud credential stores, regardless of extension.
+> **Secrets have a second boundary.** The extension dispatcher's `SecretGuard` rejects arguments that reach known credential files such as `.env`, private keys, and cloud credential stores — read the way the shell will read them, so `~`, variables, globs and `cd` are resolved first, and refused whether or not the file exists — regardless of extension. Credential values that still appear in a tool's output are withheld before any model sees them. See [secret guard](../security/secret-guard.md).
 
 Primary implementation: `crates/biorouter/src/tool_inspection.rs`, `crates/biorouter/src/permission/`, `crates/biorouter/src/security/`, `crates/biorouter/src/hooks/inspector.rs`, `crates/biorouter/src/tool_monitor.rs`
 

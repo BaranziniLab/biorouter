@@ -330,6 +330,29 @@ what did not" section first**; the rest of that document is the design, not the 
   held in place by repo-grep assertions — if you add a second call site for `raise_privacy`, `floor`
   or `.call_tool(`, a test will tell you, and the right fix is usually not to update the count.
 
+### Secret guard (BR-23, rebuilt for QA-C H1)
+
+The always-on floor that keeps credential files (`~/.aws/credentials`, SSH private keys,
+`secrets.yaml`, `.env`) away from the model in every chat, mode and tier. Reference:
+[`docs/security/secret-guard.md`](docs/security/secret-guard.md).
+
+- **Arguments are judged after resolution, never as raw tokens.** `crates/biorouter-mcp/src/secret_guard/`
+  (`lex` → `expand` → `resolve`) reads a command the way the shell will — `~`, `$VAR`, globs
+  against the real directory, `cd`/`pushd`, nested `sh -c`/`eval`/here-documents, symlinks,
+  case folded — and is shared by the dispatch scan (`secret_guard_denial`), `developer__shell`
+  (`validate_shell_command`, resolved from the directory the command really runs in) and
+  Computer Controller (`refuse_secret_access`).
+- ⚠ **Fail closed: a match is a refusal whether or not the file exists.** The old `exists()` gate
+  was asked of the *unexpanded* token, which is exactly how `cat ~/.aws/credentials` reached a
+  public model. Do not restore it to quiet a false positive — the refusal message and a
+  `.biorouterignore` negation are the escape hatch.
+- **Output is scanned too.** `guardrails/secret_output.rs` withholds private keys, AWS keys and
+  provider-store values from every tool result and error inside `dispatch_tool_call`'s future —
+  the one place the coding-agent bridge's results pass (they skip `guard_tool_result`).
+- **Tests:** `cargo test -p biorouter-mcp --lib -- secret_guard h1_` and
+  `cargo test -p biorouter --lib -- secret_output extension_manager`. The H1 tables use a fake
+  HOME; never point a test at the operator's real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
+
 ### Knowledge feature
 
 The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-buildout/*`) provides personal, LLM-maintained knowledge bases backed by markdown trees + git history.
@@ -338,7 +361,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 - **HTTP routes:** `crates/biorouter-server/src/routes/knowledge.rs` covers `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`, `/preview`, `/restore`, `/page`, `/active`, `/export`, `/import`.
 - **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). The chat-side KB chip lives at `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`.
 - **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`.
-- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
+- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted — and the two repairs differ (D2): hiding *promotes* to the first remaining base, deleting *clears* every pointer that named the base to that explicit blank, and a chat that only inherited the pointer is left inheriting. A blank `.active-kb` after a delete is the repair, not its absence. ⚠ The renderer adopts these repairs by re-reading; it never writes one (no `clear_primary` after a delete, no prune against its own base list), and every selection read from the desktop carries `userActionHeaders()`, because the gate refuses a private chat's selection without it. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
 
 When working on the Knowledge feature:
@@ -483,6 +506,13 @@ compliance page is required reading before research data goes near either.
   (`routes/coding_agents.rs`) backs the onboarding card
   `onboarding/CodingAgentInlineCard.tsx`, wired beside `LlamaServerInlineCard` in
   `ProviderGuard.tsx`. `CLAUDE_CODE_COMMAND` / `CODEX_COMMAND` override discovery.
+- **"Configured" means the key is saved AND the CLI resolves.** `check_provider_configured`
+  (`routes/utils.rs`) asks `discovery::resolve_configured` — the lookup the status probe
+  uses — so a command key naming a missing CLI is served `is_configured: false` with
+  `unavailable_reason`, and `SwitchModelModal` shows that row disabled with the reason rather
+  than offering a bind `from_env` would refuse. Sign-in is deliberately NOT part of it: learning
+  it spawns the CLI, and `GET /config/providers` runs for every provider. See
+  [`docs/desktop-ui/provider-catalog.md`](docs/desktop-ui/provider-catalog.md).
 - **Tests:** `cargo test -p biorouter --lib providers::coding_agent`,
   `cargo test -p biorouter-server --test tool_bridge_routes`, and the vitest
   suite for the onboarding card. The live end-to-end tests need the real vendor

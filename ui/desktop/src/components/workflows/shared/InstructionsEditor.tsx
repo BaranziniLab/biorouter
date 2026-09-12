@@ -65,7 +65,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
     <Dialog open={isOpen} onOpenChange={(open) => !open && handleCancel()}>
       <DialogContent className="flex max-h-[90vh] w-[900px] max-w-[90vw] flex-col overflow-hidden sm:max-w-[90vw] lg:max-w-[900px]">
         <div className="mb-4 pr-8">
-          <DialogTitle>Instructions Editor</DialogTitle>
+          <DialogTitle>Instructions editor</DialogTitle>
         </div>
 
         <div className="flex-1 flex flex-col min-h-0">
@@ -79,7 +79,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
                 size="sm"
                 className="text-supporting"
               >
-                Insert Example
+                Insert example
               </Button>
             </div>
             <DialogDescription className="text-supporting text-text-muted mb-3">
@@ -105,7 +105,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
             Cancel
           </Button>
           <Button type="button" onClick={handleSave} variant="default">
-            Save Instructions
+            Save instructions
           </Button>
         </div>
       </DialogContent>

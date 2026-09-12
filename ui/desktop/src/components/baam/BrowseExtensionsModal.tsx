@@ -4,7 +4,7 @@ import { Package } from '../icons/app-icons';
 import { BrxtInstallModal } from '../BrxtInstallModal';
 import {
   loadRegistry,
-  extensionMatches,
+  rankExtensions,
   effectivePrivacy,
   catalogFreshnessLine,
   type BaamRegistry,
@@ -73,9 +73,10 @@ export default function BrowseExtensionsModal({
   const isInstalled = (e: RegistryExtension) =>
     installedNames.has(e.name.toLowerCase()) || installedNames.has(e.id.toLowerCase());
 
+  /** Best match first under a query; registry order when there is none. */
   const filtered = useMemo(() => {
     if (!registry) return [];
-    return registry.extensions.filter((e) => extensionMatches(e, search));
+    return rankExtensions(registry.extensions, search).hits.map((hit) => hit.entry);
   }, [registry, search]);
 
   /**

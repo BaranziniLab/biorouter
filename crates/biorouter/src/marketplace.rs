@@ -8,14 +8,10 @@ use futures::StreamExt;
 use serde::Deserialize;
 use url::Url;
 
+use crate::catalog_search::{rank, CatalogSearch, Weight, EXTENSION_NOISE, SKILL_NOISE};
 use crate::config::paths::Paths;
 use crate::privacy::affiliation::InstitutionId;
 use crate::privacy::{ExtensionAffiliation, ProviderTier};
-
-mod search;
-
-use search::Weight;
-pub use search::{MarketplaceSearch, MarketplaceSearchHit};
 
 pub const REGISTRY_URL: &str = "https://biorouter.ucsf.edu/registry.json";
 const REGISTRY_SOURCE: &str = "https://biorouter.ucsf.edu/baam";
@@ -116,7 +112,7 @@ impl MarketplaceCatalog {
 
     /// Rank the extensions visible to `caller` against a free-text query. How a
     /// query is matched — and why a phrase is a union of its words rather than
-    /// one substring (finding F5) — is documented in `marketplace/search.rs`.
+    /// one substring (finding F5) — is documented in `catalog_search.rs`.
     ///
     /// The caller filter runs FIRST, so an extension hidden from `caller` is
     /// never scored and cannot move, or be counted among, what it is shown.
@@ -124,10 +120,10 @@ impl MarketplaceCatalog {
         &self,
         caller: ProviderTier,
         query: &str,
-    ) -> MarketplaceSearch<'_, MarketplaceExtensionDescriptor> {
-        search::rank(
+    ) -> CatalogSearch<'_, MarketplaceExtensionDescriptor> {
+        rank(
             query,
-            search::EXTENSION_NOISE,
+            EXTENSION_NOISE,
             self.browse_extensions(caller),
             |entry| {
                 let mut fields = vec![
@@ -148,9 +144,9 @@ impl MarketplaceCatalog {
     }
 
     /// Rank every skill against a free-text query, matched as documented in
-    /// `marketplace/search.rs`.
-    pub fn search_skills(&self, query: &str) -> MarketplaceSearch<'_, MarketplaceSkillDescriptor> {
-        search::rank(query, search::SKILL_NOISE, self.skills.values(), |entry| {
+    /// `catalog_search.rs`.
+    pub fn search_skills(&self, query: &str) -> CatalogSearch<'_, MarketplaceSkillDescriptor> {
+        rank(query, SKILL_NOISE, self.skills.values(), |entry| {
             let mut fields = vec![
                 (entry.registry_id.as_str(), Weight::Name),
                 (entry.name.as_str(), Weight::Name),
@@ -956,7 +952,7 @@ mod tests {
         .unwrap()
     }
 
-    fn skill_ids(search: &MarketplaceSearch<'_, MarketplaceSkillDescriptor>) -> Vec<String> {
+    fn skill_ids(search: &CatalogSearch<'_, MarketplaceSkillDescriptor>) -> Vec<String> {
         search
             .hits
             .iter()

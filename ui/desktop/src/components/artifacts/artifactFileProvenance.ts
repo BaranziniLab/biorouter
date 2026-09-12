@@ -33,7 +33,17 @@ export function referencedFilePaths(
   const add = (value: string) => {
     if (!/[\\/]/.test(value) || !looksLikePreviewableFile(value)) return;
     const resolved = resolveFileLink(value, workingDir);
-    if (resolved.kind === 'resolved') paths.add(resolved.path);
+    // A trailing separator is how a DIRECTORY announces itself in prose, and it
+    // must not survive into the path. `/work/out/` and `/work/out` name the same
+    // node, and the artifact list keys on the string — so leaving the slash on
+    // opens the same folder twice under two tabs the moment the assistant writes
+    // it both ways. (Only the absolute branch keeps it; the relative branch is
+    // normalised by the resolver, which is exactly the kind of asymmetry that
+    // makes the duplicate look like a different bug.)
+    //
+    // Safe to strip unconditionally: `looksLikePreviewableFile` has already
+    // rejected a bare root (`/`, `~`, `C:`), so this can never empty the path.
+    if (resolved.kind === 'resolved') paths.add(resolved.path.replace(/(?<=.)[\\/]+$/, ''));
   };
   let prose = text
     .replace(/<info-msg>[\s\S]*?<\/info-msg>/gi, '')

@@ -10756,6 +10756,11 @@
               }
             ],
             "nullable": true
+          },
+          "unavailable_reason": {
+            "type": "string",
+            "description": "Why a provider the user HAS set up cannot run right now: a one-line\nsentence for the model picker to print on the row it disables.\n\nSet only when [`Self::is_configured`] is false for a reason other than a\nmissing key — today, a coding agent whose command key is saved and whose\nCLI does not resolve (see `routes::utils::provider_readiness`). `None` for\nevery usable provider and for every provider that is simply not set up,\nwhich the picker leaves out rather than greys out.\n\n⚠ **Only what can be learned without spawning.** A signed-out CLI is not\nreported here: finding that out means running it, and this route runs\nfor every provider on every settings open.",
+            "nullable": true
           }
         }
       },

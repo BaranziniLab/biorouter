@@ -1,12 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   announceAppModelSelection,
   announceSessionBinding,
   subscribeAppModelSelectionChanges,
   subscribeSessionBindingChanges,
+  type SessionBindingChange,
 } from './sessionBindingSync';
-
-const deliver = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
  * Handoff 04 — a per-chat model switch made in one window has to reach the
@@ -20,9 +19,81 @@ const deliver = () => new Promise((resolve) => setTimeout(resolve, 0));
  * it), and a malformed message from another window is dropped rather than used
  * to patch a row with `undefined`.
  */
+const CHANNEL_NAME = 'biorouter:session-binding';
+
+/**
+ * A well-formed message whose only job is to be delivered LAST.
+ *
+ * ⚠ **`await new Promise((r) => setTimeout(r, 0))` is not a delivery barrier
+ * for a `BroadcastChannel`, and believing it was is what made these two tests
+ * flaky together.** Under vitest's jsdom environment the channel is Node's, so
+ * a message is delivered from the libuv POLL phase while `setTimeout(0)` —
+ * clamped to 1ms — fires from the TIMERS phase, which runs first in a loop
+ * turn. Measured ordering in this environment:
+ *
+ *     sync > microtask > nextTick > setImmediate > DELIVERED > timeout0
+ *
+ * so the tick normally loses to the delivery and the tests normally pass. But
+ * the timer is armed immediately after `postMessage`, and if >=1ms of wall clock
+ * passes before the loop next turns — one descheduled slice on a loaded runner,
+ * one GC pause — the timer is already due and the timers phase fires it AHEAD of
+ * the delivery. The test then asserts on an empty `seen`, the message lands a
+ * moment later, and because the module's listener set is process-global it is
+ * handed to whatever listener the NEXT test has just subscribed. That is the
+ * signature failure: 'delivers a binding another window announced' fails empty
+ * and 'drops a malformed message' fails holding the previous test's `s3`.
+ * Reproduced deterministically by burning 3ms between arming the tick and
+ * awaiting it.
+ *
+ * So wait for delivery itself. One channel is one MessagePort and a port is
+ * FIFO, so a barrier posted after the payloads is delivered after them: its
+ * arrival proves every earlier message has already been processed — including
+ * the malformed ones that are supposed to leave no trace.
+ */
+const BARRIER = {
+  sessionId: '__barrier__',
+  provider: '__barrier__',
+  model: '__barrier__',
+} as const;
+
+/** Resolve once everything already posted on `other` has been delivered. */
+function drain(other: BroadcastChannel): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = subscribeSessionBindingChanges((change) => {
+      if (change.sessionId !== BARRIER.sessionId) return;
+      stop();
+      resolve();
+    });
+    other.postMessage(BARRIER);
+  });
+}
+
+/** Everything a test's listener saw, minus the barrier it is not about. */
+function payloadsOnly(listener: (change: SessionBindingChange) => void) {
+  return (change: SessionBindingChange) => {
+    if (change.sessionId !== BARRIER.sessionId) listener(change);
+  };
+}
+
 describe('sessionBindingSync', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  /**
+   * Belt and braces: every test above drains its own posts, so nothing should
+   * be in flight — but a test that fails an assertion returns early, and a
+   * message that leaked into the next test is the failure this file exists to
+   * stop reproducing. One more barrier round trip guarantees the channel is
+   * quiet before the next test subscribes.
+   */
+  afterEach(async () => {
+    const sweeper = new BroadcastChannel(CHANNEL_NAME);
+    try {
+      await drain(sweeper);
+    } finally {
+      sweeper.close();
+    }
   });
 
   it('calls local listeners synchronously, before the announcement returns', () => {
@@ -61,18 +132,23 @@ describe('sessionBindingSync', () => {
 
   it('delivers a binding another window announced', async () => {
     const seen: string[] = [];
-    const unsubscribe = subscribeSessionBindingChanges((change) =>
-      seen.push(`${change.sessionId}:${change.model}`)
+    const unsubscribe = subscribeSessionBindingChanges(
+      payloadsOnly((change) => seen.push(`${change.sessionId}:${change.model}`))
     );
 
     // A second window, speaking on the same channel.
-    const other = new BroadcastChannel('biorouter:session-binding');
-    other.postMessage({ sessionId: 's3', provider: 'versa_azure', model: 'gpt-5.2-2025-12-11' });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    other.close();
-    unsubscribe();
+    const other = new BroadcastChannel(CHANNEL_NAME);
+    try {
+      other.postMessage({ sessionId: 's3', provider: 'versa_azure', model: 'gpt-5.2-2025-12-11' });
+      await drain(other);
 
-    expect(seen).toEqual(['s3:gpt-5.2-2025-12-11']);
+      expect(seen).toEqual(['s3:gpt-5.2-2025-12-11']);
+    } finally {
+      // In a `finally` so a failed assertion cannot leave a listener subscribed
+      // to a process-global set that the next test also subscribes to.
+      other.close();
+      unsubscribe();
+    }
   });
 
   /**
@@ -83,17 +159,25 @@ describe('sessionBindingSync', () => {
    */
   it('drops a malformed message rather than patching a row from it', async () => {
     const seen: unknown[] = [];
-    const unsubscribe = subscribeSessionBindingChanges((change) => seen.push(change));
+    const unsubscribe = subscribeSessionBindingChanges(payloadsOnly((change) => seen.push(change)));
 
-    const other = new BroadcastChannel('biorouter:session-binding');
-    other.postMessage({ sessionId: 's4' });
-    other.postMessage({ provider: 'versa_azure', model: 'gpt-5.5-2026-04-24' });
-    other.postMessage(null);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    other.close();
-    unsubscribe();
+    const other = new BroadcastChannel(CHANNEL_NAME);
+    try {
+      other.postMessage({ sessionId: 's4' });
+      other.postMessage({ provider: 'versa_azure', model: 'gpt-5.5-2026-04-24' });
+      other.postMessage(null);
+      // The barrier is posted on the SAME channel, after the three malformed
+      // messages, so one FIFO port guarantees they were all processed by the
+      // time it arrives. Without that, an empty `seen` would equally mean
+      // "nothing has been delivered yet" — which is how this assertion used to
+      // pass for the wrong reason and then fail holding another test's payload.
+      await drain(other);
 
-    expect(seen).toEqual([]);
+      expect(seen).toEqual([]);
+    } finally {
+      other.close();
+      unsubscribe();
+    }
   });
 });
 
@@ -147,7 +231,7 @@ describe('sessionBindingSync — the app-wide selection', () => {
 
     const other = new BroadcastChannel('biorouter:session-binding');
     other.postMessage({ kind: 'app-model-selection' });
-    await deliver();
+    await drain(other);
     other.close();
     unsubscribe();
 
@@ -163,7 +247,9 @@ describe('sessionBindingSync — the app-wide selection', () => {
   it('keeps the two facts apart on the one channel', async () => {
     const bindings: unknown[] = [];
     let nudges = 0;
-    const offBinding = subscribeSessionBindingChanges((change) => bindings.push(change));
+    const offBinding = subscribeSessionBindingChanges(
+      payloadsOnly((change) => bindings.push(change))
+    );
     const offSelection = subscribeAppModelSelectionChanges(() => {
       nudges += 1;
     });
@@ -171,7 +257,7 @@ describe('sessionBindingSync — the app-wide selection', () => {
     const other = new BroadcastChannel('biorouter:session-binding');
     other.postMessage({ kind: 'app-model-selection' });
     other.postMessage({ sessionId: 's5', provider: 'codex', model: 'gpt-6-astra' });
-    await deliver();
+    await drain(other);
     other.close();
     offBinding();
     offSelection();
@@ -189,7 +275,7 @@ describe('sessionBindingSync — the app-wide selection', () => {
     const other = new BroadcastChannel('biorouter:session-binding');
     other.postMessage({ kind: 'something-else' });
     other.postMessage('app-model-selection');
-    await deliver();
+    await drain(other);
     other.close();
     unsubscribe();
 

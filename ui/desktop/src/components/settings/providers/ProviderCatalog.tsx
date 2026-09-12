@@ -15,6 +15,7 @@ import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import type { View } from '../../../utils/navigationUtils';
 import {
+  AI_AGENT_PROVIDER_IDS,
   getOrderedProviderGroups,
   type OrderedProviderGroup,
   type OrderedProviderSection,
@@ -250,13 +251,52 @@ export default function ProviderCatalog({
     [handleProviderReady, onCommercialSuccess, refreshProviders]
   );
 
+  const handleAgentConnected = useCallback(
+    (providerId: string) => {
+      // "Use <agent>" has just saved the agent's command key, which is what
+      // makes the daemon report it configured. The picker that opens next reads
+      // the list for itself; the row behind it must not keep the old answer.
+      refreshProviders?.();
+      handleProviderReady(providerId);
+    },
+    [handleProviderReady, refreshProviders]
+  );
+
   /**
    * ⚠ **Mounted once, at the catalog — never per row.** `GET
    * /coding_agents/status` spawns both vendor CLIs, so one probe per agent row
    * would fork four processes on every render of this panel. `useCodingAgents`
    * fetches on mount and on an explicit "Check again" only.
+   *
+   * A re-check also re-reads the provider list. The row's "Configured" check is
+   * `is_configured`, which the daemon only grants a coding agent whose CLI
+   * resolves, so installing (or removing) a CLI and pressing "Check again" moves
+   * the check along with the pill — F6 was those two disagreeing on one line.
    */
-  const agentControls = useCodingAgents(handleProviderReady);
+  const agentControls = useCodingAgents(handleAgentConnected, refreshProviders);
+  const recheckAgents = agentControls.refresh;
+
+  /**
+   * Re-read everything a change to one provider's setup can have changed.
+   *
+   * ⚠ **For a coding agent that is two answers, not one.** Its only config key
+   * names the CLI, so saving it moves the status pill as well as
+   * `is_configured`. Re-reading the list alone is what left the row reading
+   * "Not installed" beside a fresh "✓ Configured" once `CODEX_COMMAND` was
+   * corrected in the configure form — F6's contradiction, reached from the other
+   * side, measured in the running app. The explicit re-check re-reads the list
+   * itself (`onRechecked`), so for an agent it is the one call rather than both.
+   */
+  const refreshAfterSetupChange = useCallback(
+    (providerName: string) => {
+      if (AI_AGENT_PROVIDER_IDS.includes(providerName)) {
+        void recheckAgents(false);
+      } else {
+        refreshProviders?.();
+      }
+    },
+    [recheckAgents, refreshProviders]
+  );
   const agentsByProviderId = useMemo(() => {
     const map = new Map<string, CodingAgentAvailability>();
     for (const agent of agentControls.agents ?? []) map.set(agent.providerId, agent);
@@ -362,18 +402,22 @@ export default function ProviderCatalog({
   }, []);
 
   const onCloseProviderConfig = useCallback(() => {
+    const closed = configuringProvider?.name;
     setConfiguringProvider(null);
-    refreshProviders?.();
-  }, [refreshProviders]);
+    // Closing is not proof nothing changed: a save whose provider check failed
+    // has still written the key before the error dialog appeared.
+    if (closed) refreshAfterSetupChange(closed);
+    else refreshProviders?.();
+  }, [configuringProvider, refreshAfterSetupChange, refreshProviders]);
 
   const onProviderConfigured = useCallback(
     (provider: ProviderDetails) => {
       setConfiguringProvider(null);
-      refreshProviders?.();
+      refreshAfterSetupChange(provider.name);
       setSwitchModelProvider(provider.name);
       setShowSwitchModelModal(true);
     },
-    [refreshProviders]
+    [refreshAfterSetupChange]
   );
 
   const handleSetView = useCallback(

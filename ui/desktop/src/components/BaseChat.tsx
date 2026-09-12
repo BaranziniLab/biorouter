@@ -126,10 +126,36 @@ const HEADER_ACTION_BUTTON_CLASS =
 // The image half of this alternation is generated from `utils/imageFormats`, so
 // adding a format cannot leave prose discovery behind. The non-image half stays
 // a literal: it is a deliberately closed list, not a mirror of another set.
+//
+// Anchors a path may start with — absolute, home-relative, dot-relative, a
+// Windows drive, a UNC share, or a `file://` URI.
+const ARTIFACT_PATH_ANCHOR = String.raw`(?:file://|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|/|\\\\)`;
+// What may follow the path before the sentence resumes.
+const ARTIFACT_PATH_TAIL = String.raw`(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))`;
+const ARTIFACT_PATH_BODY = String.raw`[^\s)\]}\x60"'<>]`;
+// ⚠ **A DIRECTORY is recognised by its trailing slash, and by nothing else.**
+// Four sibling files named in prose were offered as artifacts while the folder
+// holding them was not, because the only shape this matched was `.` plus an
+// extension from the closed list above. Everything downstream already handles a
+// folder — `looksLikePreviewableFile` accepts one, the main process stats the
+// path and answers `kind: 'directory'`, and the panel has `DirectoryTreePreview`
+// — so the whole gap was here, in collection.
+//
+// The temptation is to accept any extensionless path. Do not: `/usr/bin`,
+// `/dev/null` and half the command lines in a transcript are indistinguishable
+// from an extensionless file, and every one of them would become a tab. A
+// trailing slash is what the assistant actually writes when it means a folder,
+// and it is unambiguous.
 const PREVIEWABLE_TEXT_ARTIFACT_RE = new RegExp(
-  String.raw`(?<![^\s(\[{])(?:file://|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|/|\\\\)[^\s)\]}\x60"'<>]+\.(?:` +
+  String.raw`(?<![^\s(\[{])${ARTIFACT_PATH_ANCHOR}(?:` +
+    // A file: named extension, optionally followed by a line/fragment suffix.
+    String.raw`${ARTIFACT_PATH_BODY}+\.(?:` +
     `html?|${imageExtensionAlternation()}|` +
-    String.raw`pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?(?=$|[\s)\]},;]|[.!?](?=$|[\s)\]},;]))`,
+    String.raw`pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?::\d+|#L\d+|%[^\s)\]}\x60"'<>.,!?;]*)?` +
+    // …or a directory, which is any path that ends in a separator. The file
+    // branch is first so `/work/out/plot.png` is never truncated to `/work/out/`.
+    String.raw`|${ARTIFACT_PATH_BODY}*[\\/]` +
+    String.raw`)${ARTIFACT_PATH_TAIL}`,
   'gi'
 );
 

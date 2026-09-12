@@ -100,7 +100,16 @@ impl GitRepo {
     pub fn log(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
         let mut walk = self.inner.revwalk()?;
         walk.push_head()?;
-        walk.set_sorting(git2::Sort::TIME)?;
+        // ⚠ TOPOLOGICAL, not `TIME` alone. Commit times have one-second
+        // resolution and a digest makes several commits inside one second —
+        // `add_raw_source`, the squash commit, a lint autofix — and libgit2's
+        // time sort leaves equal timestamps in no useful order: measured, it
+        // listed HEAD and then the rest of the tie OLDEST first, so the Change
+        // log put a base's `create` above the ingests made after it (QA
+        // 2026-09-10 F13 asked for the log to match `git log`). Topological
+        // order never lists a parent before its child; `TIME` only breaks ties
+        // between branches, which a squash-committed history never has.
+        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         let mut out = Vec::new();
         for oid in walk.flatten().take(limit) {
             let commit = self.inner.find_commit(oid)?;
@@ -773,6 +782,69 @@ mod tests {
         let log = repo.log(10).unwrap();
         assert_eq!(log[0].summary, "two");
         assert_eq!(log[1].summary, "one");
+    }
+
+    /// QA 2026-09-10 F13 asked the history route to match `git log`, and a
+    /// digest is exactly where it did not: `add_raw_source`, the squash commit
+    /// and a lint autofix land within one second, and `Sort::TIME` alone leaves
+    /// commits with EQUAL timestamps in no particular order — measured, it
+    /// listed a base's `create` commit above the two ingests made after it.
+    /// The timestamps here are pinned equal, so the tie is certain rather than
+    /// a matter of how fast this machine commits.
+    #[test]
+    fn log_keeps_commit_order_when_commits_share_a_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        let sig = git2::Signature::new(
+            "Biorouter Knowledge",
+            "knowledge@biorouter.local",
+            &git2::Time::new(1_789_000_000, 0),
+        )
+        .unwrap();
+        let mut expected = Vec::new();
+        for (step, kind) in [
+            ChangeKind::Manual,
+            ChangeKind::Ingest,
+            ChangeKind::Ingest,
+            ChangeKind::Lint,
+            ChangeKind::Restore,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            std::fs::write(dir.path().join(format!("{step}.md")), step.to_string()).unwrap();
+            let mut index = repo.inner.index().unwrap();
+            stage_all(&mut index).unwrap();
+            index.write().unwrap();
+            let tree = repo.inner.find_tree(index.write_tree().unwrap()).unwrap();
+            let parent = repo.inner.head().ok().and_then(|h| h.peel_to_commit().ok());
+            let parents: Vec<&git2::Commit> = parent.iter().collect();
+            let summary = format!("step {step}");
+            let oid = repo
+                .inner
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    &render_message(kind, &summary, None),
+                    &tree,
+                    &parents,
+                )
+                .unwrap();
+            expected.push((oid.to_string(), summary));
+        }
+        expected.reverse();
+
+        let listed: Vec<(String, String)> = repo
+            .log(10)
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.commit_sha, entry.summary))
+            .collect();
+        assert_eq!(
+            listed, expected,
+            "newest first, and never a parent before its child"
+        );
     }
 
     #[test]
