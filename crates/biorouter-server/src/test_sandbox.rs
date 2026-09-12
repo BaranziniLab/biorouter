@@ -120,6 +120,29 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn the_session_database_is_not_the_developers() {
+        // ⚠ `#[serial]` is the WRONG mutex for this assertion, and that cost a red
+        // `main` (`055cb087`, `test (ubuntu-latest)`:
+        // "expected the per-process sandbox, got /tmp/.tmpMnHK86/data").
+        //
+        // `Paths::data_dir()` re-reads `BIOROUTER_PATH_ROOT` on every call, and
+        // this file is `#[path]`-included by
+        // `tests/session_store_survives_a_relocated_path_root.rs`, whose own test
+        // relocates that variable under **`env_lock`** — a different lock from
+        // `serial_test`'s. So the two ran concurrently and this read the
+        // relocator's `TempDir`. Latent since that binary landed; #280 changed how
+        // many sessions the suite creates, which moved the schedule enough to open
+        // the window. A scheduling-dependent assertion, not a
+        // scheduling-dependent product.
+        //
+        // So take the WRITERS' lock — the rule `pinned_path_root` was corrected to
+        // obey — and take it while **setting nothing**. ⚠ Pinning the variable to
+        // `sandbox_root()` here would serialise correctly and make the assertion
+        // VACUOUS: `Paths::data_dir()` reads the same variable, so it would be
+        // asserting the value it had just written. An empty set acquires the mutex
+        // and leaves the ctor's answer in place, which is what is under test.
+        // `sandbox_root()` is derived from `temp_dir()` and the pid, never from the
+        // environment, so comparing against it is not circular either.
+        let _env = env_lock::lock_env(Vec::<(&str, Option<&str>)>::new());
         let data_dir = Paths::data_dir();
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
