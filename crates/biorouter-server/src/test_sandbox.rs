@@ -120,6 +120,30 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn the_session_database_is_not_the_developers() {
+        // ⚠ `#[serial]` is the WRONG mutex for this assertion, and that cost a red
+        // `main` (`055cb087`, `test (ubuntu-latest)`:
+        // "expected the per-process sandbox, got /tmp/.tmpMnHK86/data").
+        //
+        // `Paths::data_dir()` re-reads `BIOROUTER_PATH_ROOT` on every call, and
+        // this file is `#[path]`-included by
+        // `tests/session_store_survives_a_relocated_path_root.rs`, whose own test
+        // relocates that variable under **`env_lock`** — a different lock from
+        // `serial_test`'s. So the two ran concurrently and this read the
+        // relocator's `TempDir`. It was latent from the day the binary was added
+        // and surfaced when #280 changed how many sessions the suite creates,
+        // which moved the schedule: a scheduling-dependent assertion, not a
+        // scheduling-dependent product.
+        //
+        // The rule is the one `pinned_path_root` was fixed to obey the same day:
+        // a reader of a process-global must hold the lock its WRITERS hold, and
+        // must read the value only after taking it. Pinning to the sandbox root
+        // rather than to whatever is there makes the assertion stronger, not
+        // weaker — it asserts the ctor's answer, under the writers' lock.
+        let root = super::sandbox_root();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(root.to_str().expect("the sandbox root is utf-8")),
+        )]);
         let data_dir = Paths::data_dir();
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
