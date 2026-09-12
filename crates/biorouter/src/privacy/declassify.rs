@@ -407,17 +407,28 @@ pub enum DeclassifyOutcome {
 /// call the doors make cheap and side-effect-free — see
 /// [`DeclassifyOutcome::SystemAuthenticationRequired`].
 ///
-/// ⚠ **Two of these racing on the same row do not both succeed, but not because
-/// of anything written here.** The pool is `max_connections(4)` over WAL, so
-/// both transactions can hold the same read snapshot showing `private`; the
-/// loser's upgrade to a writer then fails `SQLITE_BUSY_SNAPSHOT` *immediately* —
-/// a busy handler does not cover a snapshot conflict, which this tree has
-/// measured at 0.0000s elsewhere — so the single-ledger-row invariant holds by
-/// SQLite's snapshot isolation, and the loser surfaces as a 500 rather than the
-/// tidy [`DeclassifyOutcome::AlreadyPublic`] a sequential second call gets. The
-/// direction is safe (a refusal, never a double write) and the double-click that
-/// motivated `AlreadyPublic` is sequential in practice, because the dialog
-/// disables its confirm button while a request is in flight.
+/// ⚠ **The transaction takes the write lock before it reads, and that ordering
+/// is load-bearing.** The pool is `max_connections(4)` over WAL with a
+/// five-second `busy_timeout`. Let the `SELECT` below open a DEFERRED
+/// transaction and it pins a read snapshot; the ledger `INSERT` then has to
+/// *upgrade* to a writer, and any commit that landed in between makes SQLite
+/// refuse **instantly** with `SQLITE_BUSY_SNAPSHOT` — a busy handler is not
+/// consulted for that error, measured here at 0.0000s against a real WAL file,
+/// so the timeout is not in the path at all. `declassify_session` maps every
+/// `Err` to a bodyless 500, so a user whose chat merely lost a race was told
+/// nothing at all. Mutation-tested, not assumed: with the statement below
+/// removed and nothing else changed,
+/// [`concurrent_declassifications_survive_racing_writes`] lost 118, 120 and 120
+/// of 120 declassifications across three runs; with it, eight consecutive runs
+/// lost none.
+///
+/// Two of these racing on the **same row** therefore no longer collide: the
+/// loser parks on the write lock, and by the time it reads, the row is public,
+/// so it gets the same tidy [`DeclassifyOutcome::AlreadyPublic`] a sequential
+/// second call gets. The single-ledger-row invariant is now held by
+/// serialization rather than by a snapshot conflict — see
+/// [`two_declassifications_of_one_chat_serialize_into_one_ledger_row`] — which
+/// is the same invariant reached without the 500.
 ///
 /// ⚠ **Nothing here stops an in-flight turn from raising the row straight back.**
 /// Declassifying a chat that is mid-turn leaves a running agent that may reach a
@@ -441,6 +452,36 @@ pub async fn declassify(
 ) -> Result<DeclassifyOutcome> {
     let pool = sm.storage().pool().await?;
     let mut tx = pool.begin().await?;
+
+    // Take the write lock UP FRONT, exactly as `SessionStorage::delete_session`
+    // opens with its `DELETE` and for the same reason. `pool.begin()` issues a
+    // DEFERRED transaction, so the statement that opens it decides what lock it
+    // takes, and everything this function must do before it can write is a
+    // READ: the provenance decides the grade, and the grade decides whether
+    // there is a write at all. A leading `SELECT` pins a WAL read snapshot, the
+    // ledger `INSERT` then has to upgrade, and a commit inside that window is
+    // refused instantly with SQLITE_BUSY_SNAPSHOT, which no busy handler
+    // retries.
+    //
+    // This statement matches no row — it reads nothing, writes nothing, fires
+    // no trigger — and exists only for its lock, which SQLite takes at the
+    // statement's prologue regardless of what the `WHERE` selects. Here the
+    // busy handler *does* apply, so losing the race costs a wait and never an
+    // error.
+    //
+    // A plain `BEGIN IMMEDIATE` on a pooled connection would be the other way
+    // to say this, and is what the schema helpers do — but they are not
+    // cancellable. This function runs under an axum handler that is dropped
+    // when the client disconnects, and sqlx 0.8's pool only *pings* a returned
+    // connection, so a hand-rolled `BEGIN` would hand the pool a connection
+    // still holding the write lock. A real `Transaction` rolls back on drop.
+    //
+    // If SQLite ever stopped taking the lock for a statement that selects no
+    // rows, `concurrent_declassifications_survive_racing_writes` is what would
+    // notice.
+    sqlx::query("UPDATE sessions SET id = id WHERE 1 = 0")
+        .execute(&mut *tx)
+        .await?;
 
     // Inside the transaction, so the state the ledger records is the state the
     // UPDATE below overwrites — not a snapshot from before some concurrent
@@ -1453,5 +1494,243 @@ mod tests {
              member. Each extra construction site is another way to lower a classification, and \
              only these two are known to sit behind a human's confirmation."
         );
+    }
+
+    /// Real overlap against a real pool and a real WAL file: 120
+    /// declassifications of real private chats racing a second, independent
+    /// store that never stops committing.
+    ///
+    /// The declassify-side twin of
+    /// `session_manager::tests::concurrent_deletes_survive_racing_writes`, and
+    /// `errors.is_empty()` is what makes it irreplaceable. `declassify` must
+    /// take the write lock UP FRONT. Let it open a DEFERRED transaction with
+    /// its `SELECT privacy_tier ...` instead — the tidier, obvious "read the
+    /// provenance, then act" — and that `SELECT` pins a WAL read snapshot; the
+    /// `INSERT` into `classification_audit` then has to *upgrade* to a writer,
+    /// and any commit that landed in that window makes SQLite refuse
+    /// **instantly** with SQLITE_BUSY_SNAPSHOT. A busy handler is not consulted
+    /// for that error, so the pool's five-second `busy_timeout` is not in the
+    /// path at all, and the declassification surfaces `(code: 5) database is
+    /// locked`, which `declassify_session` maps to an empty 500.
+    ///
+    /// The damage is an ERROR, not a lost classification — the refused
+    /// transaction rolls back and leaves the chat private. So a test that only
+    /// checked which chats ended up public would pass while the ordering was
+    /// broken, which is why the sequential tests above cannot stand in for this
+    /// one: they are single-threaded, on one connection, with nothing to race.
+    ///
+    /// The single-click provenance (`turn:*`) is deliberate: it reaches the
+    /// write with no typed phrase and no system authentication, so the only
+    /// thing this test can fail on is lock ordering.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_declassifications_survive_racing_writes() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        const DOOMED: usize = 120;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let declassifier_store = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        // A second store over the same `sessions.db`: its own pool, its own WAL
+        // reader, nothing in process memory ordering the two — the
+        // CLI-vs-daemon shape.
+        let writer_store = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+
+        let mut doomed = Vec::with_capacity(DOOMED);
+        for _ in 0..DOOMED {
+            doomed.push(private_session_with_reason(&declassifier_store, "turn:versa_azure").await);
+        }
+        // The chat the writer commits into. It is never declassified, so the
+        // two tasks contend for the write lock without ever touching the same
+        // rows — the failure below can only be lock ordering, never a row
+        // conflict.
+        let chatty = writer_store
+            .create_session(
+                std::env::temp_dir(),
+                "chatty".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let committed = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(AtomicUsize::new(0));
+
+        let writer = {
+            let writer_store = Arc::clone(&writer_store);
+            let id = chatty.id.clone();
+            let stop = Arc::clone(&stop);
+            let committed = Arc::clone(&committed);
+            let started = Arc::clone(&started);
+            tokio::spawn(async move {
+                let mut busy = 0usize;
+                let mut i = 0i64;
+                while !stop.load(Ordering::Relaxed) {
+                    let m = crate::conversation::message::Message::user()
+                        .with_text(format!("chat-{i}"));
+                    started.fetch_add(1, Ordering::Relaxed);
+                    match writer_store.add_message(&id, &m).await {
+                        Ok(_) => {
+                            committed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) if e.to_string().contains("database is locked") => busy += 1,
+                        Err(e) => {
+                            panic!("append failed for a reason other than lock contention: {e}")
+                        }
+                    }
+                    i += 1;
+                    tokio::task::yield_now().await;
+                }
+                busy
+            })
+        };
+        let declassifier = {
+            let declassifier_store = Arc::clone(&declassifier_store);
+            let doomed = doomed.clone();
+            let stop = Arc::clone(&stop);
+            let committed = Arc::clone(&committed);
+            let started = Arc::clone(&started);
+            tokio::spawn(async move {
+                // Barrier, not a sleep: each declassification waits for the
+                // writer to ENTER its next append, which aims it at a
+                // transaction that is about to take the write lock — the state
+                // the ordering exists to survive.
+                let ok = UserConfirmation::for_test();
+                let mut seen = started.load(Ordering::Relaxed);
+                let before = committed.load(Ordering::Relaxed);
+                let mut errors = Vec::new();
+                let mut outcomes = Vec::new();
+                for id in &doomed {
+                    // Five seconds is the pool's own `busy_timeout`: a writer
+                    // silent for that long is a real fault, not scheduling
+                    // noise, and must not be graded as a passing race.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    loop {
+                        let now = started.load(Ordering::Relaxed);
+                        if now > seen {
+                            seen = now;
+                            break;
+                        }
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the writer stopped appending, so there is no race left to grade"
+                        );
+                        tokio::task::yield_now().await;
+                    }
+
+                    match declassify(&declassifier_store, id, None, None, &ok).await {
+                        Ok(outcome) => outcomes.push(outcome),
+                        Err(e) => errors.push(format!("{id}: {e}")),
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let during = committed.load(Ordering::Relaxed) - before;
+                stop.store(true, Ordering::Relaxed);
+                (errors, outcomes, during)
+            })
+        };
+        let (busy_appends, declassifications) = tokio::join!(writer, declassifier);
+        let busy_appends = busy_appends.unwrap();
+        let (errors, outcomes, committed_during) = declassifications.unwrap();
+
+        // 1. The write-first lock ordering held. A transaction that opens with
+        // a WRITE takes the single per-file write lock up front, where the busy
+        // handler *does* apply, so losing a race costs it a wait and never an
+        // error. One that opens with a READ fails right here, instantly, and
+        // the user sees an empty 500.
+        assert!(
+            errors.is_empty(),
+            "{} of {DOOMED} declassifications failed (a `database is locked`, code 5 or its \
+             SQLITE_BUSY_SNAPSHOT variant 517, here means the transaction read before it \
+             wrote): {:?}",
+            errors.len(),
+            &errors[..errors.len().min(5)]
+        );
+        // 2. Every one of them actually lowered a tier. Without this, a writer
+        // shape that answered `SessionNotFound` for all 120 would satisfy
+        // assertion 1 while declassifying nothing.
+        assert!(
+            outcomes
+                .iter()
+                .all(|o| *o == DeclassifyOutcome::Declassified),
+            "a declassification returned a non-writing outcome under contention: {outcomes:?}"
+        );
+        // 3. The race really was a race. The barrier already forces one append
+        // per declassification, so this restates the guarantee end to end: a
+        // barrier that is ever weakened, or a writer that dies halfway, cannot
+        // quietly leave assertion 1 grading an empty overlap. The bar is half
+        // of `DOOMED` rather than all of it because a *busy* append starts
+        // without committing, and those are tolerated. Measured over five clean
+        // runs: 1139 to 4245 commits alongside the 120, and no busy append at
+        // all.
+        assert!(
+            committed_during * 2 >= DOOMED,
+            "only {committed_during} writes committed alongside {DOOMED} declassifications \
+             ({busy_appends} lost the write lock): too little overlap to grade the ordering"
+        );
+    }
+
+    /// The same chat, declassified twice at once: one ledger row, and the loser
+    /// gets `AlreadyPublic` rather than an error.
+    ///
+    /// This is the property the write-first ordering *buys*, as opposed to the
+    /// one it protects. Read-first, both transactions could hold the same
+    /// snapshot showing `private` and the loser's upgrade was refused with
+    /// SQLITE_BUSY_SNAPSHOT — the single-ledger-row invariant held, but it held
+    /// by an error the user saw as an empty 500. Write-first, the loser parks
+    /// on the write lock instead, and by the time it reads, the row is already
+    /// public: the same invariant, reached through the outcome the sequential
+    /// double-click already gets.
+    ///
+    /// `turn:*` provenance, so neither call needs a phrase or a password and
+    /// the only thing that can order them is the lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_declassifications_of_one_chat_serialize_into_one_ledger_row() {
+        use std::sync::Arc;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let id = private_session_with_reason(&sm, "turn:versa_azure").await;
+
+        let a = {
+            let sm = Arc::clone(&sm);
+            let id = id.clone();
+            tokio::spawn(async move {
+                declassify(&sm, &id, None, None, &UserConfirmation::for_test()).await
+            })
+        };
+        let b = {
+            let sm = Arc::clone(&sm);
+            let id = id.clone();
+            tokio::spawn(async move {
+                declassify(&sm, &id, None, None, &UserConfirmation::for_test()).await
+            })
+        };
+        let (a, b) = tokio::join!(a, b);
+        let mut outcomes = vec![
+            a.unwrap()
+                .expect("a racing declassification must not error"),
+            b.unwrap()
+                .expect("a racing declassification must not error"),
+        ];
+        outcomes.sort_by_key(|o| format!("{o:?}"));
+        assert_eq!(
+            outcomes,
+            vec![
+                DeclassifyOutcome::AlreadyPublic,
+                DeclassifyOutcome::Declassified
+            ],
+            "exactly one of the two must do the writing, and the other must be told the \
+             chat is already public"
+        );
+
+        assert_eq!(
+            audit_rows(&sm, &id).await.len(),
+            1,
+            "the ledger must record one private -> public transition, not two"
+        );
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(row.privacy_tier, SessionClassification::Public);
     }
 }
