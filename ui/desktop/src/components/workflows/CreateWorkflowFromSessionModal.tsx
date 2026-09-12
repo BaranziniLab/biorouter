@@ -364,13 +364,45 @@ export default function CreateWorkflowFromSessionModal({
         workflowSkillIds.length > 0 || resourceEditsRef.current.skills
           ? workflowSkillIds
           : (generatedResources.skills ?? []);
-      const knowledgeBases: WorkflowKnowledgeBases | undefined =
-        selectedKnowledgeBaseIds.length > 0 || selectedDefaultKnowledgeBaseId
-          ? {
-              default: selectedDefaultKnowledgeBaseId,
-              visible: selectedKnowledgeBaseIds,
-            }
-          : undefined;
+      /**
+       * Whether this modal KNOWS what the chat's knowledge selection is — which
+       * is a different question from whether that selection is empty, and
+       * collapsing the two is what this replaces.
+       *
+       * The two states serialize differently on purpose, and `runtime.rs` reads
+       * them differently: an absent `knowledge_bases` means "this workflow has
+       * nothing to say", so each chat it starts re-derives a selection from the
+       * replaying machine and sees every base; a present-but-empty block means
+       * "select none", and hides them. Switching every base off used to produce
+       * the FIRST of those, so the one gesture that says "no knowledge bases"
+       * was stored as the one that says "whatever you have".
+       *
+       * Three independent ways to know, any one of which is enough:
+       *
+       *  * the user edited the selection — an edit is a statement, even when
+       *    what it states is an empty set;
+       *  * the generation carried the daemon's own block, which it reads past
+       *    no gate;
+       *  * this modal's own read landed and did not fail. `knowledgeBaseItems`
+       *    is set unconditionally at the top of that read's `.then`, *before*
+       *    the `if (!selection)` bail, so a non-empty list is proof the read ran
+       *    — which `!knowledgeSelectionUnread` alone is not, since a read that
+       *    never answers at all (the effect torn down first) sets no flag.
+       *
+       * A machine with no bases therefore captures nothing, matching
+       * `knowledge_bases_for_session`'s own `None` for that case: there was no
+       * selection to make, so there is no selection to state.
+       */
+      const knowledgeSelectionKnown =
+        resourceEditsRef.current.knowledgeBases ||
+        Boolean(generatedResources.knowledgeBases) ||
+        (knowledgeBaseItems.length > 0 && !knowledgeSelectionUnread);
+      const knowledgeBases: WorkflowKnowledgeBases | undefined = knowledgeSelectionKnown
+        ? {
+            default: selectedDefaultKnowledgeBaseId,
+            visible: selectedKnowledgeBaseIds,
+          }
+        : undefined;
 
       const workflow: Workflow = {
         title: formData.title,
