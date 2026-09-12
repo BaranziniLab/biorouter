@@ -478,7 +478,7 @@ impl From<SessionClassification> for TargetTier {
 ///
 /// ⚠ **Extracted so the claim is asserted rather than grepped for.** None of the
 /// gated handlers can be driven from a unit test cheaply — `AppState::new()`
-/// opens the developer's REAL session database — so a scan for
+/// opens the ONE session DB this binary shares — so a scan for
 /// `session_reach(` would keep passing against a call whose result was
 /// discarded. This mapping is pure, so every corner of it is driven for real by
 /// the `tests` module below (not linked: it is `#[cfg(test)]`, so rustdoc cannot
@@ -1443,8 +1443,8 @@ mod tests {
     /// that the gate is earlier in the body than that.
     ///
     /// A source scan because none of these handlers can be driven cheaply from a
-    /// unit test — `AppState::new()` opens the developer's REAL session
-    /// database. Every route on the list is also driven over HTTP by
+    /// unit test — `AppState::new()` opens the ONE session DB this binary
+    /// shares. Every route on the list is also driven over HTTP by
     /// [`super::bypass_tests`] except `POST /agent/add_extension` (whose admitted
     /// arm mints a real agent), `GET|POST /knowledge/active` (a middleware, which
     /// a body scan cannot see and
@@ -2249,11 +2249,13 @@ mod bypass_tests {
     /// transcript came back" is an assertion rather than an impression.
     ///
     /// ⚠ **Unmistakably a fixture, and deliberately not shaped like a record.**
-    /// These tests seed into the developer's REAL session database —
-    /// `AppState::new()` opens it — so a row that ever escapes [`SeededChat`]'s
-    /// cleanup lands in their own sidebar. A marker that read like a patient
-    /// identifier would then be a privacy incident invented by the test suite of
-    /// the privacy feature.
+    /// These tests seed into the ONE session DB this binary shares —
+    /// `AppState::new()` opens it — so a row that escapes [`SeededChat`]'s
+    /// cleanup is read by every sibling test after it. `src/test_sandbox.rs`
+    /// keeps that store off the developer's own sidebar, so a leak is no longer
+    /// a privacy incident invented by the privacy feature's own suite — but a
+    /// marker shaped like a patient identifier is still the wrong thing to write
+    /// down, and a distinctive one is what a reader greps for when a row leaks.
     const MARKER_IN_THE_TRANSCRIPT: &str = "task58-transcript-marker-not-real-data";
 
     async fn get_session_with(
@@ -2617,9 +2619,9 @@ mod bypass_tests {
     /// ends — **including on a panic**, which a `delete_session` at the end of
     /// the test body cannot do.
     ///
-    /// ⚠ The store here is the developer's REAL session database, so a row that
-    /// outlives a failing assertion is a chat in their own sidebar, forever, with
-    /// no obvious provenance. `block_in_place` is what lets an async delete run
+    /// ⚠ The store here is the ONE session DB this binary shares, so a row that
+    /// outlives a failing assertion is one every later test reads, with no
+    /// obvious provenance. `block_in_place` is what lets an async delete run
     /// from `Drop`, and it is only legal on a multi-threaded runtime — so
     /// `#[tokio::test(flavor = "multi_thread")]` on every test below is a
     /// requirement of this type, not a habit.
