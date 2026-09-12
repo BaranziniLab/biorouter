@@ -1,13 +1,28 @@
 import '@testing-library/jest-dom';
-import { vi, afterEach } from 'vitest';
+import { vi, afterEach, afterAll, expect } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
 import { ASYNC_UTIL_TIMEOUT_MS, TEST_TIMEOUT_MS, MIN_TIMEOUT_HEADROOM } from './timeouts';
+import { assertNoUnexpectedNetworkAttempts, installOfflineFetch } from './networkGuard';
 import { client } from '../api/client.gen';
 
 // This is the standard setup to ensure that React Testing Library's
 // automatic cleanup runs after each test.
+//
+// The network check is in this SAME callback, deliberately, rather than its own
+// `afterEach`. vitest runs `afterEach` hooks in reverse registration order, so a
+// separate hook could not be ordered after `cleanup()` from here — and it has to
+// be after it, because unmounting is what flushes the passive effects that make
+// these calls. See src/test/networkGuard.ts.
 afterEach(() => {
   cleanup();
+  assertNoUnexpectedNetworkAttempts(expect.getState().testPath);
+});
+
+// A request whose promise settles after the last test's `afterEach` — the late
+// resolution that started this — is recorded with nothing left to report it.
+// This is where it surfaces.
+afterAll(() => {
+  assertNoUnexpectedNetworkAttempts(expect.getState().testPath);
 });
 
 // Keep routine application logging quiet. Warnings and errors stay connected to
@@ -151,3 +166,18 @@ if (typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !=
 client.setConfig({
   baseUrl: 'http://localhost',
 });
+
+/**
+ * jsdom inherits Node's real `fetch`, so an un-stubbed request in a test does
+ * not fail — it leaves the machine, and the suite's result becomes a property of
+ * whatever the developer happens to be running. `ProviderCatalog.test.tsx` was
+ * reaching a live `ollama serve` on 127.0.0.1:11434 and taking a different path
+ * through `OllamaInlineCard` than CI takes.
+ *
+ * Installed LAST, after `client.setConfig`, because the generated client
+ * resolves `globalThis.fetch` per call rather than capturing it at import time —
+ * so order does not matter for correctness, but reading it here next to the base
+ * URL it neutralises does. src/test/networkGuard.ts holds the reasoning and the
+ * measured census of specs that already reach out.
+ */
+installOfflineFetch();
