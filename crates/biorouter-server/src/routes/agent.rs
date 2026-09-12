@@ -5775,7 +5775,13 @@ mod knowledge_selection_tests {
         for (index, step) in STEPS.iter().enumerate() {
             let start = at(step);
             let end = STEPS.get(index + 1).map_or(body.len(), |next| at(next));
-            let window = &body[start..end];
+            // `get`, not `&body[start..end]`: the workspace denies
+            // `clippy::string_slice`, and it is right to — a slice that is not on
+            // a char boundary panics. Both bounds come from `find`, so they are
+            // boundaries and this never fires.
+            let window = body
+                .get(start..end)
+                .expect("both bounds come from `find`, so both are char boundaries");
             let discarded = window
                 .find("discard_failed_new_session")
                 .unwrap_or_else(|| {
