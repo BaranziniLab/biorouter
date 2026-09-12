@@ -3,6 +3,8 @@ mod affiliation_tests;
 pub mod anthropic;
 pub mod api_client;
 pub mod auto_detect;
+#[cfg(feature = "aws-providers")]
+pub mod aws_stored_settings;
 pub mod azure;
 pub mod azureauth;
 pub mod base;

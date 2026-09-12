@@ -1305,35 +1305,72 @@ mod tests {
         assert!(out.is_err());
     }
 
-    /// The frame is only unconditional if the choke point is unconditional.
+    /// The frame is only unconditional if every choke point is.
     ///
-    /// [`guard_tool_result`] is called from exactly one place,
-    /// `Agent::integrate_tool_result`, which every completed tool call passes
-    /// through on its way into the conversation. A second tool-result path that
-    /// forgot to call it would be a silent hole, so the count is asserted here
-    /// rather than left to reviewers. If this fails because you added a call
-    /// site, the right fix is usually to route through the existing funnel, not
-    /// to bump the number.
+    /// There are **two**, because a tool result reaches a model context by two
+    /// structurally different routes, and each has exactly one funnel:
+    ///
+    /// | Route | Funnel |
+    /// | --- | --- |
+    /// | the parent model's own calls | `Agent::integrate_tool_result` |
+    /// | a coding agent's child, over the MCP bridge | `BridgeGrant::call_for_child` |
+    ///
+    /// A bridged call never enters the agent's turn loop — the vendor CLI calls
+    /// `POST /tool_bridge/{nonce}` and the provider lifts the kept result
+    /// straight into the transcript — so `integrate_tool_result` alone left the
+    /// child agent reading raw, unscanned third-party text and stored raw text
+    /// in the transcript where every other provider stored a frame (A2).
+    ///
+    /// A third tool-result path that forgot to call this would be the same
+    /// silent hole again, so the counts are asserted here rather than left to
+    /// reviewers. If this fails because you added a call site, the right fix is
+    /// usually to route through one of the two existing funnels, not to bump a
+    /// number.
     #[test]
-    fn the_guardrail_has_exactly_one_call_site() {
-        let agent_rs = include_str!("../agents/agent.rs");
-        let calls = agent_rs
-            .matches("guardrails::tool_output::guard_tool_result(")
-            .count();
-        assert_eq!(
-            calls, 1,
-            "expected exactly one guard_tool_result call site in agent.rs, found {calls}"
-        );
-        // And it must be inside the result-integration funnel, not somewhere a
-        // path could branch around.
-        let funnel = agent_rs
-            .split("async fn integrate_tool_result(")
-            .nth(1)
-            .expect("integrate_tool_result must exist");
-        assert!(
-            funnel.contains("guardrails::tool_output::guard_tool_result("),
-            "the call site moved out of integrate_tool_result"
-        );
+    fn the_guardrail_has_one_call_site_in_each_of_its_two_funnels() {
+        for (file, source, funnel, signature) in [
+            (
+                "agents/agent.rs",
+                include_str!("../agents/agent.rs"),
+                "integrate_tool_result",
+                "async fn integrate_tool_result(",
+            ),
+            (
+                "providers/coding_agent/bridge.rs",
+                include_str!("../providers/coding_agent/bridge.rs"),
+                "call_for_child",
+                "pub async fn call_for_child(",
+            ),
+        ] {
+            // ⚠ The count is over the file's PRODUCTION half only. `bridge.rs`'s
+            // own suite calls the guardrail directly, to build the frame a
+            // non-bridged provider stores and compare the two — a test proving
+            // the funnel works must not read as a second funnel. Each file has
+            // exactly one `mod tests {` at column 0.
+            let production = source
+                .split("\nmod tests {")
+                .next()
+                .expect("split always yields a first part");
+            // `bridge.rs` imports the function by name and `agent.rs` spells
+            // the whole path, so the needle is the bare name — and it carries
+            // its opening paren, which is what keeps an import or a doc link
+            // from being counted as a call.
+            let calls = production.matches("guard_tool_result(").count();
+            assert_eq!(
+                calls, 1,
+                "expected exactly one guard_tool_result call site in {file}, found {calls}"
+            );
+            // And it must be inside the funnel, not somewhere a path could
+            // branch around.
+            let body = production
+                .split(signature)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{funnel} must exist in {file}"));
+            assert!(
+                body.contains("guard_tool_result("),
+                "the call site moved out of {funnel} in {file}"
+            );
+        }
     }
 
     // ── the frame rewrites `text`, and nothing else ──
