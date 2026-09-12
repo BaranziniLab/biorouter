@@ -4726,7 +4726,7 @@ export type StartAgentErrors = {
      */
     401: unknown;
     /**
-     * The configured provider is private and this daemon holds a user-action key, but the request carried no proof it came from the user (SD-12). A daemon with no user-action key binds its configured provider without one.
+     * The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.
      */
     409: ErrorResponse;
     /**

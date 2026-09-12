@@ -1203,15 +1203,32 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
 - **A new chat starts on the configured model without a proof, and nothing else does** (SD-12).
   Until it, a `serve` daemon with a private provider configured refused EVERY `/agent/start`
   (the 2026-09-10 QA's F1): the new-chat bind asked for a proof a keyless daemon cannot check.
-  Three pieces, each load-bearing — measured by removing it: on a keyless daemon
-  `new_chat_bind_needs_user` (`routes/agent.rs`) lets the configured default bind, while a keyed
+  Four pieces, each load-bearing — measured by removing it: on a keyless daemon
+  `new_chat_bind_decision` (`routes/agent.rs`) lets the configured default bind, while a keyed
   daemon still refuses a proof-less private first bind; `raise_baseline` makes a keyless
   daemon's `/agent/update_provider` measure every move onto a private model from Public, or the
-  exemption would carry sideways to a private model nobody configured; and the browser states the
+  exemption would carry sideways to a private model nobody configured; the browser states the
   host's model as `X-Caller-Provider` (`userActionHeaders()` on `isBrowserSurface()`), without
-  which a chat's first reply ratcheted it private and its next request 403'd. Tests:
+  which a chat's first reply ratcheted it private and its next request 403'd; and
+  `biorouter_server::launch` **pins the exemption to the configuration the daemon was launched
+  with**. Tests:
   `cargo test -p biorouter-server --test new_chat_no_user_key` (its own binary: the digest is a
-  process-global `OnceLock`). ⚠ **Still unreachable in a browser, and out of SD-12's scope:**
+  process-global `OnceLock`).
+  ⚠ **The exemption's first justification was FALSE and the fix is that pin.** It rested on
+  *"`/agent/start` binds `BIOROUTER_PROVIDER`, a key only a proven person may write"*. The HTTP
+  doors are shut, but `config.yaml` is not an HTTP resource: DR-14's filesystem deny is DEFERRED,
+  the agent holds `developer__shell`, and `Config`'s cache is keyed on a `FileStamp` it re-`stat`s
+  per read — so a model with a shell on a keyless daemon configured PUBLIC could write a private
+  provider into the file and get a 200 with Private capability where `main` answers 409 (measured
+  2026-09-12). The pinned set is `privacy::CAPABILITY_CONFIG_KEYS` verbatim plus `BIOROUTER_MODEL`;
+  pinning the provider NAME alone is not enough, because flipping `OLLAMA_HOST` to loopback moves
+  `ollama`'s tier with the name untouched. ⚠ And `NoKeyInstalled` is **not** the same thing as
+  "this is `serve`" — a desktop spawn satisfies it when `userActionKey` is undefined or the
+  daemon's bounded 2s stdin read times out. That case is a repairable fault, so the desktop
+  launcher declares its intent in `BIOROUTER_USER_ACTION_EXPECTED` and such a daemon keeps
+  `main`'s refusal plus a startup `ERROR`. ⚠ `BIOROUTER_MODEL` is in neither capability-key list
+  by decision, not oversight: no `tier()` implementation reads the model name (all five checked),
+  so it is an integrity key and its row lives in `NOT_CAPABILITY_CONFIG_KEYS`. ⚠ **Still unreachable in a browser, and out of SD-12's scope:**
   `/agent/cancel` and `/interrupt` require the proof unconditionally, so Stop and mid-turn
   steering cannot work on a keyless daemon. ⚠ `privacy_ar15_is_retired.rs`'s closure scan took
   the FIRST `TierRaiseNeedsUser` in `routes/agent.rs`, which from `eb594ded` was the new-chat gate

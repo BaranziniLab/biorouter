@@ -210,13 +210,38 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // by `sysctl(KERN_PROCARGS2)`, which is not a path at all and which no
     // sandbox profile can gate.
     let user_action_digest = read_user_action_digest().await;
-    if user_action_digest.is_none() {
-        tracing::warn!(
+    // SD-12, Finding 3. `UserActionProof::NoKeyInstalled` means "this process read
+    // no valid digest", which is TWO situations wearing one name: a deployment
+    // where no proof can ever exist, and a launcher that meant to send one and
+    // did not. The launcher says which (`launch::USER_ACTION_EXPECTED_ENV`), and
+    // the difference decides both what is logged and — below, in
+    // `routes::agent::new_chat_bind_decision` — whether SD-12's exemption applies
+    // at all. A desktop daemon that lost its key is a fault to repair, not a
+    // headless deployment, so it keeps `main`'s refusal.
+    let launcher_declared_a_key =
+        biorouter_server::launch::launcher_declared_a_user_action_key_in_env();
+    match (user_action_digest.is_none(), launcher_declared_a_key) {
+        (true, true) => tracing::error!(
+            "no user-action key on stdin, but this daemon's launcher declared it would send one \
+             ({}=set): every request that needs proof of a person will be refused, INCLUDING one \
+             made by the person at the keyboard, and a new chat on a private model will be \
+             refused rather than started (SD-12). The key was either never generated or the \
+             daemon's bounded 2s stdin read timed out. Quit and reopen Biorouter.",
+            biorouter_server::launch::USER_ACTION_EXPECTED_ENV
+        ),
+        (true, false) => tracing::warn!(
             "no user-action key on stdin: this daemon will refuse every request that raises an \
              existing chat's privacy capability, including one made by the person at the \
-             keyboard; a new chat still starts on the configured provider (SD-12)"
-        );
+             keyboard; a new chat still starts on the provider this daemon was LAUNCHED with, \
+             and is refused if that configuration has changed since (SD-12)"
+        ),
+        (false, _) => {}
     }
+    // SD-12: pin the operator's declaration. Before `AppState::new()` and before
+    // any route is mounted, so no request is ever served against an unrecorded
+    // launch state, and so the sample predates anything this process could write
+    // to `config.yaml` itself.
+    biorouter_server::launch::record_launch_state(launcher_declared_a_key);
     // A tool whose approval can never be granted must not be offered. `serve`
     // spawns this daemon with `Stdio::null()`, so it holds no key and every
     // proof-backed approval refuses forever — the install and delete tools take

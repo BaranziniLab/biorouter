@@ -31,7 +31,10 @@ use biorouter::config::{with_config_overrides, Config};
 use biorouter::conversation::message::Message;
 use biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER;
 use biorouter::privacy::SessionClassification;
-use biorouter::providers::versa_azure::VERSA_AZURE_DEPLOYMENT;
+// Renamed on `main` (a MODEL, not a deployment — `VERSA_AZURE_DEPLOYMENTS` is
+// the model -> deployment map that replaced it). This binary was left RED by
+// the merge at f276111f, so nothing here ran until the name was repaired.
+use biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use biorouter_server::state::AppState;
 use serde_json::{json, Value};
@@ -47,13 +50,46 @@ fn versa_is_the_configured_default() -> HashMap<String, String> {
         ("BIOROUTER_PROVIDER".to_string(), "versa_azure".to_string()),
         (
             "BIOROUTER_MODEL".to_string(),
-            VERSA_AZURE_DEPLOYMENT.to_string(),
+            VERSA_AZURE_DEFAULT_MODEL.to_string(),
         ),
         (
             "VERSA_AZURE_API_KEY".to_string(),
             "placeholder-never-sent".to_string(),
         ),
     ])
+}
+
+/// A **public** configured default, for the tests that measure what happens when
+/// the configuration moves after launch. `self_hosted_tier` reads `ollama` as
+/// Public exactly while its host is not loopback, and constructing the provider
+/// opens no connection, so `ollama.example` is never resolved.
+fn a_public_ollama_is_the_configured_default() -> HashMap<String, String> {
+    HashMap::from([
+        ("BIOROUTER_PROVIDER".to_string(), "ollama".to_string()),
+        ("BIOROUTER_MODEL".to_string(), "stub-model".to_string()),
+        (
+            "OLLAMA_HOST".to_string(),
+            "https://ollama.example".to_string(),
+        ),
+    ])
+}
+
+/// Stand up the launch posture SD-12's exemption is pinned to: a daemon started
+/// with `configured` as its configuration, by a launcher that promised no
+/// user-action key.
+///
+/// Production samples this once in `commands::agent::run`. Here it has to happen
+/// inside the override scope, because the overrides are a `tokio` task-local.
+async fn launched_with(configured: HashMap<String, String>) {
+    launched_by(configured, false).await;
+}
+
+/// [`launched_with`], plus what the launcher claimed about the key it would send.
+async fn launched_by(configured: HashMap<String, String>, launcher_promised_a_key: bool) {
+    with_config_overrides(configured, async {
+        biorouter_server::launch::record_launch_state(launcher_promised_a_key);
+    })
+    .await;
 }
 
 /// Every test here stands on this: the daemon under test holds no key.
@@ -113,6 +149,7 @@ async fn discard(state: &Arc<AppState>, session_id: &str) {
 #[serial]
 async fn a_keyless_daemon_starts_a_new_chat_on_its_configured_private_model() {
     assert_the_daemon_is_keyless();
+    launched_with(versa_is_the_configured_default()).await;
     let state = AppState::new().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
 
@@ -143,7 +180,7 @@ async fn a_keyless_daemon_starts_a_new_chat_on_its_configured_private_model() {
     assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
     assert_eq!(
         row.model_config.map(|config| config.model_name).as_deref(),
-        Some(VERSA_AZURE_DEPLOYMENT)
+        Some(VERSA_AZURE_DEFAULT_MODEL)
     );
     // O5: the ratchet fires on the first turn, never on the bind. A chat that
     // has touched nothing is not yet private — it is private-CAPABLE.
@@ -171,6 +208,7 @@ async fn a_keyless_daemon_starts_a_new_chat_on_its_configured_private_model() {
 #[serial]
 async fn a_keyless_daemon_will_not_move_a_new_chat_to_a_private_model_nobody_configured() {
     assert_the_daemon_is_keyless();
+    launched_with(versa_is_the_configured_default()).await;
     let state = AppState::new().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
 
@@ -237,7 +275,7 @@ async fn a_keyless_daemon_still_refuses_to_change_the_configured_default() {
     let (status, body) = post_json(
         biorouter_server::routes::config_management::routes(state),
         "/config/set_provider",
-        json!({ "provider": "versa_azure", "model": VERSA_AZURE_DEPLOYMENT }),
+        json!({ "provider": "versa_azure", "model": VERSA_AZURE_DEFAULT_MODEL }),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
@@ -302,6 +340,11 @@ async fn the_first_turn_on_a_keyless_default_chat_ratchets_it_as_usual() {
     config.set_param("BIOROUTER_PROVIDER", "ollama").unwrap();
     config.set_param("BIOROUTER_MODEL", "stub-model").unwrap();
     config.set_param("OLLAMA_HOST", stub.uri()).unwrap();
+    // …and that IS this daemon's launch configuration, so SD-12's exemption
+    // applies. Recorded after the writes rather than before, for the reason
+    // production records it before `AppState::new()`: the snapshot has to be the
+    // configuration the requests will read.
+    biorouter_server::launch::record_launch_state(false);
 
     let state = AppState::new().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -377,4 +420,142 @@ async fn the_first_turn_on_a_keyless_default_chat_ratchets_it_as_usual() {
     for key in ["BIOROUTER_PROVIDER", "BIOROUTER_MODEL", "OLLAMA_HOST"] {
         let _ = config.delete(key);
     }
+}
+
+/// **Finding 1 (HIGH), the review that refuted SD-12's first justification.**
+///
+/// SD-12 rested on *"`/agent/start` binds `BIOROUTER_PROVIDER`, a key only a
+/// proven person may write"*. The HTTP doors to that key are genuinely closed —
+/// `a_keyless_daemon_still_refuses_to_change_the_configured_default` above is one
+/// of them — but `config.yaml` is not an HTTP resource. DR-14's filesystem deny
+/// is DEFERRED, the agent holds `developer__shell`, and `Config` re-`stat`s and
+/// reloads the file, so a model could write the provider it wanted and then ask
+/// for a new chat on it.
+///
+/// The exemption is pinned to the launch configuration instead: the daemon here
+/// started on a **public** Ollama, so the private provider that appeared in the
+/// file afterwards is nobody's declaration and the bind is refused.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_private_provider_written_after_launch_does_not_start_a_new_chat() {
+    assert_the_daemon_is_keyless();
+    launched_with(a_public_ollama_is_the_configured_default()).await;
+    let state = AppState::new().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+
+    let (status, body) = with_config_overrides(
+        versa_is_the_configured_default(),
+        post_json(
+            biorouter_server::routes::agent::routes(Arc::clone(&state)),
+            "/agent/start",
+            start_request(dir.path()),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a private provider written into config.yaml after this daemon launched started a chat \
+         at Private capability: {body}"
+    );
+    assert!(
+        body.contains("BIOROUTER_PROVIDER"),
+        "the refusal must name the key that moved, so the operator can act on it: {body}"
+    );
+    assert!(
+        body.to_lowercase().contains("restart"),
+        "the refusal must say how to make the new configuration take effect: {body}"
+    );
+}
+
+/// The same escalation through a key that is **not** the provider's name, which
+/// is why the pin is the whole capability list rather than `BIOROUTER_PROVIDER`
+/// alone: `self_hosted_tier` reads `ollama` as Private exactly while its host is
+/// loopback, so moving `OLLAMA_HOST` moves the tier with the provider name
+/// untouched.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_private_endpoint_written_after_launch_does_not_start_a_new_chat() {
+    assert_the_daemon_is_keyless();
+    launched_with(a_public_ollama_is_the_configured_default()).await;
+    let state = AppState::new().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut flipped_to_loopback = a_public_ollama_is_the_configured_default();
+    // Private, and never dialled: constructing an Ollama provider opens nothing.
+    flipped_to_loopback.insert("OLLAMA_HOST".to_string(), "http://127.0.0.1:1".to_string());
+
+    let (status, body) = with_config_overrides(
+        flipped_to_loopback,
+        post_json(
+            biorouter_server::routes::agent::routes(Arc::clone(&state)),
+            "/agent/start",
+            start_request(dir.path()),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "moving the endpoint alone was enough to mint a Private-capability chat: {body}"
+    );
+    assert!(
+        body.contains("OLLAMA_HOST"),
+        "the refusal named the wrong key: {body}"
+    );
+}
+
+/// **Finding 3 (LOW).** `NoKeyInstalled` is "this process read no valid digest",
+/// which is two situations wearing one name. SD-12's exemption is for the one
+/// where no proof can *ever* exist; a desktop daemon whose key never arrived —
+/// `userActionKey` undefined, or the bounded 2s stdin read timing out — is a
+/// fault to repair, and on `main` it degraded loudly by refusing every private
+/// new chat. It must keep doing that rather than silently binding.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_daemon_whose_launcher_promised_a_key_and_got_none_refuses_the_exemption() {
+    assert_the_daemon_is_keyless();
+    launched_by(versa_is_the_configured_default(), true).await;
+    let state = AppState::new().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+
+    let (status, body) = with_config_overrides(
+        versa_is_the_configured_default(),
+        post_json(
+            biorouter_server::routes::agent::routes(Arc::clone(&state)),
+            "/agent/start",
+            start_request(dir.path()),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a daemon that expected a user-action key and got none took SD-12's exemption anyway: \
+         {body}"
+    );
+    assert!(
+        body.contains("user-action key"),
+        "the refusal must say the key is missing, not that the user did not confirm: {body}"
+    );
+
+    // …and the same configuration, launched by something that promised nothing,
+    // still starts the chat. Without this the test above would pass on a build
+    // that had simply broken the exemption.
+    launched_with(versa_is_the_configured_default()).await;
+    let (status, body) = with_config_overrides(
+        versa_is_the_configured_default(),
+        post_json(
+            biorouter_server::routes::agent::routes(Arc::clone(&state)),
+            "/agent/start",
+            start_request(dir.path()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    discard(&state, &id).await;
 }

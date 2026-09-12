@@ -341,15 +341,35 @@ fn configured_new_session_provider() -> Result<Option<(String, ModelConfig)>, Er
     }
 }
 
+/// Why a brand-new chat's bind to the operator's configured private provider may
+/// not go ahead as it stands — SD-12's verdict, with the reason, because two of
+/// the three refusals here are actionable by a *person* and a single boolean
+/// would have answered all of them in a sentence written for a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NewChatBind {
+    /// Bind it.
+    Allowed,
+    /// This daemon can check a proof, and none arrived.
+    NeedsUserProof,
+    /// SD-12 would exempt this bind, but the configuration being read is no
+    /// longer the one the daemon was launched with, so there is nothing left in
+    /// it that is the operator's choice. Carries the key that moved.
+    ConfigMovedSinceLaunch(String),
+    /// The launcher declared it would hand over a user-action key and the key
+    /// never arrived. A fault to repair, not a deployment where no proof can
+    /// exist — so the exemption does not apply.
+    KeyWasExpected,
+}
+
 /// SD-12 (`docs/deployment/serve-decisions.md`): does binding the operator's
 /// configured default provider to a brand-new chat need a person's proof?
 ///
 /// A new chat has no capability of its own yet, so a private default reads as a
 /// raise from Public — the reading `update_agent_provider` gives any first bind.
-/// What differs is who chose the model. `/agent/start` names no provider; it
-/// binds `BIOROUTER_PROVIDER`, a key only a proven person may write over HTTP
-/// (DR-16, open question 24) or the operator wrote out of band with `biorouter
-/// configure`. The proof is therefore asked for only where it can be given:
+/// What differs is who chose the model: `/agent/start` names no provider, it binds
+/// `BIOROUTER_PROVIDER` + `BIOROUTER_MODEL`, and SD-1 says the tier the operator's
+/// `biorouter configure` choice implies holds for every session in that daemon. So
+/// the proof is asked for only where it can be given:
 ///
 /// * `Proven` — the desktop renderer, which sends `X-User-Action` on every start
 ///   (`ui/desktop/src/sessions.ts`). Binds.
@@ -360,19 +380,57 @@ fn configured_new_session_provider() -> Result<Option<(String, ModelConfig)>, Er
 ///   with an extension set of its own choosing.
 /// * `NoKeyInstalled` — `biorouter serve` (SD-7) or a hand-run `biorouterd`.
 ///   Nobody on this daemon can prove anything, so a refusal here refuses the
-///   person too, on every new chat, always — the 2026-09-10 QA's F1. Binds.
+///   person too, on every new chat, always — the 2026-09-10 QA's F1. Binds, under
+///   the two conditions below.
 ///
-/// Only the configured default is exempt, and only at creation: `/agent/start`
-/// cannot name any other provider, and on a keyless daemon
+/// ⚠ **The original justification for that third arm was wrong, and both
+/// conditions exist because of it** (2026-09-12 review, Findings 1 and 3):
+///
+/// 1. It said `BIOROUTER_PROVIDER` is *"a key only a proven person may write"*.
+///    The HTTP doors are closed, but `config.yaml` is not an HTTP resource:
+///    DR-14's filesystem deny is DEFERRED, the agent holds `developer__shell`, and
+///    `Config` re-`stat`s and reloads the file — so the value read here is
+///    whatever the file says at request time. A model with a shell on a keyless
+///    daemon configured with a *public* default could write a private provider
+///    there and take this exemption. So the exemption is pinned to the
+///    configuration the daemon **launched** with (`launch::pinned_config_keys`);
+///    drift refuses, and names the key.
+/// 2. `NoKeyInstalled` is only *"this process read no valid digest"*, which a
+///    desktop spawn also satisfies when its `userActionKey` is undefined or the
+///    daemon's bounded 2s stdin read times out. That is a repairable fault, and on
+///    `main` it degraded safely by refusing. It keeps refusing: the launcher
+///    declares its intent (`launch::USER_ACTION_EXPECTED_ENV`), which is the only
+///    signal that separates the two.
+///
+/// Only the configured default is ever exempt, and only at creation:
+/// `/agent/start` cannot name another provider, and on a keyless daemon
 /// `update_agent_provider` refuses every private bind ([`raise_baseline`]), so a
 /// new chat there never reaches a private model the operator did not choose.
-fn new_chat_bind_needs_user(enforced: bool, tier: ProviderTier, proof: UserActionProof) -> bool {
-    enforced
-        && raise_needs_user_action(ProviderTier::Public, tier)
-        && match proof {
-            UserActionProof::Proven | UserActionProof::NoKeyInstalled => false,
-            UserActionProof::Unproven => true,
+fn new_chat_bind_decision(
+    enforced: bool,
+    tier: ProviderTier,
+    proof: UserActionProof,
+    launcher_declared_a_key: bool,
+    config_moved_since_launch: Option<String>,
+) -> NewChatBind {
+    // DR-15's master opt-out, and the plain reading that a public default raises
+    // nothing for anybody. Neither is about who is asking.
+    if !enforced || !raise_needs_user_action(ProviderTier::Public, tier) {
+        return NewChatBind::Allowed;
+    }
+    match proof {
+        UserActionProof::Proven => NewChatBind::Allowed,
+        UserActionProof::Unproven => NewChatBind::NeedsUserProof,
+        UserActionProof::NoKeyInstalled => {
+            if launcher_declared_a_key {
+                NewChatBind::KeyWasExpected
+            } else if let Some(key) = config_moved_since_launch {
+                NewChatBind::ConfigMovedSinceLaunch(key)
+            } else {
+                NewChatBind::Allowed
+            }
         }
+    }
 }
 
 /// The capability `update_agent_provider` measures a raise from — SD-12's other
@@ -381,7 +439,7 @@ fn new_chat_bind_needs_user(enforced: bool, tier: ProviderTier, proof: UserActio
 /// On a daemon that holds a user-action key it is the chat's live capability,
 /// as it always was. On one that holds none, no chat's private capability came
 /// from anything a person proved over HTTP: the only private binding such a
-/// daemon hands out through its routes is [`new_chat_bind_needs_user`]'s
+/// daemon hands out through its routes is [`new_chat_bind_decision`]'s
 /// creation-time bind to the configured default. There is no private floor for
 /// a request to build on, so a bind to ANY private provider is measured from
 /// Public, and refused, since no proof can arrive. Without this, SD-12 would let
@@ -408,19 +466,54 @@ async fn bind_new_session_provider(
             message: format!("Failed to configure the selected provider for the new chat: {error}"),
             status: StatusCode::BAD_REQUEST,
         })?;
-    // DR-15's master opt-out, read inside the gate as every #56 surface does.
-    if new_chat_bind_needs_user(
+    // DR-15's master opt-out is read inside the gate, as every #56 surface does.
+    // The launch state is read here rather than in the gate for the same reason:
+    // one sample per request, threaded, so the decision cannot be made against two
+    // different answers.
+    match new_chat_bind_decision(
         biorouter::privacy::privacy_tiers_enabled(),
         provider.tier(),
         user_action_proof(headers),
+        biorouter_server::launch::expected_a_user_action_key(),
+        biorouter_server::launch::capability_config_moved_since_launch(),
     ) {
-        return Err(ErrorResponse {
-            message: PrivacyRefusal::TierRaiseNeedsUser {
-                requested: provider_name,
-            }
-            .to_string(),
-            status: StatusCode::CONFLICT,
-        });
+        NewChatBind::Allowed => {}
+        NewChatBind::NeedsUserProof => {
+            return Err(ErrorResponse {
+                message: PrivacyRefusal::TierRaiseNeedsUser {
+                    requested: provider_name,
+                }
+                .to_string(),
+                status: StatusCode::CONFLICT,
+            });
+        }
+        // Written for the operator, not for the model. SD-8's rule: a control the
+        // caller cannot pass must say what would make it passable, and here that
+        // is a restart — no proof exists on this daemon to offer instead.
+        NewChatBind::ConfigMovedSinceLaunch(key) => {
+            return Err(ErrorResponse {
+                message: format!(
+                    "This Biorouter daemon starts new chats on the model it was launched with, \
+                     because nothing here can confirm a request came from you. '{key}' has \
+                     changed in the configuration since it started, so '{provider_name}' is not \
+                     the model it was launched on and starting a chat on it would be a switch \
+                     nobody asked for. Restart the daemon to pick up the new configuration."
+                ),
+                status: StatusCode::CONFLICT,
+            });
+        }
+        NewChatBind::KeyWasExpected => {
+            return Err(ErrorResponse {
+                message: format!(
+                    "Biorouter cannot confirm that this request came from you: the application \
+                     that started this daemon was meant to hand it a user-action key and none \
+                     arrived, so a new chat on the private model '{provider_name}' is refused \
+                     rather than started. Quit and reopen Biorouter. If it keeps happening, the \
+                     daemon log records 'no user-action key on stdin'."
+                ),
+                status: StatusCode::CONFLICT,
+            });
+        }
     }
     let agent = state
         .get_agent(session.id.clone())
@@ -674,7 +767,7 @@ pub struct RestartAgentResponse {
         (status = 200, description = "Agent started successfully", body = Session),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 409, description = "The configured provider is private and this daemon holds a user-action key, but the request carried no proof it came from the user (SD-12). A daemon with no user-action key binds its configured provider without one.", body = ErrorResponse),
+        (status = 409, description = "The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -3192,30 +3285,122 @@ mod new_session_provider_binding_tests {
     #[test]
     fn only_a_daemon_that_can_check_a_proof_asks_a_new_chat_for_one() {
         use UserActionProof::{NoKeyInstalled, Proven, Unproven};
-        assert!(!new_chat_bind_needs_user(
-            true,
-            ProviderTier::Private,
-            Proven
-        ));
-        assert!(new_chat_bind_needs_user(
-            true,
-            ProviderTier::Private,
-            Unproven
-        ));
-        assert!(
-            !new_chat_bind_needs_user(true, ProviderTier::Private, NoKeyInstalled),
+        // A daemon launched on this configuration, by a launcher that promised no
+        // key: the posture SD-12's exemption is for.
+        let launched_here = |tier, proof| new_chat_bind_decision(true, tier, proof, false, None);
+        assert_eq!(
+            launched_here(ProviderTier::Private, Proven),
+            NewChatBind::Allowed
+        );
+        assert_eq!(
+            launched_here(ProviderTier::Private, Unproven),
+            NewChatBind::NeedsUserProof
+        );
+        assert_eq!(
+            launched_here(ProviderTier::Private, NoKeyInstalled),
+            NewChatBind::Allowed,
             "a keyless daemon refusing its own configured default refuses every person, always"
         );
         for proof in [Proven, Unproven, NoKeyInstalled] {
             // A public default raises nothing, for anyone.
-            assert!(!new_chat_bind_needs_user(true, ProviderTier::Public, proof));
+            assert_eq!(
+                launched_here(ProviderTier::Public, proof),
+                NewChatBind::Allowed
+            );
             // DR-15's master opt-out turns the gate off, not the question.
-            assert!(!new_chat_bind_needs_user(
-                false,
-                ProviderTier::Private,
-                proof
-            ));
+            assert_eq!(
+                new_chat_bind_decision(false, ProviderTier::Private, proof, false, None),
+                NewChatBind::Allowed
+            );
         }
+    }
+
+    /// Finding 1 (HIGH) of the 2026-09-12 review: the keyless exemption is for
+    /// the configuration the daemon was **launched** with, not for whatever
+    /// `config.yaml` — which the agent can write and `Config` reloads live — says
+    /// at request time.
+    ///
+    /// Both conditions bite only on the keyless arm. A daemon that can check a
+    /// proof already has one, and a person who edits the configuration and asks
+    /// for a chat in the same breath is not the case this closes.
+    #[test]
+    fn drift_since_launch_costs_the_keyless_exemption_and_nothing_else() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        let moved = || Some("BIOROUTER_PROVIDER".to_string());
+
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, NoKeyInstalled, false, moved()),
+            NewChatBind::ConfigMovedSinceLaunch("BIOROUTER_PROVIDER".to_string()),
+            "a private provider written into config.yaml after launch took the exemption"
+        );
+        // The refusal names the key, because the only person who can act on it
+        // needs to know which value to put back or which daemon to restart.
+        assert_eq!(
+            new_chat_bind_decision(
+                true,
+                ProviderTier::Private,
+                NoKeyInstalled,
+                false,
+                Some("OLLAMA_HOST".to_string()),
+            ),
+            NewChatBind::ConfigMovedSinceLaunch("OLLAMA_HOST".to_string()),
+        );
+        // A public default is not a raise, so drift changes nothing about it —
+        // there is no exemption being taken to withdraw.
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Public, NoKeyInstalled, false, moved()),
+            NewChatBind::Allowed
+        );
+        // And a daemon that can check a proof is unaffected in both directions.
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, Proven, true, moved()),
+            NewChatBind::Allowed
+        );
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, Unproven, true, moved()),
+            NewChatBind::NeedsUserProof
+        );
+    }
+
+    /// Finding 3 (LOW): `NoKeyInstalled` is two situations wearing one name, and
+    /// only one of them is a deployment where no proof can exist. A desktop daemon
+    /// whose key never arrived keeps `main`'s refusal.
+    ///
+    /// ⚠ The launcher's declaration is checked **before** the drift, so the
+    /// message the person gets names the fault they can act on rather than a
+    /// configuration key that may be perfectly fine.
+    #[test]
+    fn a_launcher_that_promised_a_key_does_not_inherit_the_keyless_exemption() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, NoKeyInstalled, true, None),
+            NewChatBind::KeyWasExpected
+        );
+        assert_eq!(
+            new_chat_bind_decision(
+                true,
+                ProviderTier::Private,
+                NoKeyInstalled,
+                true,
+                Some("BIOROUTER_PROVIDER".to_string()),
+            ),
+            NewChatBind::KeyWasExpected,
+            "a missing key is the actionable fault; the drift message would send the person to the \
+             wrong place"
+        );
+        // The declaration says nothing about a daemon that DID get its key: those
+        // two arms are decided by the proof alone.
+        for proof in [Proven, Unproven] {
+            assert_eq!(
+                new_chat_bind_decision(true, ProviderTier::Private, proof, true, None),
+                new_chat_bind_decision(true, ProviderTier::Private, proof, false, None),
+            );
+        }
+        // Nor about a public default, which raises nothing.
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Public, NoKeyInstalled, true, None),
+            NewChatBind::Allowed
+        );
     }
 
     /// SD-12's other half: a keyless daemon measures every move onto a private
