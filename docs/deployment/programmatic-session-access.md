@@ -184,6 +184,8 @@ one of them resolves the target's tier **before** it touches the session, so a r
 | `POST /skills/session` | The chat's per-chat skill overrides. |
 | `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, each checked before any transcript is read. |
 | `POST /active_work/{id}/cancel` | Stops one chat's running work: a shell command, a subagent, a detached turn or a scheduled run. The id names the work, not the chat, so the daemon looks up the chat that owns it and applies this gate to that chat before anything stops. |
+| `POST /schedule/{id}/kill` | Stops a schedule's run. Reaches the SAME kill as the row above by the schedule id instead of the work handle, so leaving it open made that row bypassable by a one-word change of URL. The run is resolved to its chat and gated on it, and the stop is checked against the run it was authorized against — a schedule that has started a different run since is refused, not stopped. |
+| `GET /schedule/{id}/inspect` | Names the chat a schedule is running in, and when the run started. Gated on that chat; a private chat's run, an idle schedule and an absent one answer alike. |
 
 Each of these refuses a caller exactly as `GET /sessions/{id}` does, with the same status and the
 same words, and answers a chat that does not exist the same way. Deleting, renaming or editing a
@@ -194,6 +196,7 @@ the caller could not open:
 
 | Route | What a caller without the header or the proof gets |
 |---|---|
+| `GET /schedule/list` | **Every** schedule, including idle and paused ones — but with `current_session_id` and `creator_session_id` omitted from any row naming a chat the caller could not open. ⚠ The one listing that REDACTS FIELDS instead of dropping rows, because a schedule is not a chat: it names chats, and an idle one names none, so a row-level rule would empty the Schedules view for every ordinary caller rather than close an association. |
 | `GET /sessions`, `GET /sessions/sidebar`, `GET /schedule/{id}/sessions` | The public chats only. A private chat is omitted, never redacted. It is not shown with its title removed. The sidebar still pages cleanly: follow `next_offset` as returned rather than computing it. |
 | Every `/knowledge/bases/{id}…` route: pages, graph, history, location, export, preview, and the writes | A private base is refused with a knowledge-base twin of the chat refusal. A base that does not exist, and a malformed id, get the same refusal. |
 | `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
@@ -249,7 +252,6 @@ reader should not infer from this page that the surface is complete:
 | `GET /sessions/running` | The ids of sessions with a turn in flight. Left unfiltered on purpose: `biorouter session list` reads it to report whether a run is still going, and a filtered answer would report a running private chat as finished. |
 | `GET /sessions/changes` | For the ids a caller names, and any other row that changed, the provider, model and tier columns. Metadata, not titles or transcripts. |
 | `GET /sessions/insights`, `GET /sessions/activity` | Machine-wide counts and per-day usage. Aggregates that name no chat. |
-| `GET /schedule/list`, `GET /schedule/{id}/inspect`, `POST /schedule/{id}/kill` | Every schedule, with the chat that created it and each running one's `current_session_id`, and a way to stop it. This is the scheduled half of what `/active_work` now filters, still open through the schedule routes: a caller that `/active_work` refuses a private chat's scheduled run can find its chat here and stop it here. |
 | `POST /schedule/{id}/run_now`, `POST /schedule/create` | Launch scheduled work that may run in a private session. |
 
 The daemon has no principal, so none of this is a *tier* bypass in the strict sense — a caller

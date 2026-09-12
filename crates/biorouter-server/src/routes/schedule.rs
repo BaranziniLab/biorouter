@@ -183,7 +183,14 @@ fn create_schedule_error(
     get,
     path = "/schedule/list",
     responses(
-        (status = 200, description = "A list of scheduled jobs", body = ListSchedulesResponse),
+        (status = 200, description = "A list of scheduled jobs. Every schedule is listed, \
+                                      including idle and paused ones — but `current_session_id` \
+                                      and `creator_session_id` are omitted from any row naming a \
+                                      chat this caller could not open, i.e. a private chat or one \
+                                      that cannot be read, for a caller carrying neither the \
+                                      user-action proof nor a private capability. Fields are \
+                                      redacted, ROWS are never dropped: a schedule is not a chat, \
+                                      and an idle one names none", body = ListSchedulesResponse),
         (status = 500, description = "Internal server error")
     ),
     tag = "schedule"
@@ -592,8 +599,25 @@ async fn update_schedule(
 #[utoipa::path(
     post,
     path = "/schedule/{id}/kill",
+    params(
+        ("id" = String, Path, description = "ID of the schedule whose run should be stopped")
+    ),
     responses(
         (status = 200, description = "Running job killed successfully"),
+        (status = 403, description = "The run belongs to a chat this caller could not open — a \
+                                      private chat, or one that cannot be read — and the request \
+                                      carried neither the user-action proof nor a private \
+                                      capability. Plain text, byte-for-byte what `GET \
+                                      /sessions/{session_id}` answers, and the same for a \
+                                      schedule that is not running and one that does not exist, \
+                                      so a refusal says nothing about the run. Nothing was \
+                                      stopped"),
+        (status = 404, description = "No such schedule"),
+        (status = 400, description = "Nothing was stopped: the schedule is not running, its run \
+                                      had already finished, or it has started a DIFFERENT run \
+                                      since this request was authorized — the last of which is \
+                                      refused rather than applied to a run the caller was not \
+                                      admitted to. The message says which"),
     ),
     tag = "schedule"
 )]
@@ -676,6 +700,11 @@ fn classify_kill_error(error: &biorouter::scheduler::SchedulerError) -> (StatusC
     ),
     responses(
         (status = 200, description = "Running job information", body = InspectJobResponse),
+        (status = 403, description = "The run belongs to a chat this caller could not open, and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Identical to the answer for a schedule \
+                                      that is not running and for one that does not exist, so a \
+                                      refusal says nothing about the run"),
         (status = 404, description = "Scheduled job not found"),
         (status = 500, description = "Internal server error")
     ),

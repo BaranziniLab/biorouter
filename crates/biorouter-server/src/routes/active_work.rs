@@ -28,11 +28,16 @@
 //! chat id Biorouter's MCP client stamps on every call, so this arm is left to
 //! work that genuinely has no chat.
 //!
-//! ⚠ **The scheduled half is not closed by this file.** `GET /schedule/list`
-//! and `GET /schedule/{id}/inspect` still name a running schedule's chat, and
-//! `POST /schedule/{id}/kill` still stops it, for any holder of the daemon
-//! secret; see the residual table in
-//! `docs/deployment/programmatic-session-access.md`.
+//! ⚠ **The scheduled half is closed in `routes::schedule`, not here — and it
+//! had to be.** `POST /schedule/{id}/kill` reaches the SAME `Scheduler` kill as
+//! this file's cancel, by the same schedule id, so while it was ungated the gate
+//! below protected nothing for its `sched:` arm: a caller refused here re-issued
+//! the request one URL over. `GET /schedule/{id}/inspect` is gated on the run's
+//! chat for the same reason, and `GET /schedule/list` redacts each row's
+//! chat-naming fields (it redacts rather than omitting: a schedule is not a
+//! chat, and an idle one names none). Both kills now also pass the chat they
+//! admitted to `Scheduler::kill_running_job_in_session`, so a schedule that
+//! started a different run between the decision and the kill is refused.
 
 use std::sync::Arc;
 

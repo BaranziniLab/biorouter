@@ -6960,7 +6960,7 @@ export type ListSchedulesErrors = {
 
 export type ListSchedulesResponses = {
     /**
-     * A list of scheduled jobs
+     * A list of scheduled jobs. Every schedule is listed, including idle and paused ones — but `current_session_id` and `creator_session_id` are omitted from any row naming a chat this caller could not open, i.e. a private chat or one that cannot be read, for a caller carrying neither the user-action proof nor a private capability. Fields are redacted, ROWS are never dropped: a schedule is not a chat, and an idle one names none
      */
     200: ListSchedulesResponse;
 };
@@ -7017,6 +7017,10 @@ export type InspectRunningJobData = {
 
 export type InspectRunningJobErrors = {
     /**
+     * The run belongs to a chat this caller could not open, and the request carried neither the user-action proof nor a private capability. Identical to the answer for a schedule that is not running and for one that does not exist, so a refusal says nothing about the run
+     */
+    403: unknown;
+    /**
      * Scheduled job not found
      */
     404: unknown;
@@ -7038,10 +7042,28 @@ export type InspectRunningJobResponse = InspectRunningJobResponses[keyof Inspect
 export type KillRunningJobData = {
     body?: never;
     path: {
+        /**
+         * ID of the schedule whose run should be stopped
+         */
         id: string;
     };
     query?: never;
     url: '/schedule/{id}/kill';
+};
+
+export type KillRunningJobErrors = {
+    /**
+     * Nothing was stopped: the schedule is not running, its run had already finished, or it has started a DIFFERENT run since this request was authorized — the last of which is refused rather than applied to a run the caller was not admitted to. The message says which
+     */
+    400: unknown;
+    /**
+     * The run belongs to a chat this caller could not open — a private chat, or one that cannot be read — and the request carried neither the user-action proof nor a private capability. Plain text, byte-for-byte what `GET /sessions/{session_id}` answers, and the same for a schedule that is not running and one that does not exist, so a refusal says nothing about the run. Nothing was stopped
+     */
+    403: unknown;
+    /**
+     * No such schedule
+     */
+    404: unknown;
 };
 
 export type KillRunningJobResponses = {

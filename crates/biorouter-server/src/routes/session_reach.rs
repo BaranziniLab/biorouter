@@ -36,10 +36,13 @@
 //!   content rather than metadata. The list now shows a row only to a caller
 //!   that could open the row's chat ([`HttpCaller::lists_work`]). The cancel
 //!   resolves its id to that chat and asks [`work_reach`]. A row that names no
-//!   chat is answered as a private one. ⚠ Their SCHEDULED half is not closed:
-//!   `GET /schedule/list` and `GET /schedule/{id}/inspect` still name a running
-//!   schedule's chat, and `POST /schedule/{id}/kill` still stops it, for any
-//!   holder of the secret. `GET /sessions/running` (ids
+//!   chat is answered as a private one. Their SCHEDULED half is closed too, and
+//!   had to be: `POST /schedule/{id}/kill` reaches the same kill by the schedule
+//!   id, so an ungated twin made the cancel's `sched:` arm bypassable by a
+//!   one-word change of URL. It and `GET /schedule/{id}/inspect` now ask
+//!   [`work_reach`]; `GET /schedule/list` keeps every row and redacts the
+//!   chat-naming FIELDS, because a schedule names chats rather than being one
+//!   and an idle schedule names none. `GET /sessions/running` (ids
 //!   only, and `biorouter session list` needs it whole to report liveness
 //!   truthfully), `GET /sessions/changes` (a watched row's provider, model and
 //!   tier columns), `GET /sessions/insights` and `GET /sessions/activity`
