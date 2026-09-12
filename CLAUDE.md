@@ -1211,14 +1211,20 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   operator-pinned-off extension and its ordinary path needs none. ⚠ Not a security change:
   nothing that was refused becomes permitted. The availability flag is sampled ONCE per roster
   and threaded, so a roster can never half-believe a person is reachable.
-- **Stop and steering answer to the reach gate on a keyless daemon** (SD-11). `/agent/cancel`,
-  `/interrupt` and the two `/agent/continuation/*` routes take the proof on a daemon that holds
-  a key, and on one that holds none gate through `authorize_agent_control` — the *same call*
-  `/agent/stop` makes — via `reply.rs::authorize_turn_control`. Tightening that gate tightens
-  who may press Stop in a browser. A keyless steer is recorded unstamped (never `UserDirect`),
-  and a subagent's tab stays refused. ⚠ Keyless behaviour can only be tested in its own binary
-  (the digest is a process-global `OnceLock`): `cargo test -p biorouter-server --test
-  turn_control_no_user_key`.
+- **Stop answers to the reach gate on a keyless daemon; steering does not** (SD-11).
+  `/agent/cancel` and the two `/agent/continuation/*` routes take the proof on a daemon that
+  holds a key, and on one that holds none gate through `authorize_agent_control` — the *same
+  call* `/agent/stop` makes — via `reply.rs::authorize_turn_control`. Tightening that gate
+  tightens who may press Stop in a browser. ⚠ **`/interrupt` is NOT one of them.** It keeps the
+  proof on both kinds of daemon: the keyless arm's whole argument is that the caller already
+  reaches the same effect through `/agent/stop` and `/reply`, and `/reply` is refused `409` by
+  the BR-33 single-turn lock in the exact state where a steer lands — so admitting it would add
+  silent mid-turn injection into a turn already in flight, which nothing else there can do
+  (`reply.rs::authorize_steer`). Its keyless refusal carries `STEER_NO_KEY` and is **never an
+  empty 403**, because an empty turn-control 403 is how `biorouter session attach` recognises a
+  daemon that holds a key and asks the person for it. A subagent's tab stays refused throughout.
+  ⚠ Keyless behaviour can only be tested in its own binary (the digest is a process-global
+  `OnceLock`): `cargo test -p biorouter-server --test turn_control_no_user_key`.
 - **Proof of a person is checked at the resolution choke point, not at one route.** Every door
   that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
   CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into

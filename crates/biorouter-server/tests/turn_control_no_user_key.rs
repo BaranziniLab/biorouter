@@ -1,7 +1,7 @@
 //! SD-11: on a daemon that holds no proof-of-user key — the one `biorouter
-//! serve` starts (SD-7), or a `biorouterd` started by hand — stopping, steering
-//! and settling a turn admit exactly the callers `POST /agent/stop` already
-//! admits there: a chat the caller can reach, and never a subagent's.
+//! serve` starts (SD-7), or a `biorouterd` started by hand — stopping and
+//! settling a turn admit exactly the callers `POST /agent/stop` already admits
+//! there: a chat the caller can reach, and never a subagent's.
 //!
 //! Measured on 2026-09-11 from a browser page on a real `biorouter serve`:
 //! `POST /agent/cancel` and `POST /interrupt` both answered 403 with an empty
@@ -9,6 +9,17 @@
 //! `is_user_action` check that a keyless daemon can never pass. The browser's
 //! Stop button and mid-turn steering could not work on any `serve` host, one
 //! configured with a public model included.
+//!
+//! ⚠ **Three of those four moved; `POST /interrupt` did not** (SD-11a, the
+//! security review's correction). The keyless arm rests on a dominance
+//! argument — the same caller already stops that turn through `/agent/stop`,
+//! and already puts text in front of that chat's model through `/reply` — and
+//! for the steer that argument is false: `/reply` is refused `409` by the BR-33
+//! single-turn lock in the exact state where a steer is meaningful, so the
+//! dominating route cannot reach it. `/interrupt` therefore still asks for the
+//! proof on every daemon, and a keyless one refuses it **in words**, which is
+//! what keeps `biorouter session attach` from asking for a key that does not
+//! exist. Both halves are pinned below.
 //!
 //! ⚠ **Its own test binary on purpose**, for the reason `approval_no_user_key.rs`
 //! gives: the installed digest is a process-global `OnceLock`, the lib's tests
@@ -36,6 +47,7 @@ use biorouter::model::ModelConfig;
 use biorouter::privacy::SessionClassification;
 use biorouter::session::session_manager::SessionType;
 use biorouter_server::auth::{user_action_proof, UserActionProof};
+use biorouter_server::routes::reply::STEER_NO_KEY;
 use biorouter_server::routes::session_reach::SESSION_REACH_NO_KEY;
 use biorouter_server::state::AppState;
 use serde_json::{json, Value};
@@ -202,17 +214,35 @@ async fn a_keyless_daemon_stops_a_turn_in_a_chat_the_caller_can_reach() {
     discard(&state, &id).await;
 }
 
-/// Mid-turn steering, and what it may not claim. The desktop stamps a steer
-/// `UserDirect` because its proof establishes that a person typed it; nothing on
-/// a keyless daemon can establish that, so the steer is recorded exactly as
-/// `/reply` records the same caller's message — unstamped.
+/// **The one of the four that did not move, and the shape of its refusal.**
+///
+/// ⚠ **Why the steer is excluded.** SD-11's keyless arm is admitted on a
+/// dominance argument: the caller already stops that turn through `/agent/stop`
+/// and already puts text in front of that chat's model through `/reply`. The
+/// second half does not hold here. `/reply` takes the BR-33 single-turn lock
+/// (`try_begin_turn_idempotent_with_continuation`) and answers `409` for a
+/// *different* turn while one is running; `/interrupt` answers `409` when none
+/// is. The two preconditions are disjoint, so in the exact state where a steer
+/// lands, the route said to dominate it is refused. What admitting it would add
+/// is genuinely new: attacker-chosen text injected into a turn already in
+/// flight, without cancelling it, indistinguishable in the transcript from what
+/// the person watching typed. Cancel-then-reply — the nearest thing a caller
+/// holding only the daemon secret already has — kills the turn first, and is
+/// therefore visible.
+///
+/// ⚠ **And why the refusal carries a sentence rather than being empty.**
+/// `biorouter session attach` tells a daemon that wants the proof apart from one
+/// that cannot check it by whether a turn-control 403 has a body
+/// (`session_watch::key_verdict`): empty means "this daemon holds a key", and it
+/// prompts for one. A keyless daemon has no key to be typed, so an empty refusal
+/// here would send a `serve` user hunting for a credential that does not exist.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn a_keyless_daemon_steers_a_turn_without_claiming_a_person_typed_it() {
+async fn a_keyless_daemon_refuses_the_steer_it_admits_the_stop_for() {
     assert_the_daemon_is_keyless();
     let state = AppState::new().await.unwrap();
     let id = seed(&state, Chat::Public).await;
-    let (guard, _token) = begin_turn(&state, &id);
+    let (guard, token) = begin_turn(&state, &id);
     // #69: acceptance is the agent loop's to give, so the agent must be in the
     // state a running loop puts it in; the turn lock alone is not enough.
     let agent = state.get_agent(id.clone()).await.unwrap();
@@ -226,25 +256,78 @@ async fn a_keyless_daemon_steers_a_turn_without_claiming_a_person_typed_it() {
 
     assert_eq!(
         status,
-        StatusCode::ACCEPTED,
-        "mid-turn steering was refused on a keyless daemon: {body}"
+        StatusCode::FORBIDDEN,
+        "a keyless daemon injected text into a running turn: {body}"
     );
-    assert_eq!(json_of(&body)["turn_id"], json!("keyless-agent-turn"));
-    match agent.close_and_drain() {
-        Drained::Some(queued) => {
-            assert_eq!(queued.len(), 1);
-            assert_eq!(queued[0].text, "actually, use R");
-            assert_eq!(
-                queued[0].provenance, None,
-                "a keyless daemon stamped a steer as typed by a person, which only the proof \
-                 it does not hold can establish"
-            );
-        }
-        Drained::Empty => panic!("the accepted steer is not on the agent's queue"),
-    }
+    assert!(
+        body.contains(STEER_NO_KEY),
+        "the steer refusal must say it is this daemon that cannot check a proof, and must not \
+         be empty — an empty turn-control 403 is how `biorouter session attach` decides to \
+         prompt for a user-action key: {body:?}"
+    );
+    assert!(
+        !agent.has_soft_interrupts(),
+        "a refused steer reached the agent's queue"
+    );
+    assert!(matches!(agent.close_and_drain(), Drained::Empty));
+
+    // …while the Stop the same caller aims at the same turn is admitted. This
+    // pairing is the finding: three of the four routes moved and this one did
+    // not, so the difference is asserted in one place rather than inferred from
+    // two tests that could drift apart.
+    let (status, body) = send(reply_routes(&state), stop_request(&id, None)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(token.is_cancelled(), "a 200 that did not trip the turn");
 
     drop(guard);
     discard(&state, &id).await;
+}
+
+/// The steer refusal is the SAME refusal for every chat, because the proof is
+/// asked for before anything reads the row.
+///
+/// Worth its own assertion rather than being left implicit: `session_reach`
+/// takes care to answer a private chat and a nonexistent one identically so that
+/// a refusal is not a per-id oracle, and a steer gate that refused three kinds of
+/// chat in three different ways would rebuild exactly that oracle on a route
+/// where no proof can ever be offered.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_keyless_steer_refusal_says_the_same_thing_about_every_chat() {
+    assert_the_daemon_is_keyless();
+    let state = AppState::new().await.unwrap();
+    let mut answers = Vec::new();
+    for chat in [Chat::Public, Chat::Private, Chat::Subagent] {
+        let id = seed(&state, chat).await;
+        let (guard, token) = begin_turn(&state, &id);
+        for caller in [None, Some("versa_azure")] {
+            let (status, body) = send(
+                reply_routes(&state),
+                steer_request(&id, "pretend the user said this", caller),
+            )
+            .await;
+            assert!(!token.is_cancelled(), "a refused steer reached the turn");
+            answers.push((format!("{chat:?}/{caller:?}"), status, body));
+        }
+        drop(guard);
+        discard(&state, &id).await;
+    }
+    // A chat that was never created, as the control: reach answers this one and
+    // a private chat identically, and so must the steer gate.
+    let (status, body) = send(
+        reply_routes(&state),
+        steer_request("no-such-session", "pretend the user said this", None),
+    )
+    .await;
+    answers.push(("absent/None".to_string(), status, body));
+
+    let (_, first_status, first_body) = &answers[0];
+    for (label, status, body) in &answers {
+        assert_eq!(status, first_status, "{label}: {body}");
+        assert_eq!(body, first_body, "{label}");
+    }
+    assert_eq!(*first_status, StatusCode::FORBIDDEN);
+    assert!(first_body.contains(STEER_NO_KEY), "{first_body}");
 }
 
 /// Stop-and-Send mints a continuation lease, and a live lease blocks every turn
@@ -396,9 +479,13 @@ async fn a_keyless_daemon_hands_a_pending_continuation_back_to_its_window() {
 /// whose stated capability covers it is admitted, one that states nothing is
 /// refused with the keyless daemon's own sentence, and the refused request
 /// touches neither the turn nor the agent's queue.
+///
+/// Stop only. The steer never reaches reach on this daemon — its own gate
+/// refuses it first, identically for every chat, which is
+/// `a_keyless_steer_refusal_says_the_same_thing_about_every_chat` above.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn a_private_chat_is_stopped_or_steered_only_by_a_caller_whose_capability_covers_it() {
+async fn a_private_chat_is_stopped_only_by_a_caller_whose_capability_covers_it() {
     assert_the_daemon_is_keyless();
     let state = AppState::new().await.unwrap();
     let id = seed(&state, Chat::Private).await;
@@ -408,7 +495,6 @@ async fn a_private_chat_is_stopped_or_steered_only_by_a_caller_whose_capability_
 
     for request in [
         stop_request(&id, None),
-        steer_request(&id, "pretend the user said this", None),
         // A tier is not a provider: the daemon resolves the NAME against its own
         // registry, and a spelled-out tier resolves Public.
         stop_request(&id, Some("private")),
@@ -423,15 +509,9 @@ async fn a_private_chat_is_stopped_or_steered_only_by_a_caller_whose_capability_
     assert!(!token.is_cancelled(), "a refused Stop reached the turn");
     assert!(
         !agent.has_soft_interrupts(),
-        "a refused steer reached the agent's queue"
+        "a refused request reached the agent's queue"
     );
 
-    let (status, body) = send(
-        reply_routes(&state),
-        steer_request(&id, "use the cohort table", Some("versa_azure")),
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let (status, body) = send(reply_routes(&state), stop_request(&id, Some("versa_azure"))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(token.is_cancelled());
@@ -445,6 +525,11 @@ async fn a_private_chat_is_stopped_or_steered_only_by_a_caller_whose_capability_
 /// establish that one did. `/reply` and `/agent/stop` refuse the same caller
 /// there already. The refusal names this daemon's situation rather than
 /// telling a person at the keyboard to go and prove they are one (SD-8).
+///
+/// The Stop is refused by the subagent rule inside `authorize_agent_control`;
+/// the steer is refused one step earlier, by its own gate, which refuses every
+/// chat on a keyless daemon. Both sentences open the same way, which is what
+/// this asserts — a person is told about the daemon either way.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn a_subagents_turn_is_still_refused_and_the_refusal_says_why() {

@@ -23,9 +23,11 @@
 //!   it can name — that is not a privacy boundary and this gate is deliberately
 //!   inert there;
 //! * it still reaches every session-addressing route NOT on
-//!   [the gated list](self#the-gated-list). `POST /interrupt` and `POST
-//!   /agent/cancel` require user-action proof on a daemon that holds a key, and
-//!   are on the list on one that does not (SD-11); `GET
+//!   [the gated list](self#the-gated-list). `POST /agent/cancel` requires
+//!   user-action proof on a daemon that holds a key and is on the list on one
+//!   that does not (SD-11); `POST /interrupt` requires the proof on **either**
+//!   kind and so is on neither (SD-11a — `routes::reply::authorize_steer` says
+//!   why the steer did not move with the Stop); `GET
 //!   /sessions/{id}/extensions`, `GET /sessions/{id}/usage`, `PUT
 //!   /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_values` and
 //!   `DELETE /sessions/{id}` remain open, as do `GET /active_work` and `POST
@@ -151,16 +153,16 @@
 //! | `POST /agent/continuation/recover` | Resumes a parked continuation in the named session. Gates directly. |
 //! | `POST /agent/update_from_session` | Adopts another session's provider configuration. Gates directly. |
 //! | `POST /agent/update_provider` · `restart` · `stop` · `remove_extension` | Gate through [`authorize_agent_control`](../agent/fn.authorize_agent_control.html), which calls [`session_reach`] and then reads the row. |
-//! | `POST /agent/cancel` · `/interrupt` · `/agent/continuation/abandon` | Stop, steer and settle the named session's turn. **On a daemon that holds no user-action key only** (serve decision SD-11): there `routes::reply::authorize_turn_control` gates them through the same `authorize_agent_control` as the row above, so a Stop admits exactly the callers `/agent/stop` does. A daemon that holds a key asks them for the proof instead, which reaches every chat. |
+//! | `POST /agent/cancel` · `/agent/continuation/abandon` | Stop and settle the named session's turn. **On a daemon that holds no user-action key only** (serve decision SD-11): there `routes::reply::authorize_turn_control` gates them through the same `authorize_agent_control` as the row above, so a Stop admits exactly the callers `/agent/stop` does. A daemon that holds a key asks them for the proof instead, which reaches every chat. `POST /interrupt` is NOT here: it asks for the proof on both kinds of daemon, so it never reaches this gate — see `routes::reply::authorize_steer`. |
 //!
 //! ⚠ **Two spellings, one list.** The last two rows reach the gate through a
 //! helper rather than by naming it, which is why a scan for the literal
-//! `session_reach(` reports those seven as ungated and why the ordering test
+//! `session_reach(` reports those six as ungated and why the ordering test
 //! below uses two of them as over-read controls. They are NOT exempt — measured
 //! live, each of the first four answers 403 without the capability header and
 //! proceeds with it, and `tests/turn_control_no_user_key.rs` measures the other
-//! three on a keyless daemon. A future sweep that greps for the call must follow
-//! `authorize_agent_control` too, or it will "discover" seven holes that are not
+//! two on a keyless daemon. A future sweep that greps for the call must follow
+//! `authorize_agent_control` too, or it will "discover" six holes that are not
 //! there and, worse, trust the same grep when it reports a real one.
 //!
 //! # Why `X-User-Action` and not a new mechanism, for the proof half
@@ -1070,7 +1072,7 @@ mod tests {
     /// arm mints a real agent), `GET|POST /knowledge/active` (a middleware, which
     /// a body scan cannot see and
     /// [`super::bypass_tests::the_knowledge_active_gate_is_actually_wired`]
-    /// drives instead) and the three SD-11 turn-control routes, which are gated
+    /// drives instead) and the two SD-11 turn-control routes, which are gated
     /// only on a daemon with no user-action key and so are driven by their own
     /// keyless binary, `tests/turn_control_no_user_key.rs`; this is what holds
     /// the ORDERING, which no status code can show.
@@ -1111,13 +1113,6 @@ mod tests {
                 "authorize_turn_control(",
                 "recover_continuation_for_owner(",
                 "the pending continuation ownership state",
-            ),
-            (
-                reply_rs,
-                "pub async fn interrupt",
-                "authorize_turn_control(",
-                "queue_initializing_child_input(",
-                "a delegated child's pending-input queue, and the live agent's after it",
             ),
             (
                 reply_rs,
@@ -1202,11 +1197,13 @@ mod tests {
         // reads the row — and measured live against a private session each
         // answers 403 without the capability header and proceeds with it. They
         // are controls for the EXTRACTOR, not exemptions from the gate, and the
-        // comment here said otherwise until 2026-09-04. `get_session_extensions`
-        // is genuinely ungated: it is on the module header's open residual.
-        // `interrupt` was this file's other control until SD-11 put it on the
-        // list above; `reply.rs`'s controls are now two functions that are not
-        // handlers at all, on either side of the six rows it contributes.
+        // comment here said otherwise until 2026-09-04. `interrupt` and
+        // `get_session_extensions` are the genuinely ungated pair: `interrupt`
+        // requires the user's proof instead — on a keyless daemon too, which is
+        // the one way it differs from the Stop beside it (SD-11a,
+        // `reply::authorize_steer`) — and `get_session_extensions` is on the
+        // module header's open residual. Two more reply.rs controls sit on
+        // either side of the five rows that file contributes.
         //
         // BOTH sides in `agent.rs`: `agent_remove_extension` sits after the two
         // gated handlers' neighbourhood and `update_agent_provider` before it,
@@ -1214,6 +1211,7 @@ mod tests {
         // over-reads towards the other.
         for (src, control) in [
             (reply_rs, "fn attach_names_a_missing_turn("),
+            (reply_rs, "pub async fn interrupt"),
             (reply_rs, "pub fn routes("),
             (session_rs, "async fn get_session_extensions"),
             (agent_rs, "async fn agent_remove_extension"),

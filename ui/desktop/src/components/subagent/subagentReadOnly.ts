@@ -10,9 +10,10 @@ import { isBrowserSurface } from '../../utils/surface';
  * that a person made it. A subagent's chat is where that proof decides
  * everything — a message there is recorded as a person intervening, and the
  * parent is told so — and the daemon refuses these writes to it from a caller
- * that cannot prove a person acted: `POST /reply`; `POST /agent/cancel`,
- * `POST /interrupt` and the two continuation routes (**SD-11**);
- * `POST /agent/stop` and the extension routes; `POST
+ * that cannot prove a person acted: `POST /reply`; `POST /agent/cancel` and
+ * the two continuation routes (**SD-11**); `POST /interrupt`, which asks for the
+ * proof on every daemon and so refuses here for its own reason rather than
+ * SD-11's; `POST /agent/stop` and the extension routes; `POST
  * /agent/update_working_dir`; and `POST /agent/resume` itself. On a keyless
  * daemon that is every caller, always. Those refusals are the design and stay.
  *
