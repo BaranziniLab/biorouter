@@ -12302,10 +12302,24 @@ impl Agent {
             workflow_builder = workflow_builder.parameters(parameters);
         }
 
-        let workflow = workflow_builder.build().map_err(|e| {
+        let mut workflow = workflow_builder.build().map_err(|e| {
             tracing::error!("Failed to build workflow: {}", e);
             anyhow!("Workflow build failed: {}", e)
         })?;
+
+        // A parameter the document refers to nowhere makes the whole workflow
+        // unsavable: `workflow::service::validate` refuses it either way round
+        // — with no default as "Optional parameters missing default values", with
+        // one as "Unnecessary parameter definitions" — so a capture that emitted
+        // one could not be saved from any surface. Models produce them routinely,
+        // because `workflow.md` asks for parameters and for their `{{ key }}`
+        // references as two separate instructions.
+        //
+        // Pruned HERE rather than in each of the three capture surfaces: the
+        // route, the CLI's `/workflow` and the model's own `generate` all come
+        // through this function, which is the whole reason
+        // `tests/workflow_capture_parity.rs` exists.
+        crate::workflow::service::drop_unreferenced_parameters(&mut workflow);
 
         tracing::info!("Workflow creation completed successfully");
         Ok(workflow)

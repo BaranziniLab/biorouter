@@ -689,6 +689,18 @@ export function WorkflowFormFields({
                   onSelectedIdsChange={onKnowledgeBaseIdsChange}
                   defaultId={defaultKnowledgeBaseId}
                   onDefaultIdChange={onDefaultKnowledgeBaseIdChange}
+                  // A chat with no pinned primary is captured as `default: null`,
+                  // and the daemon never infers one from `visible`
+                  // (`plan_knowledge_selection`) — so the workflow really will
+                  // have no default, and every chat it starts will have no write
+                  // target. That is the intent, not a bug, and the card said
+                  // nothing about it while its own description promised "which
+                  // one is focused by default": the reader had no way to tell
+                  // which of the two they were looking at.
+                  noDefaultText={
+                    'No default — this workflow will not focus one. Chats it starts search ' +
+                    'every base above, and a write that names no base asks which one to use.'
+                  }
                   notice={knowledgeBaseNotice}
                   emptyText="No knowledge bases found"
                   searchPlaceholder="Search knowledge bases..."

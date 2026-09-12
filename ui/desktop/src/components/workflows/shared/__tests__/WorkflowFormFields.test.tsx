@@ -847,4 +847,48 @@ describe('WorkflowFormFields', () => {
       expect(result).toEqual(['user_name', 'user_id', 'email_address', 'app_name']);
     });
   });
+
+  /**
+   * A chat with no pinned primary base is captured as `default: null`, and the
+   * daemon never infers a primary from `visible`
+   * (`plan_knowledge_selection`) — so the workflow really will have no default.
+   * The card promised "which one is focused by default" and then said nothing at
+   * all about not having one, leaving the correct capture indistinguishable from
+   * a bug.
+   */
+  describe('Knowledge bases card', () => {
+    const renderKnowledgeCard = (defaultKnowledgeBaseId: string | null) =>
+      render(
+        <TestWrapper
+          knowledgeBaseItems={[
+            { id: 'lab-notes', label: 'lab-notes' },
+            { id: 'soul', label: 'soul' },
+          ]}
+          selectedKnowledgeBaseIds={['lab-notes', 'soul']}
+          onKnowledgeBaseIdsChange={vi.fn()}
+          defaultKnowledgeBaseId={defaultKnowledgeBaseId}
+          onDefaultKnowledgeBaseIdChange={vi.fn()}
+        />
+      );
+
+    it('says the workflow will have no default when none is named', async () => {
+      const user = userEvent.setup();
+      renderKnowledgeCard(null);
+      await expandAdvancedSection(user);
+
+      const summary = screen.getByTestId('resource-picker-default-summary');
+      expect(summary).toHaveTextContent(/no default/i);
+      expect(summary).toHaveTextContent(/this workflow will not focus one/i);
+    });
+
+    it('names the default when one is named', async () => {
+      const user = userEvent.setup();
+      renderKnowledgeCard('lab-notes');
+      await expandAdvancedSection(user);
+
+      expect(screen.getByTestId('resource-picker-default-summary')).toHaveTextContent(
+        'Default: lab-notes'
+      );
+    });
+  });
 });

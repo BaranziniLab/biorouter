@@ -333,6 +333,86 @@ pub fn validate(workflow: &Workflow) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("{err}"))
 }
 
+/// Drop the parameters no part of the document refers to, and return their keys.
+///
+/// [`validate`] refuses a parameter that appears in no `{{ key }}` anywhere in
+/// the document ("Unnecessary parameter definitions"), and separately refuses an
+/// `optional` parameter with no `default` ("Optional parameters missing default
+/// values"). Both rules are right on their own, and together they leave an
+/// unreferenced `optional` parameter with no accepted form at all: removing its
+/// default trades one refusal for the other. A generator that emits one
+/// therefore produces a workflow the user cannot save by any route — which is
+/// what "Create workflow from this chat" did, because `workflow.md` asks for
+/// parameters and for `{{ key }}` references as two separate instructions and a
+/// model routinely obeys only the first.
+///
+/// So the generated document is normalised instead of the rules being relaxed. A
+/// parameter nothing refers to is a value the run would collect and discard, and
+/// dropping it is the same stance `Agent::create_workflow` already takes towards
+/// a parameter list that does not parse: keep the expensive part, lose the part
+/// that cannot work, say so in the log.
+///
+/// ⚠ **The reference set is read the way [`validate`] reads it** — every
+/// `{{ … }}` in the serialized document, not just the ones in `prompt` and
+/// `instructions` — so the two can never disagree about what "referenced"
+/// means. A serialization failure drops nothing: an unpruned document still has
+/// a chance of being valid, and a silently emptied `parameters` list does not.
+pub fn drop_unreferenced_parameters(workflow: &mut Workflow) -> Vec<String> {
+    let Some(parameters) = workflow.parameters.as_ref() else {
+        return Vec::new();
+    };
+    if parameters.is_empty() {
+        return Vec::new();
+    }
+
+    let yaml = match workflow.to_yaml() {
+        Ok(yaml) => yaml,
+        Err(err) => {
+            tracing::warn!(
+                "Keeping the generated parameters: the workflow would not serialize \
+                 for a reference check: {err}"
+            );
+            return Vec::new();
+        }
+    };
+    let referenced = match crate::workflow::template_workflow::parse_workflow_content(&yaml, None) {
+        Ok((_, variables)) => variables,
+        Err(err) => {
+            tracing::warn!(
+                "Keeping the generated parameters: the workflow would not parse \
+                 for a reference check: {err}"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut dropped = Vec::new();
+    let kept: Vec<_> = parameters
+        .iter()
+        .filter(|parameter| {
+            if referenced.contains(&parameter.key) {
+                return true;
+            }
+            dropped.push(parameter.key.clone());
+            false
+        })
+        .cloned()
+        .collect();
+
+    if dropped.is_empty() {
+        return dropped;
+    }
+    tracing::warn!(
+        "Dropping generated workflow parameters the document never refers to: {}",
+        dropped.join(", ")
+    );
+    // `None`, not an empty list: `skip_serializing_if` keeps an empty `Vec` out
+    // of the YAML anyway, and `None` is what every other "there is nothing to
+    // say" path in this module means by it.
+    workflow.parameters = if kept.is_empty() { None } else { Some(kept) };
+    dropped
+}
+
 /// Substitute parameter values into a workflow template.
 ///
 /// `Ok(None)` means required parameters are still missing — the caller is

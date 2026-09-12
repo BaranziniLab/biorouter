@@ -103,24 +103,34 @@ fn validate_parameters_in_template(
     let mut message = String::new();
 
     if !missing_keys.is_empty() {
+        // Sorted, like the arm below: both sides come out of a `HashSet`
+        // difference, so an unsorted join gives the same fault a different
+        // message on each run.
+        let mut names: Vec<String> = missing_keys.iter().map(|s| s.to_string()).collect();
+        names.sort();
         message.push_str(&format!(
             "Missing definitions for parameters in the workflow file: {}.",
-            missing_keys
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            names.join(", ")
         ));
     }
 
     if !extra_keys.is_empty() {
+        // The prefix is load-bearing — it is what the messages users and tests
+        // have already matched on say. What follows it is new: the old message
+        // named the parameter and stopped, leaving "unnecessary" to be guessed
+        // at, and the obvious guess (remove its `default`) trades this refusal
+        // for `validate_optional_parameters`' one. Naming the fix rather than
+        // only the fault is the difference between a rule and a dead end.
+        let mut names: Vec<String> = extra_keys.iter().map(|s| s.to_string()).collect();
+        names.sort();
         message.push_str(&format!(
-            "\nUnnecessary parameter definitions: {}.",
-            extra_keys
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            "\nUnnecessary parameter definitions: {}. Nothing in the workflow \
+             refers to {}, so a value for it would be collected and then \
+             discarded — write {{{{ {} }}}} into `prompt` or `instructions`, or \
+             remove the definition. Giving it a `default` does not help.",
+            names.join(", "),
+            if names.len() == 1 { "it" } else { "them" },
+            names[0]
         ));
     }
     Err(anyhow::anyhow!("{}", message.trim_end()))
