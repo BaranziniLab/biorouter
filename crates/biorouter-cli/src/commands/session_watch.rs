@@ -1359,8 +1359,11 @@ where
 /// turn, the agent or a subagent's pending input (`routes::reply::interrupt`).
 /// So the answer is the gate's verdict and nothing else: 400 when this terminal
 /// may steer the session as it is, an empty 403 when the daemon wants the key,
-/// and a 403 in the daemon's words when no key would help. The daemon's side
-/// is pinned by `routes::reply`'s keyed tests and
+/// and a 403 in the daemon's words when no key would help. ⚠ On a **keyless**
+/// daemon the third is the only answer there is — since SD-11 settled, a steer
+/// asks for the proof on both kinds of daemon, so `reply::steer_refusal` answers
+/// from the headers and the 400 is unreachable there whatever chat is named. The
+/// daemon's side is pinned by `routes::reply`'s keyed tests and
 /// `tests/turn_control_no_user_key.rs`.
 fn steer_gate_question(session_id: &str) -> String {
     serde_json::json!({ "session_id": session_id, "text": "" }).to_string()

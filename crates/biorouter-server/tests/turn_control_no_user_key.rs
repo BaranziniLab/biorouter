@@ -596,22 +596,35 @@ fn terminal_question(session_id: &str, caller_provider: Option<&str>) -> Request
 
 /// The question `biorouter session attach` asks as it joins, and `session send`
 /// after a refusal: would this daemon take a steer from this terminal, and does
-/// it want the user-action key for one? On this daemon the gate answers it and
-/// the text check refuses what the gate lets through, so the answer is the
-/// gate's verdict and nothing more — a 400 where the terminal may steer, and
-/// otherwise a refusal in the daemon's own words. Never the EMPTY 403 that means
-/// "this daemon holds a key", which would send the terminal to ask the person
-/// for one that does not exist. And the question touches neither the turn nor
-/// the agent's queue.
+/// it want the user-action key for one?
+///
+/// The answer here is always **no, and here is why** — `STEER_NO_KEY`, a 403
+/// carrying the daemon's own sentence. ⚠ This is the row where SD-11 settled
+/// narrower than the branch that wrote this test assumed. `POST /interrupt` is
+/// NOT admitted by the reach gate on a keyless daemon: it asks for the proof on
+/// **both** kinds, so `reply::steer_refusal` answers from the HEADERS, before
+/// the body is parsed and before any chat is resolved. So the chat and the
+/// stated caller change nothing, where an earlier draft expected a 400 for a
+/// chat the gate would have admitted.
+///
+/// What the terminal actually needs is unchanged, and is what this asserts:
+/// never the EMPTY 403 that means "this daemon holds a key", which would send
+/// the terminal to ask the person for one that does not exist; always a sentence
+/// it can print instead; and the question touches neither the turn nor the
+/// agent's queue — now trivially, since nothing is reached.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn the_terminals_empty_steer_is_answered_by_the_gate_and_touches_nothing() {
     assert_the_daemon_is_keyless();
     let state = AppState::new().await.unwrap();
+    // Every chat, asked with and without a stated capability: the answer is the
+    // same 403 and the same sentence, because the refusal is decided from the
+    // headers alone. The rows are kept rather than collapsed so that a change
+    // admitting the steer for SOME chat fails here instead of passing quietly.
     for (chat, caller, expected) in [
-        (Chat::Public, None, StatusCode::BAD_REQUEST),
+        (Chat::Public, None, StatusCode::FORBIDDEN),
         (Chat::Private, None, StatusCode::FORBIDDEN),
-        (Chat::Private, Some("versa_azure"), StatusCode::BAD_REQUEST),
+        (Chat::Private, Some("versa_azure"), StatusCode::FORBIDDEN),
         (Chat::Subagent, None, StatusCode::FORBIDDEN),
         (Chat::Subagent, Some("versa_azure"), StatusCode::FORBIDDEN),
     ] {
