@@ -1857,13 +1857,33 @@ impl CodeExecutionClient {
         // if it was the agent loop that dispatched it. Read HERE, on the task
         // the scope covers — the handler below is spawned, and a task-local does
         // not follow a spawn. See `script_call_gate`.
-        let judge = crate::agents::script_call_gate::current().map(|gate| {
-            let risks = crate::permission::tool_risk::ToolRiskRegistry::new();
-            // Graded from the exact list the script's imports are built from,
-            // so every call it can make has its own tool's grade.
-            risks.refresh_from_tools(&catalogue);
-            ScriptJudge { gate, risks }
-        });
+        //
+        // ⚠ An absent judge is never read as "nothing to judge". `judge_for`
+        // tells a person-driven dispatch (benign, unchanged) apart from an
+        // agent-loop dispatch whose scope was lost (a defect, and every call the
+        // script makes would go past the permission system), and the second
+        // refuses the whole script rather than running it unjudged.
+        let judge = match crate::agents::script_call_gate::judge_for(session_id) {
+            crate::agents::script_call_gate::ScriptJudging::By(gate) => {
+                let risks = crate::permission::tool_risk::ToolRiskRegistry::new();
+                // Graded from the exact list the script's imports are built from,
+                // so every call it can make has its own tool's grade.
+                risks.refresh_from_tools(&catalogue);
+                Some(ScriptJudge { gate, risks })
+            }
+            crate::agents::script_call_gate::ScriptJudging::PersonDriven => None,
+            crate::agents::script_call_gate::ScriptJudging::JudgeLost => {
+                tracing::error!(
+                    counter.biorouter.script_call_judge_lost = 1,
+                    session = %session_id,
+                    "an execute_code call dispatched by the agent loop reached the handler with \
+                     no script-call judge installed; refusing the script rather than running its \
+                     tool calls unjudged (a task-local does not survive a tokio::spawn — see \
+                     agents::script_call_gate)"
+                );
+                return Err(crate::agents::script_call_gate::JUDGE_LOST_REFUSAL.to_string());
+            }
+        };
         // …and whether a person can be asked at all. Also a task-local, also
         // lost across the spawn: without this a scheduled run's script would
         // park an ask nobody can answer until its time-to-live, where every other
@@ -2305,8 +2325,12 @@ impl CodeExecutionClient {
     /// hook's rewrite of them, because what runs is what was judged. `Err` is the
     /// refusal the script gets instead, as the same sentence a direct call gets.
     ///
-    /// No judge means no agent loop dispatched this script (see
-    /// `script_call_gate::current`), and the call proceeds as it always has.
+    /// `None` here is a *decision already taken*, not an absence:
+    /// `handle_execute_code` asked `script_call_gate::judge_for` once, at the one
+    /// place that can tell a person-driven dispatch from an agent-loop dispatch
+    /// whose judge was lost, and only the first reaches here. ⚠ Do not re-derive
+    /// that meaning — a second polarity decision is how the two collapse back
+    /// into one silent fail-open.
     async fn judged_arguments(
         judge: Option<&ScriptJudge>,
         cap: crate::privacy::CallCapability,

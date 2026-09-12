@@ -64,16 +64,42 @@
 //! [`Agent::dispatch_tool_call`] builds a [`ScriptCallGate`] for an
 //! `execute_code` call and runs the TOOL BODY — the future it returns, not the
 //! dispatch that builds it — inside [`judging_script_calls`]. `execute_code`
-//! reads it with [`current`] and hands it to the task that dispatches the
-//! script's calls. Absent means the caller is not the agent loop: `POST
-//! /agent/call_tool`, which a person drives and which bypasses every inspector
-//! for the outer call too. There is no model decision to gate there, so a
-//! script run that way behaves exactly as it always has.
+//! asks [`judge_for`] for it and hands it to the task that dispatches the
+//! script's calls.
+//!
+//! ## An absent judge is two situations, and only one of them is benign
+//!
+//! A task-local is unreachable across a `tokio::spawn`, so "no gate on this
+//! task" is evidence of nothing by itself. It is equally the shape of
+//!
+//! * a **person** running a script — `POST /agent/call_tool`, an Agent Drafter
+//!   app, the coding-agent bridge (which judges with its own `BridgeGrant`).
+//!   No agent loop dispatched it, every inspector was bypassed for the outer
+//!   call too, and there is no model decision to gate: benign, and behaves
+//!   exactly as it always has; and of
+//! * the agent loop dispatching a script whose **scope did not survive** the
+//!   trip down to the handler, which would run every call inside it *unjudged*.
+//!
+//! Collapsing those into one `None` made the whole control rest on the shape of
+//! the call graph: a `tokio::spawn` inserted anywhere between
+//! [`Agent::dispatch_tool_call`] and `handle_execute_code` would silently
+//! disable it — no type error, no refusal, no log. So they are told apart by a
+//! record a spawn cannot lose: [`DispatchedByAgentLoop`], a process-global count
+//! of the sessions the agent loop currently has an `execute_code` body in flight
+//! for, taken by [`judging_script_calls`] itself and released when that body
+//! ends. Gate absent **and** that record present is
+//! [`ScriptJudging::JudgeLost`], and it refuses the whole script.
+//!
+//! It errs the safe way round. Its one false positive is a *person* dispatching
+//! a script through one of the ungated doors for a session whose own turn is
+//! already inside one — and there the answer is a loud refusal (a tool error and
+//! a `tracing::error!`), never a silent grant.
 //!
 //! [`ToolInspector`]: crate::tool_inspection::ToolInspector
 //! [`Agent::dispatch_tool_call`]: crate::agents::Agent::dispatch_tool_call
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, JsonObject};
@@ -104,6 +130,59 @@ tokio::task_local! {
     static SCRIPT_CALL_GATE: Arc<ScriptCallGate>;
 }
 
+/// The sessions the agent loop currently has an `execute_code` tool body in
+/// flight for, and how many (one turn may dispatch several scripts at once).
+///
+/// The durable half of [`judge_for`]: a `tokio::spawn` loses the task-local
+/// above, and cannot touch this. Keyed by session because that is the one thing
+/// `handle_execute_code` is handed that identifies the dispatch — see the module
+/// header for why a false positive here is a refusal rather than a grant.
+static AGENT_LOOP_SCRIPTS: LazyLock<Mutex<HashMap<String, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The agent loop's record that it is running a script for one session with a
+/// judge installed. Held for exactly the life of the tool body, so a dropped
+/// (cancelled) body releases it too.
+pub(crate) struct DispatchedByAgentLoop {
+    session_id: String,
+}
+
+impl DispatchedByAgentLoop {
+    pub(crate) fn record(session_id: &str) -> Self {
+        *AGENT_LOOP_SCRIPTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(session_id.to_string())
+            .or_default() += 1;
+        Self {
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
+impl Drop for DispatchedByAgentLoop {
+    fn drop(&mut self) {
+        let mut scripts = AGENT_LOOP_SCRIPTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Remove the key at zero rather than leaving a `0` behind: the map is
+        // process-global in a daemon that outlives every session in it.
+        if let Some(count) = scripts.get_mut(&self.session_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                scripts.remove(&self.session_id);
+            }
+        }
+    }
+}
+
+fn agent_loop_is_running_a_script(session_id: &str) -> bool {
+    AGENT_LOOP_SCRIPTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains_key(session_id)
+}
+
 /// Run `tool_body` with `gate` judging any call a script makes inside it.
 ///
 /// ⚠ Wrap the tool's BODY. `dispatch_tool_call` returns a future, and a scope
@@ -113,13 +192,64 @@ pub(crate) async fn judging_script_calls<F: std::future::Future>(
     gate: Arc<ScriptCallGate>,
     tool_body: F,
 ) -> F::Output {
+    // Taken HERE rather than in the agent loop, so the record and the scope it
+    // vouches for are created and released by the same expression and can never
+    // be wired up one without the other.
+    let _dispatched = DispatchedByAgentLoop::record(&gate.session.id);
     SCRIPT_CALL_GATE.scope(gate, tool_body).await
 }
 
+/// No [`ScriptCallGate`] is installed on the task that asked.
+///
+/// A type of its own rather than a `None`, because on its own this is not a
+/// decision — [`judge_for`] is what decides what it means.
+#[derive(Debug)]
+struct NoGateOnThisTask;
+
 /// The gate installed around the tool body running on this task, if any.
-pub(crate) fn current() -> Option<Arc<ScriptCallGate>> {
-    SCRIPT_CALL_GATE.try_with(Arc::clone).ok()
+fn current() -> Result<Arc<ScriptCallGate>, NoGateOnThisTask> {
+    SCRIPT_CALL_GATE
+        .try_with(Arc::clone)
+        .map_err(|_| NoGateOnThisTask)
 }
+
+/// Who, if anyone, judges the calls the script about to run makes.
+///
+/// No `Debug`: [`ScriptCallGate`] has none, and it holds the inspector stack,
+/// the session and the hooks manager — none of which belongs in a log line.
+pub(crate) enum ScriptJudging {
+    /// The agent loop dispatched this script and its judge is right here.
+    By(Arc<ScriptCallGate>),
+    /// Nothing in the agent loop dispatched it: a person did, through a door
+    /// that bypasses every inspector for the outer call too. Unchanged
+    /// behaviour — see the module header.
+    PersonDriven,
+    /// The agent loop IS running a script for this session, and this task
+    /// cannot see its judge. Refuse: running on would put every call the script
+    /// makes past the permission system.
+    JudgeLost,
+}
+
+/// Which of the three situations in the module header this `execute_code` call
+/// is in. The ONE place an absent gate is given a meaning.
+pub(crate) fn judge_for(session_id: &str) -> ScriptJudging {
+    match current() {
+        Ok(gate) => ScriptJudging::By(gate),
+        Err(NoGateOnThisTask) if agent_loop_is_running_a_script(session_id) => {
+            ScriptJudging::JudgeLost
+        }
+        Err(NoGateOnThisTask) => ScriptJudging::PersonDriven,
+    }
+}
+
+/// What a script whose judge did not reach it is answered with. Deliberately
+/// says it is a defect: there is no user action that fixes it, and a sentence
+/// that reads like a permission refusal would send them looking for a setting.
+pub(crate) const JUDGE_LOST_REFUSAL: &str =
+    "This script was not run. Biorouter dispatched it but the permission judge for the tool \
+     calls it would make did not reach it, so those calls could not be put to you — and running \
+     them unjudged is not an option. This is a defect in Biorouter, not something you can allow: \
+     please report it.";
 
 /// Inspectors that do not judge a script's calls. See the module header.
 const NOT_FOR_SCRIPT_CALLS: &[&str] = &[crate::tool_monitor::REPETITION_INSPECTOR_NAME];
@@ -1410,6 +1540,126 @@ mod tests {
                 panic!("a rewritten catastrophic command must not run: {call:?}")
             }
         }
+    }
+
+    /// `execute_code` through the door a PERSON's dispatch takes —
+    /// `ExtensionManager::dispatch_tool_call`, with no judge scope anywhere
+    /// above it. The only way to reach the handler the way a lost scope would.
+    async fn dispatch_with_no_scope(f: &Fixture, code: &str) -> (bool, String) {
+        let call = CallToolRequestParams {
+            task: None,
+            meta: None,
+            name: EXECUTE_CODE.into(),
+            arguments: Some(object!({ "code": code })),
+        };
+        let dispatched = f
+            .agent
+            .extension_manager
+            .dispatch_tool_call(
+                &f.session.id,
+                call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("execute_code dispatches");
+        let result = tokio::time::timeout(Duration::from_secs(60), dispatched.result)
+            .await
+            .expect("execute_code returns a result")
+            .expect("execute_code returns a result");
+        (result.is_error.unwrap_or(false), text_of(&result))
+    }
+
+    /// An absent judge is two situations, and only one of them may run.
+    ///
+    /// The benign half is a **person** dispatching a script through a door that
+    /// judges nothing — `POST /agent/call_tool`, an Agent Drafter app, the
+    /// coding-agent bridge. It runs, exactly as it always has.
+    ///
+    /// The other half is the agent loop's OWN dispatch arriving with its scope
+    /// lost: the shape a `tokio::spawn` inserted anywhere between
+    /// `Agent::dispatch_tool_call` and `handle_execute_code` would produce. Until
+    /// this test, `try_with(..).ok()` collapsed it into the benign one and the
+    /// script ran with every call inside it unjudged — a silent, permissive
+    /// failure in a permission control, the opposite polarity from `unjudged()`
+    /// three lines away. It must now be refused.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_script_whose_judge_was_lost_is_refused_and_a_person_driven_one_still_runs() {
+        let f = fixture(BioRouterMode::Approve).await;
+
+        // 1. Nothing recorded: a person drove it, and it runs.
+        let (is_error, output) = dispatch_with_no_scope(
+            &f,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-PERSON-DRIVEN" }));"#,
+        )
+        .await;
+        assert!(!is_error, "a person-driven script must still run: {output}");
+        assert!(
+            output.contains("SCRIPT-GATE-PERSON-DRIVEN"),
+            "…and its call must have run: {output}"
+        );
+
+        // 2. The agent loop IS running a script for this session — and the
+        //    handler cannot see the judge. Refused, and nothing inside it ran.
+        let recorded = super::DispatchedByAgentLoop::record(&f.session.id);
+        let (is_error, output) = dispatch_with_no_scope(
+            &f,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-UNJUDGED" }));"#,
+        )
+        .await;
+        drop(recorded);
+
+        assert!(
+            is_error,
+            "a script the agent loop dispatched with no judge must be refused: {output}"
+        );
+        assert!(
+            output.contains("permission judge"),
+            "…and the refusal must say what was missing: {output}"
+        );
+        assert!(
+            !output.contains("SCRIPT-GATE-UNJUDGED"),
+            "…and its shell call must never have run: {output}"
+        );
+        assert!(
+            ActionRequiredManager::global()
+                .drain_requests(&f.session.id)
+                .is_empty(),
+            "a lost judge is a defect, not a decision to put to the user"
+        );
+
+        // 3. …and the record is released with the body, so the next person-driven
+        //    dispatch is benign again rather than permanently refused.
+        let (is_error, output) = dispatch_with_no_scope(
+            &f,
+            r#"import { shell } from "developer";
+               record_result(shell({ command: "echo SCRIPT-GATE-RELEASED" }));"#,
+        )
+        .await;
+        assert!(!is_error, "{output}");
+        assert!(output.contains("SCRIPT-GATE-RELEASED"), "{output}");
+    }
+
+    /// The record the refusal above keys on is taken by `judging_script_calls`
+    /// itself, so it cannot be wired up without the scope it vouches for — and
+    /// it is released when the body ends, cancelled bodies included.
+    #[tokio::test]
+    async fn the_agent_loop_record_lives_exactly_as_long_as_the_scope() {
+        let session = "script-gate-record-probe";
+        assert!(!super::agent_loop_is_running_a_script(session));
+        {
+            let _held = super::DispatchedByAgentLoop::record(session);
+            assert!(super::agent_loop_is_running_a_script(session));
+            let _nested = super::DispatchedByAgentLoop::record(session);
+            assert!(super::agent_loop_is_running_a_script(session));
+        }
+        assert!(
+            !super::agent_loop_is_running_a_script(session),
+            "the record must not outlive the bodies that took it"
+        );
     }
 
     #[test]
