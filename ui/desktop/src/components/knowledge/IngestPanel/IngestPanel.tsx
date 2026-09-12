@@ -467,22 +467,30 @@ export function IngestPanel() {
   // guarded by a cursor + helper line, so it never trains the eye to ignore a
   // permanently half-lit button.
   const nothingToDigest = !dispatchKbId || !model || items.length === 0;
-  const digestBlockedReason = !primaryKbId
-    ? 'Choose or create a primary knowledge base above to enable digestion.'
-    : // Ahead of every model verdict: with no manifest, "which model" has no
-      // answer yet, and "no model is configured" would send the user to fix a
-      // configuration that is not what is broken.
-      kbUnavailable
-      ? basesError
-        ? 'Could not load your knowledge bases, so digestion is on hold.'
-        : 'This knowledge base is unavailable, so digestion is on hold.'
-      : modelPending
-        ? 'Checking which model this knowledge base digests with…'
-        : !model
-          ? 'No model is configured. Choose a model above to enable digestion.'
-          : items.length === 0
-            ? 'Stage a file to digest.'
-            : null;
+  // ⚠ **There is deliberately no "choose a primary knowledge base" rung here.**
+  // This panel cannot be mounted without one: `KnowledgeView` replaces its whole
+  // body — Sources rail included — with the `No primary knowledge base`
+  // `EmptyState` whenever `primaryKbId` is null, and that state is the only route
+  // to this component. A rung for it read as covered behaviour while being
+  // unreachable, and it was the weaker of the two answers anyway: the EmptyState
+  // carries the action (Choose a base), where a blocked-reason line can only
+  // describe the absence. `KnowledgeView.test.tsx` pins the view side of this.
+  //
+  // The ladder therefore opens on `kbUnavailable`, ahead of every model verdict:
+  // with no manifest, "which model" has no answer yet, and "no model is
+  // configured" would send the user to fix a configuration that is not what is
+  // broken.
+  const digestBlockedReason = kbUnavailable
+    ? basesError
+      ? 'Could not load your knowledge bases, so digestion is on hold.'
+      : 'This knowledge base is unavailable, so digestion is on hold.'
+    : modelPending
+      ? 'Checking which model this knowledge base digests with…'
+      : !model
+        ? 'No model is configured. Choose a model above to enable digestion.'
+        : items.length === 0
+          ? 'Stage a file to digest.'
+          : null;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
