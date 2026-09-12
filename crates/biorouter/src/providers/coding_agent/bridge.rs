@@ -430,6 +430,15 @@ impl BridgeGrant {
     /// A call routed to `needs_approval` parks on the session's trusted approval
     /// card. Cancellation, lease revocation and the approval deadline release it.
     ///
+    /// ⚠ **This returns the tool's result UNFRAMED.** The untrusted-output
+    /// guardrail lives one level up, in [`Self::call_for_child`], because that is
+    /// the function whose answer a model reads — see its docs for why the frame
+    /// has to sit above the record/view fork. `call_for_child` is the only
+    /// production caller of this function (the route calls it and nothing else);
+    /// everything else reaching for `call` is a test driving the gate stack. If
+    /// you ever answer a model from here directly, guard the result first, or the
+    /// child reads raw third-party bytes again.
+    ///
     /// BR-19's PreToolUse **rewrite** is honoured here, and the sequence below is
     /// `Agent::inspect_and_gate_tool_requests`' sequence rather than a shortened
     /// version of it — see [`Self::collect_hook_rewrites`] for why the second
