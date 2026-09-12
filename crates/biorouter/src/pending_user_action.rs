@@ -321,13 +321,20 @@ struct Entry {
     /// the session that owns the parked call and whose tab always shows it —
     /// and this list only widens *who may answer*, never who may raise.
     ///
-    /// ⚠ Publishing and recording are one operation
-    /// ([`PendingUserAction::also_surface_in`]) because each half alone is a
-    /// bug with its own symptom: a recorded surface that was never published is
-    /// an approval nobody can see, and a published card that was never recorded
-    /// is a card the user clicks and watches do nothing —
-    /// [`Self::answerable_in`] answers `Unknown` for every session but this
-    /// one.
+    /// ⚠ Recording and publishing happen in one operation
+    /// ([`PendingUserAction::also_surface_in`]) because each half alone is a bug
+    /// with its own symptom: a recorded surface the card was never published to
+    /// is an approval nobody can see, and a published card that was never
+    /// recorded is a card the user clicks and watches do nothing —
+    /// [`Self::answerable_in`] answers `Unknown` for every session but this one.
+    ///
+    /// What that pairing does NOT promise is an audience. `session_events::publish`
+    /// is best-effort by design: a session nobody is observing drops the frame.
+    /// So a surface recorded here may still show nothing — for a chat whose turn
+    /// has ended and which is therefore neither streaming `/reply` nor observing
+    /// its own bus. That is no worse than not escalating, and it grants nothing:
+    /// a decision still has to carry the request id, which only a rendered card
+    /// supplies.
     escalated_to: Vec<String>,
 }
 
@@ -340,7 +347,10 @@ impl Entry {
     /// answer merely by knowing the id is a cross-session approval leak.
     fn answerable_in(&self, session_id: &str) -> bool {
         self.session_id.as_deref() == Some(session_id)
-            || self.escalated_to.iter().any(|surface| surface == session_id)
+            || self
+                .escalated_to
+                .iter()
+                .any(|surface| surface == session_id)
     }
 }
 
@@ -681,7 +691,11 @@ impl PendingUserActions {
         if entry.session_id.as_deref() == Some(session_id) {
             return false;
         }
-        if !entry.escalated_to.iter().any(|surface| surface == session_id) {
+        if !entry
+            .escalated_to
+            .iter()
+            .any(|surface| surface == session_id)
+        {
             entry.escalated_to.push(session_id.to_string());
         }
         true
