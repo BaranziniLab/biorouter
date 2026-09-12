@@ -28,6 +28,7 @@
 
 import type { Message, Session } from '../api';
 import { updateSessionName } from '../api';
+import { userActionHeaders } from './userAction';
 
 export const DEFAULT_SESSION_NAME = 'New chat';
 
@@ -144,9 +145,12 @@ export async function renameSession(
   const trimmed = newName.trim();
   if (!trimmed) throw new Error('Chat name cannot be empty');
 
+  // With the user's proof: renaming a private chat is refused, exactly as
+  // reading it is, to a caller without it (issue #56, QA 2026-09-10).
   await updateSessionName({
     path: { session_id: sessionId },
     body: { name: trimmed },
+    headers: await userActionHeaders(),
     throwOnError: true,
   });
 

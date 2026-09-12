@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigProvider, useConfig } from './ConfigContext';
 
 // Issue #52 — the cached `config` object was only ever re-read when a write
@@ -410,5 +410,100 @@ describe('ConfigContext catalogue subscription (#112)', () => {
     }
 
     expect(unhandled).toEqual([]);
+  });
+});
+
+/**
+ * F3 (provider QA, 2026-09-10). `BIOROUTER_PROVIDER` and `BIOROUTER_MODEL` are
+ * what `/agent/start` binds a new chat to, so a write of either through this
+ * context is announced to every window — each of which re-reads the pair. The
+ * writers this catches are the ones that never pass through
+ * `ModelAndProviderContext.changeModel`: onboarding's local and coding-agent
+ * cards, Lead/Worker settings and Settings' reset, which until now left even
+ * their own window's chip naming the previous model.
+ */
+describe('ConfigContext announces writes of the app-wide model selection (F3)', () => {
+  function WriteProbe() {
+    const { upsert, remove } = useConfig();
+    const [result, setResult] = useState('idle');
+    const run = (write: () => Promise<void>) => {
+      setResult('pending');
+      write().then(
+        () => setResult('ok'),
+        (error: unknown) => setResult(`failed: ${String(error)}`)
+      );
+    };
+    return (
+      <div>
+        <output data-testid="write-result">{result}</output>
+        <button
+          type="button"
+          onClick={() => run(() => upsert('BIOROUTER_PROVIDER', 'codex', false))}
+        >
+          Write provider
+        </button>
+        <button
+          type="button"
+          onClick={() => run(() => upsert('BIOROUTER_MODEL', 'gpt-6-astra', false))}
+        >
+          Write model
+        </button>
+        <button type="button" onClick={() => run(() => remove('BIOROUTER_MODEL', false))}>
+          Remove model
+        </button>
+        <button type="button" onClick={() => run(() => upsert('BIOROUTER_MODE', 'auto', false))}>
+          Write mode
+        </button>
+      </div>
+    );
+  }
+
+  let nudges = 0;
+  let unsubscribe: () => void = () => {};
+
+  beforeEach(async () => {
+    nudges = 0;
+    const { subscribeAppModelSelectionChanges } = await import('../utils/sessionBindingSync');
+    unsubscribe = subscribeAppModelSelectionChanges(() => {
+      nudges += 1;
+    });
+    mocks.removeConfig.mockResolvedValue({ data: {} });
+  });
+
+  afterEach(() => unsubscribe());
+
+  const renderWriteProbe = () =>
+    render(
+      <ConfigProvider>
+        <WriteProbe />
+      </ConfigProvider>
+    );
+
+  it.each([['Write provider'], ['Write model'], ['Remove model']])(
+    '%s announces, once the write has resolved',
+    async (button) => {
+      renderWriteProbe();
+      fireEvent.click(screen.getByRole('button', { name: button }));
+      await waitFor(() => expect(screen.getByTestId('write-result')).toHaveTextContent('ok'));
+      expect(nudges).toBe(1);
+    }
+  );
+
+  it('says nothing about a key a new chat does not bind', async () => {
+    renderWriteProbe();
+    fireEvent.click(screen.getByRole('button', { name: 'Write mode' }));
+    await waitFor(() => expect(screen.getByTestId('write-result')).toHaveTextContent('ok'));
+    expect(nudges).toBe(0);
+  });
+
+  /** A refused write moved nothing, so there is nothing to re-read. */
+  it('says nothing when the write was refused', async () => {
+    mocks.upsertConfig.mockRejectedValue(new Error('409 Conflict'));
+    renderWriteProbe();
+    fireEvent.click(screen.getByRole('button', { name: 'Write provider' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('write-result')).toHaveTextContent('failed: Error: 409 Conflict')
+    );
+    expect(nudges).toBe(0);
   });
 });

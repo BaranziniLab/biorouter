@@ -174,6 +174,52 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
         .map(str::to_lowercase)
 }
 
+/// Does `label` say nothing that `license` does not — is every word of it a word
+/// of the licence? A catalog whose entries carry a licence drops such a label
+/// when it assembles an entry's searchable text.
+///
+/// The licence itself is not a searchable field: every entry in the BAAM
+/// registry is Apache-2.0, so it separates nothing, and both catalog searches
+/// leave the field out for that reason.
+///
+/// ⚠ **Leaving the FIELD out was not enough.** A registry republishes the licence
+/// as one of the entry's own tag chips — and, for a skill, again among its
+/// keywords — and labels are searched, rightly: `MCP`, `ELN` and `Imaging` are
+/// exactly what a tag is for. Measured in the Browse-extensions modal on
+/// 2026-09-12 against the live 37-entry registry, with the field already gone:
+/// `PACS` → 31 of 37, `pac` → 31, `apache` → 31, and not one of the 31 about
+/// PACS. The three counts agreeing is the identification — `PACS` reaches `pac`
+/// through the plural fallback in [`term_strength`], `pac` is inside `apache`,
+/// and 31 rows wear an `Apache-2.0` chip. Removing the field had moved the defect
+/// one field over, where a test asserting "the licence is not searched" still
+/// passed.
+///
+/// Compared by WORDS rather than by equality, because the second spelling is not
+/// the first: the tag is `Apache-2.0` and the keyword is `apache`. An equality
+/// test drops the tag and keeps the keyword, which is the same half-fix again.
+///
+/// What this deliberately does not do: drop every label (`MCP`, `Imaging`, `ELN`,
+/// `Registry` are real search value), or name a licence in the matcher
+/// (`Apache`, `MIT` — the next licence reopens the hole). The cost of the word
+/// test is a licence id built from a topical word — `Python-2.0`, `Ruby`,
+/// `PostgreSQL` — on an entry that also tags itself with that word; the tag is
+/// then dropped for saying only what the licence says. No entry in the shipped
+/// registry is such a case (measured over all 166: the rule drops the 129 licence
+/// labels and nothing else), and an equality test pays a smaller version of the
+/// same cost.
+pub(crate) fn names_only_the_license(label: &str, license: &str) -> bool {
+    let license_words: Vec<String> = words(license).collect();
+    let mut label_words = words(label);
+    match label_words.next() {
+        // An empty label says nothing at all, which is not the same as saying
+        // only the licence: leave it, so the rule stays about the licence.
+        None => false,
+        Some(first) => {
+            license_words.contains(&first) && label_words.all(|word| license_words.contains(&word))
+        }
+    }
+}
+
 /// The distinct terms of `query`, in the order written, without filler.
 fn terms(query: &str, noise: &[&str]) -> Vec<String> {
     let mut all: Vec<String> = Vec::new();
@@ -555,5 +601,46 @@ mod tests {
         let search = rank("   ", &[], ENTRIES, fields);
         assert!(search.terms.is_empty());
         assert_eq!(ids(&search), ["complex-plots", "prose-only", "r-scripting"]);
+    }
+
+    /// The rule a catalog applies to its own labels. Both spellings the BAAM
+    /// registry publishes go, which is the whole point — `Apache-2.0` is the tag
+    /// and `apache` is the keyword, and an equality test would keep the second
+    /// and leave `PACS` matching 49 skills through it.
+    #[test]
+    fn a_label_naming_only_the_licence_is_recognised_in_either_spelling() {
+        for label in [
+            "Apache-2.0",
+            "apache",
+            "APACHE",
+            "apache 2.0",
+            "2.0",
+            "Apache/2.0",
+        ] {
+            assert!(
+                names_only_the_license(label, "Apache-2.0"),
+                "`{label}` says nothing `Apache-2.0` does not"
+            );
+        }
+        // A label that says anything else stays searchable, including one that
+        // merely contains a word of the licence.
+        for label in [
+            "Apache Spark",
+            "MCP",
+            "ELN",
+            "Imaging",
+            "Registry",
+            "apachex",
+        ] {
+            assert!(
+                !names_only_the_license(label, "Apache-2.0"),
+                "`{label}` says more than the licence"
+            );
+        }
+        // An empty label says nothing at all, which is not the same as saying
+        // only the licence; and an entry with no licence has none to drop.
+        assert!(!names_only_the_license("", "Apache-2.0"));
+        assert!(!names_only_the_license("  -  ", "Apache-2.0"));
+        assert!(!names_only_the_license("Apache-2.0", ""));
     }
 }

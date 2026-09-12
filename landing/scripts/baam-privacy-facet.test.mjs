@@ -551,6 +551,123 @@ if (!existsSync(PLAYWRIGHT)) {
     }
   });
 
+
+  /**
+   * Searching the shelf must not search the LICENCE. Every card in this catalog
+   * is Apache-2.0 and the catalog publishes that licence three more times per
+   * card — as `data-license`, as a chip in the tag row (part of the card's own
+   * textContent), and on a skill as the `apache` keyword in `data-tags` — so a
+   * haystack built from all of them answered "apache" with the whole shelf.
+   *
+   * The same overlap in the app's own matchers is worse, because those split a
+   * query into words and fall a plural back to its singular: measured in the
+   * Browse-extensions modal on 2026-09-12, `PACS` returned 31 of 37 extensions
+   * through `pac` inside `apache`, none of them about PACS.
+   *
+   * Driven through the real input, not by calling `filterExtensions` — the
+   * `oninput` attribute, `runFilter`'s trim/lowercase and the shelf's own
+   * visibility rules are all part of what a person experiences here.
+   */
+  async function search(page, query) {
+    await page.fill('#baam-search', query);
+    await page.waitForTimeout(0);
+    return shownCards(page);
+  }
+
+  test('a licence is not something a card is searched by', async () => {
+    const page = await shelfPage();
+
+    // Guard: every assertion below is vacuous if the licence stops reaching the
+    // haystack, which is what is being closed. On a RENDERED extension card it
+    // arrives two ways — `data-license`, and the `Apache-2.0` token inside the
+    // `data-tags` keyword blob. (Not as a chip: `extCardHtml` already drops an
+    // `/^apache/i` tag from the tag row, for space rather than for search, and
+    // that one hard-coded filter is exactly why this defect looked fixed.)
+    const licenceCarriers = await page.evaluate(() =>
+      [...document.querySelectorAll('#extensions-section .ext-card')].filter((card) => {
+        const licence = (card.dataset.license || '').toLowerCase();
+        if (!licence) return false;
+        return (card.dataset.tags || '')
+          .split(/\s+/)
+          .some((token) => token.toLowerCase() === licence);
+      }).length
+    );
+    assert.ok(
+      licenceCarriers >= 2,
+      `only ${licenceCarriers} cards carry their own licence into the haystack — this test proves nothing`
+    );
+
+    const all = await search(page, '');
+    for (const query of ['apache', 'APACHE']) {
+      assert.deepEqual(
+        await search(page, query),
+        [],
+        `"${query}" is a licence, not a capability — it matched cards before this fix`
+      );
+    }
+
+    // `Apache-2.0` is the same licence with a version attached, and the shelves
+    // are token-matched (#242/#277), so it asks for `apache` OR `2` OR `0`. The
+    // licence word is gone from every field; the two digits are not, and must
+    // not be — `2` and `0` are ordinary words that a description is free to
+    // contain. So the assertion is not "nothing matches", which would be true
+    // only of a whole-phrase matcher: it is that **the licence explains none of
+    // it**. Whatever survives must be exactly what the digits alone find.
+    //
+    // Measured 2026-09-12: one card, `ucsfomopagent`, whose description reads
+    // "v0.2.0 adds built-in OMOP/SQL-Server context". `catalog_search.rs` and
+    // the desktop port answer this query with the same one entry, which is the
+    // parity this shelf is held to.
+    assert.deepEqual(
+      await search(page, 'Apache-2.0'),
+      await search(page, '2 0'),
+      '"Apache-2.0" must find no more than its two digits do — the licence itself must explain nothing'
+    );
+
+    // And nothing else moved: a real tag, a name, a data source, and browsing.
+    assert.deepEqual(await search(page, ''), all);
+    assert.ok((await search(page, 'MCP')).length >= 10, 'a real tag must still match');
+    assert.deepEqual(await search(page, 'spokeagent'), ['spokeagent']);
+    assert.ok((await search(page, 'imaging')).length >= 2, '`imaging` is a capability, not a licence');
+    await page.close();
+  });
+
+  test('a skill card is not searched by its licence either', async () => {
+    // The skills shelf carries the licence a third way — the `apache` keyword in
+    // `data-tags`, which is not spelled like the `Apache-2.0` chip, so a rule
+    // comparing a label to the licence for EQUALITY leaves this one matching.
+    const page = await shelfPage();
+    await page.click('.baam-tab[data-shelf="skills"]');
+    await page.waitForSelector('#skills-section .skill-card');
+
+    const visibleSkills = () =>
+      page.$$eval('#skills-section .skill-card:visible', (els) => els.length);
+    const keyworded = await page.evaluate(() =>
+      [...document.querySelectorAll('#skills-section .skill-card')].filter((card) =>
+        (card.dataset.tags || '').split(/\s+/).includes('apache')
+      ).length
+    );
+    assert.ok(keyworded >= 2, `only ${keyworded} skill cards carry an \`apache\` keyword`);
+    // A skill card is authored, not rendered, so it DOES wear the licence chip —
+    // the one path that lives inside `textContent` rather than a data attribute.
+    const chipped = await page.evaluate(() =>
+      [...document.querySelectorAll('#skills-section .skill-card')].filter((card) =>
+        [...card.querySelectorAll('.tag')].some(
+          (chip) =>
+            chip.textContent.trim().toLowerCase() === (card.dataset.license || '').toLowerCase()
+        )
+      ).length
+    );
+    assert.ok(chipped >= 2, `only ${chipped} skill cards wear their own licence as a chip`);
+
+    await page.fill('#baam-search', 'apache');
+    assert.equal(await visibleSkills(), 0, 'a licence keyword matched skill cards');
+
+    await page.fill('#baam-search', 'ggplot');
+    assert.ok((await visibleSkills()) >= 1, '`ggplot` must still match');
+    await page.close();
+  });
+
   test('a well-formed registry still renders', async () => {
     // Without this, "refuse to render" is satisfiable by never rendering, and
     // every other test in this file would be reading static markup.

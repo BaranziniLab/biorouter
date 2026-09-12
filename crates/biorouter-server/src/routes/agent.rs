@@ -79,7 +79,7 @@ const SUBAGENT_USER_ACTION_REQUIRED: &str =
 /// and `session_reach::SESSION_REACH_NO_KEY` already use. Since SD-11 this is
 /// also what a keyless daemon answers a Stop aimed at a subagent's turn, because
 /// that route gates through [`authorize_agent_control`] there. A *steer* at the
-/// same turn is refused one step earlier, by `reply::authorize_steer`, which
+/// same turn is refused one step earlier, by `reply::steer_refusal`, which
 /// never reads the row — so the two sentences differ, and both open by naming
 /// this daemon rather than the caller.
 const SUBAGENT_CONTROL_NO_KEY: &str =
@@ -186,7 +186,7 @@ async fn read_update_session(
 /// callers `/agent/stop` admits. Tightening this therefore tightens those three
 /// too, which is the point — but it is a change to who may press Stop in a
 /// browser, and `tests/turn_control_no_user_key.rs` will say so. `/interrupt` is
-/// NOT among them: `reply::authorize_steer` keeps the proof on every daemon,
+/// NOT among them: `reply::steer_refusal` keeps the proof on every daemon,
 /// because the dominance argument that admits a Stop does not reach a steer.
 pub(crate) async fn authorize_agent_control(
     state: &AppState,
@@ -383,6 +383,117 @@ fn configured_new_session_provider() -> Result<Option<(String, ModelConfig)>, Er
     }
 }
 
+/// Why a brand-new chat's bind to the operator's configured private provider may
+/// not go ahead as it stands — SD-12's verdict, with the reason, because two of
+/// the three refusals here are actionable by a *person* and a single boolean
+/// would have answered all of them in a sentence written for a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NewChatBind {
+    /// Bind it.
+    Allowed,
+    /// This daemon can check a proof, and none arrived.
+    NeedsUserProof,
+    /// SD-12 would exempt this bind, but the configuration being read is no
+    /// longer the one the daemon was launched with, so there is nothing left in
+    /// it that is the operator's choice. Carries the key that moved.
+    ConfigMovedSinceLaunch(String),
+    /// The launcher declared it would hand over a user-action key and the key
+    /// never arrived. A fault to repair, not a deployment where no proof can
+    /// exist — so the exemption does not apply.
+    KeyWasExpected,
+}
+
+/// SD-12 (`docs/deployment/serve-decisions.md`): does binding the operator's
+/// configured default provider to a brand-new chat need a person's proof?
+///
+/// A new chat has no capability of its own yet, so a private default reads as a
+/// raise from Public — the reading `update_agent_provider` gives any first bind.
+/// What differs is who chose the model: `/agent/start` names no provider, it binds
+/// `BIOROUTER_PROVIDER` + `BIOROUTER_MODEL`, and SD-1 says the tier the operator's
+/// `biorouter configure` choice implies holds for every session in that daemon. So
+/// the proof is asked for only where it can be given:
+///
+/// * `Proven` — the desktop renderer, which sends `X-User-Action` on every start
+///   (`ui/desktop/src/sessions.ts`). Binds.
+/// * `Unproven` — a daemon that holds a key, and a caller that did not present
+///   it: a script, or the model holding the daemon secret AR-11 found
+///   recoverable. Refused, as before. The person proves themselves here at no
+///   cost, and without the refusal a model could mint a private-capability chat
+///   with an extension set of its own choosing.
+/// * `NoKeyInstalled` — `biorouter serve` (SD-7) or a hand-run `biorouterd`.
+///   Nobody on this daemon can prove anything, so a refusal here refuses the
+///   person too, on every new chat, always — the 2026-09-10 QA's F1. Binds, under
+///   the two conditions below.
+///
+/// ⚠ **The original justification for that third arm was wrong, and both
+/// conditions exist because of it** (2026-09-12 review, Findings 1 and 3):
+///
+/// 1. It said `BIOROUTER_PROVIDER` is *"a key only a proven person may write"*.
+///    The HTTP doors are closed, but `config.yaml` is not an HTTP resource:
+///    DR-14's filesystem deny is DEFERRED, the agent holds `developer__shell`, and
+///    `Config` re-`stat`s and reloads the file — so the value read here is
+///    whatever the file says at request time. A model with a shell on a keyless
+///    daemon configured with a *public* default could write a private provider
+///    there and take this exemption. So the exemption is pinned to the
+///    configuration the daemon **launched** with (`launch::pinned_config_keys`);
+///    drift refuses, and names the key.
+/// 2. `NoKeyInstalled` is only *"this process read no valid digest"*, which a
+///    desktop spawn also satisfies when its `userActionKey` is undefined or the
+///    daemon's bounded 2s stdin read times out. That is a repairable fault, and on
+///    `main` it degraded safely by refusing. It keeps refusing: the launcher
+///    declares its intent (`launch::USER_ACTION_EXPECTED_ENV`), which is the only
+///    signal that separates the two.
+///
+/// Only the configured default is ever exempt, and only at creation:
+/// `/agent/start` cannot name another provider, and on a keyless daemon
+/// `update_agent_provider` refuses every private bind ([`raise_baseline`]), so a
+/// new chat there never reaches a private model the operator did not choose.
+fn new_chat_bind_decision(
+    enforced: bool,
+    tier: ProviderTier,
+    proof: UserActionProof,
+    launcher_declared_a_key: bool,
+    config_moved_since_launch: Option<String>,
+) -> NewChatBind {
+    // DR-15's master opt-out, and the plain reading that a public default raises
+    // nothing for anybody. Neither is about who is asking.
+    if !enforced || !raise_needs_user_action(ProviderTier::Public, tier) {
+        return NewChatBind::Allowed;
+    }
+    match proof {
+        UserActionProof::Proven => NewChatBind::Allowed,
+        UserActionProof::Unproven => NewChatBind::NeedsUserProof,
+        UserActionProof::NoKeyInstalled => {
+            if launcher_declared_a_key {
+                NewChatBind::KeyWasExpected
+            } else if let Some(key) = config_moved_since_launch {
+                NewChatBind::ConfigMovedSinceLaunch(key)
+            } else {
+                NewChatBind::Allowed
+            }
+        }
+    }
+}
+
+/// The capability `update_agent_provider` measures a raise from — SD-12's other
+/// half.
+///
+/// On a daemon that holds a user-action key it is the chat's live capability,
+/// as it always was. On one that holds none, no chat's private capability came
+/// from anything a person proved over HTTP: the only private binding such a
+/// daemon hands out through its routes is [`new_chat_bind_decision`]'s
+/// creation-time bind to the configured default. There is no private floor for
+/// a request to build on, so a bind to ANY private provider is measured from
+/// Public, and refused, since no proof can arrive. Without this, SD-12 would let
+/// a new chat on a private default be moved sideways, `Private -> Private`, to a
+/// private model nobody configured.
+fn raise_baseline(current: ProviderTier, proof: UserActionProof) -> ProviderTier {
+    match proof {
+        UserActionProof::NoKeyInstalled => ProviderTier::Public,
+        UserActionProof::Proven | UserActionProof::Unproven => current,
+    }
+}
+
 async fn bind_new_session_provider(
     state: &AppState,
     session: &Session,
@@ -397,17 +508,54 @@ async fn bind_new_session_provider(
             message: format!("Failed to configure the selected provider for the new chat: {error}"),
             status: StatusCode::BAD_REQUEST,
         })?;
-    if biorouter::privacy::privacy_tiers_enabled()
-        && raise_needs_user_action(ProviderTier::Public, provider.tier())
-        && !is_user_action(headers)
-    {
-        return Err(ErrorResponse {
-            message: PrivacyRefusal::TierRaiseNeedsUser {
-                requested: provider_name,
-            }
-            .to_string(),
-            status: StatusCode::CONFLICT,
-        });
+    // DR-15's master opt-out is read inside the gate, as every #56 surface does.
+    // The launch state is read here rather than in the gate for the same reason:
+    // one sample per request, threaded, so the decision cannot be made against two
+    // different answers.
+    match new_chat_bind_decision(
+        biorouter::privacy::privacy_tiers_enabled(),
+        provider.tier(),
+        user_action_proof(headers),
+        biorouter_server::launch::expected_a_user_action_key(),
+        biorouter_server::launch::capability_config_moved_since_launch(),
+    ) {
+        NewChatBind::Allowed => {}
+        NewChatBind::NeedsUserProof => {
+            return Err(ErrorResponse {
+                message: PrivacyRefusal::TierRaiseNeedsUser {
+                    requested: provider_name,
+                }
+                .to_string(),
+                status: StatusCode::CONFLICT,
+            });
+        }
+        // Written for the operator, not for the model. SD-8's rule: a control the
+        // caller cannot pass must say what would make it passable, and here that
+        // is a restart — no proof exists on this daemon to offer instead.
+        NewChatBind::ConfigMovedSinceLaunch(key) => {
+            return Err(ErrorResponse {
+                message: format!(
+                    "This Biorouter daemon starts new chats on the model it was launched with, \
+                     because nothing here can confirm a request came from you. '{key}' has \
+                     changed in the configuration since it started, so '{provider_name}' is not \
+                     the model it was launched on and starting a chat on it would be a switch \
+                     nobody asked for. Restart the daemon to pick up the new configuration."
+                ),
+                status: StatusCode::CONFLICT,
+            });
+        }
+        NewChatBind::KeyWasExpected => {
+            return Err(ErrorResponse {
+                message: format!(
+                    "Biorouter cannot confirm that this request came from you: the application \
+                     that started this daemon was meant to hand it a user-action key and none \
+                     arrived, so a new chat on the private model '{provider_name}' is refused \
+                     rather than started. Quit and reopen Biorouter. If it keeps happening, the \
+                     daemon log records 'no user-action key on stdin'."
+                ),
+                status: StatusCode::CONFLICT,
+            });
+        }
     }
     let agent = state
         .get_agent(session.id.clone())
@@ -661,7 +809,7 @@ pub struct RestartAgentResponse {
         (status = 200, description = "Agent started successfully", body = Session),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 409, description = "The selected private provider requires user-action proof", body = ErrorResponse),
+        (status = 409, description = "The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -749,7 +897,18 @@ async fn start_agent(
     };
 
     if let Some(workflow) = original_workflow.as_ref() {
-        apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)?;
+        // The siblings' shape, and for the same reason. A bare `?` here left the
+        // chat this function had just created sitting in the session list — a
+        // row the user never asked for and cannot explain. It is not a rare
+        // race, either: a workflow whose `default` names a base that has since
+        // been deleted fails here on EVERY start, so a stale workflow minted one
+        // orphan per press.
+        if let Err(error) =
+            apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)
+        {
+            discard_failed_new_session(&state, &session.id).await;
+            return Err(error);
+        }
     }
 
     let workflow_extensions = original_workflow
@@ -1156,6 +1315,10 @@ async fn update_from_session(
     responses(
         (status = 200, description = "Tools retrieved successfully", body = Vec<ToolInfo>),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary: `session_id` names a chat \
+                                      this caller may not reach, answered with the same refusal, \
+                                      word for word, that `GET /sessions/{session_id}` gives \
+                                      (body = plain text)"),
         (status = 408, description = "Extension timed out while loading for settings"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
@@ -1164,6 +1327,34 @@ async fn update_from_session(
 async fn get_tools(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetToolsQuery>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    // Issue #56, QA 2026-09-10 M2. Naming a private chat here handed a caller
+    // holding only the daemon secret that chat's private-extension tool names,
+    // while `add_extension` on the same chat refused it — and, worse, `get_agent`
+    // below MINTS an agent for the named chat, loading its extensions, on that
+    // caller's say-so. So the read's own gate runs first. The comment further
+    // down, about Gate E, is about which tools a MODEL is shown; this is about
+    // whether the CALLER may address the chat at all, and the empty id — the
+    // settings page's one global extension — names no chat and is not gated.
+    if !query.session_id.is_empty() {
+        if let Err(refusal) = crate::routes::session_reach::session_reach(
+            state.session_manager(),
+            &query.session_id,
+            &headers,
+        )
+        .await
+        {
+            return refusal.into_response();
+        }
+    }
+    permission_editor_tools(state, query).await.into_response()
+}
+
+/// The body of [`get_tools`], once the caller may address the named chat.
+async fn permission_editor_tools(
+    state: Arc<AppState>,
+    query: GetToolsQuery,
 ) -> Result<Json<Vec<ToolInfo>>, StatusCode> {
     let config = Config::global();
     let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
@@ -1290,11 +1481,9 @@ async fn get_tools(
     responses(
         (status = 200, description = "Model-visible callable tool count", body = CallableToolCountResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      the named chat is private (or absent, and an unproven caller \
-                                      is told the same thing for both) and the request carried \
-                                      neither a capability that covers it nor proof it came from \
-                                      the user"),
+        (status = 403, description = "Refused by a privacy boundary: the same refusal, word for \
+                                      word, that `GET /sessions/{session_id}` gives (body = plain \
+                                      text)"),
         (status = 424, description = "Agent not initialized")
     )
 )]
@@ -1304,20 +1493,44 @@ async fn get_callable_tool_count(
     // order the rest of this file uses.
     headers: axum::http::HeaderMap,
     Query(query): Query<CallableToolCountQuery>,
-) -> Result<Json<CallableToolCountResponse>, ErrorResponse> {
-    let session_id = query.session_id;
-    // Issue #56 Task 58 / #47. FIRST, before the agent is fetched, for the reason
-    // `agent_add_extension` states at length: `get_agent_for_route` CREATES an
-    // agent for a session that has none, so a gate below it would let an unproven
-    // caller materialise one for a chat it may not address — and this route's own
-    // 424 would then tell it what it had found. `session_id` is a request
-    // parameter, not a credential; see `routes::session_reach`.
+) -> axum::response::Response {
+    // Issue #56 Task 58 / #47, and QA 2026-09-10 M2's sibling. FIRST, before the
+    // agent is fetched, for the reason `agent_add_extension` states at length:
+    // `get_agent_for_route` CREATES an agent for a session that has none, so a
+    // gate below it would let an unproven caller materialise one for a chat it may
+    // not address — and this route's own 424 would then tell it what it had found.
+    // `session_id` is a request parameter, not a credential; see
+    // `routes::session_reach`.
     //
     // ⚠ This route had NO gate of any kind, and PR #260's renderer merely stopped
     // calling it for a subagent's chat, which left the route exactly as open as
     // it was. Routing a client around an ungated route does not gate it.
-    crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
-        .await?;
+    //
+    // ⚠ **The refusal is returned through `SessionOutOfReach`'s own
+    // `IntoResponse` — PLAIN TEXT, the bytes `GET /sessions/{session_id}`
+    // returns — and deliberately NOT with `?` through this route's
+    // `ErrorResponse`, which would wrap the same words in a JSON envelope.** One
+    // boundary has one body (see the module header of `routes::session_reach`),
+    // and that is the only reason the gate lives in this wrapper and the work
+    // lives in the function below rather than all in one body.
+    if let Err(refusal) = crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &query.session_id,
+        &headers,
+    )
+    .await
+    {
+        return refusal.into_response();
+    }
+    model_visible_tool_count(state, query).await.into_response()
+}
+
+/// The body of [`get_callable_tool_count`], once the caller may address the chat.
+async fn model_visible_tool_count(
+    state: Arc<AppState>,
+    query: CallableToolCountQuery,
+) -> Result<Json<CallableToolCountResponse>, ErrorResponse> {
+    let session_id = query.session_id;
     let child_initializing = biorouter::agents::subagent_handle::is_child_initializing(&session_id);
     let agent = if child_initializing {
         state
@@ -1365,7 +1578,9 @@ async fn get_callable_tool_count(
                                       a public model cannot be bound to a private chat \
                                       (body = PrivacyBarrierBody). DR-16: the bind raises this \
                                       chat's capability to Private and the request carried no \
-                                      proof it came from the user (body = plain text)",
+                                      proof it came from the user; on a daemon with no \
+                                      user-action key, any bind to a private model (SD-12) \
+                                      (body = plain text)",
                        body = PrivacyBarrierBody),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
@@ -1438,6 +1653,10 @@ async fn update_agent_provider(
     // DR-16 rejected. Sideways and downward binds are untouched for every
     // caller, which is what keeps Gate A's path, the CLI,
     // `restore_provider_from_session` and every apps-runtime bind working.
+    // The one exception is this route on a daemon with no user-action key,
+    // where a move onto a private model is measured from Public however the
+    // chat is bound today — `raise_baseline`, SD-12. The predicate itself is
+    // unchanged, and none of the in-process binds above passes through here.
     //
     // An unbound session reads as Public — `Agent::provider` errors when nothing
     // is bound (and when Gate B' refuses what is), and the conservative reading
@@ -1448,11 +1667,13 @@ async fn update_agent_provider(
         .await
         .map(|p| p.tier())
         .unwrap_or(ProviderTier::Public);
+    // SD-12's other half — see `raise_baseline`.
+    let baseline = raise_baseline(current, user_action_proof(&headers));
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
     // `CallCapability`: a provider raise over HTTP is not a tool call and has no
     // admitted capability to inherit.
     if biorouter::privacy::privacy_tiers_enabled()
-        && raise_needs_user_action(current, new_provider.tier())
+        && raise_needs_user_action(baseline, new_provider.tier())
         && !is_user_action(&headers)
     {
         return Err((
@@ -3230,6 +3451,159 @@ mod new_session_provider_binding_tests {
             .delete_session(&started.id)
             .await
             .unwrap();
+    }
+
+    /// SD-12, every proof verdict against both tiers. The keyless arm cannot be
+    /// reached through a route in this binary — the installed digest is a
+    /// process-global `OnceLock` and the test above installs one — so the route
+    /// half lives in `tests/new_chat_no_user_key.rs`, a binary that never does.
+    #[test]
+    fn only_a_daemon_that_can_check_a_proof_asks_a_new_chat_for_one() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        // A daemon launched on this configuration, by a launcher that promised no
+        // key: the posture SD-12's exemption is for.
+        let launched_here = |tier, proof| new_chat_bind_decision(true, tier, proof, false, None);
+        assert_eq!(
+            launched_here(ProviderTier::Private, Proven),
+            NewChatBind::Allowed
+        );
+        assert_eq!(
+            launched_here(ProviderTier::Private, Unproven),
+            NewChatBind::NeedsUserProof
+        );
+        assert_eq!(
+            launched_here(ProviderTier::Private, NoKeyInstalled),
+            NewChatBind::Allowed,
+            "a keyless daemon refusing its own configured default refuses every person, always"
+        );
+        for proof in [Proven, Unproven, NoKeyInstalled] {
+            // A public default raises nothing, for anyone.
+            assert_eq!(
+                launched_here(ProviderTier::Public, proof),
+                NewChatBind::Allowed
+            );
+            // DR-15's master opt-out turns the gate off, not the question.
+            assert_eq!(
+                new_chat_bind_decision(false, ProviderTier::Private, proof, false, None),
+                NewChatBind::Allowed
+            );
+        }
+    }
+
+    /// Finding 1 (HIGH) of the 2026-09-12 review: the keyless exemption is for
+    /// the configuration the daemon was **launched** with, not for whatever
+    /// `config.yaml` — which the agent can write and `Config` reloads live — says
+    /// at request time.
+    ///
+    /// Both conditions bite only on the keyless arm. A daemon that can check a
+    /// proof already has one, and a person who edits the configuration and asks
+    /// for a chat in the same breath is not the case this closes.
+    #[test]
+    fn drift_since_launch_costs_the_keyless_exemption_and_nothing_else() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        let moved = || Some("BIOROUTER_PROVIDER".to_string());
+
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, NoKeyInstalled, false, moved()),
+            NewChatBind::ConfigMovedSinceLaunch("BIOROUTER_PROVIDER".to_string()),
+            "a private provider written into config.yaml after launch took the exemption"
+        );
+        // The refusal names the key, because the only person who can act on it
+        // needs to know which value to put back or which daemon to restart.
+        assert_eq!(
+            new_chat_bind_decision(
+                true,
+                ProviderTier::Private,
+                NoKeyInstalled,
+                false,
+                Some("OLLAMA_HOST".to_string()),
+            ),
+            NewChatBind::ConfigMovedSinceLaunch("OLLAMA_HOST".to_string()),
+        );
+        // A public default is not a raise, so drift changes nothing about it —
+        // there is no exemption being taken to withdraw.
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Public, NoKeyInstalled, false, moved()),
+            NewChatBind::Allowed
+        );
+        // And a daemon that can check a proof is unaffected in both directions.
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, Proven, true, moved()),
+            NewChatBind::Allowed
+        );
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, Unproven, true, moved()),
+            NewChatBind::NeedsUserProof
+        );
+    }
+
+    /// Finding 3 (LOW): `NoKeyInstalled` is two situations wearing one name, and
+    /// only one of them is a deployment where no proof can exist. A desktop daemon
+    /// whose key never arrived keeps `main`'s refusal.
+    ///
+    /// ⚠ The launcher's declaration is checked **before** the drift, so the
+    /// message the person gets names the fault they can act on rather than a
+    /// configuration key that may be perfectly fine.
+    #[test]
+    fn a_launcher_that_promised_a_key_does_not_inherit_the_keyless_exemption() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Private, NoKeyInstalled, true, None),
+            NewChatBind::KeyWasExpected
+        );
+        assert_eq!(
+            new_chat_bind_decision(
+                true,
+                ProviderTier::Private,
+                NoKeyInstalled,
+                true,
+                Some("BIOROUTER_PROVIDER".to_string()),
+            ),
+            NewChatBind::KeyWasExpected,
+            "a missing key is the actionable fault; the drift message would send the person to the \
+             wrong place"
+        );
+        // The declaration says nothing about a daemon that DID get its key: those
+        // two arms are decided by the proof alone.
+        for proof in [Proven, Unproven] {
+            assert_eq!(
+                new_chat_bind_decision(true, ProviderTier::Private, proof, true, None),
+                new_chat_bind_decision(true, ProviderTier::Private, proof, false, None),
+            );
+        }
+        // Nor about a public default, which raises nothing.
+        assert_eq!(
+            new_chat_bind_decision(true, ProviderTier::Public, NoKeyInstalled, true, None),
+            NewChatBind::Allowed
+        );
+    }
+
+    /// SD-12's other half: a keyless daemon measures every move onto a private
+    /// model from Public, so its exemption for the configured default cannot be
+    /// carried sideways to a private model nobody configured.
+    #[test]
+    fn a_keyless_daemon_has_no_private_floor_for_a_switch_to_build_on() {
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        for current in [ProviderTier::Private, ProviderTier::Public] {
+            assert_eq!(
+                raise_baseline(current, NoKeyInstalled),
+                ProviderTier::Public
+            );
+            // A daemon that can check a proof keeps measuring from the live binding.
+            assert_eq!(raise_baseline(current, Proven), current);
+            assert_eq!(raise_baseline(current, Unproven), current);
+        }
+        // The composition `update_agent_provider` asks. Sideways onto a private
+        // model is a raise only where no proof can be checked.
+        let sideways = |proof| {
+            raise_needs_user_action(
+                raise_baseline(ProviderTier::Private, proof),
+                ProviderTier::Private,
+            )
+        };
+        assert!(sideways(NoKeyInstalled));
+        assert!(!sideways(Unproven));
+        assert!(!sideways(Proven));
     }
 }
 
@@ -5710,5 +6084,80 @@ mod knowledge_selection_tests {
             "only the declared base belongs to a workflow session"
         );
         assert_eq!(selection.primary_kb.as_deref(), Some("alpha"));
+    }
+
+    /// Every step that can fail while the new chat already exists, but before it
+    /// is returned, discards it. An orphan chat is a row the user never asked
+    /// for and cannot explain, and the knowledge apply was the one step that
+    /// left one: it used a bare `?` where its two siblings take the error, call
+    /// `discard_failed_new_session`, and only then return.
+    ///
+    /// ⚠ It was not a rare race. A workflow whose `default` names a base that
+    /// has since been deleted fails here on EVERY start, so a stale workflow
+    /// minted one orphan per press.
+    ///
+    /// **A source read, deliberately.** Reaching the real handler needs an
+    /// `AppState`, and `AppState::new` calls `AgentManager::instance()` and
+    /// `KnowledgeService::new_default()` — both of which resolve the developer's
+    /// own `~/.config/biorouter`. A test that creates and deletes chats there is
+    /// worse than no test. The shape is what the defect was, so the shape is
+    /// what is asserted.
+    ///
+    /// ⚠ **Scope.** The `?` sites *after* this window — the two
+    /// `manager.update(...)` calls and the refetch — orphan a chat too and are
+    /// deliberately not covered: each of those is the session store itself
+    /// failing, where the discard's own `delete_session` would be failing for
+    /// the same reason, and deciding what to do there is a separate question.
+    /// Named here so the next reader knows they were seen, not missed.
+    #[test]
+    fn every_failure_before_a_new_chat_is_returned_discards_it() {
+        let source = include_str!("agent.rs");
+        // ⚠ The leading newline is load-bearing: `include_str!` reads this file
+        // including this test, so an anchor without it matches the copy inside
+        // this very string literal and slices the test instead of the handler.
+        let body = source
+            .split("\nasync fn start_agent(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("start_agent production body");
+
+        // In source order. Each step's window runs to the next one, so the
+        // assertion is "between one fallible step and the next, the error path
+        // discards the chat" rather than a count that a fourth step could pass
+        // without being looked at.
+        const STEPS: [&str; 3] = [
+            "bind_new_session_provider(",
+            "runtime::prepare_prompt(",
+            "apply_workflow_knowledge_selection(",
+        ];
+
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is a step of start_agent"))
+        };
+        for (index, step) in STEPS.iter().enumerate() {
+            let start = at(step);
+            let end = STEPS.get(index + 1).map_or(body.len(), |next| at(next));
+            // `get`, not `&body[start..end]`: the workspace denies
+            // `clippy::string_slice`, and it is right to — a slice that is not on
+            // a char boundary panics. Both bounds come from `find`, so they are
+            // boundaries and this never fires.
+            let window = body
+                .get(start..end)
+                .expect("both bounds come from `find`, so both are char boundaries");
+            let discarded = window
+                .find("discard_failed_new_session")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{step}` can return an error without discarding the chat it leaves behind"
+                    )
+                });
+            if let Some(returned) = window.find("return Err") {
+                assert!(
+                    discarded < returned,
+                    "`{step}` returns its error before discarding the chat"
+                );
+            }
+        }
     }
 }

@@ -19,10 +19,55 @@ describe('Checkbox', () => {
     expect(input).toHaveAttribute('type', 'checkbox');
     // Not `hidden`, not a div with a role: the native control stays in the tree
     // and in the tab order, so keyboard, form participation and the label
-    // association all keep working. `sr-only` is only what stops the OS drawing
-    // a second, un-themeable box on top of ours.
-    expect(input).toHaveClass('sr-only');
+    // association all keep working. `appearance-none` + `opacity-0` is what
+    // stops the OS drawing a second, un-themeable box on top of ours.
+    expect(input).toHaveClass('appearance-none', 'opacity-0');
     expect((input as HTMLInputElement).checked).toBe(true);
+  });
+
+  /**
+   * The measured defect (2026-09-11): the input was `peer sr-only`, a 1px
+   * clipped box in the corner, so the 22px square everyone can see was a
+   * picture. `ResetPanel`'s category boxes toggled on nothing at all and
+   * `ExportAppDialog`'s toggled only on their text — the label sat *beside* the
+   * box, not around it — while `SessionListView`'s worked only because a
+   * `<label>` wraps it. A primitive whose correctness depends on every call site
+   * remembering a wrapper is the bug; this is the contract that ends it.
+   *
+   * ⚠ Asserted at the source. jsdom computes no layout and routes a click to the
+   * element the test names, so it cannot answer "does a click at the centre of
+   * the square reach the input?" whatever the CSS says. That was measured in
+   * Chromium instead (unchecked before, checked after); what is pinned here is
+   * the geometry the browser needs in order to route it.
+   */
+  it('makes the input itself the hit target, so no call site has to wrap it', () => {
+    render(<Checkbox aria-label="Include the vault" />);
+    const input = screen.getByLabelText('Include the vault');
+
+    // Stretched over the whole 24px target, on top of the paint...
+    expect(input).toHaveClass('absolute', 'inset-0', 'h-full', 'w-full');
+    // ...and not tucked away where only a keyboard or a label can reach it.
+    expect(input).not.toHaveClass('sr-only');
+
+    // Every painted sibling has to stay out of the way, or the topmost of them
+    // swallows the click the input is there to receive.
+    const painted = Array.from(input.parentElement?.children ?? []).filter(
+      (child) => child !== input
+    );
+    expect(painted.length).toBeGreaterThan(0);
+    for (const child of painted) expect(child).toHaveClass('pointer-events-none');
+  });
+
+  /**
+   * Keyboard focus was invisible whichever way the input was hidden: the global
+   * `input[type='checkbox']:focus-visible` rule in `main.css` answers focus with
+   * `outline: none` and a background colour, and the input is transparent. The
+   * indication has to live on the square that is actually painted.
+   */
+  it('puts the focus ring on the square the user can see', () => {
+    render(<Checkbox aria-label="Include the vault" />);
+    const box = screen.getByLabelText('Include the vault').nextElementSibling;
+    expect(box).toHaveClass('peer-focus-visible:ring-2', 'peer-focus-visible:ring-border-focus');
   });
 
   it('writes the indeterminate state, which has no HTML attribute', () => {

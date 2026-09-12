@@ -1,3 +1,6 @@
+import { readConfig } from '../api';
+import { isBrowserSurface } from './surface';
+
 /**
  * Issue #56 DR-16: the header that proves a request came from the person at the
  * keyboard rather than from the model.
@@ -96,7 +99,69 @@ export const COPY_OF_PRIVATE_REFUSAL_MARKER = 'only the person at the keyboard m
 export const isPrivateCopyRefusal = (error: unknown): boolean =>
   typeof error === 'string' && error.includes(COPY_OF_PRIVATE_REFUSAL_MARKER);
 
+/**
+ * Mirrored from `CALLER_PROVIDER_HEADER` in
+ * `crates/biorouter-server/src/routes/session_reach.rs`. It carries the NAME of
+ * the provider the caller runs under; the daemon resolves the tier itself.
+ */
+export const CALLER_PROVIDER_HEADER = 'X-Caller-Provider';
+
+/** The host's `BIOROUTER_PROVIDER`, once it has been read successfully. */
+let hostProvider: string | undefined;
+
+/**
+ * The provider the machine running `biorouter serve` was configured with.
+ *
+ * Only a successful read is cached. A failure answers `null` and is asked again
+ * next time, so a transient error cannot pin the page to the public side for as
+ * long as it stays open.
+ */
+async function hostConfiguredProvider(): Promise<string | null> {
+  if (hostProvider) return hostProvider;
+  try {
+    const { data } = await readConfig({ body: { key: 'BIOROUTER_PROVIDER', is_secret: false } });
+    if (typeof data === 'string' && data.trim()) {
+      hostProvider = data.trim();
+      return hostProvider;
+    }
+  } catch {
+    // Say nothing, which the daemon reads as the public side — fail-safe.
+  }
+  return null;
+}
+
+/** For tests: forget the cached host provider. */
+export const resetHostProviderForTests = (): void => {
+  hostProvider = undefined;
+};
+
+/**
+ * The headers that answer the daemon's "may this caller reach this chat?" on
+ * the requests that need an answer — one surface at a time.
+ *
+ * * **The desktop app proves the person**: `X-User-Action`, the key the
+ *   Electron main process minted and handed the daemon's digest on stdin.
+ * * **A browser states its model** (SD-12). The `biorouter serve` daemon holds no
+ *   key (SD-7), so there is no person to prove, and a browser session runs the
+ *   model the host was configured with (SD-1). It says so the way `biorouter
+ *   session` does from a terminal: `X-Caller-Provider` naming that provider.
+ *   Without it, a chat started on a private host model became unreachable from
+ *   the tab the moment its first reply made it private — measured: the next
+ *   request answered 403, the same request stating the host's provider 200.
+ *
+ * ⚠ **Not authentication, and no new reach for anything holding the secret** —
+ * that caller could always send the header (`session_reach.rs` says as much).
+ * What changes is the browser tab's own reach: on a host configured with a
+ * private model it now opens private chats, including ones started in the
+ * desktop app, which SD-12 records as a consequence. On a host configured with a
+ * public model it states a public one, and private chats stay out of reach
+ * exactly as before.
+ */
 export const userActionHeaders = async (): Promise<Record<string, string>> => {
+  if (isBrowserSurface()) {
+    const provider = await hostConfiguredProvider();
+    return provider ? { [CALLER_PROVIDER_HEADER]: provider } : {};
+  }
   try {
     return { 'X-User-Action': await window.electron.getUserActionKey() };
   } catch {

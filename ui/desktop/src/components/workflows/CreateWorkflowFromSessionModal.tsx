@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
 import { createWorkflow, getSessionExtensions, listBases } from '../../api/sdk.gen';
+import { userActionHeaders } from '../../utils/userAction';
 import { readKnowledgeSelection } from '../knowledge/knowledgeSelection';
 import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
@@ -25,6 +26,35 @@ interface CreateWorkflowFromSessionModalProps {
 
 const KNOWLEDGE_SELECTION_UNREAD =
   "Could not load this chat's knowledge bases, so none were selected automatically.";
+
+/**
+ * The primary a captured selection keeps: the one it names, if that base is
+ * among the ones the workflow will see, and otherwise none.
+ *
+ * ⚠ **Never the first visible base.** A saved `default` becomes the primary of
+ * every chat the workflow starts (`apply_knowledge_selection`), and the primary
+ * is where KB-less writes go. The daemon never infers it from `visible`
+ * (`plan_knowledge_selection` in `crates/biorouter/src/workflow/runtime.rs`),
+ * so a chat with no primary gives a workflow with no primary. Falling back to
+ * `visible[0]` gave each of those chats a write target the chat it was captured
+ * from never had.
+ *
+ * A primary outside `visible` is dropped, where the daemon would union it in.
+ * The daemon unions a `default` because somebody wrote that workflow and meant
+ * it; a captured primary outside its own set is an inconsistent read instead.
+ * The generated block is one locked snapshot and never is one, but this
+ * modal's own read is two requests, and a base created or deleted between their
+ * answers leaves the selection naming a base the list lacks. Unioning it could
+ * save a deleted base as the default, which `set_visible_kbs` refuses, so every
+ * chat the workflow starts would fail; after a failed list, it would save the
+ * primary as the only visible base and hide every other one.
+ */
+function primaryAmong(
+  primary: string | null | undefined,
+  visible: readonly string[]
+): string | null {
+  return primary && visible.includes(primary) ? primary : null;
+}
 
 export default function CreateWorkflowFromSessionModal({
   isOpen,
@@ -104,16 +134,29 @@ export default function CreateWorkflowFromSessionModal({
         setAnalysisStage(stages[currentStageIndex]);
       }, 800);
 
+      // The user's proof, on every request below that names this chat or its
+      // knowledge bases: since issue #56's QA sweep (2026-09-10) a request
+      // without it is answered as a public model, and a private chat — the
+      // chat this modal is opened from — would refuse all four.
+      const proof = userActionHeaders();
+
       // Pre-select session extensions immediately — independent of workflow analysis
-      getSessionExtensions({ path: { session_id: sessionId }, throwOnError: false }).then((res) => {
-        if (cancelled) return;
-        if (res.data?.extensions) {
-          setWorkflowExtensions(res.data.extensions);
-        }
-      });
+      void proof
+        .then((headers) =>
+          getSessionExtensions({ path: { session_id: sessionId }, headers, throwOnError: false })
+        )
+        .then((res) => {
+          if (cancelled) return;
+          if (res.data?.extensions) {
+            setWorkflowExtensions(res.data.extensions);
+          }
+        });
 
       Promise.all([
-        listBases({ throwOnError: false }),
+        // With the user's proof: since issue #56's QA sweep (2026-09-10) the
+        // daemon omits a private base from a caller without it, and a base
+        // missing from this list would be missing from the workflow saved here.
+        proof.then((headers) => listBases({ headers, throwOnError: false })),
         // Issue #56 Task 58: this modal opens from the chat it names, and the
         // read carries the user's proof, which a GET naming a PRIVATE chat
         // needs. `null` when the read failed anyway.
@@ -143,10 +186,8 @@ export default function CreateWorkflowFromSessionModal({
         const visible = bases
           .filter((base) => !selection.hiddenKbIds.has(base.id))
           .map((base) => base.id);
-        const primary = selection.primaryKbId;
-        const defaultId = primary && visible.includes(primary) ? primary : (visible[0] ?? null);
         setWorkflowKnowledgeBaseIds(visible);
-        setDefaultKnowledgeBaseId(defaultId);
+        setDefaultKnowledgeBaseId(primaryAmong(selection.primaryKbId, visible));
       });
 
       // The daemon's catalog, so a skill bundled inside an installed extension
@@ -174,10 +215,14 @@ export default function CreateWorkflowFromSessionModal({
         });
 
       // Analyze the conversation to generate a suggested workflow
-      createWorkflow({
-        body: { session_id: sessionId },
-        throwOnError: true,
-      })
+      proof
+        .then((headers) =>
+          createWorkflow({
+            body: { session_id: sessionId },
+            headers,
+            throwOnError: true,
+          })
+        )
         .then((response) => {
           if (cancelled) return;
           clearInterval(stageInterval);
@@ -233,21 +278,11 @@ export default function CreateWorkflowFromSessionModal({
               // modal's own read said, the selection is known now.
               setKnowledgeSelectionUnread(false);
               const visible = workflow.knowledge_bases.visible ?? [];
-              generatedResourcesRef.current.knowledgeBases = {
-                default:
-                  workflow.knowledge_bases.default &&
-                  visible.includes(workflow.knowledge_bases.default)
-                    ? workflow.knowledge_bases.default
-                    : (visible[0] ?? null),
-                visible,
-              };
+              // The daemon sends no `default` at all for a chat with no primary.
+              const defaultId = primaryAmong(workflow.knowledge_bases.default, visible);
+              generatedResourcesRef.current.knowledgeBases = { default: defaultId, visible };
               setWorkflowKnowledgeBaseIds(visible);
-              setDefaultKnowledgeBaseId(
-                workflow.knowledge_bases.default &&
-                  visible.includes(workflow.knowledge_bases.default)
-                  ? workflow.knowledge_bases.default
-                  : (visible[0] ?? null)
-              );
+              setDefaultKnowledgeBaseId(defaultId);
             }
 
             if (workflow.skills && workflow.skills.length > 0) {
@@ -364,13 +399,45 @@ export default function CreateWorkflowFromSessionModal({
         workflowSkillIds.length > 0 || resourceEditsRef.current.skills
           ? workflowSkillIds
           : (generatedResources.skills ?? []);
-      const knowledgeBases: WorkflowKnowledgeBases | undefined =
-        selectedKnowledgeBaseIds.length > 0 || selectedDefaultKnowledgeBaseId
-          ? {
-              default: selectedDefaultKnowledgeBaseId,
-              visible: selectedKnowledgeBaseIds,
-            }
-          : undefined;
+      /**
+       * Whether this modal KNOWS what the chat's knowledge selection is — which
+       * is a different question from whether that selection is empty, and
+       * collapsing the two is what this replaces.
+       *
+       * The two states serialize differently on purpose, and `runtime.rs` reads
+       * them differently: an absent `knowledge_bases` means "this workflow has
+       * nothing to say", so each chat it starts re-derives a selection from the
+       * replaying machine and sees every base; a present-but-empty block means
+       * "select none", and hides them. Switching every base off used to produce
+       * the FIRST of those, so the one gesture that says "no knowledge bases"
+       * was stored as the one that says "whatever you have".
+       *
+       * Three independent ways to know, any one of which is enough:
+       *
+       *  * the user edited the selection — an edit is a statement, even when
+       *    what it states is an empty set;
+       *  * the generation carried the daemon's own block, which it reads past
+       *    no gate;
+       *  * this modal's own read landed and did not fail. `knowledgeBaseItems`
+       *    is set unconditionally at the top of that read's `.then`, *before*
+       *    the `if (!selection)` bail, so a non-empty list is proof the read ran
+       *    — which `!knowledgeSelectionUnread` alone is not, since a read that
+       *    never answers at all (the effect torn down first) sets no flag.
+       *
+       * A machine with no bases therefore captures nothing, matching
+       * `knowledge_bases_for_session`'s own `None` for that case: there was no
+       * selection to make, so there is no selection to state.
+       */
+      const knowledgeSelectionKnown =
+        resourceEditsRef.current.knowledgeBases ||
+        Boolean(generatedResources.knowledgeBases) ||
+        (knowledgeBaseItems.length > 0 && !knowledgeSelectionUnread);
+      const knowledgeBases: WorkflowKnowledgeBases | undefined = knowledgeSelectionKnown
+        ? {
+            default: selectedDefaultKnowledgeBaseId,
+            visible: selectedKnowledgeBaseIds,
+          }
+        : undefined;
 
       const workflow: Workflow = {
         title: formData.title,
@@ -492,11 +559,11 @@ export default function CreateWorkflowFromSessionModal({
                 onKnowledgeBaseIdsChange={(ids) => {
                   resourceEditsRef.current.knowledgeBases = true;
                   setWorkflowKnowledgeBaseIds(ids);
-                  if (defaultKnowledgeBaseId && !ids.includes(defaultKnowledgeBaseId)) {
-                    setDefaultKnowledgeBaseId(ids[0] ?? null);
-                  } else if (!defaultKnowledgeBaseId && ids.length > 0) {
-                    setDefaultKnowledgeBaseId(ids[0]);
-                  }
+                  // Switching bases on or off never names a primary: only the
+                  // picker's Default control does. A primary already named stays
+                  // while its base is selected, and goes when it is not, rather
+                  // than passing to whichever base is left.
+                  setDefaultKnowledgeBaseId((current) => primaryAmong(current, ids));
                 }}
                 defaultKnowledgeBaseId={defaultKnowledgeBaseId}
                 onDefaultKnowledgeBaseIdChange={(id) => {

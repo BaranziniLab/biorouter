@@ -321,6 +321,19 @@ BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session watch <session_id>
 
 A mismatched key surfaces as `HTTP 401` with that hint attached.
 
+**The user-action key, when the daemon has one.** A daemon started with a user-action key (its
+SHA-256 digest piped to `biorouterd agent` on stdin) wants the raw key before it lets anyone stop or
+steer a turn, and before it takes a message into a subagent's session. `send`, `attach` and `cancel`
+never ask for it up front: each makes its request without the key, and only if the daemon refuses
+it for want of one asks you for it once, without echo, and tries again. `attach` asks as it joins,
+before it reads anything you type. A daemon started without a key — `biorouter serve`, or
+`biorouterd agent` with nothing piped in — is never asked about one. Such a daemon refuses every
+request to stop, steer or send to a subagent's session, and the command prints its reason. To supply the key
+without a prompt, pass `--user-action-key-stdin` and pipe the raw key as the first line of stdin.
+Never put it in an argument, an environment variable or a config file. See
+[Workspace control](../agent-loop/workspace-control.md#as-subcommands-you-type) for how to start a
+daemon with a key.
+
 ### session watch [options]
 
 Stream a session's live events into your terminal — the same frames biorouter Desktop renders, printed as lines. Watching is read-only: it never writes to the conversation, and stopping the watch never stops the session.
@@ -359,6 +372,7 @@ Send a prompt into an existing session and stream the resulting turn, without op
 **Options:**
 
 - **`--no-wait`**: Return as soon as the daemon accepts the turn, printing `[started] turn <turn_id> in session <session_id>`, instead of streaming it to completion
+- **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin instead of being asked for it when the daemon wants it. See [the user-action key](#live-session-commands-and-the-daemon)
 
 **Usage:**
 
@@ -391,6 +405,7 @@ Join a session that is running *right now*. `attach` prints the conversation so 
 - **`--name <NAME>`**: Attach by session name instead of ID. Refuses, and lists the candidates, if several sessions share that name
 - **`--of <PARENT_ID>`**: Attach to the running subagent of this parent session. Errors, listing what it found, if that parent has no subagent with a turn in flight or has more than one
 - **`--read-only`**: Observe only — do not read stdin and do not send anything
+- **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin, before the lines you steer with, instead of being asked for it when the daemon wants it. See [the user-action key](#live-session-commands-and-the-daemon)
 
 Give **exactly one** target: a session ID, `--name`, or `--of`. Passing none, or more than one, is an error. `biorouter session list --subagents` lists the sessions and subagent runs you can address.
 
@@ -423,6 +438,10 @@ Stop the turn a session is currently running. This is the same action as the Sto
 **Arguments:**
 
 - **`<SESSION_ID>`** (required): The session whose running turn should be stopped
+
+**Options:**
+
+- **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin instead of being asked for it when the daemon wants it. See [the user-action key](#live-session-commands-and-the-daemon)
 
 Cancelling is idempotent: a session with no turn in flight is not an error, it reports `nothing to cancel: this session had no turn in flight`.
 
@@ -707,6 +726,8 @@ No running Biorouter could be reached from this terminal (no daemon answered on 
 
 This is always the case next to the desktop app. The app's own daemon uses a random port and a new secret every launch, so a terminal cannot reach it. It is also always the case in an agent's shell, because the daemon's secret is never passed to a tool. A running Biorouter polls the file and usually picks up the change within a couple of seconds, but the promise is 60. `sessions` reads the session store directly and never needs a daemon.
 
+**A change made in the file needs a person.** A scheduled job is a standing unattended agent run, so `add`, `remove` and `run-now` print what will happen and ask for confirmation before writing the file — and refuse, with exit 2 and nothing written, when stdin and stderr are not both terminals. There is no `--yes`: a flag that skipped the question would be a flag an agent could pass. `list` and `sessions` only read, and ask nothing. To make the change from a script, reach a daemon instead: with `BIOROUTER_SERVER__SECRET_KEY` and `BIOROUTER_PORT` pointing at a running one, the daemon makes the change and no terminal is involved.
+
 ### mcp
 
 Run an enabled MCP server specified by `<name>` (e.g. `'Google Drive'`). MCP is the Model Context Protocol, the standard biorouter extensions speak.
@@ -800,7 +821,9 @@ The printed URL carries an access token as `?t=<token>`, minted per launch and s
 
 ### web
 
-> **Deprecated.** Use [`serve`](#serve) instead. `web` serves a minimal standalone chat page rather than the Biorouter interface, and its default port collides with `biorouterd`'s. It is kept for now and unchanged; new deployments should not use it.
+> **Deprecated.** Use [`serve`](#serve) instead. `web` serves a minimal standalone chat page rather than the Biorouter interface, and its default port collides with `biorouterd`'s. It is kept for now; new deployments should not use it.
+>
+> Since 2026-09-11 it lists no chats and returns no transcripts, and it opens a private chat only if it started that chat itself while running a private model. Continue any other private chat in the desktop app. [SD-13](../deployment/serve-decisions.md#sd-13--biorouter-web-serves-no-transcripts-and-opens-no-private-chat-it-did-not-start) records why.
 
 Start a new session in biorouter Web, a lightweight web-based interface launched via the CLI that mirrors the desktop app's chat experience.
 

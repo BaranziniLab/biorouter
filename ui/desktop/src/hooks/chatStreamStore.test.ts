@@ -1018,6 +1018,7 @@ describe('ChatStreamRegistry', () => {
         editType: 'edit',
         expectedMessageIds: ['u1', 'a1', 'a2'],
       },
+      headers: { 'X-User-Action': 'test-key' },
       throwOnError: true,
     });
   });
@@ -1068,6 +1069,9 @@ describe('ChatStreamRegistry', () => {
     expect(editMessage).toHaveBeenCalledWith({
       path: { session_id: sessionId },
       body: { timestamp: 10, editType: 'edit' },
+      // The in-place edit asks the read's reach gate since QA's 2026-09-10
+      // sweep, so it carries the proof as a branch does.
+      headers: { 'X-User-Action': 'test-key' },
       throwOnError: true,
     });
     const body = vi.mocked(editMessage).mock.calls[0][0].body as Record<string, unknown>;

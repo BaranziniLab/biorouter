@@ -16,6 +16,30 @@
 //! notices such a write itself (`Scheduler::spawn_file_watcher`). An agent's
 //! shell is always on this path: the daemon's secret is stripped from every tool
 //! child's environment (issue #57), and that is deliberate.
+//!
+//! ## Who says yes to a change made in the file
+//!
+//! PR #251 (QA 2026-09-10, F1) made `platform__manage_schedule` park an approval
+//! card before it changes what the scheduler will do, because a standing
+//! unattended agent run is the most consequential thing an agent can arrange and
+//! it was arranging them with nobody asked. This command was the way round that
+//! card: a chat with `developer__shell` and no schedule tool ran `biorouter
+//! schedule add`, which wrote the file directly, and nobody was asked here
+//! either.
+//!
+//! So a change on the FILE path now needs a person at this terminal
+//! ([`Consent`]) — `needs_terminal::require` first, then a confirmation that says
+//! in words when the job will run, what it will run, and that every run is an
+//! unattended agent. The daemon path is not gated here and does not need to be:
+//! reaching it takes `BIOROUTER_SERVER__SECRET_KEY`, which is the operator's own
+//! key and is stripped from every tool child — so an agent's shell has neither a
+//! daemon to ask nor a terminal to be asked at, which is exactly the case that
+//! must fail. A scripted deployment keeps working: give it the key and a running
+//! daemon.
+//!
+//! ⚠ **There is deliberately no `--yes`.** A flag that skips the question is a
+//! flag the agent writes into the same command line, which would leave the gate
+//! costing an honest operator a keystroke and an agent nothing.
 
 use anyhow::{anyhow, bail, Context, Result};
 use biorouter::scheduler::{
@@ -27,6 +51,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::apps::{configured_port, daemon_ok, DAEMON_HOST};
+use super::needs_terminal;
 use super::session_watch::{daemon_auth, daemon_json_request, DaemonAuth};
 
 fn validate_cron_expression(cron: &str) -> Result<()> {
@@ -117,6 +142,65 @@ impl Reach {
             Reach::File {
                 why: format!("no daemon answered on {DAEMON_HOST}:{port}"),
             }
+        }
+    }
+}
+
+/// Who says yes to a change this terminal makes in the schedule file itself.
+///
+/// The gate `platform__manage_schedule` gets from `agents/platform_approval.rs`,
+/// in the one form a separate process can offer it: that card is parked in the
+/// daemon's `PendingUserActions` and shown in the interface, and nothing this
+/// command can reach.
+pub(crate) enum Consent {
+    /// Ask the person at this terminal, and refuse when there is none. What an
+    /// agent's tool child gets, because it has no terminal.
+    AskThisTerminal { terminal: bool },
+    /// A test's stand-in for a person who said yes, so the paths that follow the
+    /// gate stay testable. `#[cfg(test)]` for the same reason
+    /// [`LocalStore::at_data_dir`] is: it must not exist in a shipped binary.
+    #[cfg(test)]
+    AlreadyGiven,
+}
+
+/// What a refused change says. One sentence per surface it names, because the
+/// reader is either a person who needs the alternative or an agent that needs to
+/// be told to ask the person.
+fn needs_a_person(action: &str) -> String {
+    format!(
+        "`{action}` would change what Biorouter runs on its own, so it needs a person: run it at an \
+         interactive terminal, or do it in Biorouter itself (the Scheduler page, or ask the \
+         assistant — `manage_schedule` shows an approval card). Nothing was changed.\nA script \
+         can do it without a terminal by asking a running daemon instead: set \
+         BIOROUTER_SERVER__SECRET_KEY to that daemon's key (it is deliberately not in a tool's \
+         environment) and BIOROUTER_PORT to its port."
+    )
+}
+
+impl Consent {
+    /// `Ok` once the change may go ahead.
+    ///
+    /// `action` names it for the refusal (`schedule add`); `summary` is what the
+    /// person is shown, and must say what will happen in their terms rather than
+    /// restate the arguments — the rule `platform_approval`'s card follows.
+    fn require(&self, action: &str, summary: &str) -> Result<()> {
+        let terminal = match self {
+            Consent::AskThisTerminal { terminal } => *terminal,
+            #[cfg(test)]
+            Consent::AlreadyGiven => return Ok(()),
+        };
+        // First, and before anything is printed or written: a refusal must not
+        // arrive after a wall of output, and `cliclack` under a pipe dies with a
+        // bare `Error: not connected` (see `needs_terminal`).
+        needs_terminal::require(terminal, &needs_a_person(action))?;
+        println!("{summary}");
+        if cliclack::confirm("Go ahead?")
+            .initial_value(false)
+            .interact()?
+        {
+            Ok(())
+        } else {
+            bail!("Declined. Nothing was changed.")
         }
     }
 }
@@ -361,6 +445,9 @@ pub async fn handle_schedule_add(
     let report = add_schedule(
         Reach::from_environment().await,
         LocalStore::for_this_user,
+        Consent::AskThisTerminal {
+            terminal: needs_terminal::prompt_can_run(),
+        },
         &schedule_id,
         &cron,
         &workflow_source_arg,
@@ -375,6 +462,7 @@ pub async fn handle_schedule_add(
 pub(crate) async fn add_schedule(
     reach: Reach,
     local: impl FnOnce() -> Result<LocalStore>,
+    consent: Consent,
     schedule_id: &str,
     cron: &str,
     workflow_source_arg: &str,
@@ -385,6 +473,18 @@ pub(crate) async fn add_schedule(
         }
         Reach::File { why } => why,
     };
+
+    // ⚠ Before the `Scheduler` is built, and so before the workflow is copied
+    // into its store: a refusal must leave nothing behind.
+    consent.require(
+        "biorouter schedule add",
+        &format!(
+            "Schedule '{schedule_id}' will run the workflow {workflow_source_arg} automatically \
+             {}, in background mode: every run is a new session that nobody watches, under the \
+             permission mode Biorouter is configured with.\n  cron: {cron}",
+            biorouter::agents::describe_cron(cron)
+        ),
+    )?;
 
     // The Scheduler's add_scheduled_job will handle copying the workflow from workflow_source_arg
     // to its internal storage and validating the path.
@@ -528,6 +628,9 @@ pub async fn handle_schedule_remove(schedule_id: String) -> Result<()> {
     let report = remove_schedule(
         Reach::from_environment().await,
         LocalStore::for_this_user,
+        Consent::AskThisTerminal {
+            terminal: needs_terminal::prompt_can_run(),
+        },
         &schedule_id,
     )
     .await?;
@@ -539,6 +642,7 @@ pub async fn handle_schedule_remove(schedule_id: String) -> Result<()> {
 pub(crate) async fn remove_schedule(
     reach: Reach,
     local: impl FnOnce() -> Result<LocalStore>,
+    consent: Consent,
     schedule_id: &str,
 ) -> Result<String> {
     let why = match reach {
@@ -547,6 +651,15 @@ pub(crate) async fn remove_schedule(
         }
         Reach::File { why } => why,
     };
+    // Gated for the reason `manage_schedule`'s delete is: a standing run the user
+    // set up is theirs, and removing it takes its workflow copy with it.
+    consent.require(
+        "biorouter schedule remove",
+        &format!(
+            "Schedule '{schedule_id}' will be deleted, along with the copy of its workflow \
+             Biorouter keeps. It will never run again."
+        ),
+    )?;
     let store = local()?;
     let scheduler = store.scheduler().await?;
 
@@ -615,6 +728,9 @@ pub async fn handle_schedule_run_now(schedule_id: String) -> Result<()> {
     let report = run_schedule_now(
         Reach::from_environment().await,
         LocalStore::for_this_user,
+        Consent::AskThisTerminal {
+            terminal: needs_terminal::prompt_can_run(),
+        },
         &schedule_id,
     )
     .await?;
@@ -627,6 +743,7 @@ pub async fn handle_schedule_run_now(schedule_id: String) -> Result<()> {
 pub(crate) async fn run_schedule_now(
     reach: Reach,
     local: impl FnOnce() -> Result<LocalStore>,
+    consent: Consent,
     schedule_id: &str,
 ) -> Result<String> {
     let why = match reach {
@@ -635,6 +752,16 @@ pub(crate) async fn run_schedule_now(
         }
         Reach::File { why } => why,
     };
+    // The most immediate of the three: this does not arrange an agent run, it
+    // starts one. `manage_schedule`'s `run_now` parks a card for the same reason.
+    consent.require(
+        "biorouter schedule run-now",
+        &format!(
+            "The workflow of schedule '{schedule_id}' will run once, now, in this terminal's own \
+             process: an agent session that nobody watches, under the permission mode Biorouter \
+             is configured with. Its regular schedule is unchanged."
+        ),
+    )?;
     eprintln!(
         "No running Biorouter could be reached from this terminal ({why}), so '{schedule_id}' \
          runs here, in this terminal."
@@ -1004,6 +1131,10 @@ mod tests {
         let report = add_schedule(
             reach,
             local_store_is_off_limits,
+            // ⚠ Not `AlreadyGiven`. The daemon path must not reach the gate at
+            // all, and a consent that can never be granted is what proves it:
+            // this test fails if the gate is ever moved above the branch.
+            Consent::AskThisTerminal { terminal: false },
             "qaf-probe",
             "0 2 * * *",
             &workflow.to_string_lossy(),
@@ -1049,6 +1180,7 @@ mod tests {
         let error = add_schedule(
             reach,
             local_store_is_off_limits,
+            Consent::AskThisTerminal { terminal: false },
             "qaf-probe",
             "0 2 * * *",
             &workflow.to_string_lossy(),
@@ -1089,12 +1221,13 @@ mod tests {
         let report = add_schedule(
             reach,
             || Ok(LocalStore::at_data_dir(&data_dir)),
+            Consent::AlreadyGiven,
             "qaf-probe",
             "0 2 * * *",
             &workflow.to_string_lossy(),
         )
         .await
-        .expect("with no daemon the job still goes into the file");
+        .expect("with no daemon, and a person who said yes, the job goes into the file");
 
         let on_disk: Vec<ScheduledJob> =
             serde_json::from_str(&std::fs::read_to_string(data_dir.join("schedule.json")).unwrap())
@@ -1147,9 +1280,14 @@ mod tests {
         })
         .await;
         let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
-        let report = remove_schedule(reach, local_store_is_off_limits, "qaf-probe")
-            .await
-            .expect("the daemon removed it");
+        let report = remove_schedule(
+            reach,
+            local_store_is_off_limits,
+            Consent::AskThisTerminal { terminal: false },
+            "qaf-probe",
+        )
+        .await
+        .expect("the daemon removed it");
         assert_eq!(daemon.requests().len(), 1, "{:?}", daemon.requests());
         assert!(report.contains("running Biorouter"), "{report}");
     }
@@ -1160,9 +1298,14 @@ mod tests {
     async fn a_schedule_the_daemon_does_not_have_is_not_found() {
         let daemon = fake_daemon(|_| (404, String::new())).await;
         let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
-        let error = remove_schedule(reach, local_store_is_off_limits, "nightly")
-            .await
-            .expect_err("404 is not a removal");
+        let error = remove_schedule(
+            reach,
+            local_store_is_off_limits,
+            Consent::AskThisTerminal { terminal: false },
+            "nightly",
+        )
+        .await
+        .expect_err("404 is not a removal");
         assert!(format!("{error}").contains("not found"), "{error}");
     }
 
@@ -1188,6 +1331,155 @@ mod tests {
         assert!(listing.contains("running Biorouter"), "{listing}");
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // The approval gate on the file path (QA 2026-09-12, the CLI half of F1).
+    //
+    // PR #251 made `platform__manage_schedule` park a card before it changes
+    // what the scheduler will do. `biorouter schedule add` from a chat's shell
+    // was the way round it: the file path wrote a standing unattended agent run
+    // and nobody was asked. An agent's tool child has neither the daemon's key
+    // (#57) nor a terminal, so requiring a person at one closes it and leaves a
+    // keyed script working.
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// The measured defect: with no daemon to reach and nobody at a terminal,
+    /// `schedule add` wrote the job and printed a success.
+    ///
+    /// Fails the shipped command twice: it returns `Ok`, and `schedule.json`
+    /// exists.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_schedule_added_with_nobody_to_ask_is_refused_and_writes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(root.path().to_string_lossy().into_owned()),
+        )]);
+        let data_dir = root.path().join("data");
+        let workflow = root.path().join("probe.yaml");
+        std::fs::write(
+            &workflow,
+            "title: Probe\ndescription: d\nprompt: echo probe\n",
+        )
+        .unwrap();
+
+        let error = add_schedule(
+            // The agent's shell exactly: no key, so no daemon to ask.
+            Reach::probe(None, unused_port().await).await,
+            || Ok(LocalStore::at_data_dir(&data_dir)),
+            Consent::AskThisTerminal { terminal: false },
+            "agent-added",
+            "0 2 * * *",
+            &workflow.to_string_lossy(),
+        )
+        .await
+        .expect_err("a standing agent run may not be created with nobody asked");
+
+        assert!(
+            !data_dir.join("schedule.json").exists(),
+            "the refusal must land before anything is written"
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("needs a person"), "{text}");
+        assert!(
+            text.contains("manage_schedule"),
+            "the refusal must name the surface that does ask: {text}"
+        );
+        assert!(
+            text.contains("BIOROUTER_SERVER__SECRET_KEY"),
+            "and the one a script can use: {text}"
+        );
+        assert!(text.contains("Nothing was changed"), "{text}");
+    }
+
+    /// `main` gives the refusal exit 2 and prints the sentence alone, and it can
+    /// only do that by downcasting — so the type has to survive the `?`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_refusal_is_the_needs_a_terminal_one_so_main_exits_2() {
+        let root = tempfile::tempdir().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(root.path().to_string_lossy().into_owned()),
+        )]);
+        let workflow = root.path().join("probe.yaml");
+        std::fs::write(
+            &workflow,
+            "title: Probe\ndescription: d\nprompt: echo probe\n",
+        )
+        .unwrap();
+        let error = add_schedule(
+            Reach::probe(None, unused_port().await).await,
+            || Ok(LocalStore::at_data_dir(&root.path().join("data"))),
+            Consent::AskThisTerminal { terminal: false },
+            "agent-added",
+            "0 2 * * *",
+            &workflow.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<needs_terminal::NeedsTerminal>()
+                .is_some(),
+            "{error:#}"
+        );
+    }
+
+    /// The other two file-path mutations are gated as well: `manage_schedule`
+    /// parks a card for delete and run_now, and run_now is the one that does not
+    /// arrange an unattended agent run but starts one.
+    ///
+    /// Fails the shipped command, which ran and deleted with nobody asked.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn removing_and_running_a_schedule_need_a_person_too() {
+        let root = tempfile::tempdir().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(root.path().to_string_lossy().into_owned()),
+        )]);
+        let data_dir = root.path().join("data");
+        let port = unused_port().await;
+
+        for error in [
+            remove_schedule(
+                Reach::probe(None, port).await,
+                || panic!("the gate must refuse before a Scheduler is built"),
+                Consent::AskThisTerminal { terminal: false },
+                "nightly",
+            )
+            .await
+            .expect_err("a delete with nobody asked is refused"),
+            run_schedule_now(
+                Reach::probe(None, port).await,
+                || panic!("the gate must refuse before a Scheduler is built"),
+                Consent::AskThisTerminal { terminal: false },
+                "nightly",
+            )
+            .await
+            .expect_err("starting an unattended agent run with nobody asked is refused"),
+        ] {
+            let text = format!("{error:#}");
+            assert!(text.contains("needs a person"), "{text}");
+        }
+        assert!(
+            !data_dir.join("schedule.json").exists(),
+            "nothing may be written on either path"
+        );
+    }
+
+    /// The sentence the person reads has to say when the job runs, and it says it
+    /// in the same words the `manage_schedule` card does — one describer, not
+    /// two, so the terminal and the card cannot describe one cron differently.
+    #[test]
+    fn the_question_says_when_the_job_will_run_in_the_cards_own_words() {
+        assert_eq!(
+            biorouter::agents::describe_cron("0 2 * * *"),
+            "every day at 02:00, this computer's local time"
+        );
+    }
+
     /// `schedule run-now` runs the job IN the daemon when there is one — where
     /// the desktop's Stop button can reach it — rather than in this terminal.
     ///
@@ -1203,9 +1495,14 @@ mod tests {
         })
         .await;
         let reach = Reach::probe(Some(DaemonAuth::for_test("s3cret", "")), daemon.port).await;
-        let report = run_schedule_now(reach, local_store_is_off_limits, "qaf-probe")
-            .await
-            .expect("the daemon ran it");
+        let report = run_schedule_now(
+            reach,
+            local_store_is_off_limits,
+            Consent::AskThisTerminal { terminal: false },
+            "qaf-probe",
+        )
+        .await
+        .expect("the daemon ran it");
         assert!(report.contains("20260911_42"), "{report}");
     }
 }

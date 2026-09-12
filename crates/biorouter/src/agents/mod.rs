@@ -42,6 +42,9 @@ pub mod post_edit_diagnostics;
 // Stage 0 of the tool-call latency work: opt-in per-phase timing behind
 // `BIOROUTER_PHASE_TIMING=1`, free when off.
 pub mod phase_timing;
+// Native checklist control for a multi-step turn: the reminder, the
+// once-per-turn redirect to `todo_write`, and the bounded stop check.
+pub(crate) mod planning_gate;
 pub mod prompt_manager;
 mod recurring;
 // BR-12: `pub(crate)` so `context_mgmt::run_eager_compaction` can reuse
@@ -50,6 +53,10 @@ pub(crate) mod reply_parts;
 pub mod resource_refs;
 pub mod retry;
 pub(crate) mod schedule_tool;
+/// A cron expression in words. Re-exported because the `biorouter schedule`
+/// confirmation says when a job will run, and saying it differently from the
+/// `manage_schedule` approval card would be two descriptions of one thing.
+pub use schedule_tool::describe_cron;
 // QA finding F7: every tool call a Code Execution script makes faces the same
 // permission decision it would face as a direct call.
 pub(crate) mod script_call_gate;

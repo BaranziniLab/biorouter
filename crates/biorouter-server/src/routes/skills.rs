@@ -167,6 +167,10 @@ pub async fn skill_catalog_handler(
     responses(
         (status = 200, description = "Applied", body = SessionSkillsResponse),
         (status = 401, description = "Unauthorized - invalid or missing secret key"),
+        (status = 403, description = "Refused by a privacy boundary: `sessionId` names a chat \
+                                      this caller may not reach, answered with the same refusal, \
+                                      word for word, that `GET /sessions/{session_id}` gives \
+                                      (body = plain text)"),
         (status = 404, description = "No such conversation"),
         (status = 500, description = "The override could not be persisted"),
     ),
@@ -175,8 +179,21 @@ pub async fn skill_catalog_handler(
 )]
 pub async fn set_session_skills(
     State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<SessionSkillsRequest>,
 ) -> Result<Json<SessionSkillsResponse>, (StatusCode, String)> {
+    // Issue #56, QA 2026-09-10 (F0's sweep). Enabling a skill in a chat puts its
+    // instructions into that chat's next turn — a write into the chat — so a
+    // caller the read refuses may not do it. Asked first, before the request is
+    // validated against anything the chat holds.
+    crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &request.session_id,
+        &headers,
+    )
+    .await
+    .map_err(|refusal| (refusal.status, refusal.message.to_string()))?;
     if request.add.is_empty() && request.remove.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,

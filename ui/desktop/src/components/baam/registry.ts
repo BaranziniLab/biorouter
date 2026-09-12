@@ -10,6 +10,7 @@ import fallback from './registry.fallback.json';
 import { classifyExtension } from '../settings/extensions/extensionPrivacy';
 import {
   EXTENSION_NOISE,
+  namesOnlyTheLicense,
   rankEntries,
   SKILL_NOISE,
   Weight,
@@ -378,12 +379,25 @@ export function catalogFreshnessLine(load: { live: boolean; fetchedAt?: string }
 }
 
 /**
- * Every label in a list, as a search field. Total, because an entry can omit
- * any field — `isRegistryDocument` checks only that an entry is an object — and
- * a search that throws in render takes the whole modal with it.
+ * Every label in a list, as a search field — except one that says nothing the
+ * entry's own `license` does not. Total, because an entry can omit any field —
+ * `isRegistryDocument` checks only that an entry is an object — and a search that
+ * throws in render takes the whole modal with it.
+ *
+ * The licence is dropped from what is SEARCHED, not from the catalog: the chip
+ * still renders on the card. Why a label carrying the licence has to go, and why
+ * removing the licence FIELD did not do it, is
+ * {@link namesOnlyTheLicense | documented in `search.ts`} — the rule belongs
+ * there, with its counterpart in `catalog_search.rs`.
  */
-function labelFields(labels: readonly string[] | undefined): SearchField[] {
-  return Array.isArray(labels) ? labels.map((label): SearchField => [label, Weight.Label]) : [];
+function labelFields(
+  labels: readonly string[] | undefined,
+  license: string | undefined
+): SearchField[] {
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .filter((label) => typeof label === 'string' && !namesOnlyTheLicense(label, license))
+    .map((label): SearchField => [label, Weight.Label]);
 }
 
 /**
@@ -397,6 +411,9 @@ function labelFields(labels: readonly string[] | undefined): SearchField[] {
  * which the whole-phrase matcher searched: every skill and extension in the
  * registry is Apache-2.0, so it separates nothing, and under word matching it
  * made `PACS` list every skill — a plural's singular, `pac`, is inside `apache`.
+ * ⚠ Excluding the FIELD was not enough, because the registry publishes the
+ * licence again as a tag and a keyword, and those are searched — see
+ * {@link namesOnlyTheLicense}, which is what {@link labelFields} applies.
  */
 export function rankSkills(
   skills: readonly RegistrySkill[],
@@ -407,8 +424,8 @@ export function rankSkills(
     [skill.name, Weight.Name],
     [skill.category, Weight.Label],
     [skill.description, Weight.Prose],
-    ...labelFields(skill.tags),
-    ...labelFields(skill.keywords),
+    ...labelFields(skill.tags, skill.license),
+    ...labelFields(skill.keywords, skill.license),
   ]);
 }
 
@@ -427,6 +444,6 @@ export function rankExtensions(
     [ext.name, Weight.Name],
     [ext.organization, Weight.Label],
     [ext.description, Weight.Prose],
-    ...labelFields(ext.tags),
+    ...labelFields(ext.tags, ext.license),
   ]);
 }

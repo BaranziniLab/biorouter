@@ -1568,8 +1568,13 @@ export type KbFormat = 'okf' | 'biookf';
  * store already answers — and it would also appear on `kb_list_bases`, a
  * model-facing tool whose payload Task 10D's metadata register governs.
  *
- * This route is user-facing: the renderer is the only caller, and Task 10C
- * already removes private bases from the model's own listing entirely.
+ * ⚠ **"The renderer is the only caller" was this doc's premise, and QA
+ * measured it false on 2026-09-10 (H2):** a public chat's shell recovered the
+ * daemon secret and read this list, private bases included. So the rows are
+ * now the bases the caller could open — the desktop app, which sends the
+ * user's proof, still sees every one, with its tier — and a private base is
+ * OMITTED for anyone else, as Task 10C already omits it from the model's own
+ * listing: a base's id and name are user-authored content.
  */
 export type KbListEntry = Manifest & {
     tier: KbTier;
@@ -4273,7 +4278,7 @@ export type ListActiveWorkData = {
 
 export type ListActiveWorkResponses = {
     /**
-     * Current background jobs, subagents, and in-flight scheduled runs
+     * Current background jobs, subagents, and in-flight scheduled runs, holding only the work of the chats this caller could open: a row whose chat is private, cannot be read, or that names no chat at all is omitted — never redacted — for a caller with neither the user-action proof nor a private capability, as its chat is from `GET /sessions`
      */
     200: ActiveWorkResponse;
 };
@@ -4293,6 +4298,10 @@ export type CancelActiveWorkData = {
 };
 
 export type CancelActiveWorkErrors = {
+    /**
+     * The work belongs to a chat this caller could not open — a private chat, one that cannot be read, or none at all — and the request carried neither the user-action proof nor a private capability. Plain text, byte-for-byte what `GET /sessions/{session_id}` answers, and the same for an id that names nothing, so a refusal says nothing about the work. Nothing was stopped
+     */
+    403: unknown;
     /**
      * No such active-work item
      */
@@ -4404,7 +4413,7 @@ export type GetCallableToolCountErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried neither a capability that covers it nor proof it came from the user
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
      */
     403: unknown;
     /**
@@ -4745,7 +4754,7 @@ export type StartAgentErrors = {
      */
     401: unknown;
     /**
-     * The selected private provider requires user-action proof
+     * The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.
      */
     409: ErrorResponse;
     /**
@@ -4821,6 +4830,10 @@ export type GetToolsErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
     /**
      * Extension timed out while loading for settings
      */
@@ -4898,7 +4911,7 @@ export type UpdateAgentProviderErrors = {
      */
     403: unknown;
     /**
-     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user; on a daemon with no user-action key, any bind to a private model (SD-12) (body = plain text)
      */
     409: PrivacyBarrierBody;
     /**
@@ -5714,7 +5727,7 @@ export type GetActiveErrors = {
 
 export type GetActiveResponses = {
     /**
-     * The session's knowledge bases and its primary
+     * The session's knowledge bases and its primary, showing only the bases this caller may open: a private base is omitted from both lists, and a private primary reads null, for a caller without the user's proof or a private capability
      */
     200: ActiveKbResponse;
 };
@@ -5734,7 +5747,7 @@ export type SetActiveErrors = {
      */
     400: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user; or `primary_kb` names a knowledge base this caller may not reach, answered exactly as a base that does not exist (body = plain text)
      */
     403: unknown;
 };
@@ -5757,7 +5770,7 @@ export type ListBasesData = {
 
 export type ListBasesResponses = {
     /**
-     * List of knowledge bases
+     * The knowledge bases this caller may open: every base for the desktop app (the user-action proof) or a caller stating a private provider, the public ones for anyone else. A private base is omitted, never redacted.
      */
     200: Array<KbListEntry>;
 };
@@ -6962,7 +6975,7 @@ export type ListSchedulesErrors = {
 
 export type ListSchedulesResponses = {
     /**
-     * A list of scheduled jobs
+     * A list of scheduled jobs. Every schedule is listed, including idle and paused ones — but `current_session_id` and `creator_session_id` are omitted from any row naming a chat this caller could not open, i.e. a private chat or one that cannot be read, for a caller carrying neither the user-action proof nor a private capability. Fields are redacted, ROWS are never dropped: a schedule is not a chat, and an idle one names none
      */
     200: ListSchedulesResponse;
 };
@@ -7019,6 +7032,10 @@ export type InspectRunningJobData = {
 
 export type InspectRunningJobErrors = {
     /**
+     * The run belongs to a chat this caller could not open, and the request carried neither the user-action proof nor a private capability. Identical to the answer for a schedule that is not running and for one that does not exist, so a refusal says nothing about the run
+     */
+    403: unknown;
+    /**
      * Scheduled job not found
      */
     404: unknown;
@@ -7040,10 +7057,28 @@ export type InspectRunningJobResponse = InspectRunningJobResponses[keyof Inspect
 export type KillRunningJobData = {
     body?: never;
     path: {
+        /**
+         * ID of the schedule whose run should be stopped
+         */
         id: string;
     };
     query?: never;
     url: '/schedule/{id}/kill';
+};
+
+export type KillRunningJobErrors = {
+    /**
+     * Nothing was stopped: the schedule is not running, its run had already finished, or it has started a DIFFERENT run since this request was authorized — the last of which is refused rather than applied to a run the caller was not admitted to. The message says which
+     */
+    400: unknown;
+    /**
+     * The run belongs to a chat this caller could not open — a private chat, or one that cannot be read — and the request carried neither the user-action proof nor a private capability. Plain text, byte-for-byte what `GET /sessions/{session_id}` answers, and the same for a schedule that is not running and one that does not exist, so a refusal says nothing about the run. Nothing was stopped
+     */
+    403: unknown;
+    /**
+     * No such schedule
+     */
+    404: unknown;
 };
 
 export type KillRunningJobResponses = {
@@ -7144,7 +7179,7 @@ export type SessionsHandlerErrors = {
 
 export type SessionsHandlerResponses = {
     /**
-     * A list of session display info
+     * A list of session display info, holding only the runs this caller could open: a private run is omitted for a caller with neither the user-action proof nor a private capability, as it is from `GET /sessions`
      */
     200: Array<SessionDisplayInfo>;
 };
@@ -7208,7 +7243,7 @@ export type ListSessionsErrors = {
 
 export type ListSessionsResponses = {
     /**
-     * List of available sessions retrieved successfully
+     * The sessions this caller could open. A private session is omitted — never redacted — for a caller that carries neither the user-action proof nor a private capability, exactly as `GET /sessions/{session_id}` would refuse it
      */
     200: SessionListResponse;
 };
@@ -7405,7 +7440,7 @@ export type ListSidebarSessionsErrors = {
 
 export type ListSidebarSessionsResponses = {
     /**
-     * Paginated lightweight session summaries for the sidebar
+     * Paginated lightweight session summaries for the sidebar, holding only the sessions this caller could open (see `GET /sessions`). `next_offset` is where the next page starts; for a caller shown every session it is `offset + limit` as before, and for one shown a filtered view it is a position in the underlying ordering, so pass it back as given rather than computing it
      */
     200: SidebarSessionListResponse;
 };
@@ -7429,6 +7464,10 @@ export type DeleteSessionErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56, QA 2026-09-10 F0): the same refusal, word for word, that `GET /sessions/{session_id}` gives — including for a chat that does not exist (body = plain text)
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -7721,6 +7760,10 @@ export type GetSessionExtensionsErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -7761,6 +7804,10 @@ export type UpdateSessionNameErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -7799,6 +7846,10 @@ export type GetSessionUsageErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -7834,6 +7885,10 @@ export type UpdateSessionUserWorkflowValuesErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -8039,6 +8094,10 @@ export type SetSessionSkillsErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary: `sessionId` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * No such conversation
      */
     404: unknown;
@@ -8237,6 +8296,10 @@ export type CreateWorkflowErrors = {
      */
     400: unknown;
     /**
+     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
      * Precondition failed - Agent not available
      */
     412: unknown;
@@ -8248,7 +8311,7 @@ export type CreateWorkflowErrors = {
 
 export type CreateWorkflowResponses = {
     /**
-     * Workflow created successfully
+     * Workflow created successfully. Its `knowledge_bases` names only the bases this caller may open
      */
     200: CreateWorkflowResponse;
 };

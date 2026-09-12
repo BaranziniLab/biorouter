@@ -112,8 +112,12 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
         (m) => m?.metadata?.provenance?.kind === 'spawn_context'
       );
       const spawnContext = record?.content?.map((c) => ('text' in c ? c.text : '')).join('\n');
-      const extensionsResponse = (await getSessionExtensions({ path: { session_id: sessionId } }))
-        .data;
+      const extensionsResponse = (
+        await getSessionExtensions({
+          path: { session_id: sessionId },
+          headers: await userActionHeaders(),
+        })
+      ).data;
       if (cancelled) return;
       setInfo({
         isSubagent: true,

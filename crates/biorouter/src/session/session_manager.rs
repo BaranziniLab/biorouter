@@ -4912,54 +4912,19 @@ impl SessionStorage {
         )
     }
 
-    /// Issue #56 §15 — the classification backfill, from every provenance the
-    /// database actually records.
+    /// Bring the shapes the backfill reads up to date, and say whether the turn
+    /// ledger can be read at all.
     ///
-    /// ⚠ **It belongs to the numbered migration arms and to the fresh-database
-    /// import, and to nothing else.** [`Self::ensure_privacy_schema`] runs on
-    /// **every** startup, and that remains the wrong home even now that the
-    /// statements are declassification-guarded: the guard makes a re-run
-    /// *non-destructive*, it does not make a per-launch re-scan of every row a
-    /// thing this code should do, and one guard standing between a per-startup
-    /// statement and the user's declassifications is one mechanism too few.
-    /// `the_backfill_runs_from_the_migration_arms_and_the_import_and_nowhere_else`
-    /// pins the call sites.
+    /// `Ok(None)` means the backfill must be **skipped**: this database's
+    /// `sessions` has no `provider_name`, so no row's tier can be inferred.
+    /// `Ok(Some(turn_ledger))` means it may run, with `turn_ledger` saying whether
+    /// the second evidence source is usable.
     ///
-    /// **Two evidence sources, in this order.**
-    ///
-    /// 1. [`Self::backfill_update_sql`] — the row's bound provider. What issue
-    ///    #56 shipped, unchanged apart from the declassification guard.
-    /// 2. [`Self::backfill_turn_history_update_sql`] — the `token_events` turn
-    ///    ledger. This is finding 9's fix: `provider_name` is the LAST binding,
-    ///    so a chat that ran on Ollama and was later switched to Claude read
-    ///    `anthropic` and backfilled public with a private transcript. The ledger
-    ///    still holds its Ollama turns. See that function for why those rows are
-    ///    stamped `turn:` rather than `backfill:`.
-    ///
-    /// The order is load-bearing for the counts, not for the outcome: the second
-    /// statement's `AND privacy_tier = 'public'` means it can only see rows the
-    /// first left alone, which is what makes the two counts disjoint.
-    ///
-    /// Still fails OPEN where it has nothing (DR-10). A fail-CLOSED backfill
-    /// (NULL provider plus at least one message ⇒ private) was rejected: a user
-    /// who has only ever used a commercial provider would find a large slice of
-    /// their history marked private on first launch, refused on the model they
-    /// normally use, with only an irreversible declassification as the exit, one
-    /// chat at a time.
-    ///
-    /// The residual, narrower than it was but still real: a session whose private
-    /// turns predate `token_events.provider` (migration 11) and which was later
-    /// rebound to a public provider records the private work in neither column,
-    /// and backfills public. There is no transcript scan and there will not be
-    /// one. `docs/security/privacy-tiers-migration.md` says this to the user.
-    ///
-    /// `AND privacy_tier = 'public'` is not redundant: a database that reached an
-    /// arm with the columns already present (BR-71's number collision is exactly
-    /// that case) can hold rows a running build already raised, and the ratchet
-    /// must never be walked backwards or re-stamped with a weaker provenance.
-    async fn backfill_privacy_from_recorded_provenance(
-        pool: &Pool<Sqlite>,
-    ) -> Result<BackfillCounts> {
+    /// Split out of [`Self::backfill_privacy_from_recorded_provenance`] so that
+    /// function stays under `clippy::too_many_lines`. Every guard here exists
+    /// because this arm must not assume an earlier arm ran — read the comments
+    /// before removing one; each is a failed startup that happened.
+    async fn prepare_backfill_shape(pool: &Pool<Sqlite>) -> Result<Option<bool>> {
         // Shape-guarded for the same reason `ensure_privacy_schema` is: this arm
         // must not assume an earlier arm ran. `provider_name` arrives in
         // migration 6, so every database that walked the ladder has it — but a
@@ -4974,7 +4939,7 @@ impl SessionStorage {
                 "issue #56: skipping the privacy backfill; this database's `sessions` \
                  table has no `provider_name`, so no row's tier can be inferred"
             );
-            return Ok(BackfillCounts::default());
+            return Ok(None);
         }
 
         // ⚠ The declassification guard reads `classification_audit`, so BOTH
@@ -5025,6 +4990,60 @@ impl SessionStorage {
                  only each row's bound provider, so chats that switched providers may stay public"
             );
         }
+        Ok(Some(turn_ledger))
+    }
+
+    /// Issue #56 §15 — the classification backfill, from every provenance the
+    /// database actually records.
+    ///
+    /// ⚠ **It belongs to the numbered migration arms and to the fresh-database
+    /// import, and to nothing else.** [`Self::ensure_privacy_schema`] runs on
+    /// **every** startup, and that remains the wrong home even now that the
+    /// statements are declassification-guarded: the guard makes a re-run
+    /// *non-destructive*, it does not make a per-launch re-scan of every row a
+    /// thing this code should do, and one guard standing between a per-startup
+    /// statement and the user's declassifications is one mechanism too few.
+    /// `the_backfill_runs_from_the_migration_arms_and_the_import_and_nowhere_else`
+    /// pins the call sites.
+    ///
+    /// **Two evidence sources, in this order.**
+    ///
+    /// 1. [`Self::backfill_update_sql`] — the row's bound provider. What issue
+    ///    #56 shipped, unchanged apart from the declassification guard.
+    /// 2. [`Self::backfill_turn_history_update_sql`] — the `token_events` turn
+    ///    ledger. This is finding 9's fix: `provider_name` is the LAST binding,
+    ///    so a chat that ran on Ollama and was later switched to Claude read
+    ///    `anthropic` and backfilled public with a private transcript. The ledger
+    ///    still holds its Ollama turns. See that function for why those rows are
+    ///    stamped `turn:` rather than `backfill:`.
+    ///
+    /// The order is load-bearing for the counts, not for the outcome: the second
+    /// statement's `AND privacy_tier = 'public'` means it can only see rows the
+    /// first left alone, which is what makes the two counts disjoint.
+    ///
+    /// Still fails OPEN where it has nothing (DR-10). A fail-CLOSED backfill
+    /// (NULL provider plus at least one message ⇒ private) was rejected: a user
+    /// who has only ever used a commercial provider would find a large slice of
+    /// their history marked private on first launch, refused on the model they
+    /// normally use, with only an irreversible declassification as the exit, one
+    /// chat at a time.
+    ///
+    /// The residual, narrower than it was but still real: a session whose private
+    /// turns predate `token_events.provider` (migration 11) and which was later
+    /// rebound to a public provider records the private work in neither column,
+    /// and backfills public. There is no transcript scan and there will not be
+    /// one. `docs/security/privacy-tiers-migration.md` says this to the user.
+    ///
+    /// `AND privacy_tier = 'public'` is not redundant: a database that reached an
+    /// arm with the columns already present (BR-71's number collision is exactly
+    /// that case) can hold rows a running build already raised, and the ratchet
+    /// must never be walked backwards or re-stamped with a weaker provenance.
+    async fn backfill_privacy_from_recorded_provenance(
+        pool: &Pool<Sqlite>,
+    ) -> Result<BackfillCounts> {
+        let Some(turn_ledger) = Self::prepare_backfill_shape(pool).await? else {
+            return Ok(BackfillCounts::default());
+        };
 
         let private = sqlx::query(&Self::backfill_update_sql())
             .execute(pool)

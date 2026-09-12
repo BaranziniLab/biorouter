@@ -49,6 +49,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { CatalogBundle, CatalogSkill, CatalogView, SkillRoot } from '../../api';
 import { refreshSkillCatalog, setSessionSkills, skillCatalogHandler } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 import { isContextBundle, isContextSkill } from '../settings/contexts/contexts';
 import {
@@ -255,12 +256,15 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
 
         try {
           if (sessionId) {
+            // With the user's proof: a private chat refuses this write to a
+            // caller without it (issue #56, QA 2026-09-10).
             const response = await setSessionSkills<true>({
               body: {
                 sessionId,
                 add: enabled ? keys : [],
                 remove: enabled ? [] : keys,
               },
+              headers: await userActionHeaders(),
               throwOnError: true,
             });
             commit(response.data.catalog);

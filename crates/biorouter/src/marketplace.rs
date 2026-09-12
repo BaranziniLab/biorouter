@@ -8,7 +8,9 @@ use futures::StreamExt;
 use serde::Deserialize;
 use url::Url;
 
-use crate::catalog_search::{rank, CatalogSearch, Weight, EXTENSION_NOISE, SKILL_NOISE};
+use crate::catalog_search::{
+    names_only_the_license, rank, CatalogSearch, Weight, EXTENSION_NOISE, SKILL_NOISE,
+};
 use crate::config::paths::Paths;
 use crate::privacy::affiliation::InstitutionId;
 use crate::privacy::{ExtensionAffiliation, ProviderTier};
@@ -133,7 +135,13 @@ impl MarketplaceCatalog {
                     (entry.organization.as_str(), Weight::Label),
                     (entry.description.as_str(), Weight::Prose),
                 ];
-                fields.extend(entry.tags.iter().map(|tag| (tag.as_str(), Weight::Label)));
+                fields.extend(
+                    entry
+                        .tags
+                        .iter()
+                        .filter(|tag| !names_only_the_license(tag, &entry.license))
+                        .map(|tag| (tag.as_str(), Weight::Label)),
+                );
                 fields
             },
         )
@@ -153,11 +161,18 @@ impl MarketplaceCatalog {
                 (entry.category.as_str(), Weight::Label),
                 (entry.description.as_str(), Weight::Prose),
             ];
-            fields.extend(entry.tags.iter().map(|tag| (tag.as_str(), Weight::Label)));
+            fields.extend(
+                entry
+                    .tags
+                    .iter()
+                    .filter(|tag| !names_only_the_license(tag, &entry.license))
+                    .map(|tag| (tag.as_str(), Weight::Label)),
+            );
             fields.extend(
                 entry
                     .keywords
                     .iter()
+                    .filter(|keyword| !names_only_the_license(keyword, &entry.license))
                     .map(|keyword| (keyword.as_str(), Weight::Label)),
             );
             fields
@@ -1031,6 +1046,131 @@ mod tests {
             }
         }
         assert!(phrase.len() >= 2, "{phrase:?}");
+    }
+
+    /// A licence is not searchable, and leaving the FIELD out did not make that
+    /// true. Measured in the Browse-extensions modal on 2026-09-12 against the
+    /// live 37-entry registry, with the field already gone: `PACS` → 31 of 37,
+    /// `pac` → 31, `apache` → 31, `Apache-2.0` → 32, empty → 37, `zzzznope` → 0.
+    /// The three counts agreeing is the identification — `PACS` reaches `pac`
+    /// through the plural fallback, `pac` is inside `apache`, and 31 rows
+    /// republish `Apache-2.0` as one of their own TAG chips, which are searched.
+    /// None of the 31 was about PACS.
+    ///
+    /// What this must NOT do is narrow the substring rule: `pac` is inside
+    /// "PacBio", "package" and "workspace", and those hits stay.
+    #[test]
+    fn a_licence_republished_as_a_label_is_not_searchable_through_it() {
+        let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
+
+        // A word of a licence, as a whole label. Spelled out here rather than
+        // taken from `catalog_search` so this test cannot be satisfied by the
+        // same mistake the fix makes.
+        let is_a_licence_word = |license: &str, label: &str| {
+            license
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .any(|word| word.eq_ignore_ascii_case(label))
+        };
+
+        // Guard. If the registry stops republishing its licence as a label there
+        // is nothing here to refuse, and every assertion below would pass while
+        // proving nothing — which is exactly how the fix before this one looked
+        // covered. Three counts, because there are three label paths.
+        let tagged_extensions = catalog
+            .browse_extensions(ProviderTier::Private)
+            .iter()
+            .filter(|entry| {
+                entry
+                    .tags
+                    .iter()
+                    .any(|tag| tag.eq_ignore_ascii_case(&entry.license))
+            })
+            .count();
+        let tagged_skills = catalog
+            .browse_skills()
+            .iter()
+            .filter(|entry| {
+                entry
+                    .tags
+                    .iter()
+                    .any(|tag| tag.eq_ignore_ascii_case(&entry.license))
+            })
+            .count();
+        let keyworded_skills = catalog
+            .browse_skills()
+            .iter()
+            .filter(|entry| {
+                entry
+                    .keywords
+                    .iter()
+                    .any(|keyword| is_a_licence_word(&entry.license, keyword))
+            })
+            .count();
+        assert!(
+            tagged_extensions >= 2 && tagged_skills >= 2 && keyworded_skills >= 2,
+            "the shipped registry no longer republishes its licence as a label \
+             (extensions tagged {tagged_extensions}, skills tagged {tagged_skills}, skills \
+             keyworded {keyworded_skills}) — this test would pass vacuously"
+        );
+
+        // `apache` occurs nowhere in the registry except each entry's own
+        // licence, so it finds nothing at all. Measured before the fix: 31
+        // extensions and 49 skills, none of them about Apache anything.
+        let extension_ids = |search: &CatalogSearch<'_, MarketplaceExtensionDescriptor>| {
+            search
+                .hits
+                .iter()
+                .map(|hit| hit.entry.registry_id.clone())
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(
+            extension_ids(&catalog.search_extensions(ProviderTier::Private, "apache")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            skill_ids(&catalog.search_skills("apache")),
+            Vec::<String>::new()
+        );
+
+        // The query as the QA run typed it. The plural fallback and the
+        // substring rule both stay: a skill that really says PACS is found, and
+        // a skill whose only `pac` was `Apache-2.0` is not.
+        let pacs = skill_ids(&catalog.search_skills("PACS"));
+        assert!(
+            pacs.contains(&"biomedical-imaging-pathology".to_owned()),
+            "a skill whose keywords say `pacs` must still be found: {pacs:?}"
+        );
+        assert!(
+            pacs.contains(&"long-read-sequencing".to_owned()),
+            "`pac` inside `PacBio` is the substring rule working, not the defect: {pacs:?}"
+        );
+        for licence_only in ["empirical-research-router", "causal-identification-gates"] {
+            assert!(
+                !pacs.contains(&licence_only.to_owned()),
+                "`{licence_only}`'s only `pac` is its `Apache-2.0` label: {pacs:?}"
+            );
+        }
+        let pacs_extensions =
+            extension_ids(&catalog.search_extensions(ProviderTier::Private, "PACS"));
+        for licence_only in ["benchlingagent", "dnanexusagent", "omeroagent"] {
+            assert!(
+                !pacs_extensions.contains(&licence_only.to_owned()),
+                "`{licence_only}` is not about PACS; its only `pac` is `Apache-2.0`: \
+                 {pacs_extensions:?}"
+            );
+        }
+
+        // The browse case is untouched — the licence label is dropped from what
+        // is SEARCHED, not from the catalog.
+        assert_eq!(
+            catalog.search_skills("").len(),
+            catalog.browse_skills().len()
+        );
+        assert_eq!(
+            catalog.search_extensions(ProviderTier::Private, "").len(),
+            catalog.browse_extensions(ProviderTier::Private).len()
+        );
     }
 
     /// The extension catalog shares the matcher, and the caller filter runs

@@ -30,6 +30,15 @@
 //! (`routes::reply`'s `cancel_without_user_action_proof_cannot_stop_another_turn`
 //! and `interrupt_without_user_action_proof_cannot_forge_human_steering`), and
 //! this change leaves it alone.
+//!
+//! ⚠ **The terminal reads what these refusals look like.** `biorouter session`
+//! cannot ask a daemon whether it holds a key, so `session cancel`, `attach` and
+//! `send` go out without one and read the answer (`commands/session_watch.rs`,
+//! `key_verdict`): an EMPTY 403 means "this daemon holds a key", and only that
+//! makes the terminal ask the person for it. Every refusal here must therefore
+//! carry the daemon's sentence, or a `serve` user is asked for a key that does
+//! not exist — `the_terminals_empty_steer_is_answered_by_the_gate_and_touches_nothing`
+//! pins it for the question the terminal actually sends.
 
 // Redirects this binary's Biorouter data/config/state dirs at a throwaway root
 // before `main`, so nothing here can open the developer's real `sessions.db`.
@@ -564,6 +573,88 @@ async fn a_subagents_turn_is_still_refused_and_the_refusal_says_why() {
 
     drop(guard);
     discard(&state, &id).await;
+}
+
+/// The empty steer exactly as `biorouter session` sends it to ask whether it may
+/// steer (`steer_gate_question` in `commands/session_watch.rs`): no
+/// `X-User-Action` header at all — the browser's shim sends an empty one — and
+/// no turn id.
+fn terminal_question(session_id: &str, caller_provider: Option<&str>) -> Request<Body> {
+    let mut request = Request::builder()
+        .uri("/interrupt")
+        .method("POST")
+        .header("content-type", "application/json");
+    if let Some(provider) = caller_provider {
+        request = request.header("X-Caller-Provider", provider);
+    }
+    request
+        .body(Body::from(
+            json!({ "session_id": session_id, "text": "" }).to_string(),
+        ))
+        .unwrap()
+}
+
+/// The question `biorouter session attach` asks as it joins, and `session send`
+/// after a refusal: would this daemon take a steer from this terminal, and does
+/// it want the user-action key for one?
+///
+/// The answer here is always **no, and here is why** — `STEER_NO_KEY`, a 403
+/// carrying the daemon's own sentence. ⚠ This is the row where SD-11 settled
+/// narrower than the branch that wrote this test assumed. `POST /interrupt` is
+/// NOT admitted by the reach gate on a keyless daemon: it asks for the proof on
+/// **both** kinds, so `reply::steer_refusal` answers from the HEADERS, before
+/// the body is parsed and before any chat is resolved. So the chat and the
+/// stated caller change nothing, where an earlier draft expected a 400 for a
+/// chat the gate would have admitted.
+///
+/// What the terminal actually needs is unchanged, and is what this asserts:
+/// never the EMPTY 403 that means "this daemon holds a key", which would send
+/// the terminal to ask the person for one that does not exist; always a sentence
+/// it can print instead; and the question touches neither the turn nor the
+/// agent's queue — now trivially, since nothing is reached.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn the_terminals_empty_steer_is_answered_by_the_gate_and_touches_nothing() {
+    assert_the_daemon_is_keyless();
+    let state = AppState::new().await.unwrap();
+    // Every chat, asked with and without a stated capability: the answer is the
+    // same 403 and the same sentence, because the refusal is decided from the
+    // headers alone. The rows are kept rather than collapsed so that a change
+    // admitting the steer for SOME chat fails here instead of passing quietly.
+    for (chat, caller, expected) in [
+        (Chat::Public, None, StatusCode::FORBIDDEN),
+        (Chat::Private, None, StatusCode::FORBIDDEN),
+        (Chat::Private, Some("versa_azure"), StatusCode::FORBIDDEN),
+        (Chat::Subagent, None, StatusCode::FORBIDDEN),
+        (Chat::Subagent, Some("versa_azure"), StatusCode::FORBIDDEN),
+    ] {
+        let id = seed(&state, chat).await;
+        let (guard, token) = begin_turn(&state, &id);
+        let agent = state.get_agent(id.clone()).await.unwrap();
+        agent.open_for_turn(TurnId::new("questioned-agent-turn"));
+
+        let (status, body) = send(reply_routes(&state), terminal_question(&id, caller)).await;
+
+        assert_eq!(status, expected, "{chat:?} asked by {caller:?}: {body}");
+        if status == StatusCode::FORBIDDEN {
+            assert!(
+                body.contains("without a user-action key"),
+                "a keyless refusal without the daemon's sentence reads to the terminal as \
+                 'this daemon wants a key': {body:?}"
+            );
+        }
+        assert!(
+            !agent.has_soft_interrupts(),
+            "the terminal's question reached the agent's queue"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "the terminal's question reached the turn"
+        );
+
+        drop(guard);
+        discard(&state, &id).await;
+    }
 }
 
 /// **The premise SD-11 stands on, pinned.** On a keyless daemon `/agent/stop`

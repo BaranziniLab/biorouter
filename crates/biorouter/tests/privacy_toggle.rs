@@ -709,6 +709,19 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         "BIOROUTER_PLANNER_PROVIDER",
     )
     .is_err());
+    // 10b H's RATCHETING half — the same gate on the path where the chosen
+    //     provider's tier does not stop in this process but becomes a knowledge
+    //     base's permanent classification. It has its OWN toggle read (it must:
+    //     it refuses a cell the sibling allows), so the sibling's assertion above
+    //     says nothing about it, and the cell tested here is exactly the one they
+    //     disagree on — a PRIVATE provider named by a PUBLIC chat.
+    assert!(biorouter::privacy::assert_alt_provider_matches_session(
+        "ingesting these sources",
+        private_provider().as_ref(),
+        SessionClassification::Public,
+        "this tool's `model` argument",
+    )
+    .is_err());
 
     // 13 spawn (Task 23) — the spawn matrix's THREE decisions, all hanging off
     //          one toggle read inside `apply_settings_overrides`.
@@ -862,6 +875,16 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         public_provider().as_ref(),
         SessionClassification::Private,
         "BIOROUTER_PLANNER_PROVIDER",
+    )
+    .is_ok());
+    // 10b: the ratcheting half goes quiet too. Its early return is its own line
+    //      of code, so a gate that read the switch once for the pair — or not at
+    //      all on this half — would still pass the assertion above it.
+    assert!(biorouter::privacy::assert_alt_provider_matches_session(
+        "ingesting these sources",
+        private_provider().as_ref(),
+        SessionClassification::Public,
+        "this tool's `model` argument",
     )
     .is_ok());
     // 13 spawn: all three decisions go quiet, and the third is the one a flipped

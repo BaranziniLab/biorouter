@@ -242,6 +242,89 @@ async fn read_user_action_digest() -> Result<[u8; 32], NoUserActionKey> {
     classify_digest_line(line)
 }
 
+/// Read the launcher's proof-of-user digest, say what holding none costs, and
+/// pin the launch configuration (SD-12).
+///
+/// Split out of [`run`] so the block's two decisions — the LEVEL of the report
+/// and the launch-state pin — stay beside the read they both depend on, and so
+/// `run` stays under `clippy::too_many_lines`. The pin must still land before
+/// `AppState::new()` and before any route is mounted; the one call site is
+/// where the inline block was.
+async fn install_user_action_proof() -> Option<[u8; 32]> {
+    // SD-12, Finding 3. Holding no key is TWO situations wearing one name: a
+    // deployment where no proof can ever exist, and a launcher that meant to
+    // send one and did not. The launcher says which (`launch::USER_ACTION_EXPECTED_ENV`),
+    // and the difference decides both what is logged here and — in
+    // `routes::agent::new_chat_bind_decision` — whether SD-12's exemption applies
+    // at all. A desktop daemon that lost its key is a fault to repair, not a
+    // headless deployment, so it keeps the refusal.
+    let launcher_declared_a_key =
+        biorouter_server::launch::launcher_declared_a_user_action_key_in_env();
+    let digest = match read_user_action_digest().await {
+        Ok(digest) => Some(digest),
+        Err(reason) => {
+            // ⚠ One line, and it names every consequence. `reason.warning()`
+            // carries SD-11's — before SD-11 a keyless desktop daemon announced
+            // itself at the first click, because Stop answered 403; now Stop
+            // works there, so the misconfiguration is silent unless this says
+            // so — and SD-12's new-chat sentence is appended. The LEVEL is the
+            // launcher's declaration: a deployment that can hold no key is a
+            // warning, a launcher that dropped one is an error.
+            if launcher_declared_a_key {
+                tracing::error!(
+                    "{} This daemon's launcher declared it would send a key ({}=set), so this is \
+                     a fault and not a deployment: a new chat on a private model will be refused \
+                     rather than started (SD-12). The key was either never generated or the \
+                     bounded 2s stdin read timed out. Quit and reopen Biorouter.",
+                    reason.warning(),
+                    biorouter_server::launch::USER_ACTION_EXPECTED_ENV
+                );
+            } else {
+                tracing::warn!(
+                    "{} A new chat still starts on the provider this daemon was LAUNCHED with, \
+                     and is refused if that configuration has changed since (SD-12).",
+                    reason.warning()
+                );
+            }
+            None
+        }
+    };
+    // SD-12: pin the operator's declaration. Before `AppState::new()` and before
+    // any route is mounted, so no request is ever served against an unrecorded
+    // launch state, and so the sample predates anything this process could write
+    // to `config.yaml` itself.
+    biorouter_server::launch::record_launch_state(launcher_declared_a_key);
+    digest
+}
+
+/// The tier SD-1 pins for every session a serve daemon runs: the DECLARED tier
+/// of the provider the operator configured, reduced with `least` over the lead
+/// provider when a lead model is configured — the reduction a bound lead/worker
+/// pair gets, since its transcript reaches both.
+///
+/// Read ONCE, at launch. The operator made this choice at the terminal before
+/// anyone opened a tab (SD-1), and `config.yaml` is agent-writable (DR-17), so a
+/// value re-read per request would be one a model could raise by editing a file.
+/// Unconfigured, and a name this install does not publish, both read Public —
+/// the fail-safe side, and the reach this interface had for every private chat
+/// before it had any.
+async fn served_operator_capability() -> biorouter::privacy::ProviderTier {
+    use biorouter::privacy::ProviderTier;
+    use biorouter::workflow::privacy::declared_provider_tier;
+    let config = biorouter::config::Config::global();
+    let Ok(provider) = config.get_biorouter_provider() else {
+        return ProviderTier::Public;
+    };
+    let mut capability = declared_provider_tier(&provider).await;
+    if config.get_param::<String>("BIOROUTER_LEAD_MODEL").is_ok() {
+        let lead = config
+            .get_param::<String>("BIOROUTER_LEAD_PROVIDER")
+            .unwrap_or_else(|_| provider.clone());
+        capability = ProviderTier::least(capability, declared_provider_tier(&lead).await);
+    }
+    capability
+}
+
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
 
@@ -299,18 +382,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // tool that reads a caller-named path (`/proc/self/environ`) or, on macOS,
     // by `sysctl(KERN_PROCARGS2)`, which is not a path at all and which no
     // sandbox profile can gate.
-    let user_action_digest = match read_user_action_digest().await {
-        Ok(digest) => Some(digest),
-        Err(reason) => {
-            // ⚠ One WARN, and it names the SD-11 consequence as well as the
-            // privacy one. Before SD-11 a keyless desktop daemon announced
-            // itself at the first click — Stop answered 403 and the user
-            // complained. Now Stop works there, so the same misconfiguration is
-            // silent unless this line says so.
-            tracing::warn!("{}", reason.warning());
-            None
-        }
-    };
+    let user_action_digest = install_user_action_proof().await;
     // A tool whose approval can never be granted must not be offered. `serve`
     // spawns this daemon with `Stdio::null()`, so it holds no key and every
     // proof-backed approval refuses forever — the install and delete tools take
@@ -365,6 +437,21 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
             // there, so its absence here means a loopback bind whose launcher
             // chose not to require one.
             let browser_token = std::env::var("BIOROUTER_BROWSER_TOKEN").ok();
+            // Issue #56, QA 2026-09-10 (SD-10): the interface this daemon serves is
+            // the operator's, and SD-1 pins the provider every session here runs
+            // on — so that provider's tier is the reach the listing and
+            // knowledge-base gates give a request carrying the served document's
+            // cookie. Without a token there is no such cookie, and the interface
+            // cannot be told from any other local caller, so it gets none.
+            if let Some(token) = browser_token.as_deref().filter(|t| !t.is_empty()) {
+                let capability = served_operator_capability().await;
+                info!(
+                    ?capability,
+                    "the served interface is given the configured provider's tier on listings \
+                     and knowledge bases"
+                );
+                biorouter_server::auth::install_served_operator(token.to_string(), capability);
+            }
             let ui = crate::routes::web_ui::WebUi::new(&web_dir, &secret_key, browser_token)
                 .map_err(|e| {
                     anyhow::anyhow!(
@@ -476,8 +563,11 @@ mod keyless_report_tests {
                 "{empty:?}"
             );
         }
-        // Present and wrong, which a launcher fault also looks like.
-        for bad in ["not-hex", "abcd", &digest[..62], &format!("{digest}aa")] {
+        // Present and wrong, which a launcher fault also looks like: not hex at
+        // all, and hex of the wrong length in both directions.
+        let short = "a".repeat(62);
+        let long = "a".repeat(66);
+        for bad in ["not-hex", "abcd", short.as_str(), long.as_str()] {
             assert_eq!(
                 classify_digest_line(Some(bad.to_string())),
                 Err(NoUserActionKey::Malformed),

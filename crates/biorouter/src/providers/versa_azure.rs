@@ -415,7 +415,9 @@ impl VersaAzureProvider {
             VersaAzureCredentialSource::ApiKey => {
                 let key = config
                     .get_secret::<String>("VERSA_AZURE_API_KEY")
-                    .map_err(|_| anyhow::anyhow!("VERSA_AZURE_API_KEY is not configured"))?;
+                    .map_err(|_| {
+                        anyhow::anyhow!("VERSA_AZURE_API_KEY {}", super::CREDENTIAL_NEVER_SET)
+                    })?;
                 anyhow::ensure!(!key.trim().is_empty(), "VERSA_AZURE_API_KEY is empty");
                 Some(key)
             }

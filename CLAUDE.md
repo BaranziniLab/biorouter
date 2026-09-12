@@ -293,6 +293,26 @@ what did not" section first**; the rest of that document is the design, not the 
 - **Knowledge bases ratchet too.** A base takes the tier of the most sensitive session that wrote to
   it (four write choke points), is refused to a public caller at the read choke points, and a
   refusal names what it refused. `biorouter-mcp/src/knowledge/tier*.rs`.
+- **Holding the daemon secret does not make a caller the user.** That was the premise behind
+  leaving the `/knowledge/*` read routes, `GET /sessions` and `DELETE /sessions/{id}` ungated. A
+  public chat's shell recovers the secret with `ps eww`, and QA used it to read a private base and
+  delete a private chat (H2/M1/M2/F0, 2026-09-10). Every HTTP route that names a chat or a
+  knowledge base now asks `routes::session_reach`'s one decision: a private target needs the
+  user-action proof or a stated private capability. The rules that follow:
+  - A route that names one chat calls `session_reach`, and refuses with its exact plain text.
+  - Listings filter through `HttpCaller::lists_session`.
+  - Running work is the same rule reached through the row's chat. `GET /active_work` filters
+    through `HttpCaller::lists_work`, and its cancel asks `work_reach` before anything stops. A
+    row that names no chat is treated as a private chat's, so a registrant that knows its chat must
+    set `ActiveWorkItem::session_id`. The shell's rows take it from the `_meta` session id.
+  - Every `/knowledge/bases/{id}` route sits in `knowledge::router`'s `base_routes`, behind
+    `gate_knowledge_base`. Put any new `{id}` route there.
+  - ⚠ **The renderer must send `userActionHeaders()` on every such call.** A missing proof is not an
+    error: private rows silently vanish, and the Knowledge view's prune effects then read them as
+    deleted.
+  - A `biorouter serve` browser gets its operator's tier on listings and knowledge bases only
+    (SD-10).
+  - The wiring census (`crates/biorouter/tests/privacy_guard_wiring.rs`) counts every call site.
 - **Affiliation is a third axis** (DR-26, plan Phase 6): tier asks *how sensitive*, affiliation asks
   *whose*. HIPAA compliance does not transfer between institutions, so a UCSF model reaching another
   institution's private connector is warned/refused even though both endpoints are Private.
@@ -1209,7 +1229,10 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 (`subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only`,
 `an_explicit_workspace_entry_still_hides_the_spawn_tool_when_delegation_is_off`,
 `subagents_disabled_injects_nothing`), via
-`cargo test -p biorouter --lib -- subagent` (102 tests).
+`cargo test -p biorouter --lib -- subagent` (**198 tests, measured 2026-09-12** — this
+line said 102 for long enough that a "pre + N" assertion against it would have read a
+shortfall of ninety-six as a pass; re-measure rather than trusting the figure, which
+moved 197 → 198 between this line being written and the branch carrying it landing).
 
 ### Browser access (`biorouter serve`)
 
@@ -1217,7 +1240,7 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 prints a URL. The daemon serves the SPA **on its own origin**, so nothing is proxied. This
 replaced a standalone `biorouter-headless` binary and its Linux tarball, both deleted
 2026-08-23; release assets went 11 → 10. Design and reasoning:
-[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (SD-1..SD-9, SD-11),
+[`docs/deployment/serve-decisions.md`](docs/deployment/serve-decisions.md) (the `SD-n` records),
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
@@ -1230,6 +1253,39 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   **agent**, so every surface that writes a capability key asks `isBrowserSurface()`
   (`ui/desktop/src/utils/surface.ts`) and explains *before* the user can reach the 409. Do not
   "fix" browser mode by weakening the refusal.
+- **A new chat starts on the configured model without a proof, and nothing else does** (SD-12).
+  Until it, a `serve` daemon with a private provider configured refused EVERY `/agent/start`
+  (the 2026-09-10 QA's F1): the new-chat bind asked for a proof a keyless daemon cannot check.
+  Four pieces, each load-bearing — measured by removing it: on a keyless daemon
+  `new_chat_bind_decision` (`routes/agent.rs`) lets the configured default bind, while a keyed
+  daemon still refuses a proof-less private first bind; `raise_baseline` makes a keyless
+  daemon's `/agent/update_provider` measure every move onto a private model from Public, or the
+  exemption would carry sideways to a private model nobody configured; the browser states the
+  host's model as `X-Caller-Provider` (`userActionHeaders()` on `isBrowserSurface()`), without
+  which a chat's first reply ratcheted it private and its next request 403'd; and
+  `biorouter_server::launch` **pins the exemption to the configuration the daemon was launched
+  with**. Tests:
+  `cargo test -p biorouter-server --test new_chat_no_user_key` (its own binary: the digest is a
+  process-global `OnceLock`).
+  ⚠ **The exemption's first justification was FALSE and the fix is that pin.** It rested on
+  *"`/agent/start` binds `BIOROUTER_PROVIDER`, a key only a proven person may write"*. The HTTP
+  doors are shut, but `config.yaml` is not an HTTP resource: DR-14's filesystem deny is DEFERRED,
+  the agent holds `developer__shell`, and `Config`'s cache is keyed on a `FileStamp` it re-`stat`s
+  per read — so a model with a shell on a keyless daemon configured PUBLIC could write a private
+  provider into the file and get a 200 with Private capability where `main` answers 409 (measured
+  2026-09-12). The pinned set is `privacy::CAPABILITY_CONFIG_KEYS` verbatim plus `BIOROUTER_MODEL`;
+  pinning the provider NAME alone is not enough, because flipping `OLLAMA_HOST` to loopback moves
+  `ollama`'s tier with the name untouched. ⚠ And `NoKeyInstalled` is **not** the same thing as
+  "this is `serve`" — a desktop spawn satisfies it when `userActionKey` is undefined or the
+  daemon's bounded 2s stdin read times out. That case is a repairable fault, so the desktop
+  launcher declares its intent in `BIOROUTER_USER_ACTION_EXPECTED` and such a daemon keeps
+  `main`'s refusal plus a startup `ERROR`. ⚠ `BIOROUTER_MODEL` is in neither capability-key list
+  by decision, not oversight: no `tier()` implementation reads the model name (all five checked),
+  so it is an integrity key and its row lives in `NOT_CAPABILITY_CONFIG_KEYS`. ⚠ **Still unreachable in a browser, and out of SD-12's scope:**
+  `/agent/cancel` and `/interrupt` require the proof unconditionally, so Stop and mid-turn
+  steering cannot work on a keyless daemon. ⚠ `privacy_ar15_is_retired.rs`'s closure scan took
+  the FIRST `TierRaiseNeedsUser` in `routes/agent.rs`, which from `eb594ded` was the new-chat gate
+  and not AR-15's — it now starts at `update_agent_provider`.
 - **A control that can never work here says so, before it is touched** (SD-8). The same
   `Stdio::null()` that closes SD-1 means NO approval carrying `requires_user_proof` can ever
   be granted on a `serve` daemon — for anyone, always. So `confirm_tool_action` answers a
@@ -1250,11 +1306,18 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   reaches the same effect through `/agent/stop` and `/reply`, and `/reply` is refused `409` by
   the BR-33 single-turn lock in the exact state where a steer lands — so admitting it would add
   silent mid-turn injection into a turn already in flight, which nothing else there can do
-  (`reply.rs::authorize_steer`). Its keyless refusal carries `STEER_NO_KEY` and is **never an
+  (`reply.rs::steer_refusal`). Its keyless refusal carries `STEER_NO_KEY` and is **never an
   empty 403**, because an empty turn-control 403 is how `biorouter session attach` recognises a
   daemon that holds a key and asks the person for it. A subagent's tab stays refused throughout.
   ⚠ Keyless behaviour can only be tested in its own binary (the digest is a process-global
   `OnceLock`): `cargo test -p biorouter-server --test turn_control_no_user_key`.
+  ⚠ **The CLI reads the refusal's shape, not its status.** `biorouter session cancel` / `attach`
+  / `send` cannot ask a daemon whether it holds a key, so they send without the proof and ask the
+  person for the key only on turn control's **empty** 403 — the keyed `Unproven` arm; every
+  keyless refusal carries a sentence and is printed instead (`key_verdict` in
+  `commands/session_watch.rs`). A sentence added to `Unproven`, or an empty keyless refusal,
+  breaks the terminal silently — one never prompts on the desktop's daemon, the other prompts a
+  `serve` user for a key that does not exist. Pinned from both sides.
 - **Proof of a person is checked at the resolution choke point, not at one route.** Every door
   that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
   CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into

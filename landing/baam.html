@@ -7,6 +7,9 @@
   <link rel="icon" href="icon-transparent.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="shared.css" />
   <script src="theme.js"></script>
+  <!-- The shelves' matcher. Blocking, like theme.js, because the inline script
+       at the foot of this page runs its first filter during init. -->
+  <script src="marketplace-search.js"></script>
   <style>
     /* Scroll progress — mirrors index.html (nav-edge coral fill) */
     #scroll-progress {
@@ -3784,6 +3787,83 @@ extensions: []</pre>
     else filterWorkflows(q);
   }
 
+  /* ── Text search (shared by all three shelves) ─────────────────
+     The matcher is landing/marketplace-search.js, a port of the app's own
+     crates/biorouter/src/catalog_search.rs (it was marketplace/search.rs
+     until PR #266 moved it). Each shelf used to ask
+     `hay.indexOf(q) !== -1` — the whole query as one substring — so every
+     phrase a visitor typed returned an empty shelf.
+
+     Facet chips still match against `hay`, unchanged: they are exact values or
+     curated substrings a chip authored, not prose a person typed, and the
+     privacy facet's discrimination is pinned by baam-privacy-facet.test.mjs. */
+
+  /* The searched text of one card, weighted. Deliberately NOT `textContent`:
+     that sweeps in the download button, the licence chip and the org line, and
+     licence is not a searched field in the canonical matcher. */
+  function cardFields(card) {
+    var W = window.MarketplaceSearch.Weight;
+    var fields = [];
+    var push = function (el, weight) { if (el) fields.push([el.textContent, weight]); };
+    push(card.querySelector('h3'), W.Name);
+    // "User-invocable · /scientific-research" — carries the skill's slug.
+    push(card.querySelector('.skill-type'), W.Name);
+    push(card.querySelector('.ext-desc, .skill-desc, .wf-desc'), W.Prose);
+    // The organization, WITHOUT the version. "BaranziniLab · UCSF · v0.2.0"
+    // splits into the words `v0`, `2`, `0`, so a bare query token of `2` or `0`
+    // — which is what "Apache-2.0" tokenises to — matched almost every card
+    // through its version number: 35 of 37, measured. A version is not something
+    // a visitor searches a catalog by, and neither `catalog_search.rs` nor the
+    // desktop port searches one, so stripping it is also what keeps the three
+    // matchers in step.
+    var org = card.querySelector('.ext-org');
+    if (org) fields.push([String(org.textContent).replace(/[·|]\s*v[\d.]+\s*$/, ''), W.Label]);
+    // ⚠ Not `data-tags` as it stands. That blob is
+    // `name + organization + version + description + tags`, so it carries two
+    // things a catalog is not searched by, and BOTH were measured matching
+    // almost everything:
+    //   * the licence — also present as a tag (`Apache-2.0` on 31 of 37
+    //     extensions), and on the skills shelf as a separate `apache` keyword;
+    //   * the version — `v0.2.0` tokenises to `v0`, `2`, `0`, and a bare `2`
+    //     or `0` (which is what "Apache-2.0" tokenises to) then matched 35 of
+    //     37 cards through their version numbers alone.
+    // Neither `catalog_search.rs` nor the desktop port searches either, so
+    // dropping them here is what keeps the three matchers in step. Separators
+    // are preserved and only the offending token is blanked, so a phrase
+    // spanning two keywords still matches as it did.
+    var licenceWords = wordsOf(card.dataset.license);
+    if (card.dataset.tags) {
+      fields.push([
+        String(card.dataset.tags).replace(/[^\s,]+/g, function (t) {
+          if (namesOnlyTheLicense(t, licenceWords)) return '';
+          return /^v?\d+(?:\.\d+)*$/.test(t) ? '' : t;
+        }),
+        W.Label,
+      ]);
+    }
+    // The visible chips, minus the two badges that answer facets rather than
+    // words, and minus the licence chip — identified by the card's own
+    // data-license rather than by a pattern, so a new licence needs no edit.
+    card.querySelectorAll('.ext-tags .tag, .skill-tags .tag, .wf-tags .tag').forEach(function (chip) {
+      if (chip.hasAttribute('data-privacy-badge') || chip.hasAttribute('data-affiliation-badge')) return;
+      // By WORDS, not by equality: `apache` and `Apache-2.0` are the same licence
+      // spelled two ways, and equality drops only the second.
+      if (namesOnlyTheLicense(chip.textContent, licenceWords)) return;
+      fields.push([chip.textContent, W.Label]);
+    });
+    return fields;
+  }
+
+  /* The cards `q` matches, as a Set. An empty query matches everything, which
+     is what each caller's `!q ||` guard already assumed.
+
+     The shelves are NOT reordered by rank. Every hit is shown, inside curated
+     sections whose order is editorial, so DOM order — registry order, the
+     matcher's own last tiebreak — is what a visitor should keep seeing. */
+  function searchMatches(q, cards, noise) {
+    return window.MarketplaceSearch.matching(q, noise, cards, cardFields);
+  }
+
   /* ── Chip helpers (shared by both chip bars) ───────────────── */
   function onChipClick(bar, btn) {
     if (!btn.dataset.facet) {
@@ -4089,6 +4169,61 @@ extensions: []</pre>
     }
   }
 
+  /* ── What a card is searched BY ─────────────────────────────
+     The licence is not part of it. Every card in this catalog is Apache-2.0, so
+     it separates nothing, and it reached the haystack THREE ways: `data-license`
+     (on every card), the `Apache-2.0` chip the catalog publishes in the tag row
+     (part of the card's own textContent, on an authored skill card), and — on a
+     skill — the `apache` keyword in `data-tags` derived from that chip. Because
+     `data-license` alone is universal, the shelf was worse than the catalog:
+     measured here on 2026-09-12, `apache`, `Apache-2.0` and `pac` each returned
+     ALL 37 extension cards and ALL 132 skill cards, not one of them about Apache
+     anything. After this: 0, 0, 1 and 0, 0, 7.
+
+     The same overlap in the app's own matchers is worse in a different way,
+     because those split a query into words and fall a plural back to its
+     singular: measured in the Browse-extensions modal the same day, `PACS`
+     returned 31 of 37 extensions via `pac` inside `apache`. Fixed there in one
+     rule — `names_only_the_license` in crates/biorouter/src/catalog_search.rs
+     and its port in ui/desktop/src/components/baam/search.ts — and this is the
+     third copy of it. By WORDS and not by equality, because the chip says
+     `Apache-2.0` while the keyword says `apache`, and an equality test drops
+     only the first.
+
+     Only the licence goes. `MCP`, `ELN`, `Imaging` and `Registry` are what a tag
+     is for, and the chip still RENDERS — this drops it from what is searched,
+     not from the card. Note that `extCardHtml` and `buildExtChips` already
+     filter `/^apache/i`, for row space and chip noise rather than for search;
+     that near-miss is part of why this looked handled. */
+  const WORD_BREAK = /[^\p{Alphabetic}\p{N}]+/u;
+
+  function wordsOf(text) {
+    return String(text == null ? '' : text).toLowerCase().split(WORD_BREAK).filter(Boolean);
+  }
+
+  function namesOnlyTheLicense(label, licenseWords) {
+    const words = wordsOf(label);
+    return words.length > 0 && words.every(w => licenseWords.indexOf(w) !== -1);
+  }
+
+  function searchHaystack(card) {
+    const licenseWords = wordsOf(card.dataset.license);
+    // A chip is part of `textContent`, so a licence chip is removed from that
+    // string rather than skipped while assembling one.
+    let text = card.textContent;
+    if (licenseWords.length) {
+      card.querySelectorAll('.tag').forEach(chip => {
+        const label = chip.textContent;
+        if (label && namesOnlyTheLicense(label, licenseWords)) text = text.split(label).join(' ');
+      });
+    }
+    // Separators are preserved and only a licence token is blanked, so a phrase
+    // spanning two keywords still matches as it did.
+    const tags = String(card.dataset.tags || '')
+      .replace(/[^\s,]+/g, t => (namesOnlyTheLicense(t, licenseWords) ? '' : t));
+    return (text + ' ' + tags).toLowerCase();
+  }
+
   function filterExtensions(q) {
     const bar = document.getElementById('ext-chips');
     const active = activeChips(bar);
@@ -4097,10 +4232,11 @@ extensions: []</pre>
     applyAdapterVisibility(filtering);
 
     const cards = document.querySelectorAll('#extensions-section .ext-card');
+    const hits = searchMatches(q, cards, window.MarketplaceSearch.EXTENSION_NOISE);
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '') + ' ' + (c.dataset.license || '')).toLowerCase();
-      let show = (!q || hay.indexOf(q) !== -1);
+      const hay = searchHaystack(c);
+      let show = (!q || hits.has(c));
       if (show) {
         for (let i = 0; i < facets.length; i++) {
           const f = facets[i], vals = active[f];
@@ -4177,10 +4313,10 @@ extensions: []</pre>
     const filtering = !!q || facets.length > 0;
 
     const cards = document.querySelectorAll('#skills-section .skill-card');
+    const hits = searchMatches(q, cards, window.MarketplaceSearch.SKILL_NOISE);
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '') + ' ' + (c.dataset.license || '')).toLowerCase();
-      let show = (!q || hay.indexOf(q) !== -1);
+      let show = (!q || hits.has(c));
       if (show) {
         for (let i = 0; i < facets.length; i++) {
           const f = facets[i], vals = active[f];
@@ -4228,10 +4364,10 @@ extensions: []</pre>
   /* ── Workflows — static HTML ───────────────────────────────── */
   function filterWorkflows(q) {
     const cards = document.querySelectorAll('#workflows-section .wf-card');
+    const hits = searchMatches(q, cards, window.MarketplaceSearch.WORKFLOW_NOISE);
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '')).toLowerCase();
-      const show = !q || hay.indexOf(q) !== -1;
+      const show = !q || hits.has(c);
       c.style.display = show ? '' : 'none';
       if (show) visible++;
     });

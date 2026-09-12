@@ -47,6 +47,7 @@ import {
   ExtensionConfig,
   ExtensionData,
 } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
@@ -954,8 +955,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     setSessionToDelete(null);
 
     try {
+      // With the user's proof: deleting a private chat is refused, exactly as
+      // reading it is, to a caller without it (issue #56, QA 2026-09-10 F0).
       await deleteSession({
         path: { session_id: sessionToDeleteId },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       const removeDeletedSession = (currentSessions: Session[]) =>
@@ -992,8 +996,12 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const handleExportSession = useCallback(async (session: Session, e: React.MouseEvent) => {
     e.stopPropagation();
 
+    // With the user's proof, like every read of a chat's transcript: the
+    // export route has refused a private chat to a caller without it since the
+    // reach gate's export sweep, and this is the person at the keyboard.
     const response = await exportSession({
       path: { session_id: session.id },
+      headers: await userActionHeaders(),
       throwOnError: true,
     });
 

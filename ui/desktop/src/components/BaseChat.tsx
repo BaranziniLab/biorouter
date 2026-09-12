@@ -44,6 +44,7 @@ import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosu
 import { PinnedModelNote } from './privacy/PinnedModelNote';
 import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
+import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
@@ -73,7 +74,8 @@ import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError, toastWarning } from '../toasts';
-import { errorMessage, isConnectionError } from '../utils/conversionUtils';
+import { errorMessage } from '../utils/conversionUtils';
+import { startChatFailureNotice } from '../utils/startChatFailure';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
@@ -766,8 +768,9 @@ export function collectArtifactsFromMessages(
  * is unreachable the awaited createSession rejects *after* the text is already
  * gone — and the bare catch used to show nothing, so the message silently
  * vanished. Restore the typed text (via a `restore-chat-input` event the composer
- * listens for) and surface a visible toast. Connection detection only picks the
- * wording; the toast + restore fire on ANY rejection, so no silent path remains.
+ * listens for) and surface a visible toast. The words are
+ * `startChatFailureNotice`'s, shared with every other surface that starts a
+ * chat; the toast + restore fire on ANY rejection, so no silent path remains.
  * Exported so it can be unit-tested without Electron.
  */
 export function handleCreateSessionError(
@@ -784,13 +787,7 @@ export function handleCreateSessionError(
       },
     })
   );
-  const connection = isConnectionError(err);
-  toastError({
-    title: connection ? 'Backend disconnected' : 'Failed to start chat',
-    msg: connection
-      ? 'Biorouter could not reach its backend. Your message was kept - try again in a moment.'
-      : errorMessage(err),
-  });
+  toastError(startChatFailureNotice(err, { kept: true }));
 }
 
 /**
@@ -1233,6 +1230,8 @@ function BaseChatContent({
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // F3 — the model this chat is about to be created on is the one on screen.
+  const confirmNewChatModel = useConfirmNewChatModel();
   // #39 — the working directory chosen in the composer BEFORE a session
   // exists (sidebar "New chat" mounts this chat with no sessionId, so
   // DirSwitcher has nothing to persist to yet). Read exactly once, by the
@@ -1647,10 +1646,12 @@ function BaseChatContent({
   /**
    * Resolves FALSE when the message was refused and the composer still owns the
    * text (ChatInput puts it back). The pre-session branch returns TRUE on both
-   * of its outcomes: a created session has navigated with the message as its
-   * cargo, and a failed `createSession` has already restored the composer and
-   * toasted through `handleCreateSessionError`, so a second restore would be a
-   * duplicate rather than a rescue.
+   * of its outcomes once a session is attempted: a created session has
+   * navigated with the message as its cargo, and a failed `createSession` has
+   * already restored the composer and toasted through `handleCreateSessionError`,
+   * so a second restore would be a duplicate rather than a rescue. It returns
+   * FALSE only when F3's model check refused BEFORE anything was attempted —
+   * the one case where the composer's own restore is the rescue.
    */
   const handleFormSubmit = async (e: React.FormEvent): Promise<boolean> => {
     const customEvent = e as unknown as CustomEvent;
@@ -1663,6 +1664,10 @@ function BaseChatContent({
     // If no session exists, create one and navigate with the initial message
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
+      // F3. `/agent/start` binds whatever the app-wide selection is NOW, and the
+      // composer's chip is this window's copy of it. A refusal here has already
+      // put the fresh model on screen; resolving `false` hands the text back.
+      if (!(await confirmNewChatModel())) return false;
       setIsCreatingSession(true);
       try {
         // #39 — honour the directory picked in the composer before the

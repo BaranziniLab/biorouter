@@ -38,6 +38,19 @@ pub trait SchedulerTrait: Send + Sync {
     async fn update_schedule(&self, sched_id: &str, new_cron: String)
         -> Result<(), SchedulerError>;
     async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError>;
+    /// Stop a run ONLY while it is still the run in `expected_session_id`.
+    ///
+    /// Issue #56. A stop is gated on the chat the run is in, and resolving that
+    /// chat is a separate read from the kill — so a schedule (whose id is stable
+    /// across runs) can start a *different* run, in a different chat, in the
+    /// gap. Callers that gated pass the chat they were admitted to; `None` means
+    /// the run names no chat. Implementors MUST refuse rather than stop a run
+    /// that no longer matches.
+    async fn kill_running_job_in_session(
+        &self,
+        sched_id: &str,
+        expected_session_id: Option<&str>,
+    ) -> Result<(), SchedulerError>;
     async fn get_running_job_info(
         &self,
         sched_id: &str,

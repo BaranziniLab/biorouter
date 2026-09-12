@@ -1020,6 +1020,32 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, StatusCode> {
     Ok(Json(providers_response))
 }
 
+/// The models a provider declares, for the case where it has no live fetch.
+///
+/// Named and separate because it is the answer the route gives most often, and
+/// it used to be `Vec::new()`.
+///
+/// Measured 2026-09-11 over the 23 registered builtins: **9 do not override
+/// `fetch_supported_models`**, so `base.rs`'s `Ok(None)` default is what this
+/// route receives for every one of them — and **all nine declare a catalog** the
+/// settings grid renders on screen: `azure_openai` 12, `aws_bedrock` 7,
+/// `versa_azure` 9, `versa_bedrock` 5, `xai` 9, `snowflake` 8, `zai` 8,
+/// `xiaomi_mimo` 4, `sagemaker_tgi` 1. So the route reported "no models" for nine
+/// providers that have between one and twelve, under a `200 Models fetched
+/// successfully`.
+///
+/// ⚠ Do not measure this by grepping for `with_models`. That was the first
+/// instrument tried here and it gave 6 of 9, because `ProviderMetadata::new` also
+/// takes a `model_names` list — `snowflake`, `zai` and `sagemaker_tgi` looked
+/// catalogless and are not. Read `known_models` off the live metadata instead.
+fn declared_model_names(metadata: &biorouter::providers::base::ProviderMetadata) -> Vec<String> {
+    metadata
+        .known_models
+        .iter()
+        .map(|model| model.name.clone())
+        .collect()
+}
+
 /// One row of `GET /config/providers`.
 async fn provider_details(
     metadata: ProviderMetadata,
@@ -1104,7 +1130,33 @@ pub async fn get_provider_models(
 
     match models_result {
         Ok(Some(models)) => Ok(Json(models)),
-        Ok(None) => Ok(Json(Vec::new())),
+        // ⚠ **`None` means "this provider has no LIVE fetch", not "this provider
+        // has no models"** — and answering `[]` said the second. Nine of the
+        // twenty-three builtins do not override `fetch_supported_models`, so its
+        // `Ok(None)` default reached here; ALL NINE declare a catalog the
+        // settings grid visibly renders — measured off `known_models`, not by
+        // grepping `with_models`, which undercounts by three (see
+        // `declared_model_names`). The
+        // route was therefore reporting an empty model list for a provider whose
+        // models were on screen, under a name and a `200 Models fetched
+        // successfully` that both promise the model list.
+        //
+        // Answering from the declared catalog is not a new policy, it is the one
+        // already in force twice over. The declarative-provider branch at the top
+        // of this very function returns `config.models` with no live fetch at all;
+        // and the desktop's `fetchModelsForProviders` prefers
+        // `metadata.known_models` and only falls back to this route when a
+        // provider has none. So the fallback WAS the right answer, implemented in
+        // the one place that could not help the CLI, an agent, or anything reading
+        // the OpenAPI spec.
+        //
+        // Naming was the alternative, and it was rejected: renaming or
+        // redescribing the route regenerates `openapi.json` and the TS client (the
+        // `Generated API contract` check), and would still leave every caller
+        // holding an empty list for a provider that has models. The shape is
+        // unchanged here — same path, same params, same `Vec<String>` body — so no
+        // client needs regenerating.
+        Ok(None) => Ok(Json(declared_model_names(&metadata))),
         Err(provider_error) => {
             let status_code = match provider_error {
                 // Permanent misconfigurations - client should fix configuration
@@ -1868,6 +1920,74 @@ mod tests {
     use http::HeaderMap;
 
     use super::*;
+
+    /// `GET /config/providers/{name}/models` is named and documented as the model
+    /// list, and for nine builtins it answered `[]`.
+    ///
+    /// ⚠ The cause is a default, not a failure: `fetch_supported_models` returns
+    /// `Ok(None)` unless a provider overrides it, and 9 of the 23 registered
+    /// builtins do not override it. Every one of those nine declares a catalog the
+    /// settings grid renders, so the route reported "no models" for a provider
+    /// whose models the user could see on screen — under a `200 Models fetched
+    /// successfully`.
+    ///
+    /// The nine are named rather than derived, because deriving them needs a live
+    /// instance of each: credentials, and a network call for the ones that do
+    /// fetch. If one grows a live fetch later it leaves the `Ok(None)` arm and its
+    /// row here becomes redundant rather than wrong.
+    #[tokio::test]
+    async fn a_provider_with_no_live_fetch_reports_the_models_it_declares() {
+        let all = biorouter::providers::providers().await;
+        let mut checked = 0;
+        for name in [
+            "azure_openai",
+            "aws_bedrock",
+            "versa_azure",
+            "versa_bedrock",
+            "xai",
+            "xiaomi_mimo",
+            "snowflake",
+            "zai",
+            "sagemaker_tgi",
+        ] {
+            let Some((metadata, _)) = all.iter().find(|(m, _)| m.name == name) else {
+                // `aws_bedrock`, `versa_bedrock` and `sagemaker_tgi` are behind
+                // the `aws-providers` feature.
+                continue;
+            };
+            assert!(
+                !metadata.known_models.is_empty(),
+                "{name} declares a catalog — that is what made `[]` a false answer"
+            );
+            assert_eq!(
+                declared_model_names(metadata),
+                metadata
+                    .known_models
+                    .iter()
+                    .map(|model| model.name.clone())
+                    .collect::<Vec<_>>(),
+                "{name} must report exactly what it declares, in order"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 6, "only {checked} of the nine were reachable");
+    }
+
+    /// …and nothing is invented for a provider that declares nothing. `litellm`
+    /// and `ollama` are the two builtins with an empty catalog; both have a live
+    /// fetch, so neither reaches the arm above — but the projection has to be
+    /// faithful in that direction too, or the fix reads as "always non-empty".
+    #[tokio::test]
+    async fn an_empty_catalog_projects_to_an_empty_list() {
+        let all = biorouter::providers::providers().await;
+        for name in ["litellm", "ollama"] {
+            let Some((metadata, _)) = all.iter().find(|(m, _)| m.name == name) else {
+                continue;
+            };
+            assert!(metadata.known_models.is_empty(), "{name} declares none");
+            assert!(declared_model_names(metadata).is_empty(), "{name}");
+        }
+    }
 
     /// A recovery that could not write says so in BOTH halves of its answer.
     ///

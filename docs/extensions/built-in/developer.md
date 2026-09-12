@@ -128,7 +128,7 @@ The `shell` tool runs a command one of two ways, and the difference matters more
 The budget exists because a foreground command that turns out to be far more expensive than it looked — a `find` over a whole home directory, a query with no index — blocks the turn for minutes with nothing to show for it. Two things make that visible while it happens:
 
 - The tool card in chat reports the elapsed time every 15 seconds ("shell: still running after 45s — …"), so a silent command is distinguishable from a stuck agent.
-- The command is listed in the active-work view (`GET /active_work`) for as long as it runs, alongside background jobs, subagents and scheduled runs, and `POST /active_work/{id}/cancel` stops it on its own without ending the turn.
+- The command is listed in the active-work view (`GET /active_work`) for as long as it runs, alongside background jobs, subagents and scheduled runs, and `POST /active_work/{id}/cancel` stops it on its own without ending the turn. The row names the chat that ran the command, as a background job's row does. The view shows it only to a caller that could open that chat, and only such a caller can stop it; see [Reaching a private chat from a script](../../deployment/programmatic-session-access.md).
 
 Raise, lower or disable the budget with [`BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS`](../../configuration/environment-variables.md#foreground-shell-budget) (seconds; `0` disables it).
 

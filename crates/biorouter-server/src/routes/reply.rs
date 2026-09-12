@@ -1782,7 +1782,7 @@ pub const STEER_NO_KEY: &str =
 /// The gate of `POST /agent/cancel`, `POST /agent/continuation/abandon` and
 /// `POST /agent/continuation/recover`, asked before any of them touches the
 /// turn. **`POST /interrupt` is deliberately not one of them** — see
-/// [`authorize_steer`], which says why the argument below does not reach it.
+/// [`steer_refusal`], which says why the argument below does not reach it.
 ///
 /// * **A daemon that holds a user-action key** — the desktop application's —
 ///   takes the proof and nothing else, exactly as before; `Unproven` is the
@@ -1808,6 +1808,18 @@ pub const STEER_NO_KEY: &str =
 /// ⚠ **Why a daemon that holds a key is not relaxed with it.** There the proof
 /// costs the person nothing — the renderer attaches it to every request — and it
 /// is what licenses the `UserDirect` stamp a steer carries.
+///
+/// ⚠ **The two refusals' SHAPES are read by the terminal.** `biorouter session`
+/// cannot ask a daemon whether it holds a key, so it sends a stop or a steer
+/// without the proof and reads the answer (`commands/session_watch.rs`,
+/// `key_verdict`): the `Unproven` arm's EMPTY 403 is the only thing that makes it
+/// ask the person for the key, and a refusal carrying a sentence — every one the
+/// keyless arm can give — is shown instead, because no key would change it. So
+/// a sentence added to `Unproven` would stop the terminal asking for the key on
+/// the desktop's daemon, and an empty refusal on the keyless arm would make it
+/// ask a `serve` user for a key that does not exist. Both are pinned: the keyed
+/// side here in `integration_tests`, the keyless side in
+/// `tests/turn_control_no_user_key.rs`.
 async fn authorize_turn_control(
     state: &AppState,
     session_id: &str,
@@ -1860,15 +1872,23 @@ async fn authorize_turn_control(
 /// It takes no session id and asks nothing about the chat, so the refusal is
 /// byte-for-byte the same for every chat — which keeps a route no proof can ever
 /// satisfy from becoming a per-id oracle.
-fn authorize_steer(headers: &HeaderMap) -> Result<(), axum::response::Response> {
+///
+/// Returns the refusal rather than a `Result<(), Response>`: there is no success
+/// value to carry, and a `Response` is 128 bytes, which `clippy::result_large_err`
+/// refuses in a synchronous function. [`authorize_turn_control`] keeps the
+/// `Result` shape only because it is `async`, so the lint sees a future rather
+/// than the `Result`.
+fn steer_refusal(headers: &HeaderMap) -> Option<axum::response::Response> {
     match user_action_proof(headers) {
-        UserActionProof::Proven => Ok(()),
-        UserActionProof::Unproven => Err(StatusCode::FORBIDDEN.into_response()),
-        UserActionProof::NoKeyInstalled => Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "message": STEER_NO_KEY })),
-        )
-            .into_response()),
+        UserActionProof::Proven => None,
+        UserActionProof::Unproven => Some(StatusCode::FORBIDDEN.into_response()),
+        UserActionProof::NoKeyInstalled => Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "message": STEER_NO_KEY })),
+            )
+                .into_response(),
+        ),
     }
 }
 
@@ -1910,7 +1930,9 @@ pub async fn interrupt(
     headers: HeaderMap,
     Json(req): Json<InterruptRequest>,
 ) -> Result<(StatusCode, Json<InterruptAccepted>), axum::response::Response> {
-    authorize_steer(&headers)?;
+    if let Some(refusal) = steer_refusal(&headers) {
+        return Err(refusal);
+    }
     if req.text.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST.into_response());
     }
@@ -1938,9 +1960,9 @@ pub async fn interrupt(
     if !state.is_turn_active(&req.session_id) {
         return Err(StatusCode::CONFLICT.into_response());
     }
-    // `authorize_steer` above is the authority for this attribution, and it
-    // admits none but `Proven` — which is why the stamp is unconditional here on
-    // every daemon. Keep it independent of the session store: a live agent can
+    // `steer_refusal` above is the authority for this attribution, and it
+    // refuses everything but `Proven` — which is why the stamp is unconditional
+    // here on every daemon. Keep it independent of the session store: a live agent can
     // legitimately outlast or race its durable row, but an accepted human steer
     // must never lose its provenance because that auxiliary lookup failed.
     let provenance = Some(biorouter::conversation::message::MessageProvenance {
@@ -4746,6 +4768,58 @@ mod tests {
             assert!(
                 !agent.has_soft_interrupts(),
                 "an unproven caller must not enqueue text attributed to the user"
+            );
+        }
+
+        /// The keyed half of what `biorouter session` reads before it asks a
+        /// person for the key (`commands/session_watch.rs::key_verdict`). On a
+        /// daemon that holds one, turn control refuses a request without the
+        /// proof with an EMPTY 403 — the one refusal a daemon without a key
+        /// never gives (`tests/turn_control_no_user_key.rs`) — and refuses it
+        /// before it reads the text, so the empty steer the terminal asks with
+        /// is answered by the gate, not by the text check. With the proof, the
+        /// same empty steer is the 400 the terminal takes as "this key opens
+        /// the gate". None of it touches the turn or the queue.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_unproven_stop_or_steer_is_refused_empty_before_its_text_is_read() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let _guard = state
+                .try_begin_turn_idempotent("keyed-question", token.clone(), None)
+                .expect("turn lock acquired");
+            let agent = state.get_agent("keyed-question".to_string()).await.unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("agent-turn-keyed-question"));
+
+            for mut request in [
+                interrupt_request("keyed-question", ""),
+                interrupt_request("keyed-question", "pretend the user said this"),
+                cancel_request("keyed-question"),
+            ] {
+                let route = request.uri().path().to_string();
+                request.headers_mut().remove("X-User-Action");
+                let response = routes(Arc::clone(&state)).oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route}");
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                assert!(
+                    body.is_empty(),
+                    "{route}: a sentence here reads to the terminal as a refusal no key can \
+                     change, so it would never ask for the key: {}",
+                    String::from_utf8_lossy(&body)
+                );
+            }
+
+            let response = routes(Arc::clone(&state))
+                .oneshot(interrupt_request("keyed-question", ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(!token.is_cancelled(), "a refused Stop reached the turn");
+            assert!(
+                !agent.has_soft_interrupts(),
+                "the terminal's question reached the agent's queue"
             );
         }
 

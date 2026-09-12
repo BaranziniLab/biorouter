@@ -99,6 +99,9 @@ serial_test = { workspace = true }
 # The workspace's process-wide environment lock, so env-mutating tests here
 # exclude every other one rather than only the `#[serial]` ones.
 env-lock = { workspace = true }
+# A WebSocket client, so `commands::web`'s tests can drive the page's socket the
+# way the page does. The version axum's `ws` feature already locks.
+tokio-tungstenite = "0.28.0"
 # Issue #56 DR-20 / Task 55. `biorouter session declassify <id>` raises the OS
 # authentication prompt, so its TESTS would type a real password on every run
 # without a stand-in.

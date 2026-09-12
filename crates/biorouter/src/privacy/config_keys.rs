@@ -42,6 +42,37 @@ pub const CAPABILITY_CONFIG_KEYS: &[&str] = &[
 /// Every other key the tier-input files read, each with the reason it does not
 /// determine capability. A key must be in exactly one of these two lists.
 pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
+    // The other half of `/agent/start`'s bind, and the 2026-09-12 review's
+    // Finding 2: it was in NEITHER list, so any caller holding only the daemon
+    // secret could write it without proof, on every daemon including the
+    // desktop's. Classified rather than guarded, because the classification is
+    // what the guard would have to be justified by, and it comes out the other
+    // way: no `tier()` implementation reads the model name. All five tier-input
+    // providers were checked — both Versa modules resolve
+    // `ucsf_gateway_tier(endpoint)`, `ollama` and `llamacpp` resolve
+    // `self_hosted_tier(base_url)`, and `LeadWorkerProvider` takes the `least` of
+    // its two halves — and a model name is a *string*, so it cannot smuggle a
+    // persisted provider binding either: those live in
+    // `ModelConfig::request_params`, which `ModelConfig::new` leaves empty.
+    //
+    // What an unproven write to it DOES permit is an integrity and availability
+    // problem, recorded so nobody mistakes it for nothing:
+    // every new chat starts on a model the operator did not choose (a cheaper or
+    // weaker one, or a different Versa deployment inside the same private
+    // gateway), or on none at all, because `configured_new_session_provider`
+    // requires both halves and answers `400` when only one is set. Neither moves
+    // a tier. ⚠ **On SD-12's keyless path it is nevertheless pinned to the launch
+    // configuration** (`biorouter_server::launch::pinned_config_keys`) — not
+    // because it decides capability, but because the exemption there is for the
+    // operator's own declaration and this is half of it.
+    //
+    // Read through the `config_value!` macro (base.rs), like `BIOROUTER_PROVIDER`,
+    // so the literal never appears in a `get_param(` call and the scan below
+    // cannot see it. Seeded, and the test asserts the seed survives.
+    (
+        "BIOROUTER_MODEL",
+        "names which model runs, never which tier: no `tier()` reads the model name",
+    ),
     ("BIOROUTER_CONTEXT_LIMIT", "token budget, not a tier input"),
     (
         "BIOROUTER_LEAD_TURNS",
@@ -98,11 +129,42 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
         "VERSA_BEDROCK_REGION",
         "SigV4 signing region; the endpoint, not the region, decides where a request goes",
     ),
-    ("BEDROCK_MAX_RETRIES", "retry policy"),
-    ("BEDROCK_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
-    ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
-    ("BEDROCK_MAX_RETRY_INTERVAL_MS", "retry policy"),
-    ("BEDROCK_OPERATION_TIMEOUT_SECS", "transport timeout"),
+    // ⚠ These five are the `BEDROCK_*` keys the 2026-09-11 namespacing did NOT
+    //   split, and the fact that they are still SHARED deserves saying rather
+    //   than being inferred from their absence above. `versa_bedrock.rs` (Private)
+    //   and `bedrock.rs` / `formats/bedrock.rs` (Public) all read the same five
+    //   names, so one write tunes both cards at once. That is the exact shape of
+    //   the cross-card bleed `VERSA_BEDROCK_ENDPOINT` and `VERSA_BEDROCK_REGION`
+    //   were namespaced to end — so the reason these were left shared has to be
+    //   a positive one, not an oversight.
+    //
+    //   It is that they reach nothing a tier depends on. All four retry keys are
+    //   read in one place, `load_retry_config`, and go into a `RetryConfig`;
+    //   `BEDROCK_OPERATION_TIMEOUT_SECS` is read in `load_operation_timeout_secs`
+    //   and becomes a deadline. None of them contributes to the resolved endpoint
+    //   `tier()` asks about, and none of them takes part in signing or
+    //   credentials. They decide how patiently a request is retried and how long
+    //   it may take — not where it goes or who it claims to be.
+    (
+        "BEDROCK_MAX_RETRIES",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_INITIAL_RETRY_INTERVAL_MS",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_BACKOFF_MULTIPLIER",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_MAX_RETRY_INTERVAL_MS",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_OPERATION_TIMEOUT_SECS",
+        "transport timeout, shared with the public card",
+    ),
 ];
 
 /// The files whose `get_param` reads the scan covers: every provider file Task
@@ -219,6 +281,21 @@ mod tests {
         // survives.
         assert!(CAPABILITY_CONFIG_KEYS.contains(&"BIOROUTER_PROVIDER"));
         assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5);
+        // The same, for the other half of `/agent/start`'s bind. Seeded into the
+        // NOT list by the 2026-09-12 review's Finding 2, which found it in
+        // neither — see its row for why the classification comes out that way.
+        assert!(
+            NOT_CAPABILITY_CONFIG_KEYS
+                .iter()
+                .any(|(key, _why)| *key == "BIOROUTER_MODEL"),
+            "BIOROUTER_MODEL is unclassified again: it is half of the bind /agent/start performs, \
+             so leaving it out of both lists is how it went unreviewed the first time"
+        );
+        assert!(
+            !is_capability_key("BIOROUTER_MODEL"),
+            "BIOROUTER_MODEL was made a capability key; no `tier()` reads the model name, so this \
+             would make every model switch a user act without protecting a tier"
+        );
 
         // …and the other way round: every classified key is still READ by a
         // tier-input file. Without this, a read that goes away leaves its row
@@ -228,7 +305,13 @@ mod tests {
             .iter()
             .copied()
             .chain(NOT_CAPABILITY_CONFIG_KEYS.iter().map(|(key, _why)| *key));
-        for key in classified.filter(|key| *key != "BIOROUTER_PROVIDER") {
+        //
+        // The two `config_value!` keys are excused, for the reason given above
+        // each of them: the scan reads `get_param("…")` literals, and neither
+        // literal exists in the source.
+        for key in
+            classified.filter(|key| !matches!(*key, "BIOROUTER_PROVIDER" | "BIOROUTER_MODEL"))
+        {
             assert!(
                 scanned.iter().any(|read| read == key),
                 "{key} is classified but no tier-input file reads it; delete its row"

@@ -43,7 +43,7 @@ biorouter session
 
 Biorouter asks you to approve the job before creating it, then confirms the cron expression.
 
-> **Note.** To register a job non-interactively, use `biorouter schedule add`. Its flags and a worked example are in [Creating and sharing workflows](creating-and-sharing-workflows.md#schedule-a-workflow) and the [`schedule` command reference](../cli/command-reference.md#schedule).
+> **Note.** `biorouter schedule add` registers a job from a terminal. Its flags and a worked example are in [Creating and sharing workflows](creating-and-sharing-workflows.md#schedule-a-workflow) and the [`schedule` command reference](../cli/command-reference.md#schedule). It is not a way to skip being asked: when it has to write the schedule file itself it asks for confirmation at the terminal, and refuses when there is nobody there to ask.
 
 ### When the agent schedules something, you approve it
 
@@ -64,6 +64,7 @@ The card says in words when the job runs (for example *every day at 02:00, this 
 - **Reading asks nothing.** `list`, `inspect`, `sessions` and `session_content` change nothing and raise no card.
 - **Impossible changes are refused without a card.** For example: a schedule that does not exist, stopping a run that is not running, a cron expression the scheduler cannot parse, or a workflow that hides characters the card could not show.
 - **In a browser session started by `biorouter serve`**, nobody can approve anything, so the tool offers only the read actions. Make changes in the desktop app or with the `biorouter` command line instead.
+- **The command line is not a way round the card.** An agent with a shell can run `biorouter schedule add` (and `remove`, and `run-now`), and until 2026-09 that wrote a standing agent run with nobody asked. Those three now need a person whenever the command has to change the schedule file itself: a confirmation at an interactive terminal, and a refusal — exit 2, nothing written — when there is no terminal to ask at, which is the case in every agent's shell. The confirmation says when the job will run in the same words the card uses. A script without a terminal is not locked out: give it `BIOROUTER_SERVER__SECRET_KEY` and a running daemon and the change goes through that daemon, which is the operator's own key and is deliberately never passed to a tool.
 
 ## Cron expression format
 

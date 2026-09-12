@@ -24,6 +24,8 @@ import { PageHeader } from '../Layout/PageHeader';
 import { ExtensionLoadFailureNotice } from './ExtensionLoadFailureNotice';
 import { startNewSession } from '../../sessions';
 import { getInitialWorkingDir } from '../../utils/workingDir';
+import { toastError } from '../../toasts';
+import { startChatFailureNotice } from '../../utils/startChatFailure';
 
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -208,7 +210,16 @@ export default function ExtensionsView({
               the page answered "No extensions yet" — the destination denied the
               failure existed. */}
           <ExtensionLoadFailureNotice
-            onAskBiorouter={(hints) => startNewSession(getInitialWorkingDir(), hints, setView)}
+            onAskBiorouter={(hints) =>
+              // The eighth surface that starts a chat, and it reports a failed
+              // start in the same words as the other seven — the census in
+              // `utils/startChatFailure.test.ts` is what says so. Without this
+              // the rejection was unhandled: the notice stayed on screen and
+              // nothing said the chat had not opened.
+              void startNewSession(getInitialWorkingDir(), hints, setView).catch((error) =>
+                toastError(startChatFailureNotice(error, { kept: false }))
+              )
+            }
           />
           <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search extensions...">
             <ExtensionsSection

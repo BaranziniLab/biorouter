@@ -36,6 +36,7 @@ import {
   privacyTiersRecordFromConfig,
   type PrivacyTiersRecord,
 } from './settings/privacy/privacyTiers';
+import { announceAppModelSelection } from '../utils/sessionBindingSync';
 import type {
   ConfigResponse,
   UpsertConfigQuery,
@@ -100,6 +101,21 @@ export class MalformedConfigError extends Error {
 }
 
 const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
+
+/**
+ * F3 — the two keys `/agent/start` binds a new chat to.
+ *
+ * A write of either changes what every window's composer must state, so it is
+ * announced to all of them (`utils/sessionBindingSync`), each of which re-reads
+ * the pair. `ModelAndProviderContext.changeModel` announces its own writes; the
+ * ones caught HERE are those that never pass through it — the local and
+ * coding-agent onboarding cards, Lead/Worker settings, Settings' reset — which
+ * until now left even their own window's chip naming the previous model.
+ */
+const APP_MODEL_SELECTION_KEYS: ReadonlySet<string> = new Set([
+  'BIOROUTER_PROVIDER',
+  'BIOROUTER_MODEL',
+]);
 
 export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
   const [config, setConfig] = useState<ConfigResponse['config']>({});
@@ -207,6 +223,8 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         headers: await userActionHeaders(),
       });
       await reloadConfigAfterWrite();
+      // After the write resolved — a refused one threw above and moved nothing.
+      if (APP_MODEL_SELECTION_KEYS.has(key)) announceAppModelSelection();
     },
     [reloadConfigAfterWrite]
   );
@@ -232,6 +250,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         headers: await userActionHeaders(),
       });
       await reloadConfigAfterWrite();
+      if (APP_MODEL_SELECTION_KEYS.has(key)) announceAppModelSelection();
     },
     [reloadConfigAfterWrite]
   );

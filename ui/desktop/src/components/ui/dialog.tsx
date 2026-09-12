@@ -5,6 +5,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { XIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
+import { installDialogTabRepair } from './dialogTabRepair';
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
@@ -45,15 +46,47 @@ function DialogContent({
   showCloseButton = dismissible,
   onEscapeKeyDown,
   onPointerDownOutside,
+  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   dismissible?: boolean;
   showCloseButton?: boolean;
 }) {
+  // See `dialogTabRepair`: a `Select` unmounting its live region on blur makes
+  // Radix's focus scope swallow the Tab that was moving off it, which left the
+  // New schedule dialog's Cancel and "Create schedule" keyboard-unreachable.
+  // The repair belongs here, on the one primitive every modal composes, because
+  // the trigger is any `Select` (or anything else that mutates the dialog's DOM
+  // while blurring) rather than anything the schedule dialog does.
+  const attachRepair = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      const forward = (value: HTMLDivElement | null) => {
+        if (typeof ref === 'function') ref(value);
+        else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = value;
+      };
+      forward(node);
+      if (!node) return;
+      const teardown = installDialogTabRepair(node);
+      // React 19 calls a ref callback's cleanup INSTEAD of re-invoking it with
+      // `null`, so the forwarded ref has to be cleared here or a caller holding
+      // one would keep a detached node.
+      return () => {
+        teardown();
+        forward(null);
+      };
+    },
+    [ref]
+  );
+
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
       <DialogPrimitive.Content
+        ref={attachRepair}
+        // Radix does not set this itself — it isolates the rest of the page with
+        // `aria-hidden` instead — so a screen reader was told this was a dialog
+        // but never that it was a modal one.
+        aria-modal="true"
         data-slot="dialog-content"
         className={cn(
           // No radius utility here on purpose: `.biorouter-modal-surface` (main.css,

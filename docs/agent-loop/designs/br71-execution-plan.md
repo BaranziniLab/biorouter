@@ -1490,7 +1490,7 @@ with no error anywhere.
 
 ```bash
 cargo test -p biorouter --lib session::session_manager
-cargo test -p biorouter --lib agents::knowledge_tool knowledge::conversation_ingest
+cargo test -p biorouter --lib -- agents::knowledge_tool knowledge::conversation_ingest
 ```
 
 Expected: **PASS**, including the pre-existing migration tests. Two of them name a
@@ -3705,7 +3705,7 @@ does need adding is `async-trait`, in Task 9; see there.)
 
 - [ ] **Step 5: Run tests**
 
-Run: `cargo test -p biorouter-server --lib workspace::turn state::tests::turn_guard_exposes_its_turn_id`
+Run: `cargo test -p biorouter-server --lib -- workspace::turn state::tests::turn_guard_exposes_its_turn_id`
 Expected: `test result: ok. 6 passed` (three lifecycle tests, the seed-is-not-a-write
 test, the abort classifier, and the `TurnGuard::turn_id` accessor).
 
@@ -5235,7 +5235,7 @@ just the new file)
 
 ```bash
 cargo test -p biorouter-server --lib routes::reply
-cargo test -p biorouter-server --lib routes::session_events workspace::
+cargo test -p biorouter-server --lib -- routes::session_events workspace::
 cargo test -p biorouter-server --lib          # every server unit test
 cargo test -p biorouter --lib agents::agent   # the agent side of the turn contract
 
@@ -11547,7 +11547,7 @@ for Task 24's `workspace_open` line.
 
 - [ ] **Step 6: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::agent agents::workspace_extension agents::extension_manager`
+Run: `cargo test -p biorouter --lib -- agents::agent agents::workspace_extension agents::extension_manager`
 Expected: PASS (5 new agent tests, including the persistence exclusion; the
 `available_tools` tests at `extension_manager.rs:2456-2545` still green — this task
 relies on them, it does not change them).
@@ -11773,7 +11773,7 @@ five fields used above.)
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension agents::subagent_tool agents::agent`
+Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib -- agents::workspace_extension agents::subagent_tool agents::agent`
 Expected: FAILURES — but **not** "no `subagent` tool on the extension": Task 18 Step 4
 already appended `create_subagent_tool(&[])` to `get_tools()`, so
 `the_workspace_extension_advertises_the_spawn_tool_under_its_existing_name`'s

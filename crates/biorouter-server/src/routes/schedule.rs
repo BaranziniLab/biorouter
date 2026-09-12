@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -182,7 +183,14 @@ fn create_schedule_error(
     get,
     path = "/schedule/list",
     responses(
-        (status = 200, description = "A list of scheduled jobs", body = ListSchedulesResponse),
+        (status = 200, description = "A list of scheduled jobs. Every schedule is listed, \
+                                      including idle and paused ones — but `current_session_id` \
+                                      and `creator_session_id` are omitted from any row naming a \
+                                      chat this caller could not open, i.e. a private chat or one \
+                                      that cannot be read, for a caller carrying neither the \
+                                      user-action proof nor a private capability. Fields are \
+                                      redacted, ROWS are never dropped: a schedule is not a chat, \
+                                      and an idle one names none", body = ListSchedulesResponse),
         (status = 500, description = "Internal server error")
     ),
     tag = "schedule"
@@ -190,12 +198,63 @@ fn create_schedule_error(
 #[axum::debug_handler]
 async fn list_schedules(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<ListSchedulesResponse>, StatusCode> {
     let scheduler = state.scheduler();
 
     tracing::info!("Server: Calling scheduler.list_scheduled_jobs()");
-    let jobs = scheduler.list_scheduled_jobs().await;
+    let mut jobs = scheduler.list_scheduled_jobs().await;
+
+    // Issue #56: every row named the chat that created the schedule and, for a
+    // running one, the chat the run is in — to any holder of the daemon secret.
+    //
+    // ⚠ **REDACTION here, not the omission every other listing uses, and the
+    // difference is the subject.** Elsewhere a row IS its chat's content, so the
+    // row goes. A schedule is not a chat: it is a cron line and a workflow path
+    // that merely *name* chats, and an idle or paused schedule names none at
+    // all. Applying the sibling routes' "names no chat is unreadable" rule row
+    // by row would therefore drop every non-running schedule for every caller
+    // without a private capability — emptying the Schedules interface in order
+    // to close an association. So every row stays and the two chat-naming
+    // fields go.
+    //
+    // The two fields are asked about separately because they can name different
+    // chats: a schedule created from a public chat can be running in a private
+    // one, and the reverse.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    redact_unreachable_chats(&caller, state.session_manager(), &mut jobs).await;
     Ok(Json(ListSchedulesResponse { jobs }))
+}
+
+/// Blank the chat-naming fields of every row whose chat this caller could not
+/// open. See [`list_schedules`] for why this redacts rather than omits.
+///
+/// Split out of the handler so the decision can be tested against real seeded
+/// chats without going through the cron scheduler: `add_scheduled_job` registers
+/// a task on the tokio-cron-scheduler, which is process-global while each
+/// `#[tokio::test]` brings its own runtime, so seeding a schedule from one test
+/// and listing it from another fails with `CantAdd` — measured. The route's own
+/// wiring to this function is asserted by a body scan instead.
+pub(crate) async fn redact_unreachable_chats(
+    caller: &crate::routes::session_reach::HttpCaller,
+    manager: &biorouter::session::session_manager::SessionManager,
+    jobs: &mut [ScheduledJob],
+) {
+    for job in jobs.iter_mut() {
+        // Asked separately because the two can name DIFFERENT chats: a schedule
+        // created from a public chat can be running in a private one, and the
+        // reverse.
+        if let Some(chat) = job.current_session_id.clone() {
+            if !caller.lists_work(manager, Some(&chat)).await {
+                job.current_session_id = None;
+            }
+        }
+        if let Some(chat) = job.creator_session_id.clone() {
+            if !caller.lists_work(manager, Some(&chat)).await {
+                job.creator_session_id = None;
+            }
+        }
+    }
 }
 
 #[utoipa::path(
@@ -373,7 +432,10 @@ fn classify_run_now_error(id: &str, error: &biorouter::scheduler::SchedulerError
         SessionsQuery // This will automatically pick up 'limit' as a query parameter
     ),
     responses(
-        (status = 200, description = "A list of session display info", body = Vec<SessionDisplayInfo>),
+        (status = 200, description = "A list of session display info, holding only the runs this \
+                                      caller could open: a private run is omitted for a caller \
+                                      with neither the user-action proof nor a private capability, \
+                                      as it is from `GET /sessions`", body = Vec<SessionDisplayInfo>),
         (status = 500, description = "Internal server error")
     ),
     tag = "schedule"
@@ -383,16 +445,23 @@ async fn sessions_handler(
     State(state): State<Arc<AppState>>,
     Path(schedule_id_param): Path<String>, // Renamed to avoid confusion with session_id
     Query(query_params): Query<SessionsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<SessionDisplayInfo>>, StatusCode> {
     let scheduler = state.scheduler();
+    // Issue #56, QA 2026-09-10 M1: a schedule's runs, by name and working
+    // directory — the rows `GET /sessions` lists, through another door. Filtered
+    // by the same rule, and BEFORE the limit, so a page of private runs does not
+    // leave a caller with an empty page and the impression there were none.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
 
-    match scheduler
-        .sessions(&schedule_id_param, query_params.limit)
-        .await
-    {
+    match scheduler.sessions(&schedule_id_param, usize::MAX).await {
         Ok(session_tuples) => {
             let mut display_infos = Vec::new();
-            for (session_name, session) in session_tuples {
+            for (session_name, session) in session_tuples
+                .into_iter()
+                .filter(|(_, session)| caller.lists_session(session.privacy_tier))
+                .take(query_params.limit)
+            {
                 display_infos.push(SessionDisplayInfo {
                     id: session_name.clone(),
                     name: session.name,
@@ -530,8 +599,25 @@ async fn update_schedule(
 #[utoipa::path(
     post,
     path = "/schedule/{id}/kill",
+    params(
+        ("id" = String, Path, description = "ID of the schedule whose run should be stopped")
+    ),
     responses(
         (status = 200, description = "Running job killed successfully"),
+        (status = 403, description = "The run belongs to a chat this caller could not open — a \
+                                      private chat, or one that cannot be read — and the request \
+                                      carried neither the user-action proof nor a private \
+                                      capability. Plain text, byte-for-byte what `GET \
+                                      /sessions/{session_id}` answers, and the same for a \
+                                      schedule that is not running and one that does not exist, \
+                                      so a refusal says nothing about the run. Nothing was \
+                                      stopped"),
+        (status = 404, description = "No such schedule"),
+        (status = 400, description = "Nothing was stopped: the schedule is not running, its run \
+                                      had already finished, or it has started a DIFFERENT run \
+                                      since this request was authorized — the last of which is \
+                                      refused rather than applied to a run the caller was not \
+                                      admitted to. The message says which"),
     ),
     tag = "schedule"
 )]
@@ -539,18 +625,47 @@ async fn update_schedule(
 pub async fn kill_running_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<KillJobResponse>, (StatusCode, String)> {
+    headers: HeaderMap,
+) -> Result<Json<KillJobResponse>, Response> {
     let scheduler = state.scheduler();
+
+    // Issue #56: this stopped ANY chat's scheduled run for any holder of the
+    // daemon secret. `POST /active_work/{id}/cancel` gates the very same kill,
+    // reached by the very same schedule id, so leaving this open did not merely
+    // leave a residual — it made that gate bypassable by a one-word change of
+    // URL, which reads as protection while being none.
+    //
+    // Resolve the run to the chat it is in and ask the chat READ's own gate
+    // BEFORE anything is stopped, exactly as the cancel route does: the same
+    // status and the same bytes, and the same answer for a schedule that is not
+    // running and for one that does not exist, so a refusal says nothing about
+    // which it was.
+    let owner = scheduler
+        .get_running_job_info(&id)
+        .await
+        .ok()
+        .flatten()
+        .map(|(session_id, _)| session_id);
+    crate::routes::session_reach::work_reach(state.session_manager(), owner.as_deref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
 
     // ⚠ The success message below is only true because `kill_running_job` now
     // FAILS when there was nothing to cancel. It used to return `Ok(())` whenever
     // the cancel-token registry held no token for the schedule, so this route
     // reported "Successfully killed running job" for a Stop that stopped
     // nothing — the #148 cancel complaint.
-    scheduler.kill_running_job(&id).await.map_err(|e| {
-        eprintln!("Error killing running job '{}': {:?}", id, e);
-        classify_kill_error(&e)
-    })?;
+    // The session-CHECKED kill: `owner` is the run this request was authorized
+    // against, and the scheduler holds its `jobs` lock across the check and the
+    // cancel, so a run that changed between the gate above and here is refused
+    // rather than stopped. See `Scheduler::kill_running_job_in_session`.
+    scheduler
+        .kill_running_job_in_session(&id, owner.as_deref())
+        .await
+        .map_err(|e| {
+            eprintln!("Error killing running job '{}': {:?}", id, e);
+            classify_kill_error(&e).into_response()
+        })?;
 
     Ok(Json(KillJobResponse {
         message: format!("Successfully killed running job '{}'", id),
@@ -585,6 +700,11 @@ fn classify_kill_error(error: &biorouter::scheduler::SchedulerError) -> (StatusC
     ),
     responses(
         (status = 200, description = "Running job information", body = InspectJobResponse),
+        (status = 403, description = "The run belongs to a chat this caller could not open, and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Identical to the answer for a schedule \
+                                      that is not running and for one that does not exist, so a \
+                                      refusal says nothing about the run"),
         (status = 404, description = "Scheduled job not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -594,10 +714,27 @@ fn classify_kill_error(error: &biorouter::scheduler::SchedulerError) -> (StatusC
 pub async fn inspect_running_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<InspectJobResponse>, StatusCode> {
+    headers: HeaderMap,
+) -> Result<Json<InspectJobResponse>, Response> {
     let scheduler = state.scheduler();
 
-    match scheduler.get_running_job_info(&id).await {
+    // Issue #56: this named the chat a schedule is running in, plus when the
+    // run started, to any holder of the daemon secret — precisely the
+    // association `GET /active_work` omits and `GET /schedule/list` now
+    // redacts. Resolved once, gated on that chat, and the resolved value is
+    // what the answer is built from: asking the scheduler a second time after
+    // the gate would be a second read of a fact that can change.
+    let info = scheduler.get_running_job_info(&id).await;
+    let owner = info
+        .as_ref()
+        .ok()
+        .and_then(|i| i.as_ref())
+        .map(|(session_id, _)| session_id.clone());
+    crate::routes::session_reach::work_reach(state.session_manager(), owner.as_deref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
+
+    match info {
         Ok(info) => {
             if let Some((session_id, start_time)) = info {
                 let duration = chrono::Utc::now().signed_duration_since(start_time);
@@ -617,8 +754,10 @@ pub async fn inspect_running_job(
         Err(e) => {
             eprintln!("Error inspecting running job '{}': {:?}", id, e);
             match e {
-                biorouter::scheduler::SchedulerError::JobNotFound(_) => Err(StatusCode::NOT_FOUND),
-                _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
+                biorouter::scheduler::SchedulerError::JobNotFound(_) => {
+                    Err(StatusCode::NOT_FOUND.into_response())
+                }
+                _ => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             }
         }
     }

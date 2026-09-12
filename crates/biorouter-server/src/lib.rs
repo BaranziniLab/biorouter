@@ -11,6 +11,9 @@ extern crate self as biorouter_server;
 pub mod auth;
 pub mod configuration;
 pub mod error;
+// SD-12: what this daemon was LAUNCHED with. Lib-only for the same reason
+// `auth` is — it holds a process global, and `routes::agent` is compiled twice.
+pub mod launch;
 pub mod openapi;
 pub mod routes;
 pub mod state;

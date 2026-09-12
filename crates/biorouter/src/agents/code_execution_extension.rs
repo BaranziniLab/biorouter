@@ -1834,6 +1834,42 @@ impl CodeExecutionClient {
             .unwrap_or_default()
     }
 
+    /// The `_meta` a finished script's collected artifacts and tool calls carry,
+    /// or `None` when it collected neither.
+    ///
+    /// Split out of [`Self::handle_execute_code`] so that function stays under
+    /// `clippy::too_many_lines`. It is assembly only — every key here is read by
+    /// the desktop artifact panel and by `ToolCallWithResponse`, so adding one
+    /// means adding a reader, not only a writer.
+    fn collected_meta(collected: &CollectedArtifacts) -> Option<rmcp::model::Meta> {
+        let mut meta = JsonObject::new();
+        if !collected.app_paths.is_empty() {
+            if let Some(path) = &collected.last_app_path {
+                meta.insert(
+                    "biorouter/app-path".to_string(),
+                    Value::String(path.clone()),
+                );
+            }
+            meta.insert(
+                "biorouter/app-paths".to_string(),
+                serde_json::to_value(&collected.app_paths).unwrap_or_default(),
+            );
+        }
+        if !collected.tool_calls.is_empty() {
+            meta.insert(
+                TOOL_CALLS_META_KEY.to_string(),
+                serde_json::to_value(&collected.tool_calls).unwrap_or_default(),
+            );
+            if collected.dropped_tool_calls > 0 {
+                meta.insert(
+                    TOOL_CALLS_DROPPED_META_KEY.to_string(),
+                    Value::from(collected.dropped_tool_calls),
+                );
+            }
+        }
+        (!meta.is_empty()).then_some(rmcp::model::Meta(meta))
+    }
+
     async fn handle_execute_code(
         &self,
         session_id: &str,
@@ -1925,32 +1961,7 @@ impl CodeExecutionClient {
         tool_handler.abort();
 
         let mut collected = collected_artifacts.lock().await;
-        let mut meta = JsonObject::new();
-        if !collected.app_paths.is_empty() {
-            if let Some(path) = &collected.last_app_path {
-                meta.insert(
-                    "biorouter/app-path".to_string(),
-                    Value::String(path.clone()),
-                );
-            }
-            meta.insert(
-                "biorouter/app-paths".to_string(),
-                serde_json::to_value(&collected.app_paths).unwrap_or_default(),
-            );
-        }
-        if !collected.tool_calls.is_empty() {
-            meta.insert(
-                TOOL_CALLS_META_KEY.to_string(),
-                serde_json::to_value(&collected.tool_calls).unwrap_or_default(),
-            );
-            if collected.dropped_tool_calls > 0 {
-                meta.insert(
-                    TOOL_CALLS_DROPPED_META_KEY.to_string(),
-                    Value::from(collected.dropped_tool_calls),
-                );
-            }
-        }
-        let meta = (!meta.is_empty()).then_some(rmcp::model::Meta(meta));
+        let meta = Self::collected_meta(&collected);
 
         match js_result {
             Ok(r) => {

@@ -850,9 +850,16 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let new_provider = match create(&provider_name, model_config).await {
         Ok(provider) => provider,
         Err(e) => {
+            // `render_error` already prints `error:`, and `end_sentence` already
+            // knows not to add a second full stop — this line used to do neither,
+            // so an unconfigured Versa Bedrock read
+            // `error: Error VERSA_BEDROCK_ACCESS_KEY_ID is not configured. Add it
+            // under Versa API Bedrock in Settings..`
+            let detail = e.to_string();
             output::render_error(&format!(
-                "Error {e}.{}",
-                keyring_advice(&provider_name).await
+                "{}{}",
+                biorouter::agents::mistakes::end_sentence(&detail),
+                keyring_advice(&provider_name, &detail).await
             ));
             close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
             process::exit(1);
@@ -1198,11 +1205,30 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 /// has never heard of, which is one of the ways `create` fails — keeps the
 /// advice: it may well have secrets, and an unnecessary paragraph is a much
 /// smaller failure than withholding the one that would have helped.
-async fn keyring_advice(provider_name: &str) -> &'static str {
+/// ⚠ **And it is withheld when the credential was never set at all**, which the
+/// provider says in `detail`. Three lines about the system keychain answer the
+/// question "why can't the store give me the key I saved?" — they are the wrong
+/// answer, and in one case a contradictory one, to "there is no key". An
+/// unconfigured Versa Bedrock printed *"VERSA_BEDROCK_ACCESS_KEY_ID is not
+/// configured. Add it under Versa API Bedrock in Settings."* and then told the
+/// reader to check their keychain and re-run `biorouter configure` — two
+/// remedies for a problem that has one, and a third voice after a message that
+/// had already named the fix. Worse on the sibling arm: the store-refused
+/// message says *do NOT re-enter it*, and "run 'biorouter configure' again" says
+/// the opposite.
+///
+/// The test is on the wording, via `providers::says_credential_never_set`,
+/// because the `anyhow::Error` leaving `from_env` has already discarded the
+/// `ConfigError` that knew. That constant is what both ends share so the two
+/// cannot drift apart.
+async fn keyring_advice(provider_name: &str, detail: &str) -> &'static str {
     const ADVICE: &str = "\n\
         Please check your system keychain and run 'biorouter configure' again.\n\
         If your system is unable to use the keyring, please try setting secret key(s) via environment variables.\n\
         For more info, see: https://BaranziniLab.github.io/biorouter/docs/troubleshooting/#keychainkeyring-errors";
+    if biorouter::providers::says_credential_never_set(detail) {
+        return "";
+    }
     let has_secrets = biorouter::providers::providers()
         .await
         .into_iter()
@@ -1252,11 +1278,50 @@ mod tests {
     async fn a_provider_with_no_secrets_is_not_told_to_check_its_keychain() {
         for provider in ["claude_code", "codex"] {
             assert_eq!(
-                keyring_advice(provider).await,
+                keyring_advice(provider, "could not find the `claude` command").await,
                 "",
                 "{provider} stores no secret"
             );
         }
+    }
+
+    /// A credential that was never set is not a keychain failure, and the three
+    /// lines that answer one are the wrong answer to it — the provider's own
+    /// message has already named the fix.
+    ///
+    /// The fixture is the message `versa_bedrock::from_env` really produces on
+    /// its `ConfigError::NotFound` arm, assembled from the same constant the
+    /// provider formats with, so a reword moves both ends together.
+    #[tokio::test]
+    async fn a_credential_that_was_never_set_is_not_a_keychain_problem() {
+        let detail = format!(
+            "VERSA_BEDROCK_ACCESS_KEY_ID {}. Add it under Versa API Bedrock in Settings.",
+            biorouter::providers::CREDENTIAL_NEVER_SET
+        );
+        assert_eq!(
+            keyring_advice("versa_bedrock", &detail).await,
+            "",
+            "the message already says what to do: {detail}"
+        );
+    }
+
+    /// The rendered line, end to end: one full stop and no `error: Error …`
+    /// stutter. Both were visible on an unconfigured Versa Bedrock, whose text
+    /// ends in a stop of its own and then met an unconditional one.
+    #[tokio::test]
+    async fn an_unconfigured_provider_renders_one_stop_and_no_stutter() {
+        let detail = format!(
+            "VERSA_BEDROCK_ACCESS_KEY_ID {}. Add it under Versa API Bedrock in Settings.",
+            biorouter::providers::CREDENTIAL_NEVER_SET
+        );
+        let rendered = format!(
+            "{}{}",
+            biorouter::agents::mistakes::end_sentence(&detail),
+            keyring_advice("versa_bedrock", &detail).await
+        );
+        assert_eq!(rendered, detail, "nothing should be added to it");
+        assert!(!rendered.contains(".."), "{rendered}");
+        assert!(!rendered.starts_with("Error "), "{rendered}");
     }
 
     /// …and the advice is kept for everything that does hold one, including a
@@ -1266,7 +1331,9 @@ mod tests {
     async fn a_provider_with_secrets_still_gets_the_keychain_advice() {
         for provider in ["anthropic", "openai", "no_such_provider_exists"] {
             assert!(
-                keyring_advice(provider).await.contains("system keychain"),
+                keyring_advice(provider, "the credential store refused the read")
+                    .await
+                    .contains("system keychain"),
                 "{provider} must keep the advice"
             );
         }

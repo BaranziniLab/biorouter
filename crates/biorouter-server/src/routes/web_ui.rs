@@ -40,11 +40,21 @@
 //! second browser, a bookmark, and a browser that has dropped its cookie.
 //! Decision SD-9 in `docs/deployment/serve-decisions.md` has the reasoning.
 //!
-//! **The cookie gates the document and nothing else.** It is not accepted as
-//! authentication on any API route. Accepting it there would make every API
-//! route reachable by a credential the browser attaches automatically, which is
-//! a cross-site request forgery surface the header scheme does not have. Keeping
-//! the cookie's authority to one request is why `check_token` needed no change.
+//! **The cookie gates the document, and authenticates nothing else.** It is not
+//! accepted as authentication on any API route. Accepting it there would make
+//! every API route reachable by a credential the browser attaches automatically,
+//! which is a cross-site request forgery surface the header scheme does not
+//! have. Keeping the cookie's authority to one request is why `check_token`
+//! needed no change.
+//!
+//! It has one other reader, and it is a narrowing rather than an admission: an
+//! API request that already passed `check_token` and ALSO carries this cookie
+//! came from the document this daemon served, so `auth::served_operator_capability`
+//! gives it the operator's configured tier on the listing and knowledge-base
+//! gates (`routes::session_reach`). A request holding only the secret is a
+//! public caller there. `SameSite=Strict` keeps the cookie off every cross-site
+//! request, and a forged request still needs the secret, so no CSRF surface
+//! appears. See `docs/deployment/serve-decisions.md` SD-10.
 //!
 //! # Why there is no brute-force throttle here
 //!
@@ -192,6 +202,19 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.trim())
 }
 
+/// The session cookie the token exchange set, if the request carries one.
+///
+/// The one reader of [`SESSION_COOKIE`]: the shell below asks it whether to
+/// serve the document, and `auth::served_operator_capability` asks it whether a
+/// request came from that document — which earns a serve daemon's own interface
+/// the operator's tier on the listing and knowledge-base gates, and nothing
+/// else. It is never accepted as authentication on an API route: `check_token`
+/// still demands `X-Secret-Key`, so the cookie can only narrow a caller that
+/// already holds the secret, never admit one that does not.
+pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+    cookie_value(headers, SESSION_COOKIE)
+}
+
 /// The application shell, and the token-for-cookie exchange that gates it.
 ///
 /// This handler also serves every unmatched path, so a deep link into the
@@ -220,7 +243,7 @@ async fn index(
         return unauthorized();
     }
 
-    if !ui.token_matches(cookie_value(&headers, SESSION_COOKIE)) {
+    if !ui.token_matches(session_cookie(&headers)) {
         return unauthorized();
     }
 

@@ -421,18 +421,43 @@ fn recovery_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
     )
 }
 
-/// The user-facing message when the turn ends on a provider error. The first
-/// sentence is unchanged from before BR-66 — only the retry count is new, so the
-/// user is not told to "retry" a call Biorouter already silently retried.
+/// The user-facing message when the turn ends on a provider error.
+///
+/// ⚠ **The retry invitation is only offered for an error a retry could survive.**
+/// This notice is reached by three different routes — the error is not
+/// recoverable, the budget is spent, or retries are switched off — and it used to
+/// end with "Please retry if you think this is a transient or recoverable error"
+/// on all three. On the first route that sentence contradicts the one above it:
+/// an authentication failure, an unsupported operation or a rejected model name
+/// will fail identically forever, and [`is_recoverable`]'s own doc says so. The
+/// user is then told, by the same paragraph, that the thing that cannot work
+/// might. Measured on a vendor model rejection, where the text above read "no
+/// retry will fix it" and the frame below invited one anyway.
+///
+/// So the advice follows the same predicate the retry decision does, and cannot
+/// drift from it.
+///
+/// The retried count stays on the retryable branch only. Biorouter never retries
+/// a fatal error, so on the other branch "already retried **it**" would name a
+/// call that never happened — the retries it counts were of earlier, different
+/// errors in the same turn, and that is exactly the kind of near-true sentence
+/// this function is being cleaned of.
 fn stop_notice(error: &ProviderError, retried: u32) -> String {
-    let retried_clause = match retried {
-        0 => String::new(),
-        1 => " Biorouter already retried it once.".to_string(),
-        n => format!(" Biorouter already retried it {n} times."),
+    let advice = if is_recoverable(error) {
+        let retried_clause = match retried {
+            0 => String::new(),
+            1 => " Biorouter already retried it once.".to_string(),
+            n => format!(" Biorouter already retried it {n} times."),
+        };
+        format!(
+            "Please retry if you think this is a transient or recoverable \
+             error.{retried_clause}"
+        )
+    } else {
+        "Retrying will not help: this one returns the same way until its cause changes.".to_string()
     };
     format!(
-        "Ran into this error: {}\n\nPlease retry if you think this is a transient or \
-         recoverable error.{retried_clause}",
+        "Ran into this error: {}\n\n{advice}",
         end_sentence(&error.to_string())
     )
 }
@@ -447,7 +472,12 @@ fn stop_notice(error: &ProviderError, retried: u32) -> String {
 ///
 /// Deliberately conservative: only `.`, `!`, `?` and a closing quote or bracket
 /// after one of them count as an ending. Anything else gets the period it needs.
-fn end_sentence(text: &str) -> String {
+///
+/// `pub` because the CLI needs the same rule: `session --provider` printed
+/// `Error <vendor text>.` with an unconditional stop of its own, and produced the
+/// identical `…in Settings..` on an unconfigured provider. One rule, not two
+/// spellings of it.
+pub fn end_sentence(text: &str) -> String {
     let trimmed = text.trim_end();
     let ends = trimmed
         .chars()
@@ -787,6 +817,71 @@ mod tests {
             "one stop, not two: {notice}"
         );
         assert!(!notice.contains(".."), "{notice}");
+    }
+
+    /// The same measured failure as the test above, read for the other defect it
+    /// carried. `does not support this model` is a 400, so
+    /// `classify_provider_details` reads `InvalidRequest` and [`is_recoverable`]
+    /// says false: Biorouter will not retry it, and neither should the user. The
+    /// frame invited one anyway — in the paragraph directly beneath text that had
+    /// just named the two things to run instead.
+    #[test]
+    fn a_rejection_no_retry_can_fix_does_not_invite_one() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+        let error = ProviderError::RequestFailed(
+            "API Error: 400 Claude Code 2.1.235 does not support this model; version 2.1.251 or \
+             newer is required."
+                .to_string(),
+        );
+        assert!(!is_recoverable(&error), "the fixture must be fatal");
+
+        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(&config, &error)
+        else {
+            panic!("a fatal error ends the turn");
+        };
+        assert!(
+            !notice.contains("Please retry"),
+            "a turn that cannot be retried must not invite one: {notice}"
+        );
+        assert!(
+            notice.contains("Retrying will not help"),
+            "it should say so instead: {notice}"
+        );
+        // The vendor's own text, and its instructions, are still there in full.
+        assert!(
+            notice.contains("version 2.1.251 or newer is required."),
+            "{notice}"
+        );
+    }
+
+    /// The other branch, unchanged: a blip still invites the retry, and still
+    /// reports the ones Biorouter already spent so the user is not told to retry
+    /// a call it silently retried three times.
+    #[test]
+    fn a_transient_error_still_invites_a_retry_and_names_the_ones_already_spent() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+        let error = ProviderError::ServerError("502".to_string());
+
+        let mut notice = None;
+        // Burn the budget, then read the notice the exhausted retry produces.
+        for _ in 0..=config.provider_error_retries {
+            if let ProviderErrorAction::Stop { notice: text } =
+                tracker.observe_provider_error(&config, &error)
+            {
+                notice = Some(text);
+            }
+        }
+        let notice = notice.expect("the budget runs out and the turn stops");
+        assert!(
+            notice.contains("Please retry if you think this is a transient"),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("Biorouter already retried it"),
+            "the count survives on this branch: {notice}"
+        );
     }
 
     #[test]

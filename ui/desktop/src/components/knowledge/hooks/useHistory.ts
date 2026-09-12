@@ -71,6 +71,7 @@ export function useHistory(kbId: string | null, enabled = true): UseHistoryResul
       const res = await restoreState({
         path: { id: kbId },
         body: { commit_sha: commitSha },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       const sha = (res.data as RestoreResponse | undefined)?.new_commit_sha ?? '';

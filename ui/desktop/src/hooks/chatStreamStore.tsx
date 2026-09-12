@@ -334,7 +334,9 @@ async function fetchAllSessions(): Promise<{ id: string; name?: string | null }[
   }
   sessionListInflightAt = now;
   sessionListInflight = (async () => {
-    const response = await listSessions({ throwOnError: true });
+    // With the user's proof: without it the daemon omits private chats
+    // (issue #56, QA 2026-09-10 M1).
+    const response = await listSessions({ throwOnError: true, headers: await userActionHeaders() });
     return (response.data?.sessions ?? []) as { id: string; name?: string | null }[];
   })();
   sessionListInflight.catch(() => {
@@ -3834,6 +3836,9 @@ class ChatStreamController {
 
   setWorkflowUserParams = async (user_workflow_values: Record<string, string>): Promise<void> => {
     if (this.snapshot.session) {
+      // With the user's proof: this writes into the chat and re-applies its
+      // workflow, which a private chat refuses to a caller without it (issue
+      // #56, QA 2026-09-10).
       await updateSessionUserWorkflowValues({
         path: {
           session_id: this.sessionId,
@@ -3841,6 +3846,7 @@ class ChatStreamController {
         body: {
           userWorkflowValues: user_workflow_values,
         },
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       this.updateSnapshot((prev) =>
@@ -4394,13 +4400,15 @@ class ChatStreamController {
           editType,
           ...(expectedMessageIds ? { expectedMessageIds } : {}),
         },
+        // The proof that the person at the keyboard asked, on both edit types.
         // Issue #56 DR-19: `diverge` branches this chat into a NEW session that
         // inherits its provider, so on a private chat it mints a new
-        // private-capability session and the daemon refuses it without proof the
-        // request came from the person at the keyboard. `edit` truncates this
-        // session in place and mints nothing, so it is not gated and does not
-        // carry the proof.
-        ...(editType === 'diverge' ? { headers: await userActionHeaders() } : {}),
+        // private-capability session and the daemon refuses it without the
+        // proof. `edit` truncates this session in place; it mints nothing, but
+        // since QA's 2026-09-10 sweep it asks the read's reach gate, because a
+        // caller that may not read a private chat may not cut its history
+        // either.
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
 

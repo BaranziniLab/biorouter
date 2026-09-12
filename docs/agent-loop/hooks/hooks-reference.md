@@ -279,6 +279,27 @@ spelling is accepted as an alias.
 - **PostToolUse blocks are capped** at 3 consecutive blocks per session (see
   [Blocking a tool result](#blocking-a-tool-result-posttooluse)).
 
+### Built-in checks that run before your Stop hooks
+
+When the agent tries to finish a turn, Biorouter runs its own checks first, in
+this order, and only then consults your `Stop` hooks:
+
+1. the done gate, when you configured one (`BIOROUTER_DONE_GATE`);
+2. the self-critique pass, when you enabled it;
+3. the Todo checklist check: a turn that created or changed the checklist may
+   not end while items are unfinished, unless the final message names each open
+   item. See [What Biorouter enforces](../../extensions/built-in/todo.md#what-biorouter-enforces).
+
+A built-in check that blocks ends that stop attempt, so your hooks run on the
+next one. The checklist check runs ahead of your hooks because it is
+deterministic and cheap, while a command hook may run a whole test suite; there
+is no point paying for a hook on a stop that is already refused. It has its own
+budget, 5 blocks per turn, which does not reset when the agent runs tools and
+does not count against the Stop-hook cap above. Its feedback reaches the model
+the same way a Stop-hook block does: as hidden feedback, with a notice for you.
+It stands aside while a `/goal` is active, because the goal's own judge decides
+then.
+
 ### Scheduling of observe-only events
 
 **Observe-only events run detached, but are not discarded.** `Notification`,
