@@ -167,6 +167,12 @@ describe('compact chat summary', () => {
  * The live-refresh path itself already existed and is NOT what these tests add:
  * `useSessionTodos.ts:14` computes `revision` and lists it in the effect's deps
  * at `:63`.
+ *
+ * ⚠ The exemption described as missing above now exists (2026-09-11): the five
+ * `todo__*` tools stay directly callable in Code Execution mode, and the
+ * planning gate sends a multi-step turn to `todo__todo_write` first. So the
+ * COMMON path is now a top-level request, pinned by the last test below; the
+ * scripted path above still happens whenever a model imports the tools.
  */
 const FOUR_TASK_SESSION = {
   id: 'chat',
@@ -244,5 +250,69 @@ describe('the summary panel over persisted To Do state', () => {
     expect(
       within(screen.getByRole('list', { name: 'To Do tasks' })).getAllByRole('listitem')
     ).toHaveLength(4);
+  });
+
+  // The path the planning gate makes the usual one: the model's FIRST action on
+  // a multi-step request is a direct `todo__todo_write`, and the list has to
+  // appear the moment that call is acknowledged — then tick as updates land.
+  it('shows a checklist the moment a direct todo_write lands, then ticks it off', async () => {
+    mocks.getSession.mockResolvedValue({ data: NO_TASK_SESSION });
+    const { rerender } = render(<SummaryHarness session={undefined} messages={[]} />);
+    await waitFor(() => expect(mocks.getSession).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('region', { name: 'To Do progress' })).not.toBeInTheDocument();
+
+    const direct = (id: string, name: string): Message[] =>
+      [
+        {
+          role: 'assistant',
+          created: 0,
+          metadata: { agentVisible: true, userVisible: true },
+          content: [
+            { type: 'toolRequest', id, toolCall: { status: 'success', value: { name } } },
+            {
+              type: 'toolResponse',
+              id,
+              toolResult: { status: 'success', value: { content: [], isError: false } },
+            },
+          ],
+        },
+      ] as Message[];
+
+    const planned = {
+      id: 'chat',
+      extension_data: {
+        'todo.v1': {
+          items: [
+            { id: '1', text: 'create a temp dir', status: 'pending' },
+            { id: '2', text: 'write hello.txt', status: 'pending' },
+          ],
+        },
+      },
+    } as unknown as Session;
+    mocks.getSession.mockResolvedValue({ data: planned });
+    const afterPlan = direct('plan', 'todo__todo_write');
+    rerender(<SummaryHarness session={undefined} messages={afterPlan} />);
+    await waitFor(() => expect(screen.getByText('0 of 2 complete')).toBeInTheDocument());
+
+    const ticked = {
+      id: 'chat',
+      extension_data: {
+        'todo.v1': {
+          items: [
+            { id: '1', text: 'create a temp dir', status: 'completed' },
+            { id: '2', text: 'write hello.txt', status: 'pending' },
+          ],
+        },
+      },
+    } as unknown as Session;
+    mocks.getSession.mockResolvedValue({ data: ticked });
+    rerender(
+      <SummaryHarness
+        session={undefined}
+        messages={[...afterPlan, ...direct('tick-1', 'todo__todo_update')]}
+      />
+    );
+    await waitFor(() => expect(screen.getByText('1 of 2 complete')).toBeInTheDocument());
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1');
   });
 });

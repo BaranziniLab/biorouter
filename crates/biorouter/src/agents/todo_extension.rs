@@ -15,6 +15,30 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "todo";
 
+/// The Todo tools as the model calls them: the extension key, `__`, the tool.
+///
+/// Spelled out rather than matched by a `todo__` prefix, because the prefix is
+/// not this builtin's to own: a user who disables the capability and installs
+/// an MCP server keyed `todo` would otherwise inherit every exemption these
+/// names carry. `the_todo_tool_names_are_the_tools_this_extension_lists` pins
+/// the list to [`TodoClient::get_tools`], so a sixth tool cannot ship unnamed.
+pub const TODO_TOOL_NAMES: [&str; 5] = [
+    "todo__todo_write",
+    "todo__todo_add",
+    "todo__todo_expand",
+    "todo__todo_update",
+    "todo__plan_write",
+];
+
+/// The tool that seeds a checklist, and the one the planning gate points a
+/// multi-step turn at (`agents::planning_gate`).
+pub const TODO_WRITE_TOOL_NAME: &str = "todo__todo_write";
+
+/// Is `tool_name` one of this capability's tools, as the model calls it?
+pub fn is_todo_tool_name(tool_name: &str) -> bool {
+    TODO_TOOL_NAMES.contains(&tool_name)
+}
+
 /// Default cap on the number of items a checklist may hold (per session).
 const DEFAULT_MAX_ITEMS: usize = 200;
 
@@ -726,9 +750,12 @@ impl McpClientTrait for TodoClient {
             .await
             .ok()?;
 
-        // Only the live plan/task state belongs here; the behavioral rule (plan
-        // up front, keep a todo list) lives in system.md so it holds even
-        // without this extension. See BR-4 / BR-60.
+        // Only the live plan/task state belongs here. The behavioural rule
+        // lives in two places, neither of them this extension: system.md
+        // states it, so it holds even without this extension (BR-4 / BR-60),
+        // and the planning gate (`agents::planning_gate`) enforces it for a
+        // multi-step turn — adding its own "write the checklist first" line to
+        // the same MOIM block while this one has nothing to render.
         let state = extension_data::TodoState::load(&metadata.extension_data)?;
         if state.is_empty() {
             return None;
@@ -776,6 +803,28 @@ mod tests {
             .filter_map(|content| content.as_text().map(|text| text.text.clone()))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// `TODO_TOOL_NAMES` carries exemptions (the Code Execution filter, the
+    /// planning gate), so it must be exactly this extension's tools under the
+    /// key the manager gives them — no more, no fewer.
+    #[test]
+    fn the_todo_tool_names_are_the_tools_this_extension_lists() {
+        let key = crate::config::extensions::name_to_key(EXTENSION_NAME);
+        let mut listed: Vec<String> = TodoClient::get_tools()
+            .iter()
+            .map(|tool| format!("{key}__{}", tool.name))
+            .collect();
+        listed.sort();
+        let mut named: Vec<String> = TODO_TOOL_NAMES.iter().map(|n| n.to_string()).collect();
+        named.sort();
+        assert_eq!(listed, named);
+        assert!(is_todo_tool_name(TODO_WRITE_TOOL_NAME));
+        assert!(
+            !is_todo_tool_name("todo_write"),
+            "only the name the model calls"
+        );
+        assert!(!is_todo_tool_name("todo__something_else"));
     }
 
     #[tokio::test]

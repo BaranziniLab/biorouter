@@ -144,6 +144,16 @@ pub(crate) fn denied_response_text(
         {
             result.reason.clone()
         }
+        // The planning gate: nobody declined, and the reason IS the instruction
+        // — write the checklist, then repeat the call. `DECLINED_RESPONSE` here
+        // would answer the redirect with "the user has declined", which is both
+        // false and unactionable, and would silently remove the one behaviour
+        // the gate exists to deliver.
+        Some(result)
+            if result.inspector_name == crate::agents::planning_gate::PLANNING_GATE_NAME =>
+        {
+            result.reason.clone()
+        }
         _ => DECLINED_RESPONSE.to_string(),
     }
 }

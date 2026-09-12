@@ -109,16 +109,18 @@ const EXECUTED_CALLS_META_KEY = 'biorouter/tool-calls';
 /**
  * How many acknowledged checklist mutations a tool result ran as SUB-calls.
  *
- * `todo__*` is NOT exempt from `reply_parts::survives_code_execution_filter`
- * (reply_parts.rs:206-219, applied at :286), and `code_execution` is
- * `default_enabled: true` — so in a default chat the model cannot call
- * `todo__todo_write` directly at all. It reaches it only from a script, and the
- * transcript therefore carries ZERO top-level `todo__*` requests. A revision
- * derived from top-level requests alone is then a constant for the whole
- * session: the effect never re-runs and the panel is frozen at open time.
- * Reopening flips `open`, which IS a dep, so it shows the truth again — which
- * is exactly the reported symptom.
+ * Both channels are live, so both are read. Since 2026-09-11 the five
+ * `todo__*` tools are exempt from `reply_parts::survives_code_execution_filter`
+ * (`todo_extension::TODO_TOOL_NAMES`) and the planning gate points a multi-step
+ * turn at `todo__todo_write` by name, so the common case is now an ordinary
+ * top-level request, counted in `todoMutationRevision` below. But a script can
+ * still import the same tools, and a checklist it writes leaves NO top-level
+ * `todo__*` request in the transcript — only this meta.
  *
+ * That second channel is why this function exists. Before the exemption it was
+ * the ONLY one in a default chat (`code_execution` is `default_enabled: true`),
+ * and a revision derived from top-level requests alone stayed constant for the
+ * whole session: the effect never re-ran and the panel was frozen at open time.
  * Measured on the drive session `20260901_1`: top-level requests were
  * `code_execution` x39 and `workspace` x12 and nothing else, while 15 separate
  * `execute_code` runs carried `todo__*` sub-calls.

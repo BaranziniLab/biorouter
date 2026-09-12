@@ -42,6 +42,9 @@ pub mod post_edit_diagnostics;
 // Stage 0 of the tool-call latency work: opt-in per-phase timing behind
 // `BIOROUTER_PHASE_TIMING=1`, free when off.
 pub mod phase_timing;
+// Native checklist control for a multi-step turn: the reminder, the
+// once-per-turn redirect to `todo_write`, and the bounded stop check.
+pub(crate) mod planning_gate;
 pub mod prompt_manager;
 mod recurring;
 // BR-12: `pub(crate)` so `context_mgmt::run_eager_compaction` can reuse

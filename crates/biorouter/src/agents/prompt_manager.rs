@@ -125,6 +125,9 @@ struct SystemPromptContext {
     is_autonomous: bool,
     enable_subagents: bool,
     code_execution_mode: bool,
+    /// The planning gate runs for this conversation (`agents::planning_gate`):
+    /// the "Working on Tasks" section then states exactly what it enforces.
+    checklist_enforcement: bool,
 }
 
 pub struct SystemPromptBuilder<'a, M> {
@@ -135,6 +138,7 @@ pub struct SystemPromptBuilder<'a, M> {
     subagents_enabled: bool,
     hints: Option<String>,
     code_execution_mode: bool,
+    checklist_enforcement: bool,
     variant: PromptVariant,
 }
 
@@ -164,6 +168,14 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
 
     pub fn with_code_execution_mode(mut self, enabled: bool) -> Self {
         self.code_execution_mode = enabled;
+        self
+    }
+
+    /// Whether the planning gate enforces the checklist for this turn. Pass
+    /// `planning_gate::enforcement_applies`, never a value of your own: the
+    /// clause this renders is a description of that gate.
+    pub fn with_checklist_enforcement(mut self, enabled: bool) -> Self {
+        self.checklist_enforcement = enabled;
         self
     }
 
@@ -207,19 +219,21 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             subagents_enabled,
             hints,
             code_execution_mode,
+            checklist_enforcement,
             variant,
         } = self;
         let (extensions_info, hints) =
             prepare_injected_context(extensions_info, frontend_instructions, hints);
         let config = Config::global();
         let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
-        let context = build_system_prompt_context(
+        let mut context = build_system_prompt_context(
             manager,
             extensions_info,
             biorouter_mode,
             subagents_enabled,
             code_execution_mode,
         );
+        context.checklist_enforcement = checklist_enforcement;
         let base_prompt = render_base_prompt(manager, variant, &context);
         append_system_prompt_extras(manager, base_prompt, hints, biorouter_mode)
     }
@@ -352,6 +366,7 @@ fn build_system_prompt_context(
         is_autonomous: biorouter_mode == BioRouterMode::Auto,
         enable_subagents: subagents_enabled,
         code_execution_mode,
+        checklist_enforcement: false,
     }
 }
 
@@ -481,6 +496,7 @@ impl PromptManager {
             subagents_enabled: false,
             hints: None,
             code_execution_mode: false,
+            checklist_enforcement: false,
             variant: PromptVariant::Default,
         }
     }
@@ -922,6 +938,26 @@ mod tests {
 
         let resources_only = build(&["list_resources", "read_resource"]);
         assert!(resources_only.contains("Extension Manager operations are not available"));
+    }
+
+    /// The checklist clause describes the planning gate, so it renders exactly
+    /// when the gate runs (`planning_gate::enforcement_applies`) and never
+    /// otherwise — a prompt promising a refusal the turn does not make is the
+    /// defect this flag exists to prevent.
+    #[test]
+    fn the_checklist_clause_renders_only_while_the_planning_gate_runs() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        let off = manager.builder().build();
+        assert!(!off.contains("Biorouter enforces the checklist"), "{off}");
+
+        let on = manager.builder().with_checklist_enforcement(true).build();
+        assert!(on.contains("Biorouter enforces the checklist"), "{on}");
+        assert!(on.contains("your first action is `todo__todo_write`"));
+        assert!(on.contains("That refusal happens once per turn"));
+        assert!(on.contains("names each unfinished item by its `#N` id"));
+        // It extends the planning bullet rather than replacing it.
+        assert!(on.contains("plan before acting"));
     }
 
     /// Contract test for the agentic-behavior clauses added to `system.md`.
