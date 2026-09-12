@@ -332,6 +332,25 @@
       "privacy": "public"
     },
     {
+      "id": "folklore-clinical-variant-interpretation-mcp",
+      "name": "Folklore Clinical Variant Interpretation MCP",
+      "organization": "Helena Bioinformatics",
+      "version": "v1.4.0",
+      "description": "Classifies and interprets one supported public GRCh38 germline SNV or simple indel under ACMG/AMP, with structured evidence, provenance, variant-linked literature, publication details, and semantic biomedical literature search. Read-only; accepts no patient or private case data. Results require qualified professional review and are not a diagnosis or treatment recommendation.",
+      "tags": [
+        "MCP",
+        "Variants",
+        "Literature",
+        "ACMG/AMP",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/helena-bioinformatics/folklore-mcp",
+      "download": "https://github.com/helena-bioinformatics/folklore-mcp/releases/download/folklore-biorouter-v1.4.0/folklore-clinical-variant-interpretation-mcp.brxt",
+      "filename": "folklore-clinical-variant-interpretation-mcp.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
       "id": "clinicalvariantagent",
       "name": "ClinicalVariantAgent",
       "organization": "BaranziniLab · BRXT",
