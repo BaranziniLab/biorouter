@@ -1208,16 +1208,53 @@ pub(crate) fn next_attempt(attempts: u8) -> Option<Delivery> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CtrlCAction {
     Detach,
-    /// A `/reply` socket is open: exiting now cancels the turn (`stream_event`
-    /// trips the turn's cancellation token when the client hangs up).
-    WarnWouldCancel,
+    /// A `/reply` socket this attach opened is still streaming: leaving hands
+    /// the turn to the daemon with nobody watching it.
+    ///
+    /// ⚠ It does **not** cancel the turn, and this warned that it did until
+    /// 2026-09-12. `stream_event` in `routes/reply.rs` "cannot fail and cannot
+    /// cancel anything, and that is the point": a send failure ends that one
+    /// HTTP response and nothing else, and a turn with zero observers is an
+    /// ordinary state. What leaving does cost is the reaper's clock — see
+    /// [`ReplyWindow`].
+    WarnTurnGoesUnwatched,
     ForceExit,
+}
+
+/// The first ctrl-c's heads-up, when a turn this attach started is streaming.
+///
+/// ⚠ It said "leaving now CANCELS it" until 2026-09-12, and that had stopped
+/// being true: since the live-turn-stream work a `/reply` connection is only the
+/// turn's first observer and `stream_event` "cannot fail and cannot cancel
+/// anything" (`routes/reply.rs`). What leaving really costs is the reaper's
+/// clock, so that is what this says — in the same words `session send --no-wait`
+/// already used for the same daemon behaviour, including that `session watch`
+/// is not an attachment to the reply stream.
+///
+/// A function, not an inline `eprintln!`, so the claim can be asserted: the
+/// stale one sat in the middle of an async `select!` loop where no test could
+/// reach it.
+pub(crate) fn leaving_warning(session_id: &str) -> String {
+    format!(
+        "\n⚠ a turn you started from here is still streaming. Leaving does NOT stop it: it keeps \
+         running in the daemon, which ends a turn only after five minutes with nothing attached \
+         to its reply stream (`session watch` does not count). Press ctrl-c again to leave, or \
+         `biorouter session cancel {session_id}` to stop it."
+    )
+}
+
+/// What the second ctrl-c prints as it leaves.
+pub(crate) fn leaving_notice(session_id: &str) -> String {
+    format!(
+        "\nleaving. The turn you started keeps running; attach again to follow it, or \
+         `biorouter session cancel {session_id}` to stop it."
+    )
 }
 
 pub(crate) fn ctrl_c_action(reply_socket_open: bool, already_warned: bool) -> CtrlCAction {
     match (reply_socket_open, already_warned) {
         (false, _) => CtrlCAction::Detach,
-        (true, false) => CtrlCAction::WarnWouldCancel,
+        (true, false) => CtrlCAction::WarnTurnGoesUnwatched,
         (true, true) => CtrlCAction::ForceExit,
     }
 }
@@ -1301,10 +1338,18 @@ pub(crate) enum Delivered {
 /// Whether a `/reply` socket is open right now, and whether ctrl-c has already
 /// warned about it. Shared between the attach loop and its delivery worker.
 ///
+/// **What the open window means.** Not that leaving would cancel the turn — it
+/// would not, and this file used to say otherwise throughout. It means this
+/// attach is the turn's only observer, so leaving starts the daemon's orphan
+/// reaper clock (`turn_stream::DEFAULT_ORPHAN_TIMEOUT`, five minutes with
+/// nothing attached to the turn's reply stream). The turn runs on until someone
+/// attaches again or that runs out. Worth one heads-up before a turn the user
+/// started here is left to it; not worth refusing to leave over.
+///
 /// **Counted, not a flag.** A `/reply` socket outlives the `deliver` call that
 /// opened it, so two can be streaming at once. A flag would let the first to
-/// finish declare ctrl-c harmless while the second was still streaming, and
-/// ctrl-c would then cancel that turn silently.
+/// finish declare ctrl-c uneventful while the second was still streaming, and
+/// the second turn would be left unwatched with nothing said.
 ///
 /// **One critical section, not two atomics.** Reading "open" and "warned"
 /// separately and then latching the warning with no re-check let a delivery
@@ -1354,7 +1399,7 @@ impl ReplyWindow {
     fn on_ctrl_c(&self) -> CtrlCAction {
         let mut state = self.lock();
         let action = ctrl_c_action(state.open > 0, state.warned);
-        if action == CtrlCAction::WarnWouldCancel {
+        if action == CtrlCAction::WarnTurnGoesUnwatched {
             state.warned = true;
         }
         action
@@ -1391,9 +1436,13 @@ async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Resu
 ///
 /// * Printing would double every line — the observer stream is already
 ///   rendering this turn.
-/// * Abandoning the socket would CANCEL the turn: `/reply`'s `stream_event`
-///   trips the turn's cancellation token the moment its `tx.send` fails. So the
-///   body must be consumed and discarded, not dropped.
+/// * Dropping the socket would leave the turn UNOBSERVED: `/reply`'s response is
+///   "simply the turn's FIRST observer" (`routes/reply.rs`), and when the last
+///   observer goes the daemon's orphan reaper starts its five-minute clock. It
+///   no longer *cancels* the turn — `stream_event` "cannot fail and cannot
+///   cancel anything" since the live-turn-stream work — but a turn nobody is
+///   watching is still on borrowed time. So the body is consumed and discarded,
+///   not dropped.
 /// * But *waiting* for it here would block the delivery worker for the whole
 ///   turn, and a mid-turn correction the user typed would then sit in a local
 ///   queue and go out minutes later as a brand new turn — adjudicated by the
@@ -1401,8 +1450,8 @@ async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Resu
 ///   including the ones it started itself, so the wait has to go.
 ///
 /// Hence: the acceptance comes from the **status line** over a channel, and the
-/// holder task owns the socket (and the `ReplyWindow`, so ctrl-c still knows an
-/// exit would cancel a turn) until the terminal frame.
+/// holder task owns the socket (and the `ReplyWindow`, so ctrl-c still knows a
+/// turn started from here is streaming) until the terminal frame.
 async fn post_reply_quiet(
     session_id: &str,
     text: &str,
@@ -1830,15 +1879,11 @@ pub async fn handle_session_attach(
                         );
                         return Ok(());
                     }
-                    CtrlCAction::WarnWouldCancel => {
-                        eprintln!(
-                            "\n⚠ a turn you started from here is still streaming, and leaving \
-                             now CANCELS it. Press ctrl-c again to leave anyway, or wait for it \
-                             to finish."
-                        );
+                    CtrlCAction::WarnTurnGoesUnwatched => {
+                        eprintln!("{}", leaving_warning(&session_id));
                     }
                     CtrlCAction::ForceExit => {
-                        eprintln!("\nleaving: the turn you started is being cancelled.");
+                        eprintln!("{}", leaving_notice(&session_id));
                         return Ok(());
                     }
                 }
@@ -2948,11 +2993,57 @@ mod tests {
         assert_eq!(*attempted.borrow(), 1, "the ladder stopped at the failure");
     }
 
+    /// The measured defect (2026-09-12): attach warned that leaving would cancel
+    /// the turn, and the daemon had stopped doing that. `stream_event` in
+    /// `routes/reply.rs` "cannot fail and cannot cancel anything"; a `/reply`
+    /// connection's "departure means nothing to it"; only the orphan reaper ends
+    /// a turn for want of an audience, after five minutes. A warning that
+    /// overstates the cost teaches the user to distrust the ones that do not.
+    ///
+    /// Fails the shipped sentence on the first assertion: it read "leaving now
+    /// CANCELS it".
     #[test]
-    fn ctrl_c_never_silently_cancels_a_turn_the_attach_started() {
+    fn leaving_is_described_as_what_it_does_rather_than_as_a_cancellation() {
+        let warning = leaving_warning("20260912_1");
+        assert!(
+            !warning.to_lowercase().contains("cancels it"),
+            "leaving does not cancel the turn: {warning}"
+        );
+        assert!(warning.contains("does NOT stop it"), "{warning}");
+        assert!(
+            warning.contains("five minutes"),
+            "the real cost is the orphan reaper's clock: {warning}"
+        );
+        assert!(
+            warning.contains("`session watch` does not count"),
+            "the same caveat `session send --no-wait` gives: {warning}"
+        );
+        assert!(
+            warning.contains("biorouter session cancel 20260912_1"),
+            "a user who does want it stopped needs the command: {warning}"
+        );
+
+        // And the line printed as it leaves must not claim a cancellation it did
+        // not perform either. It may *offer* `session cancel`, which is the
+        // command a user who does want it stopped needs — what it must not say
+        // is that leaving cancelled anything.
+        let notice = leaving_notice("20260912_1");
+        assert!(!notice.contains("being cancelled"), "{notice}");
+        assert!(notice.contains("keeps running"), "{notice}");
+        assert!(
+            notice.contains("biorouter session cancel 20260912_1"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_never_silently_leaves_a_turn_the_attach_started() {
         assert_eq!(ctrl_c_action(false, false), CtrlCAction::Detach);
         assert_eq!(ctrl_c_action(false, true), CtrlCAction::Detach);
-        assert_eq!(ctrl_c_action(true, false), CtrlCAction::WarnWouldCancel);
+        assert_eq!(
+            ctrl_c_action(true, false),
+            CtrlCAction::WarnTurnGoesUnwatched
+        );
         assert_eq!(ctrl_c_action(true, true), CtrlCAction::ForceExit);
     }
 
@@ -3034,15 +3125,15 @@ mod tests {
     /// and then latching the warning with no re-check let a delivery finish in
     /// between, leaving `warned` set on a window that had already shut. The next
     /// delivery's FIRST ctrl-c then read `(open, warned)` and force-exited —
-    /// cancelling a turn with no warning at all, which is exactly what closing
-    /// the window resets the warning to prevent.
+    /// leaving a turn unwatched with no warning at all, which is exactly what
+    /// closing the window resets the warning to prevent.
     #[test]
     fn closing_the_window_re_arms_the_warning_for_the_next_turn() {
         let window = ReplyWindow::default();
         assert_eq!(window.on_ctrl_c(), CtrlCAction::Detach, "nothing to lose");
 
         window.open();
-        assert_eq!(window.on_ctrl_c(), CtrlCAction::WarnWouldCancel);
+        assert_eq!(window.on_ctrl_c(), CtrlCAction::WarnTurnGoesUnwatched);
         assert_eq!(window.on_ctrl_c(), CtrlCAction::ForceExit);
         window.close();
 
@@ -3054,15 +3145,15 @@ mod tests {
         window.open();
         assert_eq!(
             window.on_ctrl_c(),
-            CtrlCAction::WarnWouldCancel,
+            CtrlCAction::WarnTurnGoesUnwatched,
             "a warning spent on an earlier turn must not arm this one"
         );
     }
 
     /// A `/reply` socket outlives the `deliver` call that opened it, so two can
     /// be streaming at once. The window is COUNTED for that reason: a flag would
-    /// let the first holder to finish declare ctrl-c harmless while the second
-    /// was still streaming, and ctrl-c would then cancel that turn silently.
+    /// let the first holder to finish declare ctrl-c uneventful while the second
+    /// was still streaming, and that turn would be left unwatched in silence.
     #[test]
     fn the_reply_window_stays_open_until_the_last_socket_closes() {
         let window = ReplyWindow::default();
@@ -3071,7 +3162,7 @@ mod tests {
         window.close();
         assert_eq!(
             window.on_ctrl_c(),
-            CtrlCAction::WarnWouldCancel,
+            CtrlCAction::WarnTurnGoesUnwatched,
             "one socket is still streaming"
         );
         window.close();
