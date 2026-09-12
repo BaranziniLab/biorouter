@@ -134,6 +134,40 @@ pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "claude-fable-5-1";
 
 pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/headless";
 
+/// The sentence to append to a failed turn when the model name is the likely
+/// cause. Codex's twin, `codex::unknown_model_hint`, and written to the same
+/// rules; read that one for the reasoning about hinting on the failure path
+/// rather than refusing before the call.
+///
+/// The case for it is *stronger* here than next door, and the reason is recorded
+/// at length in `known_models` above: `claude --model X -p` **accepts an unknown
+/// id and merely warns** —
+///
+///   "X" is not a model this version of Claude Code recognizes, so auto-compact
+///   will keep this session within 200k tokens
+///
+/// — so a typo neither fails loudly nor gets a pointer. When the turn does then
+/// end badly, nothing in the message names the model, and the frame above it
+/// invites a retry that cannot come true. Codex got this hint; the structurally
+/// identical failures here did not.
+///
+/// ⚠ **Only ever additive to text the vendor already produced.** It never
+/// replaces a real explanation, and it is empty for a listed model, so a genuine
+/// outage on a known id reads exactly as it did before.
+fn unknown_model_hint(model: &str) -> String {
+    let known = known_models();
+    if known.iter().any(|m| m.name == model) {
+        return String::new();
+    }
+    let names: Vec<&str> = known.iter().map(|m| m.name.as_str()).collect();
+    format!(
+        " — and `{model}` is not one of the models this build knows Claude Code to \
+         offer ({}). `claude` accepts an unrecognized name with only a warning, so \
+         a typo fails here rather than at the point it was made",
+        names.join(", ")
+    )
+}
+
 /// Models advertised in the picker, with each id's measured context window.
 ///
 /// `ProviderMetadata::with_models` is used rather than `::new` because `::new`
@@ -609,6 +643,7 @@ impl ClaudeCodeProvider {
                 .or_else(|| Some(stderr.trim().to_string()))
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "`claude` reported an error".into());
+            let detail = format!("{detail}{}", unknown_model_hint(model));
             let category = result
                 .get("subtype")
                 .and_then(Value::as_str)
@@ -622,9 +657,10 @@ impl ClaudeCodeProvider {
             .unwrap_or_default()
             .to_string();
         if text.trim().is_empty() {
-            return Err(ProviderError::RequestFailed(
-                "`claude` returned an empty response".into(),
-            ));
+            return Err(ProviderError::RequestFailed(format!(
+                "`claude` returned an empty response{}",
+                unknown_model_hint(model)
+            )));
         }
 
         let usage = parse_usage(result.get("usage"));
@@ -1267,7 +1303,7 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
 
     // The authoritative usage (and any failure) goes last, so it is the
     // snapshot the agent keeps.
-    let terminal = resolve_terminal(terminal, stderr_task).await;
+    let terminal = resolve_terminal(terminal, stderr_task, &model_name).await;
     let _ = out_tx.send(terminal.map(|usage| (None, Some(usage), None)));
 }
 
@@ -1279,6 +1315,7 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
 async fn resolve_terminal(
     terminal: Option<Result<ProviderUsage, ProviderError>>,
     stderr_task: tokio::task::JoinHandle<String>,
+    model: &str,
 ) -> Result<ProviderUsage, ProviderError> {
     match terminal {
         Some(terminal) => terminal,
@@ -1288,11 +1325,17 @@ async fn resolve_terminal(
         None => {
             let detail = stderr_task.await.unwrap_or_default();
             let detail = detail.trim();
-            Err(ProviderError::RequestFailed(if detail.is_empty() {
+            let base = if detail.is_empty() {
                 "`claude` produced no result".to_string()
             } else {
                 format!("`claude` produced no result: {detail}")
-            }))
+            };
+            // The most anonymous failure this provider has — a child that said
+            // nothing at all — so it is the one that most needs the model named.
+            Err(ProviderError::RequestFailed(format!(
+                "{base}{}",
+                unknown_model_hint(model)
+            )))
         }
     }
 }
@@ -2131,6 +2174,77 @@ mod tests {
     fn absent_usage_is_not_invented() {
         assert_eq!(parse_usage(None).input_tokens, None);
         assert_eq!(parse_usage(None).total_tokens, None);
+    }
+
+    /// Codex's `a_failed_turn_names_an_unknown_model_and_the_ones_that_exist`,
+    /// for the provider that needs it more. `claude` accepts an unrecognized
+    /// `--model` with only a warning, so a typo produces a turn that fails with
+    /// nothing in it naming the model — and this provider is the only thing in
+    /// the stack that knows which names it believes Claude Code offers.
+    #[test]
+    fn a_failed_turn_names_an_unknown_model_and_the_ones_that_exist() {
+        let hint = unknown_model_hint("claude-opus-99");
+        assert!(
+            hint.contains("claude-opus-99"),
+            "the hint must name the model that was asked for: {hint}"
+        );
+        // ⚠ Assert against the parenthesised catalog only, never the whole hint.
+        // The hint embeds the id that was asked for, and a plausible typo shares
+        // a prefix with a real id — so a bare `hint.contains("claude-opus")`
+        // passes on a hint that lists no models at all. Codex's twin carries the
+        // same warning for the same reason.
+        let catalog = hint
+            .split_once('(')
+            .unwrap_or_else(|| panic!("the hint must carry a parenthesised catalog: {hint}"))
+            .1;
+        for expected in known_models().iter().map(|m| m.name.clone()) {
+            assert!(
+                catalog.contains(&expected),
+                "the fix has to be in the message: {expected} is missing from {hint}"
+            );
+        }
+    }
+
+    /// ⚠ And it must stay SILENT for a model that is known, or every unrelated
+    /// failure — a rate limit, a dropped connection — gains a paragraph about
+    /// model names and sends the reader after the wrong thing.
+    #[test]
+    fn a_known_model_adds_nothing_to_a_failure() {
+        for m in known_models() {
+            assert_eq!(
+                unknown_model_hint(&m.name),
+                "",
+                "{} is a declared model and must not be second-guessed",
+                m.name
+            );
+        }
+    }
+
+    /// The hint reaches the message a user actually sees. An empty answer from
+    /// the child is the most anonymous failure this provider has, and it named
+    /// nothing at all before.
+    #[test]
+    fn an_empty_answer_on_an_unknown_model_says_which_model() {
+        let lines = vec![
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"","usage":{}}"#
+                .to_string(),
+        ];
+        let error = provider()
+            .parse_result_object("claude-opus-99", &lines, "", exit_ok())
+            .expect_err("an empty answer is a failure");
+        let text = error.to_string();
+        assert!(text.contains("claude-opus-99"), "{text}");
+        assert!(text.contains("only a warning"), "{text}");
+
+        // And a listed model's identical failure is untouched.
+        let known = provider()
+            .parse_result_object(CLAUDE_CODE_DEFAULT_MODEL, &lines, "", exit_ok())
+            .expect_err("an empty answer is a failure")
+            .to_string();
+        assert!(
+            known.ends_with("`claude` returned an empty response"),
+            "a known model's failure must read as it always did: {known}"
+        );
     }
 
     /// A real captured `result` frame parses, and the usage row is attributed to

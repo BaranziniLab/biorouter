@@ -598,13 +598,31 @@ if (!existsSync(PLAYWRIGHT)) {
     );
 
     const all = await search(page, '');
-    for (const query of ['apache', 'Apache-2.0', 'APACHE']) {
+    for (const query of ['apache', 'APACHE']) {
       assert.deepEqual(
         await search(page, query),
         [],
         `"${query}" is a licence, not a capability — it matched cards before this fix`
       );
     }
+
+    // `Apache-2.0` is the same licence with a version attached, and the shelves
+    // are token-matched (#242/#277), so it asks for `apache` OR `2` OR `0`. The
+    // licence word is gone from every field; the two digits are not, and must
+    // not be — `2` and `0` are ordinary words that a description is free to
+    // contain. So the assertion is not "nothing matches", which would be true
+    // only of a whole-phrase matcher: it is that **the licence explains none of
+    // it**. Whatever survives must be exactly what the digits alone find.
+    //
+    // Measured 2026-09-12: one card, `ucsfomopagent`, whose description reads
+    // "v0.2.0 adds built-in OMOP/SQL-Server context". `catalog_search.rs` and
+    // the desktop port answer this query with the same one entry, which is the
+    // parity this shelf is held to.
+    assert.deepEqual(
+      await search(page, 'Apache-2.0'),
+      await search(page, '2 0'),
+      '"Apache-2.0" must find no more than its two digits do — the licence itself must explain nothing'
+    );
 
     // And nothing else moved: a real tag, a name, a data source, and browsing.
     assert.deepEqual(await search(page, ''), all);

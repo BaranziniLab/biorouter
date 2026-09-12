@@ -136,6 +136,26 @@ pub(crate) fn is_loopback_host(url: &str) -> bool {
     }
 }
 
+/// The phrase a provider uses when a credential was **never set**, as distinct
+/// from "the credential store refused to hand it over". The two need opposite
+/// responses from the user — add the key, versus do NOT re-enter it and answer
+/// the Keychain prompt — and `versa_bedrock::from_env` carries a comment saying
+/// exactly that about its own two arms.
+///
+/// ⚠ **It exists so the wording has ONE spelling.** The `anyhow::Error` that
+/// leaves `from_env` has already discarded the `ConfigError` behind it, so a
+/// caller further out — `biorouter-cli`'s `keyring_advice`, which decides whether
+/// to print three lines about the system keychain — has nothing but the text to
+/// go on. A literal repeated at both ends is a literal that drifts at one end;
+/// the producers format with this constant and the consumer matches on it.
+pub const CREDENTIAL_NEVER_SET: &str = "is not configured";
+
+/// Whether `text` is a provider saying a credential was never set. See
+/// [`CREDENTIAL_NEVER_SET`] for why this is a wording check and not a type one.
+pub fn says_credential_never_set(text: &str) -> bool {
+    text.contains(CREDENTIAL_NEVER_SET)
+}
+
 /// The tier of a provider that reaches the UCSF gateway and nothing else.
 ///
 /// Demotion only, never promotion: each Versa provider's endpoint is

@@ -129,11 +129,42 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
         "VERSA_BEDROCK_REGION",
         "SigV4 signing region; the endpoint, not the region, decides where a request goes",
     ),
-    ("BEDROCK_MAX_RETRIES", "retry policy"),
-    ("BEDROCK_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
-    ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
-    ("BEDROCK_MAX_RETRY_INTERVAL_MS", "retry policy"),
-    ("BEDROCK_OPERATION_TIMEOUT_SECS", "transport timeout"),
+    // ⚠ These five are the `BEDROCK_*` keys the 2026-09-11 namespacing did NOT
+    //   split, and the fact that they are still SHARED deserves saying rather
+    //   than being inferred from their absence above. `versa_bedrock.rs` (Private)
+    //   and `bedrock.rs` / `formats/bedrock.rs` (Public) all read the same five
+    //   names, so one write tunes both cards at once. That is the exact shape of
+    //   the cross-card bleed `VERSA_BEDROCK_ENDPOINT` and `VERSA_BEDROCK_REGION`
+    //   were namespaced to end — so the reason these were left shared has to be
+    //   a positive one, not an oversight.
+    //
+    //   It is that they reach nothing a tier depends on. All four retry keys are
+    //   read in one place, `load_retry_config`, and go into a `RetryConfig`;
+    //   `BEDROCK_OPERATION_TIMEOUT_SECS` is read in `load_operation_timeout_secs`
+    //   and becomes a deadline. None of them contributes to the resolved endpoint
+    //   `tier()` asks about, and none of them takes part in signing or
+    //   credentials. They decide how patiently a request is retried and how long
+    //   it may take — not where it goes or who it claims to be.
+    (
+        "BEDROCK_MAX_RETRIES",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_INITIAL_RETRY_INTERVAL_MS",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_BACKOFF_MULTIPLIER",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_MAX_RETRY_INTERVAL_MS",
+        "retry policy, shared with the public card",
+    ),
+    (
+        "BEDROCK_OPERATION_TIMEOUT_SECS",
+        "transport timeout, shared with the public card",
+    ),
 ];
 
 /// The files whose `get_param` reads the scan covers: every provider file Task
