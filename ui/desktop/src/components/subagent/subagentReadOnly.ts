@@ -9,12 +9,21 @@ import { isBrowserSurface } from '../../utils/surface';
  * `biorouter serve` holds no user-action key, so it cannot prove of any request
  * that a person made it. A subagent's chat is where that proof decides
  * everything — a message there is recorded as a person intervening, and the
- * parent is told so — and the daemon refuses every write to it from a caller
+ * parent is told so — and the daemon refuses these writes to it from a caller
  * that cannot prove a person acted: `POST /reply`; `POST /agent/cancel`,
  * `POST /interrupt` and the two continuation routes (**SD-11**);
- * `POST /agent/stop` and the extension routes; and `POST /agent/resume`
- * itself. On a keyless daemon that is every caller, always. Those refusals are
- * the design and stay.
+ * `POST /agent/stop` and the extension routes; `POST
+ * /agent/update_working_dir`; and `POST /agent/resume` itself. On a keyless
+ * daemon that is every caller, always. Those refusals are the design and stay.
+ *
+ * ⚠ **A LIST, not "every write".** This comment claimed the latter for a day
+ * and `/agent/update_working_dir` was the counterexample — it consulted only
+ * the privacy reach gate, which is deliberately inert for a public session, and
+ * a child's chat is normally public. It is on the list because it was gated;
+ * several other session-addressing writes still reach a child's row without
+ * asking (`DELETE /sessions/{id}` first among them, since it cancels the
+ * child's turn), and SD-8 in `serve-decisions.md` enumerates them. Do not
+ * restore the universal claim here.
  *
  * **SD-8** adds that a control which can never work here says so before it is
  * touched. So the tab renders this in place of its composer

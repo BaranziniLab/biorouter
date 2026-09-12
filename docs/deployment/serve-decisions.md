@@ -225,10 +225,25 @@ from the advertised roster when no person is reachable.
 
 **A delegated subagent's tab is the same case** (2026-09-11; SD-11 recorded it as open). A
 subagent's chat is where the proof decides everything — a message there is recorded as a person
-intervening, and the parent is told so — and the daemon refuses every write to it from a caller
+intervening, and the parent is told so — and the daemon refuses these writes to it from a caller
 that cannot prove a person acted: `POST /reply`, the four turn-control routes SD-11 admits
-elsewhere, `POST /agent/stop`, the extension routes, and `POST /agent/resume` itself. On a `serve`
-daemon that is every caller, so the tab can do nothing but be read.
+elsewhere, `POST /agent/stop`, the extension routes, `POST /agent/update_working_dir`, and `POST
+/agent/resume` itself. On a `serve` daemon that is every caller, so from the tab's own controls
+there is nothing to do but read.
+
+⚠ **That is an enumeration, and it must not be read as "every write".** It said "every write" for
+one day and was wrong on its own terms: `POST /agent/update_working_dir` — which repoints a chat at
+a directory of the caller's choosing and restarts its agent there — consulted only
+[`session_reach`](../security/privacy-tiers.md), the privacy gate, which is *deliberately inert for
+a public session*, and a delegated child's chat is normally public. It is on the list above because
+it was gated (2026-09-12); the claim is stated as a list because the sweep that found it found
+eight more session-addressing writes that reach a child's row and ask nothing about it — `DELETE
+/sessions/{id}` (which cancels the child's in-flight turn before deleting, so it is a Stop by
+another name), `PUT /sessions/{id}/name`, `PUT /sessions/{id}/user_workflow_values`, `POST
+/sessions/{id}/edit_message`, `POST /sessions/{id}/diverge`, `POST /agent/call_tool` and `POST
+/agent/read_resource`. All predate this record. What SD-8 is about is the tab's own controls; a
+sentence claiming the API surface as a whole is closed would be [#47](https://github.com/BaranziniLab/biorouter/issues/47)'s
+claim to make, and #47 is open.
 
 It could not even be read. The renderer loaded every chat through `/agent/resume`, so a subagent's
 tab rendered *"Could not load this chat"* over the daemon's refusal — including the tab the daemon

@@ -4920,7 +4920,7 @@ export type UpdateWorkingDirErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user; or the named chat is a delegated subagent's, whose working directory only the person at the keyboard may repoint (SD-8)
      */
     403: unknown;
     /**

@@ -2260,7 +2260,9 @@ pub(crate) async fn apply_working_dir_update(
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
                                       the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
-                                      proof it came from the user"),
+                                      proof it came from the user; or the named chat is a delegated \
+                                      subagent's, whose working directory only the person at the \
+                                      keyboard may repoint (SD-8)"),
         (status = 404, description = "Session not found"),
         (
             status = 409,
@@ -2284,6 +2286,46 @@ async fn update_working_dir(
     // request parameter, not a credential. See `routes::session_reach`.
     crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
         .await?;
+
+    // SD-8, and the one write to a subagent's chat this daemon did not refuse.
+    // This route repoints the named chat at a directory of the caller's choosing
+    // and restarts its agent there, which for a delegated child is a change to
+    // the thing the parent is being told about. Every other write to a
+    // subagent's chat already asks for the proof — `/reply` inline,
+    // `/agent/resume` through `read_resume_session`, and provider, extension,
+    // stop and restart through `authorize_agent_control` — and this one did not,
+    // which made the shipped SD-8 claim that "the daemon refuses every write to
+    // it" false.
+    //
+    // ⚠ **`session_reach` above does not cover it, and cannot.** That gate is the
+    // PRIVACY slice and is deliberately inert for a public session; a delegated
+    // subagent's chat is normally public. The two 409s below are not the boundary
+    // either: `try_update_working_dir_if_empty` refuses a chat that has messages
+    // and the turn lock refuses one that is busy, and a just-spawned or queued
+    // child is neither — which is exactly the window in which a subagent's tab
+    // is interesting.
+    //
+    // AFTER the reach gate and BEFORE the turn lock, so the three refusals stay
+    // in the order the rest of this file uses: a chat this caller may not reach
+    // is refused without disclosing that it is a subagent's, and a subagent's is
+    // refused without disclosing whether it is busy.
+    //
+    // Not `authorize_agent_control`, which would call `session_reach` a second
+    // time, and not `read_update_session`, whose read failure is a 500 — this
+    // route documents (and the desktop handles) a 404 for a session that is not
+    // there.
+    let target = state
+        .session_manager()
+        .get_session(&session_id, false)
+        .await
+        .map_err(|error| {
+            error!("Failed to get session before working dir update: {}", error);
+            ErrorResponse {
+                message: format!("Failed to get session: {}", error),
+                status: StatusCode::NOT_FOUND,
+            }
+        })?;
+    refuse_subagent_unless_user(&target, &headers)?;
 
     // Serialize with `/reply`'s per-session turn lock (BR-33) by claiming the
     // turn slot for the whole update + restart. Without it, a first message
@@ -3191,17 +3233,22 @@ mod resume_update_security_tests {
     fn openapi_describes_the_agent_route_failures_clients_must_handle() {
         let schema: serde_json::Value =
             serde_json::from_str(&crate::openapi::generate_schema()).unwrap();
-        for (path, statuses) in [
-            ("/agent/start", &["409"][..]),
-            ("/agent/resume", &["403", "404"][..]),
-            ("/agent/update_from_session", &["403", "500"][..]),
-            ("/agent/restart", &["424"][..]),
+        for (method, path, statuses) in [
+            ("post", "/agent/start", &["409"][..]),
+            ("post", "/agent/resume", &["403", "404"][..]),
+            ("post", "/agent/update_from_session", &["403", "500"][..]),
+            ("post", "/agent/restart", &["424"][..]),
+            // Gated by the SD-8 review. A client that has only ever seen a
+            // 400/404/409 from the working-dir switch now has a 403 to handle,
+            // and the generated TS client is where it has to be visible.
+            ("post", "/agent/update_working_dir", &["403"][..]),
         ] {
-            let responses = &schema["paths"][path]["post"]["responses"];
+            let responses = &schema["paths"][path][method]["responses"];
             for status in statuses {
                 assert!(
                     responses.get(*status).is_some(),
-                    "POST {path} is missing its {status} OpenAPI response"
+                    "{} {path} is missing its {status} OpenAPI response",
+                    method.to_uppercase()
                 );
             }
         }
@@ -3413,6 +3460,13 @@ mod resume_update_security_tests {
             }),
             "/agent/stop" | "/agent/restart" => serde_json::json!({
                 "session_id": session_id,
+            }),
+            // An existing directory, deliberately: a path that does not exist is
+            // rejected with a 400 before the boundary is ever consulted, so a
+            // test written with one passes against an ungated route.
+            "/agent/update_working_dir" => serde_json::json!({
+                "session_id": session_id,
+                "working_dir": std::env::temp_dir().to_string_lossy(),
             }),
             _ => panic!("unexpected route in test: {path}"),
         };
@@ -3659,6 +3713,67 @@ mod resume_update_security_tests {
                     "{path} materialized or mutated an agent before subagent authorization"
                 );
             }
+        }
+    }
+
+    /// SD-8 review finding 1. `/agent/update_working_dir` is a WRITE to the named
+    /// chat — it repoints the session at a directory of the caller's choosing and
+    /// restarts its agent there — and it used to consult only `session_reach`,
+    /// which is **deliberately inert for a public session**. A delegated
+    /// subagent's chat is normally public, so a caller holding nothing but the
+    /// daemon secret could repoint a child, while the shipped SD-8 record said
+    /// the daemon "refuses every write" to a subagent's chat.
+    ///
+    /// ⚠ **The public arm is the one that fails without the gate.** The private
+    /// arm was already refused, by `session_reach`, for a reason that has nothing
+    /// to do with subagents — so a test written on a private child alone passes
+    /// against the hole.
+    ///
+    /// The directory is read back rather than trusting the status code: the two
+    /// 409s this route already had (a chat with messages, a turn in flight) are
+    /// not the subagent boundary and must not be mistaken for it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn bearer_only_cannot_repoint_a_subagents_working_directory() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+
+        for private in [false, true] {
+            let child = seed(&state, SessionType::SubAgent, private).await;
+            let before = state
+                .session_manager()
+                .get_session(child.id(), false)
+                .await
+                .unwrap()
+                .working_dir;
+
+            assert_eq!(
+                post_agent_route(
+                    Arc::clone(&state),
+                    "/agent/update_working_dir",
+                    child.id(),
+                    None,
+                )
+                .await,
+                StatusCode::FORBIDDEN,
+                "/agent/update_working_dir accepted bearer-only repointing of a {} child",
+                if private { "private" } else { "public" }
+            );
+            assert_eq!(
+                state
+                    .session_manager()
+                    .get_session(child.id(), false)
+                    .await
+                    .unwrap()
+                    .working_dir,
+                before,
+                "the refused request still moved the {} child's working directory",
+                if private { "private" } else { "public" }
+            );
+            assert!(
+                state.peek_agent(child.id()).await.is_none(),
+                "/agent/update_working_dir restarted an agent before refusing the request"
+            );
         }
     }
 
