@@ -30,6 +30,15 @@
 //! (`routes::reply`'s `cancel_without_user_action_proof_cannot_stop_another_turn`
 //! and `interrupt_without_user_action_proof_cannot_forge_human_steering`), and
 //! this change leaves it alone.
+//!
+//! ⚠ **The terminal reads what these refusals look like.** `biorouter session`
+//! cannot ask a daemon whether it holds a key, so `session cancel`, `attach` and
+//! `send` go out without one and read the answer (`commands/session_watch.rs`,
+//! `key_verdict`): an EMPTY 403 means "this daemon holds a key", and only that
+//! makes the terminal ask the person for it. Every refusal here must therefore
+//! carry the daemon's sentence, or a `serve` user is asked for a key that does
+//! not exist — `the_terminals_empty_steer_is_answered_by_the_gate_and_touches_nothing`
+//! pins it for the question the terminal actually sends.
 
 // Redirects this binary's Biorouter data/config/state dirs at a throwaway root
 // before `main`, so nothing here can open the developer's real `sessions.db`.
@@ -564,6 +573,75 @@ async fn a_subagents_turn_is_still_refused_and_the_refusal_says_why() {
 
     drop(guard);
     discard(&state, &id).await;
+}
+
+/// The empty steer exactly as `biorouter session` sends it to ask whether it may
+/// steer (`steer_gate_question` in `commands/session_watch.rs`): no
+/// `X-User-Action` header at all — the browser's shim sends an empty one — and
+/// no turn id.
+fn terminal_question(session_id: &str, caller_provider: Option<&str>) -> Request<Body> {
+    let mut request = Request::builder()
+        .uri("/interrupt")
+        .method("POST")
+        .header("content-type", "application/json");
+    if let Some(provider) = caller_provider {
+        request = request.header("X-Caller-Provider", provider);
+    }
+    request
+        .body(Body::from(
+            json!({ "session_id": session_id, "text": "" }).to_string(),
+        ))
+        .unwrap()
+}
+
+/// The question `biorouter session attach` asks as it joins, and `session send`
+/// after a refusal: would this daemon take a steer from this terminal, and does
+/// it want the user-action key for one? On this daemon the gate answers it and
+/// the text check refuses what the gate lets through, so the answer is the
+/// gate's verdict and nothing more — a 400 where the terminal may steer, and
+/// otherwise a refusal in the daemon's own words. Never the EMPTY 403 that means
+/// "this daemon holds a key", which would send the terminal to ask the person
+/// for one that does not exist. And the question touches neither the turn nor
+/// the agent's queue.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn the_terminals_empty_steer_is_answered_by_the_gate_and_touches_nothing() {
+    assert_the_daemon_is_keyless();
+    let state = AppState::new().await.unwrap();
+    for (chat, caller, expected) in [
+        (Chat::Public, None, StatusCode::BAD_REQUEST),
+        (Chat::Private, None, StatusCode::FORBIDDEN),
+        (Chat::Private, Some("versa_azure"), StatusCode::BAD_REQUEST),
+        (Chat::Subagent, None, StatusCode::FORBIDDEN),
+        (Chat::Subagent, Some("versa_azure"), StatusCode::FORBIDDEN),
+    ] {
+        let id = seed(&state, chat).await;
+        let (guard, token) = begin_turn(&state, &id);
+        let agent = state.get_agent(id.clone()).await.unwrap();
+        agent.open_for_turn(TurnId::new("questioned-agent-turn"));
+
+        let (status, body) = send(reply_routes(&state), terminal_question(&id, caller)).await;
+
+        assert_eq!(status, expected, "{chat:?} asked by {caller:?}: {body}");
+        if status == StatusCode::FORBIDDEN {
+            assert!(
+                body.contains("without a user-action key"),
+                "a keyless refusal without the daemon's sentence reads to the terminal as \
+                 'this daemon wants a key': {body:?}"
+            );
+        }
+        assert!(
+            !agent.has_soft_interrupts(),
+            "the terminal's question reached the agent's queue"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "the terminal's question reached the turn"
+        );
+
+        drop(guard);
+        discard(&state, &id).await;
+    }
 }
 
 /// **The premise SD-11 stands on, pinned.** On a keyless daemon `/agent/stop`

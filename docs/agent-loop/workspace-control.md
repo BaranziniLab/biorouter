@@ -212,8 +212,28 @@ Give `session export` an identifier. With neither `--session-id` nor `--name` it
 
 `session list --subagents` reads the store for the rows but has to ask the daemon who is still live, so it marks each run `● live`, `○ done`, or — when it could not ask — `· state unknown`. It deliberately does *not* blame a missing daemon for that third state: a stripped `BIOROUTER_SERVER__SECRET_KEY` (which is what an agent-spawned shell gets) produces it with a daemon running perfectly well. The actual reason is printed once on stderr, so `--format json` on stdout stays clean.
 
-The four daemon-bound commands need one running. Steering and cancellation also
-require a user-action key whose SHA-256 digest is handed to the daemon on stdin:
+The four daemon-bound commands need one running. It listens on `127.0.0.1:3000` unless
+`BIOROUTER_PORT` says otherwise, and `send`, `watch`, `attach` and `cancel` authenticate with the
+same `BIOROUTER_SERVER__SECRET_KEY`. `biorouterd` invents a random key when that variable is unset,
+in which case no client can authenticate — so set it on both sides. A mismatch shows up as HTTP 401.
+
+Whether stopping and steering also need a **user-action key** depends on how the daemon was
+started, and the command asks the daemon rather than you:
+
+- **A daemon started with a key** — its SHA-256 digest piped to `biorouterd` on stdin, as below,
+  which is how you start the daemon the desktop app shares with your terminal — wants the raw key
+  before it lets anyone stop or steer a turn, and before it takes a message into a subagent's
+  session, or into a private chat when your terminal runs a public model. When it refuses a
+  request for want of the key, the command asks you for it once, without echo, and makes the
+  request again with it. `attach` asks as it joins, before it reads anything you type, and
+  checks the key there rather than at your first steer.
+- **A daemon started without one** — `biorouter serve`, or `biorouterd agent` with nothing piped in
+  — has nothing to check a key against, so you are never asked for one. It lets you stop and steer
+  any chat it lets you reach (a public one always, a private one when your terminal runs a private
+  model), except a subagent's: stopping, steering or sending to a subagent needs proof that a person
+  acted, which only a daemon holding a key can check, and the command prints that daemon's refusal
+  saying so ([SD-11](../deployment/serve-decisions.md#sd-11--stop-and-steering-work-on-a-daemon-with-no-key-a-subagents-tab-stays-the-persons)).
+  `attach --read-only` still follows such a session.
 
 ```bash
 read -r -s action_key
@@ -222,17 +242,12 @@ printf '%s' "$action_key" | shasum -a 256 | cut -d ' ' -f 1 | \
   BIOROUTER_SERVER__SECRET_KEY=<daemon-key> biorouterd agent
 ```
 
-It listens on `127.0.0.1:3000` unless `BIOROUTER_PORT` says otherwise, and `send`, `watch`,
-`attach` and `cancel` authenticate with the same `BIOROUTER_SERVER__SECRET_KEY`. `biorouterd`
-invents a random key when that variable is unset, in which case no client can authenticate — so
-set it on both sides. A mismatch shows up as HTTP 401.
-
-`session attach` prompts for the raw user-action key, without echo, before it permits steering;
-`session cancel` does the same. `attach --read-only`, `watch`, and `send` do not need that proof.
-Trusted automation can pipe the key as the first line with `--user-action-key-stdin`; never put it
-in argv, an environment variable, config, or logs. The raw key is held in a zeroizing CLI buffer
-and sent only on the attached event stream, `/interrupt`, `/agent/cancel`, or the attached
-subagent's `/reply`, while the daemon retains only its digest.
+`watch` and `attach --read-only` never send the key. Trusted automation can supply it as the first
+line of stdin with `--user-action-key-stdin` (on `send`, `attach` and `cancel`), which sends it at
+once instead of waiting for the daemon to ask; never put it in argv, an environment variable,
+config, or logs. The raw key is held in a zeroizing CLI buffer and sent only on the attached event
+stream, `/interrupt`, `/agent/cancel` and `/reply` — and only when you supplied it or the daemon
+asked for it — while the daemon retains only its digest.
 
 Use `session attach` rather than `session --resume` on a session that is running right now: resuming opens a second agent on the same conversation, and the two do not share the daemon's turn lock.
 

@@ -492,7 +492,7 @@ answers in writing ([privacy tiers §3.1](../security/privacy-tiers.md#31-the-re
   | `POST /active_work/{id}/cancel` — cancels a running subagent or background job by registry id | user; any holder of the daemon secret | **nothing**: the id is not a session id, so the reach gate cannot be applied | `routes/active_work.rs::cancel_active_work`; an open residual in `session_reach.rs` |
   | `POST /reply` — puts the caller's text in front of the chat's model | user; any holder of the daemon secret | `session_reach`, then the subagent rule | `routes/reply.rs::reply` |
   | `workspace_send_prompt { mode: "steer" \| "turn" }` — the same, from another chat | model | `refuse_unless_writable`; the text arrives framed as `AgentInjection`, and a private-to-public write raises a first-crossing approval | `agents/workspace_extension.rs::handle_send_prompt` |
-  | `biorouter session attach` and `session cancel` → these routes | user at a terminal | the proof, which the CLI demands before it sends anything | `commands/session_watch.rs::build_user_action_post_request` |
+  | `biorouter session cancel`, `attach` and `send` → these routes, and `/reply` | user at a terminal | the routes' own gates: the CLI sends the proof only when the person supplied it or a daemon that holds a key refused without it (see *The terminal, since* below) | `commands/session_watch.rs::with_key_if_wanted` |
 
   The third row is a finding rather than a guard: a subagent's work can be cancelled on any daemon
   by a caller that holds the secret and reads the id from `GET /active_work`. It is the residual
@@ -542,9 +542,7 @@ report, not the time.
 
 **Not decided here.** An ordinary browser chat's steer control is still offered on a keyless daemon
 and still refuses — its text falls back to the send queue, so nothing is lost, but SD-8's rule would
-have it say so first. The CLI's `session cancel` and `attach` steering still demand a user-action key
-from the terminal before they send anything, so against a keyless daemon they refuse locally a Stop
-the daemon would now admit.
+have it say so first. The terminal's half of this was closed since, below.
 
 **Decided since, under SD-8.** This record left a subagent's tab in a browser offering a composer,
 a steer and a Stop that all refuse, and said SD-8 required them to say so before the click.
@@ -552,6 +550,32 @@ Measuring it found the tab worse off than that — it did not open at all — an
 with what the interface now does instead, is written up in
 [SD-8](#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click). Nothing
 about the refusals above changed.
+
+**The terminal, since.** `biorouter session cancel`, `attach` and `send` used to demand the
+user-action key from the terminal before they sent anything, so against a keyless daemon they
+refused locally the requests this record admits: the browser's defect, one client over. A terminal
+cannot ask a daemon whether it holds a key, so each command now lets the daemon answer. It sends its
+request without the proof, unless the person supplied the key on stdin (`--user-action-key-stdin`),
+and asks the person for the key only when the answer is the empty 403 of a daemon that holds one;
+then it sends once more, with the key. A refusal that carries a sentence, which is every refusal a
+keyless daemon gives on these routes, is printed instead, because no key would change it.
+
+- `attach` asks as it joins, with an empty steer: the gate answers before `/interrupt` reads the
+  text, and empty text is refused before anything is touched. It cannot wait for the first real
+  steer, because by then stdin carries the person's messages, and a hidden prompt would have to share
+  it with them.
+- `send` asks the same question after a refused `/reply`, because `/reply`'s own refusal for a
+  subagent's session is an empty 403 on either kind of daemon and cannot say which kind this is.
+
+Nothing is relaxed. The daemon stays the boundary, and every refusal the terminal reads is given
+before the route touches the turn, so sending the request a second time cannot deliver anything
+twice. A subagent's session still needs the proof. The raw key still comes only from the
+terminal or from stdin, never from argv, the environment, config or logs, and it is now sent only
+when the person supplied it or a daemon asked for it. Keeping the local refusal and rewording it to
+say what to do was rejected, because it would ask the person whether the daemon holds a key, and
+the daemon answers that itself. The shapes the terminal reads are pinned from the daemon's side, in
+`routes::reply`'s keyed tests and in `tests/turn_control_no_user_key.rs`; the reader is
+`key_verdict` in `commands/session_watch.rs`.
 
 ## SD-12 — A new chat starts on the operator's model without a proof, and nothing else does
 

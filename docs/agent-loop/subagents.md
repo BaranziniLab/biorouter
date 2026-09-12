@@ -76,7 +76,7 @@ It is a cap on the burst, not a running total of open tabs. Each slot is release
 
 History hides subagent runs by default, so your session list stays a list of *your* conversations. Turn on **Show subagent runs** in History and each child appears nested under the conversation that spawned it, with a live marker while it is still running.
 
-From the CLI, `biorouter session list --subagents` does the same, `biorouter session attach` joins a live child (`--of` to pick one by parent, `--read-only` to watch without steering), and `biorouter session cancel` stops it.
+From the CLI, `biorouter session list --subagents` does the same, `biorouter session attach` joins a live child (`--of` to pick one by parent, `--read-only` to watch without steering), and `biorouter session cancel` stops it. Steering or stopping a child needs proof that a person acted: a daemon started with a user-action key asks the terminal for the key first, and one started without — `biorouter serve` — refuses, and says so; `--read-only` still follows the child there. See [the user-action key](workspace-control.md#as-subcommands-you-type).
 
 ## Internal subagents
 
