@@ -20,6 +20,13 @@ interface SearchViewProps {
   } | null;
   /** Placeholder text for the search input */
   placeholder?: string;
+  /**
+   * How many characters this surface needs before it searches. Defaults to
+   * {@link DEFAULT_MIN_SEARCH_LENGTH}, which is what the highlighting surfaces
+   * (the chat, a saved transcript) can afford; a surface that only filters a
+   * list of rows passes 1 so a one-character query reaches its matcher.
+   */
+  minSearchLength?: number;
 }
 
 interface SearchContainerElement extends HTMLDivElement {
@@ -38,6 +45,7 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   onNavigate,
   searchResults,
   placeholder,
+  minSearchLength,
 }) => {
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [initialSearchTerm, setInitialSearchTerm] = useState('');
@@ -388,6 +396,7 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
           inputRef={searchInputRef}
           initialSearchTerm={initialSearchTerm}
           placeholder={placeholder}
+          minSearchLength={minSearchLength}
         />
       )}
       {children}

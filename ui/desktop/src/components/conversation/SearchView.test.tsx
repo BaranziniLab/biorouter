@@ -10,10 +10,17 @@ const highlighterMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('./SearchBar', () => ({
-  default: ({ onSearch }: { onSearch: (term: string, caseSensitive: boolean) => void }) => (
+  default: ({
+    onSearch,
+    minSearchLength,
+  }: {
+    onSearch: (term: string, caseSensitive: boolean) => void;
+    minSearchLength?: number;
+  }) => (
     <div>
       <button onClick={() => onSearch('alpha', false)}>Search alpha</button>
       <button onClick={() => onSearch('beta', false)}>Search beta</button>
+      <span data-testid="min-search-length">{String(minSearchLength)}</span>
     </div>
   ),
 }));
@@ -41,6 +48,21 @@ describe('SearchView', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  // The floor is the BAR's, and every surface's choice of it arrives through
+  // here. Unforwarded, a list view asking for a one-character search silently
+  // got the two-character default and its query never ran.
+  it("hands the surface's minimum search length to the bar", () => {
+    render(
+      <SearchView minSearchLength={1}>
+        <p>alpha beta</p>
+      </SearchView>
+    );
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+
+    expect(screen.getByTestId('min-search-length')).toHaveTextContent('1');
   });
 
   it('cancels a pending highlight when a newer term arrives', () => {

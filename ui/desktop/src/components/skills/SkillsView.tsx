@@ -210,6 +210,17 @@ export default function SkillsView() {
         <SearchView
           onSearch={(term, _caseSensitive) => setSearchTerm(term)}
           placeholder="Search skills..."
+          /* ⚠ **One character is a real query here.** The shared matcher's
+             short-term rule (`baam/search.ts`) exists for exactly this: a term
+             under three characters matches whole WORDS, so `R` finds the R
+             skills and not every row holding the letter. The bar's default
+             floor of two characters put that query out of reach — `R` reported
+             an EMPTY term and this view rendered its whole catalog under the
+             provenance headings, which reads as a filter that matched
+             everything. Filtering a handful of rows costs none of what the
+             floor is there to prevent: the highlighter that pays it runs over
+             the rows this filter already dropped. */
+          minSearchLength={1}
         >
           <ReadableContent size="chat" className="px-6 py-4">
             {catalog.error && (

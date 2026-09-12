@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SkillsView from './SkillsView';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
+import { DEFAULT_MIN_SEARCH_LENGTH } from '../conversation/SearchBar';
 
 const mocks = vi.hoisted(() => ({
   skillCatalogHandler: vi.fn(),
@@ -44,16 +45,33 @@ vi.mock('../Layout/ReadableContent', () => ({
 // The real SearchView owns a cmd-F overlay and a scroll-area contract; all the
 // view reads from it is the term it reports, so the mock is that one wire —
 // without it the search-filtered branches below are unreachable from a test.
+//
+// ⚠ **The mock carries the MINIMUM-LENGTH floor, because the real bar does.**
+// It used to hand every keystroke straight through, so the `R` tests below were
+// green while measuring nothing: in the app a one-character query never reached
+// this view at all — `SearchBar` reported an empty term and the whole catalog
+// rendered under its provenance headings. The floor is imported rather than
+// retyped so the mock cannot drift from the component it stands in for, and the
+// bar's own half of the contract is asserted directly in `SearchBar.test.tsx`.
+const searchMocks = vi.hoisted(() => ({ defaultFloor: 2 }));
+
 vi.mock('../conversation/SearchView', () => ({
   SearchView: ({
     children,
     onSearch,
+    minSearchLength = searchMocks.defaultFloor,
   }: {
     children: React.ReactNode;
     onSearch: (term: string, caseSensitive: boolean) => void;
+    minSearchLength?: number;
   }) => (
     <div>
-      <input aria-label="Search skills" onChange={(event) => onSearch(event.target.value, false)} />
+      <input
+        aria-label="Search skills"
+        onChange={(event) =>
+          onSearch(event.target.value.length >= minSearchLength ? event.target.value : '', false)
+        }
+      />
       {children}
     </div>
   ),
@@ -452,6 +470,14 @@ describe('SkillsView search', () => {
   const search = (term: string) =>
     fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: term } });
 
+  it("stands in for the bar with the bar's own default floor", () => {
+    // The mock cannot import the constant — its factory is hoisted above the
+    // imports — so the two are pinned here instead. Without this the default
+    // could move and the one-letter tests below would go green again while
+    // measuring a floor the app does not have.
+    expect(DEFAULT_MIN_SEARCH_LENGTH).toBe(searchMocks.defaultFloor);
+  });
+
   it('finds the skills a multi-word phrase names, best match first', async () => {
     serve({ skills: [skill('ggplot'), skill('pdf'), skill('r-scripting')] });
     render(<SkillsView />);
@@ -487,6 +513,26 @@ describe('SkillsView search', () => {
     expect(screen.getByText('r-scripting')).toBeInTheDocument();
     // `markdown-render` holds the letter twice and means nothing by it.
     expect(screen.queryByText('markdown-render')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The defect this view had until the floor became per-surface: `SearchBar`
+   * refused anything under two characters and reported an EMPTY term, which
+   * this view reads as "browsing". Measured in the running app before the fix,
+   * on a two-skill catalog: `z` showed both rows under `FROM THIS PROJECT (2)`
+   * while `zz` correctly showed "No matching skills" — a control that looks
+   * like it filtered and did not.
+   */
+  it('answers a one-letter query that matches nothing, instead of showing everything', async () => {
+    serve({ skills: [skill('markdown-render'), skill('r-scripting')] });
+    render(<SkillsView />);
+    await screen.findByText('r-scripting');
+
+    search('z');
+
+    expect(await screen.findByText('No matching skills')).toBeInTheDocument();
+    expect(screen.queryByText('r-scripting')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Biorouter Skills/)).not.toBeInTheDocument();
   });
 
   it('keeps the provenance groups when nothing is typed', async () => {
