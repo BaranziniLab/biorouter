@@ -12,8 +12,26 @@
 //! * `open`  — ensure a daemon is up and open `http://<host>:<port>/apps/<id>/`
 //!   in the default browser.
 //! * `serve` — ensure a daemon is up, print the URL, and stay in the foreground
-//!   until Ctrl-C (when it started the daemon) or return immediately with a note
-//!   (when it reused a running one).
+//!   until it is stopped (when it started the daemon) or return immediately with
+//!   a note (when it reused a running one).
+//!
+//! ## Which of the two owns the daemon's lifetime
+//!
+//! `open` is done the moment the browser has the URL, so a daemon it started is
+//! left running deliberately — closing it would close the page that was just
+//! opened. `serve` is the opposite: it stays in the foreground *because* it owns
+//! the daemon, so every way out of it must take the daemon with it. That is the
+//! same guarantee `biorouter serve` makes, through the same two layers and the
+//! same code ([`crate::commands::serve::stop_daemon`] and `--exit-with-parent`):
+//! a signal handler installed BEFORE the spawn, every exit path routed through a
+//! bounded stop-then-kill, and on Unix a daemon that stops itself when its
+//! launcher is gone.
+//!
+//! ⚠ It handled `ctrl_c` alone, and its Ctrl-C arm killed the child while
+//! SIGTERM did not run at all — the default action ended this process on the
+//! spot and left the daemon holding the port, the app and the daemon's secret.
+//! `apps open` must keep passing [`Supervision::Detached`]: tying its daemon to
+//! this process would kill the daemon as `open` returned.
 //!
 //! **Daemon management is deliberately minimal.** The CLI has no pre-existing
 //! biorouterd-supervision helper, so `open`/`serve` first health-check the
@@ -34,6 +52,8 @@ use anyhow::{anyhow, bail, Result};
 use console::{style, Color};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use crate::commands::serve::{stop_daemon, StopSignals};
 
 const ACCENT: Color = Color::Color256(137);
 
@@ -271,15 +291,36 @@ enum Daemon {
     Started(tokio::process::Child),
 }
 
+/// Whether a daemon this command starts is tied to this process's lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Supervision {
+    /// `apps open`: the daemon outlives this command, which is the point — the
+    /// page it just opened needs it.
+    Detached,
+    /// `apps serve`: the daemon is this process's to stop, however this process
+    /// ends. On Unix it is also told to stop itself if this process is gone,
+    /// which covers the endings that run no code here at all.
+    TiedToThisProcess,
+}
+
 /// Ensure a daemon is reachable on the configured port, spawning one if needed.
-async fn ensure_daemon(port: u16) -> Result<Daemon> {
+async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<Daemon> {
     if daemon_ok(DAEMON_HOST, port).await {
         return Ok(Daemon::Reused);
     }
 
     let bin = biorouterd_path();
-    let mut child = tokio::process::Command::new(&bin)
-        .arg("agent")
+    let mut command = tokio::process::Command::new(&bin);
+    command.arg("agent");
+    // ⚠ `Detached` must pass nothing: the flag makes the daemon stop when this
+    // process is gone, and `apps open` is gone as soon as it has opened the page.
+    #[cfg(unix)]
+    if supervision == Supervision::TiedToThisProcess {
+        command
+            .arg("--exit-with-parent")
+            .arg(std::process::id().to_string());
+    }
+    let mut child = command
         .env("BIOROUTER_PORT", port.to_string())
         // Issue #56 DR-16: `biorouterd agent` now reads one line off stdin at
         // startup (the launcher's user-action digest). `Command` INHERITS fd 0,
@@ -292,6 +333,10 @@ async fn ensure_daemon(port: u16) -> Result<Daemon> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        // A backstop for a panic unwinding out of `serve` before its stop runs.
+        // Every ordinary path goes through `stop_daemon`, which asks first.
+        // Harmless for `Detached`, whose child is deliberately leaked below.
+        .kill_on_drop(supervision == Supervision::TiedToThisProcess)
         .spawn()
         .map_err(|e| {
             anyhow!(
@@ -302,7 +347,11 @@ async fn ensure_daemon(port: u16) -> Result<Daemon> {
 
     // Poll for readiness, but bail early if the child dies (e.g. the port is
     // already taken by a non-Biorouter process).
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    //
+    // The same minute `biorouter serve` allows. It was 25s, which a debug daemon
+    // on a loaded machine can miss — and missing it kills a daemon that was
+    // about to answer and reports a failure that is only a slow start.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         if let Ok(Some(status)) = child.try_wait() {
             bail!(
@@ -315,7 +364,7 @@ async fn ensure_daemon(port: u16) -> Result<Daemon> {
         }
         if tokio::time::Instant::now() >= deadline {
             let _ = child.start_kill();
-            bail!("biorouterd did not become ready on port {port} within 25s");
+            bail!("biorouterd did not become ready on port {port} within 60s");
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
@@ -344,7 +393,7 @@ fn app_url(port: u16, id: &str) -> String {
 pub async fn handle_apps_open(id: String) -> Result<()> {
     require_app(&id)?;
     let port = configured_port();
-    let daemon = ensure_daemon(port).await?;
+    let daemon = ensure_daemon(port, Supervision::Detached).await?;
     let url = app_url(port, &id);
 
     match daemon {
@@ -375,14 +424,20 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
 pub async fn handle_apps_serve(id: String) -> Result<()> {
     require_app(&id)?;
     let port = configured_port();
-    let daemon = ensure_daemon(port).await?;
+
+    // ⚠ BEFORE the spawn, and before anything that can park. A handler replaces
+    // the default action — which for SIGTERM is to end this process on the spot
+    // and leave the daemon behind — so from here on a signal waits to be read,
+    // including one that lands during the readiness wait inside `ensure_daemon`.
+    let mut stop = StopSignals::install()?;
+    let daemon = ensure_daemon(port, Supervision::TiedToThisProcess).await?;
     let url = app_url(port, &id);
 
     match daemon {
         Daemon::Reused => {
             // Reusing an external daemon: print the URL and a note, then exit 0.
             // We do not own its lifecycle, so there is nothing to keep in the
-            // foreground.
+            // foreground — and nothing of ours to stop.
             println!("  {} {}", style("→").fg(ACCENT), style(&url).bold());
             println!(
                 "  {} reusing the daemon already running on port {port}; it keeps running after this command.",
@@ -396,7 +451,8 @@ pub async fn handle_apps_serve(id: String) -> Result<()> {
                 "  {} serving on port {port}. Press Ctrl-C to stop.",
                 style("✓").green()
             );
-            // Stay in the foreground until the daemon exits or Ctrl-C.
+            // Stay in the foreground until the daemon exits or we are asked to
+            // stop — and then stop it, whichever of the two happened.
             tokio::select! {
                 status = child.wait() => {
                     match status {
@@ -404,12 +460,13 @@ pub async fn handle_apps_serve(id: String) -> Result<()> {
                         Err(e) => eprintln!("  {} waiting on biorouterd failed: {e}", style("!").yellow()),
                     }
                 }
-                _ = tokio::signal::ctrl_c() => {
+                _ = stop.recv() => {
                     println!("\n  {} stopping biorouterd…", style("·").dim());
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
                 }
             }
+            // Asks, waits out the grace, then kills and reaps. A daemon that has
+            // already exited is only reaped, so this is safe on both arms.
+            stop_daemon(&mut child, &mut stop).await;
             Ok(())
         }
     }

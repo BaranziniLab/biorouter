@@ -75,11 +75,17 @@ const READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long the daemon gets to shut down on its own before it is killed.
 ///
+/// The daemon bounds its own graceful shutdown only when it finds itself
+/// orphaned (`ORPHAN_EXIT_DEADLINE` in `biorouter-server`'s `commands::agent`).
+/// Everywhere else the bound is the sender's to apply, and this is it — which is
+/// why every command that starts a daemon must stop it through [`stop_daemon`]
+/// rather than sending a SIGTERM and hoping.
+///
 /// Its graceful shutdown waits for open connections to finish, and a browser
 /// tab that is still open holds some that never do — so without a limit,
 /// stopping `serve` with a tab open would wait forever. The daemon applies the
 /// same figure to itself when it finds itself orphaned.
-const STOP_GRACE: Duration = Duration::from_secs(10);
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(10);
 
 /// Run the browser-served interface.
 #[allow(clippy::too_many_arguments)]
@@ -229,7 +235,7 @@ fn print_banner(
 /// foreground process group, daemon included; `nohup` exists to make both
 /// ignore it, and installing a handler here would override that. Any other
 /// SIGHUP ends `serve` the default way and the daemon's parent watch follows.
-struct StopSignals {
+pub(crate) struct StopSignals {
     #[cfg(unix)]
     interrupt: tokio::signal::unix::Signal,
     #[cfg(unix)]
@@ -237,7 +243,7 @@ struct StopSignals {
 }
 
 impl StopSignals {
-    fn install() -> Result<Self> {
+    pub(crate) fn install() -> Result<Self> {
         #[cfg(unix)]
         use tokio::signal::unix::{signal, SignalKind};
         Ok(Self {
@@ -249,7 +255,7 @@ impl StopSignals {
     }
 
     /// Resolve on the next request to stop.
-    async fn recv(&mut self) {
+    pub(crate) async fn recv(&mut self) {
         #[cfg(unix)]
         tokio::select! {
             _ = self.interrupt.recv() => {}
@@ -269,7 +275,13 @@ impl StopSignals {
 /// A second request to stop while it is shutting down skips the rest of the
 /// wait. A daemon that has already exited is only reaped, so every path can end
 /// here without first asking whether it needs to.
-async fn stop_daemon(child: &mut Child, stop: &mut StopSignals) {
+///
+/// Shared with `biorouter apps serve`, which starts the same daemon and owes the
+/// same guarantee. One supervision model rather than two: `apps serve` handled
+/// only `ctrl_c` and dropped its child handle, so `kill <pid>` left a daemon
+/// holding the port, the app and the daemon's secret — the defect this command
+/// had and no longer has.
+pub(crate) async fn stop_daemon(child: &mut Child, stop: &mut StopSignals) {
     if matches!(child.try_wait(), Ok(Some(_))) {
         return;
     }
