@@ -478,3 +478,70 @@ describe('BottomMenuSkillSelection', () => {
     expect(await screen.findByText(/Could not read the skill catalog/)).toBeInTheDocument();
   });
 });
+
+/**
+ * QA finding F5, this picker's copy of it — the same defect the Settings list
+ * carried, and the same fix: `skills/searchCatalog.ts`, which is the BAAM
+ * matcher over this catalog's fields.
+ *
+ * This list is flat, so the ranking applies to it directly: the rows come out
+ * best match first rather than in the catalog's alphabetical order.
+ */
+describe('BottomMenuSkillSelection search', () => {
+  beforeEach(() => {
+    mocks.overrides.clear();
+    vi.clearAllMocks();
+    serve(view());
+  });
+
+  const search = (term: string) =>
+    fireEvent.change(screen.getByPlaceholderText('Search skills...'), { target: { value: term } });
+
+  it('finds the skills a multi-word phrase names, best match first', async () => {
+    serve(view({ skills: [skill('ggplot'), skill('pdf'), skill('r-scripting')] }));
+    render(<BottomMenuSkillSelection sessionId={null} />);
+    await openMenu();
+
+    search('R scripting ggplot visualization');
+
+    await waitFor(() => expect(screen.getAllByRole('menuitemcheckbox')).toHaveLength(2));
+    const rows = screen.getAllByRole('menuitemcheckbox');
+    // Catalog order is alphabetical — ggplot, pdf, r-scripting — so this is the
+    // ranking and not the order the rows arrived in.
+    expect(rows[0]).toHaveTextContent('r-scripting');
+    expect(rows[1]).toHaveTextContent('ggplot');
+  });
+
+  it('holds a one-letter query to whole words', async () => {
+    serve(view({ skills: [skill('markdown-render'), skill('r-scripting')] }));
+    render(<BottomMenuSkillSelection sessionId={null} />);
+    await openMenu();
+
+    search('R');
+
+    await waitFor(() => expect(screen.getAllByRole('menuitemcheckbox')).toHaveLength(1));
+    expect(screen.getAllByRole('menuitemcheckbox')[0]).toHaveTextContent('r-scripting');
+  });
+
+  /**
+   * "Enable all" writes every row the filter left on screen, so a filter that
+   * returns everything under a one-letter query is a bulk write nobody asked
+   * for. The count in the button is the filtered count.
+   */
+  it('counts only the matched rows in Enable all', async () => {
+    serve(
+      view({
+        skills: [
+          skill('markdown-render', { state: { ...skill('x').state, effective: false } }),
+          skill('r-scripting', { state: { ...skill('x').state, effective: false } }),
+        ],
+      })
+    );
+    render(<BottomMenuSkillSelection sessionId={null} />);
+    await openMenu();
+
+    search('R');
+
+    expect(await screen.findByRole('button', { name: 'Enable all (1)' })).toBeInTheDocument();
+  });
+});

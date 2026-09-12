@@ -21,6 +21,7 @@ import { ReadableContent } from '../Layout/ReadableContent';
 import { removeSkillPackage } from '../../api';
 import type { CatalogBundle, CatalogSkill } from '../../api';
 import { skillCatalogToggleKey, useSkillCatalog, type SkillCatalogEntry } from './useSkillCatalog';
+import { isBrowseQuery, rankCatalogEntries } from './searchCatalog';
 
 /**
  * Settings → Skills.
@@ -40,8 +41,6 @@ type Group = {
   key: string;
   title: string;
   entries: SkillCatalogEntry[];
-  /** Skills an installed extension supplies. Not the user's to delete. */
-  fromExtension: boolean;
 };
 
 export default function SkillsView() {
@@ -70,23 +69,20 @@ export default function SkillsView() {
   );
 
   const groups = useMemo((): Group[] => {
-    const match = (entry: SkillCatalogEntry) => {
-      if (!searchTerm) return true;
-      const q = searchTerm.toLowerCase();
-      if (entry.kind === 'single') {
-        return (
-          entry.skill.name.toLowerCase().includes(q) ||
-          entry.skill.description.toLowerCase().includes(q)
-        );
-      }
-      return (
-        entry.bundle.displayName.toLowerCase().includes(q) ||
-        entry.bundle.name.toLowerCase().includes(q) ||
-        entry.bundle.skills.some((name) => name.toLowerCase().includes(q))
-      );
-    };
+    // One matcher, shared with the composer's picker, the Browse modals and the
+    // model's own search — see `searchCatalog.ts`. The filter here used to ask
+    // whether the WHOLE query occurred inside one field (QA finding F5).
+    const visible = rankCatalogEntries(entries, searchTerm).hits.map((hit) => hit.entry);
 
-    const visible = entries.filter(match);
+    // ⚠ **A search is one ranked list, not the provenance headings.** The
+    // headings are a grouping, and a grouping discards the rank: a Biorouter
+    // skill matching one word of the query would sit above a project skill
+    // matching all of them. `BrowseSkillsModal` resolved the same tension the
+    // same way, down to the "Matches (n)" heading.
+    if (!isBrowseQuery(searchTerm)) {
+      return visible.length > 0 ? [{ key: 'matches', title: 'Matches', entries: visible }] : [];
+    }
+
     const biorouter = visible.filter((e) => sourceOf(e).kind === 'biorouter');
     const project = visible.filter((e) => sourceOf(e).kind === 'project');
     const other = visible.filter((e) => ['claudeHome', 'agentsHome'].includes(sourceOf(e).kind));
@@ -107,14 +103,12 @@ export default function SkillsView() {
         key: 'biorouter',
         title: 'Biorouter Skills',
         entries: biorouter,
-        fromExtension: false,
       });
     for (const [extension, extensionEntries] of [...byExtension].sort()) {
       out.push({
         key: `extension:${extension}`,
         title: `From ${extension}`,
         entries: extensionEntries,
-        fromExtension: true,
       });
     }
     if (other.length)
@@ -122,14 +116,12 @@ export default function SkillsView() {
         key: 'other',
         title: 'Skills From Other Agents',
         entries: other,
-        fromExtension: false,
       });
     if (project.length)
       out.push({
         key: 'project',
         title: 'From This Project',
         entries: project,
-        fromExtension: false,
       });
     return out;
   }, [entries, searchTerm]);
@@ -259,8 +251,14 @@ export default function SkillsView() {
                     </span>
                   </h2>
                   <div className="biorouter-list-shell">
-                    {group.entries.map((entry) =>
-                      entry.kind === 'bundle' ? (
+                    {group.entries.map((entry) => {
+                      // ⚠ Per ENTRY, not per group. A skill an installed
+                      // extension supplies is not the user's to delete — the
+                      // extension would put it back — and under a query every
+                      // provenance is in one "Matches" list, so a flag on the
+                      // group would offer Delete on rows that must not have it.
+                      const fromExtension = sourceOf(entry).kind === 'extension';
+                      return entry.kind === 'bundle' ? (
                         <BundleRow
                           key={entry.key}
                           bundle={entry.bundle}
@@ -278,7 +276,7 @@ export default function SkillsView() {
                           onOpen={() =>
                             void window.electron.openDirectoryInExplorer(entry.bundle.directory)
                           }
-                          onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
+                          onDelete={fromExtension ? undefined : () => setPendingDelete(entry)}
                           onToggle={(enabled) => void toggle(entry, enabled)}
                         />
                       ) : (
@@ -289,12 +287,12 @@ export default function SkillsView() {
                           onClick={() =>
                             void window.electron.openDirectoryInExplorer(entry.skill.directory)
                           }
-                          onDelete={group.fromExtension ? undefined : () => setPendingDelete(entry)}
+                          onDelete={fromExtension ? undefined : () => setPendingDelete(entry)}
                           onShare={() => void copySkill(entry.skill)}
                           onToggle={(enabled) => void toggle(entry, enabled)}
                         />
-                      )
-                    )}
+                      );
+                    })}
                   </div>
                 </div>
               ))}

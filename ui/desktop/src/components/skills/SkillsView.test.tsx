@@ -437,3 +437,97 @@ describe('SkillsView built-in bundles', () => {
     expect(within(row as HTMLElement).getByLabelText(/Delete skill package/)).toBeInTheDocument();
   });
 });
+
+/**
+ * QA finding F5, this view's copy of it.
+ *
+ * The filter asked whether the WHOLE lowercased query occurred inside one
+ * field, so a phrase naming two installed skills matched neither of them, and
+ * a one-letter query matched every skill whose prose contained that letter.
+ * Both are measured below on the rows the daemon serves; the matcher they now
+ * go through is `searchCatalog.ts`, which is `baam/search.ts` with this
+ * catalog's fields.
+ */
+describe('SkillsView search', () => {
+  const search = (term: string) =>
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: term } });
+
+  it('finds the skills a multi-word phrase names, best match first', async () => {
+    serve({ skills: [skill('ggplot'), skill('pdf'), skill('r-scripting')] });
+    render(<SkillsView />);
+    await screen.findByText('ggplot');
+
+    search('R scripting ggplot visualization');
+
+    // Both are named by the query; before this change the whole phrase was
+    // looked for as a substring and neither row survived.
+    expect(await screen.findByText('r-scripting')).toBeInTheDocument();
+    expect(screen.getByText('ggplot')).toBeInTheDocument();
+    expect(screen.queryByText('pdf')).not.toBeInTheDocument();
+
+    // One ranked list under a query, not the provenance groups: `r-scripting`
+    // matches two of the query's terms and `ggplot` one, and a heading would
+    // have ordered them alphabetically instead.
+    const matches = screen.getByRole('heading', { level: 2, name: /Matches \(2\)/ }).parentElement!;
+    const text = matches.textContent ?? '';
+    expect(text.indexOf('r-scripting')).toBeLessThan(text.indexOf('ggplot'));
+    expect(screen.queryByText(/Biorouter Skills/)).not.toBeInTheDocument();
+  });
+
+  it('holds a one-letter query to whole words', async () => {
+    serve({ skills: [skill('markdown-render'), skill('r-scripting')] });
+    render(<SkillsView />);
+    await screen.findByText('r-scripting');
+
+    search('R');
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: /Matches \(1\)/ })
+    ).toBeInTheDocument();
+    expect(screen.getByText('r-scripting')).toBeInTheDocument();
+    // `markdown-render` holds the letter twice and means nothing by it.
+    expect(screen.queryByText('markdown-render')).not.toBeInTheDocument();
+  });
+
+  it('keeps the provenance groups when nothing is typed', async () => {
+    serve({
+      skills: [
+        skill('my-skill'),
+        skill('word', {
+          sourceRoot: '/extensions/BiorOffice/skills',
+          source: { kind: 'extension', extension: 'BiorOffice', label: 'BiorOffice' },
+        }),
+      ],
+    });
+    render(<SkillsView />);
+
+    expect(await screen.findByText('Biorouter Skills (1)')).toBeInTheDocument();
+    expect(screen.getByText('From BiorOffice (1)')).toBeInTheDocument();
+    expect(screen.queryByText(/Matches \(/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * The Delete a row offers follows the ROW's own source, not the heading it
+   * happens to sit under — which is the thing one flat ranked list could
+   * quietly lose, since `fromExtension` used to be a property of the group.
+   */
+  it('still offers no Delete for an extension-supplied skill inside the matches list', async () => {
+    serve({
+      skills: [
+        skill('r-scripting'),
+        skill('r-plotting', {
+          sourceRoot: '/extensions/BiorOffice/skills',
+          source: { kind: 'extension', extension: 'BiorOffice', label: 'BiorOffice' },
+        }),
+      ],
+    });
+    render(<SkillsView />);
+    await screen.findByText('r-scripting');
+
+    search('R');
+
+    expect(await screen.findByText('r-plotting')).toBeInTheDocument();
+    expect(screen.getByLabelText('Delete r-scripting')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Delete r-plotting')).not.toBeInTheDocument();
+  });
+});
