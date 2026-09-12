@@ -3647,6 +3647,43 @@ class ChatStreamController {
       const ambiguousLease =
         this.continuationLeaseTurnId === ambiguousTurnId ? this.continuationLease : null;
       const attached = await this.attachToTurn(ambiguousTurnId);
+
+      // ⚠ **The daemon can resolve the ambiguity, and when it does, this press
+      // finishes the job.**
+      //
+      // Retry after "Connection dropped" took TWO presses, and the first press
+      // replaced the card with a scarier "Model turn ended unexpectedly". The
+      // reason is here: the pointer makes press one an ATTACH, which returns
+      // before the resubmit below. If that attach reaches a turn with no writer,
+      // `TurnStream::close` answers with `stream_ended_without_terminal` — the
+      // daemon stating that the turn is over and produced nothing. That is an
+      // authoritative answer, not a transport guess: the ambiguity the pointer
+      // exists for is gone, and the user's press should carry on to the
+      // resubmit instead of being spent on a round trip that reports a failure
+      // the model never had. (Same reading as `reframeStoppedTurnError`: the
+      // daemon describes the SHAPE of an ending, never its cause.)
+      //
+      // ⚠ And ONLY for that answer. An attach that could not be made at all —
+      // the POST threw, the daemon is unreachable — leaves the turn's fate
+      // genuinely unknown, and it may still be running server-side; resubmitting
+      // there would run the user's work twice. That path keeps its second press,
+      // which is a confirmation, not a bug.
+      if (attached && this.snapshot.turnError?.code === STREAM_ENDED_WITHOUT_TERMINAL) {
+        this.ambiguousRetryTurnId = null;
+        // Cleared BEFORE the next await so the internal-scope card cannot paint
+        // for a frame on its way out.
+        this.updateSnapshot((prev) => ({ ...prev, turnError: undefined }));
+        await this.abandonContinuationIfOwned(ambiguousLease);
+        // Re-read the tail: the attach ran a stream, and `last` was captured
+        // before it. Resubmitting a message that is no longer the trailing turn
+        // would append a duplicate.
+        const tail = this.messagesRef[this.messagesRef.length - 1];
+        if (!this.hasLiveTurn() && this.canSubmitMessage() && tail && tail.role === 'user') {
+          await this.submitPreparedMessage(tail, [...this.messagesRef], false);
+        }
+        return;
+      }
+
       if (!attached && this.ambiguousRetryTurnId === ambiguousTurnId) {
         this.ambiguousRetryTurnId = null;
         await this.abandonContinuationIfOwned(ambiguousLease);
