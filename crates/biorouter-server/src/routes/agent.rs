@@ -3550,6 +3550,37 @@ mod resume_update_security_tests {
         (status, String::from_utf8_lossy(&body).into_owned())
     }
 
+    /// One agent route, one session id, no proof — status and body, so a test can
+    /// compare two refusals for sameness rather than merely for their code.
+    async fn post_agent_route_response(
+        state: Arc<AppState>,
+        path: &str,
+        session_id: &str,
+    ) -> (StatusCode, String) {
+        let response = routes(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "session_id": session_id,
+                            "load_model_and_extensions": false,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
     async fn get_agent_tools(state: Arc<AppState>, session_id: &str) -> StatusCode {
         routes(state)
             .oneshot(
@@ -3883,6 +3914,71 @@ mod resume_update_security_tests {
             proven,
             StatusCode::FORBIDDEN,
             "/agent/callable_tool_count refused a request carrying the user-action proof"
+        );
+    }
+
+    /// SD-8 review finding 4, recorded as a MEASUREMENT rather than closed as a
+    /// bug — see `docs/deployment/serve-decisions.md`.
+    ///
+    /// The refusal bodies do differ: a **public** subagent is told it is a
+    /// subagent, an unknown id is told only that it is out of reach. That pair
+    /// would be an existence oracle for subagent ids if it were the only way to
+    /// learn the fact. It is not, and the fourth row here is why: the same
+    /// unproven caller is answered **200** for a public chat that is not a
+    /// subagent's, and `GET /sessions/{id}` — inert for public chats by the same
+    /// rule — hands it the whole row, `session_type` included. The differing body
+    /// discloses nothing that a 200 next door does not.
+    ///
+    /// What must hold, and is asserted here, is that the pair collapses wherever
+    /// the 200 is *not* available: for a **private** subagent the two refusals are
+    /// identical, because `session_reach` fires first and its one sentence answers
+    /// "private" and "no such chat" alike.
+    ///
+    /// ⚠ With privacy tiers OFF `session_reach` returns `Ok` before its store
+    /// read, so the private row joins the public one and the whole pair separates
+    /// again. That is the master switch's pre-existing blast radius, not this
+    /// route's, and it is not closed here.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_private_subagent_and_an_unknown_id_are_refused_in_the_same_words() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private_child = seed(&state, SessionType::SubAgent, true).await;
+        let public_child = seed(&state, SessionType::SubAgent, false).await;
+        let public_chat = seed(&state, SessionType::User, false).await;
+
+        let (unknown_status, unknown_body) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", "19700101_404").await;
+        let (private_status, private_body) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", private_child.id())
+                .await;
+        assert_eq!(unknown_status, StatusCode::FORBIDDEN);
+        assert_eq!(private_status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            private_body, unknown_body,
+            "a private subagent is distinguishable from a nonexistent id by its refusal"
+        );
+        assert!(
+            unknown_body.contains(crate::routes::session_reach::SESSION_OUT_OF_REACH),
+            "the shared refusal is no longer the reach sentence: {unknown_body}"
+        );
+
+        // The dominating disclosure, measured in the same run so the argument
+        // above cannot rot into an assumption.
+        let (public_child_status, public_child_body) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", public_child.id()).await;
+        assert_eq!(public_child_status, StatusCode::FORBIDDEN);
+        assert!(
+            public_child_body.contains(SUBAGENT_USER_ACTION_REQUIRED),
+            "a public subagent is no longer told why it is refused: {public_child_body}"
+        );
+        let (public_chat_status, _) =
+            post_agent_route_response(Arc::clone(&state), "/agent/resume", public_chat.id()).await;
+        assert_eq!(
+            public_chat_status,
+            StatusCode::OK,
+            "an unproven caller is refused an ordinary public chat, which would make the \
+             subagent body the only existence signal and turn finding 4 into a real oracle"
         );
     }
 

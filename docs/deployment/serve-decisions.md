@@ -252,6 +252,20 @@ caller naming any chat could mint an agent for it, and the route's own 424 would
 it had found. It now consults `session_reach` before the agent is fetched, like `GET
 /sessions/{id}` and `POST /agent/resume`.
 
+⚠ **The two 403 bodies differ, and that is recorded rather than smoothed over.** A public
+subagent's chat is told it is a subagent; an id that does not exist is told only that it is out of
+reach. In isolation the pair is an existence oracle for subagent ids. It is dominated, and the
+measurement is in
+`routes::agent::resume_update_security_tests::a_private_subagent_and_an_unknown_id_are_refused_in_the_same_words`:
+for a **private** subagent the two refusals are byte-identical, because `session_reach` fires first
+and its one sentence answers "private" and "no such chat" alike; and for a **public** one the same
+unproven caller is answered **200** by `/agent/resume` on an ordinary public chat and **200** by
+`GET /sessions/{id}` on the subagent's, `session_type` included — so the body discloses nothing the
+route next door does not hand over outright. ⚠ With the privacy master switch **OFF**
+`session_reach` returns `Ok` before its store read, so the private row joins the public one and the
+pair separates for every chat on the machine. That is the switch's pre-existing blast radius
+(DR-17), not this route's, and it is not closed here.
+
 It could not even be read. The renderer loaded every chat through `/agent/resume`, so a subagent's
 tab rendered *"Could not load this chat"* over the daemon's refusal — including the tab the daemon
 itself opens to show a subagent it has just spawned. Measured against a real `biorouter serve`:
