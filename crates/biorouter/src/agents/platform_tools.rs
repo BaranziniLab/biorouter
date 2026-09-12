@@ -129,8 +129,9 @@ pub struct PlatformToolGates {
     pub bug_report: bool,
     /// `pending_user_action::user_proof_available()` again — the SAME
     /// process-global, sampled in the same breath as [`Self::bug_report`], for
-    /// a different decision: it narrows `platform__manage_workflow`'s action
-    /// list rather than deciding whether a tool is offered at all.
+    /// a different decision: it narrows `platform__manage_workflow`'s and
+    /// `platform__manage_schedule`'s action lists rather than deciding whether a
+    /// tool is offered at all.
     ///
     /// It is a field rather than a read inside [`Self::tools`] because this
     /// struct's whole contract is that a gate is sampled ONCE by
@@ -164,7 +165,7 @@ impl PlatformToolGates {
         }
         let mut tools = Vec::new();
         if self.scheduler {
-            tools.push(manage_schedule_tool());
+            tools.push(manage_schedule_tool(self.can_ask_a_person));
         }
         if self.knowledge {
             tools.push(ingest_conversation_tool());
@@ -523,9 +524,34 @@ pub fn report_bug_tool() -> Tool {
     })
 }
 
-pub fn manage_schedule_tool() -> Tool {
-    Tool::new(
-        PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.to_string(),
+/// Manage the user's scheduled jobs.
+///
+/// ⚠ Like [`manage_workflow_tool`], the `enum` is DERIVED from
+/// [`crate::agents::schedule_tool::available_actions`] rather than written out
+/// here, and for the same two reasons: a schema listing an action the handler
+/// refuses advertises a verb that always fails, and on a `biorouter serve`
+/// daemon — where `can_ask_a_person` is false forever — the six actions that
+/// need an approval can never get one, so they are absent and the description
+/// says why (SD-8).
+pub fn manage_schedule_tool(can_ask_a_person: bool) -> Tool {
+    let action_values: Vec<serde_json::Value> =
+        crate::agents::schedule_tool::available_actions(can_ask_a_person)
+            .iter()
+            .map(|action| serde_json::Value::String((*action).to_string()))
+            .collect();
+
+    let approval_note = if can_ask_a_person {
+        "Creating, running, pausing, resuming, deleting and stopping a job ask the user to \
+         approve it first, and the approval tells them when the job runs, what it runs and how."
+    } else {
+        "This Biorouter cannot ask the user to approve anything (it is a browser session), so \
+         creating, running, pausing, resuming, deleting and stopping jobs are not available here. \
+         Reading still works; tell the user to make changes in the desktop app or with the \
+         `biorouter` command."
+    };
+
+    let description = format!(
+        "{}\n{approval_note}",
         indoc! {r#"
             Manage biorouter's internal scheduled workflow execution.
 
@@ -541,14 +567,18 @@ pub fn manage_schedule_tool() -> Tool {
             - "sessions": List execution history for a biorouter scheduled job
             - "session_content": Get the full content (messages) of a specific session
         "#}
-        .to_string(),
+    );
+
+    Tool::new(
+        PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.to_string(),
+        description,
         object!({
             "type": "object",
             "required": ["action"],
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "create", "run_now", "pause", "unpause", "delete", "kill", "inspect", "sessions", "session_content"]
+                    "enum": action_values
                 },
                 "job_id": {"type": "string", "description": "Job identifier for operations on existing jobs"},
                 "workflow_path": {"type": "string", "description": "Path to workflow file for create action"},
@@ -560,7 +590,9 @@ pub fn manage_schedule_tool() -> Tool {
     ).annotate(ToolAnnotations {
         title: Some("Manage scheduled workflows".to_string()),
         read_only_hint: Some(false),
-        destructive_hint: Some(true), // Can kill jobs
+        // `delete` and `kill` are destructive; without a person to ask neither
+        // is offered, so the hint follows the most dangerous action on offer.
+        destructive_hint: Some(can_ask_a_person),
         idempotent_hint: Some(false),
         open_world_hint: Some(false),
     })

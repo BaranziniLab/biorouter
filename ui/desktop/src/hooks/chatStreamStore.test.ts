@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
-import { ChatStreamRegistry, NOTIFY_FALLBACK_MS, isRunningState } from './chatStreamStore';
+import {
+  ChatStreamRegistry,
+  NOTIFY_FALLBACK_MS,
+  STOP_CONFIRMED_NOTICE_MS,
+  isRunningState,
+} from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
 import { cancelTurn, editMessage, getSession, interrupt, reply, resumeAgent } from '../api';
 import { abandonContinuationLease, recoverContinuationGroup } from '../utils/continuationLease';
@@ -1924,6 +1929,20 @@ describe('ChatStreamRegistry', () => {
 });
 
 /**
+ * The daemon's synthesized "this turn produced no ending" frame. Shared by the
+ * M2 and F5 batteries below, which both need a Stop's wedged-writer ending.
+ */
+function endedWithoutTerminal(): MessageEvent {
+  return {
+    type: 'Error',
+    error: 'The stream for this turn ended without a result. Please retry.',
+    code: 'stream_ended_without_terminal',
+    scope: 'internal',
+    retryable: true,
+  } as MessageEvent;
+}
+
+/**
  * M2 — a Stop the daemon never confirms.
  *
  * The #166 battery above pushes its terminal frame AFTER the cancel has
@@ -1941,17 +1960,6 @@ describe('ChatStreamRegistry', () => {
  * || {}`) and the console warning printed nothing a person could act on.
  */
 describe('ChatStreamRegistry — a Stop the daemon never confirms (M2)', () => {
-  /** The daemon's synthesized "this turn produced no ending" frame. */
-  function endedWithoutTerminal(): MessageEvent {
-    return {
-      type: 'Error',
-      error: 'The stream for this turn ended without a result. Please retry.',
-      code: 'stream_ended_without_terminal',
-      scope: 'internal',
-      retryable: true,
-    } as MessageEvent;
-  }
-
   /**
    * Drive a Stop whose cancel is still on the wire when the daemon's terminal
    * frame lands, then settle the cancel however the caller asks.
@@ -2151,6 +2159,228 @@ describe('ChatStreamRegistry — a Stop the daemon never confirms (M2)', () => {
     expect(controller.getSnapshot().turnError?.code).toBe('stream_ended_without_terminal');
     expect(controller.getSnapshot().turnError?.scope).toBe('internal');
     expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+});
+
+/**
+ * F5 (QA of 7c96d796, 2026-09-10) — a Stop the daemon CONFIRMS.
+ *
+ * M2 gave the failed Stop its notice; the successful one still said nothing.
+ * Measured in the running app: Send came back 150 ms after the press, and the
+ * transcript held the user's message with no reply and no word about why.
+ *
+ * The notice is keyed on the daemon's own answer, not on the renderer's hope.
+ * `cancelled: true` means the cancel found the turn running and tripped it;
+ * `cancelled: false` is the idempotent 200 for a turn that had already ended,
+ * which is exactly the turn that must never be described as stopped.
+ */
+describe('ChatStreamRegistry — a Stop the daemon confirms (F5)', () => {
+  /** A turn that stays open until the test ends it. */
+  async function startLongTurn(sessionId: string) {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController(sessionId);
+    const submit = controller.handleSubmit('a long turn');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    return { controller, controlled, submit };
+  }
+
+  /** Stop, and let the daemon's terminal frame land before its cancel answer. */
+  async function stopWithFrameFirst(sessionId: string, frame: MessageEvent, answer: unknown) {
+    const { controller, controlled, submit } = await startLongTurn(sessionId);
+    const cancellation = deferred<unknown>();
+    vi.mocked(cancelTurn).mockReturnValueOnce(cancellation.promise as never);
+
+    const stopped = controller.stopStreaming();
+    await flush();
+    controlled.push(frame);
+    controlled.close();
+    await submit;
+
+    cancellation.resolve(answer);
+    return { controller, stopped };
+  }
+
+  it('says the turn was stopped once the daemon confirms it', async () => {
+    const { controller, controlled, submit } = await startLongTurn('stop-confirmed');
+    vi.mocked(cancelTurn).mockResolvedValueOnce({
+      data: { cancelled: true, settled: true },
+    } as never);
+
+    await expect(controller.stopStreaming()).resolves.toBe(true);
+
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+    expect(controller.getSnapshot().stopConfirmed).toBeDefined();
+    // A quiet line, not a card: nothing about this ending is an error.
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+
+    controlled.close();
+    await submit;
+  });
+
+  // The healthy daemon's other ordering: its real `Finish { reason: cancelled }`
+  // beats the cancel response, so the Stop gate defers the Idle transition to it.
+  it('says so when the cancelled turn’s own ending arrives before the confirmation', async () => {
+    const { controller, stopped } = await stopWithFrameFirst(
+      'stop-confirmed-frame-first',
+      { type: 'Finish', reason: 'cancelled', token_state: tokenState } as MessageEvent,
+      { data: { cancelled: true, settled: true } }
+    );
+
+    await expect(stopped).resolves.toBe(true);
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+    expect(controller.getSnapshot().stopConfirmed).toBeDefined();
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+  });
+
+  /**
+   * A wedged writer ends the turn with the daemon's synthesized frame, which
+   * M2 re-codes to a "Turn stopped" CARD while the cancel is still out. Once the
+   * cancel confirms, that card and this line would say one thing twice, in an
+   * error's voice and a status's; the confirmation is the stronger evidence.
+   */
+  it('replaces the interim “Turn stopped” card once the cancel confirms', async () => {
+    const { controller, stopped } = await stopWithFrameFirst(
+      'stop-confirmed-wedged-writer',
+      endedWithoutTerminal(),
+      { data: { cancelled: true, settled: true } }
+    );
+
+    await expect(stopped).resolves.toBe(true);
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+    expect(controller.getSnapshot().stopConfirmed).toBeDefined();
+  });
+
+  it('is transient — it retracts itself after its display window', async () => {
+    const { controller, controlled, submit } = await startLongTurn('stop-confirmed-transient');
+    await expect(controller.stopStreaming()).resolves.toBe(true);
+    expect(controller.getSnapshot().stopConfirmed).toBeDefined();
+
+    vi.advanceTimersByTime(STOP_CONFIRMED_NOTICE_MS - 1);
+    expect(controller.getSnapshot().stopConfirmed).toBeDefined();
+    vi.advanceTimersByTime(1);
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+
+    controlled.close();
+    await submit;
+  });
+
+  it('is retracted the moment the next turn starts', async () => {
+    const { controller, controlled, submit } = await startLongTurn('stop-confirmed-next-turn');
+    await expect(controller.stopStreaming()).resolves.toBe(true);
+    expect(controller.getSnapshot().stopConfirmed).toBeDefined();
+    controlled.close();
+    await submit;
+
+    const next = createControlledStream();
+    vi.mocked(reply).mockResolvedValue({ stream: next.stream } as never);
+    const nextSubmit = controller.handleSubmit('carry on');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(2));
+
+    // While the new turn runs — not merely once it has ended.
+    expect(isRunningState(controller.getSnapshot().chatState)).toBe(true);
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+
+    next.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    next.close();
+    await nextSubmit;
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+  });
+
+  // ---- The endings that must NOT claim a stop. These pass before the fix too;
+  // they are what keeps the fix from being "announce every Idle". ----
+
+  it('does not appear for a turn that ended on its own', async () => {
+    const { controller, controlled, submit } = await startLongTurn('ended-on-its-own');
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submit;
+
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+  });
+
+  // The race a Stop can lose: the turn finished by itself a moment before the
+  // cancel reached it, and the daemon answers that nothing was running.
+  it('does not appear when the turn had already finished before the cancel reached it', async () => {
+    const { controller, stopped } = await stopWithFrameFirst(
+      'finished-before-the-cancel',
+      { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent,
+      { data: { cancelled: false, settled: true } }
+    );
+
+    await expect(stopped).resolves.toBe(true);
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+  });
+
+  it('does not appear beside the notice for a Stop that was never confirmed', async () => {
+    // Installed first: the failed cancel logs from a microtask that runs before
+    // the helper below hands control back.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { controller, stopped } = await stopWithFrameFirst(
+        'stop-unconfirmed',
+        endedWithoutTerminal(),
+        // A bare 504: the daemon's settlement timeout.
+        { error: {}, response: { status: 504 } }
+      );
+      await expect(stopped).resolves.toBe(false);
+      await flush();
+
+      expect(controller.getSnapshot().turnError?.code).toBe('stop_not_confirmed');
+      expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Stop-and-Send is followed at once by the user's replacement turn, and that
+  // turn is the outcome; a "Stopped." line would flash for the length of a submit.
+  it('does not appear for a Stop-and-Send', async () => {
+    const { controller, controlled, submit } = await startLongTurn('stop-and-send');
+
+    await expect(controller.stopStreaming(true)).resolves.toBe(true);
+    expect(controller.getSnapshot().pendingContinuation?.ownership).toBe('owned');
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+
+    controlled.close();
+    await submit;
+  });
+
+  // The case above's harder sibling: an ORDINARY Stop the user upgrades while
+  // it is still on the wire. That Stop's own cancel comes back `cancelled:
+  // true` — and the replacement turn is still the outcome.
+  it('does not appear for an ordinary Stop upgraded to Stop-and-Send mid-flight', async () => {
+    const { controller, controlled, submit } = await startLongTurn('stop-upgraded-mid-flight');
+    const ordinaryCancellation = deferred<unknown>();
+    const continuationAdmission = deferred<unknown>();
+    vi.mocked(cancelTurn)
+      .mockReturnValueOnce(ordinaryCancellation.promise as never)
+      .mockReturnValueOnce(continuationAdmission.promise as never);
+
+    const ordinaryStop = controller.stopStreaming(false);
+    await vi.waitFor(() => expect(cancelTurn).toHaveBeenCalledTimes(1));
+    const stopAndSend = controller.stopStreaming(true);
+
+    ordinaryCancellation.resolve({ data: { cancelled: true, settled: true } });
+    await expect(ordinaryStop).resolves.toBe(true);
+    // Between the two requests: exactly where a line keyed on the ordinary
+    // Stop alone would flash.
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+
+    continuationAdmission.resolve({
+      data: { cancelled: false, settled: true, continuation_lease: 'lease-upgraded' },
+    });
+    await expect(stopAndSend).resolves.toBe(true);
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+
+    controlled.close();
+    await submit;
   });
 });
 

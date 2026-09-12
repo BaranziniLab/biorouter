@@ -65,7 +65,7 @@ The one boundary is privacy: a chat on a public model cannot inject into a conve
 
 > "Tell the QC chat to stop at step 3 and summarise." → `workspace_send_prompt { session_id: "…", text: "Stop at step 3 and summarize.", mode: "steer" }`
 
-Add `wait: "final_message"` to park until the target answers and get its reply back inline (default 120 s, max 600 s). Every injection is permanently labelled — see [provenance](#provenance-injected-messages-are-labelled-forever).
+Add `wait: "final_message"` to park until the target answers and get its reply back inline (default 120 s, max 600 s). The reply comes back whole, together with a **verdict** the agent can act on: `completed`, `declined`, `errored`, `timed_out` or `cancelled`. `declined` is the one to know about. The other conversation receives the text as a message from another agent, not from you, and is told to treat it with less trust than your own words — so it may refuse, especially when asked to run something. When it does, the agent is told it was *declined*, in the other conversation's own words, and that nothing was done. It used to be told only that the turn had finished. Every injection is permanently labelled — see [provenance](#provenance-injected-messages-are-labelled-forever).
 
 ### `workspace_set_tools`
 
@@ -122,6 +122,8 @@ A confirmation card appears when a `workspace_set_tools` call:
 The same rule covers `workspace_open { new: { extensions: […] } }`. The field name is retained for compatibility and may carry capability or extension identifiers; the effective classification remains visible in the new conversation.
 
 The card names the target conversation and the specific reason, and says outright that it appears in every mode.
+
+**You are only asked about changes that can actually be made.** Before the card is raised, Biorouter checks the whole request the way the change itself would: that the conversation exists and may be changed from here, that every extension named is really installed or enabled there, that a knowledge base named really exists, that the provider and model are real. If any of it cannot happen, there is no card — the agent is told why, in the same words it would otherwise have got after you approved. The common case is a **built-in capability** such as Auto Visualiser: it is part of Biorouter, not an installed extension, so this tool cannot remove it from another conversation, and the agent is told exactly that instead of asking you to approve a removal that would then fail.
 
 ## Provenance: injected messages are labelled forever
 

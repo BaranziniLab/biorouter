@@ -473,6 +473,23 @@ export interface ChatStreamSnapshot {
   /** A durable Stop-and-Send gap discovered from the daemon on resume. */
   pendingContinuation?: PendingContinuationView;
   /**
+   * F5 — this chat's last Stop provably ended a running turn: the daemon
+   * answered its exact-generation cancel `cancelled: true, settled: true`.
+   * BaseChat renders it as a quiet "Stopped." line in the slot a failed Stop's
+   * notice takes (`ChatTurnStopped`), because until this a Stop that WORKED
+   * stated no outcome at all.
+   *
+   * Transient and never persisted: retracted `STOP_CONFIRMED_NOTICE_MS` later,
+   * and at once by anything that starts or joins a turn in this chat.
+   *
+   * ⚠ Absent for every other ending, which is why it is keyed on the daemon's
+   * `cancelled` rather than on the press: a turn that finished on its own, a
+   * Stop that raced the turn to its end (`cancelled: false`, the daemon's
+   * idempotent answer), a Stop the daemon never confirmed (M2's card speaks
+   * instead), and a Stop-and-Send, whose replacement turn is the outcome.
+   */
+  stopConfirmed?: StopConfirmedView;
+  /**
    * Whether this session's agent — model provider + extensions — has finished
    * loading on the backend. The transcript paints before this flips (see
    * `loadSession`), so anything that reads AGENT state rather than SESSION
@@ -524,6 +541,12 @@ export interface PinnedModelView {
   model: string;
 }
 
+/** F5 — a Stop the daemon confirmed. See `ChatStreamSnapshot.stopConfirmed`. */
+export interface StopConfirmedView {
+  /** The exact generation the confirmed cancel named. */
+  turnId: string;
+}
+
 /** A tool call announced before its arguments finished streaming (§6.1b). */
 export interface PendingToolCallView {
   id: string;
@@ -546,6 +569,13 @@ export const TURN_STOPPED_BY_USER = 'turn_stopped_by_user';
 
 /** A Stop whose cancel never came back confirmed. */
 export const STOP_NOT_CONFIRMED = 'stop_not_confirmed';
+
+/**
+ * F5 — how long a confirmed Stop's "Stopped." line stays in the transcript.
+ * design.md §4.3's toast duration, so the app's transient confirmations last
+ * one length of time rather than two.
+ */
+export const STOP_CONFIRMED_NOTICE_MS = 5000;
 
 /**
  * The in-chat notice for a Stop the daemon never confirmed (M2).
@@ -797,6 +827,15 @@ class ChatStreamController {
    * notice written over the top of it would be both wrong and destructive.
    */
   private lastStopFailure: string | null = null;
+  /**
+   * F5 — whether the last exact-generation cancel that SETTLED found the turn
+   * running and tripped it (`cancelled: true`), rather than finding it already
+   * over (`cancelled: false`, the daemon's idempotent answer to a Stop that
+   * raced the turn's own ending). Only the first is a stop the user caused, so
+   * only it earns `stopConfirmed`. Reset with `lastStopFailure` at the top of
+   * every cancel request.
+   */
+  private lastStopCancelled = false;
   /**
    * The turn this controller is currently rendering — the id it POSTed, or the
    * id it attached to. Held so a re-attach can re-POST the SAME turn (rather
@@ -1902,6 +1941,7 @@ class ChatStreamController {
         session: undefined,
         sessionLoadError: undefined,
         turnError: undefined,
+        stopConfirmed: undefined,
         chatState: ChatState.LoadingConversation,
       }));
 
@@ -3125,6 +3165,7 @@ class ChatStreamController {
         chatState: ChatState.Streaming,
         turnStartedAt: prev.turnStartedAt ?? Date.now(),
         turnError: undefined,
+        stopConfirmed: undefined,
       }));
       await this.streamFromResponse(
         stream as AsyncIterable<MessageEvent>,
@@ -3231,7 +3272,8 @@ class ChatStreamController {
       if (
         prev.chatState === chatState &&
         prev.turnStartedAt === turnStartedAt &&
-        prev.turnError === undefined
+        prev.turnError === undefined &&
+        prev.stopConfirmed === undefined
       ) {
         return prev;
       }
@@ -3240,6 +3282,7 @@ class ChatStreamController {
         chatState,
         turnStartedAt,
         turnError: undefined,
+        stopConfirmed: undefined,
       };
     });
   }
@@ -3326,6 +3369,8 @@ class ChatStreamController {
       notifications: [],
       pendingToolCalls: [],
       turnError: undefined,
+      // F5 — "Stopped." spoke about the previous turn; this one supersedes it.
+      stopConfirmed: undefined,
       turnStartedAt: Date.now(),
       lastMessageAt: undefined,
       pendingSteer: undefined,
@@ -3781,6 +3826,7 @@ class ChatStreamController {
     continuationPending: boolean
   ): Promise<boolean> => {
     this.lastStopFailure = null;
+    this.lastStopCancelled = false;
     try {
       const body = {
         session_id: this.sessionId,
@@ -3806,6 +3852,7 @@ class ChatStreamController {
       }
       const data = result?.data;
       if (data?.settled === true) {
+        this.lastStopCancelled = data.cancelled === true;
         if (!continuationPending) return true;
         const lease = data.continuation_lease;
         if (!lease) {
@@ -3946,6 +3993,16 @@ class ChatStreamController {
       return false;
     }
 
+    // F5 — say that it worked, but only when the daemon says the Stop is what
+    // ended the turn. Sampled BEFORE `stopContinuationPending` is cleared below:
+    // an ordinary Stop the user upgraded to Stop-and-Send while it was on the
+    // wire is followed at once by their replacement turn, and that turn is the
+    // outcome — not a line that flashes for the length of one submit.
+    const confirmedStop: StopConfirmedView | undefined =
+      this.lastStopCancelled && !requestContinuationPending && !this.stopContinuationPending
+        ? { turnId: stoppedTurnId }
+        : undefined;
+
     this.activeStreamId += 1;
     this.abortController?.abort();
     this.endReplayHold();
@@ -3963,11 +4020,35 @@ class ChatStreamController {
       lastMessageAt: undefined,
       pendingSteer: undefined,
       // A retry that succeeded retracts the notice the failed attempt raised.
-      turnError: prev.turnError?.code === STOP_NOT_CONFIRMED ? undefined : prev.turnError,
+      // A confirmed stop also retracts M2's interim "Turn stopped" card — a
+      // wedged writer's synthesized ending raises it while the cancel is still
+      // out — because it says what `stopConfirmed` says, in an error's voice.
+      turnError:
+        prev.turnError?.code === STOP_NOT_CONFIRMED ||
+        (confirmedStop && prev.turnError?.code === TURN_STOPPED_BY_USER)
+          ? undefined
+          : prev.turnError,
+      ...(confirmedStop ? { stopConfirmed: confirmedStop } : {}),
     }));
+    if (confirmedStop) this.retractStopConfirmedLater(confirmedStop);
     this.flushNotify();
     return true;
   };
+
+  /**
+   * F5 — the confirmed-stop line is transient. Identity-checked, so a timer
+   * armed for one notice can never retract a later one, and a notice a new
+   * turn already retracted is left alone. Untracked on purpose: a stale timer
+   * is a no-op, and the registry never drops a controller outside
+   * `resetForTests`.
+   */
+  private retractStopConfirmedLater(notice: StopConfirmedView): void {
+    setTimeout(() => {
+      this.updateSnapshot((prev) =>
+        prev.stopConfirmed === notice ? { ...prev, stopConfirmed: undefined } : prev
+      );
+    }, STOP_CONFIRMED_NOTICE_MS);
+  }
 
   /**
    * M2 — finish what the Stop gate deferred, and say out loud that the stop did
