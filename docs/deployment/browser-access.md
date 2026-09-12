@@ -214,7 +214,8 @@ differs:
 |---|---|
 | Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application. |
 | Workspace control, several conversations at once, live app agents | Work — these are WebSocket-backed daemon routes, reached on the same origin. |
-| Stopping a response, steering it while it runs, Stop and send | Work in an ordinary chat ([SD-11](serve-decisions.md#sd-11--stop-and-steering-work-on-a-daemon-with-no-key-a-subagents-tab-stays-the-persons)). A message you steer with is recorded as an ordinary message rather than as one the desktop application marks as typed by you. |
+| Stopping a response, Stop and send | Work in an ordinary chat ([SD-11](serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)). |
+| Steering a response while it runs | **Not available.** Injecting text into a turn that is already running needs proof that a person acted, which only the desktop application holds. What you type is queued instead and sent when the turn ends, so nothing is lost — it simply does not redirect the answer in flight. |
 | A delegated subagent's own tab | **Read-only.** Sending to a subagent, steering it and stopping it from its tab need proof that a person acted, which only the desktop application holds. The tab does not yet say so before you try. |
 | Model and provider selection | **Not available.** See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
 | File and folder pickers | No native dialog. You type a path, and it is a path **on the machine running the daemon**, not on the machine holding the browser. |

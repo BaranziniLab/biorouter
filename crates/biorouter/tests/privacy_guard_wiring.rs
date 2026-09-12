@@ -324,9 +324,10 @@ const REGISTRY: &[Guard] = &[
                        /agent/update_working_dir`, plus the shared `authorize_agent_control` \
                        gate used by provider, extension, stop, and restart mutations. On a \
                        daemon that holds no user-action key that same gate is also the \
-                       turn-control gate of `/agent/cancel`, `/interrupt` and the two \
-                       continuation routes (SD-11), reached from `routes::reply`'s \
-                       `authorize_turn_control` by name — so SD-11 added no call here",
+                       turn-control gate of `/agent/cancel` and the two continuation routes \
+                       (SD-11), reached from `routes::reply`'s `authorize_turn_control` by \
+                       name — so SD-11 added no call here. `/interrupt` keeps the proof on \
+                       every daemon and reaches neither gate",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/mod.rs",
@@ -341,9 +342,11 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "`POST /reply`, which runs an agent turn with tools inside the named \
                        session, plus the explicit continuation takeover and group-abandon \
-                       recovery mutation. The other turn-control routes in this file reach the \
-                       gate only on a keyless daemon, and through `authorize_agent_control` \
-                       in `routes/agent.rs` (SD-11), which is why they add nothing to this count",
+                       recovery mutation. `/agent/cancel` and `/agent/continuation/abandon` reach \
+                       the gate only on a keyless daemon, and through `authorize_agent_control` \
+                       in `routes/agent.rs` (SD-11), which is why they add nothing to this count; \
+                       `/interrupt` keeps the user-action proof on every daemon and reaches no \
+                       reach gate at all",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",

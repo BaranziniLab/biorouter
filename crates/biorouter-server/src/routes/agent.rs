@@ -77,8 +77,11 @@ const SUBAGENT_USER_ACTION_REQUIRED: &str =
 /// them hunting for a permission this daemon can never grant anyone. It names
 /// the daemon as the reason, in the register `CROSS_AFFILIATION_GRANT_NO_KEY`
 /// and `session_reach::SESSION_REACH_NO_KEY` already use. Since SD-11 this is
-/// also what a keyless daemon answers a Stop or a steer aimed at a subagent's
-/// turn, because those routes gate through [`authorize_agent_control`] there.
+/// also what a keyless daemon answers a Stop aimed at a subagent's turn, because
+/// that route gates through [`authorize_agent_control`] there. A *steer* at the
+/// same turn is refused one step earlier, by `reply::authorize_steer`, which
+/// never reads the row — so the two sentences differ, and both open by naming
+/// this daemon rather than the caller.
 const SUBAGENT_CONTROL_NO_KEY: &str =
     "This daemon was started without a user-action key, so it cannot verify that a request came \
      from the person at the keyboard, and changing, resuming, stopping or steering a subagent from \
@@ -168,11 +171,13 @@ async fn read_update_session(
 /// this process; it does not prove that a person chose to mutate a subagent.
 ///
 /// ⚠ **Also the turn-control gate on a daemon with no user-action key** (SD-11):
-/// `routes::reply`'s `authorize_turn_control` calls this for `/agent/cancel`,
-/// `/interrupt` and the two continuation routes there, so that stopping a turn
-/// admits exactly the callers `/agent/stop` admits. Tightening this therefore
-/// tightens those four too, which is the point — but it is a change to who may
-/// press Stop in a browser, and `tests/turn_control_no_user_key.rs` will say so.
+/// `routes::reply`'s `authorize_turn_control` calls this for `/agent/cancel` and
+/// the two continuation routes there, so that stopping a turn admits exactly the
+/// callers `/agent/stop` admits. Tightening this therefore tightens those three
+/// too, which is the point — but it is a change to who may press Stop in a
+/// browser, and `tests/turn_control_no_user_key.rs` will say so. `/interrupt` is
+/// NOT among them: `reply::authorize_steer` keeps the proof on every daemon,
+/// because the dominance argument that admits a Stop does not reach a steer.
 pub(crate) async fn authorize_agent_control(
     state: &AppState,
     session_id: &str,

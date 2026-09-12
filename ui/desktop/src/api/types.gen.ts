@@ -5652,7 +5652,7 @@ export type InterruptErrors = {
      */
     400: unknown;
     /**
-     * The request was not proven to come from the user; on a daemon that holds no user-action key, the chat is out of the caller's reach or is a subagent's (SD-11)
+     * The request was not proven to come from the user; on a daemon that holds no user-action key, steering is unavailable and the refusal says so (SD-11)
      */
     403: unknown;
     /**
