@@ -25,7 +25,11 @@ import { describe, expect, it } from 'vitest';
  * does the same thing in the other direction.)
  */
 const here = dirname(fileURLToPath(import.meta.url));
-const BRIDGE = resolve(here, '../../../..', 'crates/biorouter/src/providers/coding_agent/bridge.rs');
+const BRIDGE = resolve(
+  here,
+  '../../../..',
+  'crates/biorouter/src/providers/coding_agent/bridge.rs'
+);
 
 const bridge = readFileSync(BRIDGE, 'utf-8');
 
