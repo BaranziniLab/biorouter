@@ -6118,7 +6118,12 @@ mod knowledge_selection_tests {
                     "creating {id} neither published nor returned in {WEDGE:?}: the knowledge \
                      root lock is held by something that is not this creation"
                 );
-                std::thread::yield_now();
+                // Cheap polling, not a budget: the loop's exits are still the two
+                // events above. A bare `yield_now` here spun one core hot for the
+                // few ms the staging takes and issued thousands of `read_dir`s —
+                // measurable next door, because ~660 other tests in this binary
+                // share a session store and some of them are sensitive to load.
+                std::thread::sleep(std::time::Duration::from_micros(200));
             }
             if inside {
                 staged = Some(creator);
