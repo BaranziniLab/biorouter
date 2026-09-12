@@ -164,6 +164,14 @@ mod tests {
                 Ok(())
             }
 
+            async fn kill_running_job_in_session(
+                &self,
+                _sched_id: &str,
+                _expected_session_id: Option<&str>,
+            ) -> Result<(), SchedulerError> {
+                Ok(())
+            }
+
             async fn get_running_job_info(
                 &self,
                 _sched_id: &str,

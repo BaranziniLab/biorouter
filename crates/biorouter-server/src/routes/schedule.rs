@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -549,18 +550,47 @@ async fn update_schedule(
 pub async fn kill_running_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<KillJobResponse>, (StatusCode, String)> {
+    headers: HeaderMap,
+) -> Result<Json<KillJobResponse>, Response> {
     let scheduler = state.scheduler();
+
+    // Issue #56: this stopped ANY chat's scheduled run for any holder of the
+    // daemon secret. `POST /active_work/{id}/cancel` gates the very same kill,
+    // reached by the very same schedule id, so leaving this open did not merely
+    // leave a residual — it made that gate bypassable by a one-word change of
+    // URL, which reads as protection while being none.
+    //
+    // Resolve the run to the chat it is in and ask the chat READ's own gate
+    // BEFORE anything is stopped, exactly as the cancel route does: the same
+    // status and the same bytes, and the same answer for a schedule that is not
+    // running and for one that does not exist, so a refusal says nothing about
+    // which it was.
+    let owner = scheduler
+        .get_running_job_info(&id)
+        .await
+        .ok()
+        .flatten()
+        .map(|(session_id, _)| session_id);
+    crate::routes::session_reach::work_reach(state.session_manager(), owner.as_deref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
 
     // ⚠ The success message below is only true because `kill_running_job` now
     // FAILS when there was nothing to cancel. It used to return `Ok(())` whenever
     // the cancel-token registry held no token for the schedule, so this route
     // reported "Successfully killed running job" for a Stop that stopped
     // nothing — the #148 cancel complaint.
-    scheduler.kill_running_job(&id).await.map_err(|e| {
-        eprintln!("Error killing running job '{}': {:?}", id, e);
-        classify_kill_error(&e)
-    })?;
+    // The session-CHECKED kill: `owner` is the run this request was authorized
+    // against, and the scheduler holds its `jobs` lock across the check and the
+    // cancel, so a run that changed between the gate above and here is refused
+    // rather than stopped. See `Scheduler::kill_running_job_in_session`.
+    scheduler
+        .kill_running_job_in_session(&id, owner.as_deref())
+        .await
+        .map_err(|e| {
+            eprintln!("Error killing running job '{}': {:?}", id, e);
+            classify_kill_error(&e).into_response()
+        })?;
 
     Ok(Json(KillJobResponse {
         message: format!("Successfully killed running job '{}'", id),

@@ -367,11 +367,15 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
-                counts: c(0, 1, 0),
+                counts: c(0, 2, 0),
                 kind: SiteKind::Unrelated,
-                what: "the MODULE qualifier on `session_reach::http_caller`, which filters \
-                       `GET /schedule/{id}/sessions` — a listing, gated by `lists_session`, not \
-                       by this function",
+                what: "the MODULE qualifier twice, on neither occasion this function. Once on \
+                       `session_reach::http_caller`, which filters `GET /schedule/{id}/sessions` \
+                       — a listing, gated by `lists_session`. Once on \
+                       `session_reach::work_reach`, which gates `POST /schedule/{id}/kill`: the \
+                       stop resolves the run to its chat and asks THAT function, exactly as \
+                       `POST /active_work/{id}/cancel` does for the same kill, so neither route \
+                       is the easier way to stop a private chat's run",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -582,15 +586,30 @@ const REGISTRY: &[Guard] = &[
                   work's chat through `session_reach` itself, and work that names no chat — or a \
                   handle that names nothing — as an unreadable target, refused in the same words",
         status: Status::Wired,
-        sites: &[Site {
-            file: "crates/biorouter-server/src/routes/active_work.rs",
-            counts: c(1, 0, 0),
-            kind: SiteKind::Guard,
-            what: "`POST /active_work/{id}/cancel`, after the id is resolved to its chat (the \
-                   registry entry's, or the running schedule's) and before the registry's cancel \
-                   action or the scheduler's kill. It stopped any chat's work for a caller \
-                   holding only the daemon secret",
-        }],
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/active_work.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /active_work/{id}/cancel`, after the id is resolved to its chat \
+                       (the registry entry's, or the running schedule's) and before the \
+                       registry's cancel action or the scheduler's kill. It stopped any chat's \
+                       work for a caller holding only the daemon secret",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /schedule/{id}/kill`, which stops the SAME run as the cancel route \
+                       above, reached by the schedule id instead of the work handle. ⚠ This \
+                       second call site is not redundancy: while it was missing, the gate on \
+                       the row above protected nothing for its `sched:` arm, because a caller \
+                       refused there re-issued the request one URL over and stopped the run \
+                       anyway. Both now resolve the run to its chat first, and both pass that \
+                       chat to `kill_running_job_in_session` so a run that changed under the \
+                       decision is refused rather than stopped",
+            },
+        ],
     },
     Guard {
         ident: "reach_knowledge_base",

@@ -1446,6 +1446,7 @@ mod tests {
         let skills_rs = include_str!("skills.rs");
         let knowledge_rs = include_str!("knowledge.rs");
         let active_work_rs = include_str!("active_work.rs");
+        let schedule_rs = include_str!("schedule.rs");
         for (src, func, gate_call, first_touch, what) in [
             (
                 reply_rs,
@@ -1588,7 +1589,7 @@ mod tests {
                 active_work_rs,
                 "async fn cancel_active_work(",
                 "work_reach(",
-                "kill_running_job(",
+                "kill_running_job_in_session(",
                 "the scheduler's kill of the run",
             ),
             (
@@ -1597,6 +1598,21 @@ mod tests {
                 "work_reach(",
                 "active_work().cancel(",
                 "the registry's cancel action, which kills a process group or trips a turn",
+            ),
+            // ── The same run, named by its SCHEDULE id instead of its work handle ──
+            //
+            // ⚠ Without this row the gate above protects nothing for the
+            // `sched:` arm: `POST /schedule/{id}/kill` reaches the identical
+            // `Scheduler` by the identical schedule id, so a caller refused at
+            // `/active_work/{id}/cancel` re-issued the request one URL over and
+            // stopped the run anyway. A gate a one-word change of URL routes
+            // around reads as protection while being none.
+            (
+                schedule_rs,
+                "pub async fn kill_running_job(",
+                "work_reach(",
+                "kill_running_job_in_session(",
+                "the scheduler's kill of the run",
             ),
         ] {
             let handler = body_of(src, func);

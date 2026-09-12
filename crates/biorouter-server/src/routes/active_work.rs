@@ -256,7 +256,12 @@ async fn cancel_active_work(
         CancelTarget::Scheduler(sched_id) => {
             state
                 .scheduler()
-                .kill_running_job(&sched_id)
+                // Session-CHECKED: `owner` is the run the gate above admitted
+                // this caller to. A schedule id is stable across runs while
+                // `current_session_id` is not, so an unchecked kill could land
+                // on a run that started after the decision — see
+                // `Scheduler::kill_running_job_in_session`.
+                .kill_running_job_in_session(&sched_id, owner.as_deref())
                 .await
                 .map_err(|e| match e {
                     biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
