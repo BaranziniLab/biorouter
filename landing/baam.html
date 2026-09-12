@@ -4089,6 +4089,61 @@ extensions: []</pre>
     }
   }
 
+  /* ── What a card is searched BY ─────────────────────────────
+     The licence is not part of it. Every card in this catalog is Apache-2.0, so
+     it separates nothing, and it reached the haystack THREE ways: `data-license`
+     (on every card), the `Apache-2.0` chip the catalog publishes in the tag row
+     (part of the card's own textContent, on an authored skill card), and — on a
+     skill — the `apache` keyword in `data-tags` derived from that chip. Because
+     `data-license` alone is universal, the shelf was worse than the catalog:
+     measured here on 2026-09-12, `apache`, `Apache-2.0` and `pac` each returned
+     ALL 37 extension cards and ALL 132 skill cards, not one of them about Apache
+     anything. After this: 0, 0, 1 and 0, 0, 7.
+
+     The same overlap in the app's own matchers is worse in a different way,
+     because those split a query into words and fall a plural back to its
+     singular: measured in the Browse-extensions modal the same day, `PACS`
+     returned 31 of 37 extensions via `pac` inside `apache`. Fixed there in one
+     rule — `names_only_the_license` in crates/biorouter/src/catalog_search.rs
+     and its port in ui/desktop/src/components/baam/search.ts — and this is the
+     third copy of it. By WORDS and not by equality, because the chip says
+     `Apache-2.0` while the keyword says `apache`, and an equality test drops
+     only the first.
+
+     Only the licence goes. `MCP`, `ELN`, `Imaging` and `Registry` are what a tag
+     is for, and the chip still RENDERS — this drops it from what is searched,
+     not from the card. Note that `extCardHtml` and `buildExtChips` already
+     filter `/^apache/i`, for row space and chip noise rather than for search;
+     that near-miss is part of why this looked handled. */
+  const WORD_BREAK = /[^\p{Alphabetic}\p{N}]+/u;
+
+  function wordsOf(text) {
+    return String(text == null ? '' : text).toLowerCase().split(WORD_BREAK).filter(Boolean);
+  }
+
+  function namesOnlyTheLicense(label, licenseWords) {
+    const words = wordsOf(label);
+    return words.length > 0 && words.every(w => licenseWords.indexOf(w) !== -1);
+  }
+
+  function searchHaystack(card) {
+    const licenseWords = wordsOf(card.dataset.license);
+    // A chip is part of `textContent`, so a licence chip is removed from that
+    // string rather than skipped while assembling one.
+    let text = card.textContent;
+    if (licenseWords.length) {
+      card.querySelectorAll('.tag').forEach(chip => {
+        const label = chip.textContent;
+        if (label && namesOnlyTheLicense(label, licenseWords)) text = text.split(label).join(' ');
+      });
+    }
+    // Separators are preserved and only a licence token is blanked, so a phrase
+    // spanning two keywords still matches as it did.
+    const tags = String(card.dataset.tags || '')
+      .replace(/[^\s,]+/g, t => (namesOnlyTheLicense(t, licenseWords) ? '' : t));
+    return (text + ' ' + tags).toLowerCase();
+  }
+
   function filterExtensions(q) {
     const bar = document.getElementById('ext-chips');
     const active = activeChips(bar);
@@ -4099,7 +4154,7 @@ extensions: []</pre>
     const cards = document.querySelectorAll('#extensions-section .ext-card');
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '') + ' ' + (c.dataset.license || '')).toLowerCase();
+      const hay = searchHaystack(c);
       let show = (!q || hay.indexOf(q) !== -1);
       if (show) {
         for (let i = 0; i < facets.length; i++) {
@@ -4179,7 +4234,7 @@ extensions: []</pre>
     const cards = document.querySelectorAll('#skills-section .skill-card');
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '') + ' ' + (c.dataset.license || '')).toLowerCase();
+      const hay = searchHaystack(c);
       let show = (!q || hay.indexOf(q) !== -1);
       if (show) {
         for (let i = 0; i < facets.length; i++) {
@@ -4230,7 +4285,7 @@ extensions: []</pre>
     const cards = document.querySelectorAll('#workflows-section .wf-card');
     let visible = 0;
     cards.forEach(c => {
-      const hay = (c.textContent + ' ' + (c.dataset.tags || '')).toLowerCase();
+      const hay = searchHaystack(c);
       const show = !q || hay.indexOf(q) !== -1;
       c.style.display = show ? '' : 'none';
       if (show) visible++;

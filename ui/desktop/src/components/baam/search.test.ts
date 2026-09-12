@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { MARKETPLACE_EXTENSIONS, MARKETPLACE_SKILLS } from './marketplace.fixture';
-import { rankExtensions, rankSkills, type RegistryExtension, type RegistrySkill } from './registry';
+import {
+  FALLBACK_REGISTRY,
+  rankExtensions,
+  rankSkills,
+  type RegistryExtension,
+  type RegistrySkill,
+} from './registry';
 import {
   EXTENSION_NOISE,
   isBrowseQuery,
+  namesOnlyTheLicense,
   parseQuery,
   rankEntries,
   scoreEntry,
@@ -431,6 +438,44 @@ describe('the fields each catalog searches, and what a match in each is worth', 
     expect(rankExtensions([{ ...blankExtension, license: 'Apache-2.0' }], 'PACS').hits).toEqual([]);
   });
 
+  /// ⚠ And not through a LABEL either, which is where the licence went on
+  /// holding the whole catalog after the field was dropped — the case the test
+  /// above cannot see, because an entry with no tags has nowhere for it to hide.
+  /// The registry publishes the licence a second time as one of the entry's own
+  /// tag chips and, for a skill, a third time among its keywords, and both are
+  /// searched. `Apache-2.0` and `apache` are both dropped, because they are the
+  /// same licence spelled two ways and an equality test would keep the second.
+  it('does not search the license republished as a tag or a keyword', () => {
+    const licensed = { license: 'Apache-2.0' };
+    for (const query of ['PACS', 'pac', 'apache', 'Apache-2.0']) {
+      expect(
+        rankSkills([{ ...blankSkill, ...licensed, tags: ['Apache-2.0'] }], query).hits,
+        `skill tag, ${query}`
+      ).toEqual([]);
+      expect(
+        rankSkills([{ ...blankSkill, ...licensed, keywords: ['apache'] }], query).hits,
+        `skill keyword, ${query}`
+      ).toEqual([]);
+      expect(
+        rankExtensions([{ ...blankExtension, ...licensed, tags: ['Apache-2.0'] }], query).hits,
+        `extension tag, ${query}`
+      ).toEqual([]);
+    }
+
+    // Only the licence goes. A label that says anything else stays searchable,
+    // including one that merely CONTAINS a word of the licence.
+    expect(
+      rankSkills([{ ...blankSkill, ...licensed, tags: ['Apache Spark'] }], 'spark').hits
+    ).toHaveLength(1);
+    expect(
+      rankExtensions([{ ...blankExtension, ...licensed, tags: ['ELN'] }], 'eln').hits
+    ).toHaveLength(1);
+    // An entry with no licence has no licence label to drop.
+    expect(
+      rankExtensions([{ ...blankExtension, tags: ['Apache-2.0'] }], 'apache').hits
+    ).toHaveLength(1);
+  });
+
   it('ranks a skill matched by id or name above a label, and a label above prose', () => {
     const skills: RegistrySkill[] = [
       { ...blankSkill, id: 'in-the-description', description: 'Segments zebrafish embryos.' },
@@ -499,6 +544,35 @@ describe('marketplace search — the query as written', () => {
   });
 });
 
+/// The same cases `catalog_search.rs` asserts for
+/// `names_only_the_license`, so the rule is pinned in both languages. Both
+/// spellings the registry publishes go — `Apache-2.0` is the tag and `apache` is
+/// the keyword, and an equality test would keep the second and leave `PACS`
+/// matching 49 skills through it.
+describe('namesOnlyTheLicense — which labels a catalog stops searching', () => {
+  it.each(['Apache-2.0', 'apache', 'APACHE', 'apache 2.0', '2.0', 'Apache/2.0'])(
+    'reads `%s` as saying nothing `Apache-2.0` does not',
+    (label) => {
+      expect(namesOnlyTheLicense(label, 'Apache-2.0')).toBe(true);
+    }
+  );
+
+  it.each(['Apache Spark', 'MCP', 'ELN', 'Imaging', 'Registry', 'apachex'])(
+    'keeps `%s`, which says more than the licence',
+    (label) => {
+      expect(namesOnlyTheLicense(label, 'Apache-2.0')).toBe(false);
+    }
+  );
+
+  it('says no for a label with no words, and for an entry with no licence', () => {
+    // Saying nothing at all is not the same as saying only the licence.
+    expect(namesOnlyTheLicense('', 'Apache-2.0')).toBe(false);
+    expect(namesOnlyTheLicense('  -  ', 'Apache-2.0')).toBe(false);
+    expect(namesOnlyTheLicense('Apache-2.0', '')).toBe(false);
+    expect(namesOnlyTheLicense('Apache-2.0', undefined)).toBe(false);
+  });
+});
+
 describe('rankExtensions — the same matcher over the extensions catalog', () => {
   /// No field holds the phrase as written — SPOKEAgent says "SPOKE biomedical
   /// knowledge graph" and "spoke-knowledge-graph" — so the matcher this replaced
@@ -515,5 +589,125 @@ describe('rankExtensions — the same matcher over the extensions catalog', () =
       'knowledge',
       'graph',
     ]);
+  });
+});
+
+/**
+ * The finding this fix answers, measured by driving the real Browse-extensions
+ * modal on 2026-09-12 against the live 37-entry registry — with the licence
+ * FIELD already excluded by PR #242 and its port PR #255:
+ *
+ * | query        | matches |
+ * | ------------ | ------- |
+ * | *(empty)*    | 37      |
+ * | `PACS`       | **31**  |
+ * | `pac`        | **31**  |
+ * | `apache`     | **31**  |
+ * | `Apache-2.0` | 32      |
+ * | `zzzznope`   | 0       |
+ *
+ * The three counts agreeing identifies the path: `PACS` → its singular `pac` →
+ * inside `apache` → the `Apache-2.0` TAG chip on 31 rows, none of them about
+ * PACS (BenchlingAgent, DNAnexusAgent, OMEROAgent…). The field had been removed
+ * and the same string kept matching through a different field, so a test
+ * asserting "the license is not searched" passed while the defect survived.
+ *
+ * Run against the bundled snapshot, not a fixture: a fixture without the licence
+ * label cannot fail, which is precisely how this got through.
+ */
+describe('a licence republished as a label is not searchable through it', () => {
+  const { extensions, skills } = FALLBACK_REGISTRY;
+
+  /** A word of `license`, as a whole label — spelled out so this cannot be satisfied by the fix's own mistake. */
+  const isALicenseWord = (license: string | undefined, label: string) =>
+    (license ?? '')
+      .split(/[^0-9A-Za-z]+/)
+      .filter(Boolean)
+      .some((word) => word.toLowerCase() === label.toLowerCase());
+
+  it('still carries the overlap this pins, or proves nothing', () => {
+    const tagged = (entries: readonly { tags: string[]; license?: string }[]) =>
+      entries.filter((entry) =>
+        entry.tags.some((tag) => tag.toLowerCase() === (entry.license ?? '').toLowerCase())
+      ).length;
+    expect(tagged(extensions), 'extensions tagged with their own licence').toBeGreaterThan(1);
+    expect(tagged(skills), 'skills tagged with their own licence').toBeGreaterThan(1);
+    expect(
+      skills.filter((skill) => skill.keywords.some((k) => isALicenseWord(skill.license, k))).length,
+      'skills with a licence word among their keywords'
+    ).toBeGreaterThan(1);
+  });
+
+  it('finds nothing for the licence, in either catalog', () => {
+    // `apache` occurs nowhere in the snapshot except each entry's own licence.
+    // Measured before the fix: 31 extensions and 49 skills.
+    expect(ids(rankExtensions(extensions, 'apache'))).toEqual([]);
+    expect(ids(rankSkills(skills, 'apache'))).toEqual([]);
+  });
+
+  it('keeps the plural fallback and the substring rule, and loses only the licence', () => {
+    const pacsSkills = ids(rankSkills(skills, 'PACS'));
+    // Real hits: a skill whose keywords say `pacs`, and `pac` inside `PacBio`.
+    expect(pacsSkills).toContain('biomedical-imaging-pathology');
+    expect(pacsSkills).toContain('long-read-sequencing');
+    // Licence-only, measured among the 51 before the fix.
+    expect(pacsSkills).not.toContain('empirical-research-router');
+    expect(pacsSkills).not.toContain('causal-identification-gates');
+
+    const pacsExtensions = ids(rankExtensions(extensions, 'PACS'));
+    for (const licenceOnly of ['benchlingagent', 'dnanexusagent', 'omeroagent']) {
+      expect(pacsExtensions, `${licenceOnly} is not about PACS`).not.toContain(licenceOnly);
+    }
+  });
+
+  /**
+   * The fix does exactly one thing: it reads an entry as if the licence label
+   * were not there. Asserted against a copy of the snapshot with those labels
+   * removed from the DATA, so an over-broad rule — dropping every tag, or every
+   * label containing a licence word — fails here even though it would satisfy the
+   * assertions above. The queries are the legitimate ones the port's differential
+   * harness measured, plus the licence ones.
+   */
+  it('changes nothing else about any query', () => {
+    const withoutLicenceLabels = (labels: string[], license: string | undefined) =>
+      labels.filter((label) => !isALicenseWord(license, label) && label !== license);
+    const strippedExtensions = extensions.map((entry) => ({
+      ...entry,
+      tags: withoutLicenceLabels(entry.tags, entry.license),
+    }));
+    const strippedSkills = skills.map((entry) => ({
+      ...entry,
+      tags: withoutLicenceLabels(entry.tags, entry.license),
+      keywords: withoutLicenceLabels(entry.keywords, entry.license),
+    }));
+
+    let matched = 0;
+    for (const query of [
+      'R scripting ggplot visualization',
+      'r-scripting',
+      'SPOKE knowledge graph',
+      'ggplot',
+      'heatmap',
+      'python',
+      'PACS',
+      'pac',
+      'apache',
+      'Apache-2.0',
+      'zzzznope',
+      '',
+    ]) {
+      const skillHits = ids(rankSkills(skills, query));
+      const extensionHits = ids(rankExtensions(extensions, query));
+      expect(skillHits, `skills, ${query || '(empty)'}`).toEqual(
+        ids(rankSkills(strippedSkills, query))
+      );
+      expect(extensionHits, `extensions, ${query || '(empty)'}`).toEqual(
+        ids(rankExtensions(strippedExtensions, query))
+      );
+      matched += skillHits.length + extensionHits.length;
+    }
+    // The browse query alone contributes 166, so a run that read no entry at all
+    // cannot pass this by matching empty against empty.
+    expect(matched).toBeGreaterThan(166);
   });
 });
