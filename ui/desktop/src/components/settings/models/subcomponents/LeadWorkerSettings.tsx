@@ -23,6 +23,64 @@ interface LeadWorkerSettingsProps {
   onClose: () => void;
 }
 
+/**
+ * A model row in either select.
+ *
+ * `unavailableReason` is the daemon's own sentence for a provider the user HAS
+ * set up that cannot run right now (`ProviderDetails.unavailable_reason`, from
+ * `ProviderReadiness::Unavailable`).
+ *
+ * # The defect (D4 of the 2026-09-12 model-controls run)
+ *
+ * This dialog built its options from `providers.filter((p) => p.is_configured)`
+ * and mapped them to `{ value, label, provider }`, dropping the row. The daemon
+ * serves an unavailable provider `is_configured: false` **with** a reason, so the
+ * filter deleted the one row the user most needs to see — and the option shape it
+ * mapped to had nowhere to carry the reason even if the row had survived.
+ *
+ * Measured live (dev GUI, sandboxed config, `CODEX_COMMAND: /nope/codex`,
+ * 2026-09-12): this dialog built **25** options, `anyCodex=false`,
+ * `anyUnavailable=false`, while `GET /config/providers` was serving
+ * `codex | is_configured=False | unavailable_reason='Codex is not installed, or is
+ * not on a path Biorouter searches' | 6 known models`. One menu item away, the
+ * Switch-models picker rendered that provider disabled with the same sentence on
+ * the row.
+ *
+ * So the reason is carried through, and rendered the way that picker already
+ * renders it: `aria-disabled` rows with the sentence beneath the label, plus the
+ * sentence beside a FIELD whose selection is barred — because a disabled row is
+ * not a disabled selection (a pair saved while the CLI worked reopens here after
+ * it moved, with nobody re-picking anything).
+ */
+type LeadWorkerModelOption = {
+  value: string;
+  label: string;
+  provider: string;
+  unavailableReason?: string;
+};
+
+/** The prefix the Switch-models picker uses, so the two surfaces read alike. */
+const unavailableLine = (reason: string) => `Unavailable: ${reason}`;
+
+/**
+ * A row's label, with the reason on a second line in the MENU only — the closed
+ * field has room for the name alone, and the reason is stated beside it instead.
+ */
+const renderLeadWorkerOption = (rawOption: unknown, meta: { context: 'menu' | 'value' }) => {
+  const option = rawOption as LeadWorkerModelOption;
+  if (meta.context === 'value' || !option.unavailableReason) {
+    return <span className="block max-w-full truncate">{option.label}</span>;
+  }
+  return (
+    <div className="min-w-0 py-0.5">
+      <div className="truncate text-sm font-medium text-current">{option.label}</div>
+      <div className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-current opacity-70">
+        {unavailableLine(option.unavailableReason)}
+      </div>
+    </div>
+  );
+};
+
 export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps) {
   const { read, upsert, getProviders, getProviderModels, remove } = useConfig();
   const { currentModel } = useModelAndProvider();
@@ -37,9 +95,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
   const [failureThreshold, setFailureThreshold] = useState<number>(2);
   const [fallbackTurns, setFallbackTurns] = useState<number>(2);
   const [isEnabled, setIsEnabled] = useState(false);
-  const [modelOptions, setModelOptions] = useState<
-    { value: string; label: string; provider: string }[]
-  >([]);
+  const [modelOptions, setModelOptions] = useState<LeadWorkerModelOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Load current configuration
@@ -97,7 +153,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
         }
 
         // Load available models
-        const options: { value: string; label: string; provider: string }[] = [];
+        const options: LeadWorkerModelOption[] = [];
 
         if (shouldShowPredefinedModels()) {
           // Use predefined models if available
@@ -112,13 +168,21 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
         } else {
           // Fallback to provider-based models
           const providers = await getProviders(false);
-          const activeProviders = providers.filter((p) => p.is_configured);
+          // D4 — every usable provider, PLUS every provider the user set up that
+          // cannot run right now, which arrives `is_configured: false` with a
+          // reason. The reason rides the option from here to the row; a provider
+          // that was never set up stays out, exactly as before. Same predicate,
+          // same polarity, as `SwitchModelModal`'s provider list.
+          const listedProviders = providers.filter((p) => p.is_configured || p.unavailable_reason);
 
-          const results = await fetchModelsForProviders(activeProviders, getProviderModels);
+          const results = await fetchModelsForProviders(listedProviders, getProviderModels);
           results.forEach(({ provider: p, models, error }) => {
             if (error) {
               console.error(error);
             }
+            const unavailableReason = p.is_configured
+              ? undefined
+              : (p.unavailable_reason ?? undefined);
 
             if (models && models.length > 0) {
               models.forEach((modelName) => {
@@ -126,6 +190,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   value: modelName,
                   label: `${modelName} (${p.metadata.display_name})`,
                   provider: p.name,
+                  unavailableReason,
                 });
               });
             }
@@ -135,6 +200,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                 value: `__custom__:${p.name}`,
                 label: 'Enter a model not listed...',
                 provider: p.name,
+                unavailableReason,
               });
             }
           });
@@ -171,8 +237,31 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
    */
   const hostManaged = isBrowserSurface();
 
+  /**
+   * D4's pre-flight: the reason each HALF cannot run, derived from the selection
+   * on every render.
+   *
+   * ⚠ **A disabled row is not a disabled selection** — the rule
+   * `SwitchModelModal.validation` records at length, and it bites harder here
+   * because nothing in this dialog picks anything on open: the two fields are
+   * filled from `BIOROUTER_LEAD_*` / `BIOROUTER_MODEL`, so a pair saved while a
+   * coding agent's CLI resolved reopens after it moved with a barred model in a
+   * field whose menu nobody will touch. Keyed on the PROVIDER, because that is
+   * what the reason belongs to, and read off the option list so it can never
+   * disagree with the row.
+   */
+  const unavailableReasonForProvider = (providerName: string) =>
+    modelOptions.find((option) => option.provider === providerName)?.unavailableReason ?? null;
+  const leadUnavailable = leadProvider ? unavailableReasonForProvider(leadProvider) : null;
+  const workerUnavailable = workerProvider ? unavailableReasonForProvider(workerProvider) : null;
+  // Only what is actually in force: the fields are inert while the pair is off.
+  const barred = isEnabled && !!(leadUnavailable || workerUnavailable);
+
   const handleSave = async () => {
     if (hostManaged) return;
+    // The button below is already disabled on this verdict; this is its
+    // post-click half, for a submit that arrives some other way.
+    if (barred) return;
     try {
       if (isEnabled && leadModel && workerModel) {
         // Save lead/worker configuration
@@ -279,6 +368,10 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   }}
                   placeholder="Select lead model..."
                   isDisabled={!isEnabled}
+                  formatOptionLabel={renderLeadWorkerOption}
+                  isOptionDisabled={(rawOption: unknown) =>
+                    !!(rawOption as LeadWorkerModelOption).unavailableReason
+                  }
                 />
               ) : (
                 <Input
@@ -289,6 +382,15 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   disabled={!isEnabled}
                 />
               )}
+              {/* D4 — beside the field, because a disabled row says nothing about
+                  a selection nobody re-picked. The custom-model input above
+                  bypasses the option list entirely and keeps its provider, so the
+                  same verdict has to be spoken here for both branches. */}
+              {isEnabled && leadUnavailable ? (
+                <p data-testid="lead-worker-lead-unavailable" className="text-sm text-text-danger">
+                  {unavailableLine(leadUnavailable)}
+                </p>
+              ) : null}
               <p className="text-xs text-text-muted">
                 Strong model for initial planning and fallback recovery
               </p>
@@ -330,6 +432,10 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   }}
                   placeholder="Select worker model..."
                   isDisabled={!isEnabled}
+                  formatOptionLabel={renderLeadWorkerOption}
+                  isOptionDisabled={(rawOption: unknown) =>
+                    !!(rawOption as LeadWorkerModelOption).unavailableReason
+                  }
                 />
               ) : (
                 <Input
@@ -340,6 +446,14 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   disabled={!isEnabled}
                 />
               )}
+              {isEnabled && workerUnavailable ? (
+                <p
+                  data-testid="lead-worker-worker-unavailable"
+                  className="text-sm text-text-danger"
+                >
+                  {unavailableLine(workerUnavailable)}
+                </p>
+              ) : null}
               <p className="text-xs text-text-muted">Fast model for routine execution tasks</p>
             </div>
 
@@ -400,7 +514,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             </Button>
             <Button
               onClick={handleSave}
-              disabled={hostManaged || (isEnabled && (!leadModel || !workerModel))}
+              disabled={hostManaged || barred || (isEnabled && (!leadModel || !workerModel))}
               title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
             >
               Save settings
