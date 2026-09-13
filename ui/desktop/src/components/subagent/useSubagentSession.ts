@@ -94,10 +94,23 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
       // Session" has created one; a GET /sessions/ then 404s on every such
       // mount. There is nothing to look up, so do not ask.
       if (!sessionId) return;
+      // The row first, without the transcript. Almost every tab is an ordinary
+      // chat, for which `session_type` is the whole answer — and the composer
+      // reads this same row in the same mount, so the two share one request
+      // (`utils/sessionReadCoalescing.ts`). Only a subagent's chat needs its
+      // conversation, for the spawn-context record below.
+      const row = (
+        await getSession({
+          path: { session_id: sessionId },
+          query: { metadata_only: true },
+          // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+          headers: await userActionHeaders(),
+        })
+      ).data;
+      if (cancelled || !row || row.session_type !== 'sub_agent') return;
       const session = (
         await getSession({
           path: { session_id: sessionId },
-          // Issue #56 Task 58: reading a private chat needs the proof-of-user.
           headers: await userActionHeaders(),
         })
       ).data;

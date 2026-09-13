@@ -8,6 +8,7 @@ import ReactDOM from 'react-dom/client';
 import { ConfigProvider } from './components/ConfigContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { client } from './api/client.gen';
+import { daemonClientConfig } from './utils/daemonClient';
 import { wrapArtifactForBrowser } from './utils/artifactSecurity';
 // The marker written below and the helper every provider/model control reads
 // are one definition, so the surface cannot be stamped in a spelling nothing
@@ -566,13 +567,7 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       return;
     }
     console.log('connecting at', biorouterApiHost);
-    client.setConfig({
-      baseUrl: biorouterApiHost,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Secret-Key': await window.electron.getSecretKey(),
-      },
-    });
+    client.setConfig(daemonClientConfig(biorouterApiHost, await window.electron.getSecretKey()));
   }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
