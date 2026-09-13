@@ -428,3 +428,45 @@ describe('firstLeaf — the titlebar reserve predicate', () => {
     expect(leafGroupIds(tree)).toEqual(['deep-top', 'deep-bottom', 'right']);
   });
 });
+
+describe('resumeUnsent — a new-chat request arriving from another route', () => {
+  const blank: ChatGroupsAction = { type: 'openTab', payload: { sessionId: '' } };
+  const arriving: ChatGroupsAction = {
+    type: 'openTab',
+    payload: { sessionId: '', resumeUnsent: true },
+  };
+
+  it('focuses the tab already holding a new chat instead of opening a blank one', () => {
+    // After a failed start sent the person to Settings, New chat / Cmd+T is how
+    // they come back; a blank tab beside the kept one put an empty composer in
+    // front of them.
+    const state = run(createInitialChatGroupsState(), blank, open('s1'));
+    const unsent = state.groups['grp-1'].tabs[0].tabId;
+
+    const next = run(state, arriving);
+
+    expect(next.groups['grp-1'].tabs).toHaveLength(2);
+    expect(next.groups['grp-1'].activeTabId).toBe(unsent);
+    expect(next.seq).toBe(state.seq);
+  });
+
+  it('prefers the new chat in view, then one in the focused pane', () => {
+    const state = run(createInitialChatGroupsState(), blank, blank, open('s1'));
+    const [, second] = state.groups['grp-1'].tabs;
+    const inView = run(state, { type: 'activateTab', tabId: second.tabId });
+
+    expect(run(inView, arriving).groups['grp-1'].activeTabId).toBe(second.tabId);
+  });
+
+  it('opens a tab as always when no tab holds a new chat', () => {
+    const state = run(createInitialChatGroupsState(), open('s1'));
+    const next = run(state, arriving);
+    expect(next.groups['grp-1'].tabs).toHaveLength(2);
+    expect(activeSessionIdOf(next)).toBe('');
+  });
+
+  it('changes nothing about a request made on /pair: New chat still opens a tab', () => {
+    const state = run(createInitialChatGroupsState(), blank);
+    expect(run(state, blank).groups['grp-1'].tabs).toHaveLength(2);
+  });
+});

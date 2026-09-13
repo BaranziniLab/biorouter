@@ -54,7 +54,17 @@ import {
   splitComposerText,
 } from '../utils/composerRefs';
 import { findRefTags } from '../utils/resourceRefs';
-import { RESTORE_CHAT_INPUT_EVENT } from '../utils/composerRestore';
+import { RESTORE_CHAT_INPUT_EVENT, composerRestoreIsFor } from '../utils/composerRestore';
+import {
+  EMPTY_COMPOSER_DRAFT,
+  giveBackToComposer,
+  mergeComposerDraft,
+  readComposerDraft,
+  saveComposerDraft,
+  subscribeComposerGiveBack,
+  type ComposerDraft,
+  type DraftImage,
+} from '../utils/composerDrafts';
 import { ResourceRefChip } from './ResourceRefChip';
 
 interface QueuedMessage {
@@ -93,6 +103,36 @@ interface PastedImage {
   filePath?: string; // Path on filesystem after saving
   isLoading: boolean;
   error?: string;
+}
+
+/**
+ * The staged images a message carries when it is handed back or kept: the ones
+ * written to a temp file. One still being read has no file yet and nothing to
+ * send; one with an error was never going to be sent.
+ */
+function draftImagesOf(images: readonly PastedImage[]): DraftImage[] {
+  return images
+    .filter((image) => image.filePath && !image.error)
+    .map((image) => ({
+      id: image.id,
+      filePath: image.filePath as string,
+      dataUrl: image.dataUrl,
+    }));
+}
+
+/** Back to the composer's own shape. A preview not read yet is read on apply. */
+function pastedImagesOf(images: readonly DraftImage[]): PastedImage[] {
+  return images.map((image) => ({
+    id: image.id,
+    filePath: image.filePath,
+    dataUrl: image.dataUrl,
+    isLoading: !image.dataUrl,
+  }));
+}
+
+/** Dropped files that have finished staging. */
+function draftFilesOf(files: readonly DroppedFile[]): DroppedFile[] {
+  return files.filter((file) => !file.isLoading);
 }
 
 // Constants for image handling
@@ -313,14 +353,19 @@ interface ChatInputProps {
   commandHistory?: string[];
   initialValue?: string;
   /**
-   * A message a failed chat start owes back to THIS chat's composer, held by
-   * the surface (`BaseChat.keptMessage`) rather than by the composer that
-   * submitted it — because the same failure replaces that composer, and the
-   * replacement is what the person is looking at. Re-applied on every mount
-   * while it is set, so the second, third and nth rebuild of the composer all
-   * show it. See `utils/composerRestore.ts` for what this replaced and why.
+   * The TAB this composer belongs to while its chat does not exist yet
+   * (`composerDraftKeyForTab`), or nothing for a composer of an existing chat
+   * and for Home's.
+   *
+   * With a key, what the composer holds is not this instance's alone: it is
+   * seeded from, and saved back to, the tab's draft in `utils/composerDrafts.ts`,
+   * and a message a send did not take is handed back THROUGH the key. That is
+   * what lets an unsent new chat survive the rebuilds a person never sees — a
+   * failed start remounting the composer, a tab switch, leaving /pair — and it
+   * is the composer's only addressable identity: no other composer can be
+   * reached under it. See that module for the lifetime and why it is bounded.
    */
-  keptMessage?: string;
+  draftKey?: string;
   droppedFiles?: DroppedFile[];
   onFilesProcessed?: () => void;
   setView: (view: View) => void;
@@ -381,7 +426,7 @@ export default function ChatInput({
   onSteer,
   commandHistory = [],
   initialValue = '',
-  keptMessage,
+  draftKey,
   droppedFiles = [],
   onFilesProcessed,
   setView,
@@ -401,15 +446,32 @@ export default function ChatInput({
   supportsVisionOverride,
   supportedInputMimeTypesOverride,
 }: ChatInputProps) {
-  const [_value, setValue] = useState(initialValue);
-  const [displayValue, setDisplayValue] = useState(initialValue); // For immediate visual feedback
+  // A new chat's unsent message, as its tab last held it. Read ONCE, in the
+  // first render, and used to seed state rather than applied by an effect: an
+  // effect would run after a first render showing an empty box, and after the
+  // `[initialValue]` effect below — and anything that saved in between (a
+  // StrictMode remount does exactly that) would save the empty box over it.
+  const [seedDraft] = useState<ComposerDraft | undefined>(() =>
+    draftKey ? readComposerDraft(draftKey) : undefined
+  );
+  const [_value, setValue] = useState(seedDraft?.text ?? initialValue);
+  const [displayValue, setDisplayValue] = useState(seedDraft?.text ?? initialValue); // For immediate visual feedback
   // (`isFocused` used to live here, mirroring the textarea's focus into React
   // purely so the card could paint a ring. The card now asks CSS directly with
   // `has-[textarea:focus]`, which is one source of truth instead of two and
   // cannot fall out of sync with the DOM the way a mirrored flag can.)
-  const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const [pastedImages, setPastedImages] = useState<PastedImage[]>(() =>
+    pastedImagesOf(seedDraft?.images ?? [])
+  );
   const pastedImagesRef = useRef(pastedImages);
   pastedImagesRef.current = pastedImages;
+  // What the box holds, as of the last render OR the last synchronous change
+  // this component made without waiting for one (a send clearing it, a give-back
+  // filling it). The draft is saved from these on the way out, and an unmount
+  // can land between a state update and its render — so a ref that only
+  // followed renders would save the box as it was BEFORE the send cleared it.
+  const displayValueRef = useRef(displayValue);
+  displayValueRef.current = displayValue;
 
   // Loading gates composer operations; live work drives the visual activity
   // indicator. LoadingConversation is intentionally only in the former.
@@ -853,8 +915,17 @@ export default function ChatInput({
     selectFile: (index: number) => void;
   }>(null);
 
-  // Update internal value when initialValue changes
+  // Update internal value when initialValue changes.
+  //
+  // CHANGES only, not the mount. On mount the state was just initialised, so
+  // this was a no-op there — except for a composer seeded with a new chat's
+  // unsent message, which it would blank, deleting that message's staged
+  // images from disk on the way. StrictMode runs it twice on mount; both runs
+  // see an unchanged value.
+  const appliedInitialValueRef = useRef(initialValue);
   useEffect(() => {
+    if (appliedInitialValueRef.current === initialValue) return;
+    appliedInitialValueRef.current = initialValue;
     setValue(initialValue);
     setDisplayValue(initialValue);
 
@@ -892,7 +963,7 @@ export default function ChatInput({
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [savedInput, setSavedInput] = useState('');
   const [isInGlobalHistory, setIsInGlobalHistory] = useState(false);
-  const [hasUserTyped, setHasUserTyped] = useState(false);
+  const [hasUserTyped, setHasUserTyped] = useState(() => Boolean(seedDraft?.text));
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const timeoutRefsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   // Rung 3b of the yield ladder: when the composer's control row is too narrow
@@ -900,45 +971,6 @@ export default function ChatInput({
   // instead of overlapping. Measured on the toolbar's own box (see the hook).
   const toolbarRef = useRef<HTMLDivElement>(null);
   const composerToolbarCollapsed = useComposerToolbarCollapsed(toolbarRef);
-
-  // Re-populate the composer when a submit failed before the backend accepted it
-  // (e.g. backend unreachable): BaseChat.handleCreateSessionError hands back the
-  // text that performSubmit had already cleared, so the user does not silently
-  // lose what they typed. Match by sessionId — with `null === null` for the
-  // pre-session Home composer — so a broadcast can only restore the input that
-  // actually submitted, never a sibling.
-  const restoreText = useCallback((value: string) => {
-    setDisplayValue(value);
-    setValue(value);
-    setHasUserTyped(true);
-    textAreaRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ sessionId?: string | null; value?: string }>).detail;
-      if ((detail?.sessionId ?? null) !== (sessionId ?? null)) return;
-      if (typeof detail?.value !== 'string' || !detail.value) return;
-      restoreText(detail.value);
-    };
-    window.addEventListener(RESTORE_CHAT_INPUT_EVENT, handler);
-    return () => window.removeEventListener(RESTORE_CHAT_INPUT_EVENT, handler);
-  }, [sessionId, restoreText]);
-
-  // A message handed back to a composer that was REPLACED in the same failure.
-  // The event above only reaches a composer that is already listening, and the
-  // fresh tab's is not: a failed start remounts it (BaseChat moves the composer
-  // between `isCleanConversation`'s two subtrees), so the event lands on the
-  // instance being discarded. The surface holds the message for whatever
-  // composer it renders next, and this reads it — on THIS mount and on every
-  // later one, for as long as the surface still owes it, which is what makes a
-  // retry survive: nothing here is spent by being read.
-  //
-  // Must stay BELOW the `[initialValue]` effect, which also runs on mount and
-  // would blank it again.
-  useEffect(() => {
-    if (keptMessage) restoreText(keptMessage);
-  }, [keptMessage, restoreText]);
 
   // A region the user selected in the preview panel arrives here as an already
   // written PNG. It joins `pastedImages` rather than getting a channel of its
@@ -1013,7 +1045,7 @@ export default function ChatInput({
     handleDragEnter: handleLocalDragEnter,
     handleDragOver: handleLocalDragOver,
     handleDragLeave: handleLocalDragLeave,
-  } = useFileDrop();
+  } = useFileDrop(() => [...(seedDraft?.files ?? [])]);
 
   // Merge local dropped files with parent dropped files. Keep every dropped
   // item visible: model capability determines whether an image is uploaded as
@@ -1021,6 +1053,124 @@ export default function ChatInput({
   const allDroppedFiles = useMemo(() => {
     return [...droppedFiles, ...localDroppedFiles];
   }, [droppedFiles, localDroppedFiles]);
+
+  // ---- What the box holds, and handing a message back to it -----------------
+  //
+  // "Your message was kept" promises the MESSAGE: its text, its staged images
+  // and its dropped files. It used to keep the text alone — the image was gone
+  // from a failed start while the toast said otherwise, measured on 1.90.4.
+  const localDroppedFilesRef = useRef(localDroppedFiles);
+  localDroppedFilesRef.current = localDroppedFiles;
+  const parentDroppedFilesRef = useRef(droppedFiles);
+  parentDroppedFilesRef.current = droppedFiles;
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+
+  /** Everything the person would lose if this composer vanished right now. */
+  const heldDraft = useCallback(
+    (): ComposerDraft => ({
+      text: displayValueRef.current,
+      images: draftImagesOf(pastedImagesRef.current),
+      files: draftFilesOf([...parentDroppedFilesRef.current, ...localDroppedFilesRef.current]),
+    }),
+    []
+  );
+
+  /**
+   * Show `next`, replacing what the box holds. Callers pass what the box holds
+   * MERGED with what came back (`takeBack`), never a bare give-back — so this
+   * cannot replace anything the person typed. The refs move with the state,
+   * synchronously, so an unmount before the next render saves what is shown.
+   */
+  const showDraft = useCallback(
+    (next: ComposerDraft) => {
+      displayValueRef.current = next.text;
+      setDisplayValue(next.text);
+      setValue(next.text);
+      const images = pastedImagesOf(next.images);
+      pastedImagesRef.current = images;
+      setPastedImages(images);
+      const parentIds = new Set(parentDroppedFilesRef.current.map((file) => file.id));
+      const local = next.files.filter((file) => !parentIds.has(file.id));
+      localDroppedFilesRef.current = local;
+      setLocalDroppedFiles(local);
+      if (next.text.trim()) setHasUserTyped(true);
+      textAreaRef.current?.focus();
+      // A preview that was never read — an image handed back by path — is read
+      // back from the file it names, as an annotation's is.
+      for (const image of next.images) {
+        if (image.dataUrl) continue;
+        void window.electron
+          ?.readTempImageAsBase64(image.filePath)
+          .then(({ data, mimeType }) => {
+            setPastedImages((current) =>
+              current.map((candidate) =>
+                candidate.id === image.id
+                  ? { ...candidate, dataUrl: `data:${mimeType};base64,${data}`, isLoading: false }
+                  : candidate
+              )
+            );
+          })
+          .catch(() => {
+            setPastedImages((current) => current.filter((candidate) => candidate.id !== image.id));
+          });
+      }
+    },
+    [setLocalDroppedFiles]
+  );
+
+  /** Merge a message this composer did not keep back into the box. */
+  const takeBack = useCallback(
+    (returned: ComposerDraft): ComposerDraft => {
+      const next = mergeComposerDraft(heldDraft(), returned);
+      showDraft(next);
+      return next;
+    },
+    [heldDraft, showDraft]
+  );
+
+  // A NEW chat's composer: its tab's draft is where the box lives between
+  // composers. The seed above is the way in; this is the way out (saved as the
+  // composer goes, whatever takes it — a failed start's remount, a tab switch,
+  // the route changing) and the addressed way back (a give-back under this key
+  // lands on whichever composer holds it, merged, and saved at once).
+  useEffect(() => {
+    if (!draftKey) return;
+    const unsubscribe = subscribeComposerGiveBack(draftKey, (returned) => {
+      saveComposerDraft(draftKey, takeBack(returned));
+    });
+    return () => {
+      unsubscribe();
+      saveComposerDraft(draftKey, heldDraft());
+    };
+  }, [draftKey, heldDraft, takeBack]);
+
+  // A message handed back to an EXISTING chat's composer by that chat's id
+  // (`BaseChat.returnInitialMessageToComposer`). `composerRestoreIsFor` refuses
+  // any restore that does not name this composer's own chat, so a composer with
+  // no chat — a new tab's, Home's — can never be reached this way; and it is
+  // merged, so text the person is typing here is never replaced by it. Its
+  // attachments come back too: the detail names their files.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<unknown>).detail;
+      if (!composerRestoreIsFor(detail, sessionId)) return;
+      const stamp = Date.now();
+      takeBack({
+        text: detail.value ?? '',
+        images: (detail.attachments ?? [])
+          .filter((attachment) => attachment.kind === 'image' && attachment.path)
+          .map((attachment, index) => ({
+            id: `restored-${stamp}-${index}`,
+            filePath: attachment.path,
+            dataUrl: '',
+          })),
+        files: [],
+      });
+    };
+    window.addEventListener(RESTORE_CHAT_INPUT_EVENT, handler);
+    return () => window.removeEventListener(RESTORE_CHAT_INPUT_EVENT, handler);
+  }, [sessionId, takeBack]);
 
   const currentModelAcceptsMimeType = useCallback(
     (mimeType: string) =>
@@ -1279,18 +1429,26 @@ export default function ChatInput({
   useEffect(() => {
     return () => {
       // Clear any pending timeouts from image processing
-      setPastedImages((currentImages) => {
-        currentImages.forEach((img) => {
-          if (img.filePath) {
-            try {
-              window.electron.deleteTempFile(img.filePath);
-            } catch (error) {
-              console.error('Error deleting temp file:', error);
+      //
+      // A new chat's composer does NOT delete its staged images on the way out:
+      // they went into its tab's draft a moment ago (the draft effect above
+      // saves on unmount) and the composer that shows the tab next needs the
+      // files. The draft's owner deletes them when the tab is gone
+      // (`retainTabComposerDrafts`).
+      if (!draftKeyRef.current) {
+        setPastedImages((currentImages) => {
+          currentImages.forEach((img) => {
+            if (img.filePath) {
+              try {
+                window.electron.deleteTempFile(img.filePath);
+              } catch (error) {
+                console.error('Error deleting temp file:', error);
+              }
             }
-          }
+          });
+          return [];
         });
-        return [];
-      });
+      }
 
       // Clear all tracked timeouts
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2011,27 +2169,31 @@ export default function ChatInput({
         );
 
         // The composer wipes itself a few lines below, synchronously, before the
-        // submit has said whether it took the message. When it did NOT (a
-        // re-entrant send, or a controller with no session, which is the fresh
-        // tab that accepts text, clears it and creates nothing), the text was
-        // gone with no error and no message. Put it back through the same
-        // channel a failed `createSession` uses. What goes back is
-        // `displayValue`, not `textToSend`: it must be the box the user was
-        // looking at, reference chips included, appended dropped-file paths not.
-        const restoredText = displayValue.trim() ? displayValue : textToSend;
-        const restoredImages = pastedImages;
+        // submit has said whether it took the message. When it did NOT — a
+        // re-entrant send, a chat start that failed or was refused, a controller
+        // with no session — the message is handed back. What goes back is the
+        // box the person was looking at: `displayValue` (reference chips
+        // included, dropped-file paths appended for the send not), the staged
+        // images and the dropped files.
+        //
+        // HOW it goes back is the part that was wrong. It was a window-wide
+        // `restore-chat-input` addressed by chat id, and a new chat has none, so
+        // every new tab's composer in every pane took it — replacing what they
+        // held (1.90.4, measured). Now a new chat's composer hands it to its own
+        // TAB's draft, which reaches this composer or the one that replaces it
+        // and nothing else; any other composer hands it back to itself.
+        const unsent: ComposerDraft = {
+          text: displayValue,
+          images: draftImagesOf(pastedImages),
+          files: draftFilesOf(allDroppedFiles),
+        };
+        // Captured at the send: the message belongs to the tab it was typed in,
+        // whatever this composer has become when the answer arrives.
+        const unsentKey = draftKey;
         void Promise.resolve(submitted).then((accepted) => {
           if (accepted !== false) return;
-          window.dispatchEvent(
-            new CustomEvent('restore-chat-input', {
-              detail: { sessionId: sessionId ?? null, value: restoredText },
-            })
-          );
-          // Attachments ride a different channel than the restore event, so they
-          // are handed straight back to the state they were cleared from.
-          if (restoredImages.length > 0) {
-            setPastedImages(restoredImages);
-          }
+          if (unsentKey) giveBackToComposer(unsentKey, unsent);
+          else takeBack(unsent);
         });
 
         // Auto-resume queue after sending a NON-interruption message (if it was paused due to interruption)
@@ -2060,6 +2222,17 @@ export default function ChatInput({
         if (localDroppedFiles.length > 0) {
           setLocalDroppedFiles([]);
         }
+
+        // The message now belongs to the send. Nothing of it may stay in the
+        // tab's draft — a start that SUCCEEDS carries it to the new chat as
+        // cargo, and a draft still holding it would hand it back as well. The
+        // refs are cleared with the state, not at the next render, because this
+        // composer can be unmounted before that render and saves from them.
+        displayValueRef.current = '';
+        pastedImagesRef.current = [];
+        localDroppedFilesRef.current = [];
+        parentDroppedFilesRef.current = [];
+        if (draftKey) saveComposerDraft(draftKey, EMPTY_COMPOSER_DRAFT);
       }
     },
     [
@@ -2069,6 +2242,7 @@ export default function ChatInput({
       currentModelSupportsVision,
       displayValue,
       diverge,
+      draftKey,
       droppedFilePath,
       droppedImageAttachmentPath,
       droppedFiles.length,
@@ -2079,6 +2253,7 @@ export default function ChatInput({
       pastedImages,
       sessionId,
       setLocalDroppedFiles,
+      takeBack,
     ]
   );
 

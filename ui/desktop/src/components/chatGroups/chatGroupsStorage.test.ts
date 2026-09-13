@@ -7,7 +7,9 @@ import {
   getWindowId,
 } from './chatGroupsStorage';
 import { createInitialChatGroupsState, chatGroupsReducer } from './chatGroupsReducer';
-import { ChatGroupsState } from './chatGroupsTypes';
+import { ChatGroupsState, leafGroupIds } from './chatGroupsTypes';
+
+const leafCount = (state: ChatGroupsState) => leafGroupIds(state.layout).length;
 
 function seeded(): ChatGroupsState {
   return chatGroupsReducer(createInitialChatGroupsState(), {
@@ -61,6 +63,52 @@ describe('chatGroupsStorage', () => {
     expect(loaded.groups['grp-1'].tabs[0].sessionId).toBe('s1');
     // The pruned tab was active — focus must fall to a tab that still exists.
     expect(loaded.groups['grp-1'].activeTabId).toBe(loaded.groups['grp-1'].tabs[0].tabId);
+  });
+
+  it('keeps a tab with no chat only when it holds an unsent message', () => {
+    // Coming back to /pair re-reads the layout from here, so this prune ran on
+    // every trip to Settings: measured on 1.90.4, a new tab whose failed start
+    // had said "Your message was kept." was gone from the strip on return.
+    const withBlank = chatGroupsReducer(seeded(), { type: 'openTab', payload: { sessionId: '' } });
+    const withTwoBlanks = chatGroupsReducer(withBlank, {
+      type: 'openTab',
+      payload: { sessionId: '' },
+    });
+    const [, unsent, blank] = withTwoBlanks.groups['grp-1'].tabs;
+    // The unsent one was the tab in view when the person left.
+    const leftOn = chatGroupsReducer(withTwoBlanks, { type: 'activateTab', tabId: unsent.tabId });
+    saveChatGroups(leftOn, 'w1');
+
+    const loaded = loadChatGroups('w1', { keepSessionlessTab: (tabId) => tabId === unsent.tabId })!;
+    const tabs = loaded.groups['grp-1'].tabs.map((t) => t.tabId);
+    expect(tabs).toContain(unsent.tabId);
+    expect(tabs).not.toContain(blank.tabId);
+    // And it is still the tab in view.
+    expect(loaded.groups['grp-1'].activeTabId).toBe(unsent.tabId);
+
+    // A reload is a new renderer: nothing holds a draft, so the prune is as it was.
+    expect(loadChatGroups('w1')!.groups['grp-1'].tabs.map((t) => t.tabId)).toEqual([
+      withTwoBlanks.groups['grp-1'].tabs[0].tabId,
+    ]);
+  });
+
+  it('keeps a split pane whose only tab holds an unsent message', () => {
+    const state = chatGroupsReducer(seeded(), { type: 'openTab', payload: { sessionId: '' } });
+    const unsentTab = state.groups['grp-1'].tabs[1].tabId;
+    const split = chatGroupsReducer(state, {
+      type: 'moveTabToGroup',
+      tabId: unsentTab,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+    expect(leafCount(split)).toBe(2);
+    saveChatGroups(split, 'w1');
+
+    const loaded = loadChatGroups('w1', { keepSessionlessTab: (tabId) => tabId === unsentTab })!;
+    expect(leafCount(loaded)).toBe(2);
+    expect(
+      Object.values(loaded.groups).some((g) => g.tabs.some((t) => t.tabId === unsentTab))
+    ).toBe(true);
   });
 
   it('returns null on garbage, wrong version, and a dangling activeGroupId', () => {

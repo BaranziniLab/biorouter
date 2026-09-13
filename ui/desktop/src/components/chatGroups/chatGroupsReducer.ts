@@ -45,6 +45,23 @@ export interface OpenTabPayload {
    * be a reorder nobody asked for.
    */
   index?: number;
+  /**
+   * For a NEW-chat request (`sessionId: ''`) that is ARRIVING on /pair from
+   * another route — the sidebar's New chat or Cmd+T pressed on Settings or Home,
+   * or history landing on such an entry: when a tab already holds a new chat,
+   * focus it instead of opening another blank one.
+   *
+   * On arrival every tab with no chat is one holding an unsent message, because
+   * the load pruned the rest (`chatGroupsStorage.loadChatGroups`). That is the
+   * case this exists for: a failed start says "Your message was kept." and, for
+   * a credential, sends the person to Settings — and the ways back to /pair are
+   * exactly these requests. Opening a blank tab beside the kept one put an empty
+   * composer in front of them, next to a tab they had no reason to look for.
+   *
+   * NOT for a request made while /pair is already showing: pressing New chat
+   * while looking at your tabs means another tab, as it always has.
+   */
+  resumeUnsent?: boolean;
 }
 
 export type ChatGroupsAction =
@@ -282,6 +299,23 @@ function withGroup(state: ChatGroupsState, groupId: ChatGroupId, next: ChatGroup
 }
 
 /**
+ * A tab with no chat, for `resumeUnsent`: the one in view first (the active tab
+ * of the active group), then the active group's, then any group's in layout
+ * order.
+ */
+function findUnsentTab(state: ChatGroupsState): { group: ChatGroup; tab: ChatTab } | null {
+  const activeGroup = state.groups[state.activeGroupId];
+  const inView = activeGroup?.tabs.find((t) => t.tabId === activeGroup.activeTabId);
+  if (activeGroup && inView && !inView.sessionId) return { group: activeGroup, tab: inView };
+  for (const groupId of [state.activeGroupId, ...leafGroupIds(state.layout)]) {
+    const group = state.groups[groupId];
+    const tab = group?.tabs.find((t) => !t.sessionId);
+    if (group && tab) return { group, tab };
+  }
+  return null;
+}
+
+/**
  * Open a chat as a tab.
  *
  * Every open is a REAL tab. There is no preview/italic slot and nothing is ever
@@ -370,6 +404,19 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
           activeTabId: empty.tabId,
         }),
         activeGroupId: groupId,
+      };
+    }
+  }
+
+  if (!payload.sessionId && payload.resumeUnsent) {
+    const unsent = findUnsentTab(state);
+    if (unsent) {
+      return {
+        ...withGroup(state, unsent.group.groupId, {
+          ...unsent.group,
+          activeTabId: unsent.tab.tabId,
+        }),
+        activeGroupId: unsent.group.groupId,
       };
     }
   }

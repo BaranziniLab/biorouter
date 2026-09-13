@@ -68,6 +68,7 @@ import { toastError, toastWarning } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { startChatFailureNotice } from '../utils/startChatFailure';
 import { restoreComposerText } from '../utils/composerRestore';
+import { composerDraftKeyForTab } from '../utils/composerDrafts';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
@@ -751,75 +752,35 @@ export function collectArtifactsFromMessages(
 }
 
 /**
- * Failure handling for the pre-session `createSession` submit. The composer wipes
- * its text synchronously on submit (ChatInput.performSubmit), so when the backend
- * is unreachable the awaited createSession rejects *after* the text is already
- * gone — and the bare catch used to show nothing, so the message silently
- * vanished. Give the typed text back and surface a visible toast. The words are
- * `startChatFailureNotice`'s, shared with every other surface that starts a
- * chat; the toast + give-back fire on ANY rejection, so no silent path remains.
+ * Failure handling for the pre-session `createSession` submit: say so, in
+ * `startChatFailureNotice`'s words, and answer `false` — the value the submit
+ * handler must resolve with.
+ *
+ * The composer wipes itself synchronously on submit (ChatInput.performSubmit),
+ * so when `createSession` rejects the message is already out of the box, and a
+ * bare catch used to lose it silently. `false` is ChatInput's contract for "the
+ * message was not taken": it hands the whole message — text, staged images,
+ * dropped files — back through the composer's own identity, which for a new
+ * chat is its TAB (`utils/composerDrafts.ts`). That is the one give-back, and
+ * it is what makes the toast's "Your message was kept." true.
+ *
+ * ⚠ What this replaced, all measured on 1.90.4. It resolved `true` and gave the
+ * message back itself: through a `restore-chat-input` BROADCAST addressed as
+ * `''`, which every new tab's composer in every pane matched, so a failure in
+ * one pane replaced the unsent draft in the other; and through `BaseChat`'s own
+ * `keptMessage` state, which carried text only (the image was dropped under a
+ * toast saying it was kept) and died with the tab on a tab switch or a trip to
+ * Settings. The retry property #305 established — the second, third and nth
+ * identical failure all keep the message — holds here because the draft is
+ * spent by events (a send, the tab closing or binding), never by a clock.
+ *
+ * Returning the `false` from here, rather than beside the call, keeps the toast
+ * that promises the message and the signal that keeps it in one expression.
  * Exported so it can be unit-tested without Electron.
- *
- * ⚠ THE BROADCAST IS NOT THE GIVE-BACK. On this surface the composer the
- * event reaches is already doomed: `isCreatingSession` flipping back moves the
- * composer between `isCleanConversation`'s two subtrees, which remounts it, so
- * the instance that takes the message never paints it. `keep` is what the
- * replacement reads — the surface's own copy, which the remount cannot touch.
- *
- * `keep` is REQUIRED, and deliberately so: this function's last act is a toast
- * that says "Your message was kept." A caller with nowhere to keep it has to
- * answer for that at the call site rather than discover it in the running app,
- * which is how #303 shipped a toast whose claim was true only on the first of
- * two identical failures.
  */
-export function handleCreateSessionError(
-  err: unknown,
-  ctx: {
-    textValue: string;
-    attachments: UserAttachment[];
-    sessionId?: string | null;
-    /** Hands the message to the SURFACE, which outlives the composer. */
-    keep: (message: { sessionId: string; value: string }) => void;
-  }
-): void {
-  // Put the user's text back so it is not lost when the backend is down.
-  ctx.keep({ sessionId: ctx.sessionId ?? '', value: ctx.textValue });
-  restoreComposerText({
-    sessionId: ctx.sessionId ?? null,
-    value: ctx.textValue,
-    attachments: ctx.attachments,
-  });
+export function handleCreateSessionError(err: unknown): false {
   toastError(startChatFailureNotice(err, { kept: true }));
-}
-
-/** What a failed start owes back, as the surface remembers it. */
-export type KeptMessage = { sessionId: string; value: string } | null;
-
-/**
- * What the surface hands to its composer: the message a failed start owes THIS
- * chat, or nothing.
- *
- * Two conditions, and both are about identity rather than timing, which is the
- * whole point of the fix this belongs to:
- *
- *   • it is the chat the message was typed into. A tab rebound to another chat
- *     (clicking a chat in this tab) stops offering it in the very render that
- *     rebinds, so no effect can run a commit late and put one chat's message
- *     into another's composer;
- *   • the surface is not at that moment trying to send it. `isCreatingSession`
- *     rebuilds the composer on its way UP as well as on its way down, and a
- *     rebuild mid-flight would otherwise refill the box with a message that is
- *     being sent — which on a retry that finally succeeds would leave the text
- *     in the composer AND in the transcript.
- *
- * Exported so the rule has one implementation and the tests pin that one.
- */
-export function messageOwedToComposer(
-  kept: KeptMessage,
-  ctx: { sessionId: string; isCreatingSession: boolean }
-): string | undefined {
-  if (ctx.isCreatingSession) return undefined;
-  return kept && kept.sessionId === ctx.sessionId ? kept.value : undefined;
+  return false;
 }
 
 /**
@@ -832,9 +793,12 @@ export function messageOwedToComposer(
  * text appearing in an empty composer with no turn in the transcript is legible
  * only once the user knows the send did not happen.
  *
- * `restore-chat-input` is the same channel `handleCreateSessionError` uses. It
- * is a window event with no buffering, so it only works if the composer is
- * already listening: it is, because ChatInput is a descendant of the component
+ * It goes through `restoreComposerText`, addressed by this chat's id — never a
+ * new chat's, which has none; that case is refused at both ends (see
+ * `utils/composerRestore.ts`). The composer MERGES it with what it holds, and
+ * restages its image attachments from the files they name. It is a window event
+ * with no buffering, so it only works if the composer is already listening: it
+ * is, because ChatInput is a descendant of the component
  * whose effect calls this, React runs child effects before parent effects, and
  * every render that reaches the composer at all renders exactly one of them
  * (the `sessionLoadError` early return, the one branch with no composer, is
@@ -846,15 +810,11 @@ export function returnInitialMessageToComposer(ctx: {
   message: string;
   attachments?: UserAttachment[];
 }): void {
-  window.dispatchEvent(
-    new CustomEvent('restore-chat-input', {
-      detail: {
-        sessionId: ctx.sessionId ?? null,
-        value: ctx.message,
-        attachments: ctx.attachments ?? [],
-      },
-    })
-  );
+  restoreComposerText({
+    sessionId: ctx.sessionId ?? '',
+    value: ctx.message,
+    attachments: ctx.attachments ?? [],
+  });
   toastWarning({
     title: 'Message not sent',
     msg: 'Biorouter could not send it while this chat was busy. It is back in the composer, ready to send.',
@@ -1262,27 +1222,12 @@ function BaseChatContent({
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
-  /**
-   * The message a failed start owes back to this chat's composer.
-   *
-   * IT LIVES HERE, on the surface, because the surface is the thing the failure
-   * does NOT destroy: `setIsCreatingSession(false)` re-renders THIS component
-   * and rebuilds the composer under it. Anything the composer held is gone by
-   * then, and anything on a timer has to beat a remount it cannot see.
-   *
-   * Its lifetime is definite events, no clock:
-   *   • a start SUCCEEDS — cleared below, before the navigate that hands the
-   *     message to the new chat as cargo, so it is never given back as well;
-   *   • the surface is trying to send it, or has stopped being this chat —
-   *     `messageOwedToComposer` decides that per render, so neither state can
-   *     reach a composer one commit too late;
-   *   • the surface goes away — it is component state and dies with the tab.
-   * Nothing else can reach it: not another pane's fresh chat, not Home's
-   * composer, not a later "New chat", not another window. And it is one
-   * nullable string per mounted chat, replaced by each failure rather than
-   * accumulated, so there is nothing here to grow.
-   */
-  const [keptMessage, setKeptMessage] = useState<KeptMessage>(null);
+  // The identity a NEW chat's composer is addressed by: its TAB. `terminalKey`
+  // is the tab id — `ChatGroupsShell`, the one place a BaseChat is mounted,
+  // always passes it — and `ChatGroupsProvider` owns the draft's lifetime by the
+  // same id. With no tab there is nothing that could release a draft, so none
+  // is kept.
+  const composerDraftKey = terminalKey ? composerDraftKeyForTab(terminalKey) : undefined;
   // F3 — the model this chat is about to be created on is the one on screen.
   const confirmNewChatModel = useConfirmNewChatModel();
   // #39 — the working directory chosen in the composer BEFORE a session
@@ -1697,14 +1642,13 @@ function BaseChatContent({
   }, [session?.provider_name, session?.model_config?.model_name, getProviders]);
 
   /**
-   * Resolves FALSE when the message was refused and the composer still owns the
-   * text (ChatInput puts it back). The pre-session branch returns TRUE on both
-   * of its outcomes once a session is attempted: a created session has
-   * navigated with the message as its cargo, and a failed `createSession` has
-   * already restored the composer and toasted through `handleCreateSessionError`,
-   * so a second restore would be a duplicate rather than a rescue. It returns
-   * FALSE only when F3's model check refused BEFORE anything was attempted —
-   * the one case where the composer's own restore is the rescue.
+   * Resolves FALSE when the message was not taken and the composer must hand it
+   * back (ChatInput does, through this tab's draft). The pre-session branch
+   * resolves TRUE only when the chat was created — the message then travels to
+   * it as cargo — and FALSE both when F3's model check refused before anything
+   * was attempted (silently: that toast is F3's own) and when `createSession`
+   * failed (`handleCreateSessionError` has said so). There is exactly one
+   * give-back either way: the composer's.
    */
   const handleFormSubmit = async (e: React.FormEvent): Promise<boolean> => {
     const customEvent = e as unknown as CustomEvent;
@@ -1731,11 +1675,6 @@ function BaseChatContent({
             allExtensions: extensionsList,
           }
         );
-        // This start worked, so nothing is owed back to the composer: the
-        // message travels to the new chat as route cargo below. Batched with
-        // the navigate, so the render that first carries the new session id
-        // already has nothing to give back.
-        setKeptMessage(null);
         navigateWithViewTransition(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
@@ -1746,11 +1685,12 @@ function BaseChatContent({
           },
           { replace: true }
         );
+        return true;
       } catch (err) {
         setIsCreatingSession(false);
-        handleCreateSessionError(err, { textValue, attachments, sessionId, keep: setKeptMessage });
+        // `false`: the composer hands the message back to this tab's draft.
+        return handleCreateSessionError(err);
       }
-      return true;
     }
 
     if (workflow && textValue.trim()) {
@@ -2289,7 +2229,11 @@ function BaseChatContent({
           onSteer={steer}
           commandHistory={commandHistory}
           initialValue={initialPrompt}
-          keptMessage={messageOwedToComposer(keptMessage, { sessionId, isCreatingSession })}
+          // A NEW chat's composer is addressed by its tab, so its unsent message
+          // survives the composer being rebuilt and reaches no other composer.
+          // An existing chat's needs no draft: its composer is not the one a
+          // failed start, a tab switch or a trip to Settings takes the text from.
+          draftKey={!sessionId ? composerDraftKey : undefined}
           setView={setView}
           totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
           accumulatedInputTokens={

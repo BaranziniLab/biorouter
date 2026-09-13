@@ -57,6 +57,11 @@ import {
   type TabAnnotation,
 } from '../components/chatGroups/workspaceCommandPlanner';
 import { useWorkspaceChannel, buildEchoFrame } from '../hooks/useWorkspaceChannel';
+import {
+  composerDraftKeyForTab,
+  hasComposerDraft,
+  retainTabComposerDrafts,
+} from '../utils/composerDrafts';
 import { toastError, toastInfo, toastWarning } from '../toasts';
 
 /**
@@ -118,10 +123,13 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   const windowIdRef = useRef<string>('');
   if (!windowIdRef.current) windowIdRef.current = getWindowId();
 
-  const [state, dispatch] = useReducer(
-    chatGroupsReducer,
-    windowIdRef.current,
-    loadChatGroupsOrInitial
+  const [state, dispatch] = useReducer(chatGroupsReducer, windowIdRef.current, (windowId) =>
+    // A tab with no chat survives the re-read that coming back to /pair does
+    // only while it holds an unsent message — renderer memory, so never across
+    // a reload. See `LoadChatGroupsOptions.keepSessionlessTab`.
+    loadChatGroupsOrInitial(windowId, {
+      keepSessionlessTab: (tabId) => hasComposerDraft(composerDraftKeyForTab(tabId)),
+    })
   );
 
   const running = useRunningChats();
@@ -139,6 +147,19 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // here, so no caller can forget.
   useEffect(() => {
     saveChatGroups(state, windowIdRef.current);
+  }, [state]);
+
+  // An unsent new chat lives as long as its tab exists AND has no chat. Closing
+  // the tab, or its message starting the chat it binds to, releases the draft
+  // (and the temp images it owned). Runs after every commit's unmount cleanups,
+  // so a composer closing with its tab has already saved what it held. This is
+  // the whole of `utils/composerDrafts.ts`'s bound: nothing else adds a tab key.
+  useEffect(() => {
+    retainTabComposerDrafts(
+      leafGroupIds(state.layout).flatMap((id) =>
+        state.groups[id].tabs.filter((tab) => !tab.sessionId).map((tab) => tab.tabId)
+      )
+    );
   }, [state]);
 
   // A session rename anywhere mirrors into the strip.
@@ -218,9 +239,14 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // remembered rather than dropped; App.tsx navigated here for us and this is
   // where the request is cashed in. consumePendingNewTab is consume-once, so
   // StrictMode's double mount opens one tab, not two.
+  //
+  // It is an ARRIVAL, so a tab already holding an unsent new chat is focused
+  // rather than joined by a blank one (`OpenTabPayload.resumeUnsent`).
   useEffect(() => {
-    if (consumePendingNewTab()) openNewTab();
-  }, [openNewTab]);
+    if (consumePendingNewTab()) {
+      dispatch({ type: 'openTab', payload: { sessionId: '', resumeUnsent: true } });
+    }
+  }, []);
 
   // A Cmd+T dispatched to THIS mounted provider stays observable in the
   // registry (hasPendingNewTab) until the tab it asked for has actually

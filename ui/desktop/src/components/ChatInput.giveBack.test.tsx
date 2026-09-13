@@ -1,0 +1,374 @@
+import React from 'react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, act, fireEvent, within, waitFor } from '@testing-library/react';
+
+/**
+ * "Your message was kept" has to be true of the MESSAGE, in the composer the
+ * person typed it into, and of nothing else. Four ways it was not, each measured
+ * in the dev app on 1.90.4 with `POST /agent/start` failing from a fresh tab:
+ *
+ *   1. a failed start in the LEFT pane of a split filled BOTH panes' new-tab
+ *      composers, 2 of 2 — replacing "MY OWN UNSENT DRAFT" in the right one —
+ *      because the give-back was a window-wide event addressed `''`;
+ *   2. a pasted image was gone after the failure, while the text came back;
+ *   3. a new tab's unsent text was gone after a tab switch, and after going to
+ *      Settings and back;
+ *   (4, the toast's punctuation, is `utils/startChatFailure.test.ts`.)
+ *
+ * These tests drive the REAL composer through what a person does — type, paste,
+ * drop, press Enter — against the smallest stand-in for a new chat's surface:
+ * its send resolves `false` when the start fails (ChatInput's "not taken"), and
+ * the failure moves the composer between two slots, which remounts it, exactly
+ * as `BaseChat`'s `isCreatingSession` does. A composer is addressed only by the
+ * key it is mounted with; the keys here are arbitrary strings on purpose.
+ */
+
+vi.mock('../toasts', () => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastWarning: vi.fn(),
+  toastInfo: vi.fn(),
+  toastService: { error: vi.fn(), configure: vi.fn() },
+}));
+vi.mock('./ConfigContext', () => ({
+  useConfig: () => ({
+    getProviders: vi.fn(async () => []),
+    read: vi.fn(async () => null),
+  }),
+}));
+vi.mock('./ModelAndProviderContext', () => ({
+  useModelAndProvider: () => ({
+    getCurrentModelAndProvider: vi.fn(async () => ({ model: null, provider: null })),
+    currentModel: null,
+    currentProvider: null,
+    // A model that reads images, so a paste is staged the way it is in the app.
+    currentModelSupportsVision: true,
+    currentModelSupportedInputMimeTypes: null,
+  }),
+}));
+vi.mock('../hooks/useDiverge', () => ({ useDiverge: () => ({ diverge: vi.fn() }) }));
+vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
+vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
+  BottomMenuExtensionSelection: () => null,
+}));
+vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({ BottomMenuSkillSelection: () => null }));
+vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
+  BottomMenuKnowledgeSelection: () => null,
+}));
+vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
+  BottomMenuReasoningEffort: () => null,
+}));
+vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
+vi.mock('./MessageQueue', () => ({ default: () => null }));
+vi.mock('./MentionPopover', () => {
+  const MentionPopoverMock = React.forwardRef(() => null);
+  MentionPopoverMock.displayName = 'MentionPopoverMock';
+  return { default: MentionPopoverMock };
+});
+vi.mock('../api', () => ({
+  getSession: vi.fn(async () => ({ data: null })),
+  llamacppStatus: vi.fn(async () => ({ data: {} })),
+  updateWorkingDir: vi.fn(async () => ({ data: {} })),
+}));
+
+import ChatInput from './ChatInput';
+import { ChatState } from '../types/chatState';
+
+const deleteTempFile = vi.fn();
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  let saved = 0;
+  Object.assign(window, {
+    appConfig: { get: () => '/w' },
+    electron: {
+      directoryChooser: vi.fn(),
+      addRecentDir: vi.fn(),
+      logInfo: vi.fn(),
+      getPathForFile: vi.fn(() => ''),
+      on: vi.fn(),
+      off: vi.fn(),
+      saveDataUrlToTemp: vi.fn(async (_dataUrl: string, id: string) => ({
+        id,
+        filePath: `/tmp/biorouter-test/pasted-${++saved}.png`,
+      })),
+      readTempImageAsBase64: vi.fn(async () => ({ data: 'AAAA', mimeType: 'image/png' })),
+      deleteTempFile,
+    },
+  });
+});
+
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
+ * A new chat's surface. `fail()` decides each start; a failure moves the
+ * composer to the other slot and back, which remounts it, and resolves `false`.
+ */
+function NewChat({
+  draftKey,
+  fail = () => true,
+  label,
+}: {
+  draftKey?: string;
+  fail?: () => boolean;
+  label: string;
+}) {
+  const [isCreatingSession, setIsCreatingSession] = React.useState(false);
+  const [started, setStarted] = React.useState(false);
+  const handleSubmit = async (): Promise<boolean> => {
+    setIsCreatingSession(true);
+    await Promise.resolve();
+    if (!fail()) {
+      setStarted(true);
+      return true;
+    }
+    setIsCreatingSession(false);
+    return false;
+  };
+  const composer = (
+    <ChatInput
+      sessionId={started ? 'sess-started' : ''}
+      draftKey={started ? undefined : draftKey}
+      handleSubmit={handleSubmit}
+      chatState={ChatState.Idle}
+      onStop={vi.fn()}
+      initialValue=""
+      setView={vi.fn()}
+      totalTokens={0}
+      accumulatedInputTokens={0}
+      accumulatedOutputTokens={0}
+      messagesLength={0}
+      disableAnimation={false}
+      toolCount={0}
+      onWorkingDirChange={vi.fn()}
+    />
+  );
+  const clean = !started && !isCreatingSession;
+  return (
+    <section aria-label={label}>
+      {clean ? <div data-slot="empty-state">{composer}</div> : null}
+      {!clean && <div data-slot="under-transcript">{composer}</div>}
+    </section>
+  );
+}
+
+/** Home's composer and an existing chat's: a composer with no key. */
+function PlainComposer({
+  sessionId,
+  label,
+  refuse = false,
+}: {
+  sessionId: string | null;
+  label: string;
+  refuse?: boolean;
+}) {
+  return (
+    <section aria-label={label}>
+      <ChatInput
+        sessionId={sessionId}
+        handleSubmit={async () => {
+          await Promise.resolve();
+          return !refuse;
+        }}
+        chatState={ChatState.Idle}
+        onStop={vi.fn()}
+        initialValue=""
+        setView={vi.fn()}
+        totalTokens={0}
+        accumulatedInputTokens={0}
+        accumulatedOutputTokens={0}
+        messagesLength={0}
+        disableAnimation={false}
+        toolCount={0}
+        onWorkingDirChange={vi.fn()}
+      />
+    </section>
+  );
+}
+
+const pane = (label: string) => screen.getByRole('region', { name: label });
+const box = (label: string) => within(pane(label)).getByRole('textbox') as HTMLTextAreaElement;
+
+const type = async (label: string, text: string) => {
+  await act(async () => {
+    fireEvent.change(box(label), { target: { value: text } });
+  });
+};
+
+const pressEnter = async (label: string) => {
+  await act(async () => {
+    fireEvent.keyDown(box(label), { key: 'Enter', code: 'Enter' });
+    await nextTask();
+    await nextTask();
+  });
+};
+
+const pasteImage = async (label: string) => {
+  const file = new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' });
+  await act(async () => {
+    fireEvent.paste(box(label), { clipboardData: { files: [file], items: [], getData: () => '' } });
+  });
+  await waitFor(() =>
+    expect(within(pane(label)).getAllByAltText(/^Pasted image/).length).toBeGreaterThan(0)
+  );
+};
+
+const dropFile = async (label: string, path: string) => {
+  const zone = pane(label).querySelector('[data-drop-zone="true"]') as HTMLElement;
+  await act(async () => {
+    fireEvent.drop(zone, {
+      dataTransfer: {
+        files: [],
+        getData: (kind: string) => (kind === 'text/uri-list' ? `file://${path}` : ''),
+      },
+    });
+  });
+};
+
+const pastedImages = (label: string) => within(pane(label)).queryAllByAltText(/^Pasted image/);
+const fileChip = (label: string, name: string) => within(pane(label)).queryByTitle(name);
+
+describe('1 — a failed start gives the message back to ITS composer and no other', () => {
+  it('leaves the other pane’s new tab exactly as it was', async () => {
+    render(
+      <>
+        <NewChat label="left" draftKey="tab:one-left" />
+        <NewChat label="right" draftKey="tab:one-right" />
+      </>
+    );
+    await type('right', 'MY OWN UNSENT DRAFT');
+    await type('left', 'ANOTHER PANE MESSAGE');
+
+    await pressEnter('left');
+
+    // Measured on 1.90.4: this read "ANOTHER PANE MESSAGE".
+    expect(box('right').value).toBe('MY OWN UNSENT DRAFT');
+    expect(box('left').value).toBe('ANOTHER PANE MESSAGE');
+  });
+
+  it('does not reach an EMPTY new tab in another pane either', async () => {
+    render(
+      <>
+        <NewChat label="left" draftKey="tab:two-left" />
+        <NewChat label="right" draftKey="tab:two-right" />
+      </>
+    );
+    await type('left', 'only mine');
+    await pressEnter('left');
+
+    expect(box('right').value).toBe('');
+    expect(box('left').value).toBe('only mine');
+  });
+
+  it('never replaces what an existing chat’s composer holds with a restore for that chat', async () => {
+    // The one broadcast left (`returnInitialMessageToComposer`) names a real
+    // chat. It merges: the person's own unsent text stays, the returned message
+    // is put before it.
+    render(<PlainComposer label="chat" sessionId="sess-9" />);
+    await type('chat', 'what I am typing now');
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('restore-chat-input', {
+          detail: { sessionId: 'sess-9', value: 'the refused message', attachments: [] },
+        })
+      );
+    });
+
+    expect(box('chat').value).toContain('what I am typing now');
+    expect(box('chat').value).toContain('the refused message');
+  });
+
+  it('a restore with no chat id reaches neither a new tab nor Home', async () => {
+    render(
+      <>
+        <NewChat label="new" draftKey="tab:three" />
+        <PlainComposer label="home" sessionId={null} />
+      </>
+    );
+    await type('new', 'new tab draft');
+    await type('home', 'home draft');
+
+    await act(async () => {
+      for (const sessionId of ['', null, undefined]) {
+        window.dispatchEvent(
+          new CustomEvent('restore-chat-input', { detail: { sessionId, value: 'INTRUDER' } })
+        );
+      }
+    });
+
+    expect(box('new').value).toBe('new tab draft');
+    expect(box('home').value).toBe('home draft');
+  });
+});
+
+describe('2 — the message kept is the whole message: text, images and files', () => {
+  it('a new tab gets its pasted image and dropped file back after a failed start', async () => {
+    render(<NewChat label="new" draftKey="tab:four" />);
+    await pasteImage('new');
+    await dropFile('new', '/Users/me/cohort.csv');
+    await type('new', 'look at these');
+    expect(fileChip('new', 'cohort.csv')).not.toBeNull();
+
+    await pressEnter('new');
+
+    // Measured on 1.90.4: the text returned and the image did not.
+    expect(pastedImages('new')).toHaveLength(1);
+    expect(fileChip('new', 'cohort.csv')).not.toBeNull();
+    expect(box('new').value).toBe('look at these');
+    // Nothing the message still needs was deleted on the way.
+    expect(deleteTempFile).not.toHaveBeenCalled();
+  });
+
+  it('Home’s composer (no key, not remounted) gets its dropped file back too', async () => {
+    render(<PlainComposer label="home" sessionId={null} refuse />);
+    await pasteImage('home');
+    await dropFile('home', '/Users/me/notes.txt');
+    await type('home', 'home message');
+
+    await pressEnter('home');
+
+    expect(box('home').value).toBe('home message');
+    expect(pastedImages('home')).toHaveLength(1);
+    expect(fileChip('home', 'notes.txt')).not.toBeNull();
+  });
+});
+
+describe('3 — a new tab’s unsent message outlives its composer', () => {
+  it('is still there when the tab’s composer is mounted again (a tab switch)', async () => {
+    const first = render(<NewChat label="tab" draftKey="tab:six" />);
+    await pasteImage('tab');
+    await dropFile('tab', '/Users/me/plan.md');
+    await type('tab', 'typed, never sent');
+
+    await act(async () => first.unmount());
+
+    render(<NewChat label="tab" draftKey="tab:six" />);
+    expect(box('tab').value).toBe('typed, never sent');
+    expect(pastedImages('tab')).toHaveLength(1);
+    expect(fileChip('tab', 'plan.md')).not.toBeNull();
+    // The composer that went did not delete the staged image: the tab owns it.
+    expect(deleteTempFile).not.toHaveBeenCalled();
+  });
+
+  it('is still there after a failed start and a tab switch', async () => {
+    const first = render(<NewChat label="tab" draftKey="tab:seven" />);
+    await type('tab', 'failed, then I switched tabs');
+    await pressEnter('tab');
+
+    await act(async () => first.unmount());
+    render(<NewChat label="tab" draftKey="tab:seven" />);
+
+    expect(box('tab').value).toBe('failed, then I switched tabs');
+  });
+
+  it('is not shown in another tab', async () => {
+    const first = render(<NewChat label="tab" draftKey="tab:eight" />);
+    await type('tab', 'belongs to eight');
+    await act(async () => first.unmount());
+
+    render(<NewChat label="tab" draftKey="tab:nine" />);
+
+    expect(box('tab').value).toBe('');
+  });
+});

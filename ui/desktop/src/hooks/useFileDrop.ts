@@ -70,8 +70,13 @@ function getDroppedPathCandidates(dataTransfer: DataTransfer): string[] {
   return [...candidates];
 }
 
-export const useFileDrop = () => {
-  const [droppedFiles, setDroppedFiles] = useState<DroppedFile[]>([]);
+/**
+ * @param initialFiles what the drop tray starts with — a composer rebuilding a
+ *   new chat's unsent message (`utils/composerDrafts.ts`) seeds it here, in the
+ *   first render, so nothing mounted can observe an empty tray first. Read once.
+ */
+export const useFileDrop = (initialFiles?: () => DroppedFile[]) => {
+  const [droppedFiles, setDroppedFiles] = useState<DroppedFile[]>(() => initialFiles?.() ?? []);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const activeReadersRef = useRef<Set<FileReader>>(new Set());
   const dragDepthRef = useRef(0);

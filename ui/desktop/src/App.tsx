@@ -139,12 +139,19 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
   // carries sessionId '' until BaseChat's pre-session submit creates a real
   // session; that navigation then ADOPTS this tab in place (see the reducer's
   // empty-tab branch) rather than orphaning it beside a second one.
+  //
+  // The first request this mount handles is an ARRIVAL from another route (the
+  // provider mounts with this component), and an arrival focuses a tab already
+  // holding an unsent new chat instead of opening a blank one beside it — see
+  // `OpenTabPayload.resumeUnsent`. A New chat pressed while /pair is on screen
+  // still opens a tab.
   const newChatKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isNewChat || !dispatch) return;
     if (newChatKeyRef.current === location.key) return;
+    const arriving = newChatKeyRef.current === null;
     newChatKeyRef.current = location.key;
-    dispatch({ type: 'openTab', payload: { sessionId: '' } });
+    dispatch({ type: 'openTab', payload: { sessionId: '', resumeUnsent: arriving } });
   }, [isNewChat, location.key, dispatch]);
 
   // Create a session when we have something to say but nothing to say it in.

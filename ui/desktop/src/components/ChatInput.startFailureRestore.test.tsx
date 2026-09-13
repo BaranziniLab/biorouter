@@ -28,7 +28,10 @@ import { render, screen, act, fireEvent } from '@testing-library/react';
  * failure has fully settled — which the app does anyway, twice per failure,
  * measured at +19 ms and +21 ms in #303 and at +38 ms / +43 ms here — and ask
  * for the message then. Everything else is the real thing: `BaseChat`'s own
- * exported `handleCreateSessionError`, and the real `ChatInput`.
+ * exported `handleCreateSessionError`, the real `ChatInput`, and the tab's draft
+ * (`utils/composerDrafts.ts`) the message is kept in since #305's surface state
+ * turned out to die with the tab switch, carry text only, and give back through
+ * a broadcast every other new tab heard. `ChatInput.giveBack.test.tsx` has those.
  */
 
 vi.mock('../toasts', () => ({
@@ -79,12 +82,14 @@ vi.mock('../api', () => ({
 }));
 
 import ChatInput from './ChatInput';
-import { handleCreateSessionError, messageOwedToComposer, type KeptMessage } from './BaseChat';
+import { handleCreateSessionError } from './BaseChat';
 import { ChatState } from '../types/chatState';
 import { toastError } from '../toasts';
+import { composerDraftKeyForTab, resetComposerDraftsForTests } from '../utils/composerDrafts';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetComposerDraftsForTests();
   Object.assign(window, {
     appConfig: { get: () => '/w' },
     electron: {
@@ -110,9 +115,10 @@ type StartOutcome = { ok: true; id: string } | { ok: false; err: unknown };
  *      the composer between two SLOTS of the same parent (the centred empty
  *      state and the bar under a transcript), which is a different position in
  *      the children array, so React tears the old one down and mounts a new one;
- *   2. it owns whatever a failed start gives back, and outlives the composer;
- *   3. it offers that back only for the chat it was typed into, and only when
- *      it is not at that moment trying to send it;
+ *   2. a failed start resolves `handleCreateSessionError`'s `false`, which is
+ *      what hands the message back;
+ *   3. its composer is addressed by its TAB while it has no chat, and by nothing
+ *      once it has one — `BaseChat`'s `draftKey` rule;
  *   4. its chat id is `''` until a chat exists.
  *
  * `composerGeneration` is a rebuild the test can ask for, to stand in for the
@@ -123,19 +129,19 @@ function Surface({
   start,
   composerGeneration = 0,
   boundSessionId = '',
+  tabId = 'tab-1',
 }: {
   start: () => StartOutcome;
   composerGeneration?: number;
   /** The chat this tab is bound to from outside; `''` is a tab with no chat. */
   boundSessionId?: string;
+  tabId?: string;
 }) {
   const [createdSessionId, setCreatedSessionId] = React.useState<string | null>(null);
   const sessionId = createdSessionId ?? boundSessionId;
   const [isCreatingSession, setIsCreatingSession] = React.useState(false);
-  const [keptMessage, setKeptMessage] = React.useState<KeptMessage>(null);
 
-  const handleFormSubmit = async (e: React.FormEvent): Promise<boolean> => {
-    const textValue = (e as unknown as CustomEvent).detail?.value ?? '';
+  const handleFormSubmit = async (): Promise<boolean> => {
     setIsCreatingSession(true);
     // The real one awaits `createSession`; the outcome always arrives in a
     // later microtask, never inline, which is why the composer has already
@@ -143,30 +149,23 @@ function Surface({
     await Promise.resolve();
     const outcome = start();
     if (outcome.ok) {
-      setKeptMessage(null);
       setCreatedSessionId(outcome.id);
       return true;
     }
     setIsCreatingSession(false);
-    handleCreateSessionError(outcome.err, {
-      textValue,
-      attachments: [],
-      sessionId,
-      keep: setKeptMessage,
-    });
-    return true;
+    return handleCreateSessionError(outcome.err);
   };
 
   const composer = (
     <ChatInput
       key={composerGeneration}
       sessionId={sessionId}
+      // `BaseChat`'s rule: a new chat's composer is its tab's; a chat's is not.
+      draftKey={!sessionId ? composerDraftKeyForTab(tabId) : undefined}
       handleSubmit={handleFormSubmit}
       chatState={ChatState.Idle}
       onStop={vi.fn()}
       initialValue=""
-      // `BaseChat`'s own rule, not a copy of it.
-      keptMessage={messageOwedToComposer(keptMessage, { sessionId, isCreatingSession })}
       setView={vi.fn()}
       totalTokens={0}
       accumulatedInputTokens={0}
@@ -313,20 +312,31 @@ describe('a chat that failed to start, on the composer the user is looking at', 
   });
 
   it('restores nothing after a reload', async () => {
-    // A reload is a new renderer: no surface, no state, nothing owed. Modelled
-    // as unmounting everything and mounting a fresh surface — which is exactly
-    // what a module-level store would NOT have been caught by, and is why the
-    // copy lives in the component.
+    // A reload is a new renderer: no surface, no module state, nothing owed.
+    // Modelled as exactly that — everything unmounted AND the renderer's
+    // memory gone — because unmounting alone is now what a tab switch is, and
+    // a tab switch is supposed to keep the message.
     const first = render(<Surface start={failing()} />);
     await send('said once');
     expect(composerText()).toBe('said once');
 
     await act(async () => {
       first.unmount();
+      resetComposerDraftsForTests();
       render(<Surface start={failing()} />);
     });
 
     expect(composerText()).toBe('');
+  });
+
+  it('says the toast once per failure and hands the message back once', async () => {
+    // One give-back, not two: the text is not doubled by a second path.
+    render(<Surface start={failing()} />);
+    await send('once');
+    expect(composerText()).toBe('once');
+    await send('once');
+    expect(composerText()).toBe('once');
+    expect(toastError).toHaveBeenCalledTimes(2);
   });
 
   it('reports nothing when the send was never attempted', async () => {
