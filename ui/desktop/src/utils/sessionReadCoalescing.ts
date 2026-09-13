@@ -6,13 +6,25 @@
  * Opening a chat mounts several components that each read the chat's own row:
  * the composer (its working directory, and separately its privacy tier), the
  * subagent header, the extension menu (`/sessions/{id}/extensions`) and the cost
- * tracker (`/sessions/{id}/usage`). Each read was issued independently, React's StrictMode doubles every effect in
- * development, and the composer remounts once when the transcript replaces the
- * empty-chat layout. Measured with CDP on 2026-09-13: a plain reload into a chat
- * sent TEN identical `GET /sessions/{id}` and four identical `/extensions`
- * inside two milliseconds, each behind its own CORS preflight, and that burst
- * filled the connection pool so the chat's own `/agent/resume` queued ~400 ms
- * behind it.
+ * tracker (`/sessions/{id}/usage`). Each read was issued independently, React's
+ * StrictMode doubles every effect in development, and the composer remounts once
+ * when the transcript replaces the empty-chat layout. Measured with CDP on
+ * 2026-09-13: a plain reload into a chat sent TEN identical `GET /sessions/{id}`
+ * and four identical `/extensions` inside two milliseconds, each behind its own
+ * CORS preflight, and that burst filled the connection pool so the chat's own
+ * `/agent/resume` queued ~400 ms behind it.
+ *
+ * # What this cannot share, and must not try to
+ *
+ * Only reads issued in the same moment. Two readers whose reads are separated by
+ * a round trip are two requests, and holding a batch open long enough to join
+ * them would just be a cache under another name. That is not hypothetical: the
+ * subagent header read the row at mount, and a browser withholds the composer
+ * until the chat store's `/agent/resume` has answered (`composerSlotMode`), so
+ * under `biorouter serve` the two went out 55–290 ms apart — two requests on
+ * almost every open, while the desktop, which mounts both together, sent one.
+ * A reader like that is fixed by not reading: the header now takes the row the
+ * chat store already holds (`components/subagent/useSubagentSession.ts`).
  *
  * # The rule, and why it cannot serve a stale answer
  *

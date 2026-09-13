@@ -7,18 +7,24 @@ import { render, screen, waitFor, act } from '@testing-library/react';
  * ten times — measured with CDP in the running app on 2026-09-13 as ten identical
  * requests inside two milliseconds on a plain reload into a chat.
  *
- * This spec drives the real readers through the real generated client and the
- * transport `renderer.tsx` installs (`daemonClientConfig`), with only the network
- * faked, and counts what reaches it:
+ * This spec mounts what `BaseChat` mounts for a chat's row, from the real
+ * modules: the chat store (`useChatStream`, whose `/agent/resume` loads the
+ * chat), the subagent header (`useSubagentSession`), the composer slot's own
+ * decision (`subagentComposerKind` → `SubagentComposerSlot`) and the composer
+ * (`ChatInput`, which reads the row for its working directory and its tier) —
+ * through the real generated client and the transport `renderer.tsx` installs
+ * (`daemonClientConfig`), with only the network faked. It counts what is SENT.
  *
- *   - `ChatInput` reads the row twice per mount (working directory, privacy tier);
- *   - `useSubagentSession` reads it once per mount;
- *   - React's StrictMode doubles every mount in development, and `BaseChat`
- *     remounts the composer when the transcript replaces the empty-chat layout.
- *
- * That is 2 x 2 x 2 + 1 x 2 = 10 reads issued, which is what the app sent. The
- * assertion is on what was SENT: one request, for the row only, carrying the
- * proof of a person.
+ * ⚠ **Both surfaces, because they time the composer differently**, and a count
+ * that holds on one says nothing about the other. The desktop mounts the
+ * composer with the chat; a browser WITHHOLDS it until the store's row has
+ * landed (`composerSlotMode`). An independent tester measured the second under
+ * `biorouter serve`: the header's own read went out at 16 ms and the composer's
+ * 55–290 ms later, after `/agent/resume` answered — two requests on almost every
+ * open, where the desktop sent one. So `/agent/resume` answers here after
+ * {@link RESUME_MS}, well past the coalescer's hold, as it did there. With it at
+ * 0 the browser case passes against the header that read for itself, which is
+ * why the delay is asserted rather than assumed.
  */
 
 vi.mock('./ConfigContext', () => ({
@@ -72,46 +78,96 @@ import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
 import { client } from '../api/client.gen';
 import { daemonClientConfig } from '../utils/daemonClient';
+import { SESSION_READ_HOLD_MS } from '../utils/sessionReadCoalescing';
 import { useSubagentSession } from './subagent/useSubagentSession';
+import { subagentComposerKind } from './subagent/subagentReadOnly';
+import { SubagentComposerSlot } from './subagent/SubagentComposerSlot';
+import { useChatStream } from '../hooks/useChatStream';
+import { defaultChatStreamRegistry } from '../hooks/chatStreamStore';
+import { BROWSER_SURFACE_MARKER } from '../utils/surface';
+import { resetHostProviderForTests } from '../utils/userAction';
 
 const DAEMON = 'http://127.0.0.1:4711';
-const CHAT = '20260913_1';
 
-type Sent = { url: URL; proof: string | null };
+/** How long `/agent/resume` takes — inside the 12–232 ms measured under serve, never 0. */
+const RESUME_MS = 80;
 
-function fakeDaemon(row: Record<string, unknown>) {
+/**
+ * A fresh id per test: the transcript LRU (`utils/sessionNameSync`) is
+ * module-level and keyed by session id, and a reused id would load from it
+ * without the `/agent/resume` whose timing this spec is about.
+ */
+let seq = 0;
+const nextChat = () => `20260913_${++seq}`;
+
+type Sent = {
+  method: string;
+  url: URL;
+  proof: string | null;
+  callerProvider: string | null;
+};
+
+type Row = Record<string, unknown> & { id: string; session_type: string };
+
+function fakeDaemon(row: Row, { resumeRefused = false } = {}) {
   const sent: Sent[] = [];
+  const transcript = [
+    {
+      role: 'user',
+      created: 1,
+      content: [{ type: 'text', text: '## Subagent spawn context\ntask: count the files' }],
+      metadata: { userVisible: true, agentVisible: false, provenance: { kind: 'spawn_context' } },
+    },
+  ];
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
   const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
     const url = new URL(request.url);
-    sent.push({ url, proof: request.headers.get('X-User-Action') });
-    if (url.pathname === `/sessions/${CHAT}`) {
-      const metadataOnly = url.searchParams.get('metadata_only') === 'true';
-      return new Response(
-        JSON.stringify({
-          ...row,
-          id: CHAT,
-          conversation: metadataOnly ? null : [{ role: 'user', created: 1, content: [] }],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
+    sent.push({
+      method: request.method,
+      url,
+      proof: request.headers.get('X-User-Action'),
+      callerProvider: request.headers.get('X-Caller-Provider'),
+    });
+    if (url.pathname === '/agent/resume') {
+      await new Promise((resolve) => setTimeout(resolve, RESUME_MS));
+      if (resumeRefused) {
+        return new Response('This daemon was started without a user-action key.', {
+          status: 403,
+        });
+      }
+      return json({ session: { ...row, conversation: transcript } });
     }
-    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.pathname === `/sessions/${row.id}`) {
+      const metadataOnly = url.searchParams.get('metadata_only') === 'true';
+      return json({ ...row, conversation: metadataOnly ? null : transcript });
+    }
+    if (url.pathname === `/sessions/${row.id}/extensions`) {
+      return json({ extensions: [{ type: 'platform', name: 'developer' }] });
+    }
+    if (url.pathname === `/sessions/${row.id}/events`) {
+      // An observer's feed: stays open until the store lets go of it.
+      return new Promise<Response>((_, reject) => {
+        request.signal.addEventListener('abort', () =>
+          reject(new DOMException('The operation was aborted.', 'AbortError'))
+        );
+      });
+    }
+    if (url.pathname === '/config/read') return json('versa_azure');
+    return json({});
   });
-  return { sent, fetchMock };
+  const rowReads = () =>
+    sent.filter((s) => s.method === 'GET' && s.url.pathname === `/sessions/${row.id}`);
+  return { sent, fetchMock, rowReads };
 }
 
-const sessionReads = (sent: Sent[]) => sent.filter((s) => s.url.pathname === `/sessions/${CHAT}`);
+const describeRead = (s: Sent) => `${s.url.pathname}${s.url.search}`;
 
-function SubagentHeaderProbe({ sessionId }: { sessionId: string }) {
-  const info = useSubagentSession(sessionId);
-  return <div data-testid="subagent-probe">{info.isSubagent ? 'subagent' : 'ordinary'}</div>;
-}
-
-function Composer() {
+function Composer({ sessionId }: { sessionId: string }) {
   return (
     <ChatInput
-      sessionId={CHAT}
+      sessionId={sessionId}
       handleSubmit={vi.fn()}
       chatState={ChatState.Idle}
       onStop={vi.fn()}
@@ -130,22 +186,52 @@ function Composer() {
   );
 }
 
-/** `BaseChat`'s two composer slots: the empty-chat layout, then the transcript's. */
-function ChatOpen({ transcript }: { transcript: boolean }) {
+const onStreamFinish = () => {};
+
+/**
+ * `BaseChat`'s reads of a chat's row, in `BaseChat`'s arrangement: the store
+ * loads it, the header hook and the slot decide from it, and the composer sits
+ * in one of two layouts — the empty-chat one, then the transcript's, which
+ * remounts it (`isCleanConversation`).
+ */
+function ChatOpen({ sessionId }: { sessionId: string }) {
+  const { session, messages, chatState, sessionLoadError } = useChatStream({
+    sessionId,
+    onStreamFinish,
+  });
+  const subagent = useSubagentSession(sessionId);
+  const kind = subagentComposerKind({
+    sessionId,
+    loadedSessionId: session?.id,
+    loadedSessionType: session?.session_type,
+    hookSaysSubagent: subagent.isSubagent,
+    loadFailed: sessionLoadError !== undefined,
+  });
+  const slot = (
+    <SubagentComposerSlot kind={kind}>
+      <Composer sessionId={sessionId} />
+    </SubagentComposerSlot>
+  );
   return (
     <div>
-      <SubagentHeaderProbe sessionId={CHAT} />
-      {transcript ? (
-        <section data-layout="transcript">
-          <Composer />
-        </section>
+      <div data-testid="subagent-probe">
+        {subagent.isSubagent
+          ? `subagent of ${subagent.parentSessionId} with ${subagent.extensions.join(',')}`
+          : 'ordinary'}
+      </div>
+      {messages.length === 0 && chatState === ChatState.Idle ? (
+        <div data-layout="clean">{slot}</div>
       ) : (
-        <div data-layout="clean">
-          <Composer />
-        </div>
+        <section data-layout="transcript">{slot}</section>
       )}
     </div>
   );
+}
+
+async function settle(ms = RESUME_MS + 150) {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  });
 }
 
 beforeEach(() => {
@@ -155,6 +241,7 @@ beforeEach(() => {
       directoryChooser: vi.fn(),
       addRecentDir: vi.fn(),
       logInfo: vi.fn(),
+      showNotification: vi.fn(),
       getPathForFile: vi.fn(() => ''),
       on: vi.fn(),
       off: vi.fn(),
@@ -165,45 +252,73 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete document.documentElement.dataset.biorouterSurface;
+  resetHostProviderForTests();
+  defaultChatStreamRegistry.resetForTests();
   client.setConfig({ baseUrl: 'http://localhost', headers: {}, fetch: undefined });
   vi.unstubAllGlobals();
 });
 
 describe('opening a chat reads its row once', () => {
-  it('sends ONE metadata read, with the proof, where ten reads are issued', async () => {
-    const daemon = fakeDaemon({ privacy_tier: 'private', working_dir: '/w', session_type: 'user' });
+  it('desktop: ONE metadata read, with the proof, however many readers mount', async () => {
+    const chat = nextChat();
+    const daemon = fakeDaemon({
+      id: chat,
+      privacy_tier: 'private',
+      working_dir: '/w',
+      session_type: 'user',
+    });
     vi.stubGlobal('fetch', daemon.fetchMock);
 
-    const { rerender } = render(
+    const { unmount } = render(
       <StrictMode>
-        <ChatOpen transcript={false} />
+        <ChatOpen sessionId={chat} />
       </StrictMode>
     );
-    // The transcript lands and the composer moves to its other slot — a remount.
-    rerender(
-      <StrictMode>
-        <ChatOpen transcript />
-      </StrictMode>
-    );
-
     await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('private'));
-    // Let any straggler that would have gone out separately do so.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settle();
 
-    const reads = sessionReads(daemon.sent);
-    expect(reads.map((r) => `${r.url.pathname}${r.url.search}`)).toEqual([
-      `/sessions/${CHAT}?metadata_only=true`,
-    ]);
+    expect(daemon.rowReads().map(describeRead)).toEqual([`/sessions/${chat}?metadata_only=true`]);
     // ⚠ A read of a private chat without the proof is answered with nothing, and
     // the interface then treats the chat as gone.
-    expect(reads[0].proof).toBe('proof-of-person');
+    expect(daemon.rowReads()[0].proof).toBe('proof-of-person');
     expect(screen.getByTestId('subagent-probe')).toHaveTextContent('ordinary');
+    unmount();
   });
 
-  it('reads the transcript only for a subagent`s chat, which needs its spawn record', async () => {
+  it('browser: ONE metadata read, though the composer mounts only after the chat has loaded', async () => {
+    // The tester's D1. The composer is withheld until `/agent/resume` answers,
+    // so a reader that asks at mount cannot share the composer's request — not
+    // within the coalescer's hold, and not by any rule that keeps a read fresh.
+    expect(RESUME_MS).toBeGreaterThan(SESSION_READ_HOLD_MS * 3);
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const chat = nextChat();
     const daemon = fakeDaemon({
+      id: chat,
+      privacy_tier: 'private',
+      working_dir: '/w',
+      session_type: 'user',
+    });
+    vi.stubGlobal('fetch', daemon.fetchMock);
+
+    const { unmount } = render(<ChatOpen sessionId={chat} />);
+    // Withheld while the answer is in flight — the arrangement that separates
+    // the two readers in time.
+    expect(screen.queryByTestId('tier-probe')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('private'));
+    await settle();
+
+    const reads = daemon.rowReads();
+    expect(reads.map(describeRead)).toEqual([`/sessions/${chat}?metadata_only=true`]);
+    // A browser states the host's model instead of a proof it cannot hold (SD-12).
+    expect(reads[0].callerProvider).toBe('versa_azure');
+    unmount();
+  });
+
+  it("desktop, a subagent's chat: the header comes from the resume, and no transcript is read", async () => {
+    const chat = nextChat();
+    const daemon = fakeDaemon({
+      id: chat,
       privacy_tier: 'public',
       working_dir: '/w',
       session_type: 'sub_agent',
@@ -211,11 +326,51 @@ describe('opening a chat reads its row once', () => {
     });
     vi.stubGlobal('fetch', daemon.fetchMock);
 
-    render(<ChatOpen transcript />);
+    const { unmount } = render(<ChatOpen sessionId={chat} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('subagent-probe')).toHaveTextContent(
+        'subagent of 20260913_0 with developer'
+      )
+    );
+    await settle();
 
-    await waitFor(() => expect(screen.getByTestId('subagent-probe')).toHaveTextContent('subagent'));
-    const reads = sessionReads(daemon.sent).map((r) => `${r.url.pathname}${r.url.search}`);
-    expect(reads).toEqual([`/sessions/${CHAT}?metadata_only=true`, `/sessions/${CHAT}`]);
-    expect(sessionReads(daemon.sent).every((r) => r.proof === 'proof-of-person')).toBe(true);
+    expect(daemon.rowReads().map(describeRead)).toEqual([`/sessions/${chat}?metadata_only=true`]);
+    const grants = daemon.sent.filter((s) => s.url.pathname === `/sessions/${chat}/extensions`);
+    expect(grants).toHaveLength(1);
+    expect(grants[0].proof).toBe('proof-of-person');
+    unmount();
+  });
+
+  it("browser, a subagent's chat: the store's one full read is the header's too", async () => {
+    // `/agent/resume` is refused for a subagent's chat on a keyless daemon, and
+    // the store reads the chat itself to paint it read-only
+    // (`loadReadOnlySubagentChat`). The composer never mounts there.
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const chat = nextChat();
+    const daemon = fakeDaemon(
+      {
+        id: chat,
+        privacy_tier: 'public',
+        working_dir: '/w',
+        session_type: 'sub_agent',
+        parent_session_id: '20260913_0',
+      },
+      { resumeRefused: true }
+    );
+    vi.stubGlobal('fetch', daemon.fetchMock);
+
+    const { unmount } = render(<ChatOpen sessionId={chat} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('subagent-probe')).toHaveTextContent(
+        'subagent of 20260913_0 with developer'
+      )
+    );
+    await settle();
+
+    expect(daemon.rowReads().map(describeRead)).toEqual([`/sessions/${chat}`]);
+    expect(daemon.rowReads()[0].callerProvider).toBe('versa_azure');
+    expect(screen.getByTestId('subagent-read-only-note')).toBeInTheDocument();
+    defaultChatStreamRegistry.peekController(chat)?.releaseOwnership();
+    unmount();
   });
 });

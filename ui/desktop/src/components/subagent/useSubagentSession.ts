@@ -1,12 +1,23 @@
 /**
- * BR-71 §4.5: everything the subagent tab header needs, from the generated
- * client. `getSession` and `cancelTurn` are two of the functions the store
- * already imports (the `from '../api'` brace list in chatStreamStore.tsx).
- * `getSessionExtensions` is NOT in that list; it is a third generated function
- * from the same module (`sdk.gen.ts`, alongside `getSession` and `cancelTurn`).
+ * BR-71 §4.5: everything the subagent tab header needs.
+ *
+ * ⚠ **The chat's row comes from the chat store, never from a read of its own.**
+ * The store (`hooks/chatStreamStore.tsx`) is the one owner of a loaded chat: its
+ * `/agent/resume` answers with the whole row (`get_session(id, true)`, transcript
+ * included), and in a browser a subagent's chat is loaded by the store's own
+ * `GET /sessions/{id}` (`loadReadOnlySubagentChat`). This hook used to ask again,
+ * at mount, and that read could share a request with the composer's only by
+ * accident of timing — measured under `biorouter serve` on 2026-09-13, it went out
+ * at 16 ms while the composer, which a browser withholds until the store's row
+ * has landed (`composerSlotMode`), read the same row 55–290 ms later: two requests
+ * on almost every open. Everything it needs — `session_type`,
+ * `parent_session_id`, the spawn-context record — is already in the store's row,
+ * and none of it changes over a chat's life. The one read left is
+ * `GET /sessions/{id}/extensions`, for a subagent's chat only.
  */
-import { useCallback, useEffect, useState } from 'react';
-import { cancelTurn, getSession, getSessionExtensions } from '../../api';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { cancelTurn, getSessionExtensions, type Message } from '../../api';
+import { useChatStreamController } from '../../hooks/chatStreamStore';
 import { userActionHeaders } from '../../utils/userAction';
 
 type SubagentSessionInfo = {
@@ -71,72 +82,60 @@ export function extractKnowledgeBases(spawnContext?: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * The spawn-context record: the first message stamped provenance `spawn_context`
+ * (Task 32). Casing verified against the generated client: `MessageMetadata` is
+ * camelCase with `provenance?: MessageProvenance | null`, `MessageProvenance` is
+ * `{ fromSessionId?, fromSessionName?, kind }`, and `ProvenanceKind` is the
+ * snake_case union `'agent_injection' | 'user_direct' | 'spawn_context'`.
+ */
+function spawnContextOf(conversation: Message[] | null | undefined): string | undefined {
+  const record = (conversation ?? []).find(
+    (m) => m?.metadata?.provenance?.kind === 'spawn_context'
+  );
+  return record?.content?.map((c) => ('text' in c ? c.text : '')).join('\n');
+}
+
 export function useSubagentSession(sessionId: string): SubagentSessionInfo {
-  const [info, setInfo] = useState<Omit<SubagentSessionInfo, 'stop'>>({
-    isSubagent: false,
-    extensions: [],
-  });
+  // The same controller `useChatStream` holds for this tab — `getController` is a
+  // create-or-get on the one registry, so this subscribes and loads nothing.
+  const controller = useChatStreamController(sessionId);
+  const loaded = useSyncExternalStore(
+    controller.subscribe,
+    () => controller.getSnapshot().session,
+    () => controller.getSnapshot().session
+  );
+  // ⚠ Compared, not assumed. `ChatGroupsShell` keys BaseChat by TAB id and the
+  // session behind a tab is rebindable, so a row for any other id is not this
+  // tab's answer — and the previous child's lineage, grants and Stop button must
+  // not stay rendered over a chat they have nothing to do with.
+  const child =
+    sessionId !== '' && loaded?.id === sessionId && loaded.session_type === 'sub_agent'
+      ? loaded
+      : undefined;
+  const childId = child?.id;
+  const conversation = child?.conversation;
+  const spawnContext = useMemo(() => spawnContextOf(conversation), [conversation]);
 
+  // The child's extension grants — the one thing the row does not carry.
+  // Tagged with the id they were read for, so a grant list can never be shown
+  // over another chat.
+  const [grants, setGrants] = useState<{ sessionId: string; extensions: string[] } | null>(null);
   useEffect(() => {
-    // Drop the previous child BEFORE anything is awaited. ChatGroupsShell keys
-    // BaseChat by TAB id, not session id — the session behind a tab is
-    // explicitly rebindable — so one instance of this hook outlives a sessionId
-    // change. Without this, the early returns below leave the old child's
-    // lineage, grants and Stop button rendered over a session they have nothing
-    // to do with, and even a subagent→subagent switch would show the previous
-    // child's spawn context for the length of the fetch. A functional update, so
-    // an already-clear state costs no re-render.
-    setInfo((prev) => (prev.isSubagent ? { isSubagent: false, extensions: [] } : prev));
-
+    if (!childId) return;
     let cancelled = false;
     (async () => {
-      // BaseChat mounts with an empty sessionId before the sidebar's "New
-      // Session" has created one; a GET /sessions/ then 404s on every such
-      // mount. There is nothing to look up, so do not ask.
-      if (!sessionId) return;
-      // The row first, without the transcript. Almost every tab is an ordinary
-      // chat, for which `session_type` is the whole answer — and the composer
-      // reads this same row in the same mount, so the two share one request
-      // (`utils/sessionReadCoalescing.ts`). Only a subagent's chat needs its
-      // conversation, for the spawn-context record below.
-      const row = (
-        await getSession({
-          path: { session_id: sessionId },
-          query: { metadata_only: true },
+      const response = (
+        await getSessionExtensions({
+          path: { session_id: childId },
           // Issue #56 Task 58: reading a private chat needs the proof-of-user.
           headers: await userActionHeaders(),
         })
       ).data;
-      if (cancelled || !row || row.session_type !== 'sub_agent') return;
-      const session = (
-        await getSession({
-          path: { session_id: sessionId },
-          headers: await userActionHeaders(),
-        })
-      ).data;
-      if (cancelled || !session || session.session_type !== 'sub_agent') return;
-      // The spawn-context record: first message stamped provenance spawn_context
-      // (Task 32). Casing verified against the generated client: `MessageMetadata`
-      // is camelCase with `provenance?: MessageProvenance | null`,
-      // `MessageProvenance` is `{ fromSessionId?, fromSessionName?, kind }`, and
-      // `ProvenanceKind` is the snake_case union
-      // `'agent_injection' | 'user_direct' | 'spawn_context'`.
-      const record = (session.conversation ?? []).find(
-        (m) => m?.metadata?.provenance?.kind === 'spawn_context'
-      );
-      const spawnContext = record?.content?.map((c) => ('text' in c ? c.text : '')).join('\n');
-      const extensionsResponse = (
-        await getSessionExtensions({
-          path: { session_id: sessionId },
-          headers: await userActionHeaders(),
-        })
-      ).data;
       if (cancelled) return;
-      setInfo({
-        isSubagent: true,
-        parentSessionId: session.parent_session_id ?? undefined,
-        spawnContext,
-        extensions: (extensionsResponse?.extensions ?? []).map((e) => e.name),
+      setGrants({
+        sessionId: childId,
+        extensions: (response?.extensions ?? []).map((e) => e.name),
       });
     })().catch(() => {
       /* a failed load renders no header — never breaks the chat */
@@ -144,7 +143,7 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [childId]);
 
   const stop = useCallback(async () => {
     await cancelTurn({
@@ -153,5 +152,19 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
     });
   }, [sessionId]);
 
-  return { ...info, stop };
+  // The header appears once everything it states is in, exactly as before: a
+  // grants row that reads "no extensions" until the list lands would be the
+  // glass box stating something false.
+  if (!child || grants?.sessionId !== child.id) {
+    return { isSubagent: false, extensions: NO_EXTENSIONS, stop };
+  }
+  return {
+    isSubagent: true,
+    parentSessionId: child.parent_session_id ?? undefined,
+    spawnContext,
+    extensions: grants.extensions,
+    stop,
+  };
 }
+
+const NO_EXTENSIONS: string[] = [];
