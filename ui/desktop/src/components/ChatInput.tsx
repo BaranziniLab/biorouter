@@ -54,7 +54,7 @@ import {
   splitComposerText,
 } from '../utils/composerRefs';
 import { findRefTags } from '../utils/resourceRefs';
-import { RESTORE_CHAT_INPUT_EVENT, parkedComposerRestore } from '../utils/composerRestore';
+import { RESTORE_CHAT_INPUT_EVENT } from '../utils/composerRestore';
 import { ResourceRefChip } from './ResourceRefChip';
 
 interface QueuedMessage {
@@ -312,6 +312,15 @@ interface ChatInputProps {
   onSteer?: (text: string) => Promise<boolean>;
   commandHistory?: string[];
   initialValue?: string;
+  /**
+   * A message a failed chat start owes back to THIS chat's composer, held by
+   * the surface (`BaseChat.keptMessage`) rather than by the composer that
+   * submitted it — because the same failure replaces that composer, and the
+   * replacement is what the person is looking at. Re-applied on every mount
+   * while it is set, so the second, third and nth rebuild of the composer all
+   * show it. See `utils/composerRestore.ts` for what this replaced and why.
+   */
+  keptMessage?: string;
   droppedFiles?: DroppedFile[];
   onFilesProcessed?: () => void;
   setView: (view: View) => void;
@@ -372,6 +381,7 @@ export default function ChatInput({
   onSteer,
   commandHistory = [],
   initialValue = '',
+  keptMessage,
   droppedFiles = [],
   onFilesProcessed,
   setView,
@@ -919,14 +929,16 @@ export default function ChatInput({
   // The event above only reaches a composer that is already listening, and the
   // fresh tab's is not: a failed start remounts it (BaseChat moves the composer
   // between `isCleanConversation`'s two subtrees), so the event lands on the
-  // instance being discarded. This mount reads what was left for it instead.
+  // instance being discarded. The surface holds the message for whatever
+  // composer it renders next, and this reads it — on THIS mount and on every
+  // later one, for as long as the surface still owes it, which is what makes a
+  // retry survive: nothing here is spent by being read.
+  //
   // Must stay BELOW the `[initialValue]` effect, which also runs on mount and
-  // would blank it again. Nothing is parked unless a start has just failed for
-  // this chat, and a park lives for one task (see the module).
+  // would blank it again.
   useEffect(() => {
-    const parked = parkedComposerRestore(sessionId);
-    if (parked?.value) restoreText(parked.value);
-  }, [sessionId, restoreText]);
+    if (keptMessage) restoreText(keptMessage);
+  }, [keptMessage, restoreText]);
 
   // A region the user selected in the preview panel arrives here as an already
   // written PNG. It joins `pastedImages` rather than getting a channel of its

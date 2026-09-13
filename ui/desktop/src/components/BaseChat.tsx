@@ -755,30 +755,71 @@ export function collectArtifactsFromMessages(
  * its text synchronously on submit (ChatInput.performSubmit), so when the backend
  * is unreachable the awaited createSession rejects *after* the text is already
  * gone — and the bare catch used to show nothing, so the message silently
- * vanished. Restore the typed text and surface a visible toast. The words are
+ * vanished. Give the typed text back and surface a visible toast. The words are
  * `startChatFailureNotice`'s, shared with every other surface that starts a
- * chat; the toast + restore fire on ANY rejection, so no silent path remains.
+ * chat; the toast + give-back fire on ANY rejection, so no silent path remains.
  * Exported so it can be unit-tested without Electron.
  *
- * ⚠ The restore goes through `restoreComposerText`, not a bare
- * `window.dispatchEvent`, because on THIS surface the composer the event would
- * reach is already doomed: `isCreatingSession` flipping back moves the composer
- * between `isCleanConversation`'s two subtrees, which remounts it, so the
- * instance that took the message never painted it. Measured in the dev app on
- * 1.90.4 — the toast read "Your message was kept." over an empty box. The
- * parked copy is what the replacement composer picks up; see that module.
+ * ⚠ THE BROADCAST IS NOT THE GIVE-BACK. On this surface the composer the
+ * event reaches is already doomed: `isCreatingSession` flipping back moves the
+ * composer between `isCleanConversation`'s two subtrees, which remounts it, so
+ * the instance that takes the message never paints it. `keep` is what the
+ * replacement reads — the surface's own copy, which the remount cannot touch.
+ *
+ * `keep` is REQUIRED, and deliberately so: this function's last act is a toast
+ * that says "Your message was kept." A caller with nowhere to keep it has to
+ * answer for that at the call site rather than discover it in the running app,
+ * which is how #303 shipped a toast whose claim was true only on the first of
+ * two identical failures.
  */
 export function handleCreateSessionError(
   err: unknown,
-  ctx: { textValue: string; attachments: UserAttachment[]; sessionId?: string | null }
+  ctx: {
+    textValue: string;
+    attachments: UserAttachment[];
+    sessionId?: string | null;
+    /** Hands the message to the SURFACE, which outlives the composer. */
+    keep: (message: { sessionId: string; value: string }) => void;
+  }
 ): void {
   // Put the user's text back so it is not lost when the backend is down.
+  ctx.keep({ sessionId: ctx.sessionId ?? '', value: ctx.textValue });
   restoreComposerText({
     sessionId: ctx.sessionId ?? null,
     value: ctx.textValue,
     attachments: ctx.attachments,
   });
   toastError(startChatFailureNotice(err, { kept: true }));
+}
+
+/** What a failed start owes back, as the surface remembers it. */
+export type KeptMessage = { sessionId: string; value: string } | null;
+
+/**
+ * What the surface hands to its composer: the message a failed start owes THIS
+ * chat, or nothing.
+ *
+ * Two conditions, and both are about identity rather than timing, which is the
+ * whole point of the fix this belongs to:
+ *
+ *   • it is the chat the message was typed into. A tab rebound to another chat
+ *     (clicking a chat in this tab) stops offering it in the very render that
+ *     rebinds, so no effect can run a commit late and put one chat's message
+ *     into another's composer;
+ *   • the surface is not at that moment trying to send it. `isCreatingSession`
+ *     rebuilds the composer on its way UP as well as on its way down, and a
+ *     rebuild mid-flight would otherwise refill the box with a message that is
+ *     being sent — which on a retry that finally succeeds would leave the text
+ *     in the composer AND in the transcript.
+ *
+ * Exported so the rule has one implementation and the tests pin that one.
+ */
+export function messageOwedToComposer(
+  kept: KeptMessage,
+  ctx: { sessionId: string; isCreatingSession: boolean }
+): string | undefined {
+  if (ctx.isCreatingSession) return undefined;
+  return kept && kept.sessionId === ctx.sessionId ? kept.value : undefined;
 }
 
 /**
@@ -1221,6 +1262,27 @@ function BaseChatContent({
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  /**
+   * The message a failed start owes back to this chat's composer.
+   *
+   * IT LIVES HERE, on the surface, because the surface is the thing the failure
+   * does NOT destroy: `setIsCreatingSession(false)` re-renders THIS component
+   * and rebuilds the composer under it. Anything the composer held is gone by
+   * then, and anything on a timer has to beat a remount it cannot see.
+   *
+   * Its lifetime is definite events, no clock:
+   *   • a start SUCCEEDS — cleared below, before the navigate that hands the
+   *     message to the new chat as cargo, so it is never given back as well;
+   *   • the surface is trying to send it, or has stopped being this chat —
+   *     `messageOwedToComposer` decides that per render, so neither state can
+   *     reach a composer one commit too late;
+   *   • the surface goes away — it is component state and dies with the tab.
+   * Nothing else can reach it: not another pane's fresh chat, not Home's
+   * composer, not a later "New chat", not another window. And it is one
+   * nullable string per mounted chat, replaced by each failure rather than
+   * accumulated, so there is nothing here to grow.
+   */
+  const [keptMessage, setKeptMessage] = useState<KeptMessage>(null);
   // F3 — the model this chat is about to be created on is the one on screen.
   const confirmNewChatModel = useConfirmNewChatModel();
   // #39 — the working directory chosen in the composer BEFORE a session
@@ -1669,6 +1731,11 @@ function BaseChatContent({
             allExtensions: extensionsList,
           }
         );
+        // This start worked, so nothing is owed back to the composer: the
+        // message travels to the new chat as route cargo below. Batched with
+        // the navigate, so the render that first carries the new session id
+        // already has nothing to give back.
+        setKeptMessage(null);
         navigateWithViewTransition(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
@@ -1681,7 +1748,7 @@ function BaseChatContent({
         );
       } catch (err) {
         setIsCreatingSession(false);
-        handleCreateSessionError(err, { textValue, attachments, sessionId });
+        handleCreateSessionError(err, { textValue, attachments, sessionId, keep: setKeptMessage });
       }
       return true;
     }
@@ -2222,6 +2289,7 @@ function BaseChatContent({
           onSteer={steer}
           commandHistory={commandHistory}
           initialValue={initialPrompt}
+          keptMessage={messageOwedToComposer(keptMessage, { sessionId, isCreatingSession })}
           setView={setView}
           totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
           accumulatedInputTokens={
