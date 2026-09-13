@@ -67,6 +67,7 @@ import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError, toastWarning } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { startChatFailureNotice } from '../utils/startChatFailure';
+import { restoreComposerText } from '../utils/composerRestore';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
@@ -754,26 +755,29 @@ export function collectArtifactsFromMessages(
  * its text synchronously on submit (ChatInput.performSubmit), so when the backend
  * is unreachable the awaited createSession rejects *after* the text is already
  * gone — and the bare catch used to show nothing, so the message silently
- * vanished. Restore the typed text (via a `restore-chat-input` event the composer
- * listens for) and surface a visible toast. The words are
+ * vanished. Restore the typed text and surface a visible toast. The words are
  * `startChatFailureNotice`'s, shared with every other surface that starts a
  * chat; the toast + restore fire on ANY rejection, so no silent path remains.
  * Exported so it can be unit-tested without Electron.
+ *
+ * ⚠ The restore goes through `restoreComposerText`, not a bare
+ * `window.dispatchEvent`, because on THIS surface the composer the event would
+ * reach is already doomed: `isCreatingSession` flipping back moves the composer
+ * between `isCleanConversation`'s two subtrees, which remounts it, so the
+ * instance that took the message never painted it. Measured in the dev app on
+ * 1.90.4 — the toast read "Your message was kept." over an empty box. The
+ * parked copy is what the replacement composer picks up; see that module.
  */
 export function handleCreateSessionError(
   err: unknown,
   ctx: { textValue: string; attachments: UserAttachment[]; sessionId?: string | null }
 ): void {
   // Put the user's text back so it is not lost when the backend is down.
-  window.dispatchEvent(
-    new CustomEvent('restore-chat-input', {
-      detail: {
-        sessionId: ctx.sessionId ?? null,
-        value: ctx.textValue,
-        attachments: ctx.attachments,
-      },
-    })
-  );
+  restoreComposerText({
+    sessionId: ctx.sessionId ?? null,
+    value: ctx.textValue,
+    attachments: ctx.attachments,
+  });
   toastError(startChatFailureNotice(err, { kept: true }));
 }
 
