@@ -496,13 +496,36 @@ mod tests {
     /// nothing about which function holds it, and a guarded handler says nothing
     /// about a second, unguarded one next to it — and together they say the
     /// proof is minted once, behind the guard.
+    ///
+    /// ⚠ **The needle is [`user_action_proof`], not `is_user_action`** (SD-8,
+    /// 2026-09-12), the same spelling `the_kb_tier_route_consults_the_user_action_guard`
+    /// below already asserts. The boolean form collapses `Unproven` and
+    /// `NoKeyInstalled`, and a `biorouter serve` daemon — where every caller,
+    /// the person at the keyboard included, is `NoKeyInstalled` — answered a
+    /// human with the sentence written for a model. The guard is unchanged in
+    /// what it admits; only the verdict it reads is finer.
+    ///
+    /// ⚠ **A consulted verdict is not a guard**, which is the way this scan
+    /// could have gone soft: `user_action_proof(` would still be present in a
+    /// handler that read it and then ignored it. So the refusal's early return
+    /// is asserted too, and the two together say the verdict is read AND acted
+    /// on before anything else happens.
     #[test]
     fn the_declassify_route_consults_the_user_action_guard() {
         let session_rs = include_str!("routes/session.rs");
         let handler = body_of(session_rs, "async fn declassify_session");
         assert!(
-            handler.contains("is_user_action("),
+            handler.contains("user_action_proof("),
             "the declassify route does not consult the user-action guard"
+        );
+        assert!(
+            handler.contains("declassify_refusal(user_action_proof(&headers))"),
+            "the declassify route reads the user-action verdict but no longer hands it to the \
+             function that turns it into a refusal"
+        );
+        assert!(
+            handler.contains("return Err((StatusCode::FORBIDDEN, refusal).into_response());"),
+            "the declassify route no longer REFUSES on the user-action verdict it read"
         );
         // Split across two literals so this file does not itself become a place
         // that names the proof-of-user: its sibling audit asserts the set of
@@ -521,7 +544,7 @@ mod tests {
         // no matter which function it was asked about.
         let unguarded = body_of(session_rs, "async fn get_session_extensions");
         assert!(
-            !unguarded.contains("is_user_action("),
+            !unguarded.contains("user_action_proof("),
             "the body scan is over-reading: a handler with no guard reported one"
         );
         assert!(

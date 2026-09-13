@@ -58,6 +58,7 @@ import { Badge } from '../ui/badge';
 import { EmptyState } from '../ui/empty-state';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
+import { DECLASSIFY_NEEDS_HOST_REASON, declassifyBrowserReason } from './declassifyOnBrowser';
 import {
   getCachedSessionList,
   notifySessionListChanged,
@@ -336,6 +337,17 @@ const SessionItem = React.memo(function SessionItem({
   onExportClick: (session: Session, e: React.MouseEvent) => void;
   onDeclassifyClick: (session: Session) => void;
 }) {
+  /**
+   * Is this page served to a browser, where declassification cannot work
+   * (SD-8)? See `declassifyOnBrowser.ts` for the ruling and the words.
+   *
+   * ⚠ **Not state, and not fetched**, for the reason `ModelsBottomBar` gives:
+   * the surface a renderer runs on cannot change while it is running, so this
+   * is read straight from the DOM marker `renderer.tsx` stamps. A state hook
+   * here would add a render in which the item is still offered.
+   */
+  const declassifyOnHost = declassifyBrowserReason();
+
   const handleEditClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation(); // Prevent card click
@@ -614,9 +626,54 @@ const SessionItem = React.memo(function SessionItem({
                   trigger at all. The menu now always carries the open and
                   delete items, so only the ITEM is gated. */}
                 {session.privacy_tier === 'private' && (
-                  <DropdownMenuItem onSelect={() => onDeclassifyClick(session)}>
-                    Make this chat public
-                  </DropdownMenuItem>
+                  <>
+                    {/* SD-8. On a `biorouter serve` page this item can never
+                      work — the daemon holds no proof-of-user key (SD-7), and
+                      the chat that needs the typed phrase also needs an
+                      operating-system prompt raised on the HOST — so it says so
+                      before the click instead of opening a destructive-confirm
+                      dialog that ends in a 403. Same shape as the model chip's
+                      two items in `ModelsBottomBar`: the note above, the item
+                      disabled and carrying the reason, and no handler wired.
+
+                      The item stays VISIBLE rather than being dropped the way a
+                      public row's is. A public row has nothing to declassify; a
+                      private row on this surface has something to declassify and
+                      nowhere here to do it, and "the control is missing" and
+                      "the control is unavailable here, for this reason" are
+                      different facts. */}
+                    {declassifyOnHost !== null && (
+                      <p
+                        data-testid="declassify-browser-note"
+                        /* ⚠ `max-w-72` is load-bearing, not decoration.
+                           `DropdownMenuContent` is `min-w-[8rem]` with no
+                           maximum, so it takes the width of its widest child:
+                           measured in the browser, three unwrapped sentences
+                           stretched this menu across the entire 1280px viewport
+                           and off the right edge. The cap is what makes it
+                           wrap. */
+                        className="max-w-72 border-b border-border-subtle px-3 py-2 text-supporting text-text-muted"
+                      >
+                        {DECLASSIFY_NEEDS_HOST_REASON}
+                      </p>
+                    )}
+                    {/* ⚠ **No `title` here, deliberately.** Measured in the
+                      browser on 2026-09-12: the app's global tooltip enhancer
+                      lifts a `title` into `data-biorouter-tooltip` AND writes it
+                      to `aria-label`, so a three-sentence reason becomes the
+                      item's accessible NAME and a screen reader announces the
+                      paragraph instead of "Make this chat public". The note
+                      above is visible whenever this menu is open, so the
+                      attribute bought nothing and cost the item its name. */}
+                    <DropdownMenuItem
+                      disabled={declassifyOnHost !== null}
+                      onSelect={
+                        declassifyOnHost !== null ? undefined : () => onDeclassifyClick(session)
+                      }
+                    >
+                      Make this chat public
+                    </DropdownMenuItem>
+                  </>
                 )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
