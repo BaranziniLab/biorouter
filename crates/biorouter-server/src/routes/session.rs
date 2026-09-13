@@ -1738,14 +1738,48 @@ pub struct RunningSessionsResponse {
     // is invisible to it.
     tag = "workspace",
     responses(
-        (status = 200, description = "Sessions with a turn in flight", body = RunningSessionsResponse),
+        (status = 200, description = "Sessions with a turn in flight, holding only the chats this \
+                                      caller could open: a private chat's id, and one this daemon \
+                                      cannot read, are omitted — never redacted — for a caller \
+                                      with neither the user-action proof nor a private \
+                                      capability, exactly as `GET /active_work` omits that chat's \
+                                      running work. An omitted row is indistinguishable from \
+                                      nothing running", body = RunningSessionsResponse),
         (status = 401, description = "Unauthorized - invalid secret key")
     )
 )]
-async fn running_sessions(State(state): State<Arc<AppState>>) -> Json<RunningSessionsResponse> {
-    Json(RunningSessionsResponse {
-        session_ids: state.active_turn_session_ids(),
-    })
+async fn running_sessions(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Json<RunningSessionsResponse> {
+    // Issue #56: this published the id of EVERY chat holding a turn — and, to
+    // anything polling it, when each one started and stopped — to a caller
+    // holding nothing but the daemon secret, while `GET /sessions/{id}` on that
+    // same id answered 403 and `GET /sessions` omitted the row. A running
+    // private chat is exactly what `GET /active_work` was closed for on
+    // 2026-09-11; this route is that same enumeration with the content stripped
+    // off, so it takes the same decision.
+    //
+    // FILTER, not refuse, for `GET /sessions`' reason: a 403 would break
+    // `biorouter session list`'s liveness on the public chats this gate is
+    // deliberately inert on. A caller that can prove nothing is answered
+    // `{"session_ids":[]}` — byte-for-byte the body it gets when nothing is
+    // running, so an omission is not an oracle.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    let manager = state.session_manager();
+    let mut session_ids = Vec::new();
+    for session_id in state.active_turn_session_ids() {
+        // `lists_work` and not `lists_session`: this route holds IDS, not rows,
+        // so each chat has to be resolved and resolution can fail. A turn held
+        // on a chat this daemon cannot read is `TargetTier::Unreadable` and so
+        // is answered as a private one — `work_reach`'s rule for work that names
+        // no chat, for the same reason. ONE resolved caller for the whole list,
+        // so the rows cannot half-believe two answers.
+        if caller.lists_work(manager, Some(&session_id)).await {
+            session_ids.push(session_id);
+        }
+    }
+    Json(RunningSessionsResponse { session_ids })
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -2852,14 +2886,26 @@ pub(crate) mod diverge_tests {
         manager.delete_session(&original.id).await.unwrap();
     }
 
-    async fn get_running(state: Arc<AppState>) -> Vec<String> {
+    /// ⚠ **The proof header is load-bearing, and it is why this helper takes
+    /// one.** Since the 2026-09-12 serve sweep `GET /sessions/running` filters
+    /// each id through `session_reach::HttpCaller::lists_work`, and the ids this
+    /// module's liveness test fabricates are in NO store — `TargetTier::
+    /// Unreadable`, which an unproven caller is refused exactly as it is refused
+    /// a private chat. So an unproven request here would answer `[]` and the
+    /// liveness assertions below would pass while measuring the gate rather than
+    /// the turn map. The person at the keyboard is the right caller for a test
+    /// about bookkeeping; whose ids the route hands out is measured in
+    /// `session_reach`'s own HTTP tests, against chats that really exist.
+    async fn get_running(state: Arc<AppState>, headers: &[(&str, &str)]) -> Vec<String> {
         let app = routes(state);
-        let req = Request::builder()
-            .method("GET")
-            .uri("/sessions/running")
-            .body(Body::empty())
+        let mut builder = Request::builder().method("GET").uri("/sessions/running");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let res = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
             .unwrap();
-        let res = app.oneshot(req).await.unwrap();
         let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value =
             serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
@@ -2895,6 +2941,8 @@ pub(crate) mod diverge_tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn running_sessions_reports_exactly_the_sessions_holding_a_turn() {
+        install_test_user_action_key();
+        let proof: &[(&str, &str)] = &[("X-User-Action", TEST_USER_ACTION_KEY)];
         let state = AppState::new().await.unwrap();
         // ⚠ NOT `uuid::Uuid::new_v4()`: `uuid` is not a dependency of
         // `biorouter-server`, so that would be an unresolved-crate error. A
@@ -2908,14 +2956,14 @@ pub(crate) mod diverge_tests {
 
         // A cheap precondition, not a strong one — this map starts empty. Kept
         // so the failure message names the offender if that ever stops holding.
-        let before = get_running(state.clone()).await;
+        let before = get_running(state.clone(), proof).await;
         assert!(!before.contains(&busy), "precondition: {before:?}");
 
         let guard = state
             .try_begin_turn_idempotent(&busy, CancellationToken::new(), None)
             .expect("nothing holds this fabricated session");
 
-        let during = get_running(state.clone()).await;
+        let during = get_running(state.clone(), proof).await;
         assert!(during.contains(&busy), "a held turn must be reported");
         assert!(
             !during.contains(&idle),
@@ -2924,7 +2972,7 @@ pub(crate) mod diverge_tests {
 
         drop(guard);
         assert!(
-            !get_running(state.clone()).await.contains(&busy),
+            !get_running(state.clone(), proof).await.contains(&busy),
             "TurnGuard::drop clears the slot, so the route must read LIVE state: \
              a snapshot taken at construction passes every assertion above and \
              fails this one"

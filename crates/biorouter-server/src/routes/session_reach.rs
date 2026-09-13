@@ -45,11 +45,30 @@
 //!   one-word change of URL. It and `GET /schedule/{id}/inspect` now ask
 //!   [`work_reach`]; `GET /schedule/list` keeps every row and redacts the
 //!   chat-naming FIELDS, because a schedule names chats rather than being one
-//!   and an idle schedule names none. `GET /sessions/running` (ids
-//!   only, and `biorouter session list` needs it whole to report liveness
-//!   truthfully), `GET /sessions/changes` (a watched row's provider, model and
-//!   tier columns), `GET /sessions/insights` and `GET /sessions/activity`
-//!   (aggregates) remain open too.
+//!   and an idle schedule names none. ⚠ **`GET /sessions/running` sat on this
+//!   list as deliberately open until 2026-09-12, and BOTH halves of the reason
+//!   given for it were wrong.** "Ids only" treated a chat's id as metadata when
+//!   the sibling `GET /sessions/{id}` refuses to confirm that same id EXISTS —
+//!   it answers an unknown id and a private one with one byte-identical
+//!   sentence, precisely so that nothing says which chats are there. And the
+//!   clause about `biorouter session list` had its dependency backwards: that
+//!   client sends its capability header on this request like any other
+//!   (`session_watch::DaemonAuth::headers`) and renders liveness only for the
+//!   rows `GET /sessions` has already handed it — rows that listing filters by
+//!   this same decision — so it never needed the route whole. It needed exactly
+//!   the filtered set, which is what it now gets. Driving `biorouter serve` on
+//!   2026-09-12 measured what the sentence cost: holding X-Secret-Key alone, the
+//!   route returned a private chat's id for as long as that chat held a turn and
+//!   dropped it when the turn ended, so polling it timed a private chat's turns
+//!   — while `GET /active_work` beside it answered `{"items":[]}` throughout and
+//!   `GET /sessions/{that id}` answered 403. It now filters through
+//!   [`HttpCaller::lists_work`], the `/active_work` decision, for the reason that
+//!   route takes it: this one holds ids rather than rows, so each chat is
+//!   resolved, and a turn on a chat this daemon cannot read is answered as a
+//!   private chat's. An omitted id is indistinguishable from nothing running.
+//!   `GET /sessions/changes` (a watched row's provider, model and tier columns),
+//!   `GET /sessions/insights` and `GET /sessions/activity` (aggregates) remain
+//!   open.
 //!   ⚠ **This bullet listed `POST /agent/resume` as open until 2026-09-04, and
 //!   it was wrong** — measured against a live private session, `/agent/resume`
 //!   answers 403 without the capability header and 200 with it, because
@@ -1759,9 +1778,13 @@ mod tests {
         // `pub fn routes(` sits on the far side of the rows reply.rs
         // contributes. `get_session_extensions` was this file's other ungated
         // control until QA's 2026-09-10 sweep gated it, which is why it can no
-        // longer serve as one; `get_session_insights` and `running_sessions`
-        // replace it — machine-wide aggregates that name no chat — on the two
-        // sides of this file's gated handlers.
+        // longer serve as one. `running_sessions` replaced it and has now gone
+        // the same way: the 2026-09-12 serve sweep measured it naming every
+        // private chat holding a turn to a secret-only caller, so it filters
+        // through `http_caller`/`lists_work` and is no longer ungated either.
+        // `get_session_insights` — a machine-wide aggregate that names no chat
+        // — and `pub fn routes(` replace the pair, on the two sides of this
+        // file's gated handlers.
         //
         // BOTH sides in `agent.rs`: `agent_remove_extension` sits after the two
         // gated handlers' neighbourhood and `update_agent_provider` before it,
@@ -1772,7 +1795,7 @@ mod tests {
             (reply_rs, "pub async fn interrupt"),
             (reply_rs, "pub fn routes("),
             (session_rs, "async fn get_session_insights("),
-            (session_rs, "async fn running_sessions("),
+            (session_rs, "pub fn routes("),
             (agent_rs, "async fn agent_remove_extension"),
             (agent_rs, "async fn update_agent_provider"),
             // BOTH sides in the two files this sweep added, for the same reason:
@@ -3666,6 +3689,145 @@ mod bypass_tests {
             assert!(ids.contains(&public.id().to_string()));
             assert_eq!(ids.contains(&private.id().to_string()), sees_private);
         }
+    }
+
+    /// Pull the id set out of a `GET /sessions/running` body.
+    async fn running_ids(state: Arc<AppState>, headers: &[(&str, &str)]) -> (String, Vec<String>) {
+        let (status, body) = call(state, "GET", "/sessions/running", None, headers).await;
+        assert_eq!(status, StatusCode::OK, "{headers:?}: {body}");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let ids = json["session_ids"]
+            .as_array()
+            .expect("session_ids is an array")
+            .iter()
+            .map(|id| id.as_str().unwrap().to_string())
+            .collect();
+        (body, ids)
+    }
+
+    /// `GET /sessions/running` named every chat holding a turn — private ones
+    /// included — to a caller holding nothing but the daemon secret, and because
+    /// the id appears while the turn runs and vanishes when it ends, POLLING it
+    /// timed a private chat's turns.
+    ///
+    /// Measured on `main` (e7002972) against a live `biorouter serve`, with
+    /// X-Secret-Key and no other header: `{"session_ids":["20260913_1"]}` for as
+    /// long as that private chat held a turn, while `GET /sessions/20260913_1`
+    /// answered 403 with the byte-identical body an id that never existed gets,
+    /// `GET /sessions` omitted the row, and `GET /active_work` — the sibling
+    /// closed on 2026-09-11 — answered `{"items":[]}` throughout.
+    ///
+    /// ⚠ **Phase 2's leak assertion is the cheap half; phases 2 and 3 together
+    /// are what make this test worth having.** A route that refused the request
+    /// outright, or answered `[]` to every unproven caller, satisfies "the
+    /// secret-only caller does not see the private id" perfectly while breaking
+    /// `biorouter session list`'s liveness on every public chat — a leak traded
+    /// for a broken client. So phase 3 requires the PUBLIC id to survive for
+    /// every caller, and phase 2 requires the secret-only body to be
+    /// byte-identical to the body that caller gets when nothing is running,
+    /// because an omission a caller can detect is the oracle the refusal is
+    /// worded to withhold. The final `drop` pins that the turn map is read live,
+    /// so phase 2 measured a running turn and not a row that is always absent.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_running_list_names_a_chat_only_to_a_caller_that_could_open_it() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Running list private (test fixture)").await;
+        let public = seed_chat(
+            &state,
+            "Running list public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+
+        // PHASE 1 — nothing running. The body an omission has to be
+        // indistinguishable from, observed rather than assumed.
+        let (idle_body, idle_ids) = running_ids(state.clone(), &[]).await;
+        assert!(
+            !idle_ids.contains(&private.id().to_string())
+                && !idle_ids.contains(&public.id().to_string()),
+            "precondition: neither seeded chat holds a turn yet, got {idle_ids:?}"
+        );
+
+        // PHASE 2 — the PRIVATE chat alone holds a turn, which is the leak in
+        // its purest form: on `main` this answered `{"session_ids":["<id>"]}`.
+        // `try_begin_turn_idempotent` writes the in-memory turn map and never
+        // consults the store, so this is the whole route path without running a
+        // model.
+        let private_turn = state
+            .try_begin_turn_idempotent(
+                private.id(),
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .expect("nothing holds the seeded private chat");
+        let (secret_only_body, secret_only_ids) = running_ids(state.clone(), &[]).await;
+        assert!(
+            !secret_only_ids.contains(&private.id().to_string()),
+            "a caller holding only the daemon secret was handed the id of a PRIVATE chat while \
+             it held a turn: {secret_only_body}"
+        );
+        // ⚠ Byte-identical, not merely "the id is absent". A body that differed
+        // at all — a `has_more`, a count, a different ordering — would let a
+        // caller tell a running private chat from no private chat, which is the
+        // oracle `SESSION_OUT_OF_REACH` is one sentence for two answers to
+        // avoid, and which is how the sidebar's continuation value leaked a
+        // count of the rows it hid.
+        assert_eq!(
+            secret_only_body, idle_body,
+            "a secret-only caller can tell a running private chat from nothing running at all"
+        );
+        for (headers, label) in [
+            (&[PROOF][..], "the person at the keyboard"),
+            (&[PRIVATE_CAPABILITY][..], "a program on a private model"),
+        ] {
+            let (body, ids) = running_ids(state.clone(), headers).await;
+            assert!(
+                ids.contains(&private.id().to_string()),
+                "{label} lost the private chat's running turn: {body}"
+            );
+        }
+
+        // PHASE 3 — the PUBLIC chat holds one too. This is the half that says
+        // the fix is a filter and not a refusal: a route that answered `[]` to
+        // every unproven caller satisfies phase 2 perfectly while breaking
+        // `biorouter session list`'s liveness on every public chat.
+        let _public_turn = state
+            .try_begin_turn_idempotent(
+                public.id(),
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .expect("nothing holds the seeded public chat");
+        for (headers, sees_private) in [
+            (&[][..], false),
+            (&[PROOF][..], true),
+            (&[PRIVATE_CAPABILITY][..], true),
+        ] {
+            let (body, ids) = running_ids(state.clone(), headers).await;
+            assert!(
+                ids.contains(&public.id().to_string()),
+                "{headers:?} lost the PUBLIC chat's running turn — a leak traded for a broken \
+                 client: {body}"
+            );
+            assert_eq!(
+                ids.contains(&private.id().to_string()),
+                sees_private,
+                "{headers:?}: the private chat's id was {} the running list — {body}",
+                if sees_private { "missing from" } else { "in" }
+            );
+        }
+
+        // The turn map is read LIVE: drop the private turn and the callers that
+        // COULD see it stop seeing it, so phase 2 measured a running turn rather
+        // than a row that is always there.
+        drop(private_turn);
+        let (body, ids) = running_ids(state.clone(), &[PROOF]).await;
+        assert!(
+            !ids.contains(&private.id().to_string()) && ids.contains(&public.id().to_string()),
+            "the route must read the live turn map: {body}"
+        );
     }
 
     /// Paging a FILTERED sidebar must still walk every visible row exactly
