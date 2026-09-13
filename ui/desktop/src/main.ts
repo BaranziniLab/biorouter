@@ -165,6 +165,7 @@ import {
   unsandboxedConfigDirCandidates,
 } from './utils/biorouterPaths';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
+import { stagedAssetPath } from './utils/registryDownload';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
   diagnosticsArchiveBytes,
@@ -4054,15 +4055,19 @@ ipcMain.handle('registry:download', async (_event, { url }: { url: string }) => 
     const buf = Buffer.from(await response.arrayBuffer());
     if (buf.length > MAX_SIZE) return { error: 'Download too large.' };
 
-    const dir = path.join(os.tmpdir(), 'biorouter-registry');
+    // ⚠ The nonce names the DIRECTORY, not the file: the daemon's importer
+    // reads this filename's stem as the package id for an archive that declares
+    // no name, so a `<nonce>-single-cell.zip` installed as
+    // `<nonce>-single-cell`. See `utils/registryDownload`.
+    const { dir, file } = stagedAssetPath({
+      tmpDir: os.tmpdir(),
+      pathname: parsed.pathname,
+      nonce: crypto.randomBytes(6).toString('hex'),
+      ext,
+    });
     fsSync.mkdirSync(dir, { recursive: true });
-    const safeName = (path.basename(parsed.pathname) || `asset${ext}`).replace(
-      /[^a-zA-Z0-9._-]/g,
-      '_'
-    );
-    const dest = path.join(dir, `${crypto.randomBytes(6).toString('hex')}-${safeName}`);
-    fsSync.writeFileSync(dest, buf);
-    return { path: dest };
+    fsSync.writeFileSync(file, buf);
+    return { path: file };
   } catch (err) {
     return { error: `Download failed: ${(err as Error).message}` };
   }

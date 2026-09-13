@@ -1917,17 +1917,17 @@ async fn fetch_registry_asset(raw_url: &str) -> Result<PathBuf, String> {
         return Err("Download too large.".to_string());
     }
 
-    let dir = std::env::temp_dir().join("biorouter-registry");
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| format!("Download failed: {e}"))?;
     let safe_name = url
         .path_segments()
         .and_then(Iterator::last)
         .filter(|name| !name.is_empty())
         .map(sanitize_asset_name)
         .unwrap_or_else(|| "asset.zip".to_string());
-    let dest = dir.join(format!("{}-{safe_name}", random_suffix()));
+    let dir = staging_dir(&std::env::temp_dir(), &random_suffix());
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?;
+    let dest = dir.join(safe_name);
     tokio::fs::write(&dest, bytes)
         .await
         .map_err(|e| format!("Download failed: {e}"))?;
@@ -1959,6 +1959,29 @@ fn sanitize_asset_name(name: &str) -> String {
     } else {
         sanitized
     }
+}
+
+/// The private directory one download is staged in.
+///
+/// ⚠ **The collision nonce names the DIRECTORY, never the file.** This path is
+/// handed to `POST /skills/packages/install`, and the importer reads the
+/// archive's *stem* as the package id for any archive that declares no name of
+/// its own (`skill_package::source::archive_stem` → `plan::resolve_identity`) —
+/// which every BAAM bundle asset is. Prefixing the filename therefore installed
+/// the marketplace's `single-cell` into `~/.config/biorouter/skills/
+/// <nonce>-single-cell/` and wrote that string into `biorouter-package.json` as
+/// both `id` and `displayName`: Settings listed the package under a timestamp,
+/// `searchSkills` reported it as the bundle name, Browse skills (which compares
+/// against the registry id) could never match it and re-offered the same bundle
+/// forever, and each re-install made ANOTHER directory instead of replacing the
+/// one already there, because `install_in` keys its destination on `plan.id`.
+///
+/// The nonce is still needed — two downloads sharing a basename must not
+/// clobber each other — so it moves one level up, where nothing reads it.
+/// `ui/desktop/src/utils/registryDownload.ts` is the same rule for the desktop
+/// app's own copy of this handler.
+fn staging_dir(temp_root: &Path, nonce: &str) -> PathBuf {
+    temp_root.join("biorouter-registry").join(nonce)
 }
 
 fn random_suffix() -> String {
@@ -3363,6 +3386,42 @@ mod tests {
         assert!(allowed_registry_url("http://github.com/a/b.zip").is_none());
         assert!(allowed_registry_url("https://github.com.evil.test/a/b.zip").is_none());
         assert!(allowed_registry_url("file:///etc/passwd").is_none());
+    }
+
+    /// The staged filename IS the installed package's name for any archive that
+    /// declares none of its own — every BAAM bundle asset — so the collision
+    /// nonce belongs in the directory. Staging `single-cell.zip` as
+    /// `<nonce>-single-cell.zip` installed the bundle as `<nonce>-single-cell`,
+    /// which matched no registry id in Browse skills and re-installed forever.
+    #[test]
+    fn a_staged_registry_asset_keeps_the_asset_name_and_nonces_its_directory() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        let first =
+            staging_dir(root, "18d4c57a2b75d100").join(sanitize_asset_name("single-cell.zip"));
+        assert_eq!(first.file_name().unwrap(), "single-cell.zip");
+        assert_eq!(first.file_stem().unwrap(), "single-cell");
+
+        // Two downloads that share a basename cannot clobber each other: the
+        // nonce is one level up, and the parent of the file is that directory.
+        let second =
+            staging_dir(root, "18d4c57a2b75d200").join(sanitize_asset_name("single-cell.zip"));
+        assert_ne!(first, second);
+        assert_ne!(first.parent(), second.parent());
+        assert_eq!(first.file_name(), second.file_name());
+        assert_eq!(
+            first.parent().unwrap(),
+            root.join("biorouter-registry").join("18d4c57a2b75d100")
+        );
+
+        // The sanitiser still owns the basename, and it never yields a path.
+        let odd = staging_dir(root, "abc").join(sanitize_asset_name("my pack(v2).zip"));
+        assert_eq!(odd.file_name().unwrap(), "my_pack_v2_.zip");
+        assert_eq!(
+            odd.parent().unwrap(),
+            root.join("biorouter-registry").join("abc")
+        );
     }
 
     /// The settings document lives under the resolved configuration directory,

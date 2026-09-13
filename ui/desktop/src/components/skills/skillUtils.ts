@@ -98,3 +98,39 @@ export function toSlug(input: string): string {
     .replace(/^-|-$/g, '')
     .toLowerCase();
 }
+
+/**
+ * A staging nonce left in an installed package's name by a shipped build.
+ *
+ * Two writers, two exact widths, and both are pinned rather than approximated:
+ *
+ * * **12 lowercase hex digits** — `crypto.randomBytes(6).toString('hex')`, what
+ *   the desktop app's `registry:download` IPC handler prepended to the staged
+ *   filename before `utils/registryDownload` moved it into the directory.
+ * * **16 lowercase hex digits** — `format!("{nanos:x}")` over
+ *   `SystemTime::now()` nanoseconds, what `biorouter serve`'s
+ *   `POST /registry/download` prepended. Nanoseconds since the epoch have been
+ *   16 hex digits since 2006 and stay 16 until 2554.
+ *
+ * Anchored and exact-width on purpose: this is "recognise the nonce this app
+ * wrote", not "strip whatever precedes a dash", so `hi-c-analysis`,
+ * `2024-cohort` and an unrelated `chip-single-cell` are all untouched.
+ */
+const STAGING_NONCE = /^(?:[0-9a-f]{12}|[0-9a-f]{16})-(?=.)/;
+
+/**
+ * The name a package installed by an older build *would* have had, or `null`
+ * when it carries no staging nonce.
+ *
+ * ⚠ **An alias, never a replacement.** A bundle already on disk as
+ * `d92c1c985d54-single-cell` keeps that name everywhere it is displayed and
+ * removed — renaming an install directory would orphan its `skills-config.json`
+ * entry, every session override keyed on the bundle name, and its
+ * `removeSkillPackage` target. What the alias buys is the one question that was
+ * answered wrongly: "is the marketplace's `single-cell` already installed?" —
+ * yes, and the Browse modal stops offering it for the tenth time.
+ */
+export function withoutStagingNonce(packageName: string): string | null {
+  const stripped = packageName.replace(STAGING_NONCE, '');
+  return stripped === packageName ? null : stripped;
+}
