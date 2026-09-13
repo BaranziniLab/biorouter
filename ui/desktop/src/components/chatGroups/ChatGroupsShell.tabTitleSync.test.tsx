@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '../../api';
 
@@ -32,6 +32,10 @@ import type { Session } from '../../api';
 
 const dispatch = vi.fn();
 let cachedList: Session[] | null = null;
+// Every subscriber, as the real cache keeps them: the shell has more than one
+// (the privacy tiers read the same list), and a single slot would hand an emit
+// to whichever subscribed last.
+const listeners = new Set<() => void>();
 let emit: (() => void) | null = null;
 
 vi.mock('../BaseChat', () => ({
@@ -41,9 +45,10 @@ vi.mock('../BaseChat', () => ({
 vi.mock('../../utils/sessionListCache', () => ({
   getCachedSessionList: () => cachedList,
   subscribeSessionList: (listener: () => void) => {
-    emit = listener;
+    listeners.add(listener);
+    emit = () => listeners.forEach((l) => l());
     return () => {
-      emit = null;
+      listeners.delete(listener);
     };
   },
   preloadSessionList: () => {},
@@ -51,6 +56,31 @@ vi.mock('../../utils/sessionListCache', () => ({
 
 vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => ({}),
+}));
+
+/**
+ * The single-row read, `GET /sessions/{id}`. Every call is recorded and left
+ * pending, so a test decides when each read lands and what it says.
+ */
+type ReadCall = {
+  options: { path: { session_id: string }; query?: unknown; headers?: unknown };
+  resolve: (row: Partial<Session>) => void;
+  reject: (error: unknown) => void;
+};
+let reads: ReadCall[] = [];
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api')>()),
+  getSession: (options: ReadCall['options']) =>
+    new Promise((resolve, reject) => {
+      reads.push({ options, resolve: (row) => resolve({ data: row }), reject });
+    }),
+}));
+
+/** The proof-of-user this window attaches. Every read must carry exactly this. */
+const PROOF = { 'X-User-Action': 'proof-of-user' };
+vi.mock('../../utils/userAction', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/userAction')>()),
+  userActionHeaders: async () => PROOF,
 }));
 
 /**
@@ -105,6 +135,7 @@ describe('ChatGroupsShell — tab titles are reconciled against the session list
     dispatch.mockClear();
     cachedList = null;
     emit = null;
+    reads = [];
     tabs = [
       {
         tabId: 't-active',
@@ -214,12 +245,246 @@ describe('ChatGroupsShell — tab titles are reconciled against the session list
     expect(renameDispatches()).toEqual([]);
   });
 
-  /** A chat the list does not carry keeps what it has: silence, not a guess. */
-  it('leaves a tab alone when the list has no row for it', () => {
+  /**
+   * A chat the list does not carry is asked about on its own (see the suite
+   * below). When that read is refused, the tab keeps what it has: silence, not a
+   * guess.
+   */
+  it('leaves a tab alone when the list has no row for it and its own read is refused', async () => {
     cachedList = [row('sess-active', 'DELTA instruction test')];
 
     render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    for (const read of reads)
+      read.reject('That chat is private, or there is no chat with that id.');
+    await flush();
 
     expect(renameDispatches()).toEqual([]);
+  });
+});
+
+/** Let the proof's async hop, the read and its answer settle. */
+async function flush() {
+  await act(async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+}
+
+function readIds() {
+  return reads.map((read) => read.options.path.session_id);
+}
+
+/**
+ * A delegated subagent's tab read "New chat" forever.
+ *
+ * # The bug
+ *
+ * Measured 2026-09-13 on `main` @ 35757426, sandbox `fx-subtab`: a Versa GPT-5.5
+ * chat (private) delegated one task, and the daemon opened the child's tab in
+ * the background (`announce_open_frame` sends `open_tab` with `focus: false`,
+ * and no title). sqlite named the child `Subagent: Reply with exactly the word
+ * ECHOSUB and nothing else.`; the tab said `New chat`, and still did after a
+ * reload.
+ *
+ * The reconcile above could never correct it. It reads the shared session list,
+ * which is `GET /sessions?include_subagents=false` — 5543 rows on that machine,
+ * and the child was not one of them. Leaving `sub_agent` rows out of that list
+ * is deliberate (they are not sidebar chats), so the fix is not to put them in.
+ *
+ * # The fix
+ *
+ * A tab whose chat the list does not carry is read on its own, with
+ * `GET /sessions/{id}?metadata_only=true` — the singular read, behind the same
+ * reach gate as every other read of a chat, carrying the user's proof. Measured
+ * against that daemon: without the proof the private child answers 403; with
+ * it, 200 and its name.
+ */
+describe('ChatGroupsShell — a tab the session list leaves out is read on its own', () => {
+  const CHILD_NAME = 'Subagent: Reply with exactly the word ECHOSUB and nothing else.';
+  const childRow = (name = CHILD_NAME): Partial<Session> => ({
+    id: 'sess-sub',
+    name,
+    user_set_name: false,
+    session_type: 'sub_agent',
+    parent_session_id: 'sess-parent',
+    privacy_tier: 'private',
+  });
+
+  beforeEach(() => {
+    dispatch.mockClear();
+    emit = null;
+    reads = [];
+    tabs = [
+      {
+        tabId: 't-active',
+        sessionId: 'sess-parent',
+        title: 'Subagent delegation prompt',
+        userSetName: false,
+      },
+      // The daemon-opened child: a background tab still on the placeholder.
+      { tabId: 't-background', sessionId: 'sess-sub', title: 'New chat', userSetName: false },
+    ];
+    // The list the app really holds: the parent, and never the child.
+    cachedList = [row('sess-parent', 'Subagent delegation prompt')];
+  });
+
+  it("names a subagent's background tab from its own row", async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+
+    expect(readIds()).toEqual(['sess-sub']);
+    reads[0].resolve(childRow());
+    await flush();
+
+    expect(renameDispatches()).toEqual([
+      { type: 'renameTab', sessionId: 'sess-sub', title: CHILD_NAME, userSetName: false },
+    ]);
+  });
+
+  /**
+   * ⚠ A subagent of a PRIVATE chat is private. A read without the proof is
+   * refused by the reach gate, and the tab would silently keep the placeholder
+   * — the very bug, reintroduced by a missing header.
+   */
+  it("carries the user's proof, and asks for metadata only", async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+
+    expect(reads).toHaveLength(1);
+    expect(reads[0].options.headers).toEqual(PROOF);
+    expect(reads[0].options.query).toEqual({ metadata_only: true });
+  });
+
+  it('never reads a chat the list already carries', async () => {
+    cachedList = [row('sess-parent', 'Subagent delegation prompt'), row('sess-sub', CHILD_NAME)];
+
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+
+    expect(reads).toEqual([]);
+    expect(renameDispatches()).toEqual([
+      { type: 'renameTab', sessionId: 'sess-sub', title: CHILD_NAME, userSetName: false },
+    ]);
+  });
+
+  it('waits for the list before reading anything', async () => {
+    cachedList = null;
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    expect(reads).toEqual([]);
+
+    cachedList = [row('sess-parent', 'Subagent delegation prompt')];
+    emit?.();
+    await flush();
+    expect(readIds()).toEqual(['sess-sub']);
+  });
+
+  /**
+   * Rule 1 holds for a read's answer. The tab is still READ — its tier is a fact
+   * the strip has no other source for (`ChatGroupsShell.privacy.test.tsx`) —
+   * but its name is the user's.
+   */
+  it('never renames a tab the user named, though it still reads its row', async () => {
+    tabs[1] = { ...tabs[1], title: 'My audit child', userSetName: true };
+
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    expect(readIds()).toEqual(['sess-sub']);
+    reads[0].resolve(childRow());
+    await flush();
+
+    expect(renameDispatches()).toEqual([]);
+  });
+
+  it('keeps a real name over a row still reading the placeholder', async () => {
+    tabs[1] = { ...tabs[1], title: CHILD_NAME };
+
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    reads[0].resolve(childRow('New chat'));
+    await flush();
+
+    expect(renameDispatches()).toEqual([]);
+  });
+
+  /**
+   * A read answers for the title it was asked about. If the tab's name moved
+   * while it was out — a rename on the name channel, the tab loading its own
+   * chat — the tab already holds the later fact, and the answer is dropped.
+   */
+  it('drops an answer for a title the tab no longer has', async () => {
+    const { rerender } = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    expect(reads).toHaveLength(1);
+
+    tabs[1] = { ...tabs[1], title: 'Renamed while the read was out' };
+    rerender(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+
+    reads[0].resolve(childRow());
+    await flush();
+
+    expect(renameDispatches()).toEqual([]);
+  });
+
+  it('reads once per list, and follows a rename the next list brings', async () => {
+    const { rerender } = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    reads[0].resolve(childRow());
+    await flush();
+    expect(renameDispatches()).toHaveLength(1);
+
+    // The reducer applied the rename; the tab's signature moved. Same list — no
+    // second read, however often the shell re-renders or the list re-emits.
+    tabs[1] = { ...tabs[1], title: CHILD_NAME };
+    rerender(<ChatGroupsShell onChatChange={() => {}} />);
+    emit?.();
+    emit?.();
+    await flush();
+    expect(reads).toHaveLength(1);
+
+    // The list is fetched again. The child is renamed since (the CLI, another
+    // window while this one was shut): the tab follows.
+    cachedList = [row('sess-parent', 'Subagent delegation prompt')];
+    emit?.();
+    await flush();
+    expect(reads).toHaveLength(2);
+    reads[1].resolve(childRow('Audit of the migration'));
+    await flush();
+
+    const renames = renameDispatches();
+    expect(renames[renames.length - 1]).toEqual({
+      type: 'renameTab',
+      sessionId: 'sess-sub',
+      title: 'Audit of the migration',
+      userSetName: false,
+    });
+  });
+
+  it('never lets an earlier read land over a later one', async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    cachedList = [row('sess-parent', 'Subagent delegation prompt')];
+    emit?.();
+    await flush();
+    expect(reads).toHaveLength(2);
+
+    reads[1].resolve(childRow('The later name'));
+    await flush();
+    reads[0].resolve(childRow('The earlier name'));
+    await flush();
+
+    expect(renameDispatches()).toEqual([
+      { type: 'renameTab', sessionId: 'sess-sub', title: 'The later name', userSetName: false },
+    ]);
+  });
+
+  it('reads a chat open in two tabs once', async () => {
+    tabs.push({ tabId: 't-again', sessionId: 'sess-sub', title: 'New chat', userSetName: false });
+
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+
+    expect(readIds()).toEqual(['sess-sub']);
   });
 });
