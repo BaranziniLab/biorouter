@@ -13,13 +13,28 @@
 // back is now the daemon's single one.
 
 import { installSkillPackage } from '../../api';
-import type { ImportResult } from '../../api';
+import type { ImportKind, ImportResult } from '../../api';
 import type { RegistrySkill } from './registry';
+
+/** One unit the daemon installed. */
+export interface InstalledUnit {
+  /** The name the Skills list shows it under. */
+  name: string;
+  kind: ImportKind;
+  /** Its component skill names, as installed. */
+  skills: string[];
+}
 
 export interface InstallResult {
   ok: boolean;
   name: string;
   error?: string;
+  /**
+   * What landed, as the daemon reports it — set when `ok`. A marketplace
+   * package is one unit holding several skills, which is the count the success
+   * toast needs and the registry row cannot be trusted to give.
+   */
+  installed?: InstalledUnit[];
   /** Set when the source was ambiguous and nobody has answered yet. */
   needsChoice?: { planId: string; reason: string; components: string[] };
 }
@@ -49,7 +64,15 @@ export async function installRegistrySkill(skill: RegistrySkill): Promise<Instal
         error: result.preview.ambiguity?.reason,
       };
     }
-    return { ok: true, name: skill.name };
+    return {
+      ok: true,
+      name: skill.name,
+      installed: (result.installed ?? []).map((unit) => ({
+        name: unit.displayName,
+        kind: unit.kind,
+        skills: unit.skills ?? [],
+      })),
+    };
   } catch (err) {
     return {
       ok: false,

@@ -29,13 +29,36 @@ describe('installRegistrySkill', () => {
    */
   it('installs through the shared importer rather than unzipping in the renderer', async () => {
     mocks.installSkillPackage.mockResolvedValue({
-      data: { status: 'installed', preview: {}, installed: [{ skills: ['single-cell'] }] },
+      data: {
+        status: 'installed',
+        preview: {},
+        installed: [{ displayName: 'single-cell', kind: 'single', skills: ['single-cell'] }],
+      },
     });
     const result = await installRegistrySkill(skill);
-    expect(result).toEqual({ ok: true, name: 'single-cell' });
+    expect(result).toEqual({
+      ok: true,
+      name: 'single-cell',
+      installed: [{ name: 'single-cell', kind: 'single', skills: ['single-cell'] }],
+    });
     expect(mocks.installSkillPackage.mock.calls[0][0].body).toEqual({
       filePath: '/tmp/single-cell.zip',
     });
+  });
+
+  /// A marketplace package is ONE installed unit holding several skills. The
+  /// modal's toast counts skills from this, so it must come back whole.
+  it("returns the daemon's account of a package: its name and every component", async () => {
+    const components = ['single-cell-qc', 'single-cell-clustering', 'single-cell-annotation'];
+    mocks.installSkillPackage.mockResolvedValue({
+      data: {
+        status: 'installed',
+        preview: {},
+        installed: [{ displayName: 'single-cell', kind: 'bundle', skills: components }],
+      },
+    });
+    const result = await installRegistrySkill(skill);
+    expect(result.installed).toEqual([{ name: 'single-cell', kind: 'bundle', skills: components }]);
   });
 
   it('reports a download failure without calling the importer', async () => {

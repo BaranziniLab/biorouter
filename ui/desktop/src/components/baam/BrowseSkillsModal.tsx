@@ -11,6 +11,15 @@ import {
 } from './registry';
 import { isBrowseQuery } from './search';
 import { installRegistrySkill } from './installSkill';
+import {
+  failedToast,
+  installButtonLabel,
+  installedToast,
+  installProgressLabel,
+  registrySkillCount,
+  type FailedInstall,
+  type LandedInstall,
+} from './installCopy';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 
 interface Props {
@@ -29,25 +38,6 @@ const CATEGORY_LABELS: Record<SkillCategory, string> = {
 
 type Filter = 'All' | SkillCategory;
 
-/**
- * The install button's label.
- *
- * ⚠ The count goes INSIDE the conditional along with its trailing space, not
- * beside it. The original wrote `` `Install ${n > 0 ? n : ''} skill…` `` — an
- * empty substitution between two literal spaces — so the button read
- * **"Install  skills"** with a double space in the state it spends most of its
- * life in: nothing selected, and therefore disabled and in front of the user
- * from the moment the dialog opens.
- *
- * Three shapes, all pinned in `BrowseSkillsModal.test.tsx`: 0 → "Install
- * skills" (plural, because it is an invitation, not a count), 1 → "Install 1
- * skill", n → "Install n skills".
- */
-export function installButtonLabel(selectedCount: number): string {
-  const count = selectedCount > 0 ? `${selectedCount} ` : '';
-  return `Install ${count}skill${selectedCount !== 1 ? 's' : ''}`;
-}
-
 export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }: Props) {
   const [registry, setRegistry] = useState<BaamRegistry | null>(null);
   const [live, setLive] = useState(false);
@@ -57,7 +47,11 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const [filter, setFilter] = useState<Filter>('All');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [installing, setInstalling] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{
+    name: string;
+    position: number;
+    total: number;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,49 +114,62 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
       return next;
     });
 
-  const handleInstall = async () => {
-    if (installing || !registry || selected.size === 0) return;
-    const targets = registry.skills.filter((s) => selected.has(s.id) && !isInstalled(s));
-    setInstalling(true);
-    setProgress({ done: 0, total: targets.length });
+  /** The selected rows an install would act on — everything selected but not already on disk. */
+  const targets = registry
+    ? registry.skills.filter((s) => selected.has(s.id) && !isInstalled(s))
+    : [];
+  /** What the install button promises: skills, as each selected row says it holds. */
+  const selectedSkillCount = targets.reduce((sum, s) => sum + registrySkillCount(s), 0);
 
-    const failures: string[] = [];
-    let done = 0;
-    for (const skill of targets) {
+  const handleInstall = async () => {
+    if (installing || targets.length === 0) return;
+    setInstalling(true);
+
+    const landed: LandedInstall[] = [];
+    const failures: (FailedInstall & { id: string })[] = [];
+    for (const [index, skill] of targets.entries()) {
+      setProgress({ name: skill.name, position: index + 1, total: targets.length });
       try {
         const res = await installRegistrySkill(skill);
-        if (!res.ok) failures.push(`${res.name}: ${res.error ?? 'failed'}`);
+        if (!res.ok) {
+          failures.push({ id: skill.id, name: skill.name, error: res.error ?? 'failed' });
+        } else if (res.installed && res.installed.length > 0) {
+          // The daemon's account of what landed, not the row's claim.
+          landed.push(
+            ...res.installed.map((unit) => ({
+              name: unit.name,
+              skills: unit.skills.length,
+              isPackage: unit.kind === 'bundle',
+            }))
+          );
+        } else {
+          const skills = registrySkillCount(skill);
+          landed.push({ name: skill.name, skills, isPackage: skills > 1 });
+        }
       } catch (error) {
-        failures.push(
-          `${skill.name}: ${error instanceof Error ? error.message : 'installation failed'}`
-        );
+        failures.push({
+          id: skill.id,
+          name: skill.name,
+          error: error instanceof Error ? error.message : 'installation failed',
+        });
       }
-      done += 1;
-      setProgress({ done, total: targets.length });
     }
 
     setInstalling(false);
     setProgress(null);
 
-    const ok = targets.length - failures.length;
-    if (ok > 0) {
-      toastSuccess({
-        title: `${ok} skill${ok !== 1 ? 's' : ''} installed`,
-        msg: 'Added to Biorouter Skills',
-      });
+    if (landed.length > 0) {
+      toastSuccess(installedToast(landed));
       onInstalled();
     }
     if (failures.length > 0) {
-      toastError({
-        title: `${failures.length} skill${failures.length !== 1 ? 's' : ''} failed`,
-        msg: failures[0],
-      });
+      toastError(failedToast(failures));
     }
     if (failures.length === 0) onClose();
-    else
-      setSelected(
-        new Set(targets.filter((t) => failures.some((f) => f.startsWith(t.name))).map((t) => t.id))
-      );
+    // Keep exactly the rows that failed selected, by id. Matching the failure
+    // text's prefix against a name re-selected "Alignment" when "Alignment
+    // Files" failed.
+    else setSelected(new Set(failures.map((failure) => failure.id)));
   };
 
   const selectedCount = selected.size;
@@ -216,6 +223,8 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
               </button>
             ))}
             <div className="flex-1" />
+            {/* Counts ROWS, on purpose: it checks boxes, and a package is one box.
+                The install button is what translates a selection into skills. */}
             {selectableFiltered.length > 0 && (
               <button
                 onClick={toggleAllFiltered}
@@ -326,15 +335,15 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
         <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between gap-3">
           <span className="text-xs text-text-muted">
             {progress
-              ? `Installing ${progress.done}/${progress.total}…`
+              ? installProgressLabel(progress.name, progress.position, progress.total)
               : `${selectedCount} selected`}
           </span>
           <div className="flex gap-2">
             <Button variant="outline" onClick={onClose} disabled={installing}>
               Cancel
             </Button>
-            <Button onClick={handleInstall} disabled={selectedCount === 0 || installing}>
-              {installing ? 'Installing…' : installButtonLabel(selectedCount)}
+            <Button onClick={handleInstall} disabled={targets.length === 0 || installing}>
+              {installing ? 'Installing…' : installButtonLabel(selectedSkillCount)}
             </Button>
           </div>
         </div>
