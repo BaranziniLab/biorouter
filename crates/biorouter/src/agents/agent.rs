@@ -9287,6 +9287,85 @@ impl Agent {
         notice
     }
 
+    /// Item 7 — write the prose a STOPPED turn had streamed but not yet stored.
+    ///
+    /// The detached runner calls this before it drops a cancelled reply stream,
+    /// for the same reason it calls [`Self::settle_carried_over_soft_interrupts`]:
+    /// the stream's own tail, which would have persisted the iteration, will
+    /// never run. `in_flight` is what the runner watched stream since the last
+    /// `MessagesPersisted`; what is kept of it, and why only the prose, is
+    /// [`crate::agents::stopped_turn::salvage_stopped_reply`]'s decision.
+    ///
+    /// Returns the rows that were written, carrying the uids they took. A
+    /// failure to read or write degrades to keeping less, never to failing the
+    /// Stop: the user asked for the turn to end, and it will.
+    ///
+    /// ⚠ A row whose INSERT was still on its way when the runner read the store
+    /// can in principle be written twice (the second under a re-minted uid). The
+    /// window is a Stop landing inside the milliseconds of an iteration's own
+    /// persistence, and the cost is one repeated paragraph, not a lost one.
+    pub async fn settle_stopped_reply(
+        &self,
+        session_id: &str,
+        in_flight: &[Message],
+    ) -> Vec<Message> {
+        if in_flight.is_empty() {
+            return Vec::new();
+        }
+        let stored_ids: HashSet<String> = match self
+            .config
+            .session_manager
+            .get_session(session_id, true)
+            .await
+        {
+            Ok(session) => session
+                .conversation
+                .map(|conversation| {
+                    conversation
+                        .messages()
+                        .iter()
+                        .filter_map(|message| message.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(e) => {
+                // Without the store's ids a kept row could duplicate one that
+                // landed; saying less is the safe side of that.
+                warn!("could not read the stopped turn's conversation; its streamed reply is not kept: {e}");
+                return Vec::new();
+            }
+        };
+        let mut written = Vec::new();
+        for mut row in crate::agents::stopped_turn::salvage_stopped_reply(in_flight, &stored_ids) {
+            match self
+                .config
+                .session_manager
+                .add_message_adopting_uid(session_id, &mut row)
+                .await
+            {
+                Ok(()) => written.push(row),
+                Err(e) => warn!("could not keep the stopped turn's streamed reply: {e}"),
+            }
+        }
+        written
+    }
+
+    /// Item 7 — the durable notice a stopped turn ends on
+    /// ([`crate::agents::stopped_turn::TURN_STOPPED_NOTICE`]), persisted the way
+    /// [`Self::durable_notice`] persists every turn-level verdict.
+    ///
+    /// `None` when the write failed: a notice the store does not hold must not be
+    /// handed to a client as history, because a reload would not reproduce it.
+    pub async fn record_turn_stopped(&self, session_id: &str) -> Option<Message> {
+        let notice = self
+            .durable_notice(
+                session_id,
+                crate::agents::stopped_turn::TURN_STOPPED_NOTICE.to_string(),
+            )
+            .await;
+        notice.id.is_some().then_some(notice)
+    }
+
     /// Everything that decides whether a turn may end, in order: the planning
     /// gate's checklist check, then the Stop hooks (a `/goal` judge is one).
     ///

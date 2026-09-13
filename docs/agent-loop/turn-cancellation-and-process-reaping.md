@@ -1,7 +1,7 @@
 # Turn cancellation and process reaping
 
 > **What this is.** The contract that makes Stop actually stop things: how a cancelled turn reaches a running OS process, why every link in that chain is cooperative, and the two rules a change to any link must not break.
-> **Status:** Current. Describes the code as it ships — `routes/reply.rs`, `agents/mcp_client.rs`, `agents/code_execution_extension.rs`, and `biorouter-mcp/src/developer/{shell,rmcp_developer}.rs`. Written up after [#72](https://github.com/BaranziniLab/biorouter/issues/72), where one link was severed and Stop left a filesystem scan running.
+> **Status:** Current. Describes the code as it ships — `routes/reply.rs`, `workspace/turn.rs`, `agents/stopped_turn.rs`, `agents/mcp_client.rs`, `agents/code_execution_extension.rs`, and `biorouter-mcp/src/developer/{shell,rmcp_developer}.rs`. Written up after [#72](https://github.com/BaranziniLab/biorouter/issues/72), where one link was severed and Stop left a filesystem scan running.
 > **Audience:** anyone touching the cancel path, the MCP client, or how the Developer capability spawns processes.
 
 ## The chain
@@ -53,6 +53,20 @@ So the tests assert on the OS, not on the code. Each one runs a real command tha
 - `crates/biorouter/tests/nested_shell_cancellation.rs` — both dispatch paths and the teardown trigger, end to end through a real `ExtensionManager`.
 - `dropping_the_shell_future_reaps_the_whole_process_tree` (in `rmcp_developer.rs`) — the drop path, with no cancellation involved at all.
 - `a_foreground_command_is_killed_when_it_blows_its_budget` — the budget path.
+
+## What a stopped turn leaves in the transcript
+
+Stopping the work is half of Stop; the other half is that the chat **remembers** it was stopped. Until release 1.90.4's QA (item 7) it did not: the reply loop writes an iteration's rows only when the iteration ends, and the detached runner (`workspace/turn.rs::drive_stream`) drops the reply stream the instant the token trips. So the half-reply the user had been reading was never stored, and the only sign of the interruption was a renderer-only "Stopped." line on a five-second timer. A reload, a second window and History all showed a chat ending on the user's message.
+
+The runner now settles a stopped turn the way it already settled the steers the turn had accepted — it hands the agent what the dropped stream can no longer write, before the turn guard retires, in this order:
+
+1. **The prose the reply had streamed** (`Agent::settle_stopped_reply`, deciding through `agents/stopped_turn.rs`). Only the text is kept: it is what the user read, and a Stop-and-Send correction needs the model to see what it corrects. Thinking blocks and tool calls from the unfinished iteration are dropped, because a provider refuses to replay a thinking block whose signature never arrived or a tool call with no result — the same line `SignedStreamTruncated` draws. A row the store already holds is never written twice.
+2. **The steers the turn had accepted**, as before.
+3. **A durable "Stopped." notice** (`Agent::record_turn_stopped`), stored exactly like the planning gate's verdicts through `Agent::durable_notice`: an inline system notification, visible to people and hidden from the model. It is published on the session bus, so a window following the chat live receives it.
+
+`POST /agent/cancel` returns those rows as `stop_messages` when it cancelled a running turn and waited for it to settle. The desktop merges them into the transcript after abandoning the turn's stream, so the window that pressed Stop shows exactly what a reload will, whether or not the notice's own frame arrived first. The renderer draws a stored notice with `ChatTurnStopped`, the same line a confirmed Stop always drew; the transient `stopConfirmed` line remains only as the fallback for a cancel that returned no record.
+
+Only a Stop records anything. A turn that finished before the token tripped has already left `drive_stream` and writes nothing, and the reach gate on `/agent/cancel` (SD-11) is unchanged. Tests: `a_stopped_turn_keeps_the_text_it_streamed_and_says_it_was_stopped` and `a_turn_that_finishes_on_its_own_records_no_stop` in `workspace/turn.rs`, `a_settled_cancel_hands_back_the_rows_the_stop_wrote` in `routes/reply.rs`, and the "a stopped reply stays marked (item 7)" battery in `chatStreamStore.test.ts`.
 
 ## Related documentation
 
