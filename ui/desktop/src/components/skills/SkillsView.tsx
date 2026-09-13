@@ -22,6 +22,7 @@ import { removeSkillPackage } from '../../api';
 import type { CatalogBundle, CatalogSkill } from '../../api';
 import { skillCatalogToggleKey, useSkillCatalog, type SkillCatalogEntry } from './useSkillCatalog';
 import { isBrowseQuery, rankCatalogEntries } from './searchCatalog';
+import { withoutStagingNonce } from './skillUtils';
 
 /**
  * Settings → Skills.
@@ -156,6 +157,20 @@ export default function SkillsView() {
     }
   };
 
+  /**
+   * Every spelling under which Browse skills may recognise something already on
+   * disk — the frontmatter name, the folder, and a bundle's display name.
+   *
+   * ⚠ **Plus the de-nonced alias of each.** Until `utils/registryDownload`, a
+   * marketplace download was staged as `<12 hex>-<asset>.zip` and the importer
+   * read that stem as the package id for any archive declaring no name of its
+   * own — which every BAAM bundle is. So a `single-cell` bundle installed as
+   * `d92c1c985d54-single-cell`, matched none of the registry ids the modal
+   * compares against, and was offered for install again on every visit. New
+   * installs no longer carry the nonce; this alias is what stops the ones
+   * already on disk from being re-installed indefinitely. It adds a name, it
+   * never removes one: the package keeps the identity it was installed under.
+   */
   const installedIds = useMemo(
     () =>
       new Set(
@@ -165,8 +180,9 @@ export default function SkillsView() {
               ? [entry.skill.name, lastPathComponent(entry.skill.slug)]
               : [entry.bundle.name, entry.bundle.displayName]
           )
+          .flatMap((value) => [value, withoutStagingNonce(value)])
+          .filter((value): value is string => Boolean(value))
           .map((value) => value.toLowerCase())
-          .filter(Boolean)
       ),
     [entries]
   );
