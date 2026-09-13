@@ -54,6 +54,7 @@ import {
   splitComposerText,
 } from '../utils/composerRefs';
 import { findRefTags } from '../utils/resourceRefs';
+import { RESTORE_CHAT_INPUT_EVENT, parkedComposerRestore } from '../utils/composerRestore';
 import { ResourceRefChip } from './ResourceRefChip';
 
 interface QueuedMessage {
@@ -891,24 +892,41 @@ export default function ChatInput({
   const composerToolbarCollapsed = useComposerToolbarCollapsed(toolbarRef);
 
   // Re-populate the composer when a submit failed before the backend accepted it
-  // (e.g. backend unreachable): BaseChat.handleCreateSessionError dispatches
-  // 'restore-chat-input' with the text that performSubmit had already cleared, so
-  // the user does not silently lose what they typed. Match by sessionId — with
-  // `null === null` for the pre-session Home composer — so a broadcast can only
-  // restore the input that actually submitted, never a sibling.
+  // (e.g. backend unreachable): BaseChat.handleCreateSessionError hands back the
+  // text that performSubmit had already cleared, so the user does not silently
+  // lose what they typed. Match by sessionId — with `null === null` for the
+  // pre-session Home composer — so a broadcast can only restore the input that
+  // actually submitted, never a sibling.
+  const restoreText = useCallback((value: string) => {
+    setDisplayValue(value);
+    setValue(value);
+    setHasUserTyped(true);
+    textAreaRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ sessionId?: string | null; value?: string }>).detail;
       if ((detail?.sessionId ?? null) !== (sessionId ?? null)) return;
       if (typeof detail?.value !== 'string' || !detail.value) return;
-      setDisplayValue(detail.value);
-      setValue(detail.value);
-      setHasUserTyped(true);
-      textAreaRef.current?.focus();
+      restoreText(detail.value);
     };
-    window.addEventListener('restore-chat-input', handler);
-    return () => window.removeEventListener('restore-chat-input', handler);
-  }, [sessionId]);
+    window.addEventListener(RESTORE_CHAT_INPUT_EVENT, handler);
+    return () => window.removeEventListener(RESTORE_CHAT_INPUT_EVENT, handler);
+  }, [sessionId, restoreText]);
+
+  // A message handed back to a composer that was REPLACED in the same failure.
+  // The event above only reaches a composer that is already listening, and the
+  // fresh tab's is not: a failed start remounts it (BaseChat moves the composer
+  // between `isCleanConversation`'s two subtrees), so the event lands on the
+  // instance being discarded. This mount reads what was left for it instead.
+  // Must stay BELOW the `[initialValue]` effect, which also runs on mount and
+  // would blank it again. Nothing is parked unless a start has just failed for
+  // this chat, and a park lives for one task (see the module).
+  useEffect(() => {
+    const parked = parkedComposerRestore(sessionId);
+    if (parked?.value) restoreText(parked.value);
+  }, [sessionId, restoreText]);
 
   // A region the user selected in the preview panel arrives here as an already
   // written PNG. It joins `pastedImages` rather than getting a channel of its
