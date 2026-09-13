@@ -316,6 +316,55 @@ is live. Both are withheld by passing no callback, which is how the read-only tr
 already withhold them: `BioRouterMessage` renders the elicitation form only when handed a submit
 callback, and `ArtifactViewer` installs its `postMessage` listener only when handed `onRenderError`.
 
+**Marking a chat public is the third case, and the worst of them** (2026-09-12). Measured on a
+real `biorouter serve`: History's row menu offered **"Make this chat public"** on a private row
+with `aria-disabled` absent, `title` absent and no note; the destructive-confirm dialog then asked
+the user to type the last six characters of the chat id; and `POST /sessions/{id}/declassify`
+answered **403** carrying `DECLASSIFY_NEEDS_USER`, which the renderer showed verbatim in a toast:
+
+> …this request carried no proof it came from them. Nothing was changed. Do not retry… If this chat
+> no longer holds anything private, stop and ask the user to mark it public from the chat history.
+
+That sentence is addressed to an AI agent that tried to declassify on a user's behalf, and its
+advice is *hand this to the person, in the chat history*. The reader was the person, in the chat
+history. An inescapable loop, shown to a human — the exact failure SD-8 exists to forbid, on the
+one control in the product that **lowers** a chat's privacy.
+
+⚠ **It cannot be made to work here, and that is the ruling rather than a limitation awaiting a
+fix.** Three separate reasons, and any one of them is sufficient:
+
+1. The `X-User-Action` digest is the *only* thing that distinguishes a person from a model to this
+   daemon, and a `serve` daemon is started with stdin closed, so it holds none (SD-7). The browser
+   page and a model-driven caller present byte-identical credentials.
+2. Admitting `X-Secret-Key` in its place would admit every caller that can read that secret, which
+   issue #56 §9.3 A1 measured to be any developer-enabled agent shell — to the single operation
+   that reverses the ratchet, and the one whose damage cannot be undone (a re-raise writes a second
+   ledger row under a different provenance, so the audit trail then says something happened that
+   the user believes did not).
+3. The second gate cannot cross the gap even in principle. A chat graded onto the typed control
+   also needs the operating system to confirm the user (DR-20), and that prompt is raised on the
+   machine running the daemon, which is not where the browser is.
+
+So the control declares itself unavailable **before** the click, in the browser only, and the
+desktop path — including §12.4's typed-confirmation dialog, which is deliberate friction on an
+irreversible privacy change — is untouched. Both of §12.1's entry points are covered: History's row
+menu renders the reason as an inset note and disables the item, and the saved-chat page's action bar
+replaces its "Make public" button with a line carrying the short reason (a tooltip would be
+unreachable there — `buttonVariants` sets `disabled:pointer-events-none`, which is why the Share
+button beside it has had a tooltip nobody can trigger). `ui/desktop/src/components/sessions/declassifyOnBrowser.ts`
+holds the words.
+
+**And the daemon now has a sentence for a keyless caller.** `declassify_session` asked
+`is_user_action`, whose boolean collapses `Unproven` and `NoKeyInstalled` into one answer; it now
+reads `user_action_proof` and answers `NoKeyInstalled` with `DECLASSIFY_NO_USER_KEY`, in the register
+`SESSION_REACH_NO_KEY` and `SUBAGENT_CONTROL_NO_KEY` already use. That half matters independently of
+the renderer, because `biorouter session declassify` pointed at a keyless daemon, a script, or a
+model in a hand-run `biorouterd agent` all read the same body and would all have been sent round the
+same loop. ⚠ **Nothing that was refused becomes permitted**: both verdicts still 403 and still write
+nothing, and the refusal is still chosen before the row is read, so it remains the same bytes for a
+private chat, a public one and an id that never existed
+(`tests/declassify_no_user_key.rs::the_keyless_refusal_is_the_same_bytes_for_every_target`).
+
 **Why.** SD-1 already required that *"the interface must explain the refusal rather than appear
 broken"*, and stated it about the model picker. The same argument covers every proof-backed
 control, and an approval card is the worst case: three buttons that look live, a bare 403 on

@@ -24,7 +24,7 @@ use biorouter::session::session_manager::{
 };
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
-use biorouter_server::auth::is_user_action;
+use biorouter_server::auth::{is_user_action, user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1452,11 +1452,75 @@ async fn diverge_session(
 /// it"), whose toast says *branch it from the chat window*. Both would send the
 /// user somewhere that cannot help, so the wording steps around them; pinned by
 /// [`declassify_tests::the_refusals_say_different_things`].
-const DECLASSIFY_NEEDS_USER: &str =
+///
+/// ⚠ **This is the `Unproven` arm only, and the closing clause is why.** It ends
+/// by telling its reader to hand the decision to the person at the keyboard,
+/// which is sound advice to a model on a daemon that HOLDS a key — the person
+/// opens the History row and the same call succeeds. On a daemon that holds
+/// none it is a loop: the person at the keyboard is already on the History row,
+/// doing exactly what they are being told to go and do, and no amount of doing
+/// it again will produce a proof this daemon can check. That case has its own
+/// sentence, [`DECLASSIFY_NO_USER_KEY`].
+pub const DECLASSIFY_NEEDS_USER: &str =
     "Marking a private chat public is a decision only the person at the keyboard can make, and \
      this request carried no proof it came from them. Nothing was changed. Do not retry; the \
      same call will be refused again. If this chat no longer holds anything private, stop and \
      ask the user to mark it public from the chat history.";
+
+/// …and when this daemon was handed no user-action key at all (SD-7, SD-8).
+///
+/// A separate sentence, per Task 18A's open question 23 and the register
+/// [`session_reach::SESSION_REACH_NO_KEY`] and `agent::SUBAGENT_CONTROL_NO_KEY`
+/// already use: it names the DAEMON as the reason rather than accusing its
+/// caller of being a model, because on a `biorouter serve` daemon every caller
+/// lands here, the person at the keyboard included.
+///
+/// ⚠ **Measured, on a real `biorouter serve` (2026-09-12).** A user opened the
+/// History row menu, chose "Make this chat public", satisfied the destructive
+/// confirm, and was shown [`DECLASSIFY_NEEDS_USER`] verbatim in a toast — a
+/// sentence written for an AI agent, closing with *"stop and ask the user to
+/// mark it public from the chat history"*, addressed to a person who was
+/// standing in the chat history at that moment. That is the whole defect: a
+/// refusal that is correct about the boundary and gives advice its reader
+/// cannot follow. The renderer now withholds the control on that surface and
+/// explains before the click; this sentence is what any OTHER client on a
+/// keyless daemon reads — `biorouter session declassify` pointed at one, a
+/// script, a model in a hand-run `biorouterd agent`.
+///
+/// ⚠ **It says nothing about the chat**, exactly as [`DECLASSIFY_NEEDS_USER`]
+/// says nothing: both are emitted before the row is read, so the pair separates
+/// *credential states of the caller*, which the caller already knows, and never
+/// states of the session.
+///
+/// ⚠ **It still forecloses the retry.** A keyless daemon refuses this call for
+/// as long as it runs, so a model that reads the refusal as transient loops on
+/// it just as hard here as on the other arm.
+pub const DECLASSIFY_NO_USER_KEY: &str =
+    "This daemon was started without a user-action key, so it cannot verify that a request came \
+     from the person at the keyboard, and marking a private chat public requires that proof. \
+     Nothing was changed. Do not retry; this control is unavailable on this daemon. It is \
+     available on the machine running the daemon, in the Biorouter app there or with `biorouter \
+     session declassify`.";
+
+/// Which refusal this route owes a caller, or `None` when the proof is good.
+///
+/// A function rather than two arms inlined in the handler, so the choice is
+/// exercisable in `--lib` without an `AppState`: the keyless state is a
+/// process-global `OnceLock` that a test binary installing a digest can never
+/// re-enter, which is why the end-to-end measurement lives in its own binary
+/// (`tests/declassify_no_user_key.rs`) and the RULE lives here.
+///
+/// ⚠ It reads [`user_action_proof`], not `is_user_action`. The boolean form
+/// collapses `Unproven` and `NoKeyInstalled` into one answer, and it was that
+/// collapse — not the gate, which is unchanged in what it admits — that put an
+/// agent's sentence in front of a person.
+fn declassify_refusal(proof: UserActionProof) -> Option<&'static str> {
+    match proof {
+        UserActionProof::Proven => None,
+        UserActionProof::Unproven => Some(DECLASSIFY_NEEDS_USER),
+        UserActionProof::NoKeyInstalled => Some(DECLASSIFY_NO_USER_KEY),
+    }
+}
 
 /// What `POST /sessions/{id}/declassify` says when the typed confirmation does
 /// not match. Human-facing: the only caller that reaches it is the renderer's
@@ -1568,8 +1632,12 @@ async fn declassify_session(
     // FIRST, before the row is even read. An unproven caller learns nothing
     // about which ids exist, and the refusal cannot be told apart from one for a
     // session that is already public.
-    if !is_user_action(&headers) {
-        return Err((StatusCode::FORBIDDEN, DECLASSIFY_NEEDS_USER).into_response());
+    //
+    // ⚠ **What is refused is unchanged**; only what the refusal SAYS depends on
+    // which of the two failing verdicts this is. Both still 403 and both still
+    // write nothing.
+    if let Some(refusal) = declassify_refusal(user_action_proof(&headers)) {
+        return Err((StatusCode::FORBIDDEN, refusal).into_response());
     }
 
     // §12.4's grade is NOT decided here. The confirmation is handed to the
@@ -3766,7 +3834,7 @@ mod declassify_tests {
         manager.delete_session(&id).await.unwrap();
     }
 
-    /// The two refusals this route can emit are distinguishable from each other
+    /// The refusals this route can emit are distinguishable from each other
     /// and from the two the renderer already keys on.
     ///
     /// Borrowing either marker would fire a toast whose remedy is wrong here:
@@ -3776,6 +3844,7 @@ mod declassify_tests {
     fn the_refusals_say_different_things() {
         let all = [
             DECLASSIFY_NEEDS_USER,
+            DECLASSIFY_NO_USER_KEY,
             DECLASSIFY_CONFIRMATION_MISMATCH,
             DECLASSIFY_SYSTEM_AUTH_REFUSED,
         ];
@@ -3794,9 +3863,72 @@ mod declassify_tests {
                 "this refusal is claiming to be the copy handler's: {message}"
             );
         }
-        // The model-facing one forecloses the retry; the human-facing one has no
-        // model audience and does not need to.
+        // Both proof-of-user arms foreclose the retry; the two human-facing ones
+        // have no model audience and do not need to.
         assert!(DECLASSIFY_NEEDS_USER.contains("Do not retry"));
+        assert!(DECLASSIFY_NO_USER_KEY.contains("Do not retry"));
+    }
+
+    /// SD-8. A daemon that holds no key may not answer a person with advice only
+    /// a model could act on.
+    ///
+    /// ⚠ **Fails on `origin/main`**, where `declassify_refusal` does not exist
+    /// and both verdicts answer [`DECLASSIFY_NEEDS_USER`] — whose closing clause
+    /// tells its reader to *"stop and ask the user to mark it public from the
+    /// chat history"*. On a `biorouter serve` daemon the reader IS the user and
+    /// IS in the chat history, and the loop was measured end to end on
+    /// 2026-09-12 before this was written.
+    ///
+    /// The clause is quoted from the constant rather than typed out, so
+    /// rewording the model-facing sentence cannot leave this test passing
+    /// against the old words.
+    #[test]
+    fn the_keyless_refusal_does_not_send_a_person_where_they_already_are() {
+        let no_key = declassify_refusal(UserActionProof::NoKeyInstalled)
+            .expect("a keyless daemon refuses this route");
+        let unproven = declassify_refusal(UserActionProof::Unproven)
+            .expect("an unproven caller is refused too");
+        assert_eq!(unproven, DECLASSIFY_NEEDS_USER);
+        assert!(declassify_refusal(UserActionProof::Proven).is_none());
+
+        // The advice a person cannot follow, taken from the arm that owns it.
+        let hand_it_to_the_user = DECLASSIFY_NEEDS_USER
+            .split_once("stop and ")
+            .expect("the model-facing refusal has stopped delegating to the user")
+            .1;
+        assert!(
+            !no_key.contains(hand_it_to_the_user),
+            "the keyless refusal tells the person at the keyboard to go and do what they are \
+             already doing: {no_key}"
+        );
+
+        // ...and it names the daemon rather than the caller, which is what makes
+        // it readable by the person who started that daemon.
+        assert!(
+            no_key.contains("This daemon was started without a user-action key"),
+            "the keyless refusal no longer opens by naming the daemon: {no_key}"
+        );
+        assert!(
+            no_key.contains("Nothing was changed"),
+            "a refusal that does not say the row is untouched invites a second attempt: {no_key}"
+        );
+    }
+
+    /// The keyless refusal is not an oracle either: it is the same bytes for
+    /// every id, because it is chosen before the row is read.
+    ///
+    /// A `const` cannot vary by construction — this is a guard against the
+    /// plausible next edit, which is to make it helpful by naming the chat.
+    #[test]
+    fn neither_proof_refusal_says_anything_about_the_chat() {
+        for message in [DECLASSIFY_NEEDS_USER, DECLASSIFY_NO_USER_KEY] {
+            for leak in ["privacy_reason", "mcp:", "backfill:", "turn:", "inherited:"] {
+                assert!(
+                    !message.contains(leak),
+                    "this refusal names a chat's provenance, which the route never read: {message}"
+                );
+            }
+        }
     }
 
     /// This route's refusal may not tell a chat why it is private, because it

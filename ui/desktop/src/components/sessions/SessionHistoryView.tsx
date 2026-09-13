@@ -38,6 +38,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Message, Session } from '../../api';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
+import { DECLASSIFY_NEEDS_HOST_SHORT, declassifyBrowserReason } from './declassifyOnBrowser';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { MODAL_SIZE } from '../ModalShell';
@@ -201,6 +202,13 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   // longer anything private" belongs. Same dialog as History's row menu, so the
   // two cannot come to ask for different confirmations.
   const [declassifyOpen, setDeclassifyOpen] = useState(false);
+  /**
+   * SD-8 — is this page served to a browser, where declassification cannot work
+   * at all? See `declassifyOnBrowser.ts`. Read from the DOM marker rather than
+   * held as state, for the reason `ModelsBottomBar` gives: the surface cannot
+   * change while the renderer runs.
+   */
+  const declassifyOnHost = declassifyBrowserReason();
   const [tier, setTier] = useState(session.privacy_tier);
   // The same panel the live chat mounts, from the same hook — a saved figure is
   // displayed exactly as a fresh one is, and there is no second renderer here.
@@ -336,11 +344,32 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         <Sparkles className="w-4 h-4" />
         Resume
       </Button>
-      {tier === 'private' && (
-        <Button onClick={() => setDeclassifyOpen(true)} size="sm" variant="outline">
-          Make public
-        </Button>
-      )}
+      {tier === 'private' &&
+        (declassifyOnHost !== null ? (
+          /* SD-8's second entry point. A line of text rather than a disabled
+             Button with a tooltip, and the comment above the Share button is
+             why: `buttonVariants` sets `disabled:pointer-events-none`, so a
+             disabled trigger receives no hover and the tooltip explaining it
+             has never once fired on this very row. An explanation nobody can
+             reach is the defect SD-8 names, not a fix for it.
+
+             The SHORT line, with the full reason on `title`. This bar is a row
+             of small buttons; the three-sentence form belongs where there is
+             room for it, which is History's row menu. Same trade as
+             `SUBAGENT_STOP_NEEDS_DESKTOP`, which takes the header Stop's
+             place. */
+          <span
+            data-testid="declassify-browser-note"
+            title={declassifyOnHost}
+            className="text-supporting text-text-muted"
+          >
+            {DECLASSIFY_NEEDS_HOST_SHORT}
+          </span>
+        ) : (
+          <Button onClick={() => setDeclassifyOpen(true)} size="sm" variant="outline">
+            Make public
+          </Button>
+        ))}
     </>
   ) : null;
 
