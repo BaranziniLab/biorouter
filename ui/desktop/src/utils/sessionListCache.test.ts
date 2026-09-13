@@ -8,15 +8,18 @@ import {
   subscribeSessionListChanges,
 } from './sessionListCache';
 import { announceSessionName } from './sessionNameSync';
+import { announceSessionRowChanged } from './sessionRowSync';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
   updateSessionName: vi.fn(),
+  getSession: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
   listSessions: mocks.listSessions,
   updateSessionName: mocks.updateSessionName,
+  getSession: mocks.getSession,
 }));
 
 // The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) a list
@@ -249,5 +252,35 @@ describe('sessionListCache', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
     unsub();
+  });
+
+  // Item 11 of the 1.90.4 hold (2026-09-13). A declassification no longer
+  // re-sorts the chat, so nothing about the LIST changes and no refetch would
+  // notice. History's badge and its row menu read this entry, so it is patched
+  // where it sits — from the daemon's read, not from the announcement.
+  it('re-marks a declassified chat in place, without refetching or reordering', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          { id: 'recent', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+          { id: 'old', privacy_tier: 'private', privacy_reason: 'backfill:ollama' },
+        ],
+      },
+    });
+    await refreshSessionList();
+    mocks.listSessions.mockClear();
+    mocks.getSession.mockResolvedValue({
+      data: { id: 'old', privacy_tier: 'public', privacy_reason: 'declassified_by_user' },
+    });
+
+    announceSessionRowChanged('old');
+
+    await vi.waitFor(() =>
+      expect(getCachedSessionList()).toEqual([
+        { id: 'recent', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+        { id: 'old', privacy_tier: 'public', privacy_reason: 'declassified_by_user' },
+      ])
+    );
+    expect(mocks.listSessions).not.toHaveBeenCalled();
   });
 });

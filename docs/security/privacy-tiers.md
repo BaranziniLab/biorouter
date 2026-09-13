@@ -128,6 +128,17 @@ this section is the ledger.
   `biorouter session declassify <id>` in the CLI, which is the only surface that reaches a private
   chat no listing shows.
 
+  Two properties added on 2026-09-13 (the 1.90.4 hold, items 8 and 11). **A declassification does
+  not move the chat's `updated_at`**: a classification change is not use of the chat, and stamping
+  it put months-old chats under History's "Today". The desktop announces the change on its own
+  channel instead (`ui/desktop/src/utils/sessionRowSync.ts`), so a second window's History row,
+  sidebar row and session page re-read the row in place. **A declassification that only waited out
+  the store's busy timeout answers `503` with `Retry-After` and a sentence**
+  (`privacy::declassify::DECLASSIFY_STORE_BUSY`), distinct from a genuine failure's `500`
+  (`routes::session::DECLASSIFY_FAILED`); both mean nothing landed, and neither retries inside
+  the call — SQLite's busy handler already waited five seconds, and a second
+  attempt under the load that causes this was measured to fail again three times in seven.
+
   ⚠ **R18's "no cached grant" is honoured on Linux and NOT guaranteed on macOS (F-13).** R18 asks
   for a prompt "raised once per operation (no session, no cached grant)". The Linux prompter
   implements that literally — it declines `pkexec`'s `org.freedesktop.policykit.exec` *because*

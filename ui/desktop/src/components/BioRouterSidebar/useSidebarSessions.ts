@@ -3,6 +3,7 @@ import { listSidebarSessions, type SessionSummary } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { subscribeSessionListChanges, subscribeSessionRemoved } from '../../utils/sessionListCache';
+import { subscribeSessionRowChanges } from '../../utils/sessionRowSync';
 
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
 
@@ -135,6 +136,26 @@ export default function useSidebarSessions(): SidebarSessionsState {
       setSessions(remaining);
     });
 
+    // A chat's classification changed in place — a declassification, here or
+    // in another window (`sessionRowSync`). Patched by id, for the same reason
+    // the removal above is: `loadPage(true)` re-reads only the HEAD of the
+    // keyset, and a declassified chat is usually months old and nowhere near
+    // it. Until 2026-09-13 the daemon stamped `updated_at` on a declassification,
+    // so the next head refresh happened to carry the chat (moved to the top,
+    // which was the bug); with the chat left where it belongs, only this
+    // reaches its row.
+    const unsubscribeRows = subscribeSessionRowChanges(({ sessionId, privacy_tier }) => {
+      let changed = false;
+      const next = sessionsRef.current.map((session) => {
+        if (session.id !== sessionId || session.privacy_tier === privacy_tier) return session;
+        changed = true;
+        return { ...session, privacy_tier };
+      });
+      if (!changed) return;
+      sessionsRef.current = next;
+      setSessions(next);
+    });
+
     window.addEventListener('session-created', scheduleRefresh);
     window.addEventListener('message-stream-finished', scheduleRefresh);
 
@@ -142,6 +163,7 @@ export default function useSidebarSessions(): SidebarSessionsState {
       unsubscribeNames();
       unsubscribeList();
       unsubscribeRemoved();
+      unsubscribeRows();
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
       window.removeEventListener('session-created', scheduleRefresh);
       window.removeEventListener('message-stream-finished', scheduleRefresh);

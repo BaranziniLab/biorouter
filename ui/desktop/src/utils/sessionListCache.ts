@@ -1,6 +1,7 @@
 import { listSessions, type Session } from '../api';
 import { userActionHeaders } from './userAction';
 import { subscribeSessionNameChanges } from './sessionNameSync';
+import { subscribeSessionRowChanges } from './sessionRowSync';
 
 let cachedSessions: Session[] | null = null;
 let inFlightRequest: Promise<Session[]> | null = null;
@@ -54,6 +55,36 @@ subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
   if (idx === -1) return;
   const next = cachedSessions.slice();
   next[idx] = { ...next[idx], name, user_set_name: userSetName };
+  cachedSessions = next;
+  emitChange();
+});
+
+// A row whose classification changed in place — a declassification, in this
+// window or another (`sessionRowSync`). History's badge, its row menu ("Make
+// this chat public" is offered on private rows only), Home recents and the tab
+// strip's cached tiers all read this cache, so the entry is patched where it
+// sits. Nothing is re-sorted: the daemon no longer moves `updated_at` for a
+// classification change, so the row's place in the list is still right.
+//
+// ⚠ Unlike the name channel above, a fact that lands while a list request is in
+// flight is NOT re-applied over that request's answer. The row read may have
+// been ISSUED before the list was, so replaying it could write an older
+// `public` over a newer `private` — the wrong direction for a privacy badge. A
+// list that snaps a row back to private is the safe miss, and the next
+// announcement or refresh corrects it.
+subscribeSessionRowChanges(({ sessionId, privacy_tier, privacy_reason }) => {
+  if (!cachedSessions) return;
+  const idx = cachedSessions.findIndex((s) => s.id === sessionId);
+  if (idx === -1) return;
+  const current = cachedSessions[idx];
+  if (
+    current.privacy_tier === privacy_tier &&
+    (current.privacy_reason ?? null) === privacy_reason
+  ) {
+    return;
+  }
+  const next = cachedSessions.slice();
+  next[idx] = { ...current, privacy_tier, privacy_reason };
   cachedSessions = next;
   emitChange();
 });

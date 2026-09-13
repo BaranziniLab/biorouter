@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { declassifySession, type Session } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
+import { announceSessionRowChanged } from '../../utils/sessionRowSync';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
 import {
   Dialog,
@@ -81,6 +82,53 @@ export function strongConfirmationReason(privacyReason?: string | null): string 
  */
 export function confirmationPhrase(sessionId: string): string {
   return [...sessionId].slice(-6).join('');
+}
+
+/**
+ * What went wrong, in the words the person is shown — item 8 of the 1.90.4
+ * hold (2026-09-13).
+ *
+ * The daemon answers every failure of `POST /sessions/{id}/declassify` with a
+ * plain-text sentence, and that sentence is the message. It did not always: a
+ * lock timeout was a bodyless 500, the generated client throws the parsed body
+ * rather than the Response, and `String({})` put **`[object Object]`** in the
+ * toast. Measured in the running app with the store's write lock held across
+ * one click.
+ *
+ * So the status is read off the Response, never inferred from the body, and a
+ * body that is not a sentence gets one written here — still claiming only what
+ * a failed request guarantees. No Response at all (`status` undefined) means
+ * the request never reached the daemon; a raw `TypeError: Failed to fetch` is
+ * not something a person can act on, so it is not shown either.
+ *
+ * A 503 is the daemon saying the chat store stayed write-locked by other work
+ * past its wait: the one failure a retry clears, titled so it cannot be read
+ * as a refusal.
+ */
+export interface DeclassifyFailure {
+  status: number | undefined;
+  title: string;
+  message: string;
+}
+
+export function describeDeclassifyFailure(
+  status: number | undefined,
+  body: unknown
+): DeclassifyFailure {
+  const sentence = typeof body === 'string' && body.trim().length > 0 ? body.trim() : undefined;
+  let message: string;
+  if (status === undefined) {
+    message = 'Biorouter could not be reached, so this chat was not marked public.';
+  } else {
+    message =
+      sentence ??
+      `Biorouter answered ${status} without saying why, and this chat was not marked public.`;
+  }
+  return {
+    status,
+    title: status === 503 ? 'The chat store was busy' : 'Could not mark this chat public',
+    message,
+  };
 }
 
 type Phase = 'confirm' | 'undo' | 'sending';
@@ -163,36 +211,59 @@ export function DeclassifySessionDialog({
   const send = useCallback(
     async (confirmation: string | null) => {
       setPhase('sending');
+      let failure: DeclassifyFailure | null = null;
       try {
-        await declassifySession({
+        // NOT `throwOnError`: the generated client then throws the parsed BODY
+        // and drops the Response, and the status is what separates a refusal
+        // from a busy store. See `describeDeclassifyFailure`.
+        const result = await declassifySession({
           path: { session_id: session.id },
           body: { confirmation },
           // DR-16's proof-of-user. Without it the daemon refuses, correctly:
           // the server secret alone is reachable from any developer-enabled
           // agent shell (§9.3 A1) and is not evidence of a human.
           headers: await userActionHeaders(),
-          throwOnError: true,
         });
+        // Success is a 200 and nothing else. A missing Response (the fetch
+        // failed) or any other status is a failure, whatever `data` holds — a
+        // private chat must never be reported public when the write did not
+        // land.
+        if (result.response?.status !== 200) {
+          failure = describeDeclassifyFailure(result.response?.status, result.error);
+        }
+      } catch (error) {
+        failure = describeDeclassifyFailure(undefined, error);
+      }
+
+      if (failure === null) {
         toastSuccess({
           title: 'Chat marked public',
           msg: 'It no longer carries a private marker. The change is recorded.',
         });
+        // Every list surface in every window re-reads this row in place (item
+        // 11: the daemon no longer re-sorts it to say something happened).
+        announceSessionRowChanged(session.id);
         latest.current.onDeclassified?.(session.id);
         latest.current.onClose?.();
-      } catch (error) {
-        toastError({
-          title: 'Could not mark this chat public',
-          msg: error instanceof Error ? error.message : String(error),
-        });
-        // A request that carried no confirmation was refused, so the weak
-        // control this dialog rendered was the wrong one — most likely because
-        // the cached row's `turn:*` provenance has since been displaced by an
-        // `mcp:*` one. Returning to the same control would re-render it from
-        // the same stale prop and fail identically, forever. Escalating is the
-        // only recovery, and it is never the wrong answer to a refusal.
-        if (confirmation === null) setEscalated(true);
-        setPhase('confirm');
+        return;
       }
+
+      toastError({ title: failure.title, msg: failure.message });
+      // A request that carried no confirmation was answered "the confirmation
+      // did not match" (400), so the weak control this dialog rendered was the
+      // wrong one — most likely because the cached row's `turn:*` provenance
+      // has since been displaced by an `mcp:*` one. Returning to the same
+      // control would re-render it from the same stale prop and fail
+      // identically, forever, so it escalates.
+      //
+      // ⚠ **Only on that answer.** This used to escalate on ANY failure, and a
+      // lock timeout then swapped the single click for the typed phrase under a
+      // sentence claiming "this chat's record has changed since this list was
+      // loaded" — a claim about the chat that a busy store does not make. A
+      // busy store, a network failure or a daemon fault leaves the grade
+      // exactly as it was, so the same control is the right one to try again.
+      if (confirmation === null && failure.status === 400) setEscalated(true);
+      setPhase('confirm');
     },
     [session.id]
   );

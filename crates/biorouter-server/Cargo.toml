@@ -95,6 +95,11 @@ env-lock = { workspace = true }
 wiremock = { workspace = true }
 zip = "8.6.0"
 serial_test = { workspace = true }
+# `tests/declassify_store_busy.rs` holds `sessions.db`'s write lock from a
+# connection outside the daemon's pool, which no public API of `biorouter` can
+# do. The same version and features `biorouter` already compiles, so this adds
+# no crate to the build.
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
 # Issue #56 DR-20 / Task 55. This crate's routes raise the OS authentication
 # prompt — `POST /sessions/{id}/declassify` and `/config/upsert`'s master-switch
 # arm — so its TESTS would type a real password on every run without a stand-in.

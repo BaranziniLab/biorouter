@@ -7572,9 +7572,13 @@ export type DeclassifySessionErrors = {
      */
     404: unknown;
     /**
-     * Internal server error
+     * Internal server error. Nothing was changed (body = plain text)
      */
     500: unknown;
+    /**
+     * The session store stayed busy with other writes for longer than the daemon waits. Nothing was changed, and the same call a moment later can succeed; `Retry-After` is set (body = plain text)
+     */
+    503: unknown;
 };
 
 export type DeclassifySessionResponses = {

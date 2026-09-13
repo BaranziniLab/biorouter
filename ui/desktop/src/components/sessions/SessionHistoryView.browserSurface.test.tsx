@@ -63,7 +63,13 @@ function renderPrivatePage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.declassifySession.mockResolvedValue({});
+  // The shape the generated client resolves a 200 with. The dialog reads the
+  // status off the Response, so a bare `{}` — no Response at all — is a failed
+  // request, exactly as it is at runtime.
+  mocks.declassifySession.mockResolvedValue({
+    data: { sessionId: 'x', privacyTier: 'public' },
+    response: { status: 200 },
+  });
 });
 
 afterEach(() => {

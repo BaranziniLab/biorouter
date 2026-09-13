@@ -7,6 +7,8 @@ import type { Session } from '../../api';
 const mocks = vi.hoisted(() => ({
   declassifySession: vi.fn(),
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+  announceSessionRowChanged: vi.fn(),
 }));
 
 vi.mock('../../api', () => ({
@@ -15,12 +17,43 @@ vi.mock('../../api', () => ({
 
 vi.mock('../../toasts', () => ({
   toastError: mocks.toastError,
-  toastSuccess: vi.fn(),
+  toastSuccess: mocks.toastSuccess,
 }));
 
 vi.mock('../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
 }));
+
+vi.mock('../../utils/sessionRowSync', () => ({
+  announceSessionRowChanged: mocks.announceSessionRowChanged,
+}));
+
+/**
+ * Answer the way the generated client (`api/client/client.gen.ts`) really does,
+ * for BOTH ways of calling it — which is what lets a test here fail on the code
+ * it replaced rather than on a mock that only fits the new call.
+ *
+ * With `throwOnError` the client throws the parsed BODY and the Response is
+ * gone; a plain-text body stays a string and an empty one becomes `{}`
+ * (`finalError || {}`). Without it the same body comes back as `error`, beside
+ * the Response.
+ */
+function answerLikeTheClient(status: number, body: string) {
+  return async (options: { throwOnError?: boolean }) => {
+    if (status === 200) {
+      const data = { sessionId: s.id, privacyTier: 'public' };
+      return { data, request: {}, response: { status } };
+    }
+    const error = body || {};
+    if (options.throwOnError) throw error;
+    return { data: undefined, error, request: {}, response: { status } };
+  };
+}
+
+/** The daemon's 503 body, `privacy::declassify::DECLASSIFY_STORE_BUSY`. */
+const STORE_BUSY =
+  'Nothing was changed and this chat was not marked public, because other writes kept the chat ' +
+  'store busy. Try again in a moment.';
 
 const s = {
   id: 'abc123def456',
@@ -36,7 +69,7 @@ const s = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.declassifySession.mockResolvedValue({});
+  mocks.declassifySession.mockImplementation(answerLikeTheClient(200, ''));
 });
 
 afterEach(() => {
@@ -159,10 +192,12 @@ describe('DeclassifySessionDialog', () => {
         path: { session_id: 'abc123def456' },
         body: { confirmation: 'def456' },
         headers: { 'X-User-Action': 'test-key' },
-        throwOnError: true,
       })
     );
     await waitFor(() => expect(onDeclassified).toHaveBeenCalledWith('abc123def456'));
+    // Item 11: the change announces itself, so a second window's lists re-read
+    // the row instead of waiting for a re-sort that no longer happens.
+    expect(mocks.announceSessionRowChanged).toHaveBeenCalledWith('abc123def456');
   });
 
   it('the single-click path holds the request open for the undo window', async () => {
@@ -210,7 +245,6 @@ describe('DeclassifySessionDialog', () => {
         path: { session_id: 'abc123def456' },
         body: { confirmation: null },
         headers: { 'X-User-Action': 'test-key' },
-        throwOnError: true,
       })
     );
     await waitFor(() => expect(onDeclassified).toHaveBeenCalledWith('abc123def456'));
@@ -289,8 +323,11 @@ describe('DeclassifySessionDialog', () => {
     // stale prop, so clicking again fails identically — an unrecoverable
     // dialog. The strong control is always an acceptable answer to a refusal,
     // and it is the only one that can recover from a stale grade.
-    mocks.declassifySession.mockRejectedValue(
-      new Error("The confirmation did not match the last six characters of this chat's id.")
+    mocks.declassifySession.mockImplementation(
+      answerLikeTheClient(
+        400,
+        "The confirmation did not match the last six characters of this chat's id. Nothing was changed."
+      )
     );
 
     render(
@@ -313,7 +350,33 @@ describe('DeclassifySessionDialog', () => {
   it('surfaces a refusal instead of claiming the chat is now public', async () => {
     const user = userEvent.setup();
     const onDeclassified = vi.fn();
-    mocks.declassifySession.mockRejectedValue('Nothing was changed.');
+    const refusal =
+      'This chat does not record an observed turn on a private model as the reason it is private, ' +
+      'so marking it public needs your operating system to confirm it is you. That did not happen, ' +
+      'and nothing was changed.';
+    mocks.declassifySession.mockImplementation(answerLikeTheClient(403, refusal));
+
+    render(
+      <DeclassifySessionDialog session={s} onClose={vi.fn()} onDeclassified={onDeclassified} />
+    );
+    await user.type(screen.getByLabelText(/last 6 characters/i), 'def456');
+    await user.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith({
+        title: 'Could not mark this chat public',
+        msg: refusal,
+      })
+    );
+    expect(onDeclassified).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(mocks.announceSessionRowChanged).not.toHaveBeenCalled();
+  });
+
+  it('a thrown request (the daemon unreachable) is a failure, not a success', async () => {
+    const user = userEvent.setup();
+    const onDeclassified = vi.fn();
+    mocks.declassifySession.mockRejectedValue(new TypeError('Failed to fetch'));
 
     render(
       <DeclassifySessionDialog session={s} onClose={vi.fn()} onDeclassified={onDeclassified} />
@@ -323,5 +386,64 @@ describe('DeclassifySessionDialog', () => {
 
     await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
     expect(onDeclassified).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  // Item 8 of the 1.90.4 hold (2026-09-13). Reproduced in the running app by
+  // holding `sessions.db`'s write lock across one single-click declassification:
+  // the daemon answered a bodyless 500 after its five-second busy wait, the toast
+  // read "Could not mark this chat public / [object Object]", and the dialog
+  // swapped the single click for the typed phrase under "That request was
+  // refused. This chat's record has changed since this list was loaded" — none
+  // of which was true.
+  it('a busy store says so in the daemon’s words and keeps the single click', async () => {
+    mocks.declassifySession.mockImplementation(answerLikeTheClient(503, STORE_BUSY));
+    const onDeclassified = vi.fn();
+
+    render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        onDeclassified={onDeclassified}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith({
+        title: 'The chat store was busy',
+        msg: STORE_BUSY,
+      })
+    );
+    // Not escalated: a busy store says nothing about this chat's grade, so the
+    // control it was offered is still the right one to try again with.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Make public/ })).toBeEnabled());
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByText(/record has changed/i)).toBeNull();
+    // And never reported public.
+    expect(onDeclassified).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(mocks.announceSessionRowChanged).not.toHaveBeenCalled();
+  });
+
+  it('a failure with no body is described, never shown as [object Object]', async () => {
+    mocks.declassifySession.mockImplementation(answerLikeTheClient(500, ''));
+
+    render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    const { title, msg } = mocks.toastError.mock.calls[0][0] as { title: string; msg: string };
+    expect(msg).not.toContain('[object Object]');
+    expect(msg).toMatch(/not marked public/);
+    expect(title).toBe('Could not mark this chat public');
+    expect(screen.queryByRole('textbox')).toBeNull();
   });
 });

@@ -39,6 +39,7 @@ import { Message, Session } from '../../api';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import { DECLASSIFY_NEEDS_HOST_SHORT, declassifyBrowserReason } from './declassifyOnBrowser';
+import { subscribeSessionRowChanges } from '../../utils/sessionRowSync';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { MODAL_SIZE } from '../ModalShell';
@@ -217,6 +218,17 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   const artifactPanel = useArtifactPanel({ isMobile: useIsMobile(), allowWindowResize: false });
   const { splitPaneRef, artifact: presentedArtifact, openArtifact } = artifactPanel;
   useEffect(() => setTier(session.privacy_tier), [session.privacy_tier]);
+  // …and follow a declassification made anywhere else — another window's
+  // History row, or this chat's own page open twice. The `session` prop is read
+  // once when the page opens, so without this the badge above a chat that is
+  // no longer private would stay private until the page was reopened.
+  useEffect(
+    () =>
+      subscribeSessionRowChanges(({ sessionId, privacy_tier }) => {
+        if (sessionId === session.id) setTier(privacy_tier);
+      }),
+    [session.id]
+  );
 
   const messages = session.conversation || [];
   const billedTokenEstimate = billedSessionTokenEstimate(session);

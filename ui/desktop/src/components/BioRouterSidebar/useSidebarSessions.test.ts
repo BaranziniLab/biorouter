@@ -9,10 +9,12 @@ import { notifySessionListChanged } from '../../utils/sessionListCache';
 
 const mocks = vi.hoisted(() => ({
   listSidebarSessions: vi.fn(),
+  getSession: vi.fn(),
 }));
 
 vi.mock('../../api', () => ({
   listSidebarSessions: mocks.listSidebarSessions,
+  getSession: mocks.getSession,
 }));
 
 // The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) the
@@ -195,5 +197,64 @@ describe('a deleted chat leaves Recents without a reload', () => {
 
     await waitFor(() => expect(result.current.sessions).toHaveLength(19));
     expect(result.current.sessions.map((session) => session.id)).toContain('session-19');
+  });
+});
+
+/**
+ * Item 11 of the 1.90.4 hold (2026-09-13). The daemon used to stamp
+ * `updated_at` on a declassification, so the next head refresh carried the chat
+ * — moved to the top, which was the bug. With the chat left where it belongs, a
+ * refresh re-reads only the HEAD of the keyset and never reaches a months-old
+ * row, so the row is re-marked by id from ANOTHER window's announcement.
+ */
+describe('a declassified chat is re-marked in Recents without a reload', () => {
+  it('patches a scrolled-in row where it sits, from a sibling window', async () => {
+    const firstPage = Array.from({ length: 10 }, (_, index) => ({
+      ...makeSummary(index),
+      privacy_tier: 'private' as const,
+    }));
+    const secondPage = Array.from({ length: 10 }, (_, index) => ({
+      ...makeSummary(index + 10),
+      privacy_tier: 'private' as const,
+    }));
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({
+        data: { sessions: firstPage, has_more: true, next_cursor: 'cursor-page-2' },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: secondPage, has_more: false, next_cursor: null },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(10));
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(20));
+    const order = result.current.sessions.map((session) => session.id);
+    mocks.listSidebarSessions.mockClear();
+    mocks.getSession.mockResolvedValue({
+      data: { id: 'session-17', privacy_tier: 'public', privacy_reason: 'declassified_by_user' },
+    });
+
+    // Another window declassified it.
+    const sibling = new BroadcastChannel('biorouter:session-row');
+    try {
+      sibling.postMessage({ sessionId: 'session-17' });
+      await waitFor(() =>
+        expect(result.current.sessions.find((s) => s.id === 'session-17')?.privacy_tier).toBe(
+          'public'
+        )
+      );
+    } finally {
+      sibling.close();
+    }
+
+    expect(result.current.sessions.map((session) => session.id)).toEqual(order);
+    expect(
+      result.current.sessions
+        .filter((s) => s.id !== 'session-17')
+        .every((s) => s.privacy_tier === 'private')
+    ).toBe(true);
+    // No head refresh was needed — and one could not have reached this row.
+    expect(mocks.listSidebarSessions).not.toHaveBeenCalled();
   });
 });
