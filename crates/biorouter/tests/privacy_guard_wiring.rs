@@ -421,7 +421,7 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
-                counts: c(8, 10, 0),
+                counts: c(8, 11, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions/{id}` (the transcript) and `GET /sessions/{id}/export` \
                        (the same transcript, `to_string_pretty`), and — QA 2026-09-10 F0 and \
@@ -429,8 +429,13 @@ const REGISTRY: &[Guard] = &[
                        /sessions/{id}` (measured deleting a private chat the read refused, four \
                        of four), `PUT …/name`, `PUT …/user_workflow_values`, the in-place arm \
                        of `POST …/edit_message` (it truncates), `GET …/extensions` and `GET \
-                       …/usage`. Ten refs: the module qualifier on each of the eight calls, \
-                       and on `http_caller` for the two listings",
+                       …/usage`. ELEVEN refs and still EIGHT calls: the module qualifier on \
+                       each of the eight calls, and on `http_caller` for the THREE listings — \
+                       `GET /sessions`, `GET /sessions/sidebar`, and, since the 2026-09-12 serve \
+                       sweep, `GET /sessions/running`. ⚠ The eleventh ref is a LISTING and not \
+                       a ninth reach decision, which is why `calls` did not move: a listing asks \
+                       `HttpCaller` whether to SHOW a row and drops it silently, where a call \
+                       here refuses the request outright",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/skills.rs",
@@ -570,10 +575,12 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
-                counts: c(2, 0, 0),
+                counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions` and `GET /sessions/sidebar` — QA 2026-09-10 M1, every \
-                       chat on the machine, titled, to a secret-only caller",
+                       chat on the machine, titled, to a secret-only caller — and, since the \
+                       2026-09-12 serve sweep, `GET /sessions/running`, which named every chat \
+                       holding a turn to that same caller and, polled, timed each one",
             },
             Site {
                 file: SESSION_REACH,
@@ -633,6 +640,17 @@ const REGISTRY: &[Guard] = &[
                 what: "`visible_items`, which `GET /active_work` passes every row through — \
                    background jobs, foreground commands, subagents, detached turns and scheduled \
                    runs alike — after one `http_caller` for the whole list",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/running`, whose every row IS a chat id — so the id is \
+                       shown exactly when `GET /active_work` would show that chat's work. It \
+                       holds ids and not rows, which is why it takes this predicate rather than \
+                       `lists_session`: the chat must be resolved, resolution can fail, and a \
+                       turn held on a chat this daemon cannot read is answered as a private \
+                       chat's",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",

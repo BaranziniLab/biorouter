@@ -7408,7 +7408,7 @@ export type RunningSessionsErrors = {
 
 export type RunningSessionsResponses = {
     /**
-     * Sessions with a turn in flight
+     * Sessions with a turn in flight, holding only the chats this caller could open: a private chat's id, and one this daemon cannot read, are omitted — never redacted — for a caller with neither the user-action proof nor a private capability, exactly as `GET /active_work` omits that chat's running work. An omitted row is indistinguishable from nothing running
      */
     200: RunningSessionsResponse;
 };
