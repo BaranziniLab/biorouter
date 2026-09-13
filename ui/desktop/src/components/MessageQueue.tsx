@@ -13,6 +13,8 @@ import type { UserAttachment } from '../types/message';
 import { ResourceRefText } from './ResourceRefChip';
 import { joinComposerText, splitComposerText } from '../utils/composerRefs';
 import { getSteerShortcutText } from '../utils/keyboardShortcuts';
+import { SteerUnavailableNote } from './privacy/SteerUnavailableNote';
+import { steerUnavailableReason } from './privacy/steerUnavailableCopy';
 
 const STEER_TITLE = 'Add to current turn without stopping';
 const STOP_AND_SEND_TITLE = 'Stop current turn, then send as a new turn';
@@ -105,8 +107,26 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
     return null;
   }
 
+  /**
+   * SD-8. `null` on the desktop; on a browser-served session the sentence that
+   * takes the place of every "Add now" in this widget.
+   *
+   * Read here rather than passed in, on `HostManagedModelNote`'s contract: a
+   * prop is a thing a call site can forget, and the one that forgot would leave
+   * a button that answers 403 and says nothing — which is the defect.
+   */
+  const steerRefusal = steerUnavailableReason();
+
+  /**
+   * Does the steer apply at all right now? `onSteerMessage` is `undefined`
+   * whenever no turn is in flight, so this is also "is there a running turn" —
+   * and it is what decides whether the note has anything to explain. A queue
+   * sitting in front of an idle agent is missing no control.
+   */
+  const steerApplies = Boolean(onSteerMessage);
+
   const isSteerable = (message: QueuedMessage) =>
-    Boolean(onSteerMessage) && canSteerMessage(message);
+    steerApplies && !steerRefusal && canSteerMessage(message);
 
   const handleDragStart = (e: React.DragEvent, messageId: string) => {
     setDraggedItem(messageId);
@@ -262,6 +282,15 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             <ChevronDown className="w-3.5 h-3.5" />
           </Button>
         </div>
+        {/* SD-8: the reason the "Add now" above is missing, in the row it is
+            missing from. `short` because the collapsed bar is the compact
+            shape, and a three-line block under a one-line strip would be the
+            note shouting louder than the queue it annotates.
+
+            Mounted on `steerApplies` alone — the note itself renders nothing on
+            the desktop, so this condition is "is there a turn to steer", not
+            "which surface is this". */}
+        {steerApplies && <SteerUnavailableNote short />}
       </div>
     );
   }
@@ -462,6 +491,10 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
           </div>
         ))}
       </div>
+      {/* SD-8, once for the whole list rather than once per row: the reason is
+          the daemon's, not this message's, so repeating it under every row
+          would say one true thing N times. */}
+      {steerApplies && <SteerUnavailableNote />}
     </div>
   );
 };

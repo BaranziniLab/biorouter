@@ -34,6 +34,7 @@ import { DroppedFile, useFileDrop } from '../hooks/useFileDrop';
 import { useDiverge } from '../hooks/useDiverge';
 import { Workflow } from '../workflow';
 import MessageQueue, { canSteerMessage } from './MessageQueue';
+import { steerUnavailableReason } from './privacy/steerUnavailableCopy';
 import { detectInterruption } from '../utils/interruptionDetector';
 import { getSession, llamacppStatus, Message } from '../api';
 import { userActionHeaders } from '../utils/userAction';
@@ -1784,7 +1785,33 @@ export default function ChatInput({
     isLoadingRef.current = isLoading;
   }, [isLoading]);
 
-  const canSteer = Boolean(onSteer) && isLoading;
+  /**
+   * Is a steer on the table at all — is a turn running with a steer path bound?
+   *
+   * Kept separate from {@link canSteer} so `MessageQueue` still learns that a
+   * turn IS running on a surface that cannot steer it: it needs that to know
+   * whether its SD-8 note has anything to explain. An undefined
+   * `onSteerMessage` means both "no turn" and "cannot steer" otherwise, and the
+   * note would appear over an idle agent.
+   */
+  const steerApplies = Boolean(onSteer) && isLoading;
+
+  /**
+   * May THIS surface actually steer? (SD-8.)
+   *
+   * `steerUnavailableReason()` is non-null exactly on a browser-served session,
+   * where `userActionHeaders()` has no `X-User-Action` to send and the daemon's
+   * `steer_refusal` admits nothing else — so the POST is refused on every
+   * daemon, every time. Measured on a real `biorouter serve` 2026-09-12: both
+   * clicks of "Add now" posted `/interrupt` and both took a 403 whose body
+   * nothing rendered.
+   *
+   * Gating here rather than on the refusal is what keeps the Cmd/Ctrl+Enter
+   * chord and its tooltip line honest too: a shortcut advertised as "adds it to
+   * the running turn" that instead queues the message is the same silent lie in
+   * a second place.
+   */
+  const canSteer = steerApplies && !steerUnavailableReason();
 
   // Never drop the user's words: if the steer was refused (the turn ended in the
   // meantime) send the text now, or re-queue it if a turn is somehow running.
@@ -2650,7 +2677,12 @@ export default function ChatInput({
             onRemoveMessage={handleRemoveQueuedMessage}
             onClearQueue={handleClearQueue}
             onStopAndSend={handleStopAndSend}
-            onSteerMessage={canSteer ? handleSteerMessage : undefined}
+            // `steerApplies`, not `canSteer`: the queue decides for itself
+            // whether to offer the button or the SD-8 note, and it can only
+            // tell the two apart while it can still see that a turn is running.
+            // `handleSteerMessage` re-checks `canSteer` before it posts, so the
+            // callback being bound here grants nothing.
+            onSteerMessage={steerApplies ? handleSteerMessage : undefined}
             onReorderMessages={handleReorderMessages}
             onEditMessage={handleEditMessage}
             onTriggerQueueProcessing={handleResumeQueue}
