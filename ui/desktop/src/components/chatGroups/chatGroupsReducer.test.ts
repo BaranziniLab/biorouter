@@ -471,6 +471,176 @@ describe('resumeUnsent — a new-chat request arriving from another route', () =
   });
 });
 
+describe('resumeUnsent in a split — no other pane loses the chat it is showing', () => {
+  const blank: ChatGroupsAction = { type: 'openTab', payload: { sessionId: '' } };
+  const blankIn = (groupId: string): ChatGroupsAction => ({
+    type: 'openTab',
+    payload: { sessionId: '', groupId },
+  });
+  const arriving: ChatGroupsAction = {
+    type: 'openTab',
+    payload: { sessionId: '', resumeUnsent: true },
+  };
+  /** Drag `tabId` to grp-1's right edge; returns the new pane's id. */
+  const splitRight = (state: ChatGroupsState, tabId: string) => {
+    const next = run(state, {
+      type: 'moveTabToGroup',
+      tabId,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+    return { state: next, right: leafGroupIds(next.layout).find((id) => id !== 'grp-1')! };
+  };
+  /** The tab each pane shows, and which pane has focus. */
+  const onScreen = (state: ChatGroupsState) => ({
+    shown: Object.fromEntries(
+      leafGroupIds(state.layout).map((id) => [id, state.groups[id].activeTabId])
+    ),
+    focused: state.activeGroupId,
+  });
+
+  it('focuses the draft showing in one pane, not a draft behind the other pane’s chat', () => {
+    // Measured in the dev app on 7200e293: the left pane showing "LEFT PANE
+    // DRAFT", the right pane showing the chat "Prompt injection test" with a new
+    // tab holding "RIGHT BACKGROUND DRAFT" behind it. Settings, then New chat:
+    // the right pane's chat was replaced by that background tab, in a pane the
+    // person had not acted on, while the draft was already on screen.
+    const base = run(createInitialChatGroupsState(), blank, open('s-chat'));
+    const [leftDraft, chat] = base.groups['grp-1'].tabs.map((t) => t.tabId);
+    const { state: split, right } = splitRight(base, chat);
+    const behind = run(split, blankIn(right), { type: 'activateTab', tabId: chat });
+    const rightDraft = behind.groups[right].tabs[1].tabId;
+    expect(onScreen(behind)).toEqual({
+      shown: { 'grp-1': leftDraft, [right]: chat },
+      focused: right,
+    });
+
+    const next = run(behind, arriving);
+
+    expect(onScreen(next)).toEqual({
+      shown: { 'grp-1': leftDraft, [right]: chat },
+      focused: 'grp-1',
+    });
+    expect(next.groups[right].tabs.map((t) => t.tabId)).toEqual([chat, rightDraft]);
+    expect(next.seq).toBe(behind.seq);
+  });
+
+  it('focuses a draft showing in another pane when the focused pane shows a chat', () => {
+    const base = run(createInitialChatGroupsState(), blank, open('s-chat'));
+    const [leftDraft, chat] = base.groups['grp-1'].tabs.map((t) => t.tabId);
+    const { state: split, right } = splitRight(base, chat);
+    expect(split.activeGroupId).toBe(right);
+
+    const next = run(split, arriving);
+
+    expect(onScreen(next)).toEqual({
+      shown: { 'grp-1': leftDraft, [right]: chat },
+      focused: 'grp-1',
+    });
+    expect(next.seq).toBe(split.seq);
+  });
+
+  it('leaves a draft behind ANOTHER pane’s chat in its strip, and opens a tab as New chat does', () => {
+    // DECIDED: bringing that tab forward would put it in front of a chat in a
+    // pane New chat does not act on. The draft stays where it is, in that pane's
+    // strip; the focused pane gets the blank tab New chat has always opened.
+    const base = run(createInitialChatGroupsState(), blank, open('s-left'), open('s-right'));
+    const [leftDraft, leftChat, rightChat] = base.groups['grp-1'].tabs.map((t) => t.tabId);
+    const { state: split, right } = splitRight(base, rightChat);
+    expect(onScreen(split)).toEqual({
+      shown: { 'grp-1': leftChat, [right]: rightChat },
+      focused: right,
+    });
+
+    const next = run(split, arriving);
+
+    expect(next.groups['grp-1'].activeTabId).toBe(leftChat);
+    expect(next.groups['grp-1'].tabs.map((t) => [t.tabId, t.sessionId])).toEqual([
+      [leftDraft, ''],
+      [leftChat, 's-left'],
+    ]);
+    expect(next.activeGroupId).toBe(right);
+    expect(next.groups[right].tabs).toHaveLength(2);
+    expect(activeSessionIdOf(next)).toBe('');
+  });
+
+  it('brings a draft behind the FOCUSED pane’s chat forward, as a single pane does', () => {
+    // DECIDED: New chat acts on the focused pane, and that pane's chat goes
+    // behind a tab either way; the tab in front is the kept message rather than a
+    // blank one beside it. The other pane is untouched.
+    const base = run(createInitialChatGroupsState(), open('s-left'), open('s-right'));
+    const [leftChat, rightChat] = base.groups['grp-1'].tabs.map((t) => t.tabId);
+    const { state: split, right } = splitRight(base, rightChat);
+    const behind = run(split, blankIn(right), { type: 'activateTab', tabId: rightChat });
+    const rightDraft = behind.groups[right].tabs[1].tabId;
+
+    const next = run(behind, arriving);
+
+    expect(onScreen(next)).toEqual({
+      shown: { 'grp-1': leftChat, [right]: rightDraft },
+      focused: right,
+    });
+    expect(next.seq).toBe(behind.seq);
+  });
+
+  it('with a draft showing in each pane, stays on the focused pane’s and moves nothing', () => {
+    const base = run(createInitialChatGroupsState(), blank, blank);
+    const [leftDraft, rightDraft] = base.groups['grp-1'].tabs.map((t) => t.tabId);
+    const { state: split, right } = splitRight(base, rightDraft);
+    const focusedLeft = run(split, { type: 'activateTab', tabId: leftDraft });
+
+    const next = run(focusedLeft, arriving);
+
+    expect(onScreen(next)).toEqual({
+      shown: { 'grp-1': leftDraft, [right]: rightDraft },
+      focused: 'grp-1',
+    });
+  });
+
+  it('with a draft behind each pane’s chat, brings forward only the focused pane’s', () => {
+    const base = run(createInitialChatGroupsState(), blank, open('s-left'), blank, open('s-right'));
+    const [leftDraft, leftChat, rightDraft, rightChat] = base.groups['grp-1'].tabs.map(
+      (t) => t.tabId
+    );
+    const { state: moved, right } = splitRight(base, rightDraft);
+    const split = run(
+      moved,
+      { type: 'moveTabToGroup', tabId: rightChat, targetGroupId: right, zone: 'center' },
+      { type: 'activateTab', tabId: leftChat },
+      { type: 'activateTab', tabId: rightChat }
+    );
+    expect(onScreen(split)).toEqual({
+      shown: { 'grp-1': leftChat, [right]: rightChat },
+      focused: right,
+    });
+    expect(split.groups['grp-1'].tabs.map((t) => t.tabId)).toEqual([leftDraft, leftChat]);
+
+    const next = run(split, arriving);
+
+    expect(onScreen(next)).toEqual({
+      shown: { 'grp-1': leftChat, [right]: rightDraft },
+      focused: right,
+    });
+  });
+
+  it('a second New chat, pressed on /pair, still opens a blank tab in the focused pane', () => {
+    const base = run(createInitialChatGroupsState(), blank, open('s-chat'));
+    const [leftDraft, chat] = base.groups['grp-1'].tabs.map((t) => t.tabId);
+    const { state: split, right } = splitRight(base, chat);
+    const resumed = run(split, arriving);
+    expect(resumed.activeGroupId).toBe('grp-1');
+
+    const next = run(resumed, blank);
+
+    expect(next.groups['grp-1'].tabs.map((t) => t.tabId)).toEqual([
+      leftDraft,
+      `tab-${resumed.seq + 1}`,
+    ]);
+    expect(next.groups['grp-1'].activeTabId).toBe(`tab-${resumed.seq + 1}`);
+    expect(next.groups[right].activeTabId).toBe(chat);
+  });
+});
+
 describe('a started chat never takes over a tab holding an unsent message (D1)', () => {
   const blank: ChatGroupsAction = { type: 'openTab', payload: { sessionId: '' } };
   const started = (

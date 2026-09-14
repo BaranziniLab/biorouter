@@ -112,6 +112,48 @@ describe('a new tab holding an unsent message', () => {
     expect(tabIds()).toEqual([unsent]);
   });
 
+  it('in a split, coming back focuses the draft on screen and no pane loses its chat', async () => {
+    // Measured in the dev app on 7200e293: left pane showing "LEFT PANE DRAFT";
+    // right pane showing the chat "Prompt injection test", a new tab holding
+    // "RIGHT BACKGROUND DRAFT" behind it. Settings, then New chat: the right
+    // pane's chat was replaced by its background tab.
+    const view = mount();
+    act(() => void requestNewTab());
+    await waitFor(() => expect(tabIds()).toHaveLength(1));
+    const [leftDraft] = tabIds();
+    act(() => ctx!.dispatch({ type: 'openTab', payload: { sessionId: 's-chat', title: 'chat' } }));
+    await waitFor(() => expect(tabIds()).toHaveLength(2));
+    const chat = tabIds()[1];
+    act(() =>
+      ctx!.dispatch({ type: 'moveTabToGroup', tabId: chat, targetGroupId: 'grp-1', zone: 'right' })
+    );
+    const right = Object.keys(ctx!.state.groups).find((id) => id !== 'grp-1')!;
+    act(() => ctx!.dispatch({ type: 'openTab', payload: { sessionId: '', groupId: right } }));
+    const rightDraft = ctx!.state.groups[right].tabs[1].tabId;
+    act(() => ctx!.dispatch({ type: 'activateTab', tabId: chat }));
+    for (const [tabId, text] of [
+      [leftDraft, 'LEFT PANE DRAFT'],
+      [rightDraft, 'RIGHT BACKGROUND DRAFT'],
+    ]) {
+      saveComposerDraft(composerDraftKeyForTab(tabId), { text, images: [], files: [] });
+    }
+    const shown = () =>
+      Object.fromEntries(Object.values(ctx!.state.groups).map((g) => [g.groupId, g.activeTabId]));
+    expect(shown()).toEqual({ 'grp-1': leftDraft, [right]: chat });
+    expect(ctx!.state.activeGroupId).toBe(right);
+
+    act(() => view.unmount());
+    act(() => void requestNewTab());
+    mount();
+
+    await waitFor(() => expect(ctx!.state.activeGroupId).toBe('grp-1'));
+    expect(shown()).toEqual({ 'grp-1': leftDraft, [right]: chat });
+    expect(ctx!.state.groups[right].tabs.map((t) => t.tabId)).toEqual([chat, rightDraft]);
+    expect(readComposerDraft(composerDraftKeyForTab(rightDraft))?.text).toBe(
+      'RIGHT BACKGROUND DRAFT'
+    );
+  });
+
   it('is gone after a RELOAD, which restores nothing', async () => {
     const { view, unsent } = await twoNewTabsFirstUnsent();
     act(() => view.unmount());

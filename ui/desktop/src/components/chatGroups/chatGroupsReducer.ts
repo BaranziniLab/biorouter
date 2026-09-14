@@ -60,6 +60,10 @@ export interface OpenTabPayload {
    *
    * NOT for a request made while /pair is already showing: pressing New chat
    * while looking at your tabs means another tab, as it always has.
+   *
+   * In a split, it never changes what any pane but the focused one shows: a tab
+   * already on screen only takes focus, and a tab behind another pane's chat
+   * stays there. Which tab, and why: `findUnsentTab`.
    */
   resumeUnsent?: boolean;
   /**
@@ -321,20 +325,40 @@ function withGroup(state: ChatGroupsState, groupId: ChatGroupId, next: ChatGroup
 }
 
 /**
- * A tab with no chat, for `resumeUnsent`: the one in view first (the active tab
- * of the active group), then the active group's, then any group's in layout
- * order.
+ * The tab with no chat that `resumeUnsent` brings the person to, or null for the
+ * blank tab New chat has always opened.
+ *
+ * New chat acts on ONE pane, the focused one: its visible tab gives way to the
+ * tab the request lands on, and no other pane's does. Resuming keeps to that, so
+ * in order:
+ *
+ *   1. A tab with no chat that a pane is ALREADY SHOWING — the focused pane's,
+ *      then any pane's in layout order. Only focus moves; every pane keeps what
+ *      it shows.
+ *   2. A tab with no chat BEHIND the focused pane's visible tab. That visible tab
+ *      goes behind a tab either way; the one in front is the kept message rather
+ *      than a blank tab beside it. This is the single-pane case.
+ *   3. Nothing. A tab with no chat behind ANOTHER pane's visible tab stays where
+ *      it is, in that pane's strip: bringing it forward would put it in front of
+ *      a chat in a pane New chat does not act on.
+ *
+ * ⚠ The first version searched the focused pane's whole strip before looking at
+ * any other pane, then every pane's strip. Measured in the dev app: the left
+ * pane showing a draft, the right pane showing a chat with a second draft behind
+ * it; Settings, then New chat, and the right pane's chat was replaced by that
+ * background draft. The focused pane on arrival is not even reliably the one the
+ * person left: each remounting composer focuses itself, and a focus in a pane
+ * makes it the focused one (`ChatGroupsShell`'s `onFocusGroup`).
  */
 function findUnsentTab(state: ChatGroupsState): { group: ChatGroup; tab: ChatTab } | null {
-  const activeGroup = state.groups[state.activeGroupId];
-  const inView = activeGroup?.tabs.find((t) => t.tabId === activeGroup.activeTabId);
-  if (activeGroup && inView && !inView.sessionId) return { group: activeGroup, tab: inView };
   for (const groupId of [state.activeGroupId, ...leafGroupIds(state.layout)]) {
     const group = state.groups[groupId];
-    const tab = group?.tabs.find((t) => !t.sessionId);
-    if (group && tab) return { group, tab };
+    const shown = group?.tabs.find((t) => t.tabId === group.activeTabId);
+    if (group && shown && !shown.sessionId) return { group, tab: shown };
   }
-  return null;
+  const focused = state.groups[state.activeGroupId];
+  const behind = focused?.tabs.find((t) => !t.sessionId);
+  return focused && behind ? { group: focused, tab: behind } : null;
 }
 
 /**
