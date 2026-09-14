@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 /**
@@ -29,6 +29,7 @@ const dispatch = vi.fn();
 const preloadSessionList = vi.fn();
 let cachedList: Array<{ id: string; privacy_tier?: string }> | null = null;
 let liveTiers: Record<string, string> = {};
+let tabNamedByUser = false;
 
 // The strip is not a child of the shell — it reaches the DOM through BaseChat's
 // `renderSessionTitle` render prop, so a BaseChat stub that ignores its props
@@ -63,6 +64,33 @@ vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => liveTiers,
 }));
 
+// The THIRD source: a tab whose chat the list leaves out (a delegated
+// subagent's, above all) is read on its own. Left pending unless a test answers
+// it, so the suites above see exactly the two sources they were written about.
+type PendingRead = {
+  sessionId: string;
+  headers: unknown;
+  resolve: (row: { id: string; name: string; privacy_tier?: string }) => void;
+  reject: (error: unknown) => void;
+};
+let reads: PendingRead[] = [];
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api')>()),
+  getSession: (options: { path: { session_id: string }; headers?: unknown }) =>
+    new Promise((resolve, reject) => {
+      reads.push({
+        sessionId: options.path.session_id,
+        headers: options.headers,
+        resolve: (row) => resolve({ data: row }),
+        reject,
+      });
+    }),
+}));
+vi.mock('../../utils/userAction', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/userAction')>()),
+  userActionHeaders: async () => ({ 'X-User-Action': 'proof-of-user' }),
+}));
+
 vi.mock('../../contexts/ChatGroupsContext', () => ({
   useChatGroups: () => ({
     dispatch,
@@ -73,7 +101,7 @@ vi.mock('../../contexts/ChatGroupsContext', () => ({
         g1: {
           id: 'g1',
           activeTabId: 't1',
-          tabs: [{ tabId: 't1', sessionId: 'sess-1', title: 'Chat', userSetName: false }],
+          tabs: [{ tabId: 't1', sessionId: 'sess-1', title: 'Chat', userSetName: tabNamedByUser }],
         },
       },
     },
@@ -90,6 +118,7 @@ describe('ChatGroupsShell — the strip warms the list it reads', () => {
     cachedList = null;
     liveTiers = {};
     lastStripProps = {};
+    reads = [];
   });
 
   it('asks the cache to populate itself on mount, rather than assuming another screen did', () => {
@@ -171,5 +200,94 @@ describe('ChatGroupsShell — the tab dot follows the live store, not just the l
     liveTiers = {};
     render(<ChatGroupsShell onChatChange={() => {}} />);
     expect(lastStripProps.privacyTiers).toEqual({});
+  });
+});
+
+/**
+ * A delegated subagent of a PRIVATE chat is private, and its tab drew no padlock.
+ *
+ * Measured 2026-09-13 on `main` @ 35757426 alongside the "New chat" title: a
+ * Versa GPT-5.5 chat delegated one task, sqlite recorded the child
+ * `sub_agent` / `privacy_tier=private`, and after a reload the child's
+ * background tab rendered `data-privacy="public"` — the plain glyph. Neither
+ * source above could know: the list is `include_subagents=false`, and no chat
+ * store exists for a tab this window has not opened.
+ *
+ * The same single-row read that names that tab reports its tier, folded in with
+ * `max` like the other two.
+ */
+describe('ChatGroupsShell — a tab the list leaves out is marked from its own row', () => {
+  async function flush() {
+    await act(async () => {
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    });
+  }
+
+  beforeEach(() => {
+    reads = [];
+    liveTiers = {};
+    lastStripProps = {};
+    tabNamedByUser = false;
+    dispatch.mockClear();
+    // The list is loaded, and does not carry this tab's chat.
+    cachedList = [{ id: 'someone-else', privacy_tier: 'public' }];
+  });
+
+  it("marks a private chat the list leaves out, from the chat's own row", async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+
+    expect(reads.map((read) => read.sessionId)).toEqual(['sess-1']);
+    expect(reads[0].headers).toEqual({ 'X-User-Action': 'proof-of-user' });
+    reads[0].resolve({ id: 'sess-1', name: 'Chat', privacy_tier: 'private' });
+    await flush();
+
+    expect(lastStripProps.privacyTiers).toEqual({
+      'someone-else': 'public',
+      'sess-1': 'private',
+    });
+  });
+
+  /**
+   * Measured on this branch before it was so: a private subagent's tab the user
+   * had renamed kept its name — correctly — and drew `data-privacy="public"`,
+   * because the read skipped user-named tabs along with their names.
+   */
+  it('marks a tab the user named, too: only its name is theirs', async () => {
+    tabNamedByUser = true;
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+
+    expect(reads.map((read) => read.sessionId)).toEqual(['sess-1']);
+    reads[0].resolve({ id: 'sess-1', name: 'Subagent: audit', privacy_tier: 'private' });
+    await flush();
+
+    expect(lastStripProps.privacyTiers).toEqual({
+      'someone-else': 'public',
+      'sess-1': 'private',
+    });
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'renameTab' }));
+  });
+
+  it('marks nothing for it when that read is refused', async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    reads[0].reject('That chat is private, or there is no chat with that id.');
+    await flush();
+
+    expect(lastStripProps.privacyTiers).toEqual({ 'someone-else': 'public' });
+  });
+
+  it('never lets a row that reads public lower what the live store has seen', async () => {
+    liveTiers = { 'sess-1': 'private' };
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    reads[0].resolve({ id: 'sess-1', name: 'Chat', privacy_tier: 'public' });
+    await flush();
+
+    expect(lastStripProps.privacyTiers).toEqual({
+      'someone-else': 'public',
+      'sess-1': 'private',
+    });
   });
 });
