@@ -16,6 +16,15 @@
  *   A match counts only if at least half its height and some of its width are
  *   inside every such box, and only that part is painted. Text that is not
  *   rendered (`display: none`, `visibility: hidden`) does not count either.
+ * - **An ellipsis hides what it replaced.** A truncated line (`text-overflow:
+ *   ellipsis`) and the last line of a clamped block do not just clip at the box
+ *   edge: the line truncator stops painting glyphs early to make room for the
+ *   "…", and every glyph it dropped keeps a rect under or before the ellipsis.
+ *   Clipping at the box edge alone counted those, and painted a sliver of a mark
+ *   over the "…" — Settings → Skills, `align`: "alignment-structural" at left
+ *   1114.9 in a box ending at 1120 read as match 7 of 13. See
+ *   {@link trimRectToEllipsis}, whose rule was checked against the pixels
+ *   Chromium paints, not inferred from rects.
  * - **A scroll container does not.** The transcript's own scroller is where the
  *   overlay lives, so a match below the fold counts and is painted in place. An
  *   inner scroller (a code block with `overflow-x: auto`) is the same promise one
@@ -100,6 +109,93 @@ export function clipMatchRect(
 }
 
 /**
+ * Where a left-to-right line's ellipsis leaves off painting glyphs: its end
+ * edge, moved left by the width of the "…".
+ *
+ * Left-to-right only, deliberately. In a right-to-left block the truncator
+ * drops glyphs from the LOGICAL end, which is the visual right of a Latin run
+ * and the visual left of a Hebrew one, so no single edge describes it. Such a
+ * block gets no ellipsis model at all and falls back to the overflow clip,
+ * which can paint a stray mark but never hides a real one.
+ */
+export interface EllipsisCut {
+  at: number;
+}
+
+/**
+ * Slack between a glyph edge and the cut. Chromium lays out in 1/64px units and
+ * the ellipsis width is measured here on a canvas. In the app the last painted
+ * glyph ended 0.47px or more before the cut and the first dropped one 2.4px or
+ * more after it, so this only absorbs rounding.
+ */
+export const ELLIPSIS_EPSILON_PX = 0.02;
+
+/** A glyph's horizontal extent. */
+export interface GlyphSpan {
+  left: number;
+  right: number;
+}
+
+/** Whether the line truncator kept (and so painted) this glyph. */
+export function glyphPaintedBeforeEllipsis(glyph: GlyphSpan, cut: EllipsisCut): boolean {
+  return glyph.right <= cut.at + ELLIPSIS_EPSILON_PX;
+}
+
+/**
+ * The part of one match rect an ellipsized line still paints, or `null` when
+ * the ellipsis took all of it.
+ *
+ * ⚠ **Whole glyphs, not pixels.** The line truncator keeps the longest run of
+ * glyphs that fits in the line minus the ellipsis's width — a glyph is painted
+ * exactly when its end edge is at or before `lineEnd − width("…")` — and then
+ * places the "…" right after the last glyph it kept. So the "…" can start
+ * several pixels before the box edge, and a glyph wholly inside the box can
+ * still be gone: the hyphen of "receiving-code-review" at x 1071–1075 sat under
+ * an ellipsis in a box ending at 1084. Clipping the rect at a pixel would have
+ * painted that hyphen; asking each glyph does not.
+ *
+ * `glyphs` are the match's glyph rects on this rect's line. What stays runs from
+ * the rect's start edge to the far edge of the last glyph the truncator kept.
+ * Call this only for a line that really carries an ellipsis: on a line that
+ * fits, the last few glyphs before the edge are painted.
+ */
+export function trimRectToEllipsis(
+  rect: ViewportRect,
+  glyphs: readonly GlyphSpan[],
+  cut: EllipsisCut
+): ViewportRect | null {
+  if (glyphPaintedBeforeEllipsis(rect, cut)) return rect;
+  const kept = glyphs.filter((glyph) => glyphPaintedBeforeEllipsis(glyph, cut));
+  if (kept.length === 0) return null;
+  const right = Math.min(rect.right, Math.max(...kept.map((glyph) => glyph.right)));
+  return right > rect.left ? { ...rect, right } : null;
+}
+
+/** Half a CSS pixel: bounding rects are fractional. */
+const SAME_RECT_PX = 0.5;
+
+/**
+ * `rects` with near-duplicates removed. A truncated line keeps the glyphs it
+ * shows as a second fragment beside the original one, so a match on it reports
+ * the same rect twice — and was painted twice, reading darker than every other
+ * mark on the page.
+ */
+export function withoutDuplicateRects<T extends ViewportRect>(rects: readonly T[]): T[] {
+  const kept: T[] = [];
+  for (const rect of rects) {
+    const duplicate = kept.some(
+      (other) =>
+        Math.abs(other.left - rect.left) < SAME_RECT_PX &&
+        Math.abs(other.right - rect.right) < SAME_RECT_PX &&
+        Math.abs(other.top - rect.top) < SAME_RECT_PX &&
+        Math.abs(other.bottom - rect.bottom) < SAME_RECT_PX
+    );
+    if (!duplicate) kept.push(rect);
+  }
+  return kept;
+}
+
+/**
  * Displays on which `overflow` does nothing: it applies to block, flex and
  * grid containers, and an inline box's rect is the union of its lines, not a
  * clip. Skipping a box that does clip only paints a stray mark; treating a box
@@ -119,6 +215,27 @@ const NON_CLIPPING_DISPLAYS = new Set([
   'table-column-group',
 ]);
 
+/** Displays whose box does not own the lines of the text inside it. */
+const INLINE_DISPLAYS = new Set(['inline', 'contents']);
+
+/**
+ * Block containers: the boxes that lay text out in line boxes of their own, and
+ * so the only ones a `text-overflow` or a line clamp can put an ellipsis on.
+ * Text directly in a flex or grid container is wrapped in an anonymous item,
+ * which does not inherit `text-overflow` — so a `truncate` on a flex row clips
+ * but never ellipsizes, and is left to the overflow rule.
+ */
+const BLOCK_CONTAINER_DISPLAYS = new Set([
+  'block',
+  'inline-block',
+  'flow-root',
+  'list-item',
+  'table-cell',
+  'table-caption',
+  '-webkit-box',
+  '-webkit-inline-box',
+]);
+
 function overflowMode(value: string): OverflowMode {
   if (value === 'visible') return 'visible';
   return value === 'auto' || value === 'scroll' || value === 'overlay' ? 'scrolls' : 'hides';
@@ -132,10 +249,46 @@ function paddingBoxOf(element: Element): ViewportRect {
   return { left, top, right: left + element.clientWidth, bottom: top + element.clientHeight };
 }
 
+/**
+ * The content box: the edges line boxes are laid out between.
+ *
+ * ⚠ **From the fractional border box, not `clientWidth`.** `clientWidth` is
+ * rounded to a whole pixel, and the truncator cuts against the real width: in
+ * the app the last glyph it kept ended 0.47px before the cut, so a rounded edge
+ * can move the cut past it. Only the scrollbar gutter is taken from the rounded
+ * sizes, and a box an ellipsis can sit in usually has none.
+ */
+function contentBoxOf(element: Element, style: CSSStyleDeclaration): ViewportRect {
+  const box = element.getBoundingClientRect();
+  const px = (value: string) => parseFloat(value) || 0;
+  const borderLeft = px(style.borderLeftWidth);
+  const borderRight = px(style.borderRightWidth);
+  const borderTop = px(style.borderTopWidth);
+  const borderBottom = px(style.borderBottomWidth);
+  const html = element as HTMLElement;
+  const gutter = (outer: number, inner: number, borders: number) =>
+    typeof outer === 'number' && outer - inner - borders >= 1 ? outer - inner - borders : 0;
+  return {
+    left: box.left + borderLeft + px(style.paddingLeft),
+    top: box.top + borderTop + px(style.paddingTop),
+    right:
+      box.right -
+      borderRight -
+      gutter(html.offsetWidth, element.clientWidth, borderLeft + borderRight) -
+      px(style.paddingRight),
+    bottom:
+      box.bottom -
+      borderBottom -
+      gutter(html.offsetHeight, element.clientHeight, borderTop + borderBottom) -
+      px(style.paddingBottom),
+  };
+}
+
 interface ElementLayout {
   position: string;
   rendered: boolean;
   clip: ClipBox | null;
+  style: CSSStyleDeclaration;
 }
 
 type LayoutCache = Map<Element, ElementLayout>;
@@ -155,6 +308,7 @@ function layoutOf(element: Element, cache: LayoutCache): ElementLayout {
     position: style.position,
     rendered: style.visibility === 'visible',
     clip,
+    style,
   };
   cache.set(element, layout);
   return layout;
@@ -196,6 +350,148 @@ function clipChainOf(start: Element, host: Element, cache: LayoutCache): ClipCha
     if (layout.position === 'absolute') escapingToPositioned = true;
   }
   return { clips, scrollers };
+}
+
+/** The lines one block container lays out, and the ellipses it may draw on them. */
+interface LineBlock {
+  element: Element;
+  content: ViewportRect;
+  cut: EllipsisCut;
+  /** `text-overflow: ellipsis` with a clipping `overflow-x`: any line that overflows gets one. */
+  ellipsizesOverflow: boolean;
+  /**
+   * A clamp that cut content off: its last shown line gets an ellipsis whether
+   * or not that line overflows. `lastLineBottom` is the clamp box's content
+   * bottom, which that line ends at.
+   */
+  clampedLastLineBottom: number | null;
+  /** Per line (keyed by its rounded middle): does its content run past the end edge? */
+  overflowByLine: Map<number, boolean>;
+}
+
+let ellipsisCanvas: CanvasRenderingContext2D | null | undefined;
+const ellipsisWidths = new Map<string, number>();
+
+/**
+ * The advance of "…" in `style`'s font — the space the truncator reserves.
+ * `null` where nothing can measure it (jsdom has no canvas), in which case no
+ * ellipsis is modelled and matches are left to the overflow rule.
+ */
+function ellipsisWidthIn(style: CSSStyleDeclaration): number | null {
+  const font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const cached = ellipsisWidths.get(font);
+  if (cached !== undefined) return cached;
+  if (ellipsisCanvas === undefined) {
+    try {
+      ellipsisCanvas =
+        typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)
+          ? null
+          : (document.createElement('canvas').getContext('2d') ?? null);
+    } catch {
+      ellipsisCanvas = null;
+    }
+  }
+  if (!ellipsisCanvas) return null;
+  ellipsisCanvas.font = font;
+  const width = ellipsisCanvas.measureText('…').width;
+  ellipsisWidths.set(font, width);
+  return width;
+}
+
+const lineClampOf = (style: CSSStyleDeclaration): boolean => {
+  const value = style.webkitLineClamp || style.getPropertyValue('line-clamp');
+  return Boolean(value) && value !== 'none';
+};
+
+/**
+ * The block container whose line boxes hold `start`'s text, if it can draw an
+ * ellipsis on them. `null` for text whose lines can carry none.
+ */
+function lineBlockOf(start: Element, host: Element, cache: LayoutCache): LineBlock | null {
+  let el: Element | null = start;
+  while (el && el !== host && INLINE_DISPLAYS.has(layoutOf(el, cache).style.display)) {
+    el = el.parentElement;
+  }
+  if (!el || el === host) return null;
+  const { style } = layoutOf(el, cache);
+  if (!BLOCK_CONTAINER_DISPLAYS.has(style.display) || style.direction !== 'ltr') return null;
+
+  const ellipsizesOverflow = style.textOverflow === 'ellipsis' && style.overflowX !== 'visible';
+
+  // A clamp counts lines through nested blocks, so it may sit further up.
+  let clampedLastLineBottom: number | null = null;
+  for (let up: Element | null = el; up && up !== host; up = up.parentElement) {
+    const upStyle = layoutOf(up, cache).style;
+    if (!lineClampOf(upStyle)) continue;
+    // No ellipsis unless the clamp actually cut something off.
+    if (up.scrollHeight > up.clientHeight + 1) {
+      clampedLastLineBottom = contentBoxOf(up, upStyle).bottom;
+    }
+    break;
+  }
+  if (!ellipsizesOverflow && clampedLastLineBottom === null) return null;
+
+  const width = ellipsisWidthIn(style);
+  if (width === null) return null;
+  const content = contentBoxOf(el, style);
+  return {
+    element: el,
+    content,
+    cut: { at: content.right - width },
+    ellipsizesOverflow,
+    clampedLastLineBottom,
+    overflowByLine: new Map(),
+  };
+}
+
+/** Whether the line through `rect` ends in an ellipsis. */
+function lineCarriesEllipsis(block: LineBlock, rect: ViewportRect): boolean {
+  const height = rect.bottom - rect.top;
+  const last = block.clampedLastLineBottom;
+  // The clamp's last shown line ends at the box's content bottom; a line whose
+  // lower half reaches it is that line (the one above ends a whole line higher).
+  if (last !== null && rect.top < last && rect.bottom + height / 2 > last) {
+    return true;
+  }
+  if (!block.ellipsizesOverflow) return false;
+
+  const middle = (rect.top + rect.bottom) / 2;
+  const key = Math.round(middle);
+  const known = block.overflowByLine.get(key);
+  if (known !== undefined) return known;
+
+  // A truncated line's content keeps its untruncated rects, so the line
+  // overflows exactly when one of them runs past the end edge.
+  const range = document.createRange();
+  range.selectNodeContents(block.element);
+  let overflows = false;
+  for (const line of Array.from(range.getClientRects())) {
+    if (line.top > middle || line.bottom < middle) continue;
+    if (line.right > block.content.right + SAME_RECT_PX) {
+      overflows = true;
+      break;
+    }
+  }
+  block.overflowByLine.set(key, overflows);
+  return overflows;
+}
+
+/** The rects of the glyphs in `node[start, end)` whose middle is on `rect`'s line. */
+function glyphsOnLine(node: Text, start: number, end: number, rect: ViewportRect): GlyphSpan[] {
+  const range = document.createRange();
+  const glyphs: GlyphSpan[] = [];
+  for (let offset = start; offset < end; ) {
+    const length = (node.data.codePointAt(offset) ?? 0) > 0xffff ? 2 : 1;
+    range.setStart(node, offset);
+    range.setEnd(node, Math.min(offset + length, end));
+    const glyph = range.getBoundingClientRect();
+    const middle = (glyph.top + glyph.bottom) / 2;
+    if (glyph.width > 0 && middle >= rect.top && middle <= rect.bottom) {
+      glyphs.push({ left: glyph.left, right: glyph.right });
+    }
+    offset += length;
+  }
+  return glyphs;
 }
 
 interface MatchRecord {
@@ -372,6 +668,7 @@ export class SearchHighlighter {
     const originLeft = hostRect.left + host.clientLeft - host.scrollLeft;
     const originTop = hostRect.top + host.clientTop - host.scrollTop;
     const layouts: LayoutCache = new Map();
+    const lineBlocks = new Map<Element, LineBlock | null>();
 
     const measured: { record: MatchRecord; paint: ViewportRect[] }[] = [];
     for (const hit of hits) {
@@ -381,16 +678,42 @@ export class SearchHighlighter {
       range.setStart(hit.node, hit.startOffset);
       range.setEnd(hit.node, hit.endOffset);
       const { clips, scrollers } = clipChainOf(parent, host, layouts);
+      if (!lineBlocks.has(parent)) lineBlocks.set(parent, lineBlockOf(parent, host, layouts));
+      const lineBlock = lineBlocks.get(parent) ?? null;
 
       let counts = false;
       const paint: ViewportRect[] = [];
-      for (const rect of Array.from(range.getClientRects())) {
-        const verdict = clipMatchRect(rect, clips);
+      // ⚠ Copied out of the DOMRects: their edges are prototype getters, so
+      // `{ ...domRect, right }` is `{ right }` and every other edge is lost.
+      const rects = Array.from(range.getClientRects(), ({ left, top, right, bottom }) => ({
+        left,
+        top,
+        right,
+        bottom,
+      }));
+      for (const rect of withoutDuplicateRects(rects)) {
+        let shown: ViewportRect | null = rect;
+        // Cheap test first: a rect wholly before the cut is painted whether or
+        // not its line was truncated.
+        if (
+          lineBlock &&
+          !glyphPaintedBeforeEllipsis(rect, lineBlock.cut) &&
+          lineCarriesEllipsis(lineBlock, rect)
+        ) {
+          shown = trimRectToEllipsis(
+            rect,
+            glyphsOnLine(hit.node, hit.startOffset, hit.endOffset, rect),
+            lineBlock.cut
+          );
+        }
+        if (!shown) continue;
+        const verdict = clipMatchRect(shown, clips);
         if (!verdict.counts) continue;
         counts = true;
         if (verdict.paint) paint.push(verdict.paint);
       }
-      if (counts) measured.push({ record: { ...hit, scrollers }, paint });
+      if (counts)
+        measured.push({ record: { ...hit, scrollers }, paint: withoutDuplicateRects(paint) });
     }
 
     this.matches = measured.map(({ record }) => record);

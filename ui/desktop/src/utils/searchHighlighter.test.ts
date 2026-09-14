@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clipMatchRect, SearchHighlighter, type ClipBox } from './searchHighlighter';
+import {
+  clipMatchRect,
+  glyphPaintedBeforeEllipsis,
+  SearchHighlighter,
+  trimRectToEllipsis,
+  withoutDuplicateRects,
+  type ClipBox,
+} from './searchHighlighter';
 
 class ResizeObserverStub {
   observe = vi.fn();
@@ -144,5 +151,64 @@ describe('clipMatchRect', () => {
 
   it('never counts an empty rect', () => {
     expect(clipMatchRect({ left: 5, top: 5, right: 5, bottom: 19 }, []).counts).toBe(false);
+  });
+});
+
+/// The ellipsis rule, with the numbers the tester and the app measured. Whether
+/// Chromium really paints this way is pinned against screen pixels in
+/// `searchHighlighter.browser.test.ts`; this pins the arithmetic.
+describe('trimRectToEllipsis', () => {
+  // Settings → Skills, a 12px component line whose box ends at 1120: the "…" is
+  // 12px wide, so the truncator keeps glyphs ending at or before 1108.
+  const cut = { at: 1108 };
+  const glyphsOf = (left: number, widths: number[]) =>
+    widths.map((width, i) => {
+      const start = left + widths.slice(0, i).reduce((sum, w) => sum + w, 0);
+      return { left: start, right: start + width };
+    });
+
+  it('keeps a rect wholly before the cut as it is', () => {
+    const rect = { left: 1004.1, top: 362, right: 1029.5, bottom: 377 };
+    expect(trimRectToEllipsis(rect, [], cut)).toBe(rect);
+  });
+
+  /// "alignment-structural" at left 1114.9: its sliver inside the box is under
+  /// the "…", so nothing of it is painted.
+  it('drops a match that starts after the cut, even inside the box', () => {
+    const rect = { left: 1114.9, top: 362, right: 1140.3, bottom: 377 };
+    expect(trimRectToEllipsis(rect, glyphsOf(1114.9, [6.7, 2.7, 2.7, 6.7, 6.7]), cut)).toBeNull();
+  });
+
+  /// The hyphen of "receiving-code-review", wholly inside a box ending at 1084.
+  /// A pixel clip at the cut would keep 1071 → 1072; the glyph is not painted.
+  it('drops a glyph that straddles the cut rather than keeping its left part', () => {
+    const hyphen = { left: 1071, top: 0, right: 1075, bottom: 14 };
+    expect(trimRectToEllipsis(hyphen, [{ left: 1071, right: 1075 }], { at: 1072 })).toBeNull();
+  });
+
+  it('keeps a cut-through match up to the end of its last painted glyph', () => {
+    const glyphs = glyphsOf(1090, [6, 6, 6, 6]); // rights 1096, 1102, 1108, 1114
+    const rect = { left: 1090, top: 0, right: 1114, bottom: 14 };
+    expect(trimRectToEllipsis(rect, glyphs, cut)).toEqual({ ...rect, right: 1108 });
+  });
+
+  it('keeps a glyph that ends exactly at the cut', () => {
+    expect(glyphPaintedBeforeEllipsis({ left: 1100, right: 1108 }, cut)).toBe(true);
+    expect(glyphPaintedBeforeEllipsis({ left: 1100, right: 1108.1 }, cut)).toBe(false);
+  });
+});
+
+describe('withoutDuplicateRects', () => {
+  /// A truncated line reports each painted match twice — the original fragment
+  /// and the truncated copy — and both used to get a mark.
+  it('keeps one of two rects a truncated line reports for the same glyphs', () => {
+    const rect = { left: 548, top: 362, right: 573.4, bottom: 377 };
+    expect(withoutDuplicateRects([rect, { ...rect, right: 573.45 }])).toEqual([rect]);
+  });
+
+  it('keeps the two lines of a match that wraps', () => {
+    const first = { left: 300, top: 20, right: 330, bottom: 34 };
+    const second = { left: 0, top: 36, right: 20, bottom: 50 };
+    expect(withoutDuplicateRects([first, second])).toEqual([first, second]);
   });
 });

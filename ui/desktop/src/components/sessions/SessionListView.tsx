@@ -29,7 +29,6 @@ import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
 import { SearchView } from '../conversation/SearchView';
-import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
 import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
@@ -234,10 +233,6 @@ function useDebounce<T>(value: T, delay: number): T {
   }, [value, delay]);
 
   return debouncedValue;
-}
-
-interface SearchContainerElement extends HTMLDivElement {
-  _searchHighlighter: SearchHighlighter | null;
 }
 
 interface SessionListViewProps {
@@ -773,8 +768,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const [caseSensitive, setCaseSensitive] = useState(false);
   const debouncedSearchTerm = useDebounce(searchTerm, 300); // 300ms debounce
 
-  const containerRef = useRef<HTMLDivElement>(null);
-
   const visibleDateGroups = useMemo(() => {
     let remainingSessions = visibleSessionCount;
 
@@ -953,29 +946,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     setSearchTerm(term);
     setCaseSensitive(caseSensitive);
   }, []);
-
-  // Handle search result navigation
-  const handleSearchNavigation = (direction: 'next' | 'prev') => {
-    if (!searchResults || filteredSessions.length === 0) return;
-
-    let newIndex: number;
-    if (direction === 'next') {
-      newIndex = (searchResults.currentIndex % filteredSessions.length) + 1;
-    } else {
-      newIndex =
-        searchResults.currentIndex === 1 ? filteredSessions.length : searchResults.currentIndex - 1;
-    }
-
-    setSearchResults({ ...searchResults, currentIndex: newIndex });
-
-    // Find the SearchView's container element
-    const searchContainer =
-      containerRef.current?.querySelector<SearchContainerElement>('.search-container');
-    if (searchContainer?._searchHighlighter) {
-      // Update the current match in the highlighter
-      searchContainer._searchHighlighter.setCurrentMatch(newIndex - 1, true);
-    }
-  };
 
   // Handle modal close
   const handleModalClose = useCallback(() => {
@@ -1332,11 +1302,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
               paddingX={1}
               data-search-scroll-area
             >
-              <div ref={containerRef} className="h-full relative">
+              <div className="h-full relative">
+                {/* ⚠ No `searchResults` or `onNavigate` here. They used to be the
+                    number of chats the filter kept and a step through THAT
+                    list, handed to a bar whose marks are the highlighter's —
+                    so `Desktop` read 1/1039 over 996 marks, and each step
+                    called `setCurrentMatch(chatIndex)`, landing on whatever
+                    mark shared the chat's position. The counter and ⌘G belong
+                    to what is painted; SearchView owns both. */}
                 <SearchView
                   onSearch={handleSearch}
-                  onNavigate={handleSearchNavigation}
-                  searchResults={searchResults}
                   className="relative"
                   placeholder="Search history..."
                 >

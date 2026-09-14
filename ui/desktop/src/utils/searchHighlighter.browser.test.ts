@@ -352,4 +352,295 @@ describe('SearchHighlighter in a real layout engine', () => {
       }
     );
   });
+  // ---------------------------------------------------------------------------
+  // Ellipses. The rule is judged against the PIXELS Chromium paints, not
+  // against rects: a glyph the line truncator dropped keeps a perfectly good
+  // client rect, and a caret placed on it lands in the hidden text, so every
+  // rect- or caret-based instrument agrees with a wrong answer. The text is
+  // blue and its block is red, so the "…" (painted in the block's colour) never
+  // reads as a glyph, and a glyph is painted exactly when blue ink sits inside
+  // its own rect.
+  // ---------------------------------------------------------------------------
+
+  interface HitTruth {
+    /** First glyph's left edge. */
+    left: number;
+    /** Right edge of the last glyph with ink, or null when none has any. */
+    paintedRight: number | null;
+    glyphs: number;
+    painted: number;
+    /** Whether any glyph's rect starts inside `#clip`'s box. */
+    startsInsideBox: boolean;
+  }
+
+  /** Every occurrence of `term` in `#clip`, with which of its glyphs have ink on screen. */
+  const paintedHits = async (page: Page, term: string): Promise<HitTruth[]> => {
+    const shot = await page.screenshot({ type: 'png' });
+    return page.evaluate(
+      async ({ b64, searchTerm }) => {
+        const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
+        const bitmap = await createImageBitmap(blob);
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = canvas.getContext('2d')!;
+        context.drawImage(bitmap, 0, 0);
+        const { data, width } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+        const blueInk = (x: number, y: number) => {
+          const i = (y * width + x) * 4;
+          const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+          return b > 110 && r < 140 && g < 140 && b - r > 60;
+        };
+
+        const clip = document.getElementById('clip')!;
+        const box = clip.getBoundingClientRect();
+        const hits: HitTruth[] = [];
+        const walker = document.createTreeWalker(clip, NodeFilter.SHOW_TEXT);
+        const range = document.createRange();
+        let node: Text | null;
+        while ((node = walker.nextNode() as Text | null)) {
+          let at = node.data.indexOf(searchTerm);
+          while (at !== -1) {
+            let painted = 0;
+            let paintedRight: number | null = null;
+            let left = Infinity;
+            let startsInsideBox = false;
+            for (let i = at; i < at + searchTerm.length; i++) {
+              range.setStart(node, i);
+              range.setEnd(node, i + 1);
+              const glyph = range.getBoundingClientRect();
+              left = Math.min(left, glyph.left);
+              if (glyph.left < box.right) startsInsideBox = true;
+              let ink = 0;
+              for (let x = Math.ceil(glyph.left + 0.5); x < Math.floor(glyph.right - 0.5); x++) {
+                for (let y = Math.ceil(glyph.top); y < Math.floor(glyph.bottom); y++) {
+                  if (x >= 0 && x < width && blueInk(x, y)) ink++;
+                }
+              }
+              if (ink >= 2) {
+                painted++;
+                paintedRight = glyph.right;
+              }
+            }
+            hits.push({ left, paintedRight, glyphs: searchTerm.length, painted, startsInsideBox });
+            at = node.data.indexOf(searchTerm, at + searchTerm.length);
+          }
+        }
+        return hits;
+      },
+      { b64: shot.toString('base64'), searchTerm: term }
+    );
+  };
+
+  /** Highlight `term` over `#content`; one entry per counted match, holding its marks. */
+  const countedMarks = (page: Page, term: string): Promise<Box[][]> =>
+    page.evaluate((searchTerm) => {
+      const w = window as unknown as {
+        SearchHighlighter: new (el: HTMLElement) => PageHighlighter & { destroy(): void };
+        __highlighter?: PageHighlighter & { destroy(): void };
+      };
+      w.__highlighter?.destroy();
+      const highlighter = new w.SearchHighlighter(document.getElementById('content')!);
+      w.__highlighter = highlighter;
+      return highlighter.highlight(searchTerm).map((container) =>
+        [...container.querySelectorAll('.search-highlight')].map((mark) => {
+          const r = mark.getBoundingClientRect();
+          return {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+            width: r.width,
+            height: r.height,
+          };
+        })
+      );
+    }, term);
+
+  /**
+   * The counter and the marks agree with the screen: a match counts exactly
+   * when a glyph of it is painted, gets ONE mark, and that mark ends where the
+   * last painted glyph does.
+   */
+  const expectMarksMatchPixels = (counted: Box[][], truth: HitTruth[]) => {
+    const visible = truth.filter((hit) => hit.painted > 0);
+    // The counter: one per match with a painted glyph, and no others.
+    expect(counted).toHaveLength(visible.length);
+    // Where each is painted: from its first glyph to its last PAINTED glyph.
+    visible.forEach((hit, index) => {
+      const marks = counted[index];
+      expect(marks.length).toBeGreaterThan(0);
+      expect(Math.abs(Math.min(...marks.map((mark) => mark.left)) - hit.left)).toBeLessThan(0.75);
+      expect(
+        Math.abs(Math.max(...marks.map((mark) => mark.right)) - hit.paintedRight!)
+      ).toBeLessThan(0.75);
+    });
+    // Once: a truncated line reports a painted match's rect twice, and two
+    // marks on one word paint it darker than every other.
+    expect(counted.map((marks) => marks.length)).toEqual(visible.map(() => 1));
+  };
+
+  const RED_BLOCK = 'color:#ff0000; margin:0';
+  const BLUE = 'color:#0000ff';
+  const TRUNCATE = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap';
+
+  /** The advance of "…" in `#clip`'s font: the room the truncator makes. */
+  const ellipsisWidth = (page: Page) =>
+    page.evaluate(() => {
+      const style = getComputedStyle(document.getElementById('clip')!);
+      const context = document.createElement('canvas').getContext('2d')!;
+      context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      return context.measureText('\u2026').width;
+    });
+
+  /**
+   * Resize `#clip` (no padding or border) so its content edge sits `edgePx`
+   * right of the LEFT edge of glyph `glyph` in occurrence `occurrence` of
+   * `term`. Measured with the box wide enough that nothing is truncated; a
+   * `nowrap` line's glyph positions do not depend on the box width.
+   */
+  const placeEdge = (page: Page, term: string, occurrence: number, glyph: number, edgePx: number) =>
+    page.evaluate(
+      ({ term: t, occurrence: o, glyph: g, edgePx: e }) => {
+        const clip = document.getElementById('clip')!;
+        clip.style.width = '2000px';
+        const node = clip.querySelector('span')!.firstChild as Text;
+        let at = -1;
+        for (let i = 0; i <= o; i++) at = node.data.indexOf(t, at + 1);
+        const range = document.createRange();
+        range.setStart(node, at + g);
+        range.setEnd(node, at + g + 1);
+        const { left, right } = range.getBoundingClientRect();
+        clip.style.width = `${left + e - clip.getBoundingClientRect().left}px`;
+        return { left, right };
+      },
+      { term, occurrence, glyph, edgePx }
+    );
+
+  /// The defect as the tester measured it: a match starting 5px before the edge
+  /// of a truncated line counted, and its 5px sliver was painted over the "…".
+  /// And the hyphen that sat wholly inside the box, under the ellipsis.
+  it('does not count or paint a match a truncated line hid under its ellipsis', async (ctx) => {
+    if (!browser) return ctx.skip();
+    await withPage(
+      `<div id="clip" style="${RED_BLOCK}; ${TRUNCATE}"><span style="${BLUE}">` +
+        `alignment-io alignment-msa receiving-code-review alignment-pairwise</span></div>`,
+      async (page) => {
+        // The cut 2px into the second hyphen of "receiving-code-review" — the
+        // tester's shape, where a pixel clip keeps a sliver of it. The hyphen
+        // and the "review" after it are both inside the box, under the "…".
+        const ellipsis = await ellipsisWidth(page);
+        await placeEdge(page, 'receiving-code-review', 0, 14, 2 + ellipsis);
+
+        const hyphens = await paintedHits(page, '-');
+        const underEllipsis = hyphens.filter((hit) => hit.startsInsideBox && hit.painted === 0);
+        // The scenario is real, or this test measures nothing.
+        expect(underEllipsis.length).toBeGreaterThan(0);
+        expect(hyphens.some((hit) => hit.painted > 0)).toBe(true);
+        expectMarksMatchPixels(await countedMarks(page, '-'), hyphens);
+
+        const review = await paintedHits(page, 'review');
+        expect(review).toHaveLength(1);
+        expect(review[0].startsInsideBox).toBe(true);
+        expect(review[0].painted).toBe(0);
+        expectMarksMatchPixels(await countedMarks(page, 'review'), review);
+      }
+    );
+  });
+
+  it('counts a match the ellipsis cuts through, and paints only its painted glyphs', async (ctx) => {
+    if (!browser) return ctx.skip();
+    await withPage(
+      `<div id="clip" style="${RED_BLOCK}; ${TRUNCATE}">` +
+        `<span style="${BLUE}">wombat wombat wombat wombat wombat wombat</span></div>`,
+      async (page) => {
+        // The cut 2px into glyph 3 ("b") of the third wombat: glyphs 0-2 are
+        // kept, and a pixel clip would paint 2px of the "b" as well.
+        await placeEdge(page, 'wombat', 2, 3, 2 + (await ellipsisWidth(page)));
+
+        const truth = await paintedHits(page, 'wombat');
+        const cutThrough = truth.filter((hit) => hit.painted > 0 && hit.painted < hit.glyphs);
+        expect(cutThrough).toHaveLength(1);
+        expectMarksMatchPixels(await countedMarks(page, 'wombat'), truth);
+      }
+    );
+  });
+
+  /// A clamp puts its "…" on the last line it shows and drops that line's final
+  /// glyphs to make room — even though the line itself fits the box.
+  it('does not count glyphs a line clamp dropped for its ellipsis', async (ctx) => {
+    if (!browser) return ctx.skip();
+    await withPage(
+      `<div id="clip" style="${RED_BLOCK}; overflow:hidden; display:-webkit-box; ` +
+        `-webkit-box-orient:vertical; -webkit-line-clamp:1">` +
+        `<span style="${BLUE}">${'wombat '.repeat(30)}</span></div>`,
+      async (page) => {
+        // Find a width whose first line ends in a wombat the ellipsis cuts through.
+        const width = await page.evaluate(() => {
+          const clip = document.getElementById('clip')!;
+          const node = clip.querySelector('span')!.firstChild as Text;
+          const style = getComputedStyle(clip);
+          const context = document.createElement('canvas').getContext('2d')!;
+          context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          const ellipsis = context.measureText('…').width;
+          const range = document.createRange();
+          const glyph = (i: number) => {
+            range.setStart(node, i);
+            range.setEnd(node, i + 1);
+            return range.getBoundingClientRect();
+          };
+          for (let w = 120; w < 400; w++) {
+            clip.style.width = `${w}px`;
+            const cut = clip.getBoundingClientRect().left + clip.clientWidth - ellipsis;
+            const firstTop = glyph(0).top;
+            let last = -1;
+            for (
+              let at = 0;
+              at !== -1 && glyph(at).top === firstTop;
+              at = node.data.indexOf('wombat', at + 1)
+            ) {
+              last = at;
+            }
+            const rights = [0, 1, 2, 3, 4, 5].map((i) => glyph(last + i).right);
+            if (rights.some((r) => r <= cut - 0.5) && rights.some((r) => r > cut + 0.5)) return w;
+          }
+          return null;
+        });
+        expect(width).not.toBeNull();
+
+        const truth = await paintedHits(page, 'wombat');
+        expect(truth.some((hit) => hit.painted > 0 && hit.painted < hit.glyphs)).toBe(true);
+        expectMarksMatchPixels(await countedMarks(page, 'wombat'), truth);
+      }
+    );
+  });
+
+  /// The guard against over-hiding: without an overflow (or a clamp that cut
+  /// something), there is no ellipsis, and the last glyphs before the edge are
+  /// painted — so a match ending within an ellipsis's width of it counts whole.
+  it('counts a match near the edge of a line that has no ellipsis', async (ctx) => {
+    if (!browser) return ctx.skip();
+    await withPage(
+      `<div id="clip" style="${RED_BLOCK}; ${TRUNCATE}"><span style="${BLUE}">a small wombat</span></div>`,
+      async (page) => {
+        // Its last glyph ends 2px before the edge: inside an ellipsis's width.
+        const last = await placeEdge(page, 'wombat', 0, 5, 0);
+        await placeEdge(page, 'wombat', 0, 5, last.right - last.left + 2);
+        const truth = await paintedHits(page, 'wombat');
+        expect(truth).toEqual([expect.objectContaining({ painted: 6 })]);
+        expectMarksMatchPixels(await countedMarks(page, 'wombat'), truth);
+      }
+    );
+    await withPage(
+      `<div id="clip" style="${RED_BLOCK}; overflow:hidden; display:-webkit-box; ` +
+        `-webkit-box-orient:vertical; -webkit-line-clamp:2; white-space:nowrap">` +
+        `<span style="${BLUE}">a small wombat</span></div>`,
+      async (page) => {
+        // Its last glyph ends 2px before the edge: inside an ellipsis's width.
+        const last = await placeEdge(page, 'wombat', 0, 5, 0);
+        await placeEdge(page, 'wombat', 0, 5, last.right - last.left + 2);
+        const truth = await paintedHits(page, 'wombat');
+        expect(truth).toEqual([expect.objectContaining({ painted: 6 })]);
+        expectMarksMatchPixels(await countedMarks(page, 'wombat'), truth);
+      }
+    );
+  });
 });
