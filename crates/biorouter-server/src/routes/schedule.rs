@@ -73,6 +73,21 @@ pub struct SessionDisplayInfo {
     accumulated_output_tokens: Option<i64>,
 }
 
+/// The schedule `id` names, as the scheduler holds it right now — after it has
+/// reconciled with `schedule.json` — or `None`.
+///
+/// Read once, by the route, BEFORE the reach gate and before anything is
+/// changed: the gate decides on this job and the route acts on the same id, so
+/// the decision and the effect are about one schedule.
+async fn named_schedule(state: &AppState, id: &str) -> Option<ScheduledJob> {
+    state
+        .scheduler()
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .find(|job| job.id == id)
+}
+
 #[utoipa::path(
     post,
     path = "/schedule/create",
@@ -80,6 +95,9 @@ pub struct SessionDisplayInfo {
     responses(
         (status = 200, description = "Scheduled job created successfully", body = ScheduledJob),
         (status = 400, description = "Invalid schedule name, cron expression or workflow file", body = ErrorResponse),
+        (status = 403, description = "The new schedule's runs would use a private model, and the \
+                                      request carried neither the user-action proof nor a private \
+                                      capability. Plain text; nothing was created"),
         (status = 409, description = "Job ID already exists", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
@@ -88,9 +106,41 @@ pub struct SessionDisplayInfo {
 #[axum::debug_handler]
 async fn create_schedule(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<CreateScheduleRequest>,
-) -> Result<Json<ScheduledJob>, ErrorResponse> {
+) -> Result<Json<ScheduledJob>, Response> {
     let scheduler = state.scheduler();
+
+    // Issue #56: this made standing, unattended agent work for any holder of
+    // the daemon secret. The job it makes names no chat, so its runs bind the
+    // configured default model — and where that model is private, a run is a
+    // new private-capability chat started with no person present, running a
+    // workflow (and the extensions it names) of the caller's choosing. That is
+    // the bind `POST /agent/start` refuses such a caller (SD-12), so this route
+    // asks the same question of the same caller first. See
+    // `session_reach::schedule_reach`.
+    //
+    // The job the gate is asked about is the job this handler creates, built
+    // from the same request fields, so the answer cannot be about another one.
+    let job = ScheduledJob {
+        id: req.id,
+        source: req.workflow_source,
+        cron: req.cron,
+        last_run: None,
+        currently_running: false,
+        paused: false,
+        current_session_id: None,
+        process_start_time: None,
+        run_count: 0,
+        max_runs: None,
+        // `POST /schedule/create` schedules a workflow file, not a chat.
+        creator_session_id: None,
+        last_error: None,
+        owns_source: None,
+    };
+    crate::routes::session_reach::schedule_reach(state.session_manager(), Some(&job), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
 
     // ⚠ The id names a FILE. `Path::join` throws its base away when the argument
     // is absolute and `..` resolves in the kernel, so an unvalidated `req.id`
@@ -108,36 +158,20 @@ async fn create_schedule(
     // where only a developer would find it, so the client's JSON parse failed
     // and the dialog reported "Unexpected response format": a transport-shaped
     // error for a validation problem the user could have fixed in one keystroke.
-    if let Err(error) = biorouter::scheduler::validate_schedule_id(&req.id) {
+    if let Err(error) = biorouter::scheduler::validate_schedule_id(&job.id) {
         tracing::warn!("Refusing schedule create with an invalid id: {error}");
-        return Err(create_schedule_error(StatusCode::BAD_REQUEST, error));
+        return Err(create_schedule_error(StatusCode::BAD_REQUEST, error).into_response());
     }
     tracing::info!(
         "Server: Calling scheduler.add_scheduled_job() for job '{}'",
-        req.id
+        job.id
     );
-    let job = ScheduledJob {
-        id: req.id,
-        source: req.workflow_source,
-        cron: req.cron,
-        last_run: None,
-        currently_running: false,
-        paused: false,
-        current_session_id: None,
-        process_start_time: None,
-        run_count: 0,
-        max_runs: None,
-        // `POST /schedule/create` schedules a workflow file, not a chat.
-        creator_session_id: None,
-        last_error: None,
-        owns_source: None,
-    };
     scheduler
         .add_scheduled_job(job.clone(), true)
         .await
         .map_err(|e| {
             eprintln!("Error creating schedule: {:?}", e); // Log error
-            create_schedule_error(create_schedule_status(&e), e)
+            create_schedule_error(create_schedule_status(&e), e).into_response()
         })?;
     Ok(Json(job))
 }
@@ -265,6 +299,12 @@ pub(crate) async fn redact_unreachable_chats(
     ),
     responses(
         (status = 204, description = "Scheduled job deleted successfully"),
+        (status = 403, description = "The schedule's work is private — its runs use a private \
+                                      model, or it was created from or is running in a chat this \
+                                      caller could not open — or there is no such schedule, and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Plain text, the same for each of these; \
+                                      nothing was removed"),
         (status = 404, description = "Scheduled job not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -274,8 +314,17 @@ pub(crate) async fn redact_unreachable_chats(
 async fn delete_schedule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
+    headers: HeaderMap,
+) -> Result<StatusCode, Response> {
     let scheduler = state.scheduler();
+    // Issue #56: removing a schedule removes its work, and stopping private
+    // work is never easier than reaching it — the rule `POST
+    // /schedule/{id}/kill` already applies to the run itself. Resolved, then
+    // gated, before anything is removed.
+    let job = named_schedule(&state, &id).await;
+    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
     // ⚠ `true` asks for the workflow file; it no longer grants it. This route
     // never reads the job, so it cannot tell the private copy the scheduler made
     // for itself from a pointer at the user's own workflow — and while the flag
@@ -287,8 +336,10 @@ async fn delete_schedule(
         .map_err(|e| {
             eprintln!("Error deleting schedule '{}': {:?}", id, e);
             match e {
-                biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
+                biorouter::scheduler::SchedulerError::JobNotFound(_) => {
+                    StatusCode::NOT_FOUND.into_response()
+                }
+                _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             }
         })?;
     Ok(StatusCode::NO_CONTENT)
@@ -302,6 +353,12 @@ async fn delete_schedule(
     ),
     responses(
         (status = 200, description = "Scheduled job triggered successfully, returns new session ID", body = RunNowResponse),
+        (status = 403, description = "The schedule's work is private — its runs use a private \
+                                      model, or it was created from or is running in a chat this \
+                                      caller could not open — or there is no such schedule, and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Plain text, the same for each of these; \
+                                      nothing was run"),
         (status = 404, description = "Scheduled job not found"),
         (status = 500, description = "Internal server error when trying to run the job")
     ),
@@ -311,15 +368,23 @@ async fn delete_schedule(
 async fn run_now_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<RunNowResponse>, (StatusCode, String)> {
     let scheduler = state.scheduler();
 
-    let (workflow_display_name, workflow_version_opt) = if let Some(job) = scheduler
-        .list_scheduled_jobs()
+    // Issue #56: this started a run for any holder of the daemon secret — a new
+    // chat, bound with no person present to the creating chat's model or the
+    // configured default, answering with that chat's id. Measured on `main`
+    // (1038a113) against a daemon configured with a private model: HTTP 200 and
+    // `{"session_id":…}` naming a private chat that `GET /sessions/{id}`
+    // refused the same caller. The job is resolved once, gated, and the same
+    // resolved job is what the display name below is read from.
+    let job = named_schedule(&state, &id).await;
+    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
         .await
-        .into_iter()
-        .find(|job| job.id == id)
-    {
+        .map_err(|refusal| (refusal.status, refusal.message.to_string()))?;
+
+    let (workflow_display_name, workflow_version_opt) = if let Some(job) = job {
         let workflow_display_name = std::path::Path::new(&job.source)
             .file_name()
             .and_then(|name| name.to_str())
@@ -497,6 +562,12 @@ async fn sessions_handler(
     ),
     responses(
         (status = 204, description = "Scheduled job paused successfully"),
+        (status = 403, description = "The schedule's work is private — its runs use a private \
+                                      model, or it was created from or is running in a chat this \
+                                      caller could not open — or there is no such schedule, and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Plain text, the same for each of these; \
+                                      nothing was paused"),
         (status = 404, description = "Scheduled job not found"),
         (status = 400, description = "Cannot pause a currently running job"),
         (status = 500, description = "Internal server error")
@@ -507,8 +578,16 @@ async fn sessions_handler(
 async fn pause_schedule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
+    headers: HeaderMap,
+) -> Result<StatusCode, Response> {
     let scheduler = state.scheduler();
+    // Issue #56: pausing is stopping a schedule's future work. Gated before the
+    // scheduler is asked, whose "cannot pause a running schedule" would
+    // otherwise answer ahead of the refusal.
+    let job = named_schedule(&state, &id).await;
+    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
 
     scheduler.pause_schedule(&id).await.map_err(|e| {
         eprintln!("Error pausing schedule '{}': {:?}", id, e);
@@ -517,6 +596,7 @@ async fn pause_schedule(
             biorouter::scheduler::SchedulerError::AnyhowError(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
+        .into_response()
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -529,6 +609,12 @@ async fn pause_schedule(
     ),
     responses(
         (status = 204, description = "Scheduled job unpaused successfully"),
+        (status = 403, description = "The schedule's work is private — its runs use a private \
+                                      model, or it was created from or is running in a chat this \
+                                      caller could not open — or there is no such schedule, and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Plain text, the same for each of these; \
+                                      nothing was resumed"),
         (status = 404, description = "Scheduled job not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -538,8 +624,15 @@ async fn pause_schedule(
 async fn unpause_schedule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
+    headers: HeaderMap,
+) -> Result<StatusCode, Response> {
     let scheduler = state.scheduler();
+    // Issue #56: resuming re-arms unattended runs on the schedule's model —
+    // `run_now` on a timer — so it asks what `run_now` asks.
+    let job = named_schedule(&state, &id).await;
+    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
 
     scheduler.unpause_schedule(&id).await.map_err(|e| {
         eprintln!("Error unpausing schedule '{}': {:?}", id, e);
@@ -547,6 +640,7 @@ async fn unpause_schedule(
             biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
+        .into_response()
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -559,7 +653,16 @@ async fn unpause_schedule(
     ),
     request_body = UpdateScheduleRequest,
     responses(
-        (status = 200, description = "Scheduled job updated successfully", body = ScheduledJob),
+        (status = 200, description = "Scheduled job updated successfully. The job as `GET \
+                                      /schedule/list` shows it to this caller: \
+                                      `current_session_id` and `creator_session_id` are omitted \
+                                      when they name a chat the caller could not open", body = ScheduledJob),
+        (status = 403, description = "The schedule's work is private — its runs use a private \
+                                      model, or it was created from or is running in a chat this \
+                                      caller could not open — or there is no such schedule, and \
+                                      the request carried neither the user-action proof nor a \
+                                      private capability. Plain text, the same for each of these; \
+                                      nothing was changed"),
         (status = 404, description = "Scheduled job not found"),
         (status = 400, description = "Cannot update a currently running job or invalid request"),
         (status = 500, description = "Internal server error")
@@ -570,9 +673,20 @@ async fn unpause_schedule(
 async fn update_schedule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<UpdateScheduleRequest>,
-) -> Result<Json<ScheduledJob>, StatusCode> {
+) -> Result<Json<ScheduledJob>, Response> {
     let scheduler = state.scheduler();
+    // Issue #56: re-timing a schedule changes when its work runs, and this
+    // route answered with the WHOLE job. Measured on `main` (1038a113): `PUT
+    // /schedule/{id}` with the job's own cron — a change of nothing — handed a
+    // secret-only caller `creator_session_id` naming a private chat, the one
+    // field `GET /schedule/list` beside it redacts for that caller. Gated first,
+    // and the answer is redacted exactly as the listing is.
+    let job = named_schedule(&state, &id).await;
+    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
 
     scheduler
         .update_schedule(&id, req.cron)
@@ -585,13 +699,19 @@ async fn update_schedule(
                 biorouter::scheduler::SchedulerError::CronParseError(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             }
+            .into_response()
         })?;
 
-    let jobs = scheduler.list_scheduled_jobs().await;
-    let updated_job = jobs
-        .into_iter()
-        .find(|job| job.id == id)
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(updated_job) = named_schedule(&state, &id).await else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    };
+    // The same redaction as the listing, through the same function: the gate
+    // above admitted this caller to the schedule's WORK, and a run can start in
+    // a chat between that decision and this answer.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    let mut answer = [updated_job];
+    redact_unreachable_chats(&caller, state.session_manager(), &mut answer).await;
+    let [updated_job] = answer;
 
     Ok(Json(updated_job))
 }
@@ -947,7 +1067,7 @@ mod tests {
             .split_once("\n/// The status a failed create")
             .expect("could not find the end of create_schedule");
         let guard = body
-            .find("validate_schedule_id(&req.id)")
+            .find("validate_schedule_id(&job.id)")
             .expect("the handler no longer refuses an invalid name itself");
         let handoff = body
             .find(".add_scheduled_job(")

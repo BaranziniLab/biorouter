@@ -13,6 +13,14 @@ import {
 } from './api';
 import { userActionHeaders } from './utils/userAction';
 
+// ⚠ Every call below carries `userActionHeaders()`, and none of them may lose it.
+// The daemon answers a request without the person's proof as a public model
+// (issue #56): it redacts a schedule's chats from the list, refuses to stop or
+// inspect a run in a private chat, and refuses to create, run, re-time, pause,
+// resume or delete a schedule whose work is private. None of that is an error
+// the Schedules view could tell from a real one — `schedule.userProof.test.ts`
+// holds the line.
+
 export interface ScheduledJob {
   id: string;
   source: string;
@@ -97,9 +105,30 @@ function failureMessage(
     : `${prefix}: no response from the server.`;
 }
 
+/**
+ * Throw when a call whose success has no body failed.
+ *
+ * Without `throwOnError` the generated client RESOLVES a failed request with
+ * `{ error, response }` rather than throwing, and delete, pause and unpause
+ * answer 204 with nothing to check — so each of them used to report success
+ * for a 400, a 404 or a refusal, and the view toasted "paused" over a schedule
+ * that was not. A refusal is now common enough to matter: the daemon refuses a
+ * schedule whose work is private to a caller it cannot believe (issue #56).
+ */
+function throwIfRefused(
+  prefix: string,
+  response: { error?: unknown; response?: { ok?: boolean; status?: number } } | undefined
+): void {
+  if (response?.response && response.response.ok === false) {
+    throw new Error(failureMessage(prefix, response));
+  }
+}
+
 export async function listSchedules(): Promise<ScheduledJob[]> {
   try {
-    const response = await apiListSchedules<true>();
+    // With the user's proof: a schedule's chat ids are redacted for a caller
+    // without it (issue #56).
+    const response = await apiListSchedules<true>({ headers: await userActionHeaders() });
     if (response && response.data && Array.isArray(response.data.jobs)) {
       return response.data.jobs as ScheduledJob[];
     }
@@ -118,7 +147,12 @@ export async function createSchedule(request: {
   execution_mode?: string;
 }): Promise<ScheduledJob> {
   try {
-    const response = await apiCreateSchedule<true>({ body: request });
+    // With the user's proof: a schedule whose runs would use a private model is
+    // refused to a caller without it (issue #56).
+    const response = await apiCreateSchedule<true>({
+      body: request,
+      headers: await userActionHeaders(),
+    });
     if (response && response.data) {
       return response.data as ScheduledJob;
     }
@@ -132,7 +166,11 @@ export async function createSchedule(request: {
 
 export async function deleteSchedule(id: string): Promise<void> {
   try {
-    await apiDeleteSchedule<true>({ path: { id } });
+    const response = await apiDeleteSchedule<true>({
+      path: { id },
+      headers: await userActionHeaders(),
+    });
+    throwIfRefused('Failed to delete schedule', response);
   } catch (error) {
     console.error(`Error deleting schedule ${id}:`, error);
     throw error;
@@ -159,6 +197,7 @@ export async function runScheduleNow(scheduleId: string): Promise<string> {
   try {
     const response = await apiRunScheduleNow<true>({
       path: { id: scheduleId },
+      headers: await userActionHeaders(),
     });
 
     if (response && response.data && response.data.session_id) {
@@ -174,9 +213,11 @@ export async function runScheduleNow(scheduleId: string): Promise<string> {
 
 export async function pauseSchedule(scheduleId: string): Promise<void> {
   try {
-    await apiPauseSchedule<true>({
+    const response = await apiPauseSchedule<true>({
       path: { id: scheduleId },
+      headers: await userActionHeaders(),
     });
+    throwIfRefused('Failed to pause schedule', response);
   } catch (error) {
     console.error(`Error pausing schedule ${scheduleId}:`, error);
     throw error;
@@ -185,9 +226,11 @@ export async function pauseSchedule(scheduleId: string): Promise<void> {
 
 export async function unpauseSchedule(scheduleId: string): Promise<void> {
   try {
-    await apiUnpauseSchedule<true>({
+    const response = await apiUnpauseSchedule<true>({
       path: { id: scheduleId },
+      headers: await userActionHeaders(),
     });
+    throwIfRefused('Failed to unpause schedule', response);
   } catch (error) {
     console.error(`Error unpausing schedule ${scheduleId}:`, error);
     throw error;
@@ -199,6 +242,7 @@ export async function updateSchedule(scheduleId: string, cron: string): Promise<
     const response = await apiUpdateSchedule<true>({
       path: { id: scheduleId },
       body: { cron },
+      headers: await userActionHeaders(),
     });
 
     if (response && response.data) {
@@ -226,6 +270,7 @@ export async function killRunningJob(scheduleId: string): Promise<KillJobRespons
   try {
     const response = await apiKillRunningJob<true>({
       path: { id: scheduleId },
+      headers: await userActionHeaders(),
     });
 
     if (response && response.data) {
@@ -243,6 +288,7 @@ export async function inspectRunningJob(scheduleId: string): Promise<InspectJobR
   try {
     const response = await apiInspectRunningJob<true>({
       path: { id: scheduleId },
+      headers: await userActionHeaders(),
     });
 
     if (response && response.data) {
