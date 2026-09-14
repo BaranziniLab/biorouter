@@ -7,8 +7,11 @@ import { toastService } from '../../../toasts';
 import { clearAllSessionCache } from '../../../utils/sessionCache';
 import { clearSessionListCache } from '../../../utils/sessionListCache';
 import { LocalMessageStorage } from '../../../utils/localMessageStorage';
+import { userActionHeaders } from '../../../utils/userAction';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
+import { Note } from '../../ui/note';
+import { resetBrowserReason } from './resetOnBrowser';
 import { MODAL_SIZE } from '../../ModalShell';
 import { cn } from '../../../utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
@@ -125,6 +128,25 @@ function clearKnowledgeSelections() {
   }
 }
 
+/**
+ * The sentence a failed reset call carries.
+ *
+ * Under `throwOnError` the generated client throws the PARSED BODY, not an
+ * `Error` (`api/client/client.gen.ts`). This route's failures are
+ * `ResetErrorResponse` objects, so reading `Error.message` alone replaced every
+ * one of them — the 403 saying why a reset was refused, the 409 saying a chat is
+ * still running — with the generic fallback.
+ */
+function resetErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const { message } = error as { message: unknown };
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return fallback;
+}
+
 export default function ResetPanel({ onReset }: ResetPanelProps) {
   const [selected, setSelected] = useState<Set<ResetCategory>>(new Set());
   const [expanded, setExpanded] = useState<ResetCategory | null>(null);
@@ -133,11 +155,31 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
   const [loadingCounts, setLoadingCounts] = useState(true);
   const [resetting, setResetting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  /**
+   * SD-8: on a browser-served page the daemon refuses every reset, so the panel
+   * says so in place of its controls instead of letting the user select, confirm
+   * and then read a refusal. See `resetOnBrowser.ts`. Read from the DOM marker on
+   * every render, as `isBrowserSurface` requires.
+   */
+  const hostOnly = resetBrowserReason();
 
   const loadCounts = useCallback(async () => {
+    // The preview is refused on that surface for the same reason, and its only
+    // use is to show what a reset there could not do.
+    if (resetBrowserReason()) {
+      setCounts(null);
+      setLoadingCounts(false);
+      return;
+    }
     setLoadingCounts(true);
     try {
-      const response = await previewReset<true>({ throwOnError: true });
+      // ⚠ The proof on BOTH calls. The daemon answers the preview and the reset
+      // only for a request that proves the person at the keyboard sent it: the
+      // counts include every private chat and base, and a reset deletes them.
+      const response = await previewReset<true>({
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
       setCounts(response.data.counts);
     } catch (error) {
       console.error('Failed to inspect reset data:', error);
@@ -171,12 +213,16 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
   };
 
   const handleReset = async () => {
-    if (!pendingCategories?.length) return;
+    if (!pendingCategories?.length || resetBrowserReason()) return;
     const categories = pendingCategories;
     setResetting(true);
     setStatus(null);
     try {
-      await resetAppData<true>({ body: { categories }, throwOnError: true });
+      await resetAppData<true>({
+        body: { categories },
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
       if (categories.includes('history')) clearRendererHistory();
       if (categories.includes('knowledge')) clearKnowledgeSelections();
       setSelected(new Set());
@@ -191,8 +237,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
       });
     } catch (error) {
       console.error('Failed to reset app data:', error);
-      const message =
-        error instanceof Error ? error.message : 'Biorouter could not reset the selected data.';
+      const message = resetErrorMessage(error, 'Biorouter could not reset the selected data.');
       setStatus(message);
       toastService.error({ title: 'Reset failed', msg: message });
     } finally {
@@ -218,23 +263,25 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
         {/* `mr-3` so the cluster's box shares the rows' 12px inset while the
             `text-caps` label opposite it stays flush. Both actions carry labels,
             so neither may sit on the 24px `xs` rung. */}
-        <div className="mr-3 flex items-center gap-2 pb-0.5">
-          <span className="text-supporting tabular-nums text-text-muted">
-            {selected.size} of {CATEGORIES.length} selected
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setSelected(new Set(ALL_CATEGORIES))}
-          >
-            Select all
-          </Button>
-          {selected.size > 0 && (
-            <Button type="button" variant="ghost" onClick={() => setSelected(new Set())}>
-              Clear
+        {hostOnly === null && (
+          <div className="mr-3 flex items-center gap-2 pb-0.5">
+            <span className="text-supporting tabular-nums text-text-muted">
+              {selected.size} of {CATEGORIES.length} selected
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setSelected(new Set(ALL_CATEGORIES))}
+            >
+              Select all
             </Button>
-          )}
-        </div>
+            {selected.size > 0 && (
+              <Button type="button" variant="ghost" onClick={() => setSelected(new Set())}>
+                Clear
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="biorouter-settings-list">
@@ -293,6 +340,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
                     a screen reader announces the state twice, once inverted. */}
                 <Checkbox
                   checked={isSelected}
+                  disabled={hostOnly !== null}
                   onChange={() => toggleCategory(category.id)}
                   aria-label={`Select ${category.title} for reset`}
                 />
@@ -305,37 +353,45 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
         })}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-start gap-2">
-          <RotateCcw className="mt-0.5 h-4 w-4 shrink-0 text-text-danger" />
-          <p className="max-w-xl text-supporting text-text-muted">
-            Resetting is permanent. Export anything you want to keep before continuing.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* A plain `outline`. The danger border plus a second hover fill made
+      {hostOnly !== null ? (
+        // The whole reason, in place of the two buttons it disables, so the
+        // person reads it before reaching for a control rather than after.
+        <Note tone="neutral" testId="reset-needs-host-note" className="mt-3">
+          {hostOnly}
+        </Note>
+      ) : (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <RotateCcw className="mt-0.5 h-4 w-4 shrink-0 text-text-danger" />
+            <p className="max-w-xl text-supporting text-text-muted">
+              Resetting is permanent. Export anything you want to keep before continuing.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* A plain `outline`. The danger border plus a second hover fill made
               two loud destructive buttons side by side; the pair now mirrors this
               file's own dialog footer, where the dismiss is outline and the
               confirm is destructive. */}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={selectedCategories.length === 0 || resetting}
-            onClick={() => openConfirmation(selectedCategories)}
-          >
-            Reset selected
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            disabled={resetting}
-            onClick={() => openConfirmation(ALL_CATEGORIES)}
-          >
-            <RotateCcw />
-            Reset everything
-          </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={selectedCategories.length === 0 || resetting}
+              onClick={() => openConfirmation(selectedCategories)}
+            >
+              Reset selected
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={resetting}
+              onClick={() => openConfirmation(ALL_CATEGORIES)}
+            >
+              <RotateCcw />
+              Reset everything
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
 
       {status && (
         <p
