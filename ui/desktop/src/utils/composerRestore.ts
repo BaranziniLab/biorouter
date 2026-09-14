@@ -1,54 +1,57 @@
 import type { UserAttachment } from '../types/message';
 
 /**
- * Giving a message back to the composer when the chat it was typed into never
- * started.
+ * `restore-chat-input`: giving a message back to the composer of an EXISTING
+ * chat, addressed by that chat's id.
  *
- * `restore-chat-input` is a plain window event with no buffering: it reaches
- * whichever composer is listening at the instant it is dispatched, and nobody
- * else, ever. That is enough for a composer that is alive and listening, and it
- * is NOT enough for the fresh tab's, which the failure itself replaces —
- * `BaseChat` renders its composer in two places (the centred empty state and
- * the bar under a transcript) and `isCreatingSession` moves it between them, so
- * a failed start REMOUNTS it and the instance the event reached is discarded
- * before it ever paints.
+ * It is a plain window event — no buffering, delivered to whichever composers
+ * are listening at that instant — and that is only safe because a chat id names
+ * one chat. So it is now refused for anything else, on both ends:
+ * `restoreComposerText` will not send one without a chat id, and
+ * `composerRestoreIsFor` will not let a composer take one that does not name
+ * the composer's own chat.
  *
- * THE DURABLE COPY IS NOT HERE. It is `BaseChat`'s own `keptMessage` state,
- * handed to whatever composer that surface renders next. This module keeps only
- * the broadcast, for the composers the broadcast was written for.
+ * ⚠ A NEW chat has no id, and this channel used to address it as `''` (and Home's
+ * as `null`). Every mounted fresh-tab composer matched `'' === ''`, so a start
+ * that failed in one pane REPLACED the unsent text in every other pane's new
+ * tab — measured in the dev app on 1.90.4, 2 of 2, and shipped since #303's
+ * parent. A new chat's composer is addressed by its TAB instead, through
+ * `utils/composerDrafts.ts`, and a composer's own refused send is handed back
+ * to itself; neither goes near this event.
  *
- * WHY NOT HERE — measured, not assumed. #303 put the message in a module-level
- * map keyed by chat and deleted it on a `setTimeout(..., 0)`: a lifetime that
- * had to beat the very remount it existed to survive. It won that race exactly
- * when the failure also rendered a NEW toast node, and error toasts are
- * `autoClose: false` and deduped by their own text, so a second identical
- * failure renders no toast at all — and pressing the same failing send again is
- * what a person does. In the dev app on 1.90.4 (2026-09-12): first failure, new
- * toast node, remount +38 ms after the dispatch -> kept; press Enter again, no
- * new toast node, remount +43 ms -> the composer was EMPTY while the first
- * toast was still on screen reading "Your message was kept." 3 of 3 sends that
- * rendered no new toast node lost the message; 2 of 2 that rendered one kept it.
- *
- * A timer was not the only thing wrong with parking it here. A pre-session
- * composer has no chat id — it is addressed as `''` by one caller and `null` by
- * another — so a store keyed by chat cannot tell the fresh tab in one pane from
- * the fresh tab in another, or from Home's composer. Surface-owned state can:
- * it is reachable only from the one component instance that holds it.
+ * Today's one sender is `BaseChat.returnInitialMessageToComposer`: a message
+ * that arrived as a chat's route cargo and was refused by that chat.
  */
 export type ComposerRestore = {
-  /** The chat the message was typed into; `null`/`''` is a chat not yet created. */
-  sessionId: string | null;
+  /** The chat the message belongs to. Required, and never empty. */
+  sessionId: string;
   value: string;
   attachments?: UserAttachment[];
 };
 
 export const RESTORE_CHAT_INPUT_EVENT = 'restore-chat-input';
 
-/**
- * Hand `detail.value` to the composer for `detail.sessionId` that is listening
- * right now. A composer the same failure is about to replace is NOT one of
- * them; its replacement is served by the surface's own copy.
- */
+/** Hand `detail` to the composer of the chat it names, if one is listening. */
 export function restoreComposerText(detail: ComposerRestore): void {
+  if (typeof detail.sessionId !== 'string' || !detail.sessionId) return;
   window.dispatchEvent(new CustomEvent(RESTORE_CHAT_INPUT_EVENT, { detail }));
+}
+
+/**
+ * Whether a composer for `sessionId` may take this restore. Only a composer of
+ * a real chat, and only for that chat — so no new chat's composer, and no Home
+ * composer, can ever be reached by a broadcast.
+ */
+export function composerRestoreIsFor(
+  detail: unknown,
+  sessionId: string | null | undefined
+): detail is ComposerRestore {
+  if (typeof sessionId !== 'string' || !sessionId) return false;
+  if (!detail || typeof detail !== 'object') return false;
+  const candidate = detail as Partial<ComposerRestore>;
+  if (candidate.sessionId !== sessionId) return false;
+  const hasText = typeof candidate.value === 'string' && candidate.value.length > 0;
+  const hasAttachments =
+    Array.isArray(candidate.attachments) && candidate.attachments.some((a) => a?.path);
+  return hasText || hasAttachments;
 }

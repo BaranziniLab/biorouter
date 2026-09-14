@@ -102,8 +102,25 @@ function isValid(value: unknown): value is ChatGroupsState {
   return Object.values(state.groups).every((g) => Array.isArray(g?.tabs));
 }
 
+export interface LoadChatGroupsOptions {
+  /**
+   * Keep this tab although it has no chat. Asked only about tabs with
+   * `sessionId: ''`.
+   *
+   * The provider answers "it holds an unsent message" (`utils/composerDrafts.ts`).
+   * That store is renderer memory, so the answer is yes only when the provider
+   * is being re-mounted inside the same renderer — the user went to Settings or
+   * Home and came back — and no after a reload, which therefore prunes exactly
+   * as it always did.
+   */
+  keepSessionlessTab?: (tabId: string) => boolean;
+}
+
 /** Returns null on ANY shape mismatch -> the caller takes the cold-boot path. */
-export function loadChatGroups(windowId: string): ChatGroupsState | null {
+export function loadChatGroups(
+  windowId: string,
+  options: LoadChatGroupsOptions = {}
+): ChatGroupsState | null {
   try {
     const raw = localStorage.getItem(chatGroupsStorageKey(windowId));
     if (!raw) return null;
@@ -112,10 +129,21 @@ export function loadChatGroups(windowId: string): ChatGroupsState | null {
 
     const groups: Record<string, ChatGroup> = {};
     for (const [id, group] of Object.entries(parsed.groups)) {
-      // A tab with sessionId '' never resolved its createSession. It cannot be
-      // restored into anything meaningful, so it is dropped rather than
-      // rendered as a permanently blank tab.
-      const tabs = group.tabs.filter((tab) => typeof tab?.sessionId === 'string' && tab.sessionId);
+      // A tab with sessionId '' never resolved its createSession. Blank, it
+      // cannot be restored into anything meaningful, so it is dropped rather
+      // than rendered as a permanently blank tab.
+      //
+      // ⚠ Unless it holds a message the person has not sent. Leaving /pair
+      // unmounts this provider and coming back re-reads it from here, so this
+      // prune ran on every trip to Settings — measured on 1.90.4: a new tab
+      // whose failed start had just said "Your message was kept." was gone
+      // from the strip, and the message with it, while that toast was still on
+      // screen.
+      const tabs = group.tabs.filter(
+        (tab) =>
+          typeof tab?.sessionId === 'string' &&
+          (tab.sessionId !== '' || (options.keepSessionlessTab?.(tab.tabId) ?? false))
+      );
       const activeTabId = tabs.some((t) => t.tabId === group.activeTabId)
         ? group.activeTabId
         : (tabs[0]?.tabId ?? null);
@@ -172,8 +200,11 @@ function reconcile(state: ChatGroupsState): ChatGroupsState | null {
   return { ...state, layout, groups, activeGroupId };
 }
 
-export function loadChatGroupsOrInitial(windowId: string): ChatGroupsState {
-  return loadChatGroups(windowId) ?? createInitialChatGroupsState();
+export function loadChatGroupsOrInitial(
+  windowId: string,
+  options: LoadChatGroupsOptions = {}
+): ChatGroupsState {
+  return loadChatGroups(windowId, options) ?? createInitialChatGroupsState();
 }
 
 /** Prune keys belonging to windows that are gone. Best-effort; called on

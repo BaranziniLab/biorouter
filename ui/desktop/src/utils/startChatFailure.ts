@@ -55,6 +55,42 @@ export const isStartRefusedForWantOfProof = (error: unknown): boolean => {
   return text !== null && text.includes(USER_ACTION_REFUSAL_MARKER);
 };
 
+/** The sentence a failure notice ends with when the caller kept the message. */
+export const MESSAGE_KEPT_SENTENCE = 'Your message was kept.';
+
+// A sentence is over when it ends in one of these...
+const SENTENCE_END = /[.!?\u2026]$/;
+// ...possibly inside a closing quote or bracket: `said "stop."`, `(see the log.)`.
+const CLOSERS = /["'\u201d\u2019)\]\u00bb]+$/;
+// A trailing separator with nothing after it: `…for the new chat:`.
+const DANGLING_SEPARATOR = /[:;,]$/;
+
+/**
+ * Put a sentence of ours after a daemon's message, punctuated as one paragraph.
+ *
+ * Daemon refusals carry no terminal period as often as they carry one — the
+ * 1.90.4 toast read "…must be an HTTPS URL with a host Your message was kept."
+ * — so a bare space is not enough, and neither is an unconditional period:
+ *
+ *   • already a finished sentence, including one closed inside a quote or a
+ *     bracket, gets a space and nothing else;
+ *   • a message ending in a code span, a quote around a value, a bracket or a
+ *     word gets a period AFTER it — never inside the span or the quote, whose
+ *     contents are the daemon's, not prose;
+ *   • a dangling `:` `;` `,` is the end of a template with nothing substituted,
+ *     so it becomes the period rather than sitting before one.
+ *
+ * Only the TOAST's words go through this. The daemon's text itself stays
+ * untouched in the notice's `traceback`, behind "Copy error".
+ */
+export function appendSentence(message: string, sentence: string): string {
+  const text = message.trimEnd();
+  if (!text) return sentence;
+  if (SENTENCE_END.test(text.replace(CLOSERS, ''))) return `${text} ${sentence}`;
+  if (DANGLING_SEPARATOR.test(text)) return `${text.slice(0, -1)}. ${sentence}`;
+  return `${text}. ${sentence}`;
+}
+
 /**
  * @param kept whether the caller has put the message back where the person can
  *   see it (the composer). Say so only when it is true.
@@ -74,7 +110,7 @@ export function startChatFailureNotice(
       traceback: daemonText,
     };
   }
-  const keptSentence = kept ? ' Your message was kept.' : '';
+  const keptSentence = kept ? ` ${MESSAGE_KEPT_SENTENCE}` : '';
   if (isStartRefusedForWantOfProof(error)) {
     return {
       title: START_CHAT_FAILED_TITLE,
@@ -91,7 +127,7 @@ export function startChatFailureNotice(
   // traceback too, which is what puts "Copy error" on the toast.
   return {
     title: START_CHAT_FAILED_TITLE,
-    msg: `${daemonText}${keptSentence}`,
+    msg: kept ? appendSentence(daemonText, MESSAGE_KEPT_SENTENCE) : daemonText,
     traceback: daemonText,
   };
 }

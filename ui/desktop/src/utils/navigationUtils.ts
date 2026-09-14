@@ -33,6 +33,8 @@ export type ViewOptions = {
   disableAnimation?: boolean;
   initialMessage?: string;
   initialAttachments?: UserAttachment[];
+  /** The chat tab a pre-session submit was typed in (`OpenTabPayload.originTabId`). */
+  originTabId?: string;
   shareToken?: string;
   resumeSessionId?: string;
   pendingScheduleDeepLink?: string;

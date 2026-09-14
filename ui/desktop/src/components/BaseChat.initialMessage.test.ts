@@ -487,15 +487,20 @@ describe('returnInitialMessageToComposer', () => {
     dispatch.mockRestore();
   });
 
-  it('addresses a pre-session composer as null, not undefined', () => {
+  it('sends nothing for a message with no chat to address', () => {
+    // A chat with no id cannot be addressed by a window-wide event without
+    // addressing every such composer: a new tab's in every pane matched `''`.
+    // `restoreComposerText` refuses it rather than broadcast it.
     const dispatch = vi.spyOn(window, 'dispatchEvent');
 
     returnInitialMessageToComposer({ message: 'keep me' });
+    returnInitialMessageToComposer({ sessionId: '', message: 'keep me' });
+    returnInitialMessageToComposer({ sessionId: null, message: 'keep me' });
 
-    const restore = dispatch.mock.calls
+    const restores = dispatch.mock.calls
       .map((c) => c[0] as CustomEvent)
-      .find((e) => e?.type === 'restore-chat-input');
-    expect(restore!.detail).toMatchObject({ sessionId: null, value: 'keep me' });
+      .filter((e) => e?.type === 'restore-chat-input');
+    expect(restores).toHaveLength(0);
 
     dispatch.mockRestore();
   });

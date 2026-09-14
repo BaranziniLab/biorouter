@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKEND_DISCONNECTED_TITLE,
   START_CHAT_FAILED_TITLE,
+  appendSentence,
   isStartRefusedForWantOfProof,
   startChatFailureNotice,
 } from './startChatFailure';
@@ -60,8 +61,31 @@ describe('startChatFailureNotice', () => {
       // Always copyable: the troubleshooting guide sends people to "Copy error".
       traceback: body.message,
     });
-    expect(startChatFailureNotice(body, { kept: true }).msg).toBe(
-      `${body.message} Your message was kept.`
+    // Punctuated as prose. This read "…OPENAI_API_KEY Your message was kept."
+    // — two sentences run together — and the traceback keeps the daemon's own
+    // text untouched.
+    const kept = startChatFailureNotice(body, { kept: true });
+    expect(kept.msg).toBe(`${body.message}. Your message was kept.`);
+    expect(kept.traceback).toBe(body.message);
+  });
+
+  it('ends the daemon text as a sentence before saying the message was kept', () => {
+    // The exact 400 measured in the dev app on 1.90.4, which ran on as
+    // "…with a host Your message was kept."
+    const measured = {
+      message:
+        'Failed to configure the selected provider for the new chat: provider endpoint must be ' +
+        'an HTTPS URL with a host',
+    };
+    expect(startChatFailureNotice(measured, { kept: true }).msg).toBe(
+      'Failed to configure the selected provider for the new chat: provider endpoint must be an ' +
+        'HTTPS URL with a host. Your message was kept.'
+    );
+    // One that already ends a sentence gets no second period. (The credential
+    // refusal measured beside it ends "…signs in with the API key.")
+    const finished = { message: 'Could not read the key. Answer the prompt with “Always Allow”.' };
+    expect(startChatFailureNotice(finished, { kept: true }).msg).toBe(
+      'Could not read the key. Answer the prompt with “Always Allow”. Your message was kept.'
     );
   });
 
@@ -145,4 +169,34 @@ describe('every surface that starts a chat', () => {
       expect(source).toMatch(/startChatFailureNotice\(|handleCreateSessionError\(/);
     }
   );
+});
+
+describe('appendSentence', () => {
+  const KEPT = 'Your message was kept.';
+  it.each([
+    // [daemon text, toast text]
+    ['no period', 'no period. Your message was kept.'],
+    ['a sentence.', 'a sentence. Your message was kept.'],
+    ['a question?', 'a question? Your message was kept.'],
+    ['an exclamation!', 'an exclamation! Your message was kept.'],
+    ['trailing ellipsis…', 'trailing ellipsis… Your message was kept.'],
+    ['trailing whitespace.\n\n', 'trailing whitespace. Your message was kept.'],
+    // A finished sentence closed inside a quote or bracket is finished.
+    ['he said "stop."', 'he said "stop." Your message was kept.'],
+    ['(see the log.)', '(see the log.) Your message was kept.'],
+    ['it said ‘done.’', 'it said ‘done.’ Your message was kept.'],
+    // A quoted VALUE is not a sentence end: the period goes after the quote.
+    ['invalid value "abc"', 'invalid value "abc". Your message was kept.'],
+    ["unknown provider 'x'", "unknown provider 'x'. Your message was kept."],
+    ['(see the log)', '(see the log). Your message was kept.'],
+    // A code span is the daemon's, character for character: never a period
+    // inside it, even when the code itself ends in one.
+    ['set `api_version`', 'set `api_version`. Your message was kept.'],
+    ['ends in code `a.b.`', 'ends in code `a.b.`. Your message was kept.'],
+    // A dangling separator is a template with nothing substituted.
+    ['for the new chat:', 'for the new chat. Your message was kept.'],
+    ['', 'Your message was kept.'],
+  ])('%j', (daemon, toast) => {
+    expect(appendSentence(daemon, KEPT)).toBe(toast);
+  });
 });

@@ -8,7 +8,8 @@ export interface ChatTab {
    *  opened empty and later bound to a created session keeps its identity, so
    *  React keys and strip order survive the bind. */
   tabId: ChatTabId;
-  /** '' only transiently, before createSession resolves. Pruned on load. */
+  /** '' until createSession resolves. Pruned on load unless the tab holds an
+   *  unsent message in this renderer (`utils/composerDrafts.ts`). */
   sessionId: string;
   /** Mirror for the strip; kept fresh by utils/sessionNameSync.ts. */
   title: string;

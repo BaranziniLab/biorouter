@@ -45,6 +45,49 @@ export interface OpenTabPayload {
    * be a reorder nobody asked for.
    */
   index?: number;
+  /**
+   * For a NEW-chat request (`sessionId: ''`) that is ARRIVING on /pair from
+   * another route — the sidebar's New chat or Cmd+T pressed on Settings or Home,
+   * or history landing on such an entry: when a tab already holds a new chat,
+   * focus it instead of opening another blank one.
+   *
+   * On arrival every tab with no chat is one holding an unsent message, because
+   * the load pruned the rest (`chatGroupsStorage.loadChatGroups`). That is the
+   * case this exists for: a failed start says "Your message was kept." and, for
+   * a credential, sends the person to Settings — and the ways back to /pair are
+   * exactly these requests. Opening a blank tab beside the kept one put an empty
+   * composer in front of them, next to a tab they had no reason to look for.
+   *
+   * NOT for a request made while /pair is already showing: pressing New chat
+   * while looking at your tabs means another tab, as it always has.
+   *
+   * In a split, it never changes what any pane but the focused one shows: a tab
+   * already on screen only takes focus, and a tab behind another pane's chat
+   * stays there. Which tab, and why: `findUnsentTab`.
+   */
+  resumeUnsent?: boolean;
+  /**
+   * For a pre-session submit: the tab its message was typed in. The chat binds
+   * to THAT tab or to a tab of its own — never to another blank tab.
+   *
+   * ⚠ The adopt branch used to take "the active blank tab, else any blank tab",
+   * and a blank tab is not the same as an empty one once a tab can hold an
+   * unsent message. Measured in the dev app: a start held in flight from tab X,
+   * the person switched to tab Y holding "MY OWN UNSENT DRAFT" and an image, and
+   * the chat that came back bound to Y, deleting its draft and image and leaving
+   * X blank. And a message sent from Home after a failed start bound to the tab
+   * the failure had just said "Your message was kept." about.
+   */
+  originTabId?: ChatTabId;
+  /**
+   * Which chat-less tabs are not blank (`utils/composerDrafts.unsentComposerTabs`),
+   * sampled by the dispatcher because the reducer is pure. `drafted` tabs hold a
+   * message the person has not sent and are never adopted, not even as the
+   * origin — the chat gets its own tab and the draft stays where it was typed.
+   * `sending` tabs have a message in flight and are adopted only by their own
+   * chat, as the origin.
+   */
+  unsentTabs?: { drafted: readonly ChatTabId[]; sending: readonly ChatTabId[] };
 }
 
 export type ChatGroupsAction =
@@ -282,6 +325,78 @@ function withGroup(state: ChatGroupsState, groupId: ChatGroupId, next: ChatGroup
 }
 
 /**
+ * The tab with no chat that `resumeUnsent` brings the person to, or null for the
+ * blank tab New chat has always opened.
+ *
+ * New chat acts on ONE pane, the focused one: its visible tab gives way to the
+ * tab the request lands on, and no other pane's does. Resuming keeps to that, so
+ * in order:
+ *
+ *   1. A tab with no chat that a pane is ALREADY SHOWING — the focused pane's,
+ *      then any pane's in layout order. Only focus moves; every pane keeps what
+ *      it shows.
+ *   2. A tab with no chat BEHIND the focused pane's visible tab. That visible tab
+ *      goes behind a tab either way; the one in front is the kept message rather
+ *      than a blank tab beside it. This is the single-pane case.
+ *   3. Nothing. A tab with no chat behind ANOTHER pane's visible tab stays where
+ *      it is, in that pane's strip: bringing it forward would put it in front of
+ *      a chat in a pane New chat does not act on.
+ *
+ * ⚠ The first version searched the focused pane's whole strip before looking at
+ * any other pane, then every pane's strip. Measured in the dev app: the left
+ * pane showing a draft, the right pane showing a chat with a second draft behind
+ * it; Settings, then New chat, and the right pane's chat was replaced by that
+ * background draft. The focused pane on arrival is not even reliably the one the
+ * person left: each remounting composer focuses itself, and a focus in a pane
+ * makes it the focused one (`ChatGroupsShell`'s `onFocusGroup`).
+ */
+function findUnsentTab(state: ChatGroupsState): { group: ChatGroup; tab: ChatTab } | null {
+  for (const groupId of [state.activeGroupId, ...leafGroupIds(state.layout)]) {
+    const group = state.groups[groupId];
+    const shown = group?.tabs.find((t) => t.tabId === group.activeTabId);
+    if (group && shown && !shown.sessionId) return { group, tab: shown };
+  }
+  const focused = state.groups[state.activeGroupId];
+  const behind = focused?.tabs.find((t) => !t.sessionId);
+  return focused && behind ? { group: focused, tab: behind } : null;
+}
+
+/**
+ * The existing tab a pre-session submit's chat fills, or null for a tab of its
+ * own.
+ *
+ * WITH AN ORIGIN (a new tab's composer started it): that tab, wherever it is
+ * now, if it still has no chat and holds no unsent draft. Nothing else — a tab
+ * the person closed, or one they have typed a new message into while the start
+ * was in flight, is not the chat's home, and neither is any other blank tab.
+ *
+ * WITHOUT ONE (Home, a launcher deep link, a diverge): the ACTIVE blank tab
+ * first, then any blank tab in the target group — where "blank" now excludes a
+ * tab holding a draft or a message in flight. "The blank tab" and "the leftmost
+ * blank tab" were the same tab back when reaching two blanks took real effort;
+ * Cmd+T makes two blanks a keystroke away. The fallback survives because a
+ * launcher message arrives from outside the strip entirely, and filling a
+ * waiting blank is the right home for it.
+ */
+function adoptionTarget(
+  state: ChatGroupsState,
+  group: ChatGroup,
+  payload: OpenTabPayload
+): { group: ChatGroup; tab: ChatTab } | null {
+  const drafted = new Set(payload.unsentTabs?.drafted ?? []);
+  const sending = new Set(payload.unsentTabs?.sending ?? []);
+  if (payload.originTabId) {
+    const hit = findTabGroup(state, (t) => t.tabId === payload.originTabId);
+    if (!hit || hit.tab.sessionId || drafted.has(hit.tab.tabId)) return null;
+    return hit;
+  }
+  const blank = (t: ChatTab) => !t.sessionId && !drafted.has(t.tabId) && !sending.has(t.tabId);
+  const tab =
+    group.tabs.find((t) => t.tabId === group.activeTabId && blank(t)) ?? group.tabs.find(blank);
+  return tab ? { group, tab } : null;
+}
+
+/**
  * Open a chat as a tab.
  *
  * Every open is a REAL tab. There is no preview/italic slot and nothing is ever
@@ -315,7 +430,17 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
     }
   }
 
-  const groupId = payload.groupId ?? state.activeGroupId;
+  // A started chat whose origin tab still exists but cannot take it (the person
+  // typed a new message there while the start was in flight) opens BESIDE that
+  // tab, in its pane: the origin's surface is still mid-start, and becoming the
+  // inactive tab of its own pane is what rebuilds it fresh.
+  const isPreSessionSubmit =
+    payload.pendingInitialMessage !== undefined || payload.pendingInitialAttachments !== undefined;
+  const origin =
+    payload.originTabId && isPreSessionSubmit
+      ? findTabGroup(state, (t) => t.tabId === payload.originTabId)
+      : null;
+  const groupId = payload.groupId ?? origin?.group.groupId ?? state.activeGroupId;
   const group = state.groups[groupId];
   if (!group) return state;
 
@@ -337,7 +462,9 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
   // a session. When BaseChat's pre-session submit finally creates one and
   // navigates, that arrives here as an openTab — and it must fill the empty tab
   // in place, keeping its tabId, rather than opening a second tab beside it and
-  // orphaning the blank one the user is staring at.
+  // orphaning the blank one the user is staring at. WHICH empty tab is
+  // `adoptionTarget`'s decision: the one the message was typed in, and never a
+  // tab holding a message the person has not sent.
   //
   // Gated on the route-state cargo (`pendingInitial*`) because that cargo is what
   // makes this the submit path: only a submit carries the message that created
@@ -346,30 +473,31 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
   // reason this branch is safe to keep; without it "open in a new tab" would
   // silently become "replace the blank tab" and we would be back to the
   // behaviour the user rejected.
-  const isPreSessionSubmit =
-    payload.pendingInitialMessage !== undefined || payload.pendingInitialAttachments !== undefined;
   if (payload.sessionId && isPreSessionSubmit) {
-    // The ACTIVE blank tab first, and only then any blank tab.
-    //
-    // "The blank tab" and "the leftmost blank tab" were the same tab back when
-    // reaching two blanks took real effort. Cmd+T makes two blanks a keystroke
-    // away, and then the leftmost is the wrong answer: the submit came from the
-    // tab the user is typing in, so their first message would appear in a tab
-    // they were not looking at while the one they typed in stayed empty.
-    //
-    // The fallback survives because not every pre-session submit originates in
-    // the active tab — a launcher deep link carries its message in from outside
-    // the strip entirely, and filling a waiting blank is the right home for it.
-    const active = group.tabs.find((t) => t.tabId === group.activeTabId && !t.sessionId);
-    const empty = active ?? group.tabs.find((t) => !t.sessionId);
-    if (empty) {
+    const target = adoptionTarget(state, group, payload);
+    if (target) {
       return {
-        ...withGroup(state, groupId, {
-          ...group,
-          tabs: group.tabs.map((t) => (t.tabId === empty.tabId ? nextTab(empty.tabId) : t)),
-          activeTabId: empty.tabId,
+        ...withGroup(state, target.group.groupId, {
+          ...target.group,
+          tabs: target.group.tabs.map((t) =>
+            t.tabId === target.tab.tabId ? nextTab(target.tab.tabId) : t
+          ),
+          activeTabId: target.tab.tabId,
         }),
-        activeGroupId: groupId,
+        activeGroupId: target.group.groupId,
+      };
+    }
+  }
+
+  if (!payload.sessionId && payload.resumeUnsent) {
+    const unsent = findUnsentTab(state);
+    if (unsent) {
+      return {
+        ...withGroup(state, unsent.group.groupId, {
+          ...unsent.group,
+          activeTabId: unsent.tab.tabId,
+        }),
+        activeGroupId: unsent.group.groupId,
       };
     }
   }

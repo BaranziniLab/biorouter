@@ -1193,6 +1193,12 @@ function ChatGroupPane({
           // the only one: a background group opening an artifact would resize the
           // window out from under the group you are actually looking at.
           allowWindowResize={groupCount === 1}
+          // Only the focused pane's composer takes the caret when it mounts.
+          // Every pane mounts at once when /pair is rebuilt, and a focus inside
+          // a pane makes it the focused one (`onFocusCapture` above), so the
+          // LAST pane used to win the caret and the focus — whichever pane an
+          // arrival had just focused, and whichever the person had left.
+          autoFocusComposer={isActiveGroup}
         />
       </div>
       {/* This pane's OWN terminals, stacked below its chat inside the pane's
