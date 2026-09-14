@@ -12,6 +12,7 @@ import {
 } from './registry';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { readRegistryDownload } from '../../utils/registryDownloadResult';
 
 interface Props {
   onClose: () => void;
@@ -86,7 +87,12 @@ export default function BrowseExtensionsModal({
    */
   const download = useCallback(async (ext: RegistryExtension) => {
     try {
-      const dl = await window.electron.downloadRegistryAsset(ext.download);
+      // Read by value, not by key: `biorouter serve` answers with both keys and
+      // one of them null. See `utils/registryDownloadResult`.
+      const dl = readRegistryDownload(
+        await window.electron.downloadRegistryAsset(ext.download),
+        `Could not download ${ext.name}`
+      );
       setPending((prev) => {
         // A Back-to-marketplace click during the download wins: resolving into
         // a cleared (or re-targeted) slot would reopen an installer the user

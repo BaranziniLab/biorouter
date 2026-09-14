@@ -19,6 +19,7 @@ import { BROWSER_SURFACE_BODY_CLASS, BROWSER_SURFACE_MARKER } from './utils/surf
 // impostor. Like `utils/surface`, this module has no top-level side effects and
 // touches no global at import time, so it cannot disturb the polyfill above.
 import { installViewportPinWarning } from './utils/viewportPin';
+import { readRegistryDownload } from './utils/registryDownloadResult';
 
 const App = lazy(() => import('./App'));
 
@@ -517,13 +518,15 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
           success: false,
           error: 'Could not uninstall extension on the headless server',
         },
+      // ⚠ The daemon answers `{ path, error }` with one of the two null, and
+      // this used to hand that body through as the declared `{ path } |
+      // { error }` — so `'error' in result` read every download as failed and
+      // no Browse install ever reached the importer in a browser.
       downloadRegistryAsset: async (url: string) =>
-        (await headlessPost(headlessConfig.headlessBaseUrl, '/registry/download', {
-          url,
-        })) ?? {
-          success: false,
-          error: 'Could not download registry asset on the headless server',
-        },
+        readRegistryDownload(
+          await headlessPost(headlessConfig.headlessBaseUrl, '/registry/download', { url }),
+          'Could not download registry asset on the headless server'
+        ),
       fetchRegistry: async (url: string) => fetch(url).then((response) => response.json()),
       installDependency: async () => ({ success: false, error: 'Not available in browser mode' }),
       // Absent from this stub entirely until now, so the dependency modal's calls
