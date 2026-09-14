@@ -35,7 +35,7 @@ import {
 import { useLiveSessionTiers } from '../../hooks/chatStreamStore';
 import { mergeSessionTiers, raiseTier } from '../privacy/sessionTier';
 import { useSessionListTiers } from '../privacy/useSessionListTiers';
-import { getSession, type Session, type SessionClassification } from '../../api';
+import { getSession, type Session, type SessionClassification, type SessionType } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 
 interface ChatGroupsShellProps {
@@ -278,10 +278,30 @@ function useSessionPrivacyTiers(
  * with `max`. That is why a tab the user named is still READ — only its name is
  * off limits. Measured before this was so: a private subagent's tab the user
  * had renamed kept its name and drew `data-privacy="public"`.
+ *
+ * # And its session type, for the tab's kind
+ *
+ * The row also says `session_type: 'sub_agent'`, and that is returned too, for
+ * the strip to OR with the workspace annotation. The annotation was the strip's
+ * only source for "this is a sub-agent", and it lives in `ChatGroupsProvider`'s
+ * React state, which mounts inside the `/pair` route and is never persisted.
+ * Measured 2026-09-14 on 1.90.4: two delegated subagent tabs read
+ * `data-chat-kind="subagent"`, and after Settings → a sidebar chat, History →
+ * back, or a reload, both read `data-chat-kind="chat"` for good.
+ *
+ * Like the tier, a type is kept from ANY answer, whatever rules 4 and 5 do to
+ * its name: it is a fact about the session, not about the title the read was
+ * asked about, and a tab's title can move while its read is out (the name
+ * channel, the tab's own load). Unlike the tier it is not raised or merged — a
+ * session's type does not change — and it is never persisted with the tab.
+ * Until a row answers, the annotation is the only source, so a remounted tab
+ * reads as a plain chat for that long: the same window its tier reads as not
+ * yet known.
  */
-function useTabTitlesFromSessionList(
-  groups: ReturnType<typeof useChatGroups>
-): Record<string, SessionClassification> {
+function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): {
+  outsideListTiers: Record<string, SessionClassification>;
+  outsideListSessionTypes: Record<string, SessionType>;
+} {
   const dispatch = groups?.dispatch;
   // Read through a ref so the effect depends on the SIGNATURE below and not on
   // state identity — the shell re-renders on every streamed token, and this
@@ -293,6 +313,10 @@ function useTabTitlesFromSessionList(
   const [outsideListTiers, setOutsideListTiers] = useState<Record<string, SessionClassification>>(
     {}
   );
+  // The session type of each chat read on its own (see above), for the tab's kind.
+  const [outsideListSessionTypes, setOutsideListSessionTypes] = useState<
+    Record<string, SessionType>
+  >({});
   // Which list the reads below were issued against: bumped when the list array
   // itself is replaced, so rule 3 compares numbers rather than pinning old arrays.
   const listRef = useRef<{ rows: readonly Session[] | null; generation: number }>({
@@ -387,6 +411,15 @@ function useTabTitlesFromSessionList(
               return raised && raised !== prev[sessionId] ? { ...prev, [sessionId]: raised } : prev;
             });
           }
+          // So is the type, and for the same reason it is kept before rules 5
+          // and 4 can drop the name. Same object back when nothing changed, so
+          // an identical answer costs no strip render.
+          const sessionType = row.session_type;
+          if (sessionType) {
+            setOutsideListSessionTypes((prev) =>
+              prev[sessionId] === sessionType ? prev : { ...prev, [sessionId]: sessionType }
+            );
+          }
           // Rule 5, then rule 4.
           if (newestReadRef.current.get(sessionId) !== seq) return;
           if (titleOf(sessionId) !== askedAbout) return;
@@ -440,13 +473,15 @@ function useTabTitlesFromSessionList(
     return unsubscribe;
   }, [dispatch, tabTitleSignature]);
 
-  return outsideListTiers;
+  return { outsideListTiers, outsideListSessionTypes };
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
   const terminalDock = useTerminalDock();
-  const outsideListTiers = useTabTitlesFromSessionList(groups);
+  // Both maps are state, so each keeps its identity until its own row changes —
+  // the wrapper object is new per render and is never passed on.
+  const { outsideListTiers, outsideListSessionTypes } = useTabTitlesFromSessionList(groups);
   const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
 
   const isMobile = useIsMobile();
@@ -929,6 +964,10 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         runningSessionIds={groups.runningSessionIds}
         tabAnnotations={groups.tabAnnotations}
         privacyTiers={privacyTiers}
+        // What each out-of-list tab's own row says it is. The strip ORs a
+        // `sub_agent` here with `tabAnnotations`, which do not survive leaving
+        // `/pair` or a reload.
+        sessionTypes={outsideListSessionTypes}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives
         // no pointer events at all, so its own drag state is empty and the caret
