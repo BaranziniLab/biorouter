@@ -2412,6 +2412,17 @@ export default function ChatInput({
     }
   };
 
+  // THE FORM SEND SUBMITS, named for THIS composer. Send sits outside the form
+  // (it is the input line's sibling, not its child) and reaches it through the
+  // `form` attribute, which the document resolves with an id lookup — and a
+  // lookup for an id two elements share returns the FIRST. The id used to be the
+  // literal `bior-chat-form`, so in a split every pane's Send submitted the LEFT
+  // pane's form: measured on 1.90.4, the right-hand Send sent the left pane's
+  // draft and never its own message. `useId` is unique within the window's one
+  // React root, which is every composer a Send could be confused with.
+  // `ChatInput.splitPaneSend.test.tsx`.
+  const composerFormId = React.useId();
+
   const onFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isLoading && hasSubmittableContent) {
@@ -3050,7 +3061,7 @@ export default function ChatInput({
             the prose and Send, still inside 12px to the card's edge. */}
         <div className="flex min-w-0 items-end gap-2">
           <form
-            id="bior-chat-form"
+            id={composerFormId}
             onSubmit={onFormSubmit}
             className="relative flex min-w-0 flex-1"
           >
@@ -3202,7 +3213,8 @@ export default function ChatInput({
                 <span className="flex-shrink-0">
                   <Button
                     type="submit"
-                    form="bior-chat-form"
+                    // Its OWN composer's form — see `composerFormId`.
+                    form={composerFormId}
                     // A 32×32 ROUNDED SQUARE, not a circle and not the 28px
                     // rung. `shape="round"` is already the square icon button
                     // (the name is historical — see button.tsx), so `default`
