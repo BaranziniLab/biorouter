@@ -3418,6 +3418,16 @@
               }
             }
           },
+          "403": {
+            "description": "Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Reset is blocked by active work",
             "content": {
@@ -3454,6 +3464,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResetPreviewResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was counted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
                 }
               }
             }

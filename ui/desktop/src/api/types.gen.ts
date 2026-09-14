@@ -6869,6 +6869,10 @@ export type ResetAppDataErrors = {
      */
     400: ResetErrorResponse;
     /**
+     * Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was deleted
+     */
+    403: ResetErrorResponse;
+    /**
      * Reset is blocked by active work
      */
     409: ResetErrorResponse;
@@ -6897,6 +6901,10 @@ export type PreviewResetData = {
 };
 
 export type PreviewResetErrors = {
+    /**
+     * Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was counted
+     */
+    403: ResetErrorResponse;
     /**
      * Could not inspect reset data
      */
