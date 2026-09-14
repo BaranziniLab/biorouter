@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   announceSessionRowChanged,
+  lastKnownSessionTier,
+  readSessionRowFacts,
   subscribeSessionRowChanges,
   type SessionRowFacts,
 } from './sessionRowSync';
@@ -152,5 +154,35 @@ describe('sessionRowSync', () => {
 
     announceSessionRowChanged('s4');
     await vi.waitFor(() => expect(seen).toHaveLength(1));
+  });
+
+  it('remembers the tier it last delivered, and nothing it failed to read', async () => {
+    mocks.getSession
+      .mockRejectedValueOnce(new Error('403'))
+      .mockResolvedValueOnce(row('s5', 'private', 'turn:versa_azure'));
+    listen();
+
+    announceSessionRowChanged('s5');
+    await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(lastKnownSessionTier('s5')).toBeUndefined();
+
+    announceSessionRowChanged('s5');
+    await vi.waitFor(() => expect(lastKnownSessionTier('s5')).toBe('private'));
+  });
+
+  it('answers a failed or mismatched row read with null, never a throw', async () => {
+    mocks.getSession.mockRejectedValueOnce(new Error('network'));
+    await expect(readSessionRowFacts('s6')).resolves.toBeNull();
+
+    mocks.getSession.mockResolvedValueOnce(row('someone-else', 'public', null));
+    await expect(readSessionRowFacts('s6')).resolves.toBeNull();
+
+    mocks.getSession.mockResolvedValueOnce(row('s6', 'public', 'declassified_by_user'));
+    await expect(readSessionRowFacts('s6')).resolves.toEqual({
+      sessionId: 's6',
+      privacy_tier: 'public',
+      privacy_reason: 'declassified_by_user',
+    });
   });
 });

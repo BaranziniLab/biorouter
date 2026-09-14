@@ -34,7 +34,11 @@ import {
   updateCachedSessionList,
 } from '../utils/sessionListCache';
 import { subscribeToSessionMeta } from '../utils/sessionMetaSubscription';
-import { raiseTier } from '../components/privacy/sessionTier';
+import {
+  announceSessionRowChanged,
+  lastKnownSessionTier,
+  subscribeSessionRowChanges,
+} from '../utils/sessionRowSync';
 import { isReadOnlySubagentChat } from '../components/subagent/subagentReadOnly';
 import { isBrowserSurface } from '../utils/surface';
 import {
@@ -4526,7 +4530,7 @@ export class ChatStreamRegistry {
    */
   followSessionRows(): () => void {
     if (this.stopSessionMeta) return () => {};
-    this.stopSessionMeta = subscribeToSessionMeta({
+    const stopMeta = subscribeToSessionMeta({
       // Only chats this renderer holds a row for can go stale, and only those
       // are worth a read on the daemon's side.
       openSessionIds: () =>
@@ -4537,6 +4541,27 @@ export class ChatStreamRegistry {
         void this.controllers.get(sessionId)?.refreshSessionBinding();
       },
     });
+    // A row read THIS window just made (`sessionRowSync`: a declassification
+    // here or in another window, or a raise another store announced) that
+    // disagrees with the store holding the same chat. Handed over as a nudge,
+    // not applied: the store re-reads through `refreshSessionBinding`, the one
+    // path that orders overlapping reads (`bindingGeneration`).
+    //
+    // The long poll above would get there too, within about two seconds — but
+    // only for the ids it watches, and it watches at most 64 (`MAX_IDS` in
+    // `routes/session_meta.rs`) while this registry keeps every store it ever
+    // made. A store past that cap would otherwise keep a declassified chat's
+    // tab private until the renderer reloaded (defect D1, 2026-09-13).
+    const stopRows = subscribeSessionRowChanges(({ sessionId, privacy_tier }) => {
+      const controller = this.controllers.get(sessionId);
+      if (!controller?.hasLoadedSession()) return;
+      if (controller.getSnapshot().session?.privacy_tier === privacy_tier) return;
+      void controller.refreshSessionBinding();
+    });
+    this.stopSessionMeta = () => {
+      stopMeta();
+      stopRows();
+    };
     return () => {
       this.stopSessionMeta?.();
       this.stopSessionMeta = null;
@@ -4596,11 +4621,27 @@ export class ChatStreamRegistry {
    * reading to the strip, so the three surfaces cannot disagree — and it needs
    * no fetch, because the answer was already in the window.
    *
-   * ⚠ **This map only ever RISES**, mirroring the daemon's own ratchet
-   * (`privacy::raise`). A controller whose session momentarily goes null — a
-   * reload, a rebind — must not retract a `private` it has already reported, or
-   * the strip would fall back to a cached `public` and un-mark a private chat.
-   * {@link raiseTier} is the whole rule.
+   * ⚠ **This map follows its stores DOWN as well as up.** It used to only rise
+   * ("mirroring the daemon's ratchet"), and the ratchet has one exit: a
+   * declassification (issue #56 §12.4). So a chat declassified while its tab
+   * was open kept a private tab icon for as long as it was watched — measured
+   * past twelve minutes on 2026-09-13 (defect D1), with the store, the sidebar
+   * and the database all reading `public` — because the store's lowered
+   * reading was discarded here and `mergeSessionTiers` then took `max` against
+   * it. Each store's newest DEFINED reading is adopted; it is the daemon's row
+   * as that store last read it, and every store is followed by the change feed
+   * and by `sessionRowSync`.
+   *
+   * ⚠ A store that holds NO row says nothing, and does not retract what it said.
+   * The strip must not fall back to a cached `public` because a store is between
+   * rows. (No production path empties a loaded store today; the rule is kept so
+   * one cannot silently un-mark a chat.)
+   *
+   * ⚠ **A change it sees is announced** (`sessionRowSync`), so every OTHER
+   * window's History row and sidebar row re-read the chat. Without that, a
+   * lowering pushed by the declassify dialog and a raise pushed by nobody left
+   * another window badging a private chat PUBLIC (defect D4). See
+   * {@link noteControllerTier}.
    *
    * ⚠ **O(1) per notification.** `handleControllerActivity` runs on every
    * snapshot notification, which during a turn is once per animation frame per
@@ -4627,14 +4668,30 @@ export class ChatStreamRegistry {
   }
 
   private noteControllerTier(controller: ChatStreamController): void {
+    const sessionId = controller.sessionId;
     const reported = controller.getSnapshot().session?.privacy_tier ?? undefined;
-    const current = this.sessionTiers[controller.sessionId];
-    const raised = raiseTier(current, reported);
-    if (raised === current) return;
-    this.sessionTiers = { ...this.sessionTiers };
-    if (raised) this.sessionTiers[controller.sessionId] = raised;
-    else delete this.sessionTiers[controller.sessionId];
+    const current = this.sessionTiers[sessionId];
+    if (reported === undefined || reported === current) return;
+    this.sessionTiers = { ...this.sessionTiers, [sessionId]: reported };
     for (const listener of this.tierListeners) listener();
+
+    // Tell every window's list surfaces — this one's included — to re-read the
+    // row. Only a CHANGE against something this window already believed:
+    //
+    // - `current` is this store's previous reading, so a turn that raised the
+    //   chat, a change-feed re-read that found it lowered, a CLI declassification
+    //   the feed carried;
+    // - `lastKnownSessionTier` is the last row this window's list surfaces were
+    //   handed, so a chat opened for the first time HERE whose row no longer
+    //   matches what History was last told about it.
+    //
+    // A store's very first reading of a chat nobody here has an opinion about
+    // announces nothing; that is every chat load. And a change this window's
+    // list surfaces have already been handed is not announced again: someone
+    // announced it, every window has read it, and this store is catching up.
+    const listed = lastKnownSessionTier(sessionId);
+    const believed = current ?? listed;
+    if (believed !== undefined && listed !== reported) announceSessionRowChanged(sessionId);
   }
 
   private handleControllerActivity = (controller: ChatStreamController): void => {

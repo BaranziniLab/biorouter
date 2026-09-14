@@ -6,9 +6,16 @@ import type { Session } from '../../api';
 
 const mocks = vi.hoisted(() => ({
   declassifySession: vi.fn(),
-  toastError: vi.fn(),
+  // Returns the id the real `toastError` returns: its dedupe key, so two
+  // identical failures share one id exactly as they share one toast.
+  toastError: vi.fn(({ title, msg }: { title: string; msg: string }) => `error:${title}:${msg}`),
   toastSuccess: vi.fn(),
+  dismissToast: vi.fn(),
   announceSessionRowChanged: vi.fn(),
+  readSessionRowFacts: vi.fn(),
+  // Row reads delivered in this window, for the listener the dialog module
+  // installs; `deliverRow` below plays one.
+  rowListeners: new Set<(facts: { sessionId: string; privacy_tier: string }) => void>(),
 }));
 
 vi.mock('../../api', () => ({
@@ -18,6 +25,7 @@ vi.mock('../../api', () => ({
 vi.mock('../../toasts', () => ({
   toastError: mocks.toastError,
   toastSuccess: mocks.toastSuccess,
+  toastService: { dismiss: mocks.dismissToast },
 }));
 
 vi.mock('../../utils/userAction', () => ({
@@ -26,7 +34,31 @@ vi.mock('../../utils/userAction', () => ({
 
 vi.mock('../../utils/sessionRowSync', () => ({
   announceSessionRowChanged: mocks.announceSessionRowChanged,
+  readSessionRowFacts: mocks.readSessionRowFacts,
+  subscribeSessionRowChanges: (
+    listener: (facts: { sessionId: string; privacy_tier: string }) => void
+  ) => {
+    mocks.rowListeners.add(listener);
+    return () => mocks.rowListeners.delete(listener);
+  },
 }));
+
+function deliverRow(sessionId: string, privacy_tier: 'public' | 'private') {
+  for (const listener of [...mocks.rowListeners]) listener({ sessionId, privacy_tier });
+}
+
+/** The row as `readSessionRowFacts` would hand it back after a failure. */
+function rowReads(privacy_tier: 'public' | 'private' | null) {
+  mocks.readSessionRowFacts.mockResolvedValue(
+    privacy_tier === null
+      ? null
+      : {
+          sessionId: s.id,
+          privacy_tier,
+          privacy_reason: privacy_tier === 'public' ? 'declassified_by_user' : 'turn:versa_azure',
+        }
+  );
+}
 
 /**
  * Answer the way the generated client (`api/client/client.gen.ts`) really does,
@@ -70,6 +102,9 @@ const s = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.declassifySession.mockImplementation(answerLikeTheClient(200, ''));
+  // Every failure re-reads the row before it says anything. Unless a test says
+  // otherwise, the write did not land.
+  rowReads('private');
 });
 
 afterEach(() => {
@@ -442,8 +477,228 @@ describe('DeclassifySessionDialog', () => {
     await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
     const { title, msg } = mocks.toastError.mock.calls[0][0] as { title: string; msg: string };
     expect(msg).not.toContain('[object Object]');
-    expect(msg).toMatch(/not marked public/);
+    // Stated as what the row read back, which is all this dialog knows.
+    expect(msg).toMatch(/still private/);
     expect(title).toBe('Could not mark this chat public');
     expect(screen.queryByRole('textbox')).toBeNull();
+  });
+});
+
+/**
+ * Defect D2 of the 2026-09-13 repair round. The daemon wrote, and its answer
+ * never reached the renderer: measured by failing the POST's RESPONSE in the
+ * running app (CDP `Fetch.failRequest` at the response stage) with the daemon's
+ * 200 already sent. The database read `public` with one ledger row; the toast
+ * read "Biorouter could not be reached, so this chat was not marked public.",
+ * the dialog stayed open, and both windows' rows stayed private. A missing
+ * answer is not a "no", so the row is asked before a word is said.
+ */
+describe('an answer that never arrived', () => {
+  const lostAnswer = () =>
+    mocks.declassifySession.mockRejectedValue(new TypeError('Failed to fetch'));
+
+  it('is a success when the row reads public — the write landed', async () => {
+    const user = userEvent.setup();
+    const onDeclassified = vi.fn();
+    const onClose = vi.fn();
+    lostAnswer();
+    rowReads('public');
+
+    render(
+      <DeclassifySessionDialog session={s} onClose={onClose} onDeclassified={onDeclassified} />
+    );
+    await user.type(screen.getByLabelText(/last 6 characters/i), 'def456');
+    await user.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() => expect(onDeclassified).toHaveBeenCalledWith('abc123def456'));
+    expect(mocks.readSessionRowFacts).toHaveBeenCalledWith('abc123def456');
+    expect(mocks.toastSuccess).toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    // Every window's rows re-read it, as after any success.
+    expect(mocks.announceSessionRowChanged).toHaveBeenCalledWith('abc123def456');
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('says the chat is still private when the row says so, and not more', async () => {
+    const onDeclassified = vi.fn();
+    lostAnswer();
+    rowReads('private');
+
+    render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        onDeclassified={onDeclassified}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    const { msg } = mocks.toastError.mock.calls[0][0] as { msg: string };
+    expect(msg).toMatch(/still private/);
+    expect(onDeclassified).not.toHaveBeenCalled();
+    expect(mocks.announceSessionRowChanged).not.toHaveBeenCalled();
+    // A lost answer says nothing about the grade.
+    expect(screen.queryByRole('textbox')).toBeNull();
+  });
+
+  it('claims neither outcome when the row cannot be read either', async () => {
+    const onDeclassified = vi.fn();
+    lostAnswer();
+    rowReads(null);
+
+    render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        onDeclassified={onDeclassified}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    const { msg } = mocks.toastError.mock.calls[0][0] as { msg: string };
+    expect(msg).toMatch(/could not be asked whether this chat is now public/);
+    expect(msg).not.toMatch(/not marked public/);
+    expect(msg).not.toMatch(/still private/);
+    expect(onDeclassified).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it('keeps the daemon’s own sentence when it gave one and the row is unreadable', async () => {
+    mocks.declassifySession.mockImplementation(answerLikeTheClient(503, STORE_BUSY));
+    rowReads(null);
+
+    render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith({
+        title: 'The chat store was busy',
+        msg: STORE_BUSY,
+      })
+    );
+  });
+});
+
+/**
+ * Defect D3a of the 2026-09-13 repair round. Error toasts do not expire, so a
+ * failure that a later attempt overturned stayed beside "Chat marked public":
+ * measured still on screen 60 s after the success toast had closed — after two
+ * busy answers, after a lost answer, and after the escalation's refusal.
+ */
+describe('a failure report is retracted by the next outcome', () => {
+  it('a later success dismisses the failure it overturned', async () => {
+    mocks.declassifySession
+      .mockImplementationOnce(answerLikeTheClient(503, STORE_BUSY))
+      .mockImplementationOnce(answerLikeTheClient(200, ''));
+    const onDeclassified = vi.fn();
+
+    render(
+      <DeclassifySessionDialog
+        // Its own id: the outstanding-failure map is module-level, and an id
+        // an earlier test failed on would already hold an entry.
+        session={{ ...s, id: 'overturned01', privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        onDeclassified={onDeclassified}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+    const failureId = mocks.toastError.mock.results[0].value;
+    expect(mocks.dismissToast).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Make public/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() => expect(onDeclassified).toHaveBeenCalled());
+    expect(mocks.dismissToast).toHaveBeenCalledWith(failureId);
+    expect(mocks.toastSuccess).toHaveBeenCalled();
+  });
+
+  it('reaches a failure raised before the dialog was closed and reopened', async () => {
+    mocks.declassifySession
+      .mockImplementationOnce(answerLikeTheClient(503, STORE_BUSY))
+      .mockImplementationOnce(answerLikeTheClient(200, ''));
+    const session = { ...s, id: 'reopened0001', privacy_reason: 'turn:versa_azure' };
+
+    const first = render(
+      <DeclassifySessionDialog session={session} onClose={vi.fn()} undoMs={5} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+    const failureId = mocks.toastError.mock.results[0].value;
+    // Both entry points unmount the dialog when it closes.
+    first.unmount();
+
+    const onDeclassified = vi.fn();
+    render(
+      <DeclassifySessionDialog
+        session={session}
+        onClose={vi.fn()}
+        onDeclassified={onDeclassified}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+    await waitFor(() => expect(onDeclassified).toHaveBeenCalled());
+    expect(mocks.dismissToast).toHaveBeenCalledWith(failureId);
+  });
+
+  it('a declassification made elsewhere retracts the failure too', async () => {
+    // Fail here, close the dialog, and mark the chat public from another
+    // window: this window hears it as a row read, and its "still private" toast
+    // is then a report about a chat that is not.
+    mocks.declassifySession.mockImplementation(answerLikeTheClient(503, STORE_BUSY));
+    const session = { ...s, id: 'elsewhere001', privacy_reason: 'turn:versa_azure' };
+    const view = render(<DeclassifySessionDialog session={session} onClose={vi.fn()} undoMs={5} />);
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+    const failureId = mocks.toastError.mock.results[0].value;
+    view.unmount();
+
+    deliverRow('elsewhere001', 'private');
+    expect(mocks.dismissToast).not.toHaveBeenCalled();
+
+    deliverRow('elsewhere001', 'public');
+    expect(mocks.dismissToast).toHaveBeenCalledWith(failureId);
+  });
+
+  it('a different failure replaces the earlier one; the same failure keeps its toast', async () => {
+    const refusal =
+      "The confirmation did not match the last six characters of this chat's id. Nothing was changed.";
+    mocks.declassifySession
+      .mockImplementationOnce(answerLikeTheClient(503, STORE_BUSY))
+      .mockImplementationOnce(answerLikeTheClient(503, STORE_BUSY))
+      .mockImplementationOnce(answerLikeTheClient(400, refusal));
+    const session = { ...s, id: 'replaced0001', privacy_reason: 'turn:versa_azure' };
+
+    render(<DeclassifySessionDialog session={session} onClose={vi.fn()} undoMs={5} />);
+    const press = async (times: number) => {
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /Make public/ })).toBeEnabled()
+      );
+      fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+      await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(times));
+    };
+
+    await press(1);
+    const busyId = mocks.toastError.mock.results[0].value;
+    await press(2);
+    // Deduplicated onto the same toast: dismissing it would take away the
+    // report of the attempt just made.
+    expect(mocks.dismissToast).not.toHaveBeenCalled();
+
+    await press(3);
+    expect(mocks.dismissToast).toHaveBeenCalledWith(busyId);
   });
 });

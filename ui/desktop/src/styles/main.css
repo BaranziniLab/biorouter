@@ -1862,6 +1862,21 @@
     background-color var(--motion-fast) var(--ease-out);
 }
 
+/* A toast stays clickable while a modal dialog is open.
+   Radix's modal sets `pointer-events: none` on <body> for as long as the dialog
+   is open and gives only its own layer `auto`. The toast layer is a child of
+   <body> that says nothing, so it inherited `none`: a toast drawn ABOVE the
+   dialog (`--z-toast` > `--z-modal`) could not be clicked, and the press fell
+   through to the dialog's backdrop and closed the dialog instead. Measured on
+   2026-09-13 (defect D3b): an error toast over "Make this chat public?", one
+   click on its ×, the dialog gone and the toast still there a minute later.
+   On each card, not on the container, so the gaps between toasts still reach
+   the backdrop. `dialog.tsx` keeps a press that lands here from counting as a
+   press outside the dialog. */
+.Toastify__toast-container > * {
+  pointer-events: auto;
+}
+
 .Toastify__toast-container .Toastify__close-button:hover {
   opacity: 1;
   color: var(--text-default);

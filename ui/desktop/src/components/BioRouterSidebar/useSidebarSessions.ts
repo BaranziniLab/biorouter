@@ -3,7 +3,11 @@ import { listSidebarSessions, type SessionSummary } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { subscribeSessionListChanges, subscribeSessionRemoved } from '../../utils/sessionListCache';
-import { subscribeSessionRowChanges } from '../../utils/sessionRowSync';
+import {
+  settleRowsReadDuringFetch,
+  subscribeSessionRowChanges,
+  type SessionRowFacts,
+} from '../../utils/sessionRowSync';
 
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
 
@@ -43,12 +47,18 @@ export default function useSidebarSessions(): SidebarSessionsState {
   const hasMoreRef = useRef(true);
   const hasLoadedRef = useRef(false);
   const loadingRef = useRef(false);
+  // Row reads delivered while a page request was in flight, settled against
+  // that page's answer. See `settleRowsReadDuringFetch`: without it, a head
+  // refresh issued before a turn raised a chat and answered after the raise was
+  // patched in would draw the chat public again.
+  const rowsReadDuringLoadRef = useRef(new Map<string, SessionRowFacts>());
 
   const loadPage = useCallback(async (reset: boolean) => {
     if (loadingRef.current || (!reset && !hasMoreRef.current)) return;
 
     const cursor = reset ? null : nextCursorRef.current;
     loadingRef.current = true;
+    rowsReadDuringLoadRef.current.clear();
     setIsLoading(true);
 
     try {
@@ -60,7 +70,10 @@ export default function useSidebarSessions(): SidebarSessionsState {
         throwOnError: true,
       });
       const page = response.data;
-      const mergedSessions = appendSessionPage(sessionsRef.current, page.sessions);
+      const mergedSessions = appendSessionPage(
+        sessionsRef.current,
+        settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false)
+      );
       const pageHasMore =
         reset && hasLoadedRef.current ? hasMoreRef.current || page.has_more : page.has_more;
 
@@ -136,15 +149,17 @@ export default function useSidebarSessions(): SidebarSessionsState {
       setSessions(remaining);
     });
 
-    // A chat's classification changed in place — a declassification, here or
-    // in another window (`sessionRowSync`). Patched by id, for the same reason
-    // the removal above is: `loadPage(true)` re-reads only the HEAD of the
-    // keyset, and a declassified chat is usually months old and nowhere near
-    // it. Until 2026-09-13 the daemon stamped `updated_at` on a declassification,
-    // so the next head refresh happened to carry the chat (moved to the top,
-    // which was the bug); with the chat left where it belongs, only this
-    // reaches its row.
-    const unsubscribeRows = subscribeSessionRowChanges(({ sessionId, privacy_tier }) => {
+    // A chat's classification changed in place — a declassification, or a raise
+    // a chat store announced, here or in another window (`sessionRowSync`).
+    // Patched by id, for the same reason the removal above is: `loadPage(true)`
+    // re-reads only the HEAD of the keyset, and a declassified chat is usually
+    // months old and nowhere near it. Until 2026-09-13 the daemon stamped
+    // `updated_at` on a declassification, so the next head refresh happened to
+    // carry the chat (moved to the top, which was the bug); with the chat left
+    // where it belongs, only this reaches its row.
+    const unsubscribeRows = subscribeSessionRowChanges((facts) => {
+      const { sessionId, privacy_tier } = facts;
+      if (loadingRef.current) rowsReadDuringLoadRef.current.set(sessionId, facts);
       let changed = false;
       const next = sessionsRef.current.map((session) => {
         if (session.id !== sessionId || session.privacy_tier === privacy_tier) return session;

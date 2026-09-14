@@ -3,8 +3,10 @@ import { userActionHeaders } from './userAction';
 
 /**
  * "A chat's ROW changed in place" — for a change the list surfaces render but
- * that moves nothing in the list. Today exactly one writer needs it: a
- * declassification (issue #56 §12.4).
+ * that moves nothing in the list: a chat's classification moving in EITHER
+ * direction. A declassification (issue #56 §12.4) announces itself from the
+ * dialog that made it; a raise is announced by whichever window's chat store
+ * first sees it (`ChatStreamRegistry.noteControllerTier`).
  *
  * # Why this exists — item 11 of the 1.90.4 hold (2026-09-13)
  *
@@ -28,9 +30,28 @@ import { userActionHeaders } from './userAction';
  * - `useSidebarSessions` patches the row it holds, wherever it sits;
  * - `SessionHistoryView` moves its page badge.
  *
- * An open chat needs none of this: `GET /sessions/changes` compares
+ * An open chat's store is followed by `GET /sessions/changes`, which compares
  * `privacy_tier` and `privacy_reason` (never `updated_at`), and its poll tells
- * the chat's controller to re-read within about two seconds.
+ * the chat's controller to re-read within about two seconds. The registry also
+ * hands a controller every row read made here, so a store that holds a stale
+ * tier re-reads at once rather than on the next poll.
+ *
+ * # Both directions, or the push is a new way to be wrong
+ *
+ * ⚠ **Pushing only the lowering was defect D4 of the 2026-09-13 repair round.**
+ * Before this channel existed a second window never learned of a
+ * declassification, so it kept a private badge — stale, but in the safe
+ * direction. Once the lowering was pushed and nothing pushed the raise, the
+ * sequence "declassify in A, then send one turn on a private model in A" left
+ * window B's History row AND its sidebar row badging the chat PUBLIC for as
+ * long as it was watched (90 s, and the sidebar over two minutes), while the
+ * database read `private` / `turn:versa_azure`. A channel that can lower a
+ * badge must also be able to raise it, so a store that observes its chat's tier
+ * change announces here too — see `ChatStreamRegistry.noteControllerTier`.
+ *
+ * {@link lastKnownSessionTier} is what keeps that from echoing: a window that
+ * has already delivered a read of the new tier (because someone announced it)
+ * does not announce the same change again when its own store catches up.
  *
  * # The announcement is a nudge, never a payload
  *
@@ -45,9 +66,9 @@ import { userActionHeaders } from './userAction';
  * row is read here and handed to the subscribers, rather than each subscriber
  * fetching for itself, so a declassification costs one `GET` per window.
  *
- * ⚠ **Announce only what the daemon accepted.** Call it after the write
- * resolved 200; a nudge that outran its write would re-read the value it was
- * sent to replace.
+ * ⚠ **Announce only what has landed.** Call it after the write resolved (or a
+ * read showed that it had), or after a store READ the new tier; a nudge that
+ * outran its write would re-read the value it was sent to replace.
  */
 
 export interface SessionRowFacts {
@@ -70,6 +91,13 @@ const listeners = new Set<Listener>();
 const newestRead = new Map<string, number>();
 let readCounter = 0;
 
+/**
+ * The tier of the last read this window DELIVERED for each chat. See
+ * {@link lastKnownSessionTier}. Holds one short string per chat the channel has
+ * carried, which is bounded by the chats whose classification moved.
+ */
+const delivered = new Map<string, SessionClassification>();
+
 let channel: BroadcastChannel | null = null;
 
 function getChannel(): BroadcastChannel | null {
@@ -87,10 +115,15 @@ function getChannel(): BroadcastChannel | null {
   return channel;
 }
 
-async function reread(sessionId: string): Promise<void> {
-  if (listeners.size === 0) return;
-  const generation = ++readCounter;
-  newestRead.set(sessionId, generation);
+/**
+ * Read one chat's classification from the daemon — the row, not the
+ * transcript, with the proof-of-user a private chat's row needs.
+ *
+ * `null` when the read failed or answered for another chat. Never throws: a
+ * caller that needs to know what happened to a write asks this, and "could not
+ * ask" is an answer it has to handle rather than an exception it can forget.
+ */
+export async function readSessionRowFacts(sessionId: string): Promise<SessionRowFacts | null> {
   try {
     const response = await getSession({
       path: { session_id: sessionId },
@@ -102,17 +135,29 @@ async function reread(sessionId: string): Promise<void> {
       throwOnError: true,
     });
     const row = response.data;
-    if (newestRead.get(sessionId) !== generation) return;
-    if (!row || row.id !== sessionId || !row.privacy_tier) return;
-    const facts: SessionRowFacts = {
+    if (!row || row.id !== sessionId || !row.privacy_tier) return null;
+    return {
       sessionId,
       privacy_tier: row.privacy_tier,
       privacy_reason: row.privacy_reason ?? null,
     };
-    for (const listener of [...listeners]) listener(facts);
   } catch {
-    // Silent, as `refreshSessionBinding` is: a read that failed leaves every
-    // surface exactly as stale as it was, which is not worth a toast.
+    return null;
+  }
+}
+
+async function reread(sessionId: string): Promise<void> {
+  if (listeners.size === 0) return;
+  const generation = ++readCounter;
+  newestRead.set(sessionId, generation);
+  try {
+    const facts = await readSessionRowFacts(sessionId);
+    // Silent on failure, as `refreshSessionBinding` is: a read that failed
+    // leaves every surface exactly as stale as it was, which is not worth a
+    // toast.
+    if (!facts || newestRead.get(sessionId) !== generation) return;
+    delivered.set(sessionId, facts.privacy_tier);
+    for (const listener of [...listeners]) listener(facts);
   } finally {
     if (newestRead.get(sessionId) === generation) newestRead.delete(sessionId);
   }
@@ -125,6 +170,86 @@ async function reread(sessionId: string): Promise<void> {
 export function announceSessionRowChanged(sessionId: string): void {
   void reread(sessionId);
   getChannel()?.postMessage({ sessionId });
+}
+
+/**
+ * Re-read `sessionId`'s row for THIS window only, and deliver it to this
+ * window's subscribers. No other window is told.
+ *
+ * For a disagreement this window found by itself: a list answer that differs
+ * from a row read which landed while that list was in flight. Nobody else holds
+ * that pair of readings, so nobody else needs the third one that settles it.
+ */
+export function rereadSessionRowHere(sessionId: string): void {
+  void reread(sessionId);
+}
+
+/**
+ * Reconcile a LIST answer with the row reads this window delivered while that
+ * list request was in flight, and return the rows to publish.
+ *
+ * # Why a list surface cannot just take either one
+ *
+ * Neither reading is known to be the later one. A list request issued before a
+ * turn raised a chat can land after the raise was read and patched in, and a
+ * surface that adopted the list would put the chat back to PUBLIC — a raise
+ * undone by an older photograph. Replaying the row read over the list is wrong
+ * the other way: that read may itself have been issued before the list, so it
+ * could write an older `public` over a newer `private`.
+ *
+ * So a disagreement is settled the only way that does not guess:
+ *
+ * 1. until it is settled the row shows the HIGHER tier of the two (a chat is
+ *    never drawn public while either reading says private), and
+ * 2. the row is read a third time, now — after both — and that read patches
+ *    the surface through the ordinary channel ({@link rereadSessionRowHere}).
+ *
+ * A row the two readings agree on, and a row no read touched, is published as
+ * the list answered.
+ *
+ * `withReason` compares `privacy_reason` as well, for a surface whose rows carry
+ * it (`Session`); `SessionSummary` carries only the tier.
+ *
+ * Consumes `readDuringFetch` (it is cleared).
+ */
+export function settleRowsReadDuringFetch<
+  T extends {
+    id: string;
+    privacy_tier?: SessionClassification | null;
+    privacy_reason?: string | null;
+  },
+>(rows: T[], readDuringFetch: Map<string, SessionRowFacts>, withReason: boolean): T[] {
+  if (readDuringFetch.size === 0) return rows;
+  const unsettled: string[] = [];
+  const settled = rows.map((row) => {
+    const read = readDuringFetch.get(row.id);
+    if (!read) return row;
+    const agrees =
+      row.privacy_tier === read.privacy_tier &&
+      (!withReason || (row.privacy_reason ?? null) === read.privacy_reason);
+    if (agrees) return row;
+    unsettled.push(row.id);
+    if (read.privacy_tier !== 'private' || row.privacy_tier === 'private') return row;
+    return withReason
+      ? { ...row, privacy_tier: read.privacy_tier, privacy_reason: read.privacy_reason }
+      : { ...row, privacy_tier: read.privacy_tier };
+  });
+  readDuringFetch.clear();
+  for (const sessionId of unsettled) rereadSessionRowHere(sessionId);
+  return settled;
+}
+
+/**
+ * The tier of the last read of `sessionId` this window delivered to its
+ * subscribers, or `undefined` when the channel has carried nothing for it.
+ *
+ * What it is for: a chat store that sees its tier change asks this before
+ * announcing, and says nothing when the window has already delivered that tier
+ * — the change was announced by whoever made it, every window has read it, and
+ * a second announcement would only make every window read it again.
+ */
+export function lastKnownSessionTier(sessionId: string): SessionClassification | undefined {
+  return delivered.get(sessionId);
 }
 
 /**

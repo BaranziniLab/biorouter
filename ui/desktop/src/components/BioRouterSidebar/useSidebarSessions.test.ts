@@ -257,4 +257,61 @@ describe('a declassified chat is re-marked in Recents without a reload', () => {
     // No head refresh was needed — and one could not have reached this row.
     expect(mocks.listSidebarSessions).not.toHaveBeenCalled();
   });
+
+  /**
+   * Defect D4 of the 2026-09-13 repair round, the sidebar half. A head refresh
+   * issued before a turn raised a chat, answered after the raise was patched
+   * in, drew the row public again.
+   */
+  it('a page that raced a raise does not draw the row public again', async () => {
+    const publicRow = { ...makeSummary(0), privacy_tier: 'public' as const };
+    mocks.listSidebarSessions.mockResolvedValueOnce({
+      data: { sessions: [publicRow], has_more: false, next_cursor: null },
+    });
+    const { result } = renderHook(() => useSidebarSessions());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+    let answerPage: ((value: unknown) => void) | undefined;
+    mocks.listSidebarSessions.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerPage = resolve;
+      })
+    );
+    // A membership nudge from anywhere schedules a head refresh.
+    act(() => notifySessionListChanged());
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2));
+
+    mocks.getSession.mockResolvedValue({
+      data: { id: 'session-0', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+    });
+    const sibling = new BroadcastChannel('biorouter:session-row');
+    try {
+      sibling.postMessage({ sessionId: 'session-0' });
+      await waitFor(() => expect(result.current.sessions[0].privacy_tier).toBe('private'));
+    } finally {
+      sibling.close();
+    }
+    expect(mocks.getSession).toHaveBeenCalledTimes(1);
+
+    // The read that settles the disagreement is held open, so the row's state
+    // in the meantime is observable.
+    let answerThirdRead: ((value: unknown) => void) | undefined;
+    mocks.getSession.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerThirdRead = resolve;
+      })
+    );
+    await act(async () => {
+      answerPage!({ data: { sessions: [publicRow], has_more: false, next_cursor: null } });
+    });
+
+    await waitFor(() => expect(mocks.getSession).toHaveBeenCalledTimes(2));
+    expect(result.current.sessions[0].privacy_tier).toBe('private');
+    await act(async () => {
+      answerThirdRead!({
+        data: { id: 'session-0', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+      });
+    });
+    expect(result.current.sessions[0].privacy_tier).toBe('private');
+  });
 });

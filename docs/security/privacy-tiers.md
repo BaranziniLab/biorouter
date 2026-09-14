@@ -132,12 +132,20 @@ this section is the ledger.
   not move the chat's `updated_at`**: a classification change is not use of the chat, and stamping
   it put months-old chats under History's "Today". The desktop announces the change on its own
   channel instead (`ui/desktop/src/utils/sessionRowSync.ts`), so a second window's History row,
-  sidebar row and session page re-read the row in place. **A declassification that only waited out
+  sidebar row and session page re-read the row in place. ⚠ **That channel carries raises too, and
+  must.** Pushing only the lowering let a second window badge a chat PUBLIC after a turn had raised
+  it straight back — a failure the renderer could not produce before the push existed. A chat store
+  that sees its chat's tier change announces it (`ChatStreamRegistry.noteControllerTier`), and a
+  list answer that raced a row read shows the higher tier until a third read settles it. The tab
+  strip's live map follows its store down as well as up; it used to only rise, which kept a
+  declassified chat's open tab private until a reload. **A declassification that only waited out
   the store's busy timeout answers `503` with `Retry-After` and a sentence**
   (`privacy::declassify::DECLASSIFY_STORE_BUSY`), distinct from a genuine failure's `500`
   (`routes::session::DECLASSIFY_FAILED`); both mean nothing landed, and neither retries inside
   the call — SQLite's busy handler already waited five seconds, and a second
-  attempt under the load that causes this was measured to fail again three times in seven.
+  attempt under the load that causes this was measured to fail again three times in seven. The
+  desktop never reports an outcome it did not read: after any answer that is not a `200` it reads
+  the row, because an answer can be lost after the daemon wrote.
 
   ⚠ **R18's "no cached grant" is honoured on Linux and NOT guaranteed on macOS (F-13).** R18 asks
   for a prompt "raised once per operation (no session, no cached grant)". The Linux prompter
