@@ -213,15 +213,23 @@ const outstandingFailureToasts = new Map<string, string | number>();
  * `isDefaultSessionName`) is shared by dozens of rows, so that chat is named by
  * its id, which the dialog shows under the name. Any other name is quoted, and
  * cut short (by characters, so an emoji is never split) because a toast title
- * is not clamped.
+ * is not clamped — and it is followed by the id too, because a real name is not
+ * unique either: auto-generated names repeat, and two chats both called
+ * "Subagent delegation request" failing at once would otherwise raise two
+ * toasts that read identically.
  */
 export function declassifyToastSubject(name: string | null | undefined, sessionId: string): string {
   const trimmed = (name ?? '').trim();
   if (isDefaultSessionName(trimmed)) return `chat ${sessionId}`;
   const chars = [...trimmed];
-  if (chars.length <= SUBJECT_MAX_CHARS) return `“${trimmed}”`;
-  const kept = chars.slice(0, SUBJECT_MAX_CHARS - 1).join('');
-  return `“${kept.trimEnd()}…”`;
+  const quoted =
+    chars.length <= SUBJECT_MAX_CHARS
+      ? `“${trimmed}”`
+      : `“${chars
+          .slice(0, SUBJECT_MAX_CHARS - 1)
+          .join('')
+          .trimEnd()}…”`;
+  return `${quoted} (${sessionId})`;
 }
 const SUBJECT_MAX_CHARS = 60;
 

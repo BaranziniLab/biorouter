@@ -403,7 +403,7 @@ describe('DeclassifySessionDialog', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'Could not mark this chat public — “Cohort of 4,102 patients”',
+        title: 'Could not mark this chat public — “Cohort of 4,102 patients” (abc123def456)',
         msg: refusal,
         dedupeScope: 'declassify:abc123def456',
       })
@@ -452,7 +452,7 @@ describe('DeclassifySessionDialog', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'The chat store was busy — “Cohort of 4,102 patients”',
+        title: 'The chat store was busy — “Cohort of 4,102 patients” (abc123def456)',
         msg: STORE_BUSY,
         dedupeScope: 'declassify:abc123def456',
       })
@@ -485,7 +485,9 @@ describe('DeclassifySessionDialog', () => {
     expect(msg).not.toContain('[object Object]');
     // Stated as what the row read back, which is all this dialog knows.
     expect(msg).toMatch(/still private/);
-    expect(title).toBe('Could not mark this chat public — “Cohort of 4,102 patients”');
+    expect(title).toBe(
+      'Could not mark this chat public — “Cohort of 4,102 patients” (abc123def456)'
+    );
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 });
@@ -588,7 +590,7 @@ describe('an answer that never arrived', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'The chat store was busy — “Cohort of 4,102 patients”',
+        title: 'The chat store was busy — “Cohort of 4,102 patients” (abc123def456)',
         msg: STORE_BUSY,
         dedupeScope: 'declassify:abc123def456',
       })
@@ -718,15 +720,26 @@ describe('declassifyToastSubject', () => {
     expect(declassifyToastSubject(undefined, '20260809_21')).toBe('chat 20260809_21');
   });
 
-  it('quotes any other name, and cuts a long one short', () => {
+  it('quotes any other name, cuts a long one short, and follows it with the id', () => {
     expect(declassifyToastSubject(' Subagent delegation request ', 'x')).toBe(
-      '“Subagent delegation request”'
+      '“Subagent delegation request” (x)'
     );
     const long = declassifyToastSubject('a'.repeat(59) + '😀😀', 'x');
-    expect(long).toBe(`“${'a'.repeat(59)}…”`);
+    expect(long).toBe(`“${'a'.repeat(59)}…” (x)`);
     // Characters, not UTF-16 units: an emoji at the cut is kept whole or dropped.
-    expect([...declassifyToastSubject('b'.repeat(58) + '😀😀😀', 'x')].slice(-3).join('')).toBe(
-      '😀…”'
+    expect(declassifyToastSubject('b'.repeat(58) + '😀😀😀', 'x')).toBe(
+      `“${'b'.repeat(58)}😀…” (x)`
     );
+  });
+
+  it('tells two chats with the same name apart', () => {
+    // Auto-generated names repeat: the seed data already holds 20260809_23 and
+    // 20260809_25, both "Subagent delegation request". Two failures at once must
+    // not raise two toasts that read the same.
+    const a = declassifyToastSubject('Subagent delegation request', '20260809_23');
+    const b = declassifyToastSubject('Subagent delegation request', '20260809_25');
+    expect(a).not.toBe(b);
+    expect(a).toContain('20260809_23');
+    expect(b).toContain('20260809_25');
   });
 });
