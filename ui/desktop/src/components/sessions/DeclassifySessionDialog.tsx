@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { declassifySession, type Session } from '../../api';
-import { toastError, toastSuccess } from '../../toasts';
+import { toastError, toastService, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
+import {
+  announceSessionRowChanged,
+  readSessionRowFacts,
+  subscribeSessionRowChanges,
+} from '../../utils/sessionRowSync';
+import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
 import {
   Dialog,
@@ -83,6 +89,173 @@ export function confirmationPhrase(sessionId: string): string {
   return [...sessionId].slice(-6).join('');
 }
 
+/**
+ * What went wrong, in the words the person is shown — item 8 of the 1.90.4
+ * hold (2026-09-13).
+ *
+ * The daemon answers every failure of `POST /sessions/{id}/declassify` with a
+ * plain-text sentence, and that sentence is the message. It did not always: a
+ * lock timeout was a bodyless 500, the generated client throws the parsed body
+ * rather than the Response, and `String({})` put **`[object Object]`** in the
+ * toast. Measured in the running app with the store's write lock held across
+ * one click.
+ *
+ * So the status is read off the Response, never inferred from the body, and a
+ * body that is not a sentence gets one written here. A 503 is the daemon saying
+ * the chat store stayed write-locked by other work past its wait: the one
+ * failure a retry clears, titled so it cannot be read as a refusal.
+ *
+ * # A missing answer is not a "no" — defect D2 (2026-09-13)
+ *
+ * ⚠ This used to say "no Response means the request never reached the daemon"
+ * and tell the person **"this chat was not marked public"**. A Response can be
+ * lost AFTER the daemon wrote: measured by failing the POST's response in the
+ * renderer with the daemon's 200 already sent — the database read `public`
+ * with one ledger row while the toast said the chat was not marked public, the
+ * dialog stayed open, and both windows' rows stayed private.
+ *
+ * So nothing here reports an outcome the dialog did not read. After any answer
+ * that is not a 200 the row is read again (`readSessionRowFacts`), and:
+ *
+ * - a row that reads PUBLIC is a success, however it got there (the lost
+ *   answer, or another window's declassification), and is never described
+ *   here — `send` takes the success path instead;
+ * - a row that reads PRIVATE is the failure, stated as the chat's state
+ *   ("still private"), with the daemon's own sentence when it gave one;
+ * - a row that cannot be read leaves only the daemon's sentence, if there was
+ *   one — the daemon said nothing changed, and it is the one that knows. With
+ *   neither, the dialog says it could not find out, and claims nothing.
+ */
+export interface DeclassifyFailure {
+  status: number | undefined;
+  title: string;
+  message: string;
+}
+
+export function describeDeclassifyFailure(
+  status: number | undefined,
+  body: unknown,
+  /** The row as read AFTER the failure; `null` when it could not be read. */
+  rowTier: 'public' | 'private' | null
+): DeclassifyFailure {
+  const sentence = typeof body === 'string' && body.trim().length > 0 ? body.trim() : undefined;
+  let message: string;
+  if (sentence !== undefined) {
+    message = sentence;
+  } else if (rowTier === 'private') {
+    message =
+      status === undefined
+        ? 'No answer came back from Biorouter, and this chat is still private. Try again.'
+        : `Biorouter answered ${status} without saying why, and this chat is still private.`;
+  } else {
+    // ⚠ Kept short on purpose: the toast clamps its message to three lines and
+    // cuts a clause past them silently. Both are shorter than a 142-character
+    // version of the first, which was measured filling all three lines.
+    message =
+      status === undefined
+        ? 'No answer came back from Biorouter, and it could not be asked whether this chat is ' +
+          'now public. Reopen chat history to check.'
+        : `Biorouter answered ${status} without a reason, and could not be asked whether this ` +
+          'chat is now public. Reopen chat history to check.';
+  }
+  return {
+    status,
+    title: status === 503 ? 'The chat store was busy' : 'Could not mark this chat public',
+    message,
+  };
+}
+
+/**
+ * The failure toast each chat's dialog last raised, by session id — defect D3a
+ * (2026-09-13).
+ *
+ * Error toasts do not expire (`toasts.tsx`: "a failure that expires unread is a
+ * failure that was never reported"), so a failure a later attempt overturned
+ * stayed on screen beside "Chat marked public" — measured still there 60 s
+ * after the success toast had closed, after two busy answers, after a lost
+ * answer, and after the escalation's refusal. A report about one attempt is
+ * retracted by the next outcome of the same operation.
+ *
+ * Module-level, not component state, because the dialog is unmounted on close:
+ * fail, close, reopen and succeed must retract the first failure too. And the
+ * outcome that overturns a failure need not come from this dialog at all — the
+ * same chat declassified from another window, or from the CLI while a store
+ * here holds it, reaches this window as a row read (`sessionRowSync`), and a
+ * toast still saying "still private" beside a public chat is the same stale
+ * report.
+ *
+ * # One chat, one report — D3a's second round (2026-09-13)
+ *
+ * ⚠ Keyed by chat here, and until this round deduplicated by CONTENT in
+ * `toastError` — and the busy sentence is the same for every chat. Measured in
+ * the dev app: chat Y failed busy, chat X failed busy (still one toast on
+ * screen), X was retried and succeeded, and Y's report was gone with Y still
+ * private. X's retraction had dismissed the one toast both reports shared, and
+ * a different failure on X, or a row read showing X public, did the same.
+ *
+ * So each report is raised under its chat (`dedupeScope`), and names the chat
+ * it is about (`declassifyToastSubject`). Reference-counting the shared toast
+ * was the other way to keep Y's report alive, and it is wrong for what the
+ * person reads: one toast would stand for several chats while saying "this
+ * chat", so after X succeeded it would sit beside "Chat marked public" still
+ * saying "this chat was not marked public" — the stale report this map exists
+ * to retract, now about a chat it does not name. A retry on the SAME chat still
+ * lands on its own toast id, so it replaces its report rather than stacking.
+ */
+const outstandingFailureToasts = new Map<string, string | number>();
+
+/**
+ * Which chat a failure toast is about, for its title. Two chats that fail at
+ * once raise two toasts carrying the same daemon sentence, and those are only
+ * useful if each says which chat it means.
+ *
+ * A placeholder name ("New Session", "New chat", "Session 5" —
+ * `isDefaultSessionName`) is shared by dozens of rows, so that chat is named by
+ * its id, which the dialog shows under the name. Any other name is quoted, and
+ * cut short (by characters, so an emoji is never split) because a toast title
+ * is not clamped — and it is followed by the id too, because a real name is not
+ * unique either: auto-generated names repeat, and two chats both called
+ * "Subagent delegation request" failing at once would otherwise raise two
+ * toasts that read identically.
+ */
+export function declassifyToastSubject(name: string | null | undefined, sessionId: string): string {
+  const trimmed = (name ?? '').trim();
+  if (isDefaultSessionName(trimmed)) return `chat ${sessionId}`;
+  const chars = [...trimmed];
+  const quoted =
+    chars.length <= SUBJECT_MAX_CHARS
+      ? `“${trimmed}”`
+      : `“${chars
+          .slice(0, SUBJECT_MAX_CHARS - 1)
+          .join('')
+          .trimEnd()}…”`;
+  return `${quoted} (${sessionId})`;
+}
+const SUBJECT_MAX_CHARS = 60;
+
+let stopFollowingRows: (() => void) | null = null;
+
+/**
+ * Started the first time a failure is reported, and kept for the renderer's
+ * life: a toast that outlives its dialog is exactly the case it is for.
+ */
+function followRowsForOutstandingFailures(): void {
+  if (stopFollowingRows) return;
+  stopFollowingRows = subscribeSessionRowChanges(({ sessionId, privacy_tier }) => {
+    if (privacy_tier === 'public') retractFailureToast(sessionId);
+  });
+}
+
+function retractFailureToast(sessionId: string, keep?: string | number): void {
+  const previous = outstandingFailureToasts.get(sessionId);
+  if (previous === undefined) return;
+  outstandingFailureToasts.delete(sessionId);
+  // An identical failure on THIS chat is deduplicated onto the same toast id,
+  // so dismissing it would take away the toast reporting the attempt just made.
+  // Another chat's identical failure has its own id and is never reached here.
+  if (previous !== keep) toastService.dismiss(previous);
+}
+
 type Phase = 'confirm' | 'undo' | 'sending';
 
 export interface DeclassifySessionDialogProps {
@@ -155,44 +328,93 @@ export function DeclassifySessionDialog({
   // than the window — the session list's own change subscription, a search
   // debounce — means the request is never sent at all. Pinned by "the undo
   // window is a deadline, not a countdown a re-render restarts".
-  const latest = useRef({ onClose, onDeclassified });
+  //
+  // The chat's NAME rides here for the same reason: the daemon renames a chat
+  // after its early turns, and a `send` keyed on the name would restart the undo
+  // window when that rename reached this row.
+  const latest = useRef({ onClose, onDeclassified, sessionName: session.name });
   useLayoutEffect(() => {
-    latest.current = { onClose, onDeclassified };
+    latest.current = { onClose, onDeclassified, sessionName: session.name };
   });
 
   const send = useCallback(
     async (confirmation: string | null) => {
       setPhase('sending');
+      let status: number | undefined;
+      let body: unknown;
       try {
-        await declassifySession({
+        // NOT `throwOnError`: the generated client then throws the parsed BODY
+        // and drops the Response, and the status is what separates a refusal
+        // from a busy store. See `describeDeclassifyFailure`.
+        const result = await declassifySession({
           path: { session_id: session.id },
           body: { confirmation },
           // DR-16's proof-of-user. Without it the daemon refuses, correctly:
           // the server secret alone is reachable from any developer-enabled
           // agent shell (§9.3 A1) and is not evidence of a human.
           headers: await userActionHeaders(),
-          throwOnError: true,
         });
+        status = result.response?.status;
+        body = result.error;
+      } catch (error) {
+        // A throw here carries no Response, so no status: the answer — if the
+        // daemon sent one — did not arrive.
+        status = undefined;
+        body = error;
+      }
+
+      // Success is a 200, or a row that READS public after anything else. A
+      // missing Response is not evidence the write did not land (D2), so the
+      // row is asked before a word is said; and a private chat is never
+      // reported public unless the row says so.
+      let failure: DeclassifyFailure | null = null;
+      if (status !== 200) {
+        const row = await readSessionRowFacts(session.id);
+        if (row?.privacy_tier !== 'public') {
+          failure = describeDeclassifyFailure(status, body, row?.privacy_tier ?? null);
+        }
+      }
+
+      if (failure === null) {
+        retractFailureToast(session.id);
         toastSuccess({
           title: 'Chat marked public',
           msg: 'It no longer carries a private marker. The change is recorded.',
         });
+        // Every list surface in every window re-reads this row in place (item
+        // 11: the daemon no longer re-sorts it to say something happened).
+        announceSessionRowChanged(session.id);
         latest.current.onDeclassified?.(session.id);
         latest.current.onClose?.();
-      } catch (error) {
-        toastError({
-          title: 'Could not mark this chat public',
-          msg: error instanceof Error ? error.message : String(error),
-        });
-        // A request that carried no confirmation was refused, so the weak
-        // control this dialog rendered was the wrong one — most likely because
-        // the cached row's `turn:*` provenance has since been displaced by an
-        // `mcp:*` one. Returning to the same control would re-render it from
-        // the same stale prop and fail identically, forever. Escalating is the
-        // only recovery, and it is never the wrong answer to a refusal.
-        if (confirmation === null) setEscalated(true);
-        setPhase('confirm');
+        return;
       }
+
+      // Raised under this chat, and naming it: see `outstandingFailureToasts`.
+      const toastId = toastError({
+        title: `${failure.title} — ${declassifyToastSubject(latest.current.sessionName, session.id)}`,
+        msg: failure.message,
+        dedupeScope: `declassify:${session.id}`,
+      });
+      retractFailureToast(session.id, toastId);
+      if (toastId !== undefined) {
+        outstandingFailureToasts.set(session.id, toastId);
+        followRowsForOutstandingFailures();
+      }
+      // A request that carried no confirmation was answered "the confirmation
+      // did not match" (400), so the weak control this dialog rendered was the
+      // wrong one — most likely because the cached row's `turn:*` provenance
+      // has since been displaced by an `mcp:*` one. Returning to the same
+      // control would re-render it from the same stale prop and fail
+      // identically, forever, so it escalates.
+      //
+      // ⚠ **Only on that answer.** This used to escalate on ANY failure, and a
+      // lock timeout then swapped the single click for the typed phrase under a
+      // sentence claiming "this chat's record has changed since this list was
+      // loaded" — a claim about the chat that a busy store does not make. A
+      // busy store, a network failure or a daemon fault leaves the grade
+      // exactly as it was, so the same control is the right one to try again.
+      if (confirmation === null && failure.status === 400) setEscalated(true);
+      setPhase('confirm');
     },
     [session.id]
   );

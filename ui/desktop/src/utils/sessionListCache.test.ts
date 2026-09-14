@@ -8,15 +8,18 @@ import {
   subscribeSessionListChanges,
 } from './sessionListCache';
 import { announceSessionName } from './sessionNameSync';
+import { announceSessionRowChanged } from './sessionRowSync';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
   updateSessionName: vi.fn(),
+  getSession: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
   listSessions: mocks.listSessions,
   updateSessionName: mocks.updateSessionName,
+  getSession: mocks.getSession,
 }));
 
 // The proof the desktop sends. Since issue #56's QA sweep (2026-09-10) a list
@@ -249,5 +252,143 @@ describe('sessionListCache', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
     unsub();
+  });
+
+  // Item 11 of the 1.90.4 hold (2026-09-13). A declassification no longer
+  // re-sorts the chat, so nothing about the LIST changes and no refetch would
+  // notice. History's badge and its row menu read this entry, so it is patched
+  // where it sits — from the daemon's read, not from the announcement.
+  it('re-marks a declassified chat in place, without refetching or reordering', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          { id: 'recent', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+          { id: 'old', privacy_tier: 'private', privacy_reason: 'backfill:ollama' },
+        ],
+      },
+    });
+    await refreshSessionList();
+    mocks.listSessions.mockClear();
+    mocks.getSession.mockResolvedValue({
+      data: { id: 'old', privacy_tier: 'public', privacy_reason: 'declassified_by_user' },
+    });
+
+    announceSessionRowChanged('old');
+
+    await vi.waitFor(() =>
+      expect(getCachedSessionList()).toEqual([
+        { id: 'recent', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+        { id: 'old', privacy_tier: 'public', privacy_reason: 'declassified_by_user' },
+      ])
+    );
+    expect(mocks.listSessions).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Defect D4 of the 2026-09-13 repair round, the list half. A list request
+   * issued BEFORE a turn raised a chat can answer AFTER the raise was read and
+   * patched in; adopting the answer drew the chat public again. Neither reading
+   * is known to be the later one, so the row shows the higher tier and is read
+   * a third time.
+   */
+  it('a list answer that raced a raise does not draw the chat public again', async () => {
+    mocks.listSessions.mockResolvedValueOnce({
+      data: { sessions: [{ id: 'raced', privacy_tier: 'public', privacy_reason: null }] },
+    });
+    await refreshSessionList();
+
+    let answerList: ((value: unknown) => void) | undefined;
+    mocks.listSessions.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerList = resolve;
+      })
+    );
+    const refresh = refreshSessionList();
+    await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(2));
+
+    // The raise, announced by the chat's store and read while the list is out.
+    mocks.getSession.mockResolvedValue({
+      data: { id: 'raced', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+    });
+    announceSessionRowChanged('raced');
+    await vi.waitFor(() =>
+      expect(getCachedSessionList()?.[0]).toMatchObject({ privacy_tier: 'private' })
+    );
+    expect(mocks.getSession).toHaveBeenCalledTimes(1);
+
+    // The list answers with what it saw before the raise. The read that
+    // settles it is held open, so what the cache shows in the meantime is
+    // observable rather than overwritten a microtask later.
+    let answerThirdRead: ((value: unknown) => void) | undefined;
+    mocks.getSession.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerThirdRead = resolve;
+      })
+    );
+    answerList!({
+      data: { sessions: [{ id: 'raced', privacy_tier: 'public', privacy_reason: null }] },
+    });
+    await refresh;
+
+    // The disagreement is settled by a read issued after both…
+    await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalledTimes(2));
+    // …and until it lands the chat is not drawn public.
+    expect(getCachedSessionList()?.[0]).toMatchObject({
+      privacy_tier: 'private',
+      privacy_reason: 'turn:versa_azure',
+    });
+    answerThirdRead!({
+      data: { id: 'raced', privacy_tier: 'private', privacy_reason: 'turn:versa_azure' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getCachedSessionList()?.[0]).toMatchObject({ privacy_tier: 'private' });
+  });
+
+  it('a list answer that raced a declassification is settled by a third read', async () => {
+    mocks.listSessions.mockResolvedValueOnce({
+      data: { sessions: [{ id: 'lowered', privacy_tier: 'private', privacy_reason: 'turn:x' }] },
+    });
+    await refreshSessionList();
+
+    let answerList: ((value: unknown) => void) | undefined;
+    mocks.listSessions.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerList = resolve;
+      })
+    );
+    const refresh = refreshSessionList();
+    await vi.waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(2));
+
+    mocks.getSession.mockResolvedValue({
+      data: { id: 'lowered', privacy_tier: 'public', privacy_reason: 'declassified_by_user' },
+    });
+    announceSessionRowChanged('lowered');
+    await vi.waitFor(() =>
+      expect(getCachedSessionList()?.[0]).toMatchObject({ privacy_tier: 'public' })
+    );
+
+    let answerThirdRead: ((value: unknown) => void) | undefined;
+    mocks.getSession.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerThirdRead = resolve;
+      })
+    );
+    answerList!({
+      data: { sessions: [{ id: 'lowered', privacy_tier: 'private', privacy_reason: 'turn:x' }] },
+    });
+    await refresh;
+    // Private until the order is known — never public on a guess…
+    await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalledTimes(2));
+    expect(getCachedSessionList()?.[0]).toMatchObject({ privacy_tier: 'private' });
+    // …and public once a read issued after both says so.
+    answerThirdRead!({
+      data: { id: 'lowered', privacy_tier: 'public', privacy_reason: 'declassified_by_user' },
+    });
+    await vi.waitFor(() =>
+      expect(getCachedSessionList()?.[0]).toMatchObject({
+        privacy_tier: 'public',
+        privacy_reason: 'declassified_by_user',
+      })
+    );
   });
 });

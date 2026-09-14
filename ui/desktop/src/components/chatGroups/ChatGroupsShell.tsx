@@ -108,16 +108,22 @@ function renderLayout(
  *
  * # The merge is `max`, not "freshest wins"
  *
- * The tier is a permanent ratchet server-side
- * (`crates/biorouter/src/privacy/mod.rs`) — public → private, never back — so a
- * `private` from ANY source is a fact that still holds, and a `public` is only
- * a lower bound. {@link mergeSessionTiers} folds the two with `max` and
- * `undefined` stays unmarked. The invariant, which
+ * The tier is a ratchet server-side (`crates/biorouter/src/privacy/mod.rs`)
+ * with one exit, the user's declassification — so a `public` is only a lower
+ * bound, and a `private` holds until a declassification that BOTH sources are
+ * told about (`sessionRowSync`, the change feed). {@link mergeSessionTiers}
+ * folds the two with `max` and `undefined` stays unmarked. The invariant, which
  * `ChatGroupsShell.privacy.test.tsx` pins: this map may render private-from-
- * either-source or unmarked, and can never render public over a source that has
- * seen private. There is no failure mode in which it over-marks — no source
- * here invents a tier, they only report a row. `ChatTabStrip`'s `privacyTiers`
- * prop doc states the same thing, and the two must not drift apart again.
+ * either-source or unmarked, and can never render public over a source that
+ * still holds private. There is no failure mode in which it over-marks — no
+ * source here invents a tier, they only report a row. `ChatTabStrip`'s
+ * `privacyTiers` prop doc states the same thing, and the two must not drift
+ * apart again.
+ *
+ * ⚠ `max` across sources is only right because each source follows its OWN
+ * row down. The live map once refused to (it "mirrored the ratchet"), so a
+ * declassified chat's tab stayed private for as long as it was open — defect D1
+ * of 2026-09-13; see `ChatStreamRegistry.subscribeSessionTiers`.
  *
  * # The cache still has to be warmed here
  *

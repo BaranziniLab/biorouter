@@ -364,6 +364,98 @@ pub enum DeclassifyOutcome {
     SessionNotFound,
 }
 
+/// What a person is told when a declassification gave up waiting for the chat
+/// store. Shared by both doors: the route answers it as a 503's body, and the
+/// CLI prints it as the head of the error chain [`declassify`] returns.
+///
+/// ⚠ **Every clause is a claim this module can stand behind, and no more.**
+/// "Changed nothing" holds because the only statements that can fail this way
+/// run inside the writing transaction (or are its commit), and a
+/// `sqlx::Transaction` that is dropped without committing rolls back — so no
+/// ledger row and no lowered tier survive it. It says the chat was not marked
+/// public *by this request*, rather than "the chat is still private", on
+/// purpose: another request may land while this one is being answered, and a
+/// sentence about the row's present state would be a read this code never made.
+///
+/// ⚠ **Short on purpose.** The desktop shows it in a toast whose message is
+/// clamped to three lines, and a first draft that opened with the cause lost
+/// "Try again in a moment" behind the ellipsis — measured in the running app.
+/// So it leads with what happened to the chat, then the remedy.
+///
+/// It invites the retry, unlike the proof-of-user refusals beside it in
+/// `routes/session.rs`. Those are refusals a retry cannot change; this is a
+/// wait that ran out, and the same call a moment later is the remedy. Both
+/// doors sit behind a person — the user-action header, or a terminal — so no
+/// model is being taught to loop on it.
+///
+/// ⚠ **The retry is the person's, not this module's.** SQLite's busy handler is
+/// already a bounded retry loop: every statement here polls the write lock for
+/// the pool's full five-second `busy_timeout` before this error exists. A
+/// second in-process attempt was measured (2026-09-13, two external writers on
+/// the same `sessions.db`) and it mostly bought a longer spinner: 7 of 30
+/// declassifications gave up, an immediate retry rescued 4 of the 7 and the
+/// other 3 failed again, at up to 9.5 s each — under the load that causes this
+/// error the busy periods are correlated, not independent.
+pub const DECLASSIFY_STORE_BUSY: &str =
+    "Nothing was changed and this chat was not marked public, because other writes kept the chat \
+     store busy. Try again in a moment.";
+
+/// The error context [`declassify`] attaches when it failed only because the
+/// store stayed busy.
+///
+/// A type rather than a string, so a door asks [`is_store_busy`] — a downcast —
+/// and a reworded sentence cannot quietly turn a 503 back into an empty 500.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreBusy;
+
+impl std::fmt::Display for StoreBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(DECLASSIFY_STORE_BUSY)
+    }
+}
+
+/// Did this declassification fail only because the chat store stayed busy?
+///
+/// `true` exactly for an error [`declassify`] returned with [`StoreBusy`]
+/// attached. It is the one distinction a door should draw from an `Err`: this
+/// one says "try again", and every other failure is a genuine fault and says so.
+pub fn is_store_busy(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<StoreBusy>().is_some()
+}
+
+/// Is this the store's busy wait running out, as opposed to any other fault?
+///
+/// Two shapes, both meaning "other work held the write lock, or every pooled
+/// connection, for longer than this process waits", and both cleared by the
+/// same call a moment later:
+///
+/// * SQLite answered `SQLITE_BUSY` once the pool's `busy_timeout` ran out —
+///   extended code 5 — or one of its two other waited-out forms,
+///   `SQLITE_BUSY_RECOVERY` (261) and `SQLITE_BUSY_TIMEOUT` (773). sqlx reports
+///   `sqlite3_extended_errcode`, so they arrive as exactly those strings. The
+///   daemon log of the report this was written for reads `(code: 5) database
+///   is locked`.
+/// * sqlx gave up acquiring a pooled connection (`PoolTimedOut`).
+///
+/// ⚠ **`SQLITE_BUSY_SNAPSHOT` (517) is deliberately NOT one of them.** It is the
+/// instant refusal of a transaction that READ before it wrote — no busy handler
+/// is consulted for it — and the write-first statement at the top of
+/// [`declassify_in_one_transaction`] exists so that it cannot happen here. If it
+/// ever does, the lock ordering has regressed, and answering it as "busy, try
+/// again" would dress that regression up as load. It stays a genuine failure: a
+/// 500 and an `ERROR` in the log.
+fn waited_out_the_store(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| match cause.downcast_ref::<sqlx::Error>() {
+            Some(sqlx::Error::PoolTimedOut) => true,
+            Some(sqlx::Error::Database(db)) => {
+                matches!(db.code().as_deref(), Some("5") | Some("261") | Some("773"))
+            }
+            _ => false,
+        })
+}
+
 /// The ONLY writer in the tree permitted to lower `privacy_tier`.
 ///
 /// Every other write goes through the session update builder, whose emission is
@@ -437,13 +529,48 @@ pub enum DeclassifyOutcome {
 /// honest and the direction is fail-safe — private is the protected state — but
 /// the user can watch their action undo itself. Preventing it would mean
 /// refusing to declassify a busy session, which §12.4 does not ask for.
-/// ⚠ **`_ok` is borrowed rather than consumed**, and that is what keeps the two
+/// ⚠ **`ok` is borrowed rather than consumed**, and that is what keeps the two
 /// doors at ONE construction site each. Both call this twice for a chat on the
 /// strong control — once to probe, once to write — and
 /// [`the_proof_of_user_is_constructed_in_exactly_two_places`] counts
 /// constructions per file, not calls. One human action, one proof, however many
 /// times the writer is asked.
+///
+/// # Errors
+///
+/// An `Err` means this call changed nothing: every write is inside one
+/// transaction, and a transaction that does not reach its commit rolls back on
+/// drop. One kind of `Err` is not a fault at all — the store stayed busy for
+/// longer than the pool waits — and it carries [`StoreBusy`], so a door can tell
+/// a person to try again rather than answer an empty 500 (which is what the
+/// route did until 2026-09-13: two of thirty declassifications under a
+/// saturating external writer came back bodyless at 5.4 s, and the desktop
+/// showed `[object Object]`). Ask [`is_store_busy`]; everything else is genuine.
 pub async fn declassify(
+    sm: &SessionManager,
+    session_id: &str,
+    confirmation: Option<&str>,
+    authorization: Option<&SystemAuthorization>,
+    ok: &UserConfirmation,
+) -> Result<DeclassifyOutcome> {
+    declassify_in_one_transaction(sm, session_id, confirmation, authorization, ok)
+        .await
+        .map_err(|error| {
+            if waited_out_the_store(&error) {
+                error.context(StoreBusy)
+            } else {
+                error
+            }
+        })
+}
+
+/// [`declassify`]'s body: one transaction, and everything its doc comment says
+/// about lock ordering, grading and the ledger lives here.
+///
+/// Split out only so the error it returns can be named in ONE place. The `?`s
+/// below are many and each can fail on a busy store; wrapping them one by one
+/// is how a new statement would come to be the one that answers an empty 500.
+async fn declassify_in_one_transaction(
     sm: &SessionManager,
     session_id: &str,
     confirmation: Option<&str>,
@@ -570,9 +697,24 @@ pub async fn declassify(
     .execute(&mut *tx)
     .await?;
 
+    // ⚠ **`updated_at` is not touched, and that is a decision, not an omission.**
+    // `updated_at` orders History, the sidebar's keyset pages and `biorouter
+    // session list`, and buckets History's date groups — it answers "when was
+    // this chat last USED". A classification change is not use. This statement
+    // stamped it until 2026-09-13, and the measured result was 796
+    // declassifications moving months-old chats (20260224_11, created
+    // 2026-02-24) into History's "Today".
+    //
+    // Nothing needed the stamp to learn of the change. The session-row feed
+    // (`GET /sessions/changes`, `SessionStorage::session_meta_rows`) compares
+    // `privacy_tier`/`privacy_reason` and deliberately never `updated_at`; and a
+    // second window had no live signal at all before — it learned only when some
+    // unrelated refresh re-read a list that this stamp had re-sorted. The
+    // desktop now announces the change itself (`utils/sessionRowSync.ts`), and
+    // every list surface re-reads the row in place.
     sqlx::query(
         "UPDATE sessions \
-            SET privacy_tier = 'public', privacy_reason = ?2, updated_at = datetime('now') \
+            SET privacy_tier = 'public', privacy_reason = ?2 \
           WHERE id = ?1",
     )
     .bind(session_id)
@@ -1732,5 +1874,238 @@ mod tests {
         );
         let row = sm.get_session(&id, false).await.unwrap();
         assert_eq!(row.privacy_tier, SessionClassification::Public);
+    }
+
+    /// Take `sessions.db`'s write lock the way a real transaction does — a
+    /// statement that writes nothing but takes the lock at its prologue, inside a
+    /// real `Transaction` — on a SECOND store over the same file, so nothing in
+    /// process memory orders it against the declassification. Dropping the
+    /// returned transaction releases it.
+    async fn hold_the_write_lock(
+        other: &SessionManager,
+    ) -> sqlx::Transaction<'static, sqlx::Sqlite> {
+        let pool = other.storage().pool().await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("UPDATE sessions SET id = id WHERE 1 = 0")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx
+    }
+
+    /// Item 8 of the 1.90.4 hold (2026-09-13). Measured under a saturating
+    /// external writer: two of thirty declassifications failed at 5.40 s and
+    /// 5.46 s with `(code: 5) database is locked`, the route answered a
+    /// bodyless 500, and the desktop toasted `[object Object]`.
+    ///
+    /// Three things are pinned, and the second is the one that matters most:
+    ///
+    /// 1. The error is NAMED — [`is_store_busy`] says so, and its head is the
+    ///    sentence a person can act on. On `origin/main` the error is sqlx's
+    ///    alone.
+    /// 2. It changed nothing. The chat is still private and the ledger holds no
+    ///    row claiming a transition. A lock timeout must never be reported, or
+    ///    recorded, as a declassification.
+    /// 3. It is transient: once the lock is released, the same call succeeds.
+    ///
+    /// The lock is held for real, past the pool's five-second `busy_timeout`, so
+    /// this test takes about that long. `turn:*` provenance, so neither a phrase
+    /// nor a password is in the way and the store is the only variable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_store_that_stays_busy_is_named_and_changes_nothing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = private_session_with_reason(&sm, "turn:versa_azure").await;
+        let ok = UserConfirmation::for_test();
+
+        let other = SessionManager::new(temp.path().to_path_buf());
+        let lock = hold_the_write_lock(&other).await;
+        let started = std::time::Instant::now();
+        let error = declassify(&sm, &id, None, None, &ok)
+            .await
+            .expect_err("a store write-locked past the busy timeout cannot be declassified");
+        let waited = started.elapsed();
+
+        assert!(
+            is_store_busy(&error),
+            "a declassification that only lost the write lock is not named as one: {error:#}"
+        );
+        assert_eq!(
+            error.to_string(),
+            DECLASSIFY_STORE_BUSY,
+            "the error's head is not the sentence a person is shown"
+        );
+        assert!(
+            format!("{error:#}").contains("database is locked"),
+            "the cause was swallowed rather than kept under the sentence: {error:#}"
+        );
+        // It really waited: an instant failure here would be a snapshot conflict
+        // (a lock-ordering regression), which must not be classified as busy.
+        assert!(
+            waited >= std::time::Duration::from_secs(4),
+            "gave up after {waited:?}, well inside the five-second busy timeout"
+        );
+
+        drop(lock);
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.privacy_tier,
+            SessionClassification::Private,
+            "a declassification that timed out lowered the tier anyway"
+        );
+        assert_eq!(row.privacy_reason.as_deref(), Some("turn:versa_azure"));
+        assert!(
+            audit_rows(&sm, &id).await.is_empty(),
+            "the ledger claims a transition that did not happen"
+        );
+
+        assert_eq!(
+            declassify(&sm, &id, None, None, &ok).await.unwrap(),
+            DeclassifyOutcome::Declassified,
+            "the same call did not succeed once the store was free"
+        );
+    }
+
+    /// The other half of item 8: only a busy store is called one. A fault that is
+    /// not contention — here a trigger that aborts the ledger insert — must stay a
+    /// genuine failure, or a broken daemon would keep telling people to "try
+    /// again in a moment" forever. It changes nothing either.
+    #[tokio::test]
+    async fn a_fault_that_is_not_a_busy_store_is_not_called_one() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = private_session_with_reason(&sm, "turn:versa_azure").await;
+        {
+            let pool = sm.storage().pool().await.unwrap();
+            sqlx::query(&format!(
+                "CREATE TRIGGER fail_this_ledger_insert BEFORE INSERT ON classification_audit \
+                 WHEN NEW.session_id = '{id}' BEGIN SELECT RAISE(ABORT, 'injected fault'); END"
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        let error = declassify(&sm, &id, None, None, &UserConfirmation::for_test())
+            .await
+            .expect_err("the trigger aborts the ledger insert");
+        assert!(
+            !is_store_busy(&error),
+            "a genuine fault was named a busy store: {error:#}"
+        );
+        assert!(format!("{error:#}").contains("injected fault"));
+
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert!(audit_rows(&sm, &id).await.is_empty());
+    }
+
+    /// `SQLITE_BUSY_SNAPSHOT` (517) is not a busy store, and this is measured on
+    /// a real WAL file rather than asserted of a hand-built error: a transaction
+    /// that READ, then lost the write to a commit made after its snapshot, is
+    /// refused instantly with no busy wait. That is the shape PR #294's
+    /// write-first statement removed from `declassify`, so if it ever reaches a
+    /// door again it must read as the regression it is.
+    #[tokio::test]
+    async fn a_snapshot_conflict_is_not_classified_as_a_busy_store() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let reader_store = SessionManager::new(temp.path().to_path_buf());
+        let s = reader_store
+            .create_session(std::env::temp_dir(), "snap".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        let writer_store = SessionManager::new(temp.path().to_path_buf());
+
+        let pool = reader_store.storage().pool().await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        // Pin a read snapshot.
+        let _: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        // Another store commits after that snapshot.
+        writer_store
+            .add_message(
+                &s.id,
+                &crate::conversation::message::Message::user().with_text("later"),
+            )
+            .await
+            .unwrap();
+        // The upgrade is refused.
+        let started = std::time::Instant::now();
+        let refused = sqlx::query("UPDATE sessions SET name = 'x' WHERE id = ?1")
+            .bind(&s.id)
+            .execute(&mut *tx)
+            .await
+            .expect_err("a stale snapshot cannot upgrade to a writer");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the snapshot conflict waited, so this test is not measuring 517"
+        );
+        let code = match &refused {
+            sqlx::Error::Database(db) => db.code().map(|c| c.into_owned()),
+            other => panic!("expected a database error, got {other:?}"),
+        };
+        assert_eq!(
+            code.as_deref(),
+            Some("517"),
+            "not SQLITE_BUSY_SNAPSHOT: {refused}"
+        );
+
+        assert!(
+            !waited_out_the_store(&anyhow::Error::from(refused)),
+            "a snapshot conflict was classified as a busy store"
+        );
+    }
+
+    /// Item 11 of the 1.90.4 hold (2026-09-13): declassifying a chat must not
+    /// move it in History.
+    ///
+    /// The writer stamped `updated_at = datetime('now')`, so a chat created
+    /// months ago jumped into History's "Today" (measured across 796
+    /// declassifications; 20260224_11 was one). `updated_at` orders every chat
+    /// list and buckets History's dates, and a classification change is not use
+    /// of the chat. Fails on `origin/main`.
+    #[tokio::test]
+    async fn declassifying_a_chat_does_not_move_it_in_history() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        const LAST_USED: &str = "2026-02-24 11:01:03";
+        let mut ids = vec![];
+        for reason in ["turn:versa_azure", "backfill:ollama"] {
+            let id = private_session_with_reason(&sm, reason).await;
+            let pool = sm.storage().pool().await.unwrap();
+            sqlx::query("UPDATE sessions SET updated_at = ?1 WHERE id = ?2")
+                .bind(LAST_USED)
+                .bind(&id)
+                .execute(pool)
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        let mut before = vec![];
+        for id in &ids {
+            before.push(sm.get_session(id, false).await.unwrap().updated_at);
+        }
+
+        // Both graded paths — the single click, and the phrase plus password —
+        // go through the same statement.
+        for id in &ids {
+            assert_eq!(
+                declassify_for_test(&sm, id).await.unwrap(),
+                DeclassifyOutcome::Declassified
+            );
+        }
+
+        for (id, was) in ids.iter().zip(before) {
+            let row = sm.get_session(id, false).await.unwrap();
+            assert_eq!(row.privacy_tier, SessionClassification::Public);
+            assert_eq!(
+                row.updated_at, was,
+                "declassifying {id} moved its last-used time from {was} to {}, which re-sorts \
+                 History and puts a months-old chat under Today",
+                row.updated_at
+            );
+        }
     }
 }

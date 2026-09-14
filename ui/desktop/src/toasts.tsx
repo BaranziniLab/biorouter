@@ -301,6 +301,18 @@ type ToastErrorProps = {
    * replacing what the user was doing.
    */
   debugFailure?: Omit<DependencyFailure, 'environment' | 'error'>;
+  /**
+   * Narrows the dedup key to one subject: content-identical failures about two
+   * DIFFERENT subjects are then two toasts, while the same failure about the
+   * same subject still coalesces.
+   *
+   * For a caller that retracts its own report by the returned id. Without a
+   * scope, two subjects that fail with the same sentence share one toast, and
+   * the first subject whose failure is overturned dismisses the other's report
+   * too — defect D3a's second round, where one chat's successful declassify
+   * took away another chat's "The chat store was busy".
+   */
+  dedupeScope?: string;
 };
 
 function ToastErrorContent({
@@ -369,7 +381,14 @@ function ToastErrorContent({
   );
 }
 
-export function toastError({ title, msg, traceback, recoverHints, debugFailure }: ToastErrorProps) {
+export function toastError({
+  title,
+  msg,
+  traceback,
+  recoverHints,
+  debugFailure,
+  dedupeScope,
+}: ToastErrorProps) {
   // An error toast carries actions whenever there is something to copy or a
   // recovery path to offer — and a toast with actions is not click-to-dismiss,
   // because the click that misses the button must not destroy the button.
@@ -389,7 +408,7 @@ export function toastError({ title, msg, traceback, recoverHints, debugFailure }
       // never reported.
       autoClose: false,
       closeOnClick: !hasActions,
-      toastId: dedupeKey('error', title, msg),
+      toastId: dedupeKey(dedupeScope === undefined ? 'error' : `error[${dedupeScope}]`, title, msg),
     }
   );
 }

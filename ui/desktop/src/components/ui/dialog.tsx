@@ -39,6 +39,16 @@ const DialogOverlay = React.forwardRef<
 ));
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
+/**
+ * Whether a pointer target sits in react-toastify's layer. `.Toastify` is the
+ * container the library renders (`App.tsx`'s `ToastContainer`); the app's own
+ * card class replaces the library's per-toast class, so the container is the
+ * one stable hook (see `toastLayer.test.ts`).
+ */
+function isInsideToastLayer(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('.Toastify') !== null;
+}
+
 function DialogContent({
   className,
   children,
@@ -102,6 +112,16 @@ function DialogContent({
         onPointerDownOutside={(event) => {
           onPointerDownOutside?.(event);
           if (!dismissible) event.preventDefault();
+          // A press on a TOAST is not a press on the backdrop. Toasts sit above
+          // every modal (`--z-toast` > `--z-modal`) and are rendered outside
+          // any dialog's tree, so to Radix a click on one is "outside" — and
+          // it closed the dialog underneath while the toast, whose × had never
+          // received the click, stayed on screen. Measured on 2026-09-13
+          // (defect D3b): a busy-store error over "Make this chat public?",
+          // one click on the toast's ×, the dialog gone and the error still
+          // there a minute later. `main.css` makes the toast layer take the
+          // click at all; this stops the dialog treating it as a dismissal.
+          if (isInsideToastLayer(event.target)) event.preventDefault();
         }}
         {...props}
       >

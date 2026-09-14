@@ -1,6 +1,11 @@
 import { listSessions, type Session } from '../api';
 import { userActionHeaders } from './userAction';
 import { subscribeSessionNameChanges } from './sessionNameSync';
+import {
+  settleRowsReadDuringFetch,
+  subscribeSessionRowChanges,
+  type SessionRowFacts,
+} from './sessionRowSync';
 
 let cachedSessions: Session[] | null = null;
 let inFlightRequest: Promise<Session[]> | null = null;
@@ -54,6 +59,44 @@ subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
   if (idx === -1) return;
   const next = cachedSessions.slice();
   next[idx] = { ...next[idx], name, user_set_name: userSetName };
+  cachedSessions = next;
+  emitChange();
+});
+
+/**
+ * Row reads (`sessionRowSync`) delivered WHILE a list request was in flight,
+ * settled against that request's answer by `settleRowsReadDuringFetch`.
+ *
+ * ⚠ This used to be "not re-applied — a list that snaps a row back to private
+ * is the safe miss". The snap-back runs in BOTH directions, and the other one
+ * is not safe: a list issued before a turn raised a chat, landing after the
+ * raise was patched in, draws the chat public again. Recorded and cleared
+ * exactly as {@link namesPublishedDuringFetch} is, so it cannot grow.
+ */
+const rowsReadDuringFetch = new Map<string, SessionRowFacts>();
+
+// A row whose classification changed in place — a declassification, or a raise
+// a chat store announced, in this window or another (`sessionRowSync`).
+// History's badge, its row menu ("Make this chat public" is offered on private
+// rows only), Home recents and the tab strip's cached tiers all read this cache,
+// so the entry is patched where it sits. Nothing is re-sorted: the daemon no
+// longer moves `updated_at` for a classification change, so the row's place in
+// the list is still right.
+subscribeSessionRowChanges((facts) => {
+  const { sessionId, privacy_tier, privacy_reason } = facts;
+  if (inFlightRequest) rowsReadDuringFetch.set(sessionId, facts);
+  if (!cachedSessions) return;
+  const idx = cachedSessions.findIndex((s) => s.id === sessionId);
+  if (idx === -1) return;
+  const current = cachedSessions[idx];
+  if (
+    current.privacy_tier === privacy_tier &&
+    (current.privacy_reason ?? null) === privacy_reason
+  ) {
+    return;
+  }
+  const next = cachedSessions.slice();
+  next[idx] = { ...current, privacy_tier, privacy_reason };
   cachedSessions = next;
   emitChange();
 });
@@ -204,6 +247,7 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
   // This request's answer supersedes every name it is about to carry — except
   // the ones announced from HERE on. See {@link namesPublishedDuringFetch}.
   namesPublishedDuringFetch.clear();
+  rowsReadDuringFetch.clear();
   inFlightRequest = userActionHeaders()
     .then((headers) =>
       listSessions<true>({
@@ -217,7 +261,11 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
       // this exact call, but publish nothing — the cache and its subscribers
       // belong to the request that replaced it.
       if (generation !== requestGeneration) return response.data.sessions;
-      cachedSessions = applyNamesPublishedDuringFetch(response.data.sessions);
+      cachedSessions = settleRowsReadDuringFetch(
+        applyNamesPublishedDuringFetch(response.data.sessions),
+        rowsReadDuringFetch,
+        true
+      );
       emitChange();
       return cachedSessions;
     })

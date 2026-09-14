@@ -121,3 +121,17 @@ describe('a newer notification lands directly below the older one', () => {
     expect(APP).toContain('toastClassName={() => TOAST_SURFACE_CLASS_NAME}');
   });
 });
+
+/**
+ * Defect D3b (2026-09-13). Radix's modal sets `pointer-events: none` on <body>
+ * while a dialog is open, and the toast layer inherited it: a toast drawn above
+ * the dialog could not be clicked, and the press fell through to the backdrop
+ * and closed the dialog. jsdom applies no stylesheet, so this is asserted at the
+ * source, like everything else here; `dialog.test.tsx` covers the half that
+ * decides whether a press on a toast dismisses the dialog.
+ */
+describe('a toast stays clickable over a modal dialog', () => {
+  it('gives every toast card pointer events back', () => {
+    expect(CSS).toMatch(/\.Toastify__toast-container\s*>\s*\*\s*\{[^}]*pointer-events:\s*auto\s*;/);
+  });
+});

@@ -8,18 +8,28 @@ import type { SessionClassification } from '../../api/types.gen';
  * `SessionClassification` is a two-element lattice — `public < private` — and
  * the daemon reduces it with `max` over the life of a session
  * (`crates/biorouter/src/privacy/mod.rs`; CLAUDE.md calls it "a permanent
- * ratchet"). It only ever rises. That single fact decides every question a
- * caller could otherwise get wrong:
+ * ratchet"). It rises on its own and falls only when the USER declassifies the
+ * chat (§12.4, `privacy::declassify`). So:
  *
- * - A reading of `private` can never become false. Whoever saw it saw a fact
- *   about the row that still holds, however old the reading is.
  * - A reading of `public` can become false at any moment, and says nothing
  *   about now. It is a lower bound, not an answer.
+ * - A reading of `private` can become false only through a declassification,
+ *   which every source here is told about (`sessionRowSync`, the change feed).
  *
- * So two readings of the same chat are combined with `max`, never with
- * "whichever is fresher". Freshness is not the ordering that matters here, and
- * a merge that preferred the newer source would let a source which has not yet
- * heard about a ratchet overwrite one that has.
+ * ⚠ **That second line used to say "can never become false", and the tab strip
+ * was built on it.** The live map in `ChatStreamRegistry` then refused to
+ * follow its own store down, so a chat declassified with its tab open kept a
+ * private tab icon until the renderer reloaded (defect D1, 2026-09-13). The
+ * rule that survives is narrower, and it is two rules:
+ *
+ * - WITHIN one source, the newest reading wins. Each source is re-read when the
+ *   row moves, in either direction, and holds what it last read.
+ * - ACROSS sources, `max` — these functions. Two sources disagree only while
+ *   one of them has not yet been re-read, and while that is so the chat is
+ *   shown private. A merge that preferred "the fresher source" would let one
+ *   that has not yet heard about a raise overwrite one that has, and that is
+ *   the direction a badge must never be wrong in; the price of `max` is a
+ *   lowering that shows up once the slower source has been re-read too.
  *
  * # The direction a mistake must fall in
  *

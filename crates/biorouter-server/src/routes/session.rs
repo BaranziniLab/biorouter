@@ -15,7 +15,8 @@ use axum::{
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
 use biorouter::privacy::declassify::{
-    authenticate_declassification, declassify, DeclassifyOutcome, UserConfirmation,
+    authenticate_declassification, declassify, is_store_busy, DeclassifyOutcome, UserConfirmation,
+    DECLASSIFY_STORE_BUSY,
 };
 use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
@@ -1558,6 +1559,19 @@ const DECLASSIFY_SYSTEM_AUTH_REFUSED: &str =
      so marking it public needs your operating system to confirm it is you. That did not happen, \
      and nothing was changed.";
 
+/// What `POST /sessions/{id}/declassify` says when it failed for a reason that
+/// is not a busy store — which it answers with
+/// `biorouter::privacy::declassify::DECLASSIFY_STORE_BUSY` and a 503 instead.
+///
+/// It used to say nothing at all: every `Err` was a bodyless 500. The sentence
+/// claims only what an `Err` from the writer guarantees — this request changed
+/// nothing — and does not invite a retry, because a genuine fault is not cleared
+/// by waiting. The cause goes to the daemon log, not the body: a database error
+/// can name paths, and a person cannot act on it anyway.
+pub const DECLASSIFY_FAILED: &str =
+    "Nothing was changed and this chat was not marked public, because Biorouter hit an error. The \
+     daemon log records it.";
+
 #[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DeclassifySessionRequest {
@@ -1611,7 +1625,12 @@ pub struct DeclassifySessionResponse {
                                       request carried no proof it came from them (body = plain \
                                       text)"),
         (status = 404, description = "Session not found"),
-        (status = 500, description = "Internal server error")
+        (status = 500, description = "Internal server error. Nothing was changed (body = plain \
+                                      text)"),
+        (status = 503, description = "The session store stayed busy with other writes for longer \
+                                      than the daemon waits. Nothing was changed, and the same \
+                                      call a moment later can succeed; `Retry-After` is set \
+                                      (body = plain text)")
     ),
     security(
         ("api_key" = [])
@@ -1706,9 +1725,33 @@ async fn declassify_session(
                 privacy_tier: SessionClassification::Public,
             }))
         }
+        // Item 8 of the 1.90.4 hold (2026-09-13). Both arms used to be one: a
+        // bodyless 500, which the desktop toasted as `[object Object]` and — on
+        // the single-click path — read as a stale grade and escalated to the
+        // typed phrase with a sentence claiming the chat's record had changed.
+        // Measured under a saturating external writer: 2 of 30 at 5.40 s and
+        // 5.46 s, daemon log `(code: 5) database is locked`.
+        //
+        // Either way nothing was written: `declassify` changes nothing on an
+        // `Err` (its transaction rolls back on drop), and a probe that answered
+        // before it never writes. So neither body claims more than that.
+        Err(e) if is_store_busy(&e) => {
+            // WARN, not ERROR: nothing is broken, other work held the lock.
+            tracing::warn!(
+                "Declassifying session {} gave up waiting for the session store: {:#}",
+                session_id,
+                e
+            );
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "1")],
+                DECLASSIFY_STORE_BUSY,
+            )
+                .into_response())
+        }
         Err(e) => {
-            tracing::error!("Failed to declassify session {}: {}", session_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+            tracing::error!("Failed to declassify session {}: {:#}", session_id, e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, DECLASSIFY_FAILED).into_response())
         }
     }
 }
@@ -3895,6 +3938,11 @@ mod declassify_tests {
             DECLASSIFY_NO_USER_KEY,
             DECLASSIFY_CONFIRMATION_MISMATCH,
             DECLASSIFY_SYSTEM_AUTH_REFUSED,
+            // Not refusals, but the same route's plain-text bodies, so they are
+            // held to the same two rules: distinct, and never wearing a marker
+            // that sends the renderer's toast somewhere that cannot help.
+            DECLASSIFY_STORE_BUSY,
+            DECLASSIFY_FAILED,
         ];
         for (i, one) in all.iter().enumerate() {
             for other in &all[i + 1..] {
@@ -3915,6 +3963,14 @@ mod declassify_tests {
         // have no model audience and do not need to.
         assert!(DECLASSIFY_NEEDS_USER.contains("Do not retry"));
         assert!(DECLASSIFY_NO_USER_KEY.contains("Do not retry"));
+        // A busy store is the one failure a retry DOES clear, and a genuine
+        // fault the one it does not — so exactly one of the two says so.
+        assert!(DECLASSIFY_STORE_BUSY.contains("Try again"));
+        assert!(!DECLASSIFY_FAILED.to_lowercase().contains("try again"));
+        // Neither may say the chat is public, and both must say nothing changed.
+        for body in [DECLASSIFY_STORE_BUSY, DECLASSIFY_FAILED] {
+            assert!(body.contains("not marked public"), "{body}");
+        }
     }
 
     /// SD-8. A daemon that holds no key may not answer a person with advice only

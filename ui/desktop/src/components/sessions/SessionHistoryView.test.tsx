@@ -5,9 +5,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionHistoryView from './SessionHistoryView';
 import type { Session } from '../../api';
 
-const mocks = vi.hoisted(() => ({ declassifySession: vi.fn() }));
+const mocks = vi.hoisted(() => ({ declassifySession: vi.fn(), getSession: vi.fn() }));
 
-vi.mock('../../api', () => ({ declassifySession: mocks.declassifySession }));
+vi.mock('../../api', () => ({
+  declassifySession: mocks.declassifySession,
+  getSession: mocks.getSession,
+}));
 
 vi.mock('../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
@@ -60,7 +63,13 @@ function renderView(over: Partial<Session> = {}, showActionButtons = false) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.declassifySession.mockResolvedValue({});
+  // The shape the generated client resolves a 200 with. The dialog reads the
+  // status off the Response, so a bare `{}` — no Response at all — is a failed
+  // request, exactly as it is at runtime.
+  mocks.declassifySession.mockResolvedValue({
+    data: { sessionId: 'x', privacyTier: 'public' },
+    response: { status: 200 },
+  });
 });
 
 describe('SessionHistoryView — the privacy marker', () => {
@@ -116,6 +125,41 @@ describe('SessionHistoryView — declassification', () => {
     await waitFor(() => expect(mocks.declassifySession).toHaveBeenCalled());
     await waitFor(() =>
       expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'public')
+    );
+  });
+
+  // Item 11 of the 1.90.4 hold (2026-09-13): a declassification made in ANOTHER
+  // window reaches this page too. The page reads its `session` prop once, and
+  // the daemon no longer re-sorts the chat to say something happened, so the
+  // badge follows the row announcement — and states the daemon's read of it.
+  it('follows a declassification made in another window', async () => {
+    mocks.getSession.mockResolvedValue({
+      data: {
+        id: '20260714_130000',
+        privacy_tier: 'public',
+        privacy_reason: 'declassified_by_user',
+      },
+    });
+    renderView({
+      privacy_tier: 'private',
+      privacy_reason: 'turn:versa_azure',
+      id: '20260714_130000',
+    });
+    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+
+    const otherWindow = new BroadcastChannel('biorouter:session-row');
+    try {
+      // A different chat first: this page must not move for it.
+      otherWindow.postMessage({ sessionId: 'someone-else' });
+      otherWindow.postMessage({ sessionId: '20260714_130000' });
+      await waitFor(() =>
+        expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'public')
+      );
+    } finally {
+      otherWindow.close();
+    }
+    expect(mocks.getSession).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { session_id: '20260714_130000' } })
     );
   });
 });

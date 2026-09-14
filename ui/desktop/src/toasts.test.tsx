@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   success: vi.fn(),
+  error: vi.fn(),
 }));
 
 // react-toastify is the only thing `toastService.success` actually reaches; stub
@@ -9,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('react-toastify', () => ({
   toast: Object.assign(vi.fn(), {
     success: mocks.success,
-    error: vi.fn(),
+    error: mocks.error,
     info: vi.fn(),
     warning: vi.fn(),
     loading: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('react-toastify', () => ({
   }),
 }));
 
-import { toastService } from './toasts';
+import { toastError, toastService } from './toasts';
 
 describe('toastService.success', () => {
   beforeEach(() => {
@@ -60,5 +61,27 @@ describe('toastService.success', () => {
 
     expect(mocks.success).toHaveBeenCalledTimes(1);
     expect(mocks.success.mock.calls[0][1]).toMatchObject({ autoClose: false });
+  });
+});
+
+describe('toastError', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // D3a's second round: two chats that failed with the same sentence shared one
+  // toast, so the first chat whose failure was overturned dismissed the other's
+  // report. A scope keeps two subjects apart without giving up dedup within one.
+  it('a dedupe scope separates identical failures about different subjects', () => {
+    const busy = { title: 'The chat store was busy', msg: 'Try again in a moment.' };
+    toastError({ ...busy, dedupeScope: 'declassify:a' });
+    toastError({ ...busy, dedupeScope: 'declassify:b' });
+    toastError({ ...busy, dedupeScope: 'declassify:a' });
+    toastError(busy);
+
+    const ids = mocks.error.mock.calls.map((call) => call[1].toastId);
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(ids[2]).toBe(ids[0]);
+    // Unscoped callers keep the content key they always had.
+    expect(ids[3]).toBe('error:The chat store was busy:Try again in a moment.');
+    expect(ids[3]).not.toBe(ids[0]);
   });
 });
