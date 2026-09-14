@@ -1,5 +1,5 @@
 import { act, render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * A delegated subagent's tab must still read as a sub-agent after the window
@@ -69,9 +69,18 @@ vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => ({}),
 }));
 
+/**
+ * One `GET /sessions/{id}` in flight. The read passes no `throwOnError`, so the
+ * generated client RESOLVES for every outcome it has a response for, and the
+ * three helpers below are the three shapes it resolves with.
+ */
 type PendingRead = {
   sessionId: string;
   resolve: (row: Row) => void;
+  /** The daemon answered, and the answer was no: 403 refused, 404 gone. */
+  refuse: (status: number, body?: string) => void;
+  /** No answer at all: the client caught fetch's throw and has no response. */
+  unanswered: () => void;
   reject: (error: unknown) => void;
 };
 let reads: PendingRead[] = [];
@@ -81,7 +90,15 @@ vi.mock('../../api', async (importOriginal) => ({
     new Promise((resolve, reject) => {
       reads.push({
         sessionId: options.path.session_id,
-        resolve: (row) => resolve({ data: row }),
+        resolve: (row) => resolve({ data: row, response: { status: 200 } }),
+        refuse: (status, body = 'That chat is private, or there is no chat with that id.') =>
+          resolve({ data: undefined, error: body, response: { status } }),
+        unanswered: () =>
+          resolve({
+            data: undefined,
+            error: new TypeError('Failed to fetch'),
+            response: undefined,
+          }),
         reject,
       });
     }),
@@ -113,6 +130,7 @@ vi.mock('../../contexts/ChatGroupsContext', () => ({
 vi.mock('../ui/sidebar', () => ({ useSidebar: () => ({ state: 'expanded', isMobile: false }) }));
 
 import ChatGroupsShell from './ChatGroupsShell';
+import { clearSessionTypeMemory } from './sessionTypeMemory';
 
 const defaultTabs = (): Tab[] => [
   { tabId: 't-parent', sessionId: 'parent', title: 'Delegation', userSetName: false },
@@ -184,6 +202,9 @@ describe('ChatGroupsShell — a subagent tab after the workspace annotations are
     tabAnnotations = {};
     tabs = defaultTabs();
     listListeners.clear();
+    // The memory is module state and outlives a mount by design, so it would
+    // outlive a test too.
+    clearSessionTypeMemory();
     // The list has loaded and, being `include_subagents=false`, carries neither
     // subagent.
     cachedList = [
@@ -222,7 +243,7 @@ describe('ChatGroupsShell — a subagent tab after the workspace annotations are
   it('leaves the tab unmarked when the read is refused', async () => {
     render(<ChatGroupsShell onChatChange={() => {}} />);
     await flush();
-    readOf('sub-alpha').reject('That chat is private, or there is no chat with that id.');
+    readOf('sub-alpha').refuse(403);
     await flush();
     expect(kindOf('t-alpha')).toBe('chat');
   });
@@ -272,6 +293,9 @@ describe('ChatGroupsShell — a subagent tab whose row is IN the cached list', (
     tabAnnotations = {};
     tabs = defaultTabs();
     listListeners.clear();
+    // The memory is module state and outlives a mount by design, so it would
+    // outlive a test too.
+    clearSessionTypeMemory();
     // What History's "Show subagent runs" leaves behind: the module-global
     // cache was refetched with `include_subagents=true`, so both subagents'
     // rows are in it — as measured, 20260914_2 and _3 as sub_agent/private.
@@ -295,8 +319,8 @@ describe('ChatGroupsShell — a subagent tab whose row is IN the cached list', (
     cachedList = [parentRow, openRow];
     render(<ChatGroupsShell onChatChange={() => {}} />);
     await flush();
-    readOf('sub-alpha').reject(new Error('the daemon is away'));
-    readOf('sub-beta').reject(new Error('the daemon is away'));
+    readOf('sub-alpha').unanswered();
+    readOf('sub-beta').unanswered();
     await flush();
     expect(kindOf('t-alpha')).toBe('chat');
 
@@ -323,7 +347,7 @@ describe('ChatGroupsShell — a subagent tab whose row is IN the cached list', (
     // History remounts with the box unticked and refetches without subagents.
     await emitList([parentRow, openRow]);
     await flush();
-    readOf('sub-alpha').reject('That chat is private, or there is no chat with that id.');
+    readOf('sub-alpha').refuse(403);
     await flush();
     // The type was a fact about the session; a refused read changes nothing.
     expect(kindOf('t-alpha')).toBe('subagent');
@@ -341,8 +365,11 @@ describe('ChatGroupsShell — a subagent tab whose row is IN the cached list', (
     await emitList([parentRow, betaRow, openRow]);
     await flush();
 
-    // …and `create_session` reissues the id (MAX(N)+1 over surviving rows) to a
-    // new chat, opened in a new tab before it has recorded a message.
+    // …and the id is reissued to a new chat, opened in a new tab before it has
+    // recorded a message. `create_session`'s high-water mark makes ids single
+    // use, so only a store without it can do this: an older build sharing the
+    // file, or a database restored from a backup. The forgetting also bounds
+    // the map.
     tabs = [
       ...tabs,
       { tabId: 't-new', sessionId: 'sub-alpha', title: 'New chat', userSetName: false },
@@ -353,5 +380,321 @@ describe('ChatGroupsShell — a subagent tab whose row is IN the cached list', (
     readOf('sub-alpha').resolve({ id: 'sub-alpha', name: 'New chat', session_type: 'user' });
     await flush();
     expect(kindOf('t-new')).toBe('chat');
+  });
+});
+
+/**
+ * The glyph flip on a remount (follow-up to PR #314).
+ *
+ * The type map was React state in the shell, which mounts inside `/pair`, so
+ * it started empty on every return to a chat. Until the row was read again a
+ * subagent's tab drew the chat bubble, then switched to the Bot. Measured
+ * 2026-09-14 on d7f02191 in the dev app: `chat/unknown` at 123 ms after
+ * Settings → a sidebar chat and `subagent/private` at 751 ms; History → back,
+ * 81 ms then 157 ms. The type now also lives in `sessionTypeMemory`, and the
+ * shell's state is seeded from it on mount.
+ */
+describe('ChatGroupsShell — a subagent tab on a remount, before its row is read again', () => {
+  beforeEach(() => {
+    reads = [];
+    dispatch.mockClear();
+    tabAnnotations = {};
+    tabs = defaultTabs();
+    listListeners.clear();
+    clearSessionTypeMemory();
+    cachedList = [
+      { id: 'parent', name: 'Delegation', privacy_tier: 'private', session_type: 'user' },
+      { id: 'open-chat', name: 'Public notes', privacy_tier: 'public', session_type: 'user' },
+    ];
+  });
+
+  it('draws the Bot glyph on the first render of a remount, with no flush', async () => {
+    const first = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    readOf('sub-alpha').resolve(alphaRow);
+    readOf('sub-beta').resolve(betaRow);
+    await flush();
+    expect(kindOf('t-alpha')).toBe('subagent');
+
+    // Settings or History: leaving `/pair` unmounts the shell, and the
+    // annotations go with the provider.
+    first.unmount();
+    reads = [];
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+
+    // No flush, and no row has answered for this mount.
+    expect(kindOf('t-alpha')).toBe('subagent');
+    expect(kindOf('t-beta')).toBe('subagent');
+    expect(kindOf('t-parent')).toBe('chat');
+    expect(kindOf('t-open')).toBe('chat');
+    // Only the kind is remembered. The tier stays not yet known until the row
+    // answers again, which is #312's state and not this one's to change.
+    expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'unknown');
+
+    await flush();
+    readOf('sub-alpha').resolve(alphaRow);
+    await flush();
+    expect(kindOf('t-alpha')).toBe('subagent');
+    expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'private');
+  });
+
+  it('remembers a row that answers after the shell has gone', async () => {
+    const first = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    // A reload, then away from the chat before its reads came back.
+    first.unmount();
+    readOf('sub-alpha').resolve(alphaRow);
+    await flush();
+
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    expect(kindOf('t-alpha')).toBe('subagent');
+    // Beta never answered, so nothing is remembered for it.
+    expect(kindOf('t-beta')).toBe('chat');
+  });
+
+  it('forgets a closed tab, so a later mount does not seed a reissued id with its kind', async () => {
+    const first = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    readOf('sub-alpha').resolve(alphaRow);
+    await flush();
+    tabs = tabs.filter((tab) => tab.tabId !== 't-alpha');
+    first.rerender(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    first.unmount();
+
+    // A store without the high-water mark reissues the id, and the new chat is
+    // opened in a tab while the shell is away.
+    tabs = [
+      ...tabs,
+      { tabId: 't-new', sessionId: 'sub-alpha', title: 'New chat', userSetName: false },
+    ];
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    expect(kindOf('t-new')).toBe('chat');
+  });
+
+  it("forgets a closed tab's tier too, so a reissued id is not yet known rather than private", async () => {
+    const view = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    readOf('sub-alpha').resolve(alphaRow);
+    await flush();
+    expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'private');
+
+    tabs = tabs.filter((tab) => tab.tabId !== 't-alpha');
+    view.rerender(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    reads = [];
+    tabs = [
+      ...tabs,
+      { tabId: 't-new', sessionId: 'sub-alpha', title: 'New chat', userSetName: false },
+    ];
+    view.rerender(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    // Its own row has not answered yet.
+    expect(glyphOf('t-new')).toHaveAttribute('data-privacy', 'unknown');
+
+    readOf('sub-alpha').resolve({
+      id: 'sub-alpha',
+      name: 'New chat',
+      privacy_tier: 'public',
+      session_type: 'user',
+    });
+    await flush();
+    // Kept, the closed tab's private would have been raised over this for good.
+    expect(glyphOf('t-new')).toHaveAttribute('data-privacy', 'public');
+  });
+});
+
+/**
+ * A failed row read was never retried (follow-up to PR #314).
+ *
+ * Rule 3 marks a chat as read for a list when the read is ISSUED, so a read
+ * that failed waited for the next list. Measured 2026-09-14 on d7f02191 in the
+ * dev app: every `metadata_only` read failed with a connection error during
+ * Settings → a sidebar chat, and 25 s after the daemon was answering again both
+ * subagent tabs still read `chat/unknown`, with no read issued in that time.
+ */
+describe('ChatGroupsShell — a row read nobody answered is asked again', () => {
+  beforeEach(() => {
+    reads = [];
+    dispatch.mockClear();
+    tabAnnotations = {};
+    tabs = defaultTabs();
+    listListeners.clear();
+    clearSessionTypeMemory();
+    cachedList = [
+      { id: 'parent', name: 'Delegation', privacy_tier: 'private', session_type: 'user' },
+      { id: 'open-chat', name: 'Public notes', privacy_tier: 'public', session_type: 'user' },
+    ];
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const readsOf = (sessionId: string) => reads.filter((read) => read.sessionId === sessionId);
+  const lastReadOf = (sessionId: string) => {
+    const all = readsOf(sessionId);
+    if (all.length === 0) throw new Error(`no read issued for ${sessionId}`);
+    return all[all.length - 1];
+  };
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+    await flush();
+  }
+
+  it.each<[string, (read: PendingRead) => void]>([
+    ['no response at all', (read) => read.unanswered()],
+    ['a 503', (read) => read.refuse(503, 'Service Unavailable')],
+    ['a 429', (read) => read.refuse(429, 'Too Many Requests')],
+    // No HTTP status at all. Measured: the Electron renderer reports a
+    // CDP-fulfilled 503 as status 0, and the first cut of this retried only
+    // `>= 500`, so that probe saw no retry.
+    ['a status of 0', (read) => read.refuse(0, '')],
+    ['a throw', (read) => read.reject(new TypeError('Failed to fetch'))],
+  ])(
+    'reads the row again after %s, and the tab gains kind and tier with no new list',
+    async (_label, fail) => {
+      render(<ChatGroupsShell onChatChange={() => {}} />);
+      await flush();
+      fail(readOf('sub-alpha'));
+      fail(readOf('sub-beta'));
+      await flush();
+      expect(kindOf('t-alpha')).toBe('chat');
+      expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'unknown');
+
+      await advance(1_499);
+      expect(readsOf('sub-alpha')).toHaveLength(1);
+      await advance(1);
+      expect(readsOf('sub-alpha')).toHaveLength(2);
+      expect(readsOf('sub-beta')).toHaveLength(2);
+
+      lastReadOf('sub-alpha').resolve(alphaRow);
+      lastReadOf('sub-beta').resolve(betaRow);
+      await flush();
+      // No list was published in this test: `emitList` is never called.
+      expect(kindOf('t-alpha')).toBe('subagent');
+      expect(kindOf('t-beta')).toBe('subagent');
+      expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'private');
+      expect(glyphOf('t-beta')).toHaveAttribute('data-privacy', 'private');
+
+      // Answered, so never asked about again for this list.
+      await advance(60_000);
+      expect(readsOf('sub-alpha')).toHaveLength(2);
+    }
+  );
+
+  it.each([403, 404])('does not ask again after a %i: a refusal is an answer', async (status) => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    readOf('sub-alpha').refuse(status);
+    await flush();
+    await advance(60_000);
+    expect(readsOf('sub-alpha')).toHaveLength(1);
+    expect(kindOf('t-alpha')).toBe('chat');
+    expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'unknown');
+  });
+
+  it('backs off, and stops after five retries for one list', async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    lastReadOf('sub-alpha').unanswered();
+    await flush();
+    for (const [index, delay] of [1_500, 3_000, 6_000, 10_000, 10_000].entries()) {
+      await advance(delay - 1);
+      expect(readsOf('sub-alpha')).toHaveLength(index + 1);
+      await advance(1);
+      expect(readsOf('sub-alpha')).toHaveLength(index + 2);
+      lastReadOf('sub-alpha').unanswered();
+      await flush();
+    }
+    await advance(120_000);
+    expect(readsOf('sub-alpha')).toHaveLength(6);
+  });
+
+  it('asks again from the start once a new list arrives after the retries ran out', async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    lastReadOf('sub-alpha').unanswered();
+    await flush();
+    for (let i = 0; i < 5; i++) {
+      await advance(10_000);
+      lastReadOf('sub-alpha').unanswered();
+      await flush();
+    }
+    await advance(120_000);
+    expect(readsOf('sub-alpha')).toHaveLength(6);
+
+    // The daemon answered a list, so rule 3 reads the chat for it…
+    await emitList([...(cachedList ?? [])]);
+    await flush();
+    expect(readsOf('sub-alpha')).toHaveLength(7);
+    // …and a failure of that read is retried again, from the shortest wait.
+    lastReadOf('sub-alpha').unanswered();
+    await flush();
+    await advance(1_500);
+    expect(readsOf('sub-alpha')).toHaveLength(8);
+  });
+
+  it('keeps only the newest read landing: an overtaken read that fails asks nothing again', async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    const overtaken = readOf('sub-alpha');
+    // A new list while the first read is out: rule 3 reads the chat again.
+    await emitList([...(cachedList ?? [])]);
+    await flush();
+    expect(readsOf('sub-alpha')).toHaveLength(2);
+
+    overtaken.unanswered();
+    await flush();
+    lastReadOf('sub-alpha').resolve(alphaRow);
+    await flush();
+    expect(kindOf('t-alpha')).toBe('subagent');
+
+    await advance(60_000);
+    expect(readsOf('sub-alpha')).toHaveLength(2);
+  });
+
+  it("cannot let an overtaken read that fails later cancel the newest read's retry", async () => {
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    const overtaken = readOf('sub-alpha');
+    await emitList([...(cachedList ?? [])]);
+    await flush();
+    // The newest read fails first, and is due to be asked again…
+    lastReadOf('sub-alpha').unanswered();
+    await flush();
+    // …then the overtaken one fails too, and must not touch that.
+    overtaken.unanswered();
+    await flush();
+
+    await advance(1_500);
+    expect(readsOf('sub-alpha')).toHaveLength(3);
+    lastReadOf('sub-alpha').resolve(alphaRow);
+    await flush();
+    expect(kindOf('t-alpha')).toBe('subagent');
+  });
+
+  it('does not ask about a tab that was closed while it waited', async () => {
+    const view = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    readOf('sub-alpha').unanswered();
+    await flush();
+    tabs = tabs.filter((tab) => tab.tabId !== 't-alpha');
+    view.rerender(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    await advance(60_000);
+    expect(readsOf('sub-alpha')).toHaveLength(1);
+  });
+
+  it('does not ask again after the shell has gone', async () => {
+    const view = render(<ChatGroupsShell onChatChange={() => {}} />);
+    await flush();
+    readOf('sub-alpha').unanswered();
+    await flush();
+    view.unmount();
+    await advance(60_000);
+    expect(readsOf('sub-alpha')).toHaveLength(1);
   });
 });
