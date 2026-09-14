@@ -59,6 +59,7 @@ import {
   EMPTY_COMPOSER_DRAFT,
   beginComposerSend,
   composerDraftVersion,
+  giveBackToComposer,
   mergeComposerDraft,
   readComposerDraft,
   saveComposerDraft,
@@ -66,36 +67,55 @@ import {
   type ComposerDraft,
   type DraftImage,
 } from '../utils/composerDrafts';
+import {
+  beginQueuedOffer,
+  claimComposerQueue,
+  composerQueueKey,
+  deleteOwnedTempAttachments,
+  endQueuedOffer,
+  hasQueuedOfferInFlight,
+  parkComposerQueue,
+  returnQueuedOffer,
+  subscribeQueuedOfferReturns,
+  type QueuedMessage,
+} from '../utils/composerQueues';
 import { ResourceRefChip } from './ResourceRefChip';
 
-interface QueuedMessage {
-  id: string;
-  content: string;
-  attachments?: UserAttachment[];
-  /** Renderer-owned temp images to unlink if the queue discards this message.
-   * Kept separate from `attachments`: that array may also contain a user's
-   * original file path, which this component must never delete. */
-  ownedTempAttachmentPaths?: string[];
-  timestamp: number;
+/**
+ * Queued messages as a draft, for a composer with no chat to keep a queue for.
+ * Every image a queued message carries is a temp file the composer staged
+ * (`canUploadDroppedImage` requires a staged path), so each comes back as one.
+ */
+function draftOfQueuedMessages(messages: readonly QueuedMessage[]): ComposerDraft {
+  return {
+    text: messages
+      .map((message) => message.content.trim())
+      .filter(Boolean)
+      .join('\n\n'),
+    images: messages.flatMap((message) =>
+      (message.attachments ?? [])
+        .filter((attachment) => attachment.kind === 'image')
+        .map((attachment, index) => ({
+          id: `queued-${message.id}-${index}`,
+          filePath: attachment.path,
+          dataUrl: '',
+        }))
+    ),
+    files: [],
+  };
 }
 
-const orphanedQueuedOffers = new Map<string, Map<string, QueuedMessage>>();
-const orphanedQueuedOfferListeners = new Map<string, Set<(messageId: string) => void>>();
-
-function queuedOfferOwner(sessionId: string | null): string {
-  return sessionId ?? '__new_session__';
-}
-
-function settleOrphanedQueuedOffer(owner: string, messageId: string): void {
-  const offers = orphanedQueuedOffers.get(owner);
-  offers?.delete(messageId);
-  if (offers?.size === 0) orphanedQueuedOffers.delete(owner);
-  for (const listener of orphanedQueuedOfferListeners.get(owner) ?? []) listener(messageId);
-}
-
-function deleteQueuedOwnedTempAttachments(messages: readonly QueuedMessage[]): void {
-  const ownedPaths = new Set(messages.flatMap((message) => message.ownedTempAttachmentPaths ?? []));
-  for (const path of ownedPaths) window.electron.deleteTempFile(path);
+/**
+ * A queued message that a composer which is gone could not send. A chat's goes
+ * back to that chat's queue; a composer with no chat hands it to its own draft.
+ */
+function handBackQueuedMessage(
+  key: string | null,
+  draftKey: string | undefined,
+  message: QueuedMessage
+): void {
+  if (key) returnQueuedOffer(key, message);
+  else if (draftKey) giveBackToComposer(draftKey, draftOfQueuedMessages([message]));
 }
 
 interface PastedImage {
@@ -498,28 +518,38 @@ export default function ChatInput({
   const isLoading = chatState !== ChatState.Idle;
   const isWorking = isRunningState(chatState);
   const wasLoadingRef = useRef(isLoading);
+  const isLoadingNowRef = useRef(isLoading);
+  isLoadingNowRef.current = isLoading;
 
-  // Queue functionality - renderer-memory only, scoped to this chat. An offer
-  // crossing an unmount is handed to the next composer instance below.
-  const queueOwner = queuedOfferOwner(sessionId);
-  const recoveredQueuedOffersRef = useRef<QueuedMessage[] | null>(null);
-  if (recoveredQueuedOffersRef.current === null) {
-    recoveredQueuedOffersRef.current = [...(orphanedQueuedOffers.get(queueOwner)?.values() ?? [])];
-    orphanedQueuedOffers.delete(queueOwner);
-  }
-  const recoveredQueuedOffers = recoveredQueuedOffersRef.current ?? [];
-  const recoveredQueuedMessageIdsRef = useRef(
-    new Set(recoveredQueuedOffers.map((message) => message.id))
-  );
-  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>(recoveredQueuedOffers);
+  // The queue — renderer memory only, and the CHAT's rather than this
+  // instance's: it is parked under the chat's key when this composer unmounts
+  // and claimed by the next composer for the same chat. See
+  // `utils/composerQueues.ts` for the two states a message can be in and why.
+  const queueKey = composerQueueKey(sessionId);
+  const queueKeyRef = useRef(queueKey);
+  queueKeyRef.current = queueKey;
+  const queueDraftKeyRef = useRef(draftKey);
+  queueDraftKeyRef.current = draftKey;
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const queuedMessagesRef = useRef(queuedMessages);
   queuedMessagesRef.current = queuedMessages;
-  const activeQueuedOffersRef = useRef(new Map<string, QueuedMessage>());
+  // Offers refused once and waiting for their next attempt's timer: out of the
+  // queue, and not handed to any submit right now.
+  const retryingQueuedOffersRef = useRef(new Map<string, QueuedMessage>());
+  // Offers handed to a submit that has not answered. They belong to that submit.
+  const pendingQueuedOfferIdsRef = useRef(new Set<string>());
+  // A claimed queue whose turn ended while no composer was mounted: drain it at
+  // the first idle render, as that turn's end would have.
+  const drainWhenIdleRef = useRef(false);
   const queueDisposedRef = useRef(false);
   const queuePausedRef = useRef(false);
+  // What `queuePausedRef` goes back to when a Stop & send that paused it settles.
+  const pausedBeforeStopAndSendRef = useRef<boolean | null>(null);
   const editingMessageIdRef = useRef<string | null>(null);
   const continuationQueuedMessageIdRef = useRef<string | null>(null);
   const [lastInterruption, setLastInterruption] = useState<string | null>(null);
+  const lastInterruptionRef = useRef(lastInterruption);
+  lastInterruptionRef.current = lastInterruption;
 
   const { alerts, addAlert, clearAlerts } = useAlerts();
   const dropdownRef: React.RefObject<HTMLDivElement> = useRef<HTMLDivElement>(
@@ -774,43 +804,82 @@ export default function ChatInput({
   // Timers for the bounded re-offer below. Tracked so unmounting cannot leave a
   // submit firing out of a composer that is gone.
   const queueRetryTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  useEffect(() => {
-    const listener = (messageId: string) => {
-      recoveredQueuedMessageIdsRef.current.delete(messageId);
-      activeQueuedOffersRef.current.delete(messageId);
-      setQueuedMessages((prev) => prev.filter((message) => message.id !== messageId));
-    };
-    const listeners = orphanedQueuedOfferListeners.get(queueOwner) ?? new Set();
-    listeners.add(listener);
-    orphanedQueuedOfferListeners.set(queueOwner, listeners);
-    return () => {
-      listeners.delete(listener);
-      if (listeners.size === 0) orphanedQueuedOfferListeners.delete(queueOwner);
-    };
-  }, [queueOwner]);
 
-  useEffect(() => {
-    const timers = queueRetryTimersRef.current;
-    const activeQueuedOffers = activeQueuedOffersRef.current;
-    const recoveredQueuedMessageIds = recoveredQueuedMessageIdsRef.current;
+  // The queue's lifetime across composers: claim the chat's parked queue on
+  // mount, park it on unmount. LAYOUT effects, and on mount/unmount only (the
+  // key is read from its ref, so a new chat's first message binding a session
+  // is not mistaken for an unmount): a pane rebuild renders the replacement
+  // BEFORE this instance unmounts, so a claim made while rendering would read
+  // the store one park too early. React runs every unmount's layout cleanup
+  // before any mount's layout effect in the same commit, so the claim below
+  // sees what the composer it replaces parked, and before anything is painted.
+  useLayoutEffect(() => {
     queueDisposedRef.current = false;
+    const key = queueKeyRef.current;
+    const claimed = key ? claimComposerQueue(key) : undefined;
+    if (key && claimed) {
+      const current = queuedMessagesRef.current;
+      const adopted = [
+        ...claimed.messages.filter((message) => !current.some((held) => held.id === message.id)),
+        ...current,
+      ];
+      queuedMessagesRef.current = adopted;
+      setQueuedMessages(adopted);
+      queuePausedRef.current = claimed.paused;
+      if (claimed.interruption) setLastInterruption(claimed.interruption);
+      // Not while a message of this chat is still with a submit: it answers into
+      // a turn this composer will see end, and draining now would only race it.
+      if (claimed.sendWhenIdle && !hasQueuedOfferInFlight(key)) drainWhenIdleRef.current = true;
+    }
+    const timers = queueRetryTimersRef.current;
+    const retrying = retryingQueuedOffersRef.current;
+    const pending = pendingQueuedOfferIdsRef.current;
     return () => {
       queueDisposedRef.current = true;
       timers.forEach((timer) => clearTimeout(timer));
       timers.clear();
 
-      const recoverable = new Map(orphanedQueuedOffers.get(queueOwner));
-      for (const [id, message] of activeQueuedOffers) {
-        recoverable.set(id, message);
+      // Everything this composer holds that no submit has: offers between
+      // attempts (they were being sent, so they go first), then the queue. An
+      // offer a submit still has is left to that submit's answer.
+      const waiting = [...retrying.values()];
+      retrying.clear();
+      const keep = [
+        ...waiting,
+        ...queuedMessagesRef.current.filter(
+          (message) => !pending.has(message.id) && !waiting.some((w) => w.id === message.id)
+        ),
+      ];
+      if (keep.length === 0) return;
+      const keyNow = queueKeyRef.current;
+      if (keyNow) {
+        parkComposerQueue(keyNow, {
+          messages: keep,
+          paused: pausedBeforeStopAndSendRef.current ?? queuePausedRef.current,
+          interruption: lastInterruptionRef.current,
+          sendWhenIdle: waiting.length > 0 || isLoadingNowRef.current,
+        });
+      } else if (queueDraftKeyRef.current) {
+        // No chat to send it to later: back to the draft it was typed under.
+        giveBackToComposer(queueDraftKeyRef.current, draftOfQueuedMessages(keep));
       }
-      for (const message of queuedMessagesRef.current) {
-        if (recoveredQueuedMessageIds.has(message.id)) {
-          recoverable.set(message.id, message);
-        }
-      }
-      if (recoverable.size > 0) orphanedQueuedOffers.set(queueOwner, recoverable);
     };
-  }, [queueOwner]);
+  }, []);
+
+  // A message of this chat that a gone composer's submit did not take.
+  useLayoutEffect(() => {
+    if (!queueKey) return;
+    return subscribeQueuedOfferReturns(queueKey, (message) => {
+      queuedMessagesRef.current = [
+        message,
+        ...queuedMessagesRef.current.filter((queued) => queued.id !== message.id),
+      ];
+      setQueuedMessages((prev) =>
+        prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
+      );
+      drainWhenIdleRef.current = true;
+    });
+  }, [queueKey]);
 
   useEffect(
     () => () => {
@@ -836,38 +905,59 @@ export default function ChatInput({
    * can pick up the same message and send it twice. Only a message that is
    * still refused at the bound goes back into the queue, at the head, with a
    * toast: visible and re-sendable, never silently dropped.
+   *
+   * The composer can unmount while an offer is out. Between attempts, the
+   * unmount parks the message for the chat (the timer is cancelled with it). With
+   * a submit, it stays that submit's: taken, it is done; not taken, it goes back
+   * to the chat's queue through `utils/composerQueues.ts` — never both, which is
+   * what used to show a running message as "Next" and send it again.
    */
   const offerQueuedMessage = useCallback(
     (message: QueuedMessage) => {
+      // Captured at the offer: an answer arriving after this composer is gone
+      // still belongs to the chat (or draft) the message was queued in.
+      const key = queueKeyRef.current;
+      const draftKeyAtOffer = queueDraftKeyRef.current;
+      if (queueDisposedRef.current) {
+        // A late caller on a composer that is gone (a refused steer, a resume
+        // timer). The message is not in any queue any more, so hand it on.
+        handBackQueuedMessage(key, draftKeyAtOffer, message);
+        return;
+      }
       LocalMessageStorage.addMessage(message.content);
-      activeQueuedOffersRef.current.set(message.id, message);
       const offer = (attempt: number) => {
         if (queueDisposedRef.current) return;
+        retryingQueuedOffersRef.current.delete(message.id);
+        pendingQueuedOfferIdsRef.current.add(message.id);
+        if (key) beginQueuedOffer(key, message.id);
         const submitted = handleSubmit(
           new CustomEvent('submit', {
             detail: { value: message.content, attachments: message.attachments ?? [] },
           }) as unknown as React.FormEvent
         );
         void Promise.resolve(submitted).then((accepted) => {
+          pendingQueuedOfferIdsRef.current.delete(message.id);
+          if (key) endQueuedOffer(key, message.id);
           // Only an explicit `false` is a refusal: a handler predating the
           // contract resolves `undefined` and must not be read as one.
           if (accepted !== false) {
-            activeQueuedOffersRef.current.delete(message.id);
-            recoveredQueuedMessageIdsRef.current.delete(message.id);
-            settleOrphanedQueuedOffer(queueOwner, message.id);
             if (continuationQueuedMessageIdRef.current === message.id) {
               continuationQueuedMessageIdRef.current = null;
             }
             return;
           }
-          // Cleanup already copied this in-flight offer to the renderer-level
-          // recovery map. A late refusal must leave it there and must not arm a
-          // timer or set state on a composer that no longer exists.
-          if (queueDisposedRef.current) return;
+          // Not taken, and the composer that offered it is gone: no timer, no
+          // state on a component that no longer exists. The message goes back
+          // to whatever holds this chat's queue now.
+          if (queueDisposedRef.current) {
+            handBackQueuedMessage(key, draftKeyAtOffer, message);
+            return;
+          }
           if (attempt < QUEUE_DRAIN_ATTEMPTS) {
             // Next macrotask, which is all the in-flight submit's promise chain
             // needs to unwind and release its latch. Deliberately not a poll:
             // the attempt count is the whole retry budget.
+            retryingQueuedOffersRef.current.set(message.id, message);
             const timer = setTimeout(() => {
               queueRetryTimersRef.current.delete(timer);
               offer(attempt + 1);
@@ -875,7 +965,6 @@ export default function ChatInput({
             queueRetryTimersRef.current.add(timer);
             return;
           }
-          activeQueuedOffersRef.current.delete(message.id);
           setQueuedMessages((prev) =>
             prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
           );
@@ -887,12 +976,18 @@ export default function ChatInput({
       };
       offer(1);
     },
-    [handleSubmit, queueOwner]
+    [handleSubmit]
   );
 
   // Queue processing
   useEffect(() => {
-    if (wasLoadingRef.current && !isLoading && queuedMessages.length > 0) {
+    // A turn running now ends with its own edge, so a claimed queue's pending
+    // drain is that edge's.
+    if (isLoading) drainWhenIdleRef.current = false;
+    const turnEnded = wasLoadingRef.current && !isLoading;
+    const missedTurnEnd = drainWhenIdleRef.current && !isLoading;
+    if ((turnEnded || missedTurnEnd) && queuedMessages.length > 0) {
+      drainWhenIdleRef.current = false;
       // After an interruption, we should process the interruption message immediately
       // The queue is only truly paused if there was an interruption AND we want to keep it paused
       const shouldProcessQueue = !queuePausedRef.current || lastInterruption;
@@ -2072,6 +2167,11 @@ export default function ChatInput({
         attachments: [],
         timestamp: Date.now(),
       };
+      if (queueDisposedRef.current) {
+        // The steer was answered after this composer went away.
+        handBackQueuedMessage(queueKeyRef.current, queueDraftKeyRef.current, message);
+        return;
+      }
       if (isLoadingRef.current) {
         setQueuedMessages((prev) => [...prev, message]);
         return;
@@ -2492,11 +2592,8 @@ export default function ChatInput({
       continuationQueuedMessageIdRef.current = null;
       void onAbandonContinuation?.();
     }
-    recoveredQueuedMessageIdsRef.current.delete(messageId);
-    activeQueuedOffersRef.current.delete(messageId);
-    orphanedQueuedOffers.get(queueOwner)?.delete(messageId);
     const removed = queuedMessagesRef.current.find((message) => message.id === messageId);
-    if (removed) deleteQueuedOwnedTempAttachments([removed]);
+    if (removed) deleteOwnedTempAttachments([removed]);
     setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
   };
 
@@ -2505,10 +2602,7 @@ export default function ChatInput({
       continuationQueuedMessageIdRef.current = null;
       void onAbandonContinuation?.();
     }
-    recoveredQueuedMessageIdsRef.current.clear();
-    activeQueuedOffersRef.current.clear();
-    orphanedQueuedOffers.delete(queueOwner);
-    deleteQueuedOwnedTempAttachments(queuedMessagesRef.current);
+    deleteOwnedTempAttachments(queuedMessagesRef.current);
     setQueuedMessages([]);
     queuePausedRef.current = false;
     setLastInterruption(null);
@@ -2545,6 +2639,9 @@ export default function ChatInput({
     stopAndSendPendingRef.current.add(messageId);
     const wasPaused = queuePausedRef.current;
     queuePausedRef.current = true;
+    // The pause is this control's, not the person's: a queue parked while it is
+    // held goes back to the chat as it was before.
+    pausedBeforeStopAndSendRef.current = wasPaused;
     // Own the future lease before asking for it. Removal, Clear, and unmount
     // can now revoke this exact queued replacement while the cancel barrier is
     // still on the wire; the delayed acknowledgement below observes that
@@ -2553,6 +2650,7 @@ export default function ChatInput({
 
     void stopAck.trigger(true).then((stopped) => {
       stopAndSendPendingRef.current.delete(messageId);
+      pausedBeforeStopAndSendRef.current = null;
       if (!stopped) {
         if (continuationQueuedMessageIdRef.current === messageId) {
           continuationQueuedMessageIdRef.current = null;
