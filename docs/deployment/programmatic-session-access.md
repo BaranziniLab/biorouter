@@ -200,6 +200,32 @@ Each of these refuses a caller exactly as `GET /sessions/{id}` does, with the sa
 same words, and answers a chat that does not exist the same way. Deleting, renaming or editing a
 chat is never easier than reading it, and neither is stopping its work.
 
+**Schedules apply the rule to their work.** A schedule is not a chat and has no tier of its own.
+Its work is private when a chat it names is private, which is the chat it was created from (its
+runs use that chat's model) or the chat it is running in. Its work is also private when the model
+its runs use is private: the creating chat's model, or the configured default when there is no
+creating chat. A run starts a new chat on that model with nobody present, which is why this counts
+as reaching private work. On a daemon holding a user-action key, `POST /agent/start` refuses that
+same caller a new chat on a private default. These routes take the header, or the proof, before
+changing private work:
+
+| Route | What it does |
+|---|---|
+| `POST /schedule/create` | Makes a schedule. The new schedule names no chat, so it is private work exactly when the configured default model is private. |
+| `POST /schedule/{id}/run_now` | Starts a run now, in a new chat on the schedule's model, and answers with that chat's id. |
+| `POST /schedule/{id}/pause` · `/unpause` | Stops or resumes the schedule's future runs. |
+| `PUT /schedule/{id}` | Changes when it runs. Answers with the job as `GET /schedule/list` shows it to the caller. |
+| `DELETE /schedule/delete/{id}` | Removes the schedule and the workflow copy it keeps. |
+| `POST /workflows/schedule` | Adds, re-times or removes the schedule of a saved workflow, through the same scheduler. |
+
+A refused request gets `403` with a schedule-worded twin of the chat refusal, and nothing is run or
+changed. An id that names no schedule gets the same `403`. A caller the gate admits is told the
+truth, which for an unknown id is `404`. A schedule doing **public** work (it names no private chat
+and its runs use a public model) stays open to any holder of the secret, as a public chat does. On
+an install configured with a public model, that covers every schedule not created from a private
+chat. `biorouter schedule add`, `remove` and `run-now` state the terminal's configured provider,
+so they pass on an install configured with a private model.
+
 **Listings and knowledge bases apply the same rule.** They do not refuse a list; they leave out what
 the caller could not open:
 
@@ -210,6 +236,7 @@ the caller could not open:
 | Every `/knowledge/bases/{id}…` route: pages, graph, history, location, export, preview, and the writes | A private base is refused with a knowledge-base twin of the chat refusal. A base that does not exist, and a malformed id, get the same refusal. |
 | `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
 | `GET /active_work` | The running work of public chats only. Each row carries its chat's `sessionId` and a `title` and `detail` holding the shell command or task prompt, which is the chat's content. A row whose chat is private, or cannot be read, is omitted. So is a row that names no chat at all (see below). |
+| `GET /sessions/changes` | Changes to public chats only. Each change carries a chat's provider, model and privacy tier. A change to a private chat is left out. Naming a private chat does not make the poll answer sooner when that chat's row moves, so the timing of a poll says nothing about it either. The `revision` a poll answers with still counts every chat's changes, so it reveals how many rows moved on the machine but not which. Until 1.90.5 this route reported any chat a caller named, and every model switch it made. |
 | `GET /sessions/running` | The ids of public chats with a turn in flight only. A running private chat, or one the daemon cannot read, is omitted, and an unproven caller's empty answer is identical to "nothing is running", so the omission tells it nothing. `biorouter session list` and `session watch` still report liveness truthfully: they state the terminal's configured provider on every request, so a private-provider install is handed every running id and a public one exactly the chats `GET /sessions` already lists. Until 1.90.4 this route was left unfiltered, and polling it revealed when a private chat's turns started and stopped. |
 
 A browser pointed at `biorouter serve` is a special case of this, described in
@@ -260,9 +287,8 @@ reader should not infer from this page that the surface is complete:
 
 | Route | What an ungated caller gets |
 |---|---|
-| `GET /sessions/changes` | For the ids a caller names, and any other row that changed, the provider, model and tier columns. Metadata, not titles or transcripts. |
 | `GET /sessions/insights`, `GET /sessions/activity` | Machine-wide counts and per-day usage. Aggregates that name no chat. |
-| `POST /schedule/create`, `POST /schedule/{id}/run_now`, `POST /schedule/{id}/pause`, `POST /schedule/{id}/unpause`, `DELETE /schedule/delete/{id}` | Create, launch, pause, resume or delete scheduled work. A schedule runs a workflow file in a new session rather than an existing chat, and a launched run still passes the privacy check when it binds its model — but none of these five takes the header or the proof, so an ungated caller can change what runs and when. |
+| `schedule.json`, the file | Not a route, and listed because it bypasses every schedule route above. The daemon follows this file and picks up an added, changed or removed row within seconds. Biorouter does not yet stop a chat's shell from writing ordinary files. So a caller that can write the file can add, re-time or remove a schedule, and name any creating chat, without an HTTP request. The schedule routes' gate makes the HTTP surface follow the reach rule. It does not make the file a boundary. |
 
 The daemon has no principal, so none of this is a *tier* bypass in the strict sense — a caller
 holding the secret is already inside. It is the same open problem as

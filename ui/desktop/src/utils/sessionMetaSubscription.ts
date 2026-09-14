@@ -1,5 +1,6 @@
 import { sessionChanges } from '../api';
 import type { SessionMetaDelta } from '../api';
+import { userActionHeaders } from './userAction';
 
 /**
  * Handoff 04. The renderer's ear on a session ROW that something else rewrote.
@@ -72,12 +73,22 @@ const MIN_INTERVAL_MS = 40;
  */
 const IDLE_SLEEP_MS = 2000;
 
+/**
+ * ⚠ With the person's proof, on every poll. The daemon reports a change only for
+ * a chat the caller could open (issue #56), so a poll without it is answered as
+ * a public model's: a private chat's model switch or tier raise is silently
+ * left out, and the composer and tab keep showing the row it replaced.
+ */
 const defaultPoll = async (
   since: number,
   ids: string[],
   signal?: AbortSignal
 ): Promise<SessionMetaDelta | undefined> => {
-  const response = await sessionChanges({ query: { since, ids: ids.join(',') }, signal });
+  const response = await sessionChanges({
+    query: { since, ids: ids.join(',') },
+    headers: await userActionHeaders(),
+    signal,
+  });
   return response.data;
 };
 

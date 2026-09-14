@@ -427,6 +427,11 @@ async fn delete_workflow(Json(request): Json<DeleteWorkflowRequest>) -> StatusCo
     request_body = ScheduleWorkflowRequest,
     responses(
         (status = 200, description = "Workflow scheduled successfully"),
+        (status = 403, description = "The schedule this would create, re-time or remove does \
+                                      private work — its runs use a private model, or it was \
+                                      created from or is running in a chat this caller could not \
+                                      open — and the request carried neither the user-action proof \
+                                      nor a private capability. Plain text; nothing was changed"),
         (status = 404, description = "Workflow not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -434,14 +439,48 @@ async fn delete_workflow(Json(request): Json<DeleteWorkflowRequest>) -> StatusCo
 )]
 async fn schedule_workflow(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<ScheduleWorkflowRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<StatusCode, axum::response::Response> {
+    use axum::response::IntoResponse;
     let file_path = match get_workflow_file_path_by_id(&request.id) {
         Ok(path) => path,
-        Err(err) => return Err(err.status),
+        Err(err) => return Err(err.status.into_response()),
     };
 
     let scheduler = state.scheduler();
+    // Issue #56: the same scheduler `POST /schedule/create`, `PUT
+    // /schedule/{id}` and `DELETE /schedule/delete/{id}` reach, by a workflow's
+    // id instead of a schedule's — so it asks the question they ask, or a caller
+    // refused there re-issues the request one URL over. The schedule it is asked
+    // about is the one `Scheduler::schedule_workflow` will act on: the existing
+    // job for this workflow file when there is one, and otherwise the job it
+    // would add, which names no chat and so runs on the configured default.
+    let source = file_path.to_string_lossy().to_string();
+    let target = scheduler
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .find(|job| job.source == source)
+        .unwrap_or_else(|| biorouter::scheduler::ScheduledJob {
+            id: request.id.clone(),
+            source: source.clone(),
+            cron: request.cron_schedule.clone().unwrap_or_default(),
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 0,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: None,
+            owns_source: None,
+        });
+    crate::routes::session_reach::schedule_reach(state.session_manager(), Some(&target), &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
+
     match scheduler
         .schedule_workflow(file_path, request.cron_schedule)
         .await
@@ -449,7 +488,7 @@ async fn schedule_workflow(
         Ok(_) => Ok(StatusCode::OK),
         Err(e) => {
             tracing::error!("Failed to schedule workflow: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
     }
 }

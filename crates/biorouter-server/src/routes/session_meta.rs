@@ -42,7 +42,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{extract::Query, extract::State, routing::get, Json, Router};
+use axum::{extract::Query, extract::State, http::HeaderMap, routing::get, Json, Router};
+use biorouter::privacy::SessionClassification;
 use biorouter::session_meta::{SessionMetaDelta, SessionMetaEvents};
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -116,12 +117,17 @@ fn parse_ids(raw: Option<&str>) -> Vec<String> {
     path = "/sessions/changes",
     params(SessionChangesQuery),
     responses(
-        (status = 200, description = "The session-row delta since `since`", body = SessionMetaDelta),
+        (status = 200, description = "The session-row delta since `since`, holding only the chats \
+                                      this caller could open: a change to a private chat is \
+                                      omitted for a caller with neither the user-action proof nor \
+                                      a private capability, as the chat is from `GET /sessions`, \
+                                      and such a change never answers that caller's poll early", body = SessionMetaDelta),
         (status = 401, description = "Unauthorized - invalid secret key"),
     )
 )]
 pub async fn session_changes(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<SessionChangesQuery>,
 ) -> Json<SessionMetaDelta> {
     let events = SessionMetaEvents::global();
@@ -133,6 +139,26 @@ pub async fn session_changes(
             .unwrap_or(MAX_WAIT)
             .min(MAX_WAIT);
 
+    // Issue #56. Every change carries a chat's provider, model and privacy
+    // tier, and the poll reads whichever ids its caller names — so a caller
+    // holding only the daemon secret named a private chat and was told its tier
+    // and every model switch. Measured on `main` (1038a113): another process
+    // switched a private chat's model and this route handed that caller
+    // `{"session_id":…,"provider_name":"versa_azure","model_name":…,
+    // "privacy_tier":"private"}` while `GET /sessions/{that id}` refused it.
+    //
+    // A change is shown exactly when `GET /sessions` would show its chat
+    // (`HttpCaller::lists_session`), and the caller is resolved ONCE for the
+    // life of the poll. The row's own stored tier decides, so a chat that went
+    // private while the poll was parked is withheld from the moment it did.
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    let may_show = |tier: Option<&str>| {
+        caller.lists_session(
+            tier.map(SessionClassification::from_stored)
+                .unwrap_or(SessionClassification::Private),
+        )
+    };
+
     // Claimed for the life of this poll and released when it answers, so the
     // row map is pruned against the union of every live watcher rather than
     // against whichever list arrived last.
@@ -142,6 +168,12 @@ pub async fn session_changes(
     // fix.
     let _claim = events.watch(&ids);
 
+    // The highest revision this poll has already looked at and found nothing
+    // for this caller in. A change withheld from the caller still moves the
+    // global revision, so parking on `query.since` would find it "moved" on
+    // every turn of the loop and spin until the deadline.
+    let mut examined = query.since;
+
     // Adopt this caller's ids before parking. A chat opened a moment ago has not
     // changed, and reporting its whole row as new would wake every window on
     // connect — the first observation of an id is silent by construction
@@ -150,16 +182,24 @@ pub async fn session_changes(
         // Through `storage()` rather than a `SessionManager` wrapper: this read
         // is deliberately the narrow one (four columns, no transcript), and the
         // manager's API is where the wide reads live.
-        if let Ok(rows) = state
+        if let Ok(mut rows) = state
             .session_manager()
             .storage()
             .session_meta_rows(&ids)
             .await
         {
+            // ⚠ Observed only for the chats this caller could open. A caller
+            // that named a private chat and was then woken — or handed a higher
+            // revision — the moment that chat's row moved would be timing it,
+            // which is the oracle the change filter below exists to close.
+            rows.retain(|row| may_show(row.privacy_tier.as_deref()));
             events.observe(rows);
         }
 
-        let delta = events.since(query.since);
+        let mut delta = events.since(query.since);
+        delta
+            .changes
+            .retain(|change| may_show(change.privacy_tier.as_deref()));
         if !delta.changes.is_empty() || delta.truncated {
             return Json(delta);
         }
@@ -167,11 +207,19 @@ pub async fn session_changes(
         if now >= deadline {
             return Json(delta);
         }
+        // ⚠ A change withheld from this caller does NOT answer the poll: it
+        // parks on to the deadline, exactly as it would had nothing changed, so
+        // how soon a poll returns says nothing about a chat the caller could not
+        // open. The revision it finally answers with counts every chat's
+        // changes, which says how many rows moved on this machine and never
+        // which — the residual `docs/deployment/programmatic-session-access.md`
+        // records.
+        examined = examined.max(delta.revision);
         // Park on the notification OR the next read, whichever comes first: a
         // change this daemon publishes wakes us immediately, and one another
         // process made is found by the read.
         let wait = POLL_INTERVAL.min(deadline - now);
-        let _ = events.wait_for_change(query.since, wait).await;
+        let _ = events.wait_for_change(examined, wait).await;
     }
 }
 

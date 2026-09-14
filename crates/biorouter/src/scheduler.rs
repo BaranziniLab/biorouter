@@ -2085,44 +2085,100 @@ async fn resolve_scheduled_provider(
     job: &ScheduledJob,
     session_manager: &SessionManager,
 ) -> Result<(String, crate::model::ModelConfig)> {
-    if let Some(creator_id) = job.creator_session_id.as_deref() {
-        match session_manager.get_session(creator_id, false).await {
-            Ok(creator) => match creator.provider_name.clone() {
-                Some(provider_name) => {
-                    // A row with a provider but no model config is a legacy row;
-                    // `Agent::update_provider` has always written both together.
-                    // Fall back for the model alone, exactly as
-                    // `Agent::rebind_from_row` does, rather than discarding a
-                    // perfectly good provider.
-                    let model_config = match creator.model_config.clone() {
-                        Some(model_config) => model_config,
-                        None => {
-                            let model_name = Config::global().get_biorouter_model()?;
-                            crate::model::ModelConfig::new(&model_name)?
-                        }
-                    };
-                    return Ok((provider_name, model_config));
+    match creator_binding(job, session_manager).await {
+        CreatorBinding::Bound {
+            provider_name,
+            model_config,
+        } => {
+            // A row with a provider but no model config is a legacy row;
+            // `Agent::update_provider` has always written both together.
+            // Fall back for the model alone, exactly as
+            // `Agent::rebind_from_row` does, rather than discarding a
+            // perfectly good provider.
+            let model_config = match model_config {
+                Some(model_config) => model_config,
+                None => {
+                    let model_name = Config::global().get_biorouter_model()?;
+                    crate::model::ModelConfig::new(&model_name)?
                 }
-                None => tracing::warn!(
-                    job = %job.id,
-                    session = %creator_id,
-                    "the chat this schedule was created from records no provider; \
-                     using the global default"
-                ),
-            },
-            Err(e) => tracing::warn!(
-                job = %job.id,
-                session = %creator_id,
-                "the chat this schedule was created from could not be read ({e}); \
-                 using the global default"
-            ),
+            };
+            return Ok((provider_name, model_config));
         }
+        CreatorBinding::NoProvider(creator_id) => tracing::warn!(
+            job = %job.id,
+            session = %creator_id,
+            "the chat this schedule was created from records no provider; \
+             using the global default"
+        ),
+        CreatorBinding::Unreadable(creator_id, e) => tracing::warn!(
+            job = %job.id,
+            session = %creator_id,
+            "the chat this schedule was created from could not be read ({e}); \
+             using the global default"
+        ),
+        CreatorBinding::NoCreator => {}
     }
 
     let config = Config::global();
     let provider_name = config.get_biorouter_provider()?;
     let model_name = config.get_biorouter_model()?;
     Ok((provider_name, crate::model::ModelConfig::new(&model_name)?))
+}
+
+/// What the chat a schedule was created from says about the model its runs
+/// bind: the first half of [`resolve_scheduled_provider`], split out so that
+/// [`scheduled_run_provider_name`] asks exactly the same question.
+enum CreatorBinding {
+    /// The schedule names no creating chat.
+    NoCreator,
+    /// The creating chat could not be read, so its runs use the global default.
+    Unreadable(String, anyhow::Error),
+    /// The creating chat records no provider, so its runs use the global default.
+    NoProvider(String),
+    /// The creating chat's own binding, which its runs take.
+    Bound {
+        provider_name: String,
+        model_config: Option<crate::model::ModelConfig>,
+    },
+}
+
+async fn creator_binding(job: &ScheduledJob, session_manager: &SessionManager) -> CreatorBinding {
+    let Some(creator_id) = job.creator_session_id.as_deref() else {
+        return CreatorBinding::NoCreator;
+    };
+    match session_manager.get_session(creator_id, false).await {
+        Ok(creator) => match creator.provider_name {
+            Some(provider_name) => CreatorBinding::Bound {
+                provider_name,
+                model_config: creator.model_config,
+            },
+            None => CreatorBinding::NoProvider(creator_id.to_string()),
+        },
+        Err(e) => CreatorBinding::Unreadable(creator_id.to_string(), e),
+    }
+}
+
+/// The NAME of the provider a run of `job` would bind if it started now: the
+/// creating chat's provider when that chat records one, the global default
+/// otherwise, and `None` when neither is set (a run then fails before it binds
+/// anything).
+///
+/// ⚠ **The resolution [`execute_job`] uses, not a copy of it.** Issue #56: the
+/// schedule write routes ask this whether the work a caller is about to start,
+/// re-time or remove runs on a private model, and a second spelling of "which
+/// model does a scheduled run use" is the first thing that would drift from the
+/// one a run actually takes. It constructs no provider and reads no model
+/// config, so it needs no credentials.
+pub async fn scheduled_run_provider_name(
+    job: &ScheduledJob,
+    session_manager: &SessionManager,
+) -> Option<String> {
+    match creator_binding(job, session_manager).await {
+        CreatorBinding::Bound { provider_name, .. } => Some(provider_name),
+        CreatorBinding::NoCreator
+        | CreatorBinding::NoProvider(_)
+        | CreatorBinding::Unreadable(..) => Config::global().get_biorouter_provider().ok(),
+    }
 }
 
 fn scheduled_prompt(job: &ScheduledJob, workflow: &Workflow) -> String {

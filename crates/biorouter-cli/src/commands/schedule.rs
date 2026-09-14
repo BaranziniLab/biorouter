@@ -37,6 +37,17 @@
 //! must fail. A scripted deployment keeps working: give it the key and a running
 //! daemon.
 //!
+//! ⚠ **The key is not the whole answer on the daemon path, since 2026-09-14.** A
+//! chat's own shell can recover that key (`ps eww`), so the daemon applies the
+//! reach rule to every schedule write (`routes::session_reach::schedule_reach`):
+//! a schedule whose work is private — made from a private chat, or running on a
+//! private model — is changed only by a caller that states a private capability
+//! or proves a person. This command states the provider this terminal is
+//! configured for on every request (`DaemonAuth::headers`), so on an install
+//! configured with a private model it passes as before, and on a public one it
+//! changes what a public caller may. A refusal is printed in the daemon's words
+//! and the file is not written behind its back.
+//!
 //! ⚠ **There is deliberately no `--yes`.** A flag that skips the question is a
 //! flag the agent writes into the same command line, which would leave the gate
 //! costing an honest operator a keystroke and an agent nothing.
@@ -1191,6 +1202,79 @@ mod tests {
         assert!(text.contains("401"), "{text}");
         assert!(text.contains("BIOROUTER_SERVER__SECRET_KEY"), "{text}");
         assert!(text.contains("Nothing was scheduled"), "{text}");
+    }
+
+    /// Issue #56: the daemon now refuses a schedule write whose work is private
+    /// — made from a private chat, or running on a private model — to a caller
+    /// that neither states a private capability nor proves a person. This
+    /// terminal is such a caller exactly when it is configured for a public
+    /// model, so two things must hold for the command to keep working and to
+    /// stay honest.
+    ///
+    /// * Every daemon request states the provider this terminal is configured
+    ///   for, which is what admits it on an install configured with a private
+    ///   model. `DaemonAuth::headers` carries it; this pins that the schedule
+    ///   commands go through it for all three writes.
+    /// * A refusal is printed in the daemon's own words, and the file is not
+    ///   written behind the daemon's back — the rule the 401 test above states
+    ///   for a refused key, for the same reason.
+    #[tokio::test]
+    async fn a_schedule_write_states_this_terminals_model_and_prints_a_refusal() {
+        const REFUSAL: &str = "That schedule's work is private, or there is no schedule with \
+                               that id.";
+        let dir = tempfile::tempdir().unwrap();
+        let workflow = dir.path().join("probe.yaml");
+        std::fs::write(
+            &workflow,
+            "title: Probe\ndescription: d\nprompt: echo probe\n",
+        )
+        .unwrap();
+        let daemon = fake_daemon(|_| (403, REFUSAL.to_string())).await;
+        let port = daemon.port;
+        let reach = move || async move {
+            Reach::probe(Some(DaemonAuth::for_test("s3cret", "versa_azure")), port).await
+        };
+
+        let added = add_schedule(
+            reach().await,
+            local_store_is_off_limits,
+            Consent::AskThisTerminal { terminal: false },
+            "qaf-probe",
+            "0 2 * * *",
+            &workflow.to_string_lossy(),
+        )
+        .await
+        .expect_err("a refused create is not a scheduled job");
+        let removed = remove_schedule(
+            reach().await,
+            local_store_is_off_limits,
+            Consent::AskThisTerminal { terminal: false },
+            "qaf-probe",
+        )
+        .await
+        .expect_err("a refused delete removed nothing");
+        let ran = run_schedule_now(
+            reach().await,
+            local_store_is_off_limits,
+            Consent::AskThisTerminal { terminal: false },
+            "qaf-probe",
+        )
+        .await
+        .expect_err("a refused run ran nothing");
+        for (what, error) in [("add", added), ("remove", removed), ("run-now", ran)] {
+            let text = format!("{error:#}");
+            assert!(text.contains(REFUSAL), "{what}: {text}");
+        }
+
+        // `/status` is answered by the fake itself and never recorded.
+        let writes = daemon.requests();
+        assert_eq!(writes.len(), 3, "{writes:?}");
+        for request in &writes {
+            assert!(
+                request.contains("X-Caller-Provider: versa_azure\r\n"),
+                "a schedule write did not state this terminal's model: {request}"
+            );
+        }
     }
 
     /// With no daemon to reach, the job goes into the file — and the terminal
