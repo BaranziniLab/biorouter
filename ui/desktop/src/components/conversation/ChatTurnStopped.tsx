@@ -17,15 +17,27 @@ import Stop from '../ui/Stop';
  * own glyph where the working pulse had been: the working line's last state
  * rather than a new element.
  *
- * WHEN it shows is the store's decision, not this component's
- * (`ChatStreamSnapshot.stopConfirmed`): only for a cancel the daemon answered
- * `cancelled: true`, never persisted, and retracted after
- * `STOP_CONFIRMED_NOTICE_MS` or by the next turn. Reduced motion is handled by
- * the global reset in `styles/main.css`.
+ * It is drawn from two places, and they are the same fact:
+ *
+ * - **the transcript**, for the notice the daemon now STORES when a Stop ends a
+ *   turn (item 7, `turnStoppedNotice.ts`). That row is what a reload, another
+ *   window and History show, and in the window that pressed Stop the cancel
+ *   response puts it into the transcript directly. `inTranscript` drops the top
+ *   margin, which the transcript's row wrapper already provides.
+ * - **BaseChat's tail slot**, from the store's transient
+ *   `ChatStreamSnapshot.stopConfirmed` — now only the fallback for a daemon that
+ *   returned no stored record, and never beside a transcript that already ends
+ *   on the stored line. It is retracted after `STOP_CONFIRMED_NOTICE_MS` or by
+ *   the next turn.
+ *
+ * Reduced motion is handled by the global reset in `styles/main.css`.
  */
-export function ChatTurnStopped() {
+export function ChatTurnStopped({ inTranscript = false }: { inTranscript?: boolean }) {
   return (
-    <div data-testid="chat-turn-stopped" className="mt-4 w-full animate-fade-slide-up">
+    <div
+      data-testid="chat-turn-stopped"
+      className={`${inTranscript ? '' : 'mt-4 '}w-full animate-fade-slide-up`}
+    >
       <div
         role="status"
         className="inline-flex items-center gap-2 px-1 py-1 text-supporting text-text-muted"

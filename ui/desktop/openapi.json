@@ -6425,6 +6425,13 @@
             "type": "boolean",
             "description": "True only after the cancelled turn's guard has retired. An idle session\nis already settled. An immediate cancellation acknowledgement may be\n`false` while the agent loop is still unwinding."
           },
+          "stop_messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "description": "The rows the cancelled turn's Stop wrote to the transcript, in stored\norder: the prose its reply had streamed (text only), any steers it had\naccepted, and the \"Stopped.\" notice it now ends on (item 7). These are\nexactly what a reload of the chat will show, so the caller can make its\nview agree without re-reading the conversation — the notice's own frame\non the turn stream may arrive after a client has stopped listening.\n\nPresent only when this request cancelled a running turn AND waited for it\nto settle (`wait_for_idle` or `continuation_pending`); omitted otherwise."
+          },
           "turn_id": {
             "type": "string",
             "description": "The id of the turn that was cancelled, when there was one.",

@@ -70,6 +70,9 @@ pub mod session_extensions;
 pub mod session_skills;
 pub mod skill_catalog;
 pub mod skill_package;
+// Item 7: what a turn the user stopped leaves in the transcript — the prose it
+// had streamed and a durable "Stopped." notice.
+pub mod stopped_turn;
 // Pub so the CLI (`biorouter skill …`) reuses the exact same skill discovery
 // roots and frontmatter parsing as this backend extension, instead of keeping
 // a drifting duplicate (Codex B2 findings 5+6).

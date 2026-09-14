@@ -2459,6 +2459,191 @@ describe('ChatStreamRegistry — a Stop the daemon confirms (F5)', () => {
 });
 
 /**
+ * Item 7 (release 1.90.4 QA, 2026-09-13) — after a Stop, the chat forgot the
+ * reply was interrupted.
+ *
+ * Measured on `biorouter serve` and on the desktop app: `/agent/cancel` answered
+ * `{cancelled: true, settled: true}`, "Stopped." appeared and was retracted by
+ * its timer five seconds later, and the store held nothing but the user's
+ * prompt — so a reload, another window and History all showed a chat ending on
+ * the user's message. The daemon now writes the stopped reply's prose and a
+ * durable notice before the turn retires, and hands the rows back on the cancel
+ * response (`stop_messages`). These pin the window that pressed Stop: its
+ * transcript must become what a reload will show, deterministically — the
+ * notice's own stream frame can land after the stream is abandoned.
+ */
+describe('ChatStreamRegistry — a stopped reply stays marked (item 7)', () => {
+  const TURN_STOPPED = 'Stopped.';
+
+  function stopNotice(id: string): Message {
+    return {
+      id,
+      role: 'assistant',
+      created: 2,
+      content: [
+        { type: 'systemNotification', notificationType: 'inlineMessage', msg: TURN_STOPPED },
+      ],
+      metadata: { userVisible: true, agentVisible: false },
+    } as Message;
+  }
+
+  function streamedChunk(id: string, parts: Message['content']): MessageEvent {
+    return {
+      type: 'Message',
+      message: {
+        id,
+        role: 'assistant',
+        created: 1,
+        content: parts,
+        metadata: { userVisible: true, agentVisible: true },
+      },
+      token_state: tokenState,
+    } as MessageEvent;
+  }
+
+  async function streamHalfAReply(sessionId: string) {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController(sessionId);
+    const submit = controller.handleSubmit('Write about the telescope.');
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    controlled.push(
+      streamedChunk('reply-7', [
+        { type: 'thinking', thinking: 'planning', signature: '' },
+      ] as Message['content'])
+    );
+    controlled.push(streamedChunk('reply-7', [{ type: 'text', text: 'The telescope was ' }]));
+    await vi.waitFor(() => expect(last(controller.getSnapshot().messages)?.id).toBe('reply-7'));
+    return { controller, controlled, submit };
+  }
+
+  const last = <T>(items: readonly T[]): T | undefined => items[items.length - 1];
+
+  const lastText = (messages: Message[]) =>
+    messages.map((m) =>
+      m.content.map((c) => ('text' in c ? c.text : 'msg' in c ? c.msg : c.type)).join('')
+    );
+
+  it('ends the transcript on the stored interruption, and keeps it after the line retracts', async () => {
+    const { controller, controlled, submit } = await streamHalfAReply('stopped-stays-marked');
+    vi.mocked(cancelTurn).mockResolvedValueOnce({
+      data: {
+        cancelled: true,
+        settled: true,
+        stop_messages: [assistantMessage('reply-7', 'The telescope was '), stopNotice('notice-7')],
+      },
+    } as never);
+
+    await expect(controller.stopStreaming()).resolves.toBe(true);
+
+    const messages = controller.getSnapshot().messages;
+    expect(messages.map((m) => m.id)).toEqual([messages[0].id, 'reply-7', 'notice-7']);
+    // The view is what a reload shows: the stored reply keeps only its prose.
+    expect(messages[1].content).toEqual([{ type: 'text', text: 'The telescope was ' }]);
+
+    // F5's live line still retracts on its timer; the interruption does not.
+    vi.advanceTimersByTime(STOP_CONFIRMED_NOTICE_MS + 1);
+    expect(controller.getSnapshot().stopConfirmed).toBeUndefined();
+    expect(last(lastText(controller.getSnapshot().messages))).toBe(TURN_STOPPED);
+
+    controlled.close();
+    await submit;
+  });
+
+  it('is not shown twice when the notice’s own frame also arrived', async () => {
+    const { controller, controlled, submit } = await streamHalfAReply('stopped-frame-and-record');
+    const cancellation = deferred<unknown>();
+    vi.mocked(cancelTurn).mockReturnValueOnce(cancellation.promise as never);
+
+    const stopped = controller.stopStreaming();
+    await flush();
+    // The healthy daemon's usual ordering: the notice and the terminal frame are
+    // published before the turn retires, so they beat the cancel response.
+    controlled.push({
+      type: 'Message',
+      message: stopNotice('notice-7'),
+      token_state: tokenState,
+    } as MessageEvent);
+    controlled.push({
+      type: 'Finish',
+      reason: 'cancelled',
+      token_state: tokenState,
+    } as MessageEvent);
+    controlled.close();
+    await submit;
+    cancellation.resolve({
+      data: {
+        cancelled: true,
+        settled: true,
+        stop_messages: [assistantMessage('reply-7', 'The telescope was '), stopNotice('notice-7')],
+      },
+    });
+    await expect(stopped).resolves.toBe(true);
+
+    const ids = controller.getSnapshot().messages.map((m) => m.id);
+    expect(ids.filter((id) => id === 'notice-7')).toHaveLength(1);
+    expect(ids.filter((id) => id === 'reply-7')).toHaveLength(1);
+    expect(last(ids)).toBe('notice-7');
+  });
+
+  // Stop-and-Send: the replacement message is the next turn, and the reply it
+  // interrupted is still an interrupted reply — in that order, as stored.
+  it('places the interruption before a Stop-and-Send replacement message', async () => {
+    const { controller, controlled, submit } = await streamHalfAReply('stop-and-send-marked');
+    vi.mocked(cancelTurn).mockResolvedValueOnce({
+      data: {
+        cancelled: true,
+        settled: true,
+        continuation_lease: 'lease-marked',
+        stop_messages: [assistantMessage('reply-7', 'The telescope was '), stopNotice('notice-7')],
+      },
+    } as never);
+
+    await expect(controller.stopStreaming(true)).resolves.toBe(true);
+    controlled.close();
+    await submit;
+
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+    await expect(controller.handleSubmit('No, the radio telescope.')).resolves.toBe(true);
+
+    const ids = controller.getSnapshot().messages.map((m) => m.id);
+    expect(ids.indexOf('notice-7')).toBe(ids.indexOf('reply-7') + 1);
+    const replacement = controller
+      .getSnapshot()
+      .messages.findIndex(
+        (m) => m.role === 'user' && lastText([m])[0] === 'No, the radio telescope.'
+      );
+    expect(replacement).toBe(ids.indexOf('notice-7') + 1);
+    expect(
+      (vi.mocked(reply).mock.calls[1][0].body as Record<string, unknown>).continuation_lease
+    ).toBe('lease-marked');
+  });
+
+  // An older daemon (or a failed write) returns no record: the live line is then
+  // the only word, and it behaves exactly as it did.
+  it('falls back to the transient line when the daemon returned no record', async () => {
+    const { controller, controlled, submit } = await streamHalfAReply('stopped-no-record');
+    vi.mocked(cancelTurn).mockResolvedValueOnce({
+      data: { cancelled: true, settled: true },
+    } as never);
+
+    await expect(controller.stopStreaming()).resolves.toBe(true);
+    expect(controller.getSnapshot().stopConfirmed).toBeDefined();
+    expect(last(controller.getSnapshot().messages)?.id).toBe('reply-7');
+
+    controlled.close();
+    await submit;
+  });
+});
+
+/**
  * Progressive conversation loading.
  *
  * A resume used to take ~5.1s on a real 355-message session, of which ~4.6s was

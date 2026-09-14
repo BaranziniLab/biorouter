@@ -76,6 +76,7 @@ import { useArtifactPanel } from './artifacts/useArtifactPanel';
 import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
 import { ChatTurnStopped } from './conversation/ChatTurnStopped';
+import { transcriptEndsStopped } from './conversation/turnStoppedNotice';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import type { LiveBrowserShare } from './artifacts/WebPagePreview';
@@ -2634,8 +2635,14 @@ function BaseChatContent({
                             )}
                             {/* F5: a CONFIRMED Stop's outcome, in the slot a
                                 failed Stop's notice takes. Transient — the
-                                store decides when it shows and when it goes. */}
-                            {stopConfirmed && <ChatTurnStopped />}
+                                store decides when it shows and when it goes.
+                                Item 7: the daemon now stores the notice, and
+                                the transcript's own row is the line; this is
+                                the fallback for a Stop that returned no
+                                record, never a second copy beside it. */}
+                            {stopConfirmed && !transcriptEndsStopped(messages) && (
+                              <ChatTurnStopped />
+                            )}
                           </>
                         </SearchView>
                         {/* No tail spacer. A `block h-8` used to sit here, and
