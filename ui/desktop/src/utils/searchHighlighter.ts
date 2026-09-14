@@ -34,7 +34,31 @@
  * So the counter agrees with the marks: every counted match is either painted
  * or one scroll away, and nothing is painted outside the box that shows it.
  * Every approximation below errs toward showing a match rather than hiding one.
+ *
+ * - **The search UI is not content.** The bar is rendered inside the container
+ *   it searches, so its own text is skipped — see {@link SEARCH_UI_ATTRIBUTE}.
  */
+
+/**
+ * Marks the search UI, which lives inside the container it searches, as not
+ * content. Put it on the root of anything the search renders there.
+ *
+ * ⚠ **An attribute this module exports, not a class name each side spells.**
+ * The walker used to skip `.search-bar, .search-results`, and no element carried
+ * either class: `SearchBar`'s root is `search-bar-enter` / `search-bar-exit`. So
+ * the bar's "Aa" toggle was walked, counted and marked under the button, where
+ * nobody sees a mark — ⌘F then `aa` in a chat read "1/1" with nothing
+ * highlighted, and on Settings → Skills `a` read 1/18 with the first two ⌘G
+ * stops on that label. `SearchView.searchUi.test.tsx` drives the real bar over
+ * the real walker, so a rename on either side fails there.
+ */
+export const SEARCH_UI_ATTRIBUTE = 'data-search-ui';
+
+/** Whether `node` belongs to the search UI rather than to what it searches. */
+function isSearchUi(node: Node): boolean {
+  const element = node instanceof Element ? node : node.parentElement;
+  return Boolean(element?.closest(`[${SEARCH_UI_ATTRIBUTE}]`));
+}
 
 /** A rectangle in viewport coordinates. */
 export interface ViewportRect {
@@ -579,6 +603,14 @@ export class SearchHighlighter {
           if (mutation.target === this.overlay || this.overlay.contains(mutation.target as Node)) {
             continue;
           }
+          // Nor from the search bar: its counter appearing is not new content,
+          // and re-walking the transcript for it cost a full highlight pass.
+          if (
+            isSearchUi(mutation.target) ||
+            Array.from(mutation.addedNodes).every((node) => isSearchUi(node))
+          ) {
+            continue;
+          }
           // Ignore mutations that only add/remove our highlight elements
           const isOnlyHighlights = Array.from(mutation.addedNodes).every(
             (node) =>
@@ -630,14 +662,8 @@ export class SearchHighlighter {
 
     // Find all text nodes in the container
     const walker = document.createTreeWalker(this.container, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => {
-        // Skip search UI elements
-        const parent = node.parentElement;
-        if (parent?.closest('.search-bar, .search-results')) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      },
+      acceptNode: (node) =>
+        isSearchUi(node) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
     });
 
     const hits: { node: Text; startOffset: number; endOffset: number }[] = [];

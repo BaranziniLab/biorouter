@@ -44,7 +44,10 @@ vi.mock('../ui/scroll-area', () => ({
   ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-vi.mock('../../utils/searchHighlighter', () => ({
+// The real module's constants (the bar marks itself with SEARCH_UI_ATTRIBUTE),
+// with only the class replaced.
+vi.mock('../../utils/searchHighlighter', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/searchHighlighter')>()),
   SearchHighlighter: class {
     highlight() {
       return Array.from({ length: mocks.marks }, () => document.createElement('div'));

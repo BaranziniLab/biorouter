@@ -564,6 +564,68 @@ describe('BrowseSkillsModal — what another window installed', () => {
     expect(installButton()).toBeDisabled();
   });
 
+  /// The tester's repair finding: select Read QC in tab 2, install it from tab 1
+  /// (tab 2 goes unchecked and disabled), delete it from tab 1's Skills list —
+  /// and within two seconds tab 2 showed Read QC checked again, "1 selected",
+  /// "Install 7 skills", with nobody having touched it. The id had stayed in the
+  /// selection, hidden only while the row was installed.
+  it('does not re-select a row once it was installed elsewhere and then removed', async () => {
+    const { user, rerenderWith } = await openOver(alignmentRows());
+
+    await user.click(rowCheckbox('Read QC'));
+    rerenderWith(new Set(['read-qc']));
+    expect(rowCheckbox('Read QC')).not.toBeChecked();
+
+    rerenderWith(new Set());
+
+    expect(rowCheckbox('Read QC')).toBeEnabled();
+    expect(rowCheckbox('Read QC')).not.toBeChecked();
+    expect(screen.getByText('0 selected')).toBeInTheDocument();
+    expect(installButton().textContent).toBe('Install skills');
+    expect(installButton()).toBeDisabled();
+
+    // Still the user's to choose again.
+    await user.click(rowCheckbox('Read QC'));
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(installButton().textContent).toBe('Install 7 skills');
+  });
+
+  it('withdraws only the row that was installed, and keeps the rest selected', async () => {
+    const { user, rerenderWith } = await openOver(alignmentRows());
+
+    await user.click(rowCheckbox('Alignment'));
+    await user.click(rowCheckbox('Read QC'));
+    rerenderWith(new Set(['read-qc']));
+    rerenderWith(new Set());
+
+    expect(rowCheckbox('Alignment')).toBeChecked();
+    expect(rowCheckbox('Read QC')).not.toBeChecked();
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(installButton().textContent).toBe('Install 7 skills');
+  });
+
+  /// The same defect by a second road: a failed run keeps its failed rows
+  /// selected, and a row another window installed while this run was failing
+  /// it must not be among them.
+  it('does not keep a failed row selected that another window installed meanwhile', async () => {
+    let rerender: (ids: Set<string>) => void = () => {};
+    vi.mocked(installRegistrySkill).mockImplementation(async (skill) => {
+      rerender(new Set(['read-qc']));
+      return { ok: false, name: skill.name, error: 'network down' };
+    });
+    const { user, rerenderWith } = await openOver(alignmentRows());
+    rerender = rerenderWith;
+
+    await user.click(rowCheckbox('Read QC'));
+    await user.click(installButton());
+    expect(rowCheckbox('Read QC')).not.toBeChecked();
+
+    rerenderWith(new Set());
+
+    expect(rowCheckbox('Read QC')).not.toBeChecked();
+    expect(screen.getByText('0 selected')).toBeInTheDocument();
+  });
+
   it('calls an install that replaced one already there a reinstall', async () => {
     vi.mocked(installRegistrySkill).mockImplementation(async (skill) =>
       landed(skill, {

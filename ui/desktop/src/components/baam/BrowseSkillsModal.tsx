@@ -70,6 +70,25 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const isInstalled = (s: RegistrySkill) =>
     installedIds.has(s.id.toLowerCase()) || installedIds.has(s.name.toLowerCase());
 
+  // ⚠ **A selection ends when its row is seen installed: withdrawn, not hidden.**
+  // When another window (or the agent) installed a row this dialog had
+  // selected, its id stayed in `selected` and only the checkbox hid it while the
+  // row was installed — so removing the package again brought the check back
+  // by itself: Read QC checked, "1 selected", "Install 7 skills", with nobody
+  // having touched it. What the user selected it for has happened; installing it
+  // again is a new decision. So `selected` never holds an installed row, and
+  // this restores that during render — before any frame shows it — whatever put
+  // the id there: a catalog update, or a failed run re-selecting a row another
+  // window installed meanwhile. It converges in one pass: the pruned set holds
+  // no installed row, so the condition is false on the next render.
+  const installedSelection = (registry?.skills ?? []).filter(
+    (s) => selected.has(s.id) && isInstalled(s)
+  );
+  if (installedSelection.length > 0) {
+    const withdrawn = new Set(installedSelection.map((s) => s.id));
+    setSelected(new Set([...selected].filter((id) => !withdrawn.has(id))));
+  }
+
   /** Best match first under a query; registry order when there is none. */
   const filtered = useMemo(() => {
     if (!registry) return [];
@@ -179,9 +198,9 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
     else setSelected(new Set(failures.map((failure) => failure.id)));
   };
 
-  // What an install would act on. A row another window installed while this
-  // dialog was open is still in `selected`, but it is disabled, marked
-  // Installed and left out of the install — so it is not "selected" either.
+  // What an install would act on. The same number as `selected.size` now that an
+  // installed row is withdrawn from the selection (above); counted from
+  // `targets` so the footer and the install can never disagree.
   const selectedCount = targets.length;
 
   return (
@@ -275,9 +294,8 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                   <div className="flex flex-col gap-1.5">
                     {items.map((skill) => {
                       const installed = isInstalled(skill);
-                      // An installed row is never shown checked, even if it was
-                      // selected before another window installed it.
-                      const checked = selected.has(skill.id) && !installed;
+                      // Never true for an installed row: see the withdrawal above.
+                      const checked = selected.has(skill.id);
                       return (
                         <label
                           key={skill.id}
