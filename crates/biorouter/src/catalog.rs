@@ -184,6 +184,18 @@ impl Default for CatalogEvents {
     }
 }
 
+fn skill_rows(skills: &[String], change: CatalogEntryChange) -> Vec<CatalogSkillChange> {
+    skills
+        .iter()
+        .map(|name| CatalogSkillChange {
+            id: name.clone(),
+            name: Some(name.clone()),
+            change,
+            source_extension_key: None,
+        })
+        .collect()
+}
+
 impl CatalogEvents {
     pub fn global() -> &'static Arc<Self> {
         static INSTANCE: once_cell::sync::Lazy<Arc<CatalogEvents>> =
@@ -270,6 +282,46 @@ impl CatalogEvents {
         }
         self.notify.notify_waiters();
         revision
+    }
+
+    /// A skill package landed on disk: `skills` are its component skill names,
+    /// and `replaced` says whether it overwrote an install of the same id.
+    ///
+    /// ⚠ **Every in-process install publishes, whichever door it came through.**
+    /// The agent's `importSkillPackage` tool did and `POST
+    /// /skills/packages/install` did not, so a skill installed from Settings in
+    /// one window never reached another window's catalog: its Browse skills
+    /// dialog kept offering the package, installed it a second time over the
+    /// first, and announced the replacement as a fresh install. This is the one
+    /// definition of that event, so the two doors cannot drift again.
+    pub fn publish_skill_package_installed(
+        &self,
+        skills: &[String],
+        replaced: bool,
+        session_id: Option<String>,
+    ) -> u64 {
+        let (reason, change) = if replaced {
+            (CatalogChangeReason::Update, CatalogEntryChange::Updated)
+        } else {
+            (CatalogChangeReason::Install, CatalogEntryChange::Added)
+        };
+        self.publish(reason, Vec::new(), skill_rows(skills, change), session_id)
+    }
+
+    /// A skill package left the disk. `skills` names what went with it — its
+    /// components where the caller knows them, the package id where it does
+    /// not. Consumers refetch on the revision either way; see the module header.
+    pub fn publish_skill_package_removed(
+        &self,
+        skills: &[String],
+        session_id: Option<String>,
+    ) -> u64 {
+        self.publish(
+            CatalogChangeReason::Uninstall,
+            Vec::new(),
+            skill_rows(skills, CatalogEntryChange::Removed),
+            session_id,
+        )
     }
 
     /// Everything that happened after `since`.
@@ -545,6 +597,53 @@ mod tests {
             before
         );
         assert_eq!(events.revision(), before);
+    }
+
+    #[test]
+    fn an_installed_skill_package_names_each_component_and_whether_it_replaced() {
+        let events = CatalogEvents::default();
+        let skills = vec!["primer-design".to_string(), "primer-blast".to_string()];
+        events.publish_skill_package_installed(&skills, false, None);
+        events.publish_skill_package_installed(&skills, true, Some("s".into()));
+        events.publish_skill_package_removed(&skills[..1], None);
+
+        let delta = events.since(0);
+        let shape: Vec<_> = delta
+            .changes
+            .iter()
+            .map(|c| {
+                (
+                    c.reason,
+                    c.skills
+                        .iter()
+                        .map(|s| (s.id.as_str(), s.change))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (
+                    CatalogChangeReason::Install,
+                    vec![
+                        ("primer-design", CatalogEntryChange::Added),
+                        ("primer-blast", CatalogEntryChange::Added)
+                    ]
+                ),
+                (
+                    CatalogChangeReason::Update,
+                    vec![
+                        ("primer-design", CatalogEntryChange::Updated),
+                        ("primer-blast", CatalogEntryChange::Updated)
+                    ]
+                ),
+                (
+                    CatalogChangeReason::Uninstall,
+                    vec![("primer-design", CatalogEntryChange::Removed)]
+                ),
+            ]
+        );
     }
 
     #[test]

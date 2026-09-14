@@ -352,7 +352,15 @@ pub async fn run_turn(
 
     let turn_id = turn_guard.turn_id().to_string();
     let outcome = Arc::new(AtomicU8::new(TURN_OUTCOME_NONE));
-    let turn = run_turn_body(state, request, turn_id, cancel_token, Arc::clone(&outcome));
+    let stop_record = turn_guard.stop_record();
+    let turn = run_turn_body(
+        state,
+        request,
+        turn_id,
+        cancel_token,
+        Arc::clone(&outcome),
+        stop_record,
+    );
     supervise_turn(session_id, turn_guard, outcome, turn).await;
 }
 
@@ -773,6 +781,7 @@ async fn run_turn_body(
     turn_id: String,
     cancel_token: CancellationToken,
     outcome: Arc<AtomicU8>,
+    stop_record: crate::state::TurnStopRecord,
 ) {
     let TurnRequest {
         session_id,
@@ -842,35 +851,25 @@ async fn run_turn_body(
     {
         Ok(stream) => stream,
         Err(e) => {
-            tracing::error!("turn: failed to start reply stream: {e:?}");
-            publish_turn_error(
-                &session_id,
-                e.to_string(),
-                "inference_start_failed",
-                TurnErrorScope::Inference,
-                false,
-                None,
-            );
-            record_child_turn_outcome(
-                &session_id,
-                true,
-                cancel_token.is_cancelled(),
-                &all_messages,
-                turn_message_start,
-                &outcome,
-            );
+            let turn_messages = (&all_messages, turn_message_start);
+            report_reply_start_failure(&session_id, &e, &cancel_token, turn_messages, &outcome);
             return;
         }
     };
 
+    let mut stopped_rows = Vec::new();
     let terminal_error = drive_stream(
         &session_id,
         &mut stream,
         &cancel_token,
         &mut all_messages,
         Some(agent.as_ref()),
+        &mut stopped_rows,
     )
     .await;
+    // Before `finish_turn`, and so before the guard retires: a cancel waiting on
+    // that retirement reads this record the moment it wakes.
+    stop_record.record(stopped_rows);
 
     record_child_turn_outcome(
         &session_id,
@@ -896,6 +895,35 @@ async fn run_turn_body(
         },
     )
     .await;
+}
+
+/// The reply stream never opened: publish the turn's one terminal and record the
+/// child outcome, exactly as the inline arm in [`run_turn_body`] used to. Split
+/// out only to keep that function under clippy's line budget.
+fn report_reply_start_failure(
+    session_id: &str,
+    error: &anyhow::Error,
+    cancel_token: &CancellationToken,
+    (all_messages, turn_message_start): (&Conversation, usize),
+    outcome: &AtomicU8,
+) {
+    tracing::error!("turn: failed to start reply stream: {error:?}");
+    publish_turn_error(
+        session_id,
+        error.to_string(),
+        "inference_start_failed",
+        TurnErrorScope::Inference,
+        false,
+        None,
+    );
+    record_child_turn_outcome(
+        session_id,
+        true,
+        cancel_token.is_cancelled(),
+        all_messages,
+        turn_message_start,
+        outcome,
+    );
 }
 
 fn record_setup_failure(
@@ -1001,19 +1029,19 @@ async fn settle_accepted_interrupts(
     session_id: &str,
     all_messages: &mut Conversation,
     agent: &biorouter::agents::Agent,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Message>> {
     biorouter::agents::subagent_handle::begin_parent_closing(session_id);
-    for message in agent
+    let settled = agent
         .settle_carried_over_soft_interrupts(session_id)
-        .await?
-    {
+        .await?;
+    for message in &settled {
         all_messages.push(message.clone());
         session_events::publish(
             session_id,
-            SessionBusEvent::Agent(AgentEvent::Message(message)),
+            SessionBusEvent::Agent(AgentEvent::Message(message.clone())),
         );
     }
-    Ok(())
+    Ok(settled)
 }
 
 async fn drain_delegated_work_after_forced_exit(
@@ -1084,16 +1112,30 @@ async fn publish_stream_failure(
     );
 }
 
+/// `stop_record` receives the rows a STOP of this turn wrote to the transcript,
+/// in the order they were stored — the prose the reply had streamed, the steers
+/// it had accepted, and the "Stopped." notice (item 7). The runner hands them to
+/// the cancel that is waiting on this turn, so the window that pressed Stop can
+/// show what a reload will show without re-reading the whole chat. Left empty by
+/// every ending that is not a Stop.
 async fn drive_stream<S>(
     session_id: &str,
     stream: &mut S,
     cancel_token: &CancellationToken,
     all_messages: &mut Conversation,
     agent: Option<&biorouter::agents::Agent>,
+    stop_record: &mut Vec<Message>,
 ) -> bool
 where
     S: futures::Stream<Item = anyhow::Result<AgentEvent>> + Unpin,
 {
+    // Item 7: what this iteration has streamed and the store may not yet hold —
+    // every `Message` since the last `MessagesPersisted` (the agent publishes the
+    // ids an iteration took right after writing it). A Stop drops the stream
+    // before its tail can write these, so the cancel arm below hands them to the
+    // agent instead. Folded with `Conversation::push`, like `all_messages`: a
+    // streamed reply arrives as many same-id chunks.
+    let mut in_flight = Conversation::new_unvalidated(Vec::new());
     loop {
         // The hard cancellation escape. Without it this loop can only end when
         // the agent yields, and `AppState::cancel_turn` deliberately does not
@@ -1113,19 +1155,31 @@ where
             _ = cancel_token.cancelled() => {
                 tracing::info!("turn: cancelled");
                 if let Some(agent) = agent {
-                    if let Err(error) =
-                        settle_accepted_interrupts(session_id, all_messages, agent).await
-                    {
-                        tracing::error!("turn: failed to settle accepted interrupts: {error}");
-                        publish_turn_error(
-                            session_id,
-                            error.to_string(),
-                            "interrupt_settlement_failed",
-                            TurnErrorScope::Session,
-                            false,
-                            None,
-                        );
-                        return true;
+                    // The prose first, so the store reads in the order things
+                    // happened: the reply was streaming when a steer arrived, and
+                    // the steer was never answered. Deliberately NOT published:
+                    // every observer already holds this reply chunk by chunk under
+                    // the same id, and the SSE coalescer would join a second, whole
+                    // copy onto an unflushed tail of the first.
+                    stop_record.extend(
+                        agent
+                            .settle_stopped_reply(session_id, in_flight.messages())
+                            .await,
+                    );
+                    match settle_accepted_interrupts(session_id, all_messages, agent).await {
+                        Ok(settled) => stop_record.extend(settled),
+                        Err(error) => {
+                            tracing::error!("turn: failed to settle accepted interrupts: {error}");
+                            publish_turn_error(
+                                session_id,
+                                error.to_string(),
+                                "interrupt_settlement_failed",
+                                TurnErrorScope::Session,
+                                false,
+                                None,
+                            );
+                            return true;
+                        }
                     }
                 }
                 break;
@@ -1145,9 +1199,14 @@ where
                             track_tool_telemetry(content, all_messages.messages());
                         }
                         all_messages.push(message.clone());
+                        in_flight.push(message.clone());
                     }
                     AgentEvent::HistoryReplaced(new_messages) => {
                         *all_messages = new_messages.clone();
+                        in_flight = Conversation::new_unvalidated(Vec::new());
+                    }
+                    AgentEvent::MessagesPersisted(_) => {
+                        in_flight = Conversation::new_unvalidated(Vec::new());
                     }
                     _ => {}
                 }
@@ -1198,6 +1257,27 @@ where
                 publish_stream_failure(session_id, e, all_messages, agent, cancel_token).await;
                 return true;
             }
+        }
+    }
+    // Item 7: a turn the token ended says so where a reload can see it. Asked of
+    // the token rather than of which arm broke the loop, because a stream may
+    // also run out on its own after observing the same cancel. A turn that
+    // FINISHED before the token tripped left this loop already and records
+    // nothing: its reply is whole.
+    //
+    // Published so a second window following the chat shows it too, but NOT
+    // pushed into `all_messages`: that is the turn's output, and a delegated
+    // child's result is read from it.
+    if cancel_token.is_cancelled() {
+        if let Some(notice) = match agent {
+            Some(agent) => agent.record_turn_stopped(session_id).await,
+            None => None,
+        } {
+            session_events::publish(
+                session_id,
+                SessionBusEvent::Agent(AgentEvent::Message(notice.clone())),
+            );
+            stop_record.push(notice);
         }
     }
     false
@@ -2043,6 +2123,16 @@ mod tests {
         seen
     }
 
+    /// The text of a row that is only an inline system notice.
+    fn stop_notice_text(message: &Message) -> Option<&str> {
+        match message.content.as_slice() {
+            [biorouter::conversation::message::MessageContent::SystemNotification(n)] => {
+                Some(n.msg.as_str())
+            }
+            _ => None,
+        }
+    }
+
     fn is_terminal(ev: &SessionBusEvent) -> bool {
         matches!(
             ev,
@@ -2109,8 +2199,15 @@ mod tests {
             message: "slow down".to_string(),
         })]);
 
-        let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
+        let terminal_error = drive_stream(
+            sid,
+            &mut stream,
+            &CancellationToken::new(),
+            &mut all,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
         assert!(terminal_error, "an abort ends the turn on an error");
 
         let seen = drain(&mut rx).await;
@@ -2185,10 +2282,16 @@ mod tests {
             .with_writer(move || writer.clone())
             .finish();
 
-        let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None)
-                .with_subscriber(subscriber)
-                .await;
+        let terminal_error = drive_stream(
+            sid,
+            &mut stream,
+            &CancellationToken::new(),
+            &mut all,
+            None,
+            &mut Vec::new(),
+        )
+        .with_subscriber(subscriber)
+        .await;
         assert!(terminal_error, "a provider abort ends the turn on an error");
 
         let seen = drain(&mut rx).await;
@@ -2247,8 +2350,15 @@ mod tests {
             }])),
         ]);
 
-        let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
+        let terminal_error = drive_stream(
+            sid,
+            &mut stream,
+            &CancellationToken::new(),
+            &mut all,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
         assert!(!terminal_error);
 
         let seen = drain(&mut rx).await;
@@ -2583,7 +2693,7 @@ mod tests {
 
         let terminal_error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            drive_stream(sid, &mut stream, &cancel, &mut all, None),
+            drive_stream(sid, &mut stream, &cancel, &mut all, None, &mut Vec::new()),
         )
         .await
         .expect("a cancelled turn must escape a stalled agent stream");
@@ -2640,8 +2750,16 @@ mod tests {
         let mut stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let terminal_error =
-            drive_stream(&session.id, &mut stream, &cancel, &mut all, Some(&agent)).await;
+        let mut stop_record = Vec::new();
+        let terminal_error = drive_stream(
+            &session.id,
+            &mut stream,
+            &cancel,
+            &mut all,
+            Some(&agent),
+            &mut stop_record,
+        )
+        .await;
 
         assert!(!terminal_error);
         assert_eq!(all.len(), 1);
@@ -2650,13 +2768,21 @@ mod tests {
             all.messages()[0].metadata.provenance,
             Some(provenance.clone())
         );
+        // Item 7: the accepted steer, then the stop notice the turn now ends on.
         let seen = drain(&mut rx).await;
-        assert!(matches!(
-            seen.as_slice(),
-            [SessionBusEvent::Agent(AgentEvent::Message(message))]
-                if message.as_concat_text() == "please preserve this"
+        assert!(
+            matches!(
+                seen.as_slice(),
+                [
+                    SessionBusEvent::Agent(AgentEvent::Message(message)),
+                    SessionBusEvent::Agent(AgentEvent::Message(notice)),
+                ] if message.as_concat_text() == "please preserve this"
                     && message.metadata.provenance == Some(provenance.clone())
-        ));
+                    && stop_notice_text(notice)
+                        == Some(biorouter::agents::stopped_turn::TURN_STOPPED_NOTICE)
+            ),
+            "unexpected bus events: {seen:#?}"
+        );
 
         let stored = session_manager
             .get_session(&session.id, true)
@@ -2664,8 +2790,17 @@ mod tests {
             .unwrap()
             .conversation
             .unwrap();
-        assert_eq!(stored.messages().len(), 1);
+        assert_eq!(stored.messages().len(), 2);
         assert_eq!(stored.messages()[0].metadata.provenance, Some(provenance));
+        assert_eq!(
+            stop_record.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+            stored
+                .messages()
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>(),
+            "the stop record names every row the Stop wrote, in stored order"
+        );
         assert!(agent
             .settle_carried_over_soft_interrupts(&session.id)
             .await
@@ -2675,6 +2810,273 @@ mod tests {
             agent.try_queue_soft_interrupt("too late".into(), None),
             Err(InterruptRefused::TurnEnded)
         ));
+    }
+
+    /// Item 7 — a Stop that worked left NOTHING durable behind.
+    ///
+    /// Measured on `biorouter serve` and on the desktop app (2026-09-13): the
+    /// streamed half-reply and the "Stopped." line were both on screen, but the
+    /// store held only the user's prompt, so a reload, a second window and
+    /// History all showed a chat ending on the user's message with no reply and
+    /// no word that one had been interrupted. Two separate losses:
+    ///
+    /// * the reply loop persists an iteration's rows only at its END, and this
+    ///   runner drops the stream the moment the token trips, so the prefix the
+    ///   user READ was never written; and
+    /// * "Stopped." was a renderer-only flag on a 5 s timer.
+    ///
+    /// The stream below is a reply that was mid-sentence: a signed thinking
+    /// block, two text chunks under one id, a live-only retry narration, and a
+    /// row an EARLIER iteration had already persisted but whose
+    /// `MessagesPersisted` the runner never got to see. Then it parks, the way
+    /// a provider call does, until the Stop.
+    #[tokio::test]
+    #[serial]
+    async fn a_stopped_turn_keeps_the_text_it_streamed_and_says_it_was_stopped() {
+        use biorouter::agents::{Agent, AgentConfig};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::conversation::message::{MessageContent, SystemNotificationType};
+        use biorouter::session::SessionManager;
+
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+        let session = session_manager
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "stopped mid-reply".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let prompt = Message::user()
+            .with_id("stop-prompt")
+            .with_text("Write about the telescope.");
+        session_manager
+            .add_message(&session.id, &prompt)
+            .await
+            .unwrap();
+        let earlier = Message::assistant()
+            .with_id("stop-earlier-iteration")
+            .with_text("An earlier iteration's answer.");
+        session_manager
+            .add_message(&session.id, &earlier)
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+
+        let events = vec![
+            Ok(AgentEvent::Message(earlier.clone())),
+            Ok(AgentEvent::Message(
+                Message::assistant()
+                    .with_id("stop-reply")
+                    .with_thinking("planning the essay", "sig-1"),
+            )),
+            Ok(AgentEvent::Message(
+                Message::assistant()
+                    .with_id("stop-reply")
+                    .with_text("The telescope "),
+            )),
+            Ok(AgentEvent::Message(
+                Message::assistant()
+                    .with_id("stop-reply")
+                    .with_text("was invented in"),
+            )),
+            Ok(AgentEvent::Message(
+                Message::assistant().with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Model call failed: blip. Retrying (1/3)…",
+                ),
+            )),
+        ];
+        let mut stream = futures::stream::iter(events)
+            .chain(futures::stream::pending::<anyhow::Result<AgentEvent>>());
+
+        let mut rx = session_events::subscribe(&session.id);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let cancel = CancellationToken::new();
+        let trip = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            trip.cancel();
+        });
+        let mut stop_record = Vec::new();
+        let terminal_error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            drive_stream(
+                &session.id,
+                &mut stream,
+                &cancel,
+                &mut all,
+                Some(&agent),
+                &mut stop_record,
+            ),
+        )
+        .await
+        .expect("a stopped turn must still escape its parked stream");
+        assert!(!terminal_error, "a Stop is not an error terminal");
+
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let stored = stored.messages();
+        let ids: Vec<Option<&str>> = stored.iter().map(|m| m.id.as_deref()).collect();
+        assert_eq!(
+            stored.len(),
+            4,
+            "prompt, earlier iteration, the stopped reply, the stop notice — got {ids:?}"
+        );
+        assert_eq!(stored[0].id.as_deref(), Some("stop-prompt"));
+        assert_eq!(
+            stored[1].id.as_deref(),
+            Some("stop-earlier-iteration"),
+            "a row the store already holds is never written twice"
+        );
+
+        let reply = &stored[2];
+        assert_eq!(reply.id.as_deref(), Some("stop-reply"));
+        assert_eq!(reply.as_concat_text(), "The telescope was invented in");
+        assert!(
+            reply
+                .content
+                .iter()
+                .all(|c| matches!(c, MessageContent::Text(_))),
+            "only the prose is kept: an unfinished signed thinking block cannot be \
+             replayed to a provider — {:?}",
+            reply.content
+        );
+        assert!(reply.is_agent_visible() && reply.is_user_visible());
+
+        let notice = &stored[3];
+        assert!(
+            matches!(
+                notice.content.as_slice(),
+                [MessageContent::SystemNotification(n)]
+                    if n.notification_type == SystemNotificationType::InlineMessage
+                        && n.msg == "Stopped."
+            ),
+            "the turn must end on a durable stop notice: {:?}",
+            notice.content
+        );
+        assert!(
+            notice.is_user_visible() && !notice.is_agent_visible(),
+            "the notice is for people; the model is not told a transcript fact twice"
+        );
+
+        // A second window following the chat learns it too. The half-reply is
+        // NOT re-published: every observer already holds it, chunk by chunk, and
+        // a second full copy under the same id would be concatenated onto it.
+        let seen = drain(&mut rx).await;
+        let published: Vec<&Message> = seen
+            .iter()
+            .filter_map(|event| match event {
+                SessionBusEvent::Agent(AgentEvent::Message(message)) => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            published.len(),
+            6,
+            "the five streamed frames, then the notice: {seen:#?}"
+        );
+        assert_eq!(
+            published[5].id, notice.id,
+            "the stop notice is published last"
+        );
+        assert_eq!(
+            published
+                .iter()
+                .filter(|m| m.id.as_deref() == Some("stop-reply"))
+                .count(),
+            3,
+            "the kept reply is not re-published on top of its own chunks"
+        );
+        assert!(
+            !all.messages().iter().any(|m| m.id == notice.id),
+            "the notice is not the turn's output: a subagent's result is read from this"
+        );
+
+        // …and the window that pressed Stop is handed exactly what it wrote, so
+        // it can show what a reload will show.
+        assert_eq!(
+            stop_record,
+            stored[2..].to_vec(),
+            "the stop record is the rows the Stop wrote, as stored"
+        );
+    }
+
+    /// A turn that ended on its own was not stopped, and must not say it was —
+    /// nor keep a second copy of a reply its own tail already wrote.
+    #[tokio::test]
+    #[serial]
+    async fn a_turn_that_finishes_on_its_own_records_no_stop() {
+        use biorouter::agents::{Agent, AgentConfig};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::session::SessionManager;
+
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+        let session = session_manager
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "finished on its own".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        let mut stream = futures::stream::iter(vec![Ok(AgentEvent::Message(
+            Message::assistant()
+                .with_id("whole")
+                .with_text("A whole answer."),
+        ))]);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stop_record = Vec::new();
+        let cancel = CancellationToken::new();
+        let terminal_error = drive_stream(
+            &session.id,
+            &mut stream,
+            &cancel,
+            &mut all,
+            Some(&agent),
+            &mut stop_record,
+        )
+        .await;
+        assert!(!terminal_error);
+        // A Stop that arrives after the stream is over is the idempotent no-op.
+        cancel.cancel();
+
+        assert!(
+            stop_record.is_empty(),
+            "no stop was recorded: {stop_record:?}"
+        );
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap_or_default();
+        assert!(
+            stored.messages().is_empty(),
+            "the runner writes nothing for a turn that was not stopped: {:?}",
+            stored.messages()
+        );
     }
 
     #[tokio::test]
@@ -2732,6 +3134,7 @@ mod tests {
             &CancellationToken::new(),
             &mut all,
             Some(&agent),
+            &mut Vec::new(),
         )
         .await;
 
@@ -2788,8 +3191,15 @@ mod tests {
         let mut all = Conversation::new_unvalidated(Vec::new());
         let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
 
-        let terminal_error =
-            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all, None).await;
+        let terminal_error = drive_stream(
+            sid,
+            &mut stream,
+            &CancellationToken::new(),
+            &mut all,
+            None,
+            &mut Vec::new(),
+        )
+        .await;
         assert!(terminal_error, "a stream error ends the turn on an error");
 
         let seen = drain(&mut rx).await;

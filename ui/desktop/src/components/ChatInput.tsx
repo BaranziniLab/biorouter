@@ -559,6 +559,8 @@ export default function ChatInput({
       try {
         const response = await getSession({
           path: { session_id: sessionId },
+          // The row, not the transcript: `working_dir` is all this reads.
+          query: { metadata_only: true },
           // Issue #56 Task 58: reading a private chat needs the proof-of-user.
           headers: await userActionHeaders(),
         });
@@ -624,6 +626,10 @@ export default function ChatInput({
     try {
       const response = await getSession({
         path: { session_id: sessionId },
+        // The row, not the transcript: `privacy_tier` is all this reads, and the
+        // same query as the working-directory read above, so a mount's two reads
+        // share one request (`utils/sessionReadCoalescing.ts`).
+        query: { metadata_only: true },
         // Issue #56 Task 58: and this read is *about* the tier, so it is
         // exactly the read the gate refuses without the header.
         headers: await userActionHeaders(),
@@ -692,10 +698,10 @@ export default function ChatInput({
    * still treats an unresolved tier as "judge nothing", and enforcement was never
    * here at all (Gates C/E/F, `crates/biorouter/src/privacy/`).
    *
-   * ⚠ **Once per turn, and never once the answer is `private`.** `GET
-   * /sessions/{id}` carries the whole transcript (`get_session(id, true)`), and
-   * within a chat the ratchet only ever raises — so a second read during the
-   * same turn cannot change the answer and would only re-fetch the conversation.
+   * ⚠ **Once per turn, and never once the answer is `private`.** Within a chat
+   * the ratchet only ever raises — so a second read during the same turn cannot
+   * change the answer and would only ask the daemon again. (The read is
+   * `metadata_only` now; it used to re-fetch the whole conversation too.)
    * A declassification lowers the tier by explicit user action and is still
    * picked up by the turn-end refresh and the next bind, exactly as before;
    * "still says private" is the safe direction to be wrong in meanwhile.

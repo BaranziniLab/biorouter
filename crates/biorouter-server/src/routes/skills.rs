@@ -59,6 +59,7 @@ use biorouter::agents::skill_catalog::{self, CatalogView, PackageSummary};
 use biorouter::agents::skill_package::{
     self, pending, ImportPlan, ImportPreview, ImportSource, InstalledPackage,
 };
+use biorouter::catalog::CatalogEvents;
 use biorouter::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -334,6 +335,106 @@ mod tests {
         );
     }
 
+    /// An install or a removal through these routes moves the catalog revision,
+    /// which is how every OTHER window learns of it. The agent's own tool
+    /// published and these routes did not, so a package installed from Settings
+    /// in one window stayed installable in a Browse skills dialog open in
+    /// another — which then installed it again, over the first, and announced a
+    /// replacement as a new install.
+    #[tokio::test]
+    async fn an_http_install_and_removal_are_published_to_every_window() {
+        use biorouter::catalog::{CatalogChangeReason, CatalogEntryChange, CatalogEvents};
+        use std::io::Write;
+
+        let sandbox = tempfile::tempdir().unwrap();
+        // Pins the install root to this directory for the whole test: the
+        // routes resolve it from `BIOROUTER_PATH_ROOT` on every call.
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(sandbox.path().to_string_lossy().into_owned()),
+        )]);
+
+        let name = "http-install-publish-probe";
+        let archive = sandbox.path().join(format!("{name}.zip"));
+        {
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            writer
+                .start_file(
+                    format!("{name}/SKILL.md"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer
+                .write_all(
+                    format!("---\nname: {name}\ndescription: probe\n---\n\nBody.\n").as_bytes(),
+                )
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        let request = || super::ImportRequest {
+            url: None,
+            file_path: Some(archive.to_string_lossy().into_owned()),
+            reference: None,
+            plan_id: None,
+            choice: None,
+            components: Vec::new(),
+        };
+
+        let events = CatalogEvents::global();
+        // Other tests in this binary publish too; keep only this package's rows.
+        let published_since = |since: u64| {
+            events
+                .since(since)
+                .changes
+                .into_iter()
+                .filter_map(|change| {
+                    let row = change.skills.iter().find(|skill| skill.id == name)?;
+                    Some((change.reason, row.change))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let before = events.revision();
+        let axum::Json(first) = super::install_skill_package(axum::Json(request()))
+            .await
+            .expect("the first install lands");
+        assert!(matches!(
+            first,
+            super::ImportResult::Installed { ref installed, .. } if !installed[0].replaced
+        ));
+        assert_eq!(
+            published_since(before),
+            vec![(CatalogChangeReason::Install, CatalogEntryChange::Added)]
+        );
+
+        let before = events.revision();
+        let axum::Json(again) = super::install_skill_package(axum::Json(request()))
+            .await
+            .expect("the reinstall lands");
+        assert!(matches!(
+            again,
+            super::ImportResult::Installed { ref installed, .. } if installed[0].replaced
+        ));
+        assert_eq!(
+            published_since(before),
+            vec![(CatalogChangeReason::Update, CatalogEntryChange::Updated)]
+        );
+
+        let before = events.revision();
+        let axum::Json(removed) =
+            super::remove_skill_package(axum::Json(super::RemovePackageRequest {
+                id: name.to_string(),
+                source_root: None,
+            }))
+            .await
+            .expect("the removal lands");
+        assert_eq!(removed.id, name);
+        assert_eq!(
+            published_since(before),
+            vec![(CatalogChangeReason::Uninstall, CatalogEntryChange::Removed)]
+        );
+    }
+
     /// `refresh` rescans; `catalog` may reuse the cached snapshot. Swapping
     /// them would make the post-install refresh a no-op that looks like one.
     #[test]
@@ -547,8 +648,18 @@ pub async fn install_skill_package(
     let root = skill_package::install::install_root();
     let mut installed = Vec::new();
     for plan in &plans {
-        installed
-            .push(skill_package::install(plan, &root).map_err(|e| bad_request(format!("{e:#}")))?);
+        let package =
+            skill_package::install(plan, &root).map_err(|e| bad_request(format!("{e:#}")))?;
+        // Every window's catalog, not just this caller's: without the event a
+        // Browse skills dialog open in another window kept offering the package
+        // and installed it again over this one. See
+        // `CatalogEvents::publish_skill_package_installed`.
+        CatalogEvents::global().publish_skill_package_installed(
+            &package.skills,
+            package.replaced,
+            None,
+        );
+        installed.push(package);
     }
     Ok(Json(ImportResult::Installed {
         preview: plan.preview(),
@@ -585,7 +696,10 @@ pub async fn remove_skill_package(
                 )
             })?,
     };
-    skill_package::remove(&request.id, &root)
-        .map(Json)
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))
+    let removed = skill_package::remove(&request.id, &root)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))?;
+    // The package id stands in for its components: consumers refetch on the
+    // revision and read nothing else from the event.
+    CatalogEvents::global().publish_skill_package_removed(std::slice::from_ref(&removed.id), None);
+    Ok(Json(removed))
 }

@@ -1623,22 +1623,11 @@ impl SkillsClient {
         package: &crate::agents::skill_package::InstalledPackage,
         session_id: &str,
     ) {
-        let (reason, change) = if package.replaced {
-            (CatalogChangeReason::Update, CatalogEntryChange::Updated)
-        } else {
-            (CatalogChangeReason::Install, CatalogEntryChange::Added)
-        };
-        let skills = package
-            .skills
-            .iter()
-            .map(|name| CatalogSkillChange {
-                id: name.clone(),
-                name: Some(name.clone()),
-                change,
-                source_extension_key: None,
-            })
-            .collect();
-        CatalogEvents::global().publish(reason, Vec::new(), skills, Some(session_id.to_string()));
+        CatalogEvents::global().publish_skill_package_installed(
+            &package.skills,
+            package.replaced,
+            Some(session_id.to_string()),
+        );
     }
 
     /// What an install can honestly say about the package it just wrote.
@@ -2623,21 +2612,8 @@ impl SkillsClient {
                 Ok(package) => {
                     deleted_names.push(target.clone());
                     deleted_names.extend(skills.iter().cloned());
-                    let changes = skills
-                        .iter()
-                        .map(|name| CatalogSkillChange {
-                            id: name.clone(),
-                            name: Some(name.clone()),
-                            change: CatalogEntryChange::Removed,
-                            source_extension_key: None,
-                        })
-                        .collect();
-                    CatalogEvents::global().publish(
-                        CatalogChangeReason::Uninstall,
-                        Vec::new(),
-                        changes,
-                        Some(session_id.to_string()),
-                    );
+                    CatalogEvents::global()
+                        .publish_skill_package_removed(&skills, Some(session_id.to_string()));
                     results.push(serde_json::json!({
                         "name": target,
                         "status": "removed",

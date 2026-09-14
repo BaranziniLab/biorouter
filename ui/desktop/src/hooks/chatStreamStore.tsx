@@ -36,6 +36,7 @@ import {
 import { subscribeToSessionMeta } from '../utils/sessionMetaSubscription';
 import { raiseTier } from '../components/privacy/sessionTier';
 import { isReadOnlySubagentChat } from '../components/subagent/subagentReadOnly';
+import { mergeStopRecord } from '../components/conversation/turnStoppedNotice';
 import { isBrowserSurface } from '../utils/surface';
 import {
   createElicitationResponseMessage,
@@ -839,6 +840,15 @@ class ChatStreamController {
    * every cancel request.
    */
   private lastStopCancelled = false;
+  /**
+   * Item 7 — the rows the last SETTLED cancel reports its Stop wrote to the
+   * store (`stop_messages`): the stopped reply's prose and the durable
+   * "Stopped." notice. Reset with `lastStopCancelled` at the top of every cancel
+   * request, and adopted into the transcript by `settleStoppedTurn` only once
+   * the turn's stream has been abandoned — the stream loop keeps its own copy of
+   * the transcript and would write a merge made while it runs straight back out.
+   */
+  private lastStopRecord: Message[] = [];
   /**
    * The turn this controller is currently rendering — the id it POSTed, or the
    * id it attached to. Held so a re-attach can re-POST the SAME turn (rather
@@ -2070,8 +2080,8 @@ class ChatStreamController {
    * was the only one that asked to resume it.
    *
    * So, on the browser surface and for a subagent's chat only, the transcript
-   * comes from `GET /sessions/{id}` — the read `useSubagentSession` already
-   * makes — and the observer feed follows it while it runs. What the resume
+   * comes from `GET /sessions/{id}` — the row `useSubagentSession` then reads
+   * the tab header from — and the observer feed follows it while it runs. What the resume
    * path does next is left out on purpose, because each piece is refused or
    * worse here:
    *
@@ -3989,6 +3999,7 @@ class ChatStreamController {
   ): Promise<boolean> => {
     this.lastStopFailure = null;
     this.lastStopCancelled = false;
+    this.lastStopRecord = [];
     try {
       const body = {
         session_id: this.sessionId,
@@ -4015,6 +4026,7 @@ class ChatStreamController {
       const data = result?.data;
       if (data?.settled === true) {
         this.lastStopCancelled = data.cancelled === true;
+        this.lastStopRecord = data.stop_messages ?? [];
         if (!continuationPending) return true;
         const lease = data.continuation_lease;
         if (!lease) {
@@ -4167,6 +4179,19 @@ class ChatStreamController {
 
     this.activeStreamId += 1;
     this.abortController?.abort();
+    // Item 7 — after the bump, so no frame of the abandoned stream can write its
+    // own copy of the transcript over this. The view becomes what a reload shows:
+    // the stopped reply as stored and the "Stopped." notice it now ends on. The
+    // notice's frame on the turn stream is not relied on — it may land after the
+    // abort above — and `mergeStopRecord` replaces by id when it did arrive.
+    const stopRecord = this.lastStopRecord;
+    this.lastStopRecord = [];
+    const mergedMessages = mergeStopRecord(this.messagesRef, stopRecord);
+    if (mergedMessages !== this.messagesRef) {
+      this.messagesRef = mergedMessages;
+      // A merge names only the rows the Stop wrote, not every stored row.
+      this.viewNamesEveryStoredRow = false;
+    }
     this.endReplayHold();
     this.retireActiveTurn();
     this.ambiguousRetryTurnId = null;
@@ -4177,6 +4202,7 @@ class ChatStreamController {
     this.stopDeferredFinishTurnId = null;
     this.updateSnapshot((prev) => ({
       ...prev,
+      messages: this.messagesRef,
       chatState: ChatState.Idle,
       turnStartedAt: undefined,
       lastMessageAt: undefined,
