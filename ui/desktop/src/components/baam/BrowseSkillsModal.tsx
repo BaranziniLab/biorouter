@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../ui/button';
-import { toastSuccess, toastError } from '../../toasts';
+import { toastSuccess } from '../../toasts';
 import {
   loadRegistry,
   rankSkills,
@@ -12,14 +12,13 @@ import {
 import { isBrowseQuery } from './search';
 import { installRegistrySkill } from './installSkill';
 import {
-  failedToast,
   installButtonLabel,
   installedToast,
   installProgressLabel,
   registrySkillCount,
-  type FailedInstall,
   type LandedInstall,
 } from './installCopy';
+import { reportInstallRun, type FailedRow } from './installReport';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 
 interface Props {
@@ -126,7 +125,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
     setInstalling(true);
 
     const landed: LandedInstall[] = [];
-    const failures: (FailedInstall & { id: string })[] = [];
+    const failures: FailedRow[] = [];
     for (const [index, skill] of targets.entries()) {
       setProgress({ name: skill.name, position: index + 1, total: targets.length });
       try {
@@ -140,6 +139,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
               name: unit.name,
               skills: unit.skills.length,
               isPackage: unit.kind === 'bundle',
+              replaced: unit.replaced,
             }))
           );
         } else {
@@ -162,9 +162,16 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
       toastSuccess(installedToast(landed));
       onInstalled();
     }
-    if (failures.length > 0) {
-      toastError(failedToast(failures));
-    }
+    // Every run, not only a failing one: a retry that lands must take back the
+    // report that said it had not. See `installReport.ts`.
+    reportInstallRun({
+      attempted: new Set(targets.map((skill) => skill.id)),
+      failures,
+      isInstalled: (id) => {
+        const row = registry?.skills.find((skill) => skill.id === id);
+        return row ? isInstalled(row) : false;
+      },
+    });
     if (failures.length === 0) onClose();
     // Keep exactly the rows that failed selected, by id. Matching the failure
     // text's prefix against a name re-selected "Alignment" when "Alignment
@@ -172,7 +179,10 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
     else setSelected(new Set(failures.map((failure) => failure.id)));
   };
 
-  const selectedCount = selected.size;
+  // What an install would act on. A row another window installed while this
+  // dialog was open is still in `selected`, but it is disabled, marked
+  // Installed and left out of the install — so it is not "selected" either.
+  const selectedCount = targets.length;
 
   return (
     <Dialog open onOpenChange={(open) => !open && !installing && onClose()}>
@@ -265,7 +275,9 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                   <div className="flex flex-col gap-1.5">
                     {items.map((skill) => {
                       const installed = isInstalled(skill);
-                      const checked = selected.has(skill.id);
+                      // An installed row is never shown checked, even if it was
+                      // selected before another window installed it.
+                      const checked = selected.has(skill.id) && !installed;
                       return (
                         <label
                           key={skill.id}

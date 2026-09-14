@@ -3,17 +3,38 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MARKETPLACE_SKILLS } from './marketplace.fixture';
 
-const mocks = vi.hoisted(() => ({ loadRegistry: vi.fn() }));
+const mocks = vi.hoisted(() => {
+  // Error toasts, as react-toastify tracks them: an id is active from the
+  // moment it is raised until something dismisses it.
+  const activeToasts = new Set<string>();
+  return {
+    loadRegistry: vi.fn(),
+    activeToasts,
+    toastError: vi.fn(({ title, msg }: { title: string; msg: string }) => {
+      const id = `error:${title}:${msg}`;
+      activeToasts.add(id);
+      return id;
+    }),
+    dismiss: vi.fn((id: string) => activeToasts.delete(id)),
+  };
+});
 
 vi.mock('./registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./registry')>()),
   loadRegistry: mocks.loadRegistry,
 }));
 vi.mock('./installSkill', () => ({ installRegistrySkill: vi.fn() }));
-vi.mock('../../toasts', () => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
+vi.mock('../../toasts', () => ({ toastSuccess: vi.fn(), toastError: mocks.toastError }));
+vi.mock('react-toastify', () => ({
+  toast: {
+    isActive: (id: string) => mocks.activeToasts.has(id),
+    dismiss: mocks.dismiss,
+  },
+}));
 
 import BrowseSkillsModal from './BrowseSkillsModal';
 import { installButtonLabel } from './installCopy';
+import { resetInstallReport } from './installReport';
 import { installRegistrySkill, type InstallResult } from './installSkill';
 import type { RegistrySkill } from './registry';
 import { toastError, toastSuccess } from '../../toasts';
@@ -33,6 +54,8 @@ const skill = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.activeToasts.clear();
+  resetInstallReport();
   mocks.loadRegistry.mockResolvedValue({
     registry: { version: 1, skills: [skill] },
     live: true,
@@ -231,9 +254,9 @@ function installButton(): HTMLElement {
 /** A successful install as the daemon reports it: one unit per package or skill. */
 function landed(
   row: Pick<RegistrySkill, 'name'>,
-  unit: { name: string; kind: 'single' | 'bundle'; skills: string[] }
+  unit: { name: string; kind: 'single' | 'bundle'; skills: string[]; replaced?: boolean }
 ): InstallResult {
-  return { ok: true, name: row.name, installed: [unit] };
+  return { ok: true, name: row.name, installed: [{ replaced: false, ...unit }] };
 }
 
 const componentNames = (prefix: string, count: number) =>
@@ -408,5 +431,156 @@ describe('BrowseSkillsModal — install copy counts skills, not rows', () => {
     expect(screen.getByText('1 selected')).toBeInTheDocument();
     expect(rowCheckbox('Alignment Files')).toBeChecked();
     expect(rowCheckbox('Alignment')).not.toBeChecked();
+  });
+});
+
+/** Open the dialog over `rows`, with `installedIds` as SkillsView would pass it. */
+async function openOver(
+  rows: RegistrySkill[],
+  props: { installedIds?: Set<string>; onClose?: () => void } = {}
+) {
+  mocks.loadRegistry.mockResolvedValue({
+    registry: { version: 2, source: 'test', extensions: [], skills: rows },
+    live: true,
+    fetchedAt: '2026-09-10T00:00:00Z',
+  });
+  const user = userEvent.setup();
+  const onClose = props.onClose ?? vi.fn();
+  const view = render(
+    <BrowseSkillsModal
+      onClose={onClose}
+      onInstalled={vi.fn()}
+      installedIds={props.installedIds ?? new Set()}
+    />
+  );
+  await screen.findByText(rows[0].name);
+  const rerenderWith = (installedIds: Set<string>) =>
+    view.rerender(
+      <BrowseSkillsModal onClose={onClose} onInstalled={vi.fn()} installedIds={installedIds} />
+    );
+  return { user, onClose, rerenderWith };
+}
+
+const alignmentRows = (): RegistrySkill[] =>
+  [
+    ['alignment', 'Alignment', 7],
+    ['alignment-files', 'Alignment Files', 10],
+    ['read-qc', 'Read QC', 7],
+  ].map(([id, name, count]) => ({
+    ...MARKETPLACE_SKILLS[6],
+    id: id as string,
+    name: name as string,
+    type: `${count} skills · auto-applied`,
+  }));
+
+/// The tester's retry: "Alignment Files was not installed" stayed on screen
+/// beside "10 skills installed | … alignment-files (10 skills)". Errors do not
+/// expire by design, so whatever raised the report has to take it back.
+describe('BrowseSkillsModal — a failure report is retracted when it stops being true', () => {
+  it('dismisses the report when a retry of the failed row lands', async () => {
+    let attempt = 0;
+    vi.mocked(installRegistrySkill).mockImplementation(async (skill) =>
+      skill.id === 'alignment-files' && attempt++ === 0
+        ? { ok: false, name: skill.name, error: 'network down' }
+        : landed(skill, { name: skill.id, kind: 'bundle', skills: componentNames(skill.id, 10) })
+    );
+    const { user, onClose } = await openOver(alignmentRows());
+
+    await user.click(rowCheckbox('Alignment Files'));
+    await user.click(installButton());
+    expect(mocks.toastError).toHaveBeenCalledTimes(1);
+    expect(mocks.activeToasts.size).toBe(1);
+
+    await user.click(installButton());
+
+    expect(toastSuccess).toHaveBeenLastCalledWith({
+      title: '10 skills installed',
+      msg: 'Added to Biorouter Skills: alignment-files (10 skills)',
+    });
+    expect(mocks.toastError).toHaveBeenCalledTimes(1);
+    expect(mocks.activeToasts.size).toBe(0);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  /// "3 selections were not installed" stayed up after two of the three landed.
+  it('replaces a report of three with one naming only what is still missing', async () => {
+    let round = 0;
+    vi.mocked(installRegistrySkill).mockImplementation(async (skill) =>
+      round === 0 || skill.id === 'read-qc'
+        ? { ok: false, name: skill.name, error: 'disk full' }
+        : landed(skill, { name: skill.id, kind: 'bundle', skills: componentNames(skill.id, 7) })
+    );
+    const { user } = await openOver(alignmentRows());
+
+    await user.click(screen.getByRole('button', { name: 'Select all (3)' }));
+    await user.click(installButton());
+    expect([...mocks.activeToasts]).toEqual([
+      'error:3 selections were not installed:Alignment: disk full (and 2 more)',
+    ]);
+
+    round = 1;
+    await user.click(installButton());
+
+    expect([...mocks.activeToasts]).toEqual(['error:Read QC was not installed:disk full']);
+  });
+
+  it('leaves a report alone when a run retried none of its rows', async () => {
+    vi.mocked(installRegistrySkill).mockImplementation(async (skill) =>
+      skill.id === 'alignment'
+        ? { ok: false, name: skill.name, error: 'network down' }
+        : landed(skill, { name: skill.id, kind: 'bundle', skills: componentNames(skill.id, 7) })
+    );
+    const { user } = await openOver(alignmentRows());
+
+    await user.click(rowCheckbox('Alignment'));
+    await user.click(installButton());
+    await user.click(rowCheckbox('Alignment'));
+    await user.click(rowCheckbox('Read QC'));
+    await user.click(installButton());
+
+    expect(mocks.dismiss).not.toHaveBeenCalled();
+    expect([...mocks.activeToasts]).toEqual(['error:Alignment was not installed:network down']);
+  });
+});
+
+/// Two windows. Window B installed a package while window A's dialog had it
+/// selected; A kept offering it, installed it again over B's, and toasted the
+/// overwrite as "12 skills installed". The catalog event now reaches A (see
+/// `routes/skills.rs`), and what is left for this dialog is to believe it — and
+/// to call an overwrite that still slips through what it is.
+describe('BrowseSkillsModal — what another window installed', () => {
+  it('stops counting a selected row as selected once it is installed', async () => {
+    const { user, rerenderWith } = await openOver(alignmentRows());
+
+    await user.click(rowCheckbox('Alignment Files'));
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+
+    rerenderWith(new Set(['alignment-files']));
+
+    expect(screen.getByText('0 selected')).toBeInTheDocument();
+    expect(rowCheckbox('Alignment Files')).not.toBeChecked();
+    expect(rowCheckbox('Alignment Files')).toBeDisabled();
+    expect(installButton().textContent).toBe('Install skills');
+    expect(installButton()).toBeDisabled();
+  });
+
+  it('calls an install that replaced one already there a reinstall', async () => {
+    vi.mocked(installRegistrySkill).mockImplementation(async (skill) =>
+      landed(skill, {
+        name: 'clinical-biostatistics',
+        kind: 'bundle',
+        skills: componentNames('cb', 12),
+        replaced: true,
+      })
+    );
+    const { user } = await openOver(alignmentRows());
+
+    await user.click(rowCheckbox('Alignment'));
+    await user.click(installButton());
+
+    expect(toastSuccess).toHaveBeenCalledWith({
+      title: '12 skills reinstalled',
+      msg: 'Replaced in Biorouter Skills: clinical-biostatistics (12 skills)',
+    });
   });
 });

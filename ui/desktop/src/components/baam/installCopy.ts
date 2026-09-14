@@ -15,6 +15,10 @@
 // - **The success toast counts skills the daemon installed**, not what the
 //   catalogue claimed, and names what landed — a package with its count — so
 //   the number can be matched against the Skills list it points at.
+// - **A reinstall is not an install.** A dialog opened before another window
+//   installed the same package still offered it, and the daemon then replaced
+//   what was there — which the toast announced as "12 skills installed". The
+//   daemon says `replaced` for each unit, and the toast says "reinstalled".
 // - **A failure names the row that failed.** The importer stages a package and
 //   swaps it in whole, so nothing of a failed row lands: counting its skills as
 //   "failed" would count skills that were never there.
@@ -64,6 +68,8 @@ export interface LandedInstall {
   name: string;
   skills: number;
   isPackage: boolean;
+  /** It overwrote an install of the same id rather than adding one. */
+  replaced?: boolean;
 }
 
 /** How many landed installs the toast names before it says "and N more". */
@@ -80,16 +86,33 @@ function listed(names: string[]): string {
 }
 
 export function installedToast(landed: readonly LandedInstall[]): { title: string; msg: string } {
-  const total = landed.reduce((sum, one) => sum + one.skills, 0);
-  const names = landed.map((one) =>
-    one.isPackage ? `${one.name} (${plural(one.skills, 'skill')})` : one.name
-  );
+  const skillsIn = (some: readonly LandedInstall[]) =>
+    some.reduce((sum, one) => sum + one.skills, 0);
+  const namesOf = (some: readonly LandedInstall[]) =>
+    listed(
+      some.map((one) => (one.isPackage ? `${one.name} (${plural(one.skills, 'skill')})` : one.name))
+    );
+  const added = landed.filter((one) => !one.replaced);
+  const replaced = landed.filter((one) => one.replaced);
+
+  if (replaced.length === 0) {
+    return {
+      title: `${plural(skillsIn(added), 'skill')} installed`,
+      msg:
+        added.length > 0
+          ? `Added to Biorouter Skills: ${namesOf(added)}`
+          : 'Added to Biorouter Skills',
+    };
+  }
+  if (added.length === 0) {
+    return {
+      title: `${plural(skillsIn(replaced), 'skill')} reinstalled`,
+      msg: `Replaced in Biorouter Skills: ${namesOf(replaced)}`,
+    };
+  }
   return {
-    title: `${plural(total, 'skill')} installed`,
-    msg:
-      names.length > 0
-        ? `Added to Biorouter Skills: ${listed(names)}`
-        : 'Added to Biorouter Skills',
+    title: `${plural(skillsIn(added), 'skill')} installed, ${skillsIn(replaced)} reinstalled`,
+    msg: `Added to Biorouter Skills: ${namesOf(added)}. Replaced: ${namesOf(replaced)}`,
   };
 }
 

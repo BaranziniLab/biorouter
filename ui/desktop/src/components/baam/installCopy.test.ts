@@ -76,6 +76,34 @@ describe('installedToast', () => {
   });
 });
 
+describe('installedToast — a reinstall is not an install', () => {
+  /// The two-window case: window B installed Clinical Biostatistics while
+  /// window A's dialog still offered it, and A's install replaced it and said
+  /// "12 skills installed".
+  it('says reinstalled when every unit replaced an install', () => {
+    expect(
+      installedToast([
+        { name: 'clinical-biostatistics', skills: 12, isPackage: true, replaced: true },
+      ])
+    ).toEqual({
+      title: '12 skills reinstalled',
+      msg: 'Replaced in Biorouter Skills: clinical-biostatistics (12 skills)',
+    });
+  });
+
+  it('keeps the two counts apart when a run did both', () => {
+    expect(
+      installedToast([
+        { name: 'alignment', skills: 7, isPackage: true },
+        { name: 'clinical-biostatistics', skills: 12, isPackage: true, replaced: true },
+      ])
+    ).toEqual({
+      title: '7 skills installed, 12 reinstalled',
+      msg: 'Added to Biorouter Skills: alignment (7 skills). Replaced: clinical-biostatistics (12 skills)',
+    });
+  });
+});
+
 describe('failedToast', () => {
   it('names the one row that failed', () => {
     expect(failedToast([{ name: 'Primer Design', error: 'network down' }])).toEqual({

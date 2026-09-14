@@ -278,6 +278,27 @@ describe('BrowseExtensionsModal — marketplace install (issue #116)', () => {
     expect(electron.validateBrxtBundle).toHaveBeenCalledTimes(2);
   });
 
+  /// `biorouter serve` answers the download with both keys, one of them null,
+  /// and `'error' in dl` read every such answer as a failure — so the bundle
+  /// the installer was handed had no path at all.
+  it("installs the downloaded bundle when the answer carries a null error (serve's shape)", async () => {
+    const user = userEvent.setup();
+    const electron = mockElectron({
+      download: async () => ({ path: '/tmp/playwright.brxt', error: null }),
+    });
+    renderModal();
+
+    await addAndWait(user);
+    await user.click(await screen.findByRole('button', { name: 'Install extension' }));
+
+    await waitFor(() => expect(electron.installBrxtBundle).toHaveBeenCalled());
+    expect(electron.installBrxtBundle).toHaveBeenCalledWith(
+      '/tmp/playwright.brxt',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
   it('offers Retry when the download fails, and re-downloads on Retry', async () => {
     const user = userEvent.setup();
     const electron = mockElectron({

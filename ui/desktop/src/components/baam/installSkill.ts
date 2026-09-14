@@ -14,6 +14,8 @@
 
 import { installSkillPackage } from '../../api';
 import type { ImportKind, ImportResult } from '../../api';
+import { serverErrorText } from '../../schedule';
+import { readRegistryDownload } from '../../utils/registryDownloadResult';
 import type { RegistrySkill } from './registry';
 
 /** One unit the daemon installed. */
@@ -23,6 +25,12 @@ export interface InstalledUnit {
   kind: ImportKind;
   /** Its component skill names, as installed. */
   skills: string[];
+  /**
+   * It overwrote an install of the same id. A dialog that did not know the
+   * package was already there — one opened before another window installed it
+   * — must not announce the overwrite as a new install.
+   */
+  replaced: boolean;
 }
 
 export interface InstallResult {
@@ -39,8 +47,25 @@ export interface InstallResult {
   needsChoice?: { planId: string; reason: string; components: string[] };
 }
 
+/**
+ * The sentence to show for a failed install.
+ *
+ * ⚠ The generated client does not throw an `Error` for a refusal: it throws
+ * the response BODY, and `/skills/packages/install` answers a 400 with a plain
+ * string ("could not install `x`: …"). Testing only `instanceof Error` dropped
+ * that sentence and showed "Could not install <name>" for every refusal the
+ * daemon had explained. An `Error` is what a transport failure looks like.
+ */
+export function installFailureText(error: unknown, name: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  return serverErrorText(error) ?? `Could not install ${name}`;
+}
+
 export async function installRegistrySkill(skill: RegistrySkill): Promise<InstallResult> {
-  const dl = await window.electron.downloadRegistryAsset(skill.download);
+  const dl = readRegistryDownload(
+    await window.electron.downloadRegistryAsset(skill.download),
+    `Could not download ${skill.name}`
+  );
   if ('error' in dl) return { ok: false, name: skill.name, error: dl.error };
 
   try {
@@ -71,13 +96,10 @@ export async function installRegistrySkill(skill: RegistrySkill): Promise<Instal
         name: unit.displayName,
         kind: unit.kind,
         skills: unit.skills ?? [],
+        replaced: unit.replaced === true,
       })),
     };
   } catch (err) {
-    return {
-      ok: false,
-      name: skill.name,
-      error: err instanceof Error ? err.message : `Could not install ${skill.name}`,
-    };
+    return { ok: false, name: skill.name, error: installFailureText(err, skill.name) };
   }
 }
