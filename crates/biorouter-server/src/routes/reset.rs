@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use biorouter::agents::{count_user_skills, reset_to_builtin_skills};
@@ -19,6 +19,10 @@ use biorouter::workflow::WORKFLOW_FILE_EXTENSIONS;
 use biorouter_mcp::agent_drafter::{default_root, store::ArtifactStore};
 use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use biorouter_mcp::knowledge::types::KbFormat;
+// `src/routes/` is compiled into the `biorouterd` binary as well as the lib and
+// cannot name `crate::auth`, so this is the shared direction — the same import
+// `routes::session` and `routes::knowledge` use.
+use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -82,6 +86,97 @@ fn api_error(
         status,
         Json(ResetErrorResponse {
             message: error.to_string(),
+        }),
+    )
+}
+
+/// What `POST /reset` and `GET /reset/preview` say to a caller that carried no
+/// proof it is the person at the keyboard, on a daemon that holds a key to check
+/// one against (issue #56 DR-16).
+///
+/// ⚠ **Holding the daemon secret does not make a caller the user.** This route
+/// used to take no headers at all, on the premise that only the user's own
+/// Settings page reaches it. A public chat's shell recovers the secret with
+/// `ps eww` (AR-11), and with it `{"categories":["history"]}` ran
+/// `SessionManager::clear_all_sessions` — every chat, private ones included —
+/// while `GET /sessions/{id}` for the same private chat answered 403 (measured
+/// on a sandboxed daemon, 2026-09-14). `knowledge` did the same to every base,
+/// private ones included, while each base's own routes refused the caller.
+/// `DELETE /sessions/{id}` was closed for exactly this in QA's F0 sweep; this is
+/// its machine-wide twin, and it had been left open.
+///
+/// ⚠ **The proof, not a stated capability.** The reach gate
+/// (`routes::session_reach`) admits a caller whose stated provider is private,
+/// because *reading* a chat is a question about what a model may see. A reset
+/// asks a different question — whether to destroy the machine's data — and a
+/// capability is a fact about a model, never a decision. So this is the
+/// declassify rule, not the reach rule: `X-User-Action` and nothing else. It
+/// does not depend on DR-15's master switch either, for the same reason: what is
+/// being decided is not a tier.
+///
+/// ⚠ It carries NEITHER renderer marker (`USER_ACTION_REFUSAL_MARKER`,
+/// `COPY_OF_PRIVATE_REFUSAL_MARKER`): each of those opens a toast that sends the
+/// user to a control that cannot help here. Pinned by
+/// `tests::the_refusals_carry_no_renderer_marker`.
+///
+/// ⚠ It is fixed text and names nothing on the machine, so it tells a refused
+/// caller nothing about what a reset would have removed — which is why the
+/// preview is refused with it too, rather than answering with counts.
+pub const RESET_NEEDS_USER: &str =
+    "Resetting Biorouter's data deletes it for good, and only the person at the keyboard can \
+     decide to do that. This request carried no proof it came from them. Nothing was read and \
+     nothing was deleted. Do not retry; the same call will be refused again. If this data \
+     genuinely needs to be cleared, stop and ask the user to reset it from Settings in the \
+     Biorouter app.";
+
+/// …and when this daemon was handed no user-action key at all — `biorouter
+/// serve` (SD-7), `just run-server`, a hand-run `biorouterd agent`.
+///
+/// A separate sentence for the reason `DECLASSIFY_NO_USER_KEY` is one: on such a
+/// daemon every caller lands here, the person at the keyboard included, and
+/// [`RESET_NEEDS_USER`]'s closing advice — ask the user to reset it from Settings
+/// — is a loop when the reader IS that user, in Settings. So it names the daemon
+/// as the reason and says where the control does work: on the machine the data
+/// lives on.
+///
+/// ⚠ **It must not be softened into admitting the browser.** A `serve` page's
+/// cookie earns its operator's reach on listings (SD-10) and is explicitly not a
+/// proof of a person; admitting it here would admit anything that can read the
+/// daemon's environment, which is where that token is.
+pub const RESET_NO_USER_KEY: &str =
+    "This daemon was started without a user-action key, so it cannot verify that a request came \
+     from the person at the keyboard, and resetting Biorouter's data requires that proof. Nothing \
+     was read and nothing was deleted. Do not retry; this control is unavailable on this daemon. \
+     It is available on the machine running the daemon, in Settings in the Biorouter app there. \
+     From a terminal on that machine, `biorouter session remove`, `biorouter schedule remove`, \
+     `biorouter skill remove` and `biorouter extension remove` delete items one at a time.";
+
+/// Which refusal these routes owe a caller, or `None` when the proof is good.
+///
+/// Pure, so all three verdicts are driven from `--lib` without an `AppState`.
+/// The end-to-end measurement lives in two integration binaries, one per
+/// credential state, because the installed digest is a process-global
+/// `OnceLock`: `tests/reset_requires_user.rs` and `tests/reset_no_user_key.rs`.
+///
+/// ⚠ It reads [`user_action_proof`], not `is_user_action`: the boolean form
+/// collapses `Unproven` and `NoKeyInstalled`, and that collapse is what once put
+/// an agent's sentence in front of a person on `biorouter serve` (SD-8).
+fn reset_refusal(proof: UserActionProof) -> Option<&'static str> {
+    match proof {
+        UserActionProof::Proven => None,
+        UserActionProof::Unproven => Some(RESET_NEEDS_USER),
+        UserActionProof::NoKeyInstalled => Some(RESET_NO_USER_KEY),
+    }
+}
+
+/// A refusal in this route's own error envelope. Not [`api_error`], which logs
+/// at `error`: a refused caller is the gate working, not the reset failing.
+fn refused(message: &'static str) -> ResetError {
+    tracing::warn!("App data reset refused: the request carried no proof of the user");
+    (
+        StatusCode::FORBIDDEN,
+        Json(ResetErrorResponse {
+            message: message.to_string(),
         }),
     )
 }
@@ -176,13 +271,25 @@ fn count_user_extensions() -> u64 {
     path = "/reset/preview",
     responses(
         (status = 200, description = "Counts of data affected by each reset category", body = ResetPreviewResponse),
+        (status = 403, description = "Refused: a reset is the user's own decision, and the request \
+                                      carried no proof it came from them, or this daemon holds no \
+                                      user-action key at all. Nothing was counted", body = ResetErrorResponse),
         (status = 500, description = "Could not inspect reset data", body = ResetErrorResponse)
     ),
     tag = "App Reset"
 )]
 pub async fn preview_reset(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> ResetResult<ResetPreviewResponse> {
+    // FIRST. The counts include every private chat and every private knowledge
+    // base on the machine — rows `GET /sessions` and `GET /knowledge/bases` omit
+    // for this same caller — and their only purpose is to show the person what a
+    // reset would remove, which is a reset this caller could not perform.
+    if let Some(refusal) = reset_refusal(user_action_proof(&headers)) {
+        return Err(refused(refusal));
+    }
+
     let knowledge_service = Arc::clone(&state.knowledge_service);
     let sync_counts = tokio::task::spawn_blocking(move || -> Result<(u64, u64, u64, u64, u64)> {
         Ok((
@@ -369,6 +476,9 @@ async fn reset_selected_categories(
     responses(
         (status = 200, description = "Selected app data was reset", body = ResetResponse),
         (status = 400, description = "No reset category was selected", body = ResetErrorResponse),
+        (status = 403, description = "Refused: a reset is the user's own decision, and the request \
+                                      carried no proof it came from them, or this daemon holds no \
+                                      user-action key at all. Nothing was deleted", body = ResetErrorResponse),
         (status = 409, description = "Reset is blocked by active work", body = ResetErrorResponse),
         (status = 500, description = "Reset failed", body = ResetErrorResponse)
     ),
@@ -376,8 +486,19 @@ async fn reset_selected_categories(
 )]
 pub async fn reset_app_data(
     State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: HeaderMap,
     Json(request): Json<ResetRequest>,
 ) -> ResetResult<ResetResponse> {
+    // FIRST, before the category check, the active-work check and the agent
+    // cache flush in `prepare_for_reset`. Each of those answers something — a
+    // 400 for an empty selection, a 409 that says a chat or a scheduled run is
+    // in flight right now — and an unproven caller is owed none of it. See
+    // `RESET_NEEDS_USER` for what this closed.
+    if let Some(refusal) = reset_refusal(user_action_proof(&headers)) {
+        return Err(refused(refusal));
+    }
+
     let categories = request.categories.into_iter().collect::<HashSet<_>>();
     prepare_for_reset(&state, &categories).await?;
     let removed = reset_selected_categories(&state, &categories).await?;
@@ -405,6 +526,87 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routes::body_of;
+
+    /// The rule, at every verdict: only a request that proves the person at the
+    /// keyboard sent it gets past, and the two refusals are told apart so a
+    /// person on a keyless daemon is never handed the sentence written for a
+    /// model.
+    #[test]
+    fn only_a_proven_request_passes_the_reset_gate() {
+        assert_eq!(reset_refusal(UserActionProof::Proven), None);
+        assert_eq!(
+            reset_refusal(UserActionProof::Unproven),
+            Some(RESET_NEEDS_USER)
+        );
+        assert_eq!(
+            reset_refusal(UserActionProof::NoKeyInstalled),
+            Some(RESET_NO_USER_KEY)
+        );
+        assert_ne!(RESET_NEEDS_USER, RESET_NO_USER_KEY);
+
+        // The keyless sentence must not send its reader to go and do what they
+        // are already doing. Quoted out of the constant that owns the clause, so
+        // a rewording cannot leave this passing against words no longer sent.
+        let hand_it_to_the_user = RESET_NEEDS_USER
+            .split_once("stop and ")
+            .expect("the model-facing refusal has stopped delegating to the user")
+            .1;
+        assert!(!RESET_NO_USER_KEY.contains(hand_it_to_the_user));
+        // …and it must say where the control does work.
+        assert!(RESET_NO_USER_KEY.contains("machine running the daemon"));
+    }
+
+    /// Each renderer marker opens a toast with its own advice — switch this
+    /// chat's model, branch it from the chat window — and neither helps a person
+    /// whose reset was refused.
+    #[test]
+    fn the_refusals_carry_no_renderer_marker() {
+        for refusal in [RESET_NEEDS_USER, RESET_NO_USER_KEY] {
+            assert!(!refusal.contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER));
+            assert!(!refusal.contains(crate::routes::session::COPY_OF_PRIVATE_REFUSAL_MARKER));
+        }
+    }
+
+    /// The gate runs before either handler does anything else.
+    ///
+    /// The HTTP binaries prove the refusal happens and deletes nothing; what they
+    /// cannot see cheaply is the ORDER, which is what keeps a refused caller from
+    /// learning "a chat is running" (the 409) or "you selected nothing" (the 400)
+    /// ahead of the 403, or from flushing every cached agent on the way to it. So
+    /// that is a source scan, and it asserts the early return as well as the
+    /// read — a verdict consulted and then ignored would pass a scan for the call
+    /// alone.
+    #[test]
+    fn both_reset_routes_refuse_before_they_touch_anything() {
+        let source = include_str!("reset.rs");
+        let gate = "if let Some(refusal) = reset_refusal(user_action_proof(&headers)) {\n        \
+                    return Err(refused(refusal));";
+        for (handler, first_act) in [
+            ("pub async fn reset_app_data(", "prepare_for_reset("),
+            ("pub async fn preview_reset(", "spawn_blocking("),
+        ] {
+            let body = body_of(source, handler);
+            let (before_the_gate, after_the_gate) = body
+                .split_once(gate)
+                .unwrap_or_else(|| panic!("`{handler}` no longer refuses on the proof verdict"));
+            assert!(
+                after_the_gate.contains(first_act),
+                "`{handler}` reaches `{first_act}` BEFORE its proof gate, or not at all"
+            );
+            assert!(
+                !before_the_gate.contains(first_act) && !before_the_gate.contains("state."),
+                "`{handler}` touches app state before its proof gate"
+            );
+        }
+        // The negative control, so the scan is provably not vacuous: a function
+        // in the same file with no gate must come back without one, or `body_of`
+        // is over-reading past a function end.
+        assert!(
+            !body_of(source, "async fn reset_schedules(").contains("user_action_proof("),
+            "the body scan is over-reading: a function with no gate reported one"
+        );
+    }
 
     #[test]
     fn workflow_reset_keeps_only_a_fresh_factory_workflow() {

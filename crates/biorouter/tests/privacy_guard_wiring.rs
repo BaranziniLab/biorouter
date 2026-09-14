@@ -405,9 +405,9 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
-                counts: c(0, 5, 0),
+                counts: c(0, 12, 0),
                 kind: SiteKind::Unrelated,
-                what: "the MODULE qualifier five times, on no occasion this function. Once on \
+                what: "the MODULE qualifier twelve times, on no occasion this function. Once on \
                        `session_reach::http_caller`, which filters `GET /schedule/{id}/sessions` \
                        — a listing, gated by `lists_session`. Once on \
                        `session_reach::work_reach` for `POST /schedule/{id}/kill`: the stop \
@@ -415,9 +415,13 @@ const REGISTRY: &[Guard] = &[
                        /active_work/{id}/cancel` does for the same kill, so neither route is \
                        the easier way to stop a private chat's run. Once more on the same \
                        function for `GET /schedule/{id}/inspect`, which hands back the chat a \
-                       run is in. The last two are `GET /schedule/list`'s redaction: the \
-                       qualifier on `http_caller`, and on the `HttpCaller` TYPE in \
-                       `redact_unreachable_chats`'s signature — a type, not a decision",
+                       run is in. Two are `GET /schedule/list`'s redaction: the qualifier on \
+                       `http_caller`, and on the `HttpCaller` TYPE in \
+                       `redact_unreachable_chats`'s signature — a type, not a decision. SIX, \
+                       from 2026-09-14, are `session_reach::schedule_reach` on the six writes — \
+                       create, run now, pause, resume, re-time and delete — its own row below; \
+                       and the twelfth is `http_caller` again, for `PUT /schedule/{id}`, which \
+                       answers with the job and redacts it exactly as the listing does",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -446,12 +450,23 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/workflow.rs",
-                counts: c(1, 2, 0),
+                counts: c(1, 3, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /workflows/create`, which loads the named chat's whole transcript \
                        and returns a workflow a model wrote from it (QA 2026-09-10, F0's \
                        sweep). The second ref is the module qualifier on `http_caller`, which \
-                       filters the knowledge bases the workflow names",
+                       filters the knowledge bases the workflow names; the third is the \
+                       qualifier on `schedule_reach` for `POST /workflows/schedule` — a \
+                       different function, with its own row below",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_meta.rs",
+                counts: c(0, 1, 0),
+                kind: SiteKind::Unrelated,
+                what: "the MODULE qualifier on `session_reach::http_caller` for `GET \
+                       /sessions/changes`, which filters the row changes it reports through \
+                       `lists_session` rather than refusing: a feed, like a listing, not a route \
+                       that names one chat",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_events.rs",
@@ -520,7 +535,7 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(5, 0, 0),
+            counts: c(7, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach` itself, which is this predicate plus the two lookups that \
                    feed it; and since QA's 2026-09-10 sweep `HttpCaller::admits` (a listing is \
@@ -532,7 +547,10 @@ const REGISTRY: &[Guard] = &[
                    the adversarial review of 2026-09-12, `HttpCaller::mints_knowledge_base` — \
                    whether a caller may TAKE a base id, asked at `TargetTier::Unreadable` and \
                    WITHOUT the id, because create refuses one that is taken and an answer that \
-                   varied with the id would say which private bases exist. ONE decision, five \
+                   varied with the id would say which private bases exist. And, from 2026-09-14, \
+                   `schedule_reach` TWICE: once at `Unreadable` to answer an admitted caller \
+                   without reading the store or the provider registry (the `lists_work` \
+                   observation), and once on the schedule's resolved work. ONE decision, six \
                    subjects: a second spelling of it is what this census exists to stop. \
                    ⚠ This row read `four` on both sides of the #237 merge — each branch added \
                    a subject and neither could see the other's — which is exactly the arithmetic \
@@ -567,11 +585,23 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
-                counts: c(2, 0, 0),
+                counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /schedule/{id}/sessions`, a schedule's runs by name and directory; \
-                       and `GET /schedule/list`, which resolves the caller ONCE for the whole \
-                       listing and then redacts each row's chat-naming fields",
+                       `GET /schedule/list`, which resolves the caller ONCE for the whole \
+                       listing and then redacts each row's chat-naming fields; and `PUT \
+                       /schedule/{id}`, which answered with the whole job and so handed a \
+                       secret-only caller the `creator_session_id` the listing redacts \
+                       (measured on 1038a113) — now redacted the same way",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_meta.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/changes`, resolved ONCE for the life of the long poll: \
+                       every change carries a chat's provider, model and privacy tier, and a \
+                       secret-only caller naming a private chat was told all three on every \
+                       switch (measured on 1038a113)",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -610,6 +640,17 @@ const REGISTRY: &[Guard] = &[
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /schedule/{id}/sessions`, filtered BEFORE its limit",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_meta.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/changes`: ONE predicate asked of both the rows the poll \
+                       observes and the changes it answers with. Observed only for chats the \
+                       caller could open, so naming a private chat cannot make the poll publish \
+                       — and so answer, or move the revision — when that chat's row moves; \
+                       answered only with those chats' changes, since the ring is process-wide \
+                       and holds rows other windows watch",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -703,6 +744,38 @@ const REGISTRY: &[Guard] = &[
         ],
     },
     Guard {
+        ident: "schedule_reach",
+        defined_in: SESSION_REACH,
+        decides: "whether an HTTP caller may create, run, re-time, pause, resume or remove a \
+                  SCHEDULE: its work is private when a chat it names (creator, current run) is \
+                  private or unreadable, or when the model its runs bind is private; an id that \
+                  names no schedule is answered as a private one. The same pure decision as \
+                  every other row, so work that is public stays open to any secret holder",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/schedule.rs",
+                counts: c(6, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the six writes: `POST /schedule/create` (the job about to be made, which \
+                       names no chat and so runs on the configured default), `POST \
+                       /schedule/{id}/run_now`, `/pause`, `/unpause`, `PUT /schedule/{id}` and \
+                       `DELETE /schedule/delete/{id}`, each on the job resolved before anything \
+                       changes. All six answered a caller holding only the daemon secret on \
+                       1038a113 — run now with a new chat on a private model",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/workflow.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /workflows/schedule`, which adds, re-times or removes the schedule \
+                       of a saved workflow through the same scheduler. ⚠ Not redundancy: without \
+                       it a caller refused at `/schedule/create` re-issued the request one URL \
+                       over",
+            },
+        ],
+    },
+    Guard {
         ident: "mints_knowledge_base",
         defined_in: SESSION_REACH,
         decides: "whether a caller may take a knowledge-base id at all — asked WITHOUT the id, \
@@ -772,12 +845,14 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(2, 0, 0),
+            counts: c(3, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach`'s tier lookup, deliberately `with_messages: false` so \
-                   resolving a tier is never the way to load the transcript being refused; and \
+                   resolving a tier is never the way to load the transcript being refused; \
                    `HttpCaller::lists_work`'s, for a row of running work that names a chat — \
-                   the same lookup, so an unreadable chat fails closed there too",
+                   the same lookup, so an unreadable chat fails closed there too; and \
+                   `schedule_reach`'s, once per chat a schedule names (the one it was created \
+                   from and the one it is running in), inside one loop",
         }],
     },
     // ----------------------------------------------------- extension tiering

@@ -109,6 +109,22 @@ this section is the ledger.
     its command came from some chat and nothing says whose. The shell now records the chat that
     ran each command, which leaves that arm to work that genuinely has no chat. Open question 10
     below was this.
+  - **Schedules.** A schedule is not a chat, so it is gated on its **work**
+    (`session_reach::schedule_reach`, 2026-09-14). Its work is private when a chat it names is
+    private, meaning the chat it was created from (whose model its runs take) or the chat it is
+    running in. Its work is also private when the model its runs use is private. Creating,
+    running, pausing, resuming, re-timing and deleting such a schedule take what reaching a private
+    chat takes, and so does `POST /workflows/schedule`, which reaches the same scheduler. A run
+    starts a new chat on a private model with nobody present, the bind `POST /agent/start` refuses
+    that caller on a daemon holding a key. Before the gate, a caller holding only the secret
+    started such runs and was handed the new private chat's id, and `PUT /schedule/{id}` answered
+    with the private creating chat the listing redacts. A schedule doing public work stays open.
+    ⚠ The daemon follows `schedule.json`, which a chat's shell can write, so the file remains a way
+    around these routes.
+  - **The row-change feed.** `GET /sessions/changes` reports a change only for a chat `GET
+    /sessions` would show the caller. It observes only those chats' rows, and a change it withholds
+    never answers a poll early. Before this, naming a private chat was enough to be told its
+    provider, model and tier on every switch.
 
   The desktop app sends the proof on each of these calls and sees exactly what it saw before. A
   `biorouter serve` browser keeps its operator's reach on listings and knowledge bases and gains

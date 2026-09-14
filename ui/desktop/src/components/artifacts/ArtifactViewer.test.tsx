@@ -532,7 +532,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
 
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('artifact-annotate'));
-    const body = document.getElementById('artifact-preview-content');
+    const body = screen.queryByTestId('artifact-preview-content');
     expect(body).not.toBeNull();
     vi.spyOn(body as HTMLElement, 'getBoundingClientRect').mockReturnValue({
       x: 10,
@@ -1403,7 +1403,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     // The complaint was "a box inside a box inside a box": the content host must
     // carry no gutter, no card fill, no border and no shadow of its own — the
     // panel edge is the only edge.
-    const content = container.querySelector('#artifact-preview-content');
+    const content = container.querySelector('[data-testid="artifact-preview-content"]');
     expect(content).not.toBeNull();
     const boxy = ['p-3', 'border', 'rounded-lg', 'shadow-popover', 'bg-background-default'];
     for (const className of boxy) {

@@ -6869,6 +6869,10 @@ export type ResetAppDataErrors = {
      */
     400: ResetErrorResponse;
     /**
+     * Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was deleted
+     */
+    403: ResetErrorResponse;
+    /**
      * Reset is blocked by active work
      */
     409: ResetErrorResponse;
@@ -6898,6 +6902,10 @@ export type PreviewResetData = {
 
 export type PreviewResetErrors = {
     /**
+     * Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was counted
+     */
+    403: ResetErrorResponse;
+    /**
      * Could not inspect reset data
      */
     500: ResetErrorResponse;
@@ -6926,6 +6934,10 @@ export type CreateScheduleErrors = {
      * Invalid schedule name, cron expression or workflow file
      */
     400: ErrorResponse;
+    /**
+     * The new schedule's runs would use a private model, and the request carried neither the user-action proof nor a private capability. Plain text; nothing was created
+     */
+    403: unknown;
     /**
      * Job ID already exists
      */
@@ -6960,6 +6972,10 @@ export type DeleteScheduleData = {
 };
 
 export type DeleteScheduleErrors = {
+    /**
+     * The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was removed
+     */
+    403: unknown;
     /**
      * Scheduled job not found
      */
@@ -7020,6 +7036,10 @@ export type UpdateScheduleErrors = {
      */
     400: unknown;
     /**
+     * The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was changed
+     */
+    403: unknown;
+    /**
      * Scheduled job not found
      */
     404: unknown;
@@ -7031,7 +7051,7 @@ export type UpdateScheduleErrors = {
 
 export type UpdateScheduleResponses = {
     /**
-     * Scheduled job updated successfully
+     * Scheduled job updated successfully. The job as `GET /schedule/list` shows it to this caller: `current_session_id` and `creator_session_id` are omitted when they name a chat the caller could not open
      */
     200: ScheduledJob;
 };
@@ -7126,6 +7146,10 @@ export type PauseScheduleErrors = {
      */
     400: unknown;
     /**
+     * The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was paused
+     */
+    403: unknown;
+    /**
      * Scheduled job not found
      */
     404: unknown;
@@ -7157,6 +7181,10 @@ export type RunNowHandlerData = {
 };
 
 export type RunNowHandlerErrors = {
+    /**
+     * The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was run
+     */
+    403: unknown;
     /**
      * Scheduled job not found
      */
@@ -7219,6 +7247,10 @@ export type UnpauseScheduleData = {
 };
 
 export type UnpauseScheduleErrors = {
+    /**
+     * The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was resumed
+     */
+    403: unknown;
     /**
      * Scheduled job not found
      */
@@ -7339,7 +7371,7 @@ export type SessionChangesErrors = {
 
 export type SessionChangesResponses = {
     /**
-     * The session-row delta since `since`
+     * The session-row delta since `since`, holding only the chats this caller could open: a change to a private chat is omitted for a caller with neither the user-action proof nor a private capability, as the chat is from `GET /sessions`, and such a change never answers that caller's poll early
      */
     200: SessionMetaDelta;
 };
@@ -8536,6 +8568,10 @@ export type ScheduleWorkflowData = {
 };
 
 export type ScheduleWorkflowErrors = {
+    /**
+     * The schedule this would create, re-time or remove does private work — its runs use a private model, or it was created from or is running in a chat this caller could not open — and the request carried neither the user-action proof nor a private capability. Plain text; nothing was changed
+     */
+    403: unknown;
     /**
      * Workflow not found
      */

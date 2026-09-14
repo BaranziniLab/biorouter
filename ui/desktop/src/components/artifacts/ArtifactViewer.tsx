@@ -4,6 +4,7 @@ import {
   type PointerEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useReducer,
   useRef,
@@ -379,6 +380,15 @@ export default function ArtifactViewer({
   const annotationSnapshotRef = useRef(annotationSnapshot);
   annotationSnapshotRef.current = annotationSnapshot;
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
+  // The preview the tabs name in `aria-controls`. Per panel, never a literal:
+  // the document resolves a shared id to its first holder, which is how every
+  // composer's Send came to submit the left pane's form in a split. Only the
+  // active group's panel renders today (`artifactPanelEnabled={isActiveGroup}`
+  // in ChatGroupsShell), so two panels do not coexist in the running app — but
+  // nothing about this component requires that, and a literal id here would
+  // quietly point a second panel's tabs at the first one's preview.
+  // `ArtifactViewer.splitPane.test.tsx`.
+  const previewContentId = useId();
   const activeSourceKeyRef = useRef<string | null>(null);
   const activeSourceGenerationRef = useRef(0);
 
@@ -1141,7 +1151,7 @@ export default function ArtifactViewer({
                   type="button"
                   role="tab"
                   aria-selected={isActive}
-                  aria-controls="artifact-preview-content"
+                  aria-controls={previewContentId}
                   onPointerDown={(event) => beginTabPointerDrag(event, tab.id)}
                   onClick={() => activateTabFromPointer(tab)}
                   title={artifactHoverTitle(tab.artifact)}
@@ -1278,7 +1288,8 @@ export default function ArtifactViewer({
       {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
           preview sits directly on the panel ground — panel → strip → content. */}
       <div
-        id="artifact-preview-content"
+        id={previewContentId}
+        data-testid="artifact-preview-content"
         ref={previewBodyRef}
         className="relative z-0 min-h-0 flex-1 overflow-hidden"
       >

@@ -66,9 +66,18 @@
 //!   route takes it: this one holds ids rather than rows, so each chat is
 //!   resolved, and a turn on a chat this daemon cannot read is answered as a
 //!   private chat's. An omitted id is indistinguishable from nothing running.
-//!   `GET /sessions/changes` (a watched row's provider, model and tier columns),
-//!   `GET /sessions/insights` and `GET /sessions/activity` (aggregates) remain
-//!   open.
+//!   `GET /sessions/changes` (a watched row's provider, model and tier columns)
+//!   sat here as open until 2026-09-14, when a secret-only poll naming a private
+//!   chat was measured being handed its provider, model and tier on every
+//!   switch. It now reports a change only when `GET /sessions` would show its
+//!   chat ([`HttpCaller::lists_session`]), observes only those chats' rows, and
+//!   is not answered early by a change it withholds — so how soon a poll returns
+//!   says nothing about a chat its caller could not open. Its `revision` still
+//!   counts every chat's changes: how many rows moved on the machine, never
+//!   which. The schedule WRITES were open until the same day — create, run now,
+//!   pause, resume, re-time and delete, and `POST /workflows/schedule` beside
+//!   them — and now ask [`schedule_reach`]. `GET /sessions/insights` and `GET
+//!   /sessions/activity` (aggregates) remain open.
 //!   ⚠ **This bullet listed `POST /agent/resume` as open until 2026-09-04, and
 //!   it was wrong** — measured against a live private session, `/agent/resume`
 //!   answers 403 without the capability header and 200 with it, because
@@ -219,10 +228,14 @@
 //! | `POST /skills/session` | Writes a skill's instructions into the chat's next turn. |
 //! | `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, checked before any is loaded. |
 //! | `POST /active_work/{id}/cancel` | Stops one chat's running work: a shell command's process group, a subagent, a detached turn or a scheduled run. The id names the work, so the route resolves it to the owning chat and asks [`work_reach`], which is `session_reach` on that chat. A handle that names nothing, work that names no chat and a schedule that is not running are all refused as a private chat is. |
+//! | `POST /schedule/{id}/kill` · `GET /schedule/{id}/inspect` | The same scheduled run by its schedule id, through [`work_reach`] on the chat it is running in. |
+//! | `POST /schedule/create` · `POST /schedule/{id}/run_now` · `/pause` · `/unpause` · `PUT /schedule/{id}` · `DELETE /schedule/delete/{id}` · `POST /workflows/schedule` | Create, run, pause, resume, re-time or remove a schedule's WORK, through [`schedule_reach`]: private when a chat the schedule names is, or when the model its runs bind is. A schedule doing public work stays open, as a public chat does; an id that names no schedule is refused as a private one. Added 2026-09-14. |
 //!
 //! Every row since the 2026-09-10 sweep answers with [`SESSION_OUT_OF_REACH`]
 //! as PLAIN TEXT — the bytes `GET /sessions/{session_id}` returns — rather than
-//! through the route's own error envelope, so one boundary has one body.
+//! through the route's own error envelope, so one boundary has one body. The
+//! schedule rows answer the same way, in their own subject's words
+//! ([`SCHEDULE_OUT_OF_REACH`]), as the knowledge-base gate does in its.
 //!
 //! ⚠ **Two spellings, one list.** THREE of the rows above reach the gate through
 //! a helper rather than by naming it — the `authorize_agent_control` row, the
@@ -237,7 +250,9 @@
 //! `work_reach(`. A future sweep that greps for the call must follow
 //! `authorize_agent_control` and `work_reach` too, or it will "discover" seven
 //! holes that are not there and, worse, trust the same grep when it reports a
-//! real one.
+//! real one. The schedule rows are a third spelling of the same kind:
+//! [`schedule_reach`] never calls `session_reach` at all, and asks
+//! [`target_tier`] and [`refuse_unless_reachable`] itself.
 //!
 //! # Why `X-User-Action` and not a new mechanism, for the proof half
 //!
@@ -428,6 +443,47 @@ pub const KNOWLEDGE_BASE_REACH_NO_KEY: &str =
      proof. Nothing was read and nothing was changed. This control is unavailable on this daemon; \
      use the desktop app.";
 
+/// [`SESSION_OUT_OF_REACH`] for a SCHEDULE a caller named, or is about to make —
+/// the same decision from the same function, with the subject changed and
+/// nothing else ([`schedule_reach`]).
+///
+/// A schedule is not a chat, so the chat's sentence would describe the wrong
+/// thing: what makes a schedule's work private is that its runs use a private
+/// model or act for a private chat, and the refusal says that much and no more.
+///
+/// ⚠ **ONE sentence for "that schedule's work is private" and for "there is no
+/// such schedule"**, for the reason the chat constant gives. Schedule ids are
+/// not secret — `GET /schedule/list` shows every one — but WHICH chat a schedule
+/// was made from, or is running in, is exactly what that listing redacts, and a
+/// refusal that varied with it would hand the association back one route away.
+/// It is fixed text, so it cannot vary with anything.
+///
+/// ⚠ Every constraint on [`SESSION_OUT_OF_REACH`] binds this one, and the leak
+/// guards below are run against it: it names no schedule, chat, model or path;
+/// it signposts the operator page without naming the header; and its last words
+/// are the stop.
+pub const SCHEDULE_OUT_OF_REACH: &str =
+    "That schedule's work is private, or there is no schedule with that id. A schedule's work is \
+     private when its runs use a private model or act for a private chat. This request was made on \
+     a public model and carried no proof it came from the person at the keyboard, and the two \
+     answers are deliberately the same so that nothing about the schedule is disclosed. Nothing was \
+     run and nothing was changed. Do not retry as you are; the same call will be refused again, \
+     and no setting, hook or permission mode changes it. Private scheduled work can be created, \
+     run or changed from a session running a private model, one the institution hosts or one that \
+     runs on this machine, or from the desktop app when the person at the keyboard acts. Pointing \
+     a program that already runs under such a model at this daemon is a setup decision for \
+     whoever operates it, and the Biorouter documentation covers it under 'Reaching a private chat \
+     from a script'. If this task genuinely needs that schedule changed, stop and ask the user to \
+     change it for you.";
+
+/// …and [`SESSION_REACH_NO_KEY`]'s sibling for a schedule, on a daemon that was
+/// handed no user-action key at all.
+pub const SCHEDULE_REACH_NO_KEY: &str =
+    "This daemon was started without a user-action key, so it cannot verify that a request came \
+     from the person at the keyboard, and creating, running or changing a schedule whose work is \
+     private requires that proof. Nothing was run and nothing was changed. This control is \
+     unavailable on this daemon; use the desktop app.";
+
 /// The named session, reduced to the one bit this gate turns on.
 ///
 /// Three states rather than two because the third has to be *represented* in
@@ -484,6 +540,17 @@ impl SessionOutOfReach {
             KNOWLEDGE_BASE_REACH_NO_KEY
         } else {
             KNOWLEDGE_BASE_OUT_OF_REACH
+        };
+        Self { message, ..self }
+    }
+
+    /// The same refusal, worded for a schedule — [`Self::for_knowledge_base`]'s
+    /// twin, and private for the same reason.
+    fn for_schedule(self) -> Self {
+        let message = if self.message == SESSION_REACH_NO_KEY {
+            SCHEDULE_REACH_NO_KEY
+        } else {
+            SCHEDULE_OUT_OF_REACH
         };
         Self { message, ..self }
     }
@@ -584,8 +651,9 @@ pub fn refuse_unless_reachable(
 /// wiring census (`crates/biorouter/tests/privacy_guard_wiring.rs`): every
 /// public function in it must carry a census row classifying it as a reach
 /// decision. This is not one — it resolves an input to [`session_reach`],
-/// [`work_reach`] and [`http_caller`], which are the guards and which do carry
-/// rows — and those three, all in this file, are its only callers. Making it
+/// [`work_reach`], [`schedule_reach`] and [`http_caller`], which are the guards
+/// and which do carry rows — and those four, all in this file, are its only
+/// callers. Making it
 /// public to save an import would either break the census or add a row that
 /// misdescribes what it is.
 async fn caller_capability(headers: &HeaderMap) -> ProviderTier {
@@ -686,6 +754,131 @@ pub async fn work_reach(
         caller_capability(headers).await,
         user_action_proof(headers),
     )
+}
+
+/// The gate for a SCHEDULE a caller changes, runs or creates — every
+/// `/schedule/…` write, and `POST /workflows/schedule`, which reaches the same
+/// scheduler by a workflow's id.
+///
+/// `schedule` is the job as the scheduler holds it now, resolved by the route
+/// BEFORE anything is changed; for a create it is the job about to be made, and
+/// `None` is an id that names no schedule.
+///
+/// # What makes a schedule's work private
+///
+/// A schedule is not a chat, and nothing about it is stored as a tier. What it
+/// has is work, and that work is private in exactly three ways, each read off
+/// the job rather than asserted by the caller:
+///
+/// * **It acts for a private chat.** `creator_session_id` names the chat the
+///   schedule was made from, and a run takes THAT chat's model
+///   (`scheduler::resolve_scheduled_provider`). A private creator is a private
+///   chat's standing work.
+/// * **It is running in a private chat** (`current_session_id`) — the chat
+///   `POST /schedule/{id}/kill` already refuses to stop for such a caller.
+/// * **Its runs use a private model.** A run mints a NEW chat and binds a
+///   model with no person present — the creator's, or the configured default.
+///   That is the bind `POST /agent/start` refuses a proof-less caller on a
+///   daemon holding a key (SD-12: *"without the refusal a model could mint a
+///   private-capability chat with an extension set of its own choosing"*), and a
+///   schedule's workflow file chooses its extensions. So creating, launching,
+///   resuming or re-timing such work is that same bind by another door, and
+///   removing or pausing it is stopping private work, which is never easier
+///   than reaching it. The model is resolved by
+///   `scheduler::scheduled_run_provider_name` — the run's own resolution — and
+///   its tier by this install's registry, as [`caller_capability`] resolves one.
+///
+/// A named chat this daemon cannot read is `Unreadable`, and so is an id that
+/// names no schedule, both answered as a private schedule is.
+///
+/// # What stays open, deliberately
+///
+/// A schedule whose runs use a PUBLIC model and name no private chat is open to
+/// any holder of the daemon secret, exactly as a public chat is. That is the
+/// whole Schedules surface of an install configured with a public model, and a
+/// barrier there would break every client that has never sent a header — the
+/// CLI on a public install among them — while protecting nothing private.
+///
+/// ⚠ **Not a boundary against the model, and not sold as one.** The daemon
+/// follows `schedule.json` (PR #251), and DR-14's filesystem deny is DEFERRED,
+/// so a shell that can write that file can add, re-time or remove a row with no
+/// HTTP request at all — naming any `creator_session_id` it likes. The gate
+/// makes the HTTP routes say what the reach rule says; the file is #47's
+/// residual, recorded in `docs/deployment/programmatic-session-access.md`.
+///
+/// ⚠ **Never the served-operator standing**, for the reason [`work_reach`]
+/// never reads it: SD-10 gives a `biorouter serve` browser its operator's tier
+/// on listings and knowledge bases only. That browser states its host's model
+/// in [`CALLER_PROVIDER_HEADER`] (SD-12), which is what reaches here.
+pub async fn schedule_reach(
+    manager: &SessionManager,
+    schedule: Option<&biorouter::scheduler::ScheduledJob>,
+    headers: &HeaderMap,
+) -> Result<(), SessionOutOfReach> {
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    if !enforced {
+        return Ok(());
+    }
+    let capability = caller_capability(headers).await;
+    let proof = user_action_proof(headers);
+    // A caller admitted to a target this daemon cannot even read is admitted to
+    // every target — the same observation `HttpCaller::lists_work` fast-paths
+    // on — so the desktop's every click is answered without a store read or a
+    // registry walk.
+    let target = if refuse_unless_reachable(enforced, TargetTier::Unreadable, capability, proof)
+        .is_ok()
+    {
+        TargetTier::Unreadable
+    } else {
+        match schedule {
+            None => TargetTier::Unreadable,
+            Some(job) => {
+                let mut chats = Vec::new();
+                for chat in [
+                    job.creator_session_id.as_deref(),
+                    job.current_session_id.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    chats.push(target_tier(manager, chat).await);
+                }
+                let run_model =
+                    match biorouter::scheduler::scheduled_run_provider_name(job, manager).await {
+                        Some(name) => {
+                            biorouter::workflow::privacy::declared_provider_tier(&name).await
+                        }
+                        // No provider anywhere: a run cannot bind a model at
+                        // all, and fails before it starts.
+                        None => ProviderTier::Public,
+                    };
+                schedule_target(chats, run_model)
+            }
+        }
+    };
+    refuse_unless_reachable(enforced, target, capability, proof)
+        .map_err(SessionOutOfReach::for_schedule)
+}
+
+/// A schedule's work, reduced to the one bit the gate turns on — see
+/// [`schedule_reach`]. Pure, so every corner is asserted rather than argued.
+///
+/// `Unreadable` dominates `Private`, which dominates `Public`; the two refuse
+/// identically, and the order only keeps the answer honest about why.
+fn schedule_target(chats: Vec<TargetTier>, run_model: ProviderTier) -> TargetTier {
+    let mut target = if run_model.is_private() {
+        TargetTier::Private
+    } else {
+        TargetTier::Public
+    };
+    for chat in chats {
+        target = match (target, chat) {
+            (TargetTier::Unreadable, _) | (_, TargetTier::Unreadable) => TargetTier::Unreadable,
+            (TargetTier::Private, _) | (_, TargetTier::Private) => TargetTier::Private,
+            (TargetTier::Public, TargetTier::Public) => TargetTier::Public,
+        };
+    }
+    target
 }
 
 /// Who is asking, resolved ONCE per request and threaded through every decision
@@ -1745,6 +1938,62 @@ mod tests {
                 "InspectJobResponse {",
                 "the response naming the chat the run is in, and when it started",
             ),
+            // ── A schedule's WORK: every write that creates, runs, re-times,
+            //    pauses, resumes or removes it ──
+            //
+            // ⚠ The gate must precede the scheduler call, whose own refusals —
+            // "already running", "cannot pause a running schedule", "no such
+            // job" — would otherwise answer an unproven caller first.
+            (
+                schedule_rs,
+                "async fn create_schedule(",
+                "schedule_reach(",
+                ".add_scheduled_job(",
+                "the scheduler's add, which writes the schedule and copies its workflow",
+            ),
+            (
+                schedule_rs,
+                "async fn run_now_handler(",
+                "schedule_reach(",
+                "match scheduler.run_now(&id)",
+                "the run itself, a new chat bound to the schedule's model",
+            ),
+            (
+                schedule_rs,
+                "async fn pause_schedule(",
+                "schedule_reach(",
+                "scheduler.pause_schedule(",
+                "the pause, and its 'cannot pause a running schedule'",
+            ),
+            (
+                schedule_rs,
+                "async fn unpause_schedule(",
+                "schedule_reach(",
+                "scheduler.unpause_schedule(",
+                "the resume, which re-arms unattended runs",
+            ),
+            (
+                schedule_rs,
+                "async fn update_schedule(",
+                "schedule_reach(",
+                ".update_schedule(&id",
+                "the re-time, and the job it answers with",
+            ),
+            (
+                schedule_rs,
+                "async fn delete_schedule(",
+                "schedule_reach(",
+                ".remove_scheduled_job(",
+                "the removal of the schedule and its workflow copy",
+            ),
+            // ── The same scheduler, reached by a WORKFLOW's id ──
+            (
+                workflow_rs,
+                "async fn schedule_workflow(",
+                "schedule_reach(",
+                ".schedule_workflow(file_path",
+                "the scheduler's add, re-time or removal for that workflow",
+            ),
         ] {
             let handler = body_of(src, func);
             let gate = handler.find(gate_call).unwrap_or_else(|| {
@@ -1806,15 +2055,25 @@ mod tests {
             (events_rs, "pub fn routes("),
             (status_rs, "async fn system_info("),
             (status_rs, "pub fn routes("),
-            // BOTH sides in `schedule.rs` too: `pause_schedule` sits before its
-            // two gated handlers and `routes` after them.
-            (schedule_rs, "async fn pause_schedule("),
+            // `schedule.rs` needs controls BETWEEN its gated handlers now, since
+            // nearly every handler there is gated. `pause_schedule` served until
+            // 2026-09-14, when it was gated itself. `create_schedule_status`
+            // sits between `create_schedule` and `delete_schedule`,
+            // `sessions_handler` (a listing: `lists_session`, no gate) directly
+            // before `pause_schedule`, and `routes` after `inspect_running_job`.
+            (schedule_rs, "fn create_schedule_status("),
+            (schedule_rs, "async fn sessions_handler("),
             (schedule_rs, "pub fn routes("),
         ] {
-            // Both spellings the rows above use, so a control is a control for
+            // Every spelling the rows above use, so a control is a control for
             // every row it could be over-reading into.
             let body = body_of(src, control);
-            for gate in ["session_reach(", "authorize_turn_control("] {
+            for gate in [
+                "session_reach(",
+                "authorize_turn_control(",
+                "work_reach(",
+                "schedule_reach(",
+            ] {
                 assert!(
                     !body.contains(gate),
                     "the body scan is over-reading: {control} is not on the gated list and \
@@ -2255,6 +2514,116 @@ mod tests {
         assert!(KNOWLEDGE_BASE_REACH_NO_KEY.contains("started without a user-action key"));
         assert_ne!(KNOWLEDGE_BASE_OUT_OF_REACH, SESSION_OUT_OF_REACH);
         assert_ne!(KNOWLEDGE_BASE_REACH_NO_KEY, SESSION_REACH_NO_KEY);
+    }
+
+    // ─── Schedules: the writes (`schedule_reach`) ───
+
+    /// A schedule's work, at every corner: private when a chat it names is,
+    /// unreadable when one cannot be read, private when its runs use a private
+    /// model — and public ONLY when none of those holds.
+    ///
+    /// ⚠ The last row is the one a stricter-looking implementation loses. A gate
+    /// that answered every schedule as private would pass every refusal test in
+    /// the tree and refuse the whole Schedules surface of an install configured
+    /// with a public model to every client that has never sent a header.
+    #[test]
+    fn a_schedules_work_is_private_when_a_chat_it_names_or_the_model_it_runs_is() {
+        use TargetTier::{Private, Public, Unreadable};
+        let cases: [(&[TargetTier], ProviderTier, TargetTier); 10] = [
+            (&[], ProviderTier::Public, Public),
+            (&[], ProviderTier::Private, Private),
+            (&[Public], ProviderTier::Public, Public),
+            (&[Public, Public], ProviderTier::Public, Public),
+            (&[Private], ProviderTier::Public, Private),
+            (&[Public, Private], ProviderTier::Public, Private),
+            (&[Public], ProviderTier::Private, Private),
+            (&[Unreadable], ProviderTier::Public, Unreadable),
+            (&[Private, Unreadable], ProviderTier::Private, Unreadable),
+            (&[Unreadable, Public], ProviderTier::Public, Unreadable),
+        ];
+        for (chats, run_model, expected) in cases {
+            assert_eq!(
+                schedule_target(chats.to_vec(), run_model),
+                expected,
+                "{chats:?} on a {run_model:?} model"
+            );
+        }
+    }
+
+    /// The schedule refusals obey every rule the chat and knowledge-base ones
+    /// do, checked by the same predicates.
+    #[test]
+    fn the_schedule_refusals_keep_every_rule_the_chat_refusals_keep() {
+        for message in [SCHEDULE_OUT_OF_REACH, SCHEDULE_REACH_NO_KEY] {
+            assert!(!message.chars().any(|c| c.is_ascii_digit()), "{message}");
+            assert!(
+                !message.contains('"') && !message.contains('\u{201c}'),
+                "{message}"
+            );
+            assert!(
+                !message.contains('/') && !message.contains('\\'),
+                "{message}"
+            );
+            assert!(!message.contains(CALLER_PROVIDER_HEADER), "{message}");
+            assert!(!message.contains("versa_azure"), "{message}");
+            assert!(
+                !message.contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+                "{message}"
+            );
+            assert!(
+                !message.contains(crate::routes::session::COPY_OF_PRIVATE_REFUSAL_MARKER),
+                "{message}"
+            );
+            // It may call a schedule's work private only while offering "no
+            // such schedule", and it never calls a CHAT private at all.
+            assert!(
+                !message.contains("work is private")
+                    || message.contains("or there is no schedule with that id")
+                    || message.contains("started without a user-action key"),
+                "{message}"
+            );
+            assert!(!message.contains("chat is private"), "{message}");
+        }
+        let doc = include_str!("../../../../docs/deployment/programmatic-session-access.md");
+        let title = doc
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("# "))
+            .unwrap();
+        assert!(SCHEDULE_OUT_OF_REACH.contains(title));
+        assert!(SCHEDULE_OUT_OF_REACH.contains(
+            "Do not retry as you are; the same call will be refused again, and no setting, hook \
+             or permission mode changes it."
+        ));
+        assert!(SCHEDULE_OUT_OF_REACH
+            .trim_end()
+            .ends_with("stop and ask the user to change it for you."));
+        assert!(SCHEDULE_REACH_NO_KEY.contains("started without a user-action key"));
+        for (schedule, other) in [
+            (SCHEDULE_OUT_OF_REACH, SESSION_OUT_OF_REACH),
+            (SCHEDULE_OUT_OF_REACH, KNOWLEDGE_BASE_OUT_OF_REACH),
+            (SCHEDULE_REACH_NO_KEY, SESSION_REACH_NO_KEY),
+            (SCHEDULE_REACH_NO_KEY, KNOWLEDGE_BASE_REACH_NO_KEY),
+        ] {
+            assert_ne!(schedule, other);
+        }
+        // The mapping changes the words and nothing else: the arm, the status
+        // and the fact of a refusal are `refuse_unless_reachable`'s.
+        for proof in [UserActionProof::Unproven, UserActionProof::NoKeyInstalled] {
+            let refusal =
+                refuse_unless_reachable(true, TargetTier::Private, ProviderTier::Public, proof)
+                    .unwrap_err();
+            let worded = refusal.for_schedule();
+            assert_eq!(worded.status, refusal.status);
+            assert_eq!(
+                worded.message,
+                if proof == UserActionProof::NoKeyInstalled {
+                    SCHEDULE_REACH_NO_KEY
+                } else {
+                    SCHEDULE_OUT_OF_REACH
+                }
+            );
+        }
     }
 
     /// The knowledge route's gate is a middleware, so the scan above cannot see
@@ -3689,6 +4058,167 @@ mod bypass_tests {
             assert!(ids.contains(&public.id().to_string()));
             assert_eq!(ids.contains(&private.id().to_string()), sees_private);
         }
+    }
+
+    /// One `GET /sessions/changes` poll: the body, its revision, the chats it
+    /// names as changed, and how long it took to answer.
+    async fn poll_row_changes(
+        state: Arc<AppState>,
+        since: u64,
+        ids: &[&str],
+        timeout_ms: u64,
+        headers: &[(&str, &str)],
+    ) -> (String, u64, Vec<String>, std::time::Duration) {
+        let started = std::time::Instant::now();
+        let uri = format!(
+            "/sessions/changes?since={since}&ids={}&timeout_ms={timeout_ms}",
+            ids.join(",")
+        );
+        let (status, body) = call(state, "GET", &uri, None, headers).await;
+        let elapsed = started.elapsed();
+        assert_eq!(status, StatusCode::OK, "{headers:?}: {body}");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let revision = json["revision"].as_u64().expect("a revision");
+        let changed = json["changes"]
+            .as_array()
+            .expect("changes is an array")
+            .iter()
+            .map(|change| change["session_id"].as_str().unwrap().to_string())
+            .collect();
+        (body, revision, changed, elapsed)
+    }
+
+    /// Rewrite a chat's binding the way another process does —
+    /// `biorouter session --resume <id> --provider …` writes the row directly —
+    /// so the feed has something to find.
+    async fn rebind_row(state: &Arc<AppState>, id: &str, provider: &str, model: &str) {
+        state
+            .session_manager()
+            .update(id)
+            .provider_name(provider)
+            .model_config(ModelConfig::new(model).unwrap())
+            .apply()
+            .await
+            .unwrap();
+    }
+
+    /// `GET /sessions/changes` handed a caller holding only the daemon secret
+    /// the provider, model and privacy tier of any chat it named — and every
+    /// time one of them was switched. Measured on `main` (1038a113) against a
+    /// sandboxed daemon: after another process switched a private chat's model,
+    /// a secret-only poll naming that chat answered
+    /// `{"session_id":…,"provider_name":"versa_azure","model_name":…,"privacy_tier":"private"}`
+    /// while `GET /sessions/{that id}` refused the same caller.
+    ///
+    /// ⚠ **Three phases, because the content filter alone is the cheap half.**
+    /// A poll that dropped the private change but still ANSWERED when it
+    /// happened would let a caller name a private chat and time its model
+    /// switches, which is the oracle `GET /sessions/running` was closed for.
+    /// So phase 3 requires a poll naming a private chat to be byte-identical to
+    /// one naming a chat that does not exist, and to wait out its timeout; and
+    /// phase 4 requires a change someone ELSE surfaced not to wake it either.
+    /// Phase 2 keeps the public chat in view throughout, because a route that
+    /// answered every unproven caller `[]` would pass the rest while breaking
+    /// the feed for every public chat.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_row_change_feed_reports_a_chat_only_to_a_caller_that_could_open_it() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Row feed private (test fixture)").await;
+        let public = seed_chat(
+            &state,
+            "Row feed public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+        let both = [private.id(), public.id()];
+        let absent = "29990101_424243";
+
+        // PHASE 1 — the person's poll adopts both rows, silently.
+        let (_, base, _, _) = poll_row_changes(state.clone(), 0, &both, 50, &[PROOF]).await;
+        let (_, base, _, _) = poll_row_changes(state.clone(), base, &both, 50, &[PROOF]).await;
+
+        // PHASE 2 — both chats are rebound by another writer.
+        rebind_row(&state, private.id(), "versa_azure", "gpt-4o-mini").await;
+        rebind_row(&state, public.id(), "anthropic", "claude-row-feed-probe").await;
+
+        let (body, _, changed, _) = poll_row_changes(state.clone(), base, &both, 3000, &[]).await;
+        assert!(
+            changed.contains(&public.id().to_string()),
+            "a secret-only caller lost a PUBLIC chat's change: {body}"
+        );
+        assert!(
+            !body.contains(private.id()),
+            "a secret-only caller was handed a PRIVATE chat's provider, model and tier: {body}"
+        );
+        for (headers, who) in [
+            (&[PROOF][..], "the person at the keyboard"),
+            (&[PRIVATE_CAPABILITY][..], "a program on a private model"),
+        ] {
+            let (body, _, changed, _) =
+                poll_row_changes(state.clone(), base, &both, 3000, headers).await;
+            assert!(
+                changed.contains(&private.id().to_string())
+                    && changed.contains(&public.id().to_string()),
+                "{who} lost a change: {body}"
+            );
+            assert!(body.contains("\"privacy_tier\":\"private\""), "{body}");
+        }
+        // The private change now sits in the ring, surfaced by the person's
+        // poll — and is still withheld from the secret-only caller.
+        let (body, current, changed, _) =
+            poll_row_changes(state.clone(), base, &both, 3000, &[]).await;
+        assert!(changed.contains(&public.id().to_string()), "{body}");
+        assert!(!body.contains(private.id()), "{body}");
+
+        // PHASE 3 — the oracle. The private chat moves again, and a secret-only
+        // poll naming ONLY it is indistinguishable from one naming no chat.
+        //
+        // ⚠ The poll naming no chat goes FIRST. Asked second, it would read the
+        // global revision AFTER the private poll had moved it — so a private
+        // poll that observed (and so published) the change it then withheld
+        // would answer with the same revision as the control, and the equality
+        // below would pass on the very leak it exists to catch. Measured: with
+        // the observed-row filter removed, that order stayed green.
+        let (named_absent, _, _, _) =
+            poll_row_changes(state.clone(), current, &[absent], 1200, &[]).await;
+        rebind_row(&state, private.id(), "versa_azure", "gpt-4o").await;
+        let (named_private, _, _, waited) =
+            poll_row_changes(state.clone(), current, &[private.id()], 1200, &[]).await;
+        assert_eq!(
+            named_private, named_absent,
+            "naming a private chat whose row just moved answered differently from naming a chat \
+             that does not exist"
+        );
+        assert!(
+            waited >= std::time::Duration::from_millis(1000),
+            "the poll naming a private chat answered early ({waited:?}), which times its switches"
+        );
+
+        // PHASE 4 — someone else's poll surfaces a private change while a
+        // secret-only poll is parked on the public chat. It must not wake.
+        let parked = {
+            let state = state.clone();
+            let public_id = public.id().to_string();
+            tokio::spawn(async move {
+                poll_row_changes(state, current, &[public_id.as_str()], 2500, &[]).await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        rebind_row(&state, private.id(), "versa_azure", "gpt-4.1").await;
+        let (surfaced, _, changed, _) =
+            poll_row_changes(state.clone(), current, &[private.id()], 3000, &[PROOF]).await;
+        assert!(
+            changed.contains(&private.id().to_string()),
+            "the person's poll did not surface the change this phase needs: {surfaced}"
+        );
+        let (body, _, _, waited) = parked.await.unwrap();
+        assert!(!body.contains(private.id()), "{body}");
+        assert!(
+            waited >= std::time::Duration::from_millis(2000),
+            "a private chat's change woke a secret-only poll after {waited:?}: {body}"
+        );
     }
 
     /// Pull the id set out of a `GET /sessions/running` body.

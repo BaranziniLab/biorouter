@@ -3418,6 +3418,16 @@
               }
             }
           },
+          "403": {
+            "description": "Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Reset is blocked by active work",
             "content": {
@@ -3454,6 +3464,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResetPreviewResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused: a reset is the user's own decision, and the request carried no proof it came from them, or this daemon holds no user-action key at all. Nothing was counted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
                 }
               }
             }
@@ -3508,6 +3528,9 @@
               }
             }
           },
+          "403": {
+            "description": "The new schedule's runs would use a private model, and the request carried neither the user-action proof nor a private capability. Plain text; nothing was created"
+          },
           "409": {
             "description": "Job ID already exists",
             "content": {
@@ -3551,6 +3574,9 @@
         "responses": {
           "204": {
             "description": "Scheduled job deleted successfully"
+          },
+          "403": {
+            "description": "The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was removed"
           },
           "404": {
             "description": "Scheduled job not found"
@@ -3613,7 +3639,7 @@
         },
         "responses": {
           "200": {
-            "description": "Scheduled job updated successfully",
+            "description": "Scheduled job updated successfully. The job as `GET /schedule/list` shows it to this caller: `current_session_id` and `creator_session_id` are omitted when they name a chat the caller could not open",
             "content": {
               "application/json": {
                 "schema": {
@@ -3624,6 +3650,9 @@
           },
           "400": {
             "description": "Cannot update a currently running job or invalid request"
+          },
+          "403": {
+            "description": "The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was changed"
           },
           "404": {
             "description": "Scheduled job not found"
@@ -3731,6 +3760,9 @@
           "400": {
             "description": "Cannot pause a currently running job"
           },
+          "403": {
+            "description": "The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was paused"
+          },
           "404": {
             "description": "Scheduled job not found"
           },
@@ -3767,6 +3799,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was run"
           },
           "404": {
             "description": "Scheduled job not found"
@@ -3843,6 +3878,9 @@
         "responses": {
           "204": {
             "description": "Scheduled job unpaused successfully"
+          },
+          "403": {
+            "description": "The schedule's work is private — its runs use a private model, or it was created from or is running in a chat this caller could not open — or there is no such schedule, and the request carried neither the user-action proof nor a private capability. Plain text, the same for each of these; nothing was resumed"
           },
           "404": {
             "description": "Scheduled job not found"
@@ -3985,7 +4023,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The session-row delta since `since`",
+            "description": "The session-row delta since `since`, holding only the chats this caller could open: a change to a private chat is omitted for a caller with neither the user-action proof nor a private capability, as the chat is from `GET /sessions`, and such a change never answers that caller's poll early",
             "content": {
               "application/json": {
                 "schema": {
@@ -5611,6 +5649,9 @@
         "responses": {
           "200": {
             "description": "Workflow scheduled successfully"
+          },
+          "403": {
+            "description": "The schedule this would create, re-time or remove does private work — its runs use a private model, or it was created from or is running in a chat this caller could not open — and the request carried neither the user-action proof nor a private capability. Plain text; nothing was changed"
           },
           "404": {
             "description": "Workflow not found"

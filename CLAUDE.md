@@ -305,6 +305,14 @@ what did not" section first**; the rest of that document is the design, not the 
     through `HttpCaller::lists_work`, and its cancel asks `work_reach` before anything stops. A
     row that names no chat is treated as a private chat's, so a registrant that knows its chat must
     set `ActiveWorkItem::session_id`. The shell's rows take it from the `_meta` session id.
+  - A schedule is gated on its WORK, through `schedule_reach`: every write (create, run now,
+    pause, resume, re-time, delete, and `POST /workflows/schedule`) is refused to an unproven
+    public caller when a chat the schedule names is private, or when the model its runs bind is —
+    resolved by `scheduler::scheduled_run_provider_name`, the run's own resolution. Public work
+    stays open. ⚠ The daemon follows `schedule.json`, so the file is not a boundary.
+  - `GET /sessions/changes` shows a change only through `lists_session`, observes only those
+    rows, and a withheld change must never answer a poll early — a poll that returns when a
+    private row moves times it.
   - Every `/knowledge/bases/{id}` route sits in `knowledge::router`'s `base_routes`, behind
     `gate_knowledge_base`. Put any new `{id}` route there.
   - ⚠ **The renderer must send `userActionHeaders()` on every such call.** A missing proof is not an
