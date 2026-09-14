@@ -7,6 +7,7 @@ import {
   readSessionRowFacts,
   subscribeSessionRowChanges,
 } from '../../utils/sessionRowSync';
+import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
 import {
   Dialog,
@@ -182,8 +183,48 @@ export function describeDeclassifyFailure(
  * here holds it, reaches this window as a row read (`sessionRowSync`), and a
  * toast still saying "still private" beside a public chat is the same stale
  * report.
+ *
+ * # One chat, one report — D3a's second round (2026-09-13)
+ *
+ * ⚠ Keyed by chat here, and until this round deduplicated by CONTENT in
+ * `toastError` — and the busy sentence is the same for every chat. Measured in
+ * the dev app: chat Y failed busy, chat X failed busy (still one toast on
+ * screen), X was retried and succeeded, and Y's report was gone with Y still
+ * private. X's retraction had dismissed the one toast both reports shared, and
+ * a different failure on X, or a row read showing X public, did the same.
+ *
+ * So each report is raised under its chat (`dedupeScope`), and names the chat
+ * it is about (`declassifyToastSubject`). Reference-counting the shared toast
+ * was the other way to keep Y's report alive, and it is wrong for what the
+ * person reads: one toast would stand for several chats while saying "this
+ * chat", so after X succeeded it would sit beside "Chat marked public" still
+ * saying "this chat was not marked public" — the stale report this map exists
+ * to retract, now about a chat it does not name. A retry on the SAME chat still
+ * lands on its own toast id, so it replaces its report rather than stacking.
  */
 const outstandingFailureToasts = new Map<string, string | number>();
+
+/**
+ * Which chat a failure toast is about, for its title. Two chats that fail at
+ * once raise two toasts carrying the same daemon sentence, and those are only
+ * useful if each says which chat it means.
+ *
+ * A placeholder name ("New Session", "New chat", "Session 5" —
+ * `isDefaultSessionName`) is shared by dozens of rows, so that chat is named by
+ * its id, which the dialog shows under the name. Any other name is quoted, and
+ * cut short (by characters, so an emoji is never split) because a toast title
+ * is not clamped.
+ */
+export function declassifyToastSubject(name: string | null | undefined, sessionId: string): string {
+  const trimmed = (name ?? '').trim();
+  if (isDefaultSessionName(trimmed)) return `chat ${sessionId}`;
+  const chars = [...trimmed];
+  if (chars.length <= SUBJECT_MAX_CHARS) return `“${trimmed}”`;
+  const kept = chars.slice(0, SUBJECT_MAX_CHARS - 1).join('');
+  return `“${kept.trimEnd()}…”`;
+}
+const SUBJECT_MAX_CHARS = 60;
+
 let stopFollowingRows: (() => void) | null = null;
 
 /**
@@ -201,8 +242,9 @@ function retractFailureToast(sessionId: string, keep?: string | number): void {
   const previous = outstandingFailureToasts.get(sessionId);
   if (previous === undefined) return;
   outstandingFailureToasts.delete(sessionId);
-  // An identical failure is deduplicated onto the SAME toast id, so dismissing
-  // it would take away the toast that is reporting the attempt just made.
+  // An identical failure on THIS chat is deduplicated onto the same toast id,
+  // so dismissing it would take away the toast reporting the attempt just made.
+  // Another chat's identical failure has its own id and is never reached here.
   if (previous !== keep) toastService.dismiss(previous);
 }
 
@@ -278,9 +320,13 @@ export function DeclassifySessionDialog({
   // than the window — the session list's own change subscription, a search
   // debounce — means the request is never sent at all. Pinned by "the undo
   // window is a deadline, not a countdown a re-render restarts".
-  const latest = useRef({ onClose, onDeclassified });
+  //
+  // The chat's NAME rides here for the same reason: the daemon renames a chat
+  // after its early turns, and a `send` keyed on the name would restart the undo
+  // window when that rename reached this row.
+  const latest = useRef({ onClose, onDeclassified, sessionName: session.name });
   useLayoutEffect(() => {
-    latest.current = { onClose, onDeclassified };
+    latest.current = { onClose, onDeclassified, sessionName: session.name };
   });
 
   const send = useCallback(
@@ -335,7 +381,12 @@ export function DeclassifySessionDialog({
         return;
       }
 
-      const toastId = toastError({ title: failure.title, msg: failure.message });
+      // Raised under this chat, and naming it: see `outstandingFailureToasts`.
+      const toastId = toastError({
+        title: `${failure.title} — ${declassifyToastSubject(latest.current.sessionName, session.id)}`,
+        msg: failure.message,
+        dedupeScope: `declassify:${session.id}`,
+      });
       retractFailureToast(session.id, toastId);
       if (toastId !== undefined) {
         outstandingFailureToasts.set(session.id, toastId);

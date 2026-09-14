@@ -1,14 +1,18 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DeclassifySessionDialog } from './DeclassifySessionDialog';
+import { DeclassifySessionDialog, declassifyToastSubject } from './DeclassifySessionDialog';
 import type { Session } from '../../api';
 
 const mocks = vi.hoisted(() => ({
   declassifySession: vi.fn(),
   // Returns the id the real `toastError` returns: its dedupe key, so two
-  // identical failures share one id exactly as they share one toast.
-  toastError: vi.fn(({ title, msg }: { title: string; msg: string }) => `error:${title}:${msg}`),
+  // identical failures on one chat share one id exactly as they share one toast.
+  // The toast layer itself is exercised in `DeclassifySessionDialog.toastLayer.test.tsx`.
+  toastError: vi.fn(
+    ({ title, msg, dedupeScope }: { title: string; msg: string; dedupeScope?: string }) =>
+      `error[${dedupeScope}]:${title}:${msg}`
+  ),
   toastSuccess: vi.fn(),
   dismissToast: vi.fn(),
   announceSessionRowChanged: vi.fn(),
@@ -399,8 +403,9 @@ describe('DeclassifySessionDialog', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'Could not mark this chat public',
+        title: 'Could not mark this chat public — “Cohort of 4,102 patients”',
         msg: refusal,
+        dedupeScope: 'declassify:abc123def456',
       })
     );
     expect(onDeclassified).not.toHaveBeenCalled();
@@ -447,8 +452,9 @@ describe('DeclassifySessionDialog', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'The chat store was busy',
+        title: 'The chat store was busy — “Cohort of 4,102 patients”',
         msg: STORE_BUSY,
+        dedupeScope: 'declassify:abc123def456',
       })
     );
     // Not escalated: a busy store says nothing about this chat's grade, so the
@@ -479,7 +485,7 @@ describe('DeclassifySessionDialog', () => {
     expect(msg).not.toContain('[object Object]');
     // Stated as what the row read back, which is all this dialog knows.
     expect(msg).toMatch(/still private/);
-    expect(title).toBe('Could not mark this chat public');
+    expect(title).toBe('Could not mark this chat public — “Cohort of 4,102 patients”');
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 });
@@ -582,8 +588,9 @@ describe('an answer that never arrived', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'The chat store was busy',
+        title: 'The chat store was busy — “Cohort of 4,102 patients”',
         msg: STORE_BUSY,
+        dedupeScope: 'declassify:abc123def456',
       })
     );
   });
@@ -700,5 +707,26 @@ describe('a failure report is retracted by the next outcome', () => {
 
     await press(3);
     expect(mocks.dismissToast).toHaveBeenCalledWith(busyId);
+  });
+});
+
+describe('declassifyToastSubject', () => {
+  it('names a placeholder-named chat by its id, since dozens of rows share the name', () => {
+    expect(declassifyToastSubject('New Session', '20260809_21')).toBe('chat 20260809_21');
+    expect(declassifyToastSubject('New chat', '20260809_21')).toBe('chat 20260809_21');
+    expect(declassifyToastSubject('  ', '20260809_21')).toBe('chat 20260809_21');
+    expect(declassifyToastSubject(undefined, '20260809_21')).toBe('chat 20260809_21');
+  });
+
+  it('quotes any other name, and cuts a long one short', () => {
+    expect(declassifyToastSubject(' Subagent delegation request ', 'x')).toBe(
+      '“Subagent delegation request”'
+    );
+    const long = declassifyToastSubject('a'.repeat(59) + '😀😀', 'x');
+    expect(long).toBe(`“${'a'.repeat(59)}…”`);
+    // Characters, not UTF-16 units: an emoji at the cut is kept whole or dropped.
+    expect([...declassifyToastSubject('b'.repeat(58) + '😀😀😀', 'x')].slice(-3).join('')).toBe(
+      '😀…”'
+    );
   });
 });
