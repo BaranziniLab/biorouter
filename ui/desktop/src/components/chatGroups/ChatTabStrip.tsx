@@ -112,8 +112,10 @@ export interface ChatTabStripProps {
    * sidebar, the chip and sqlite all read private.
    *
    * Optional with a `{}` default, like `tabAnnotations`, so the four suites that
-   * mount this strip bare keep compiling untouched. An unknown session is
-   * unmarked — silence, never an assertion of Public.
+   * mount this strip bare keep compiling untouched. A session absent from the
+   * map is passed through as no tier, and `ChatKindIcon` draws it as NOT YET
+   * KNOWN — never as Public. (It drew Public until 2026-09-14, which is how a
+   * private chat's subagent tabs said Public while their rows were being read.)
    */
   privacyTiers?: Record<string, SessionClassification>;
   onSelect: (tabId: ChatTabId) => void;

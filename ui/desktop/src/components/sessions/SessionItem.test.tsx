@@ -40,12 +40,14 @@ describe('SessionItem — the privacy marker', () => {
     expect(glyph.getAttribute('aria-label')).toBe('Chat');
   });
 
-  it('leaves a session with no tier at all unmarked rather than guessing', () => {
+  it('draws a session with no tier at all as not yet known rather than guessing', () => {
     render(<SessionItem session={session()} />);
-    // ⚠ "No tier recorded" must render as the UNMARKED glyph, never the private
-    // one — a row the daemon has said nothing about is not a row to claim
-    // protection for.
-    expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-privacy', 'public');
+    // ⚠ "No tier recorded" is neither the private glyph — a row the daemon has
+    // said nothing about is not a row to claim protection for — nor Public,
+    // which is the same guess in the other direction.
+    const glyph = screen.getByTestId('chat-kind-icon');
+    expect(glyph).toHaveAttribute('data-privacy', 'unknown');
+    expect(glyph.getAttribute('aria-label')).toBe('Chat, privacy not yet known');
   });
 
   /**
