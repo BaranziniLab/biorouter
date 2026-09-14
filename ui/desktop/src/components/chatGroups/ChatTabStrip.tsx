@@ -32,14 +32,15 @@ import type { TabAnnotation } from './workspaceCommandPlanner';
  * state in `ChatGroupsProvider`, which mounts inside the `/pair` route and is
  * never persisted: leaving `/pair` (Settings, History) or reloading drops it,
  * and every subagent tab then read as a plain chat (measured 2026-09-14 on
- * 1.90.4). The row survives any of that, but arrives only when the shell's read
- * of it answers. So the annotation covers the first moments and the row covers
+ * 1.90.4). The row survives any of that, but arrives only once the shell has it
+ * — from the cached session list, or from its own read of a chat the list
+ * leaves out. So the annotation covers the first moments and the row covers
  * every remount after them.
  *
  * ⚠ Deliberately NOT widened by fetching the session HERE: the strip renders on
  * every keystroke of a rename, and a per-tab fetch there is how a tab strip
  * becomes the slowest thing in the app. The row is the one
- * `ChatGroupsShell.useTabTitlesFromSessionList` already reads, once per list.
+ * `ChatGroupsShell.useTabTitlesFromSessionList` already holds, once per list.
  */
 function tabKindSource(
   tab: { title: string },
@@ -52,10 +53,10 @@ function tabKindSource(
   // parent link for other reasons; the strip's own suite guards that an
   // annotation carrying a parent but no badge marks nothing.
   //
-  // And only `sub_agent` is taken from the row. The shell reads rows only for
-  // tabs the session list leaves out, so a scheduled or terminal chat would get
-  // its kind from a read on one tab and not on another — the same chat drawn
-  // two ways depending on which source happened to answer.
+  // And only `sub_agent` is taken from the row: it is the one kind the
+  // annotation carried and a route change lost. Taking the rest would redraw
+  // every scheduled or terminal chat's tab from a row that may not have
+  // answered yet — a change to tabs this fix has no measurement for.
   const subagent = annotation?.badge === 'subagent' || rowSessionType === 'sub_agent';
   return {
     name: tab.title,
@@ -137,9 +138,11 @@ export interface ChatTabStripProps {
    */
   privacyTiers?: Record<string, SessionClassification>;
   /**
-   * The session type each tab's OWN row reported, per SESSION id — the
-   * `metadata_only` read `ChatGroupsShell` makes for a tab the session list
-   * leaves out, which is every delegated subagent's tab.
+   * The session type each tab's chat's row reported, per SESSION id — the
+   * cached session list's row when the list holds the chat, else the
+   * `metadata_only` read `ChatGroupsShell` makes for it. A subagent's chat is
+   * usually NOT listed, and IS listed while History's "Show subagent runs" has
+   * left the cache holding subagents, so the shell takes the type from both.
    *
    * Only `sub_agent` is consulted (see `tabKindSource`), ORed with
    * `tabAnnotations`. It exists because the annotation does not outlive the

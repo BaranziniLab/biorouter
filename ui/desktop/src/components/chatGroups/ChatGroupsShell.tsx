@@ -241,9 +241,12 @@ function useSessionPrivacyTiers(
  *
  * # The tabs the list leaves out
  *
- * The list is not every chat. It is `GET /sessions?include_subagents=false`, so
- * it never carries a delegated subagent's chat — deliberately, because those are
- * not sidebar chats and must not become sidebar chats to fix a tab. It also
+ * The list is not every chat. It is usually `GET /sessions?include_subagents=false`,
+ * so it usually carries no delegated subagent's chat — deliberately, because those
+ * are not sidebar chats and must not become sidebar chats to fix a tab. (Usually:
+ * the cache is module-global, and History's "Show subagent runs" refetches it WITH
+ * them, where it stays until something asks for the other flag. See the kind,
+ * below, for what that changes.) It also
  * omits a chat that has recorded no message yet (`GET /sessions` INNER JOINs
  * `messages`). Measured 2026-09-13: the daemon opened a private chat's subagent
  * in a background tab (`open_tab`, `focus: false`, no title), sqlite named it
@@ -281,7 +284,7 @@ function useSessionPrivacyTiers(
  *
  * # And its session type, for the tab's kind
  *
- * The row also says `session_type: 'sub_agent'`, and that is returned too, for
+ * A row also says `session_type: 'sub_agent'`, and that is returned too, for
  * the strip to OR with the workspace annotation. The annotation was the strip's
  * only source for "this is a sub-agent", and it lives in `ChatGroupsProvider`'s
  * React state, which mounts inside the `/pair` route and is never persisted.
@@ -289,18 +292,31 @@ function useSessionPrivacyTiers(
  * `data-chat-kind="subagent"`, and after Settings → a sidebar chat, History →
  * back, or a reload, both read `data-chat-kind="chat"` for good.
  *
+ * ⚠ **From EITHER source — the list row as much as the row read on its own.**
+ * The first version of this took the type only from the singular read, on the
+ * premise that every subagent tab is out of the list. It is not: with History's
+ * "Show subagent runs" ticked the cached list holds the `sub_agent` rows, the
+ * reconcile finds each subagent tab IN the list, and no singular read is ever
+ * made. Measured 2026-09-14 by an independent tester, on the desktop and on
+ * `biorouter serve`: History with the box ticked → back, and both subagent tabs
+ * read `data-chat-kind="chat"` for 35 s; "Open in new tab" on a subagent row
+ * from that list opened a tab that never got the glyph.
+ *
  * Like the tier, a type is kept from ANY answer, whatever rules 4 and 5 do to
  * its name: it is a fact about the session, not about the title the read was
  * asked about, and a tab's title can move while its read is out (the name
- * channel, the tab's own load). Unlike the tier it is not raised or merged — a
- * session's type does not change — and it is never persisted with the tab.
- * Until a row answers, the annotation is the only source, so a remounted tab
- * reads as a plain chat for that long: the same window its tier reads as not
- * yet known.
+ * channel, the tab's own load). Unlike the tier it is not raised: the latest row
+ * wins, from whichever source, because a session's type does not change and the
+ * one way the answer for an id can change is that the id was reissued to a new
+ * chat (`create_session` mints `MAX(N)+1` over the rows that still exist). For
+ * the same reason an entry is forgotten once no tab holds its chat. It is never
+ * persisted with the tab. Until a row answers, the annotation is the only
+ * source, so a remounted tab reads as a plain chat for that long: the same
+ * window its tier reads as not yet known.
  */
 function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): {
   outsideListTiers: Record<string, SessionClassification>;
-  outsideListSessionTypes: Record<string, SessionType>;
+  rowSessionTypes: Record<string, SessionType>;
 } {
   const dispatch = groups?.dispatch;
   // Read through a ref so the effect depends on the SIGNATURE below and not on
@@ -313,10 +329,9 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
   const [outsideListTiers, setOutsideListTiers] = useState<Record<string, SessionClassification>>(
     {}
   );
-  // The session type of each chat read on its own (see above), for the tab's kind.
-  const [outsideListSessionTypes, setOutsideListSessionTypes] = useState<
-    Record<string, SessionType>
-  >({});
+  // The session type each tab's chat's row reported — the list's row or the one
+  // read on its own (see above) — for the tab's kind.
+  const [rowSessionTypes, setRowSessionTypes] = useState<Record<string, SessionType>>({});
   // Which list the reads below were issued against: bumped when the list array
   // itself is replaced, so rule 3 compares numbers rather than pinning old arrays.
   const listRef = useRef<{ rows: readonly Session[] | null; generation: number }>({
@@ -385,6 +400,32 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
       return undefined;
     };
 
+    /**
+     * Fold the types some rows reported into `rowSessionTypes`, in ONE update:
+     * the latest row wins, and — when `held` is given — an entry for a chat no
+     * tab holds any more is dropped. Same object back when nothing changed, so
+     * an identical answer (every list refresh, in the common case) costs no
+     * strip render.
+     */
+    const keepSessionTypes = (
+      types: ReadonlyMap<string, SessionType>,
+      held?: ReadonlySet<string>
+    ) => {
+      setRowSessionTypes((prev) => {
+        let next = prev;
+        const writable = () => (next === prev ? (next = { ...prev }) : next);
+        for (const [sessionId, sessionType] of types) {
+          if (prev[sessionId] !== sessionType) writable()[sessionId] = sessionType;
+        }
+        if (held) {
+          for (const sessionId of Object.keys(prev)) {
+            if (!held.has(sessionId)) delete writable()[sessionId];
+          }
+        }
+        return next;
+      });
+    };
+
     const readOutsideList = (sessionId: string, askedAbout: string, generation: number) => {
       readForGenerationRef.current.set(sessionId, generation);
       const seq = ++readSeqRef.current;
@@ -412,14 +453,8 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
             });
           }
           // So is the type, and for the same reason it is kept before rules 5
-          // and 4 can drop the name. Same object back when nothing changed, so
-          // an identical answer costs no strip render.
-          const sessionType = row.session_type;
-          if (sessionType) {
-            setOutsideListSessionTypes((prev) =>
-              prev[sessionId] === sessionType ? prev : { ...prev, [sessionId]: sessionType }
-            );
-          }
+          // and 4 can drop the name.
+          if (row.session_type) keepSessionTypes(new Map([[sessionId, row.session_type]]));
           // Rule 5, then rule 4.
           if (newestReadRef.current.get(sessionId) !== seq) return;
           if (titleOf(sessionId) !== askedAbout) return;
@@ -441,12 +476,17 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
       const { generation } = listRef.current;
       const rowById = new Map(rows.map((row) => [row.id, row]));
       const seen = new Set<string>();
+      const listedTypes = new Map<string, SessionType>();
       for (const group of Object.values(state.groups)) {
         for (const tab of group.tabs) {
           if (!tab.sessionId || seen.has(tab.sessionId)) continue;
           seen.add(tab.sessionId);
           const row = rowById.get(tab.sessionId);
           if (row) {
+            // A listed row's type counts as much as a row read on its own: with
+            // History's "Show subagent runs" ticked, a subagent tab IS listed,
+            // and is never read on its own (see "its session type", above).
+            if (row.session_type) listedTypes.set(tab.sessionId, row.session_type);
             // Rule 1 lives inside: a user-named tab is never renamed.
             renameFromRow(tab.sessionId, row);
           } else if (readForGenerationRef.current.get(tab.sessionId) !== generation) {
@@ -464,6 +504,9 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
           newestReadRef.current.delete(sessionId);
         }
       }
+      // The listed types, and the same forgetting for the type map — which also
+      // keeps a reissued id from inheriting a closed subagent tab's kind.
+      keepSessionTypes(listedTypes, seen);
     };
     reconcile();
     // Subscribe BEFORE asking for the fetch, for the reason `useSessionPrivacyTiers`
@@ -473,7 +516,7 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
     return unsubscribe;
   }, [dispatch, tabTitleSignature]);
 
-  return { outsideListTiers, outsideListSessionTypes };
+  return { outsideListTiers, rowSessionTypes };
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
@@ -481,7 +524,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const terminalDock = useTerminalDock();
   // Both maps are state, so each keeps its identity until its own row changes —
   // the wrapper object is new per render and is never passed on.
-  const { outsideListTiers, outsideListSessionTypes } = useTabTitlesFromSessionList(groups);
+  const { outsideListTiers, rowSessionTypes } = useTabTitlesFromSessionList(groups);
   const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
 
   const isMobile = useIsMobile();
@@ -964,10 +1007,10 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         runningSessionIds={groups.runningSessionIds}
         tabAnnotations={groups.tabAnnotations}
         privacyTiers={privacyTiers}
-        // What each out-of-list tab's own row says it is. The strip ORs a
-        // `sub_agent` here with `tabAnnotations`, which do not survive leaving
-        // `/pair` or a reload.
-        sessionTypes={outsideListSessionTypes}
+        // What each tab's chat's row says it is — listed or read on its own.
+        // The strip ORs a `sub_agent` here with `tabAnnotations`, which do not
+        // survive leaving `/pair` or a reload.
+        sessionTypes={rowSessionTypes}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives
         // no pointer events at all, so its own drag state is empty and the caret
