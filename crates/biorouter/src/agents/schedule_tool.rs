@@ -622,6 +622,7 @@ impl Agent {
             creator_session_id: Some(creator_session_id.to_string()),
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         };
 
         match scheduler.add_scheduled_job(job, true).await {
@@ -1118,6 +1119,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         }
     }
 

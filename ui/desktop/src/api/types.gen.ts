@@ -3082,6 +3082,35 @@ export type ScheduleWorkflowRequest = {
 
 export type ScheduledJob = {
     /**
+     * Issue #56. Could the HTTP request that last ARMED this schedule — created
+     * it, re-timed it, resumed it, or scheduled its workflow — reach private
+     * work? The daemon's schedule routes record their caller's answer here
+     * (`routes::session_reach::schedule_reach`), and a run reads it back.
+     *
+     * * `Some(true)` — the person at the keyboard, or a caller stating a private
+     * model. Its runs may bind whatever model they resolve.
+     * * `Some(false)` — a caller that could reach only public work. The routes
+     * admit such a caller only to a schedule whose runs resolve a PUBLIC model
+     * at that moment, but a run resolves its model again when it starts: the
+     * chat it was created from can be deleted, or can stop recording a
+     * provider, and the run then falls back to the configured default. So a
+     * run that would bind a private model on such a record is refused before
+     * it starts ([`scheduled_run_refusal`]) and says so in [`Self::last_error`].
+     * Measured before this field existed (independent QA, 2026-09-14): with
+     * only the daemon secret, re-time a schedule made from a public chat to
+     * every minute, delete that public chat, and the next tick started a new
+     * chat on the private default with nobody present.
+     * * `None` — not armed over HTTP: `/loop`, `manage_schedule`, a CLI with no
+     * daemon to ask, or a row written before this field. Runs as it always
+     * has. ⚠ The file is not a boundary, and this does not pretend otherwise:
+     * a shell that can write `schedule.json` can write `true` here, which is
+     * the residual `docs/deployment/programmatic-session-access.md` records.
+     *
+     * Written only by the `_armed` mutations below; every other writer leaves it
+     * as it found it.
+     */
+    armed_with_private_reach?: boolean | null;
+    /**
      * Issue #56 (§9.3 C2). The chat this schedule was created from, when there
      * was one — `/loop` and `/schedule` always have one; a workflow scheduled
      * from the CLI or the schedules route does not.
@@ -7363,7 +7392,7 @@ export type SessionChangesErrors = {
 
 export type SessionChangesResponses = {
     /**
-     * The session-row delta since `since`, holding only the chats this caller could open: a change to a private chat is omitted for a caller with neither the user-action proof nor a private capability, as the chat is from `GET /sessions`, and such a change never answers that caller's poll early
+     * The session-row delta since `since`, holding only the chats this caller could open: a change is omitted for a caller with neither the user-action proof nor a private capability when its chat was private when it changed, is private now, or no longer exists, as the chat is from `GET /sessions`, and such a change never answers that caller's poll early
      */
     200: SessionMetaDelta;
 };

@@ -476,13 +476,20 @@ async fn schedule_workflow(
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         });
-    crate::routes::session_reach::schedule_reach(state.session_manager(), Some(&target), &headers)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    let admission = crate::routes::session_reach::schedule_reach(
+        state.session_manager(),
+        Some(&target),
+        &headers,
+    )
+    .await
+    .map_err(IntoResponse::into_response)?;
 
+    // `_armed`: an add or a re-time records this caller's standing, which the
+    // schedule's runs are later held to (`ScheduledJob::armed_with_private_reach`).
     match scheduler
-        .schedule_workflow(file_path, request.cron_schedule)
+        .schedule_workflow_armed(file_path, request.cron_schedule, admission.private_reach)
         .await
     {
         Ok(_) => Ok(StatusCode::OK),

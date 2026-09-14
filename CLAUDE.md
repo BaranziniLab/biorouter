@@ -310,9 +310,18 @@ what did not" section first**; the rest of that document is the design, not the 
     public caller when a chat the schedule names is private, or when the model its runs bind is —
     resolved by `scheduler::scheduled_run_provider_name`, the run's own resolution. Public work
     stays open. ⚠ The daemon follows `schedule.json`, so the file is not a boundary.
-  - `GET /sessions/changes` shows a change only through `lists_session`, observes only those
-    rows, and a withheld change must never answer a poll early — a poll that returns when a
-    private row moves times it.
+    ⚠ **Write-time gating alone is not enough: a run re-resolves its model when it starts.** Each
+    arming door (create, re-time, resume, `/workflows/schedule`) records its caller's standing
+    through the scheduler's `_armed` methods (`ScheduledJob::armed_with_private_reach`), and
+    `execute_job` refuses a private model on a public-only record (`scheduled_run_refusal`).
+    Without it, deleting a public creator chat moved a secret-only caller's schedule onto the
+    private default. The trait's `_armed` defaults DROP the standing — only for test doubles.
+    Renderer schedule writes go through `ui/desktop/src/schedule.ts` alone; a source guard in
+    `schedule.userProof.test.ts` fails on any other importer of a generated schedule function.
+  - `GET /sessions/changes` shows a change only through `lists_session` — on the tier it was
+    recorded with AND the chat's row as it is now (`visible_changes`) — observes only those rows,
+    and a withheld change must never answer a poll early — a poll that returns when a private row
+    moves times it.
   - Every `/knowledge/bases/{id}` route sits in `knowledge::router`'s `base_routes`, behind
     `gate_knowledge_base`. Put any new `{id}` route there.
   - ⚠ **The renderer must send `userActionHeaders()` on every such call.** A missing proof is not an

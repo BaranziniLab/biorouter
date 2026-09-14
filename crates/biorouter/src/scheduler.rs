@@ -320,6 +320,70 @@ pub struct ScheduledJob {
     /// file actually lives.
     #[serde(default)]
     pub owns_source: Option<bool>,
+    /// Issue #56. Could the HTTP request that last ARMED this schedule — created
+    /// it, re-timed it, resumed it, or scheduled its workflow — reach private
+    /// work? The daemon's schedule routes record their caller's answer here
+    /// (`routes::session_reach::schedule_reach`), and a run reads it back.
+    ///
+    /// * `Some(true)` — the person at the keyboard, or a caller stating a private
+    ///   model. Its runs may bind whatever model they resolve.
+    /// * `Some(false)` — a caller that could reach only public work. The routes
+    ///   admit such a caller only to a schedule whose runs resolve a PUBLIC model
+    ///   at that moment, but a run resolves its model again when it starts: the
+    ///   chat it was created from can be deleted, or can stop recording a
+    ///   provider, and the run then falls back to the configured default. So a
+    ///   run that would bind a private model on such a record is refused before
+    ///   it starts ([`scheduled_run_refusal`]) and says so in [`Self::last_error`].
+    ///   Measured before this field existed (independent QA, 2026-09-14): with
+    ///   only the daemon secret, re-time a schedule made from a public chat to
+    ///   every minute, delete that public chat, and the next tick started a new
+    ///   chat on the private default with nobody present.
+    /// * `None` — not armed over HTTP: `/loop`, `manage_schedule`, a CLI with no
+    ///   daemon to ask, or a row written before this field. Runs as it always
+    ///   has. ⚠ The file is not a boundary, and this does not pretend otherwise:
+    ///   a shell that can write `schedule.json` can write `true` here, which is
+    ///   the residual `docs/deployment/programmatic-session-access.md` records.
+    ///
+    /// Written only by the `_armed` mutations below; every other writer leaves it
+    /// as it found it.
+    #[serde(default)]
+    pub armed_with_private_reach: Option<bool>,
+}
+
+/// What a scheduled run is told when it would bind a private model on the word
+/// of a request that could not reach private work — see
+/// [`ScheduledJob::armed_with_private_reach`].
+///
+/// Fixed text. It names no model, chat or schedule: the job's `last_error` is
+/// listed by `GET /schedule/list` to any holder of the daemon secret.
+pub const SCHEDULED_RUN_NEEDS_PRIVATE_REACH: &str =
+    "This run was not started. The model it would run on is private, and this schedule was last \
+     created, re-timed or resumed by a request that could not reach private work, so starting it \
+     would begin a private chat on that request's word with nobody present. Nothing was run. To \
+     run it on this model, resume or re-save the schedule in the desktop app, or from a session \
+     running a private model.";
+
+/// Issue #56 — may a run of a schedule armed as `armed_with_private_reach`
+/// bind a model of `run_tier`? `None` when it may; the refusal otherwise.
+///
+/// Pure, so every corner is asserted rather than argued. `enforced` is DR-15's
+/// master switch, read by the caller: with tiers off nothing here refuses.
+///
+/// ⚠ **[`execute_job`] asks it twice, and both are load-bearing.** First with
+/// the DECLARED tier of the provider the run resolved
+/// (`workflow::privacy::declared_provider_tier`) — the resolution the write gate
+/// asked when it admitted the arming request, answerable without credentials,
+/// so a refused run constructs nothing. Then with the constructed instance's own
+/// `Provider::tier`, before any extension is added or any chat is made, because
+/// the two are not guaranteed to agree and the instance is what the bind
+/// actually uses.
+pub fn scheduled_run_refusal(
+    enforced: bool,
+    armed_with_private_reach: Option<bool>,
+    run_tier: crate::privacy::ProviderTier,
+) -> Option<&'static str> {
+    (enforced && armed_with_private_reach == Some(false) && run_tier.is_private())
+        .then_some(SCHEDULED_RUN_NEEDS_PRIVATE_REACH)
 }
 
 /// May the scheduler delete `job.source` when the job is removed?
@@ -1491,6 +1555,19 @@ impl Scheduler {
         workflow_path: PathBuf,
         cron_schedule: Option<String>,
     ) -> Result<(), SchedulerError> {
+        self.schedule_workflow_armed(workflow_path, cron_schedule, None)
+            .await
+    }
+
+    /// [`Self::schedule_workflow`], recording whether the request that armed the
+    /// schedule could reach private work — see
+    /// [`ScheduledJob::armed_with_private_reach`]. `None` records nothing.
+    pub async fn schedule_workflow_armed(
+        &self,
+        workflow_path: PathBuf,
+        cron_schedule: Option<String>,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
         let workflow_path_str = workflow_path.to_string_lossy().to_string();
 
         // A schedule another process made for this same workflow is one this
@@ -1514,7 +1591,8 @@ impl Scheduler {
         match cron_schedule {
             Some(cron) => {
                 if let Some(job_id) = existing_job_id {
-                    self.update_schedule(&job_id, cron).await
+                    self.update_schedule_armed(&job_id, cron, armed_with_private_reach)
+                        .await
                 } else {
                     let job_id = self.generate_unique_job_id(&workflow_path).await;
                     let job = ScheduledJob {
@@ -1532,6 +1610,7 @@ impl Scheduler {
                         creator_session_id: None,
                         last_error: None,
                         owns_source: None,
+                        armed_with_private_reach,
                     };
                     self.add_scheduled_job(job, false).await
                 }
@@ -1739,6 +1818,24 @@ impl Scheduler {
     /// registry, an eager persist) re-opens exactly the window this fixes, and
     /// nothing in the type system will say so.
     pub async fn run_now(&self, sched_id: &str) -> Result<String, SchedulerError> {
+        self.run_now_armed(sched_id, None).await
+    }
+
+    /// [`Self::run_now`], for THIS run only on the standing of the request that
+    /// asked for it — see [`ScheduledJob::armed_with_private_reach`].
+    ///
+    /// ⚠ **Not recorded on the job.** Pressing "Run now" starts one run; it has
+    /// never changed what the schedule does on its own, and it does not start
+    /// now. `Some(_)` is applied to the snapshot this run executes and to nothing
+    /// else, so the check the run makes is about the request that started it —
+    /// including a public-only caller admitted to public work whose model then
+    /// resolves private before the run binds it. `None` leaves the job's record
+    /// in charge, as a timer tick does.
+    pub async fn run_now_armed(
+        &self,
+        sched_id: &str,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<String, SchedulerError> {
         self.sync_if_unknown(sched_id).await;
         let cancel_token = CancellationToken::new();
         let job_to_run = {
@@ -1759,7 +1856,11 @@ impl Scheduler {
                     // window in which `kill_running_job` could see a running job
                     // and find no token to cancel.
                     register_running_task(&self.running_tasks, sched_id, cancel_token.clone());
-                    job.clone()
+                    let mut snapshot = job.clone();
+                    if armed_with_private_reach.is_some() {
+                        snapshot.armed_with_private_reach = armed_with_private_reach;
+                    }
+                    snapshot
                 }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
@@ -1839,21 +1940,38 @@ impl Scheduler {
             }
         }
 
-        self.publish_paused(sched_id, true).await
+        self.publish_paused(sched_id, true, None).await
     }
 
     pub async fn unpause_schedule(&self, sched_id: &str) -> Result<(), SchedulerError> {
+        self.unpause_schedule_armed(sched_id, None).await
+    }
+
+    /// [`Self::unpause_schedule`], recording whether the request that resumed
+    /// the schedule could reach private work — see
+    /// [`ScheduledJob::armed_with_private_reach`]. `None` records nothing.
+    pub async fn unpause_schedule_armed(
+        &self,
+        sched_id: &str,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
         self.sync_if_unknown(sched_id).await;
         let _sync = self.file_sync.lock().await;
         {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
-                Some((_, job)) => job.paused = false,
+                Some((_, job)) => {
+                    job.paused = false;
+                    if armed_with_private_reach.is_some() {
+                        job.armed_with_private_reach = armed_with_private_reach;
+                    }
+                }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
         }
 
-        self.publish_paused(sched_id, false).await
+        self.publish_paused(sched_id, false, armed_with_private_reach)
+            .await
     }
 
     /// Publish the one field pause/unpause owns.
@@ -1866,10 +1984,23 @@ impl Scheduler {
     /// other half, is not left in this process either: pausing a job somebody
     /// deleted tells us the deletion happened, so the job is dropped here and
     /// the caller is told it is gone.
-    async fn publish_paused(&self, sched_id: &str, paused: bool) -> Result<(), SchedulerError> {
+    ///
+    /// `armed_with_private_reach` is published beside it when it is `Some`, in
+    /// the same write — a resume is an arming ([`Self::unpause_schedule_armed`]).
+    async fn publish_paused(
+        &self,
+        sched_id: &str,
+        paused: bool,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
         let id = sched_id.to_string();
         let found = persist_change(&self.storage_path, move |list| {
-            Ok(edit_job(list, &id, |stored| stored.paused = paused))
+            Ok(edit_job(list, &id, |stored| {
+                stored.paused = paused;
+                if armed_with_private_reach.is_some() {
+                    stored.armed_with_private_reach = armed_with_private_reach;
+                }
+            }))
         })
         .await?;
         if !found {
@@ -1883,6 +2014,23 @@ impl Scheduler {
         &self,
         sched_id: &str,
         new_cron: String,
+    ) -> Result<(), SchedulerError> {
+        self.update_schedule_armed(sched_id, new_cron, None).await
+    }
+
+    /// [`Self::update_schedule`], recording whether the request that re-timed
+    /// the schedule could reach private work — see
+    /// [`ScheduledJob::armed_with_private_reach`]. `None` records nothing.
+    ///
+    /// ⚠ **Recorded even when the cron does not change.** "Re-save it" is the
+    /// remedy [`SCHEDULED_RUN_NEEDS_PRIVATE_REACH`] offers, and the Schedules
+    /// editor's Save sends the time it already had; a record that moved only
+    /// with the cron would leave that person's schedule refused.
+    pub async fn update_schedule_armed(
+        &self,
+        sched_id: &str,
+        new_cron: String,
+        armed_with_private_reach: Option<bool>,
     ) -> Result<(), SchedulerError> {
         self.sync_if_unknown(sched_id).await;
         // Held across the swap of the cron entry and the publish: a sync in
@@ -1898,38 +2046,54 @@ impl Scheduler {
                             sched_id
                         )));
                     }
-                    if new_cron == job.cron {
-                        return Ok(());
+                    if armed_with_private_reach.is_some() {
+                        job.armed_with_private_reach = armed_with_private_reach;
                     }
-                    job.cron = new_cron.clone();
-                    (*uuid, job.clone())
+                    if new_cron == job.cron {
+                        (None, job.clone())
+                    } else {
+                        job.cron = new_cron.clone();
+                        (Some(*uuid), job.clone())
+                    }
                 }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
         };
 
-        self.tokio_scheduler
-            .remove(&old_uuid)
-            .await
-            .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
+        match old_uuid {
+            // The time did not move and there is nothing to record.
+            None if armed_with_private_reach.is_none() => return Ok(()),
+            // The time did not move: the cron entry stays, only the record is
+            // published below.
+            None => {}
+            Some(old_uuid) => {
+                self.tokio_scheduler
+                    .remove(&old_uuid)
+                    .await
+                    .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
-        let cron_task = self.create_cron_task(updated_job)?;
-        let new_uuid = self
-            .tokio_scheduler
-            .add(cron_task)
-            .await
-            .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
+                let cron_task = self.create_cron_task(updated_job)?;
+                let new_uuid = self
+                    .tokio_scheduler
+                    .add(cron_task)
+                    .await
+                    .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
-        {
-            let mut jobs_guard = self.jobs.lock().await;
-            if let Some((uuid, _)) = jobs_guard.get_mut(sched_id) {
-                *uuid = new_uuid;
+                let mut jobs_guard = self.jobs.lock().await;
+                if let Some((uuid, _)) = jobs_guard.get_mut(sched_id) {
+                    *uuid = new_uuid;
+                }
             }
         }
 
         let id = sched_id.to_string();
         let found = persist_change(&self.storage_path, move |list| {
-            Ok(edit_job(list, &id, |stored| stored.cron = new_cron))
+            Ok(edit_job(list, &id, |stored| {
+                stored.cron = new_cron;
+                if armed_with_private_reach.is_some() {
+                    stored.armed_with_private_reach = armed_with_private_reach;
+                }
+            }))
         })
         .await?;
         if !found {
@@ -2235,6 +2399,20 @@ async fn execute_job(
     let (provider_name, model_config) =
         resolve_scheduled_provider(&job, agent.config.session_manager.as_ref()).await?;
 
+    // Issue #56. The schedule routes admitted whoever armed this job on the
+    // model its runs resolved THEN; this is the model they resolve NOW. A job
+    // armed by a request that could reach only public work does not start a
+    // private-capability chat with nobody present, whatever moved in between —
+    // see `ScheduledJob::armed_with_private_reach`. Read ONCE for both checks.
+    let tiers_enforced = crate::privacy::privacy_tiers_enabled();
+    if let Some(refusal) = scheduled_run_refusal(
+        tiers_enforced,
+        job.armed_with_private_reach,
+        crate::workflow::privacy::declared_provider_tier(&provider_name).await,
+    ) {
+        return Err(anyhow!(refusal));
+    }
+
     // ⚠ DELIBERATE BEHAVIOUR CHANGE, and the one place this task makes a job
     // fail that used to run. `resolve_scheduled_provider` falls back carefully —
     // a creator row that is gone, or that records no provider, yields the global
@@ -2254,6 +2432,15 @@ async fn execute_job(
     // `last_error`, and both schedule views render it.
     let agent_provider =
         crate::providers::create_from_persisted(&provider_name, model_config).await?;
+    // The same question of the instance the bind below will use, before any
+    // extension is added or any chat is made.
+    if let Some(refusal) = scheduled_run_refusal(
+        tiers_enforced,
+        job.armed_with_private_reach,
+        agent_provider.tier(),
+    ) {
+        return Err(anyhow!(refusal));
+    }
 
     let mut extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
     crate::workflow::runtime::ensure_required_extensions(&workflow, &mut extensions);
@@ -2627,6 +2814,43 @@ impl SchedulerTrait for Scheduler {
     ) -> Result<Option<(String, DateTime<Utc>)>, SchedulerError> {
         self.get_running_job_info(sched_id).await
     }
+
+    async fn schedule_workflow_armed(
+        &self,
+        workflow_path: PathBuf,
+        cron_schedule: Option<String>,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
+        self.schedule_workflow_armed(workflow_path, cron_schedule, armed_with_private_reach)
+            .await
+    }
+
+    async fn unpause_schedule_armed(
+        &self,
+        id: &str,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
+        self.unpause_schedule_armed(id, armed_with_private_reach)
+            .await
+    }
+
+    async fn run_now_armed(
+        &self,
+        id: &str,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<String, SchedulerError> {
+        self.run_now_armed(id, armed_with_private_reach).await
+    }
+
+    async fn update_schedule_armed(
+        &self,
+        sched_id: &str,
+        new_cron: String,
+        armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
+        self.update_schedule_armed(sched_id, new_cron, armed_with_private_reach)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -2658,6 +2882,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         }
     }
 
@@ -2940,6 +3165,7 @@ mod tests {
 
         let job = |source: &Path, owns: Option<bool>| ScheduledJob {
             owns_source: owns,
+            armed_with_private_reach: None,
             ..dormant_job("probe", source)
         };
 
@@ -3173,6 +3399,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -3216,6 +3443,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -3250,6 +3478,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         }];
         fs::write(&storage_path, serde_json::to_string(&stored).unwrap()).unwrap();
 
@@ -4371,6 +4600,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         };
         let prompt = scheduled_prompt(&job, &workflow);
         assert!(prompt.contains("2026-08-28T10:11:12+00:00"), "{prompt}");
@@ -4630,6 +4860,7 @@ mod privacy_c2_tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         }
     }
 
@@ -4835,6 +5066,7 @@ mod file_watch_tests {
             creator_session_id: None,
             last_error: None,
             owns_source: Some(false),
+            armed_with_private_reach: None,
         };
         write_jobs_file(&storage_path, &[job]).unwrap();
 
@@ -4875,5 +5107,337 @@ mod file_watch_tests {
             .await
             .expect("the watch must end once its scheduler is dropped")
             .unwrap();
+    }
+}
+
+/// Issue #56: a scheduled run is held to the standing of the request that armed
+/// it (`ScheduledJob::armed_with_private_reach`).
+#[cfg(test)]
+mod armed_standing_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn create_test_workflow(dir: &Path, name: &str) -> PathBuf {
+        let workflow_path = dir.join(format!("{name}.yaml"));
+        fs::write(&workflow_path, "prompt: test\n").unwrap();
+        workflow_path
+    }
+
+    /// A job whose cron will not fire during a test.
+    fn dormant_job(id: &str, source: &Path) -> ScheduledJob {
+        ScheduledJob {
+            id: id.to_string(),
+            source: source.to_string_lossy().into_owned(),
+            cron: "0 0 0 1 1 *".to_string(),
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 0,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: None,
+            owns_source: None,
+            armed_with_private_reach: None,
+        }
+    }
+
+    fn jobs_on_disk(storage_path: &Path) -> Vec<ScheduledJob> {
+        serde_json::from_str(&fs::read_to_string(storage_path).unwrap()).unwrap()
+    }
+
+    // ── Issue #56: a run is held to the standing of the request that armed it ──
+
+    /// Every corner of the run-time rule. The one cell that refuses is a run on a
+    /// private model armed by a request that could reach only public work; every
+    /// other record — the person's, a program's on a private model, and a row no
+    /// HTTP request armed — runs as it always has, and so does anything at all
+    /// with tiers switched off.
+    #[test]
+    fn a_run_is_refused_only_when_public_only_standing_would_bind_a_private_model() {
+        use crate::privacy::ProviderTier::{Private, Public};
+        for enforced in [true, false] {
+            for armed in [Some(true), Some(false), None] {
+                for tier in [Private, Public] {
+                    let refused = scheduled_run_refusal(enforced, armed, tier);
+                    let want = enforced && armed == Some(false) && tier == Private;
+                    assert_eq!(
+                        refused.is_some(),
+                        want,
+                        "enforced={enforced} armed={armed:?} tier={tier:?} answered {refused:?}"
+                    );
+                    if let Some(text) = refused {
+                        assert_eq!(text, SCHEDULED_RUN_NEEDS_PRIVATE_REACH);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The refusal lands in `last_error`, which `GET /schedule/list` shows to
+    /// any holder of the daemon secret, so it names nothing.
+    #[test]
+    fn the_scheduled_run_refusal_names_no_model_chat_or_schedule() {
+        let text = SCHEDULED_RUN_NEEDS_PRIVATE_REACH.to_lowercase();
+        // Fixed text with no placeholder, and no provider's name in it.
+        for leak in [
+            "versa",
+            "azure",
+            "anthropic",
+            "openai",
+            "ollama",
+            "llama",
+            "{",
+            "}",
+        ] {
+            assert!(!text.contains(leak), "the refusal names {leak:?}: {text}");
+        }
+        assert!(text.contains("nothing was run"));
+    }
+
+    /// The record each mutation leaves, read back from the FILE — a run reads
+    /// the row the file holds, after syncing with it — and from this process's
+    /// map.
+    #[tokio::test]
+    async fn the_armed_mutations_record_their_standing_and_every_other_writer_keeps_it() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let workflow = create_test_workflow(temp_dir.path(), "armed-probe");
+        scheduler
+            .add_scheduled_job(dormant_job("armed", &workflow), false)
+            .await
+            .unwrap();
+
+        let on_disk = |path: &Path| {
+            jobs_on_disk(path)
+                .into_iter()
+                .find(|job| job.id == "armed")
+                .map(|job| (job.armed_with_private_reach, job.cron, job.paused))
+        };
+        async fn in_memory(scheduler: &Scheduler) -> Option<Option<bool>> {
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get("armed")
+                .map(|(_, job)| job.armed_with_private_reach)
+        }
+        const DORMANT: &str = "0 0 0 1 1 *";
+        const OTHER: &str = "0 0 0 2 1 *";
+
+        assert_eq!(on_disk(&storage_path), Some((None, DORMANT.into(), false)));
+
+        // Re-saving the SAME time records the standing: "re-save it" is the
+        // remedy the refusal offers, and the Schedules editor sends the time the
+        // schedule already had.
+        scheduler
+            .update_schedule_armed("armed", DORMANT.into(), Some(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            on_disk(&storage_path),
+            Some((Some(false), DORMANT.into(), false))
+        );
+        assert_eq!(in_memory(&scheduler).await, Some(Some(false)));
+
+        // The unarmed spellings — `manage_schedule`, `/loop`, the CLI with no
+        // daemon — change what they change and leave the record alone.
+        scheduler
+            .update_schedule("armed", OTHER.into())
+            .await
+            .unwrap();
+        scheduler.pause_schedule("armed").await.unwrap();
+        assert_eq!(
+            on_disk(&storage_path),
+            Some((Some(false), OTHER.into(), true))
+        );
+        scheduler.unpause_schedule("armed").await.unwrap();
+        assert_eq!(
+            on_disk(&storage_path),
+            Some((Some(false), OTHER.into(), false))
+        );
+
+        // A resume is an arming, published in the same write as `paused`.
+        scheduler.pause_schedule("armed").await.unwrap();
+        scheduler
+            .unpause_schedule_armed("armed", Some(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            on_disk(&storage_path),
+            Some((Some(true), OTHER.into(), false))
+        );
+        assert_eq!(in_memory(&scheduler).await, Some(Some(true)));
+
+        // A pause is not an arming, and never downgrades or upgrades.
+        scheduler.pause_schedule("armed").await.unwrap();
+        assert_eq!(
+            on_disk(&storage_path),
+            Some((Some(true), OTHER.into(), true))
+        );
+        scheduler.unpause_schedule("armed").await.unwrap();
+
+        // A re-time that moves the cron records too, in the same write.
+        scheduler
+            .update_schedule_armed("armed", DORMANT.into(), Some(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            on_disk(&storage_path),
+            Some((Some(false), DORMANT.into(), false))
+        );
+
+        // `/workflows/schedule` on a workflow that already has this schedule is
+        // a re-time of it.
+        scheduler
+            .schedule_workflow_armed(workflow.clone(), Some(OTHER.into()), Some(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            on_disk(&storage_path),
+            Some((Some(true), OTHER.into(), false))
+        );
+
+        // …and on a workflow with none, an add that carries it.
+        let fresh = create_test_workflow(temp_dir.path(), "armed-fresh");
+        scheduler
+            .schedule_workflow_armed(fresh.clone(), Some(DORMANT.into()), Some(false))
+            .await
+            .unwrap();
+        let added = jobs_on_disk(&storage_path)
+            .into_iter()
+            .find(|job| job.source == fresh.to_string_lossy())
+            .expect("the workflow was scheduled");
+        assert_eq!(added.armed_with_private_reach, Some(false));
+
+        // "Run now" holds ONE run to its caller's standing and records nothing:
+        // the run fails fast on a missing workflow file, and the row keeps the
+        // standing its last arming left.
+        let gone = dormant_job("run-now-armed", &temp_dir.path().join("gone.yaml"));
+        scheduler.add_scheduled_job(gone, false).await.unwrap();
+        scheduler
+            .update_schedule_armed("run-now-armed", OTHER.into(), Some(false))
+            .await
+            .unwrap();
+        let _ = scheduler.run_now_armed("run-now-armed", Some(true)).await;
+        let row = jobs_on_disk(&storage_path)
+            .into_iter()
+            .find(|job| job.id == "run-now-armed")
+            .unwrap();
+        assert_eq!(
+            row.armed_with_private_reach,
+            Some(false),
+            "a run-now changed the schedule's own standing"
+        );
+    }
+
+    /// The trait object is what the routes hold (`AppState::scheduler()` is an
+    /// `Arc<dyn SchedulerTrait>`), and the trait's `_armed` methods DEFAULT to
+    /// dropping the standing. So the record has to arrive through the trait,
+    /// not only through the inherent methods the test above calls.
+    #[tokio::test]
+    async fn the_scheduler_records_the_standing_through_its_trait_object() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let scheduler: Arc<dyn SchedulerTrait> = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        let workflow = create_test_workflow(temp_dir.path(), "trait-armed");
+        scheduler
+            .add_scheduled_job(dormant_job("trait-armed", &workflow), false)
+            .await
+            .unwrap();
+        let standing = |path: &Path| {
+            jobs_on_disk(path)
+                .into_iter()
+                .find(|job| job.id == "trait-armed")
+                .and_then(|job| job.armed_with_private_reach)
+        };
+
+        scheduler
+            .update_schedule_armed("trait-armed", "0 0 0 1 1 *".into(), Some(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            standing(&storage_path),
+            Some(false),
+            "update_schedule_armed"
+        );
+        scheduler
+            .unpause_schedule_armed("trait-armed", Some(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            standing(&storage_path),
+            Some(true),
+            "unpause_schedule_armed"
+        );
+        scheduler
+            .schedule_workflow_armed(workflow, Some("0 0 0 2 1 *".into()), Some(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            standing(&storage_path),
+            Some(false),
+            "schedule_workflow_armed"
+        );
+    }
+
+    /// Where the run asks, which no behavioural test here can see: a run that
+    /// gets as far as a provider needs credentials a unit test does not have.
+    /// Both questions must be asked before the run adds an extension, makes its
+    /// chat or binds its model — the first before it constructs a provider at
+    /// all. `tests/schedule_write_reach.rs` drives the refusal itself.
+    #[test]
+    fn a_scheduled_run_asks_its_standing_before_it_builds_anything() {
+        let body = include_str!("scheduler.rs")
+            .split("\nasync fn execute_job(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn classify_scheduled_run(").next())
+            .expect("could not find execute_job");
+        let asks: Vec<usize> = body
+            .match_indices("scheduled_run_refusal(")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            asks.len(),
+            2,
+            "execute_job asks the declared tier and the instance's"
+        );
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is no longer in execute_job"))
+        };
+        assert!(
+            asks[0] < at("create_from_persisted("),
+            "the declared tier is asked first"
+        );
+        let first_act = [
+            at(".add_extension("),
+            at(".create_session("),
+            at(".update_provider("),
+        ]
+        .into_iter()
+        .min()
+        .unwrap();
+        assert!(
+            asks[1] < first_act,
+            "the instance's tier must be asked before the run adds an extension, makes its chat \
+             or binds its model"
+        );
+        assert!(
+            at("resolve_scheduled_provider(") < asks[0],
+            "the standing is asked of the model the run resolved"
+        );
     }
 }

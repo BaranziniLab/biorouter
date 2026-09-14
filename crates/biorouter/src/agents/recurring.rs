@@ -230,6 +230,7 @@ impl Agent {
             creator_session_id: Some(session_id.to_string()),
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         };
         if let Err(e) = scheduler.add_scheduled_job(job, false).await {
             let _ = tokio::fs::remove_file(&path).await;
@@ -554,6 +555,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         };
         assert!(format_job_line(&job).contains("3/100 runs"));
 

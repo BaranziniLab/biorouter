@@ -226,6 +226,22 @@ an install configured with a public model, that covers every schedule not create
 chat. `biorouter schedule add`, `remove` and `run-now` state the terminal's configured provider,
 so they pass on an install configured with a private model.
 
+**A run is held to the caller that set it going.** The gate judges the model a schedule's runs use
+at the moment of the request, but a run works out its model again when it starts. If the chat a
+schedule was created from is deleted, or stops recording a provider, the run falls back to the
+configured default. So each request that creates, re-times or resumes a schedule, or schedules a
+saved workflow, records on the schedule whether its caller could reach private work
+(`armed_with_private_reach` in `schedule.json` and in `GET /schedule/list`). A run whose model
+turns out to be private, on a schedule last set going by a caller that could not reach private
+work, is not started. It creates no chat, and the schedule's `last_error` says why. To run it, the
+person resumes or re-saves the schedule in the desktop app, or a program on a private model does
+the same through these routes. `POST /schedule/{id}/run_now` holds the one run it starts to its
+own caller and records nothing on the schedule. Before 1.90.5, a caller holding only the secret
+could re-time a schedule created from a public chat, delete that chat, and have the next tick
+start a new chat on a private default with nobody present. Schedules created by `/loop`, by the
+`manage_schedule` tool, or by a `biorouter schedule add` that found no daemon record nothing and
+run as before.
+
 **Listings and knowledge bases apply the same rule.** They do not refuse a list; they leave out what
 the caller could not open:
 
@@ -236,7 +252,7 @@ the caller could not open:
 | Every `/knowledge/bases/{id}…` route: pages, graph, history, location, export, preview, and the writes | A private base is refused with a knowledge-base twin of the chat refusal. A base that does not exist, and a malformed id, get the same refusal. |
 | `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
 | `GET /active_work` | The running work of public chats only. Each row carries its chat's `sessionId` and a `title` and `detail` holding the shell command or task prompt, which is the chat's content. A row whose chat is private, or cannot be read, is omitted. So is a row that names no chat at all (see below). |
-| `GET /sessions/changes` | Changes to public chats only. Each change carries a chat's provider, model and privacy tier. A change to a private chat is left out. Naming a private chat does not make the poll answer sooner when that chat's row moves, so the timing of a poll says nothing about it either. The `revision` a poll answers with still counts every chat's changes, so it reveals how many rows moved on the machine but not which. Until 1.90.5 this route reported any chat a caller named, and every model switch it made. |
+| `GET /sessions/changes` | Changes to public chats only. Each change carries a chat's provider, model and privacy tier. A change is left out when its chat was private when it changed, is private now, or no longer exists, so a chat that goes private stops showing its earlier public changes at once. Naming a private chat does not make the poll answer sooner when that chat's row moves, so the timing of a poll says nothing about it either. The `revision` a poll answers with still counts every chat's changes, so it reveals how many rows moved on the machine but not which. Until 1.90.5 this route reported any chat a caller named, and every model switch it made. |
 | `GET /sessions/running` | The ids of public chats with a turn in flight only. A running private chat, or one the daemon cannot read, is omitted, and an unproven caller's empty answer is identical to "nothing is running", so the omission tells it nothing. `biorouter session list` and `session watch` still report liveness truthfully: they state the terminal's configured provider on every request, so a private-provider install is handed every running id and a public one exactly the chats `GET /sessions` already lists. Until 1.90.4 this route was left unfiltered, and polling it revealed when a private chat's turns started and stopped. |
 
 A browser pointed at `biorouter serve` is a special case of this, described in
@@ -288,7 +304,7 @@ reader should not infer from this page that the surface is complete:
 | Route | What an ungated caller gets |
 |---|---|
 | `GET /sessions/insights`, `GET /sessions/activity` | Machine-wide counts and per-day usage. Aggregates that name no chat. |
-| `schedule.json`, the file | Not a route, and listed because it bypasses every schedule route above. The daemon follows this file and picks up an added, changed or removed row within seconds. Biorouter does not yet stop a chat's shell from writing ordinary files. So a caller that can write the file can add, re-time or remove a schedule, and name any creating chat, without an HTTP request. The schedule routes' gate makes the HTTP surface follow the reach rule. It does not make the file a boundary. |
+| `schedule.json`, the file | Not a route, and listed because it bypasses every schedule route above. The daemon follows this file and picks up an added, changed or removed row within seconds. Biorouter does not yet stop a chat's shell from writing ordinary files. So a caller that can write the file can add, re-time or remove a schedule, name any creating chat, and mark a schedule as set going by a caller that could reach private work, without an HTTP request. The schedule routes' gate makes the HTTP surface follow the reach rule. It does not make the file a boundary. |
 
 The daemon has no principal, so none of this is a *tier* bypass in the strict sense — a caller
 holding the secret is already inside. It is the same open problem as

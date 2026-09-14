@@ -55,4 +55,49 @@ pub trait SchedulerTrait: Send + Sync {
         &self,
         sched_id: &str,
     ) -> Result<Option<(String, DateTime<Utc>)>, SchedulerError>;
+
+    // ── Issue #56: the same mutations, carrying the standing of the request
+    //    that armed the schedule (`ScheduledJob::armed_with_private_reach`). ──
+    //
+    // ⚠ The defaults DROP the standing, and exist so a test double that holds
+    // no schedule file need not spell four more methods. The one implementor
+    // that persists schedules, `scheduler::Scheduler`, overrides all four, and a
+    // test there pins that it does: an implementor that persisted schedules and
+    // kept these defaults would let a public-only request's schedule start a run
+    // on a private model.
+
+    /// [`Self::schedule_workflow`], recording the arming request's standing.
+    async fn schedule_workflow_armed(
+        &self,
+        workflow_path: PathBuf,
+        cron_schedule: Option<String>,
+        _armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
+        self.schedule_workflow(workflow_path, cron_schedule).await
+    }
+    /// [`Self::unpause_schedule`], recording the arming request's standing.
+    async fn unpause_schedule_armed(
+        &self,
+        id: &str,
+        _armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
+        self.unpause_schedule(id).await
+    }
+    /// [`Self::run_now`], holding THIS run to the requesting caller's standing.
+    async fn run_now_armed(
+        &self,
+        id: &str,
+        _armed_with_private_reach: Option<bool>,
+    ) -> Result<String, SchedulerError> {
+        self.run_now(id).await
+    }
+    /// [`Self::update_schedule`], recording the arming request's standing.
+    async fn update_schedule_armed(
+        &self,
+        sched_id: &str,
+        new_cron: String,
+        _armed_with_private_reach: Option<bool>,
+    ) -> Result<(), SchedulerError> {
+        self.update_schedule(sched_id, new_cron).await
+    }
 }

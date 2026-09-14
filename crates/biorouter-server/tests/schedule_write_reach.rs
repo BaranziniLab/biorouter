@@ -10,6 +10,14 @@
 //! cron handed back `creator_session_id` naming a private chat that `GET
 //! /schedule/list` redacts. Every refusal below failed against that tree.
 //!
+//! PHASE C pins what an admission carries forward. Independent QA measured it on
+//! this branch before it did (2026-09-14): with only the secret, re-time a
+//! schedule made from a public chat to every minute (public work, admitted),
+//! delete that public chat (a public chat, admitted), and the next tick started
+//! chat `20260914_1` — `session_type` scheduled, `versa_azure`, private — with
+//! nobody present, because a run resolves its model again when it starts and
+//! falls back to the private default once its creator is gone.
+//!
 //! ⚠ **Its own binary, and ONE test in it, on purpose.** Seeding a schedule
 //! registers a task on tokio-cron-scheduler, which is process-global while each
 //! `#[tokio::test]` brings its own runtime; a second test's add fails with
@@ -25,7 +33,7 @@ mod test_sandbox;
 use axum::{body::Body, http::Request, Router};
 use biorouter::model::ModelConfig;
 use biorouter::privacy::SessionClassification;
-use biorouter::scheduler::ScheduledJob;
+use biorouter::scheduler::{ScheduledJob, SCHEDULED_RUN_NEEDS_PRIVATE_REACH};
 use biorouter::session::SessionType;
 use biorouter_server::routes::session_reach::{CALLER_PROVIDER_HEADER, SCHEDULE_OUT_OF_REACH};
 use biorouter_server::state::AppState;
@@ -165,6 +173,7 @@ fn job(id: &str, source: &Path, creator: Option<&str>) -> ScheduledJob {
         creator_session_id: creator.map(str::to_owned),
         last_error: None,
         owns_source: None,
+        armed_with_private_reach: None,
     }
 }
 
@@ -201,6 +210,9 @@ async fn a_schedules_private_work_is_changed_only_by_a_caller_that_could_reach_i
         false,
     )
     .await;
+    // PHASE C's timer scenario, on a chat of its own so its every-second cron
+    // never races the checks made on the others.
+    let tick_chat = seed_chat(&state, "Schedule reach tick (fixture)", "anthropic", false).await;
     let dir = tempfile::tempdir().unwrap();
     let workflow = dir.path().join("probe.yaml");
     std::fs::write(
@@ -214,6 +226,7 @@ async fn a_schedules_private_work_is_changed_only_by_a_caller_that_could_reach_i
         ("sr-nameless", None),
         ("sr-public-creator", Some(public_chat.as_str())),
         ("sr-private-creator", Some(private_chat.as_str())),
+        ("sr-tick", Some(tick_chat.as_str())),
     ] {
         scheduler
             .add_scheduled_job(job(id, &workflow, creator), true)
@@ -503,6 +516,173 @@ async fn a_schedules_private_work_is_changed_only_by_a_caller_that_could_reach_i
         format!(
             "a refused /workflows/schedule still removed the schedule: {after_removal_refused:?}"
         ),
+    );
+
+    // ── PHASE C: what an admission carries forward. ─────────────────────────
+    let standing = |job: Option<ScheduledJob>| job.and_then(|job| job.armed_with_private_reach);
+
+    // Each arming door records its caller's standing: the person and a program
+    // on a private model could reach private work; a secret-only caller was
+    // admitted only because the work was public when it asked.
+    for (id, want) in [
+        ("sr-created-public", Some(false)),
+        ("sr-created-by-person", Some(true)),
+        ("sr-created-by-program", Some(true)),
+        // PUT and unpause by a secret-only caller in phase A and B.
+        ("sr-public-creator", Some(false)),
+        // The person's resume in phase A, then their PUT.
+        ("sr-private-creator", Some(true)),
+    ] {
+        let got = standing(probe.job(id).await);
+        probe.check(
+            got == want,
+            format!("{id} recorded standing {got:?}, wanted {want:?}"),
+        );
+    }
+    let library_job = state
+        .scheduler()
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .find(|job| job.source.ends_with("schedule-reach-library-probe.yaml"));
+    probe.check(
+        standing(library_job.clone()) == Some(true),
+        format!("the person's /workflows/schedule recorded {library_job:?}"),
+    );
+
+    // The QA scenario, over the real timer. With ONLY the secret: re-time a
+    // schedule made from a public chat to every second (admitted: public work),
+    // then delete that public chat (admitted: a public chat).
+    probe
+        .admitted(
+            "PUT sr-tick every second (secret only)",
+            "PUT",
+            "/schedule/sr-tick",
+            Some(json!({ "cron": "* * * * * *" })),
+            &[],
+            200,
+        )
+        .await;
+    probe
+        .admitted(
+            "DELETE the tick schedule's public creator (secret only)",
+            "DELETE",
+            &format!("/sessions/{tick_chat}"),
+            None,
+            &[],
+            200,
+        )
+        .await;
+    // The next tick resolves the private default. Before the fix it started a
+    // chat on it; now the run is refused before it builds anything, and says so.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let tick_error = loop {
+        let error = probe.job("sr-tick").await.and_then(|job| job.last_error);
+        if error
+            .as_deref()
+            .is_some_and(|e| e.contains(SCHEDULED_RUN_NEEDS_PRIVATE_REACH))
+            || std::time::Instant::now() >= deadline
+        {
+            break error;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    probe.check(
+        tick_error
+            .as_deref()
+            .is_some_and(|e| e.contains(SCHEDULED_RUN_NEEDS_PRIVATE_REACH)),
+        format!("the timer's run after the creator was deleted was not refused: {tick_error:?}"),
+    );
+    let tick_runs = state
+        .scheduler()
+        .sessions("sr-tick", 50)
+        .await
+        .map(|runs| runs.len());
+    probe.check(
+        tick_runs.as_ref().is_ok_and(|runs| *runs == 0),
+        format!("the refused timer still started a chat for the schedule: {tick_runs:?}"),
+    );
+    // Stopped by the person, who can: a pause that lands between two ticks.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (status, _) = probe
+            .send("POST", "/schedule/sr-tick/pause", None, &[PROOF])
+            .await;
+        if status == 204 || std::time::Instant::now() >= deadline {
+            probe.check(status == 204, format!("could not pause sr-tick: {status}"));
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // The same chain on the other schedule, run directly: the timer's call,
+    // without the timer. Its creator goes with only the secret too.
+    probe
+        .admitted(
+            "DELETE the public creator (secret only)",
+            "DELETE",
+            &format!("/sessions/{public_chat}"),
+            None,
+            &[],
+            200,
+        )
+        .await;
+    let unattended = state.scheduler().run_now("sr-public-creator").await;
+    probe.check(
+        unattended
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains(SCHEDULED_RUN_NEEDS_PRIVATE_REACH)),
+        format!("an unattended run on public-only standing was not refused: {unattended:?}"),
+    );
+    // Its work is private now, so a secret-only caller is refused at the door…
+    probe
+        .refused(
+            "run_now sr-public-creator once its creator is gone",
+            "POST",
+            "/schedule/sr-public-creator/run_now",
+            None,
+        )
+        .await;
+    // …while the person's "Run now" is held to the person's standing: it gets
+    // past the standing check and fails further on, with no credentials for the
+    // private model in this sandbox.
+    let (_, pressed) = probe
+        .send(
+            "POST",
+            "/schedule/sr-public-creator/run_now",
+            None,
+            &[PROOF],
+        )
+        .await;
+    probe.check(
+        !pressed.contains(SCHEDULED_RUN_NEEDS_PRIVATE_REACH),
+        format!("the person's Run now was refused on the schedule's standing: {pressed}"),
+    );
+    probe.check(
+        standing(probe.job("sr-public-creator").await) == Some(false),
+        "a Run now changed the schedule's own standing".to_string(),
+    );
+    // The remedy the refusal names: the person re-saves the same time.
+    probe
+        .admitted(
+            "PUT sr-public-creator, same time, by the person",
+            "PUT",
+            "/schedule/sr-public-creator",
+            Some(json!({ "cron": FAR_CRON })),
+            &[PROOF],
+            200,
+        )
+        .await;
+    probe.check(
+        standing(probe.job("sr-public-creator").await) == Some(true),
+        "the person's re-save did not record their standing".to_string(),
+    );
+    let resaved = state.scheduler().run_now("sr-public-creator").await;
+    probe.check(
+        !resaved
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains(SCHEDULED_RUN_NEEDS_PRIVATE_REACH)),
+        format!("a run the person re-armed was still refused on standing: {resaved:?}"),
     );
 
     // And a refused caller never removed the private chat's schedule.
