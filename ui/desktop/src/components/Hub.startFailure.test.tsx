@@ -74,6 +74,7 @@ vi.mock('../api', () => ({
 }));
 
 import Hub from './Hub';
+import { resetComposerDraftsForTests } from '../utils/composerDrafts';
 
 /** What `POST /agent/start` answered on the QA run's `biorouter serve` daemon. */
 const SERVE_DAEMON_REFUSAL = {
@@ -85,6 +86,7 @@ const SERVE_DAEMON_REFUSAL = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetComposerDraftsForTests();
   Object.assign(window, {
     appConfig: {
       get: (key: string) => (key === 'BIOROUTER_WORKING_DIR' ? '/default/workdir' : undefined),
@@ -139,5 +141,45 @@ describe('Hub: a chat that fails to start', () => {
       )
     );
     expect(mockToastError).not.toHaveBeenCalled();
+  });
+});
+
+describe('Hub: leaving Home does not lose the message (D4)', () => {
+  it('a start that fails after the person left Home hands the message back to Home', async () => {
+    // Measured: send from Home, leave while the start is in flight, and the
+    // message was gone — its staged image left in the temp directory — under a
+    // toast that stayed on screen saying "Your message was kept."
+    let refuse!: (reason: unknown) => void;
+    mockCreateSession.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (refuse = reject))
+    );
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const first = render(<Hub setView={vi.fn()} />);
+    const composer = screen.getByPlaceholderText('Ask Biorouter anything…') as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: 'sent from Home, then I left' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(mockCreateSession).toHaveBeenCalledTimes(1));
+
+    first.unmount();
+    refuse(SERVE_DAEMON_REFUSAL);
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+
+    render(<Hub setView={vi.fn()} />);
+    const back = screen.getByPlaceholderText('Ask Biorouter anything…') as HTMLTextAreaElement;
+    expect(back.value).toBe('sent from Home, then I left');
+    consoleError.mockRestore();
+  });
+
+  it('what is typed on Home is still there after leaving and coming back', () => {
+    const first = render(<Hub setView={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('Ask Biorouter anything…'), {
+      target: { value: 'half a thought' },
+    });
+    first.unmount();
+
+    render(<Hub setView={vi.fn()} />);
+    expect(
+      (screen.getByPlaceholderText('Ask Biorouter anything…') as HTMLTextAreaElement).value
+    ).toBe('half a thought');
   });
 });

@@ -33,6 +33,7 @@ import type { UserAttachment } from '../types/message';
 import { toastError } from '../toasts';
 import { startChatFailureNotice } from '../utils/startChatFailure';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
+import { HOME_COMPOSER_DRAFT_KEY } from '../utils/composerDrafts';
 
 export default function Hub({
   setView,
@@ -118,6 +119,11 @@ export default function Hub({
           )}
           <ChatInput
             sessionId={null}
+            // Home's composer is left and come back to like a tab's: what it
+            // holds — and a message whose start was still in flight when the
+            // person clicked away, handed back if that start fails — is kept
+            // under Home's key rather than dying with the component.
+            draftKey={HOME_COMPOSER_DRAFT_KEY}
             handleSubmit={handleSubmit}
             chatState={isCreatingSession ? ChatState.LoadingConversation : ChatState.Idle}
             onStop={() => {}}

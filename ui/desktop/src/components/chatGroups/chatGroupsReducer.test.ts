@@ -470,3 +470,142 @@ describe('resumeUnsent — a new-chat request arriving from another route', () =
     expect(run(state, blank).groups['grp-1'].tabs).toHaveLength(2);
   });
 });
+
+describe('a started chat never takes over a tab holding an unsent message (D1)', () => {
+  const blank: ChatGroupsAction = { type: 'openTab', payload: { sessionId: '' } };
+  const started = (
+    sessionId: string,
+    extra: {
+      originTabId?: string;
+      unsentTabs?: { drafted: readonly string[]; sending: readonly string[] };
+    }
+  ): ChatGroupsAction => ({
+    type: 'openTab',
+    payload: { sessionId, title: sessionId, pendingInitialMessage: 'hello', ...extra },
+  });
+
+  it('binds to the tab its message was typed in, not the focused tab holding a draft', () => {
+    // Measured: a start held in flight from tab X, the person switched to tab Y
+    // holding "MY OWN UNSENT DRAFT" and an image, and the chat bound to Y —
+    // deleting its draft and leaving X blank.
+    const state = run(createInitialChatGroupsState(), blank, blank);
+    const [x, y] = state.groups['grp-1'].tabs.map((t) => t.tabId);
+    expect(state.groups['grp-1'].activeTabId).toBe(y);
+
+    const next = run(
+      state,
+      started('s-new', { originTabId: x, unsentTabs: { drafted: [y], sending: [x] } })
+    );
+
+    const tabs = next.groups['grp-1'].tabs;
+    expect(tabs.find((t) => t.tabId === x)?.sessionId).toBe('s-new');
+    expect(tabs.find((t) => t.tabId === y)?.sessionId).toBe('');
+    expect(tabs).toHaveLength(2);
+    expect(next.groups['grp-1'].activeTabId).toBe(x);
+  });
+
+  it('finds its origin in another pane', () => {
+    const state = run(createInitialChatGroupsState(), blank, open('s1'));
+    const x = state.groups['grp-1'].tabs[0].tabId;
+    const split = run(state, {
+      type: 'moveTabToGroup',
+      tabId: x,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+    const xGroup = leafGroupIds(split.layout).find((id) =>
+      split.groups[id].tabs.some((t) => t.tabId === x)
+    )!;
+    expect(xGroup).not.toBe('grp-1');
+
+    const next = run(split, started('s-new', { originTabId: x }));
+
+    expect(next.groups[xGroup].tabs.find((t) => t.tabId === x)?.sessionId).toBe('s-new');
+    expect(next.activeGroupId).toBe(xGroup);
+  });
+
+  it('a message sent from Home does not adopt a blank tab that holds a draft', () => {
+    // Measured: a failed start kept "KEPT BEFORE SETTINGS" and an image in a new
+    // tab; the person fixed the credential, sent something else from Home, and
+    // that chat bound to the kept tab — draft and image gone, no notice.
+    const state = run(createInitialChatGroupsState(), blank, open('s1'));
+    const kept = state.groups['grp-1'].tabs[0].tabId;
+
+    const next = run(state, started('s-home', { unsentTabs: { drafted: [kept], sending: [] } }));
+
+    const tabs = next.groups['grp-1'].tabs;
+    expect(tabs.find((t) => t.tabId === kept)?.sessionId).toBe('');
+    expect(tabs).toHaveLength(3);
+    expect(activeSessionIdOf(next)).toBe('s-home');
+  });
+
+  it('a message from Home does not adopt a blank tab whose own message is in flight', () => {
+    const state = run(createInitialChatGroupsState(), blank, open('s1'));
+    const inFlight = state.groups['grp-1'].tabs[0].tabId;
+
+    const next = run(
+      state,
+      started('s-home', { unsentTabs: { drafted: [], sending: [inFlight] } })
+    );
+
+    expect(next.groups['grp-1'].tabs.find((t) => t.tabId === inFlight)?.sessionId).toBe('');
+    expect(activeSessionIdOf(next)).toBe('s-home');
+  });
+
+  it('gets a tab of its own when its origin now holds a newer unsent message', () => {
+    // Text typed into the tab while its start was in flight stays where it was
+    // typed; binding the tab would have released that draft.
+    const state = run(createInitialChatGroupsState(), blank);
+    const x = state.groups['grp-1'].tabs[0].tabId;
+
+    const next = run(
+      state,
+      started('s-new', { originTabId: x, unsentTabs: { drafted: [x], sending: [x] } })
+    );
+
+    const tabs = next.groups['grp-1'].tabs;
+    expect(tabs.find((t) => t.tabId === x)?.sessionId).toBe('');
+    expect(tabs).toHaveLength(2);
+    expect(activeSessionIdOf(next)).toBe('s-new');
+  });
+
+  it('opens that tab of its own beside the origin, in the origin’s pane', () => {
+    const state = run(createInitialChatGroupsState(), blank, open('s1'));
+    const x = state.groups['grp-1'].tabs[0].tabId;
+    const split = run(state, {
+      type: 'moveTabToGroup',
+      tabId: x,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+    const xGroup = leafGroupIds(split.layout).find((id) =>
+      split.groups[id].tabs.some((t) => t.tabId === x)
+    )!;
+    // The person has since focused the OTHER pane.
+    const elsewhere = run(split, {
+      type: 'activateTab',
+      tabId: split.groups['grp-1'].tabs[0].tabId,
+    });
+    expect(elsewhere.activeGroupId).toBe('grp-1');
+
+    const next = run(
+      elsewhere,
+      started('s-new', { originTabId: x, unsentTabs: { drafted: [x], sending: [x] } })
+    );
+
+    expect(next.activeGroupId).toBe(xGroup);
+    expect(next.groups[xGroup].tabs.map((t) => t.sessionId)).toEqual(['', 's-new']);
+    expect(next.groups[xGroup].activeTabId).not.toBe(x);
+  });
+
+  it('gets a tab of its own when its origin was closed, rather than another blank tab', () => {
+    const state = run(createInitialChatGroupsState(), blank, blank);
+    const [x, other] = state.groups['grp-1'].tabs.map((t) => t.tabId);
+    const closed = run(state, { type: 'closeTab', tabId: x });
+
+    const next = run(closed, started('s-new', { originTabId: x }));
+
+    expect(next.groups['grp-1'].tabs.find((t) => t.tabId === other)?.sessionId).toBe('');
+    expect(activeSessionIdOf(next)).toBe('s-new');
+  });
+});

@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, act, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { ChatGroupsProvider, useChatGroups } from './ChatGroupsContext';
 import { requestNewTab, resetNewTabRegistry } from '../components/chatGroups/newTabRegistry';
 import {
+  beginComposerSend,
   composerDraftKeyForTab,
   hasComposerDraft,
+  readComposerDraft,
   resetComposerDraftsForTests,
   saveComposerDraft,
 } from '../utils/composerDrafts';
@@ -29,12 +31,17 @@ vi.mock('../utils/sessionNameSync', () => ({ subscribeSessionNameChanges: () => 
  */
 
 let ctx: ReturnType<typeof useChatGroups> = null;
+let navigateTo: NavigateFunction | null = null;
 function Probe() {
   ctx = useChatGroups();
+  navigateTo = useNavigate();
   const group = ctx?.activeGroup;
   return (
     <div>
       <span data-testid="tabs">{group?.tabs.map((t) => t.tabId).join(',') ?? ''}</span>
+      <span data-testid="sessions">
+        {group?.tabs.map((t) => `${t.tabId}=${t.sessionId}`).join(',') ?? ''}
+      </span>
       <span data-testid="active">{group?.activeTabId ?? ''}</span>
     </div>
   );
@@ -131,5 +138,77 @@ describe('a new tab holding an unsent message', () => {
     act(() => ctx!.dispatch({ type: 'bindSession', tabId: unsent, sessionId: 'sess-1' }));
 
     await waitFor(() => expect(hasComposerDraft(composerDraftKeyForTab(unsent))).toBe(false));
+  });
+});
+
+describe('a message whose start is still in flight (D4)', () => {
+  it('keeps its tab through a trip to Settings, and is handed back into it there', async () => {
+    // Measured: send from a new tab with the start held, click Settings, then
+    // New chat — the tab had already been pruned (it held no draft yet), a blank
+    // tab opened, and the failure's "Your message was kept." went under a key no
+    // tab had, which the next layout change deleted along with its image.
+    const { view, unsent, blank } = await twoNewTabsFirstUnsent();
+    const key = composerDraftKeyForTab(blank);
+    act(() => ctx!.dispatch({ type: 'activateTab', tabId: blank }));
+    const send = beginComposerSend(key);
+
+    act(() => view.unmount());
+    act(() => void requestNewTab());
+    mount();
+
+    await waitFor(() => expect(screen.getByTestId('active')).toHaveTextContent(blank));
+    expect(tabIds()).toEqual(expect.arrayContaining([unsent, blank]));
+    expect(tabIds()).toHaveLength(2);
+
+    act(() =>
+      send.giveBack({
+        text: 'failed while I was away',
+        images: [{ id: 'img-9', filePath: '/tmp/away.png', dataUrl: 'data:x' }],
+        files: [],
+      })
+    );
+    // A layout change after the give-back does not release it: its tab exists.
+    act(() => ctx!.dispatch({ type: 'activateTab', tabId: unsent }));
+    expect(readComposerDraft(key)?.text).toBe('failed while I was away');
+    expect(deleteTempFile).not.toHaveBeenCalledWith('/tmp/away.png');
+  });
+});
+
+describe('a chat started elsewhere does not take a tab holding an unsent message (D1)', () => {
+  const arriveWithStartedChat = (sessionId: string, state: Record<string, unknown>) =>
+    act(() =>
+      navigateTo!(`/pair?resumeSessionId=${sessionId}`, {
+        state: { resumeSessionId: sessionId, initialMessage: 'hello', ...state },
+      })
+    );
+
+  it('a message sent from Home opens its own tab beside the kept one', async () => {
+    const { view, unsent } = await twoNewTabsFirstUnsent();
+    act(() => view.unmount());
+    mount();
+    expect(tabIds()).toEqual([unsent]);
+
+    arriveWithStartedChat('s-home', {});
+
+    await waitFor(() => expect(tabIds()).toHaveLength(2));
+    expect(screen.getByTestId('sessions').textContent).toContain(`${unsent}=`);
+    expect(screen.getByTestId('sessions').textContent).not.toContain(`${unsent}=s-home`);
+    expect(hasComposerDraft(composerDraftKeyForTab(unsent))).toBe(true);
+    expect(deleteTempFile).not.toHaveBeenCalled();
+  });
+
+  it('a new tab’s chat binds to that tab even when another tab holding a draft is in view', async () => {
+    const { unsent, blank } = await twoNewTabsFirstUnsent();
+    // `blank` sent its message; the person is now looking at `unsent`.
+    beginComposerSend(composerDraftKeyForTab(blank));
+
+    arriveWithStartedChat('s-new', { originTabId: blank });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('sessions').textContent).toContain(`${blank}=s-new`)
+    );
+    expect(screen.getByTestId('sessions').textContent).toContain(`${unsent}=,`);
+    expect(hasComposerDraft(composerDraftKeyForTab(unsent))).toBe(true);
+    expect(deleteTempFile).not.toHaveBeenCalled();
   });
 });

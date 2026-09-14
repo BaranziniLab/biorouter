@@ -59,8 +59,9 @@ import {
 import { useWorkspaceChannel, buildEchoFrame } from '../hooks/useWorkspaceChannel';
 import {
   composerDraftKeyForTab,
-  hasComposerDraft,
+  holdsUnsentMessage,
   retainTabComposerDrafts,
+  unsentComposerTabs,
 } from '../utils/composerDrafts';
 import { toastError, toastInfo, toastWarning } from '../toasts';
 
@@ -125,10 +126,11 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
 
   const [state, dispatch] = useReducer(chatGroupsReducer, windowIdRef.current, (windowId) =>
     // A tab with no chat survives the re-read that coming back to /pair does
-    // only while it holds an unsent message — renderer memory, so never across
-    // a reload. See `LoadChatGroupsOptions.keepSessionlessTab`.
+    // only while it holds an unsent message — a draft, or a message whose start
+    // is still in flight — and that is renderer memory, so never across a
+    // reload. See `LoadChatGroupsOptions.keepSessionlessTab`.
     loadChatGroupsOrInitial(windowId, {
-      keepSessionlessTab: (tabId) => hasComposerDraft(composerDraftKeyForTab(tabId)),
+      keepSessionlessTab: (tabId) => holdsUnsentMessage(composerDraftKeyForTab(tabId)),
     })
   );
 
@@ -189,6 +191,11 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
         userSetName: request.userSetName,
         pendingInitialMessage: request.initialMessage,
         pendingInitialAttachments: request.initialAttachments,
+        // Where a started chat may go: its own tab, and never a tab holding a
+        // message the person has not sent. Sampled here, at the dispatch,
+        // because the reducer is pure.
+        originTabId: request.originTabId,
+        unsentTabs: unsentComposerTabs(),
       },
     });
   }, []);

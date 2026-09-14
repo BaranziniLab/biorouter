@@ -73,11 +73,18 @@ vi.mock('../api', () => ({
 
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
+import {
+  giveBackToComposer,
+  readComposerDraft,
+  resetComposerDraftsForTests,
+  unsentComposerTabs,
+} from '../utils/composerDrafts';
 
 const deleteTempFile = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetComposerDraftsForTests();
   let saved = 0;
   Object.assign(window, {
     appConfig: { get: () => '/w' },
@@ -370,5 +377,181 @@ describe('3 — a new tab’s unsent message outlives its composer', () => {
     render(<NewChat label="tab" draftKey="tab:nine" />);
 
     expect(box('tab').value).toBe('');
+  });
+});
+
+/**
+ * The pane tree is keyed by its SHAPE, so splitting a pane, closing the other
+ * half of a split or dragging a tab into a new pane rebuilds a composer in ONE
+ * commit: the replacement renders — and reads its seed — before the old one's
+ * unmount runs. `Pane` stands in for that: changing `shape` swaps the key.
+ */
+function Pane({ shape, children }: { shape: string; children: React.ReactNode }) {
+  return <div key={shape}>{children}</div>;
+}
+
+describe('D2 — a composer rebuilt in one commit shows what the box held, not an older save', () => {
+  it('a new tab that was never saved keeps its text when its pane is rebuilt', async () => {
+    // Measured in the production bundle: type into a new tab, drag it into a new
+    // pane — the composer was empty, and still empty after switching away and
+    // back.
+    const view = render(
+      <Pane shape="single">
+        <NewChat label="tab" draftKey="tab:d2-drag" />
+      </Pane>
+    );
+    await type('tab', 'NEVER SAVED THEN DRAGGED');
+
+    view.rerender(
+      <Pane shape="split-right">
+        <NewChat label="tab" draftKey="tab:d2-drag" />
+      </Pane>
+    );
+    expect(box('tab').value).toBe('NEVER SAVED THEN DRAGGED');
+
+    // And the rebuilt composer did not save an empty box over it on its way out.
+    view.unmount();
+    render(<NewChat label="tab" draftKey="tab:d2-drag" />);
+    expect(box('tab').value).toBe('NEVER SAVED THEN DRAGGED');
+  });
+
+  it('text typed since the last save survives a split and then a collapse', async () => {
+    // Measured: "PROD A" saved by a tab switch, then " PROD B" typed; a split
+    // showed "PROD A". Then " PROD C" typed and the split collapsed: "PROD A PROD
+    // B" came back over "PROD A PROD C" on screen.
+    const first = render(<NewChat label="tab" draftKey="tab:d2-prod" />);
+    await type('tab', 'PROD A');
+    first.unmount();
+
+    const view = render(
+      <Pane shape="single">
+        <NewChat label="tab" draftKey="tab:d2-prod" />
+      </Pane>
+    );
+    expect(box('tab').value).toBe('PROD A');
+    await type('tab', 'PROD A PROD B');
+
+    view.rerender(
+      <Pane shape="split">
+        <NewChat label="tab" draftKey="tab:d2-prod" />
+      </Pane>
+    );
+    expect(box('tab').value).toBe('PROD A PROD B');
+
+    await type('tab', 'PROD A PROD B PROD C');
+    view.rerender(
+      <Pane shape="collapsed">
+        <NewChat label="tab" draftKey="tab:d2-prod" />
+      </Pane>
+    );
+    expect(box('tab').value).toBe('PROD A PROD B PROD C');
+  });
+
+  it('a staged image is in the rebuilt composer and is not deleted', async () => {
+    const view = render(
+      <Pane shape="single">
+        <NewChat label="tab" draftKey="tab:d2-image" />
+      </Pane>
+    );
+    await pasteImage('tab');
+    await type('tab', 'DRAG ME WITH MY DRAFT');
+
+    view.rerender(
+      <Pane shape="split">
+        <NewChat label="tab" draftKey="tab:d2-image" />
+      </Pane>
+    );
+
+    expect(box('tab').value).toBe('DRAG ME WITH MY DRAFT');
+    expect(pastedImages('tab')).toHaveLength(1);
+    expect(deleteTempFile).not.toHaveBeenCalled();
+  });
+
+  it('the store knows what a composer still on screen holds, as it is typed', async () => {
+    // Where a started chat may go is decided from the store
+    // (`unsentComposerTabs`), at a moment the composer holding a draft may never
+    // have been unmounted — a launcher message arriving while the person types
+    // into a blank tab. A draft saved only on the way out was invisible there.
+    render(<NewChat label="tab" draftKey="tab:on-screen" />);
+    await type('tab', 'still typing');
+    expect(readComposerDraft('tab:on-screen')?.text).toBe('still typing');
+    expect(unsentComposerTabs().drafted).toEqual(['on-screen']);
+
+    await pasteImage('tab');
+    expect(readComposerDraft('tab:on-screen')?.images).toHaveLength(1);
+
+    await type('tab', '');
+    expect(readComposerDraft('tab:on-screen')?.text).toBe('');
+  });
+
+  it('a give-back that lands after the composer read its seed is shown, not overwritten', async () => {
+    // Between a composer's render and its commit nothing of it is listening
+    // yet. `LateGiveBack` renders after the composer in the same pass and hands
+    // a message back under its key in exactly that gap.
+    let handed = false;
+    function LateGiveBack() {
+      if (!handed) {
+        handed = true;
+        giveBackToComposer('tab:d2-late', {
+          text: 'returned in the gap',
+          images: [],
+          files: [],
+        });
+      }
+      return null;
+    }
+    render(
+      <>
+        <NewChat label="tab" draftKey="tab:d2-late" />
+        <LateGiveBack />
+      </>
+    );
+
+    await waitFor(() => expect(box('tab').value).toBe('returned in the gap'));
+    expect(readComposerDraft('tab:d2-late')?.text).toBe('returned in the gap');
+  });
+});
+
+describe('D4 — a message still in flight when its composer goes is handed back to the next one', () => {
+  it('fails after the tab was left, and is there when it is shown again', async () => {
+    let answer!: (taken: boolean) => void;
+    function Sender() {
+      return (
+        <section aria-label="tab">
+          <ChatInput
+            sessionId=""
+            draftKey="tab:d4-away"
+            handleSubmit={() => new Promise<boolean>((resolve) => (answer = resolve))}
+            chatState={ChatState.Idle}
+            onStop={vi.fn()}
+            initialValue=""
+            setView={vi.fn()}
+            totalTokens={0}
+            accumulatedInputTokens={0}
+            accumulatedOutputTokens={0}
+            messagesLength={0}
+            disableAnimation={false}
+            toolCount={0}
+            onWorkingDirChange={vi.fn()}
+          />
+        </section>
+      );
+    }
+    const first = render(<Sender />);
+    await pasteImage('tab');
+    await type('tab', 'sent, then I went to Settings');
+    await pressEnter('tab');
+    expect(box('tab').value).toBe('');
+
+    first.unmount();
+    await act(async () => {
+      answer(false);
+      await nextTask();
+    });
+
+    render(<Sender />);
+    expect(box('tab').value).toBe('sent, then I went to Settings');
+    expect(pastedImages('tab')).toHaveLength(1);
+    expect(deleteTempFile).not.toHaveBeenCalled();
   });
 });

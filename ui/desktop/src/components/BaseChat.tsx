@@ -1682,6 +1682,11 @@ function BaseChatContent({
             resumeSessionId: newSession.id,
             initialMessage: textValue,
             initialAttachments: attachments,
+            // The chat binds to the tab its message was typed in — never to
+            // whichever blank tab happens to be focused when the start answers,
+            // which could be another tab holding its own unsent message
+            // (`OpenTabPayload.originTabId`).
+            originTabId: terminalKey,
           },
           { replace: true }
         );

@@ -6,6 +6,8 @@ export interface UrlOpenRequest {
   sessionId: string;
   initialMessage?: string;
   initialAttachments?: UserAttachment[];
+  /** The tab the message that started this chat was typed in, when it was one. */
+  originTabId?: string;
   /**
    * The session's name, when the OPENER already knows it.
    *
@@ -103,6 +105,7 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
     const state = (location.state ?? {}) as {
       initialMessage?: string;
       initialAttachments?: UserAttachment[];
+      originTabId?: string;
       title?: string;
       userSetName?: boolean;
     };
@@ -120,6 +123,7 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
       sessionId: param,
       initialMessage: state.initialMessage,
       initialAttachments: state.initialAttachments,
+      originTabId: typeof state.originTabId === 'string' ? state.originTabId : undefined,
       title,
       userSetName: state.userSetName ?? (urlTitle ? true : undefined),
     });

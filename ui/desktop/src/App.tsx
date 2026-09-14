@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState, useRef } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { IpcRendererEvent } from 'electron';
 import {
   HashRouter,
@@ -26,6 +26,7 @@ import { PairRouteState } from './components/Pair';
 import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
 import { requestNewTab } from './components/chatGroups/newTabRegistry';
 import { useEmptyPairRedirect } from './components/chatGroups/useEmptyPairRedirect';
+import { useNewChatTabRequests } from './components/chatGroups/useNewChatTabRequests';
 import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
@@ -135,24 +136,10 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
   // hook; isCreatingSession is the only piece that is component state here.
   useEmptyPairRedirect(isCreatingSession);
 
-  // The sidebar's new-chat button: open ONE empty tab per navigation. The tab
-  // carries sessionId '' until BaseChat's pre-session submit creates a real
-  // session; that navigation then ADOPTS this tab in place (see the reducer's
-  // empty-tab branch) rather than orphaning it beside a second one.
-  //
-  // The first request this mount handles is an ARRIVAL from another route (the
-  // provider mounts with this component), and an arrival focuses a tab already
-  // holding an unsent new chat instead of opening a blank one beside it — see
-  // `OpenTabPayload.resumeUnsent`. A New chat pressed while /pair is on screen
-  // still opens a tab.
-  const newChatKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!isNewChat || !dispatch) return;
-    if (newChatKeyRef.current === location.key) return;
-    const arriving = newChatKeyRef.current === null;
-    newChatKeyRef.current = location.key;
-    dispatch({ type: 'openTab', payload: { sessionId: '', resumeUnsent: arriving } });
-  }, [isNewChat, location.key, dispatch]);
+  // The sidebar's new-chat button: one empty tab per navigation, or — for the
+  // navigation this route mounted on — the tab already holding an unsent new
+  // chat. See the hook for the rule and the defect its first version had.
+  useNewChatTabRequests(isNewChat, dispatch);
 
   // Create a session when we have something to say but nothing to say it in.
   useEffect(() => {

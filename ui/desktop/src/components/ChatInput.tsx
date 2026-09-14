@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import { annotationContextText, onArtifactAnnotation } from '../utils/annotationChannel';
 import { ArrowUp, ChevronsDownUp, Plus, X } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
@@ -57,7 +57,8 @@ import { findRefTags } from '../utils/resourceRefs';
 import { RESTORE_CHAT_INPUT_EVENT, composerRestoreIsFor } from '../utils/composerRestore';
 import {
   EMPTY_COMPOSER_DRAFT,
-  giveBackToComposer,
+  beginComposerSend,
+  composerDraftVersion,
   mergeComposerDraft,
   readComposerDraft,
   saveComposerDraft,
@@ -354,16 +355,17 @@ interface ChatInputProps {
   initialValue?: string;
   /**
    * The TAB this composer belongs to while its chat does not exist yet
-   * (`composerDraftKeyForTab`), or nothing for a composer of an existing chat
-   * and for Home's.
+   * (`composerDraftKeyForTab`), Home's key (`HOME_COMPOSER_DRAFT_KEY`), or
+   * nothing for a composer of an existing chat.
    *
    * With a key, what the composer holds is not this instance's alone: it is
-   * seeded from, and saved back to, the tab's draft in `utils/composerDrafts.ts`,
-   * and a message a send did not take is handed back THROUGH the key. That is
-   * what lets an unsent new chat survive the rebuilds a person never sees — a
-   * failed start remounting the composer, a tab switch, leaving /pair — and it
-   * is the composer's only addressable identity: no other composer can be
-   * reached under it. See that module for the lifetime and why it is bounded.
+   * seeded from, and saved on every change to, the draft in
+   * `utils/composerDrafts.ts`, and a message a send did not take is handed back
+   * THROUGH the key — even after this instance is gone. That is what lets an
+   * unsent new chat survive the rebuilds a person never sees — a failed start
+   * remounting the composer, a tab switch, a split, leaving /pair — and it is
+   * the composer's only addressable identity: no other composer can be reached
+   * under it. See that module for the lifetime and why it is bounded.
    */
   draftKey?: string;
   droppedFiles?: DroppedFile[];
@@ -449,11 +451,17 @@ export default function ChatInput({
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
   // first render, and used to seed state rather than applied by an effect: an
   // effect would run after a first render showing an empty box, and after the
-  // `[initialValue]` effect below — and anything that saved in between (a
-  // StrictMode remount does exactly that) would save the empty box over it.
-  const [seedDraft] = useState<ComposerDraft | undefined>(() =>
-    draftKey ? readComposerDraft(draftKey) : undefined
+  // `[initialValue]` effect below. The stamp read with it is how the draft
+  // effects below tell whether anyone wrote under this key after this render.
+  const [seed] = useState<{ draft: ComposerDraft | undefined; version: number } | undefined>(() =>
+    draftKey
+      ? { draft: readComposerDraft(draftKey), version: composerDraftVersion(draftKey) }
+      : undefined
   );
+  const seedDraft = seed?.draft;
+  // The stamp of the store write this box reflects: the seed's, then each save
+  // this composer makes.
+  const draftVersionRef = useRef(seed?.version ?? 0);
   const [_value, setValue] = useState(seedDraft?.text ?? initialValue);
   const [displayValue, setDisplayValue] = useState(seedDraft?.text ?? initialValue); // For immediate visual feedback
   // (`isFocused` used to live here, mirroring the textarea's focus into React
@@ -1045,7 +1053,10 @@ export default function ChatInput({
     handleDragEnter: handleLocalDragEnter,
     handleDragOver: handleLocalDragOver,
     handleDragLeave: handleLocalDragLeave,
-  } = useFileDrop(() => [...(seedDraft?.files ?? [])]);
+  } = useFileDrop(() =>
+    // Files the parent still holds are shown from there, not twice.
+    (seedDraft?.files ?? []).filter((file) => !droppedFiles.some((held) => held.id === file.id))
+  );
 
   // Merge local dropped files with parent dropped files. Keep every dropped
   // item visible: model capability determines whether an image is uploaded as
@@ -1083,7 +1094,7 @@ export default function ChatInput({
    * synchronously, so an unmount before the next render saves what is shown.
    */
   const showDraft = useCallback(
-    (next: ComposerDraft) => {
+    (next: ComposerDraft, { focus = true }: { focus?: boolean } = {}) => {
       displayValueRef.current = next.text;
       setDisplayValue(next.text);
       setValue(next.text);
@@ -1095,7 +1106,7 @@ export default function ChatInput({
       localDroppedFilesRef.current = local;
       setLocalDroppedFiles(local);
       if (next.text.trim()) setHasUserTyped(true);
-      textAreaRef.current?.focus();
+      if (focus) textAreaRef.current?.focus();
       // A preview that was never read — an image handed back by path — is read
       // back from the file it names, as an annotation's is.
       for (const image of next.images) {
@@ -1129,21 +1140,53 @@ export default function ChatInput({
     [heldDraft, showDraft]
   );
 
-  // A NEW chat's composer: its tab's draft is where the box lives between
-  // composers. The seed above is the way in; this is the way out (saved as the
-  // composer goes, whatever takes it — a failed start's remount, a tab switch,
-  // the route changing) and the addressed way back (a give-back under this key
-  // lands on whichever composer holds it, merged, and saved at once).
-  useEffect(() => {
+  // A NEW chat's composer (and Home's): the draft under its key is where the box
+  // lives between composers. The seed above is the way in. These are the way out
+  // and the addressed way back.
+  //
+  // ⚠ SAVED ON EVERY CHANGE, never only on the way out. The composer that
+  // replaces this one reads its seed while it RENDERS, and React renders the
+  // replacement before it runs this one's unmount — splitting a pane, closing
+  // the other half of a split, dragging a tab into a new pane all rebuild the
+  // composer in one commit. A save made only at unmount therefore reached the
+  // replacement one save late: measured in the production bundle, "PROD A PROD
+  // B" came back as "PROD A", and a tab dragged before its first save arrived
+  // empty. Layout effects, so the store is current before anything else can
+  // render.
+  //
+  // Mounting under a key: anything written there since this composer read its
+  // seed (a give-back landing between its render and its commit, or the composer
+  // it replaced saving on its way out) is newer than the seed, so the box adopts
+  // it instead of the save below writing the stale seed over it. Then listen for
+  // give-backs, which land merged into whatever the box holds by then.
+  useLayoutEffect(() => {
     if (!draftKey) return;
+    if (composerDraftVersion(draftKey) !== draftVersionRef.current) {
+      showDraft(readComposerDraft(draftKey) ?? EMPTY_COMPOSER_DRAFT, { focus: false });
+      draftVersionRef.current = composerDraftVersion(draftKey);
+    }
     const unsubscribe = subscribeComposerGiveBack(draftKey, (returned) => {
-      saveComposerDraft(draftKey, takeBack(returned));
+      draftVersionRef.current = saveComposerDraft(draftKey, takeBack(returned));
     });
     return () => {
       unsubscribe();
-      saveComposerDraft(draftKey, heldDraft());
+      // On the way out, only if nobody else has written here since this
+      // composer last did: a composer must never put its older copy back over
+      // a newer one. Every change was saved as it happened, so this matters only
+      // for a change made and unmounted before it could commit.
+      if (composerDraftVersion(draftKey) === draftVersionRef.current) {
+        draftVersionRef.current = saveComposerDraft(draftKey, heldDraft());
+      }
     };
-  }, [draftKey, heldDraft, takeBack]);
+  }, [draftKey, heldDraft, showDraft, takeBack]);
+
+  useLayoutEffect(() => {
+    if (!draftKey) return;
+    // Declared after the mount effect above so a newer store copy is adopted
+    // before this saves; `heldDraft` reads the refs that adoption just moved.
+    if (composerDraftVersion(draftKey) !== draftVersionRef.current) return;
+    draftVersionRef.current = saveComposerDraft(draftKey, heldDraft());
+  }, [draftKey, heldDraft, displayValue, pastedImages, localDroppedFiles, droppedFiles]);
 
   // A message handed back to an EXISTING chat's composer by that chat's id
   // (`BaseChat.returnInitialMessageToComposer`). `composerRestoreIsFor` refuses
@@ -1430,11 +1473,10 @@ export default function ChatInput({
     return () => {
       // Clear any pending timeouts from image processing
       //
-      // A new chat's composer does NOT delete its staged images on the way out:
-      // they went into its tab's draft a moment ago (the draft effect above
-      // saves on unmount) and the composer that shows the tab next needs the
-      // files. The draft's owner deletes them when the tab is gone
-      // (`retainTabComposerDrafts`).
+      // A composer with a draft key does NOT delete its staged images on the
+      // way out: they are in its draft (saved as they were staged) and the
+      // composer that shows that key next needs the files. The draft's owner
+      // deletes them when the tab is gone (`retainTabComposerDrafts`).
       if (!draftKeyRef.current) {
         setPastedImages((currentImages) => {
           currentImages.forEach((img) => {
@@ -2187,14 +2229,22 @@ export default function ChatInput({
           images: draftImagesOf(pastedImages),
           files: draftFilesOf(allDroppedFiles),
         };
-        // Captured at the send: the message belongs to the tab it was typed in,
-        // whatever this composer has become when the answer arrives.
-        const unsentKey = draftKey;
-        void Promise.resolve(submitted).then((accepted) => {
-          if (accepted !== false) return;
-          if (unsentKey) giveBackToComposer(unsentKey, unsent);
-          else takeBack(unsent);
-        });
+        // Captured at the send: the message belongs to the key it was typed
+        // under, whatever this composer has become when the answer arrives —
+        // even unmounted, because the person went to Settings in the meantime.
+        // The key is marked sending until then, which keeps its tab.
+        const inFlight = draftKey ? beginComposerSend(draftKey) : null;
+        void Promise.resolve(submitted).then(
+          (accepted) => {
+            if (accepted !== false) inFlight?.settle();
+            else if (inFlight) inFlight.giveBack(unsent);
+            else takeBack(unsent);
+          },
+          (error: unknown) => {
+            inFlight?.settle();
+            throw error;
+          }
+        );
 
         // Auto-resume queue after sending a NON-interruption message (if it was paused due to interruption)
         if (
@@ -2223,16 +2273,15 @@ export default function ChatInput({
           setLocalDroppedFiles([]);
         }
 
-        // The message now belongs to the send. Nothing of it may stay in the
-        // tab's draft — a start that SUCCEEDS carries it to the new chat as
-        // cargo, and a draft still holding it would hand it back as well. The
-        // refs are cleared with the state, not at the next render, because this
-        // composer can be unmounted before that render and saves from them.
+        // The message now belongs to the send, and `beginComposerSend` above
+        // has already emptied the draft. The refs are cleared with the state,
+        // not at the next render, because this composer can be unmounted before
+        // that render and saves from them.
         displayValueRef.current = '';
         pastedImagesRef.current = [];
         localDroppedFilesRef.current = [];
         parentDroppedFilesRef.current = [];
-        if (draftKey) saveComposerDraft(draftKey, EMPTY_COMPOSER_DRAFT);
+        if (draftKey) draftVersionRef.current = composerDraftVersion(draftKey);
       }
     },
     [

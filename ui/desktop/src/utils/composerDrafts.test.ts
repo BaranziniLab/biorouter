@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   EMPTY_COMPOSER_DRAFT,
+  HOME_COMPOSER_DRAFT_KEY,
+  beginComposerSend,
+  composerDraftVersion,
+  holdsUnsentMessage,
+  isComposerSending,
+  unsentComposerTabs,
   composerDraftKeyForTab,
   giveBackToComposer,
   hasComposerDraft,
@@ -130,5 +136,79 @@ describe('retainTabComposerDrafts — bounded by the tabs that exist and have no
     saveComposerDraft('elsewhere', draft('not a tab'));
     retainTabComposerDrafts([]);
     expect(hasComposerDraft('elsewhere')).toBe(true);
+  });
+});
+
+describe('stamps — how a composer knows the store moved on without it (D2)', () => {
+  it('stamps every real write, and not a write of what is already there', () => {
+    const key = composerDraftKeyForTab('stamp');
+    expect(composerDraftVersion(key)).toBe(0);
+    const first = saveComposerDraft(key, draft('a'));
+    expect(first).toBeGreaterThan(0);
+    expect(saveComposerDraft(key, draft('a'))).toBe(first);
+    const second = saveComposerDraft(key, draft('ab'));
+    expect(second).toBeGreaterThan(first);
+    expect(composerDraftVersion(key)).toBe(second);
+  });
+
+  it('a give-back moves the stamp even with no composer listening', () => {
+    const key = composerDraftKeyForTab('stamp-gb');
+    const before = saveComposerDraft(key, draft('typed'));
+    giveBackToComposer(key, draft('returned'));
+    expect(composerDraftVersion(key)).toBeGreaterThan(before);
+  });
+});
+
+describe('beginComposerSend — a message in flight (D4)', () => {
+  it('empties the draft and marks the key until the send answers', () => {
+    const key = composerDraftKeyForTab('fly');
+    saveComposerDraft(key, draft('about to send', { images: [image(1)] }));
+
+    const send = beginComposerSend(key);
+
+    expect(hasComposerDraft(key)).toBe(false);
+    expect(isComposerSending(key)).toBe(true);
+    expect(holdsUnsentMessage(key)).toBe(true);
+    expect(unsentComposerTabs()).toEqual({ drafted: [], sending: ['fly'] });
+
+    send.settle();
+    send.settle();
+    expect(isComposerSending(key)).toBe(false);
+    expect(holdsUnsentMessage(key)).toBe(false);
+    // Taking the message is not deleting its image: the send carries it.
+    expect(deleteTempFile).not.toHaveBeenCalled();
+  });
+
+  it('a refused send hands the message back under the key and settles', () => {
+    const key = composerDraftKeyForTab('refused');
+    const send = beginComposerSend(key);
+
+    send.giveBack(draft('not taken', { images: [image(2)] }));
+
+    expect(readComposerDraft(key)).toEqual(draft('not taken', { images: [image(2)] }));
+    expect(isComposerSending(key)).toBe(false);
+    expect(unsentComposerTabs()).toEqual({ drafted: ['refused'], sending: [] });
+  });
+
+  it('Home is not a tab: never listed, never released by the tab strip', () => {
+    saveComposerDraft(HOME_COMPOSER_DRAFT_KEY, draft('home', { images: [image(3)] }));
+    beginComposerSend(HOME_COMPOSER_DRAFT_KEY);
+    saveComposerDraft(HOME_COMPOSER_DRAFT_KEY, draft('home again'));
+
+    retainTabComposerDrafts([]);
+
+    expect(unsentComposerTabs()).toEqual({ drafted: [], sending: [] });
+    expect(readComposerDraft(HOME_COMPOSER_DRAFT_KEY)?.text).toBe('home again');
+  });
+
+  it('a closed tab takes its stamp and its in-flight mark with it', () => {
+    const key = composerDraftKeyForTab('closed');
+    saveComposerDraft(key, draft('x'));
+    beginComposerSend(key);
+
+    retainTabComposerDrafts([]);
+
+    expect(composerDraftVersion(key)).toBe(0);
+    expect(isComposerSending(key)).toBe(false);
   });
 });
