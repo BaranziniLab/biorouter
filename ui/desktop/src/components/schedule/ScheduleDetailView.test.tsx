@@ -24,6 +24,14 @@ vi.mock('../../schedule', () => ({
 }));
 vi.mock('../../toasts', () => mocks);
 vi.mock('../../api', () => ({ getSession: vi.fn() }));
+// The session list is where a run's privacy tier comes from (its own endpoint
+// carries none). `null` is "not fetched yet", as the real cache starts.
+let cachedSessionList: Array<{ id: string; privacy_tier?: string }> | null = null;
+vi.mock('../../utils/sessionListCache', () => ({
+  getCachedSessionList: () => cachedSessionList,
+  subscribeSessionList: () => () => {},
+  preloadSessionList: () => {},
+}));
 vi.mock('../sessions/SessionHistoryView', () => ({ default: () => null }));
 vi.mock('./ScheduleModal', () => ({ ScheduleModal: () => null }));
 vi.mock('../ui/scroll-area', () => ({
@@ -49,6 +57,7 @@ function renderDetails() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cachedSessionList = null;
   mocks.listSchedules.mockResolvedValue([schedule]);
   mocks.getScheduleSessions.mockResolvedValue([]);
   mocks.pauseSchedule.mockResolvedValue(undefined);
@@ -99,6 +108,54 @@ describe('manual schedule run feedback', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(mocks.runScheduleNow).not.toHaveBeenCalled();
     await act(async () => finish());
+  });
+});
+
+/**
+ * A run's glyph must not call a private run Public.
+ *
+ * `GET /schedule/{id}/sessions` lists a schedule's private runs to the desktop
+ * (it sends the proof) but its rows carry no `privacy_tier`, and until
+ * 2026-09-14 the row passed the glyph no tier at all — which the glyph drew as
+ * `data-privacy="public"` on every run. The tier now comes from the session
+ * list; a run that list does not carry is drawn as not yet known.
+ */
+describe('a run’s privacy glyph', () => {
+  const glyphFor = async (runName: string) => {
+    const row = (await screen.findByRole('button', { name: `Open run ${runName}` })) as HTMLElement;
+    const glyph = row.querySelector('[data-testid="chat-kind-icon"]');
+    expect(glyph).not.toBeNull();
+    return glyph as HTMLElement;
+  };
+
+  it('marks a private run private and a public run public, from the session list', async () => {
+    cachedSessionList = [
+      { id: 'run-private', privacy_tier: 'private' },
+      { id: 'run-public', privacy_tier: 'public' },
+    ];
+    mocks.getScheduleSessions.mockResolvedValue([
+      { id: 'run-private', name: 'Nightly cohort pull', messageCount: 4 },
+      { id: 'run-public', name: 'Nightly news digest', messageCount: 2 },
+    ]);
+    renderDetails();
+
+    const privateGlyph = await glyphFor('Nightly cohort pull');
+    expect(privateGlyph).toHaveAttribute('data-chat-kind', 'scheduled');
+    expect(privateGlyph).toHaveAttribute('data-privacy', 'private');
+    expect(privateGlyph.getAttribute('aria-label')).toBe('Scheduled run, private');
+    expect(await glyphFor('Nightly news digest')).toHaveAttribute('data-privacy', 'public');
+  });
+
+  it('draws a run the session list does not carry as not yet known, never public', async () => {
+    cachedSessionList = [];
+    mocks.getScheduleSessions.mockResolvedValue([
+      { id: 'run-unlisted', name: 'Run with no messages yet', messageCount: 0 },
+    ]);
+    renderDetails();
+
+    const glyph = await glyphFor('Run with no messages yet');
+    expect(glyph).not.toHaveAttribute('data-privacy', 'public');
+    expect(glyph).toHaveAttribute('data-privacy', 'unknown');
   });
 });
 

@@ -1,7 +1,7 @@
 import { cn } from '../../utils';
 import { usePrivacyTiersEnabled } from '../ConfigContext';
 import type { SessionClassification } from '../../api/types.gen';
-import { chatIconFor, chatKindOf, type ChatKindSource } from './chatKind';
+import { chatIconFor, chatKindOf, chatPrivacyMark, type ChatKindSource } from './chatKind';
 
 interface ChatKindIconProps {
   session: ChatKindSource;
@@ -46,7 +46,16 @@ interface ChatKindIconProps {
  * ⚠ **It honours the master privacy switch** for the same reason `PrivacyBadge`
  * does (issue #56, DR-15): when nothing is enforcing tiers, a padlocked bubble
  * claiming protection is a false statement. The KIND still renders — that fact
- * is true either way — and only the privacy treatment stands down.
+ * is true either way — and only the privacy treatment stands down, to
+ * `data-privacy="off"`.
+ *
+ * ⚠ **A tier no source has read is drawn as NOT YET KNOWN, never as Public** —
+ * the kind's unmarked shape, dimmed, with "privacy not yet known" in its name.
+ * It rendered `tier ?? 'public'` until 2026-09-14, and a private chat's
+ * subagent tabs said Public for seconds on every Settings round-trip and every
+ * reload. `ChatPrivacyMark` records the measurement and why "private until
+ * confirmed" is not the fix either. A caller with no tier passes none; it must
+ * never pass `'public'` to fill the gap.
  */
 export function ChatKindIcon({
   session,
@@ -55,16 +64,21 @@ export function ChatKindIcon({
   testId,
   isActive = false,
 }: ChatKindIconProps) {
-  const tiersEnabled = usePrivacyTiersEnabled();
-  const effectiveTier = tiersEnabled ? tier : null;
+  const mark = chatPrivacyMark(tier, usePrivacyTiersEnabled());
   const kind = chatKindOf(session);
-  const { Icon, label } = chatIconFor(kind, effectiveTier);
+  const { Icon, label } = chatIconFor(kind, mark);
 
   return (
     <Icon
       data-testid={testId ?? 'chat-kind-icon'}
       data-chat-kind={kind}
-      data-privacy={effectiveTier ?? 'public'}
+      // `private` | `public` | `unknown` | `off`. The dimming that makes
+      // `unknown` look unlike `public` is AUTHORED CSS keyed on this attribute
+      // (`.br-chat-kind-icon[data-privacy='unknown']` in main.css), not a
+      // Tailwind class here: under BIOROUTER_NO_HMR a newly written utility
+      // can silently fail to generate, and this state must not depend on
+      // class-scanning having worked.
+      data-privacy={mark}
       // `role="img"` + `aria-label`: a bare <svg> with a label is not announced
       // by every screen reader — the same trap the dense dot fell into.
       role="img"
@@ -74,9 +88,9 @@ export function ChatKindIcon({
       // marking, and stands down when the row is active because "you are here"
       // is the more urgent of the two and the padlock shape still says private.
       className={cn(
-        'flex-none',
+        'br-chat-kind-icon flex-none',
         className,
-        effectiveTier === 'private' && !isActive ? 'text-text-accent' : undefined
+        mark === 'private' && !isActive ? 'text-text-accent' : undefined
       )}
     />
   );

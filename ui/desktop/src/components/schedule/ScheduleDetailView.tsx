@@ -27,7 +27,8 @@ import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
 import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
 import { scheduleDisplayName } from '../../utils/builtins';
-import { getSession, Session } from '../../api';
+import { getSession, Session, type SessionClassification } from '../../api';
+import { useSessionListTiers } from '../privacy/useSessionListTiers';
 import { userActionHeaders } from '../../utils/userAction';
 
 interface ScheduleSessionMeta {
@@ -112,8 +113,25 @@ function DefinitionRow({
  * vocabulary. What IS shared is everything that decides how a chat LOOKS: the
  * kind glyph (`ChatKindIcon`), the billed-token selection and its format, and
  * `.biorouter-list-row`.
+ *
+ * ⚠ **`tier` comes from the session-list cache, because this row's own
+ * endpoint carries none.** `GET /schedule/{id}/sessions` returns
+ * `SessionDisplayInfo`, which has no `privacy_tier`, and until 2026-09-14 this
+ * row passed the glyph no tier at all — which the glyph then drew as
+ * `data-privacy="public"` on EVERY run, private ones included (the route lists a
+ * schedule's private runs to the desktop, which sends the proof). A run the
+ * list does not carry — one that has recorded no message yet — is drawn as not
+ * yet known, never as Public.
  */
-function RunRow({ session, onOpen }: { session: ScheduleSessionMeta; onOpen: () => void }) {
+function RunRow({
+  session,
+  tier,
+  onOpen,
+}: {
+  session: ScheduleSessionMeta;
+  tier: SessionClassification | undefined;
+  onOpen: () => void;
+}) {
   // `SessionDisplayInfo` is camelCase and `billedSessionTokenEstimate` reads the
   // session row's snake_case columns, so the mapping happens here rather than
   // the figure being re-derived: issue #1's whole point is that ONE helper
@@ -137,6 +155,7 @@ function RunRow({ session, onOpen }: { session: ScheduleSessionMeta; onOpen: () 
         <div className="flex min-w-0 items-center gap-1.5">
           <ChatKindIcon
             session={{ name: session.name, session_type: 'scheduled' }}
+            tier={tier}
             className="h-4 w-4"
           />
           <h3 className="min-w-0 truncate text-label" title={session.name || session.id}>
@@ -212,6 +231,8 @@ const RunRowSkeleton: React.FC = () => (
  */
 const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onNavigateBack }) => {
   const [sessions, setSessions] = useState<ScheduleSessionMeta[]>([]);
+  // Each run's tier, from the session list — see `RunRow`.
+  const runTiers = useSessionListTiers();
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
 
@@ -630,6 +651,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                         <RunRow
                           key={session.id}
                           session={session}
+                          tier={runTiers[session.id]}
                           onOpen={() => loadSession(session.id)}
                         />
                       ))}

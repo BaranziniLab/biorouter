@@ -2709,6 +2709,28 @@
   animation: none;
 }
 
+/* A chat glyph whose privacy tier no source has read yet (`ChatKindIcon`,
+   issue #56). It keeps the kind's unmarked shape — a padlock would be a claim —
+   and is dimmed so it does not read as the settled Public glyph either: the
+   renderer drew exactly this state as `data-privacy="public"` until 2026-09-14,
+   and a private chat's subagent tabs said Public for seconds after every
+   Settings round-trip and every reload. When the tier lands the glyph eases up
+   to full ink (the global reduced-motion block clamps the transition).
+
+   Authored here, keyed on the attribute, and never a Tailwind class at the call
+   site: under BIOROUTER_NO_HMR a newly written utility can silently fail to
+   generate, and "not yet known" must not depend on class-scanning having
+   worked. Unlayered, so no utility on the element can outrank it.
+   `ChatKindIcon.test.tsx` asserts the rule at the source, because jsdom never
+   loads this file. */
+.br-chat-kind-icon {
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.br-chat-kind-icon[data-privacy='unknown'] {
+  opacity: 0.4;
+}
+
 @keyframes br-tab-pulse {
   0%,
   100% {

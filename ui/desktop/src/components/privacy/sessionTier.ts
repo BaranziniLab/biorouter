@@ -41,8 +41,10 @@ import type { SessionClassification } from '../../api/types.gen';
  * they only ever report a row.
  *
  * ⚠ **`undefined` is not `public`.** An id no source has an opinion about stays
- * absent from the result, and the glyph renders unmarked. Asserting Public for
- * a chat nobody has read is the same lie in the other direction.
+ * absent from the result, and the glyph (`ChatKindIcon`) draws it as not yet
+ * known. Asserting Public for a chat nobody has read is the same lie in the
+ * other direction — and the glyph told exactly that lie, `tier ?? 'public'`,
+ * until 2026-09-14, so every map here was right and the tab still said Public.
  */
 
 /** `max` over `public < private`; `undefined` is "no opinion", not `public`. */

@@ -348,11 +348,13 @@ describe('RecentChats', () => {
     // Every row has a glyph now — the marker is which one, not whether one is
     // there. Exactly one row may claim the private tier, and an untiered row
     // must not: reading "no tier recorded" as private would mark half the
-    // history, and reading it as private-looking is the same failure.
+    // history, and reading it as private-looking is the same failure. Nor may
+    // it claim Public, which is the same guess the other way round — it is
+    // drawn as not yet known.
     const glyphs = [0, 1, 2].map((i) => screen.getByTestId(`recent-chat-glyph-session-${i}`));
     expect(glyphs.map((g) => g.getAttribute('data-privacy'))).toEqual([
       'public',
-      'public',
+      'unknown',
       'private',
     ]);
     expect(glyphs.filter((g) => g.getAttribute('aria-label') === 'Private chat')).toHaveLength(1);
