@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, act, waitFor } from '@testing-library/react';
-import { MemoryRouter, useNavigate, type NavigateFunction } from 'react-router-dom';
+import {
+  MemoryRouter,
+  useNavigate,
+  type InitialEntry,
+  type NavigateFunction,
+} from 'react-router-dom';
+import type { ChatGroupsState } from '../components/chatGroups/chatGroupsTypes';
 import { ChatGroupsProvider, useChatGroups } from './ChatGroupsContext';
 import { requestNewTab, resetNewTabRegistry } from '../components/chatGroups/newTabRegistry';
 import {
@@ -32,9 +38,12 @@ vi.mock('../utils/sessionNameSync', () => ({ subscribeSessionNameChanges: () => 
 
 let ctx: ReturnType<typeof useChatGroups> = null;
 let navigateTo: NavigateFunction | null = null;
+/** Every state the probe rendered, in order: `[0]` is the provider's FIRST state. */
+let rendered: ChatGroupsState[] = [];
 function Probe() {
   ctx = useChatGroups();
   navigateTo = useNavigate();
+  if (ctx) rendered.push(ctx.state);
   const group = ctx?.activeGroup;
   return (
     <div>
@@ -47,9 +56,9 @@ function Probe() {
   );
 }
 
-const mount = () =>
+const mount = (entry: InitialEntry = '/pair') =>
   render(
-    <MemoryRouter initialEntries={['/pair']}>
+    <MemoryRouter initialEntries={[entry]}>
       <ChatGroupsProvider>
         <Probe />
       </ChatGroupsProvider>
@@ -61,6 +70,7 @@ const tabIds = () => screen.getByTestId('tabs').textContent!.split(',').filter(B
 const deleteTempFile = vi.fn();
 
 beforeEach(() => {
+  rendered = [];
   localStorage.clear();
   sessionStorage.clear();
   resetNewTabRegistry();
@@ -84,6 +94,39 @@ const twoNewTabsFirstUnsent = async () => {
   act(() => ctx!.dispatch({ type: 'activateTab', tabId: unsent }));
   await waitFor(() => expect(screen.getByTestId('active')).toHaveTextContent(unsent));
   return { view, unsent, blank };
+};
+
+/**
+ * The layout the pane-swap defect was measured in: the left pane SHOWING a draft,
+ * the right pane showing a chat with a second draft BEHIND it, and the right
+ * pane focused.
+ */
+const splitWithDraftBehindChat = async () => {
+  const view = mount();
+  act(() => void requestNewTab());
+  await waitFor(() => expect(tabIds()).toHaveLength(1));
+  const [leftDraft] = tabIds();
+  act(() => ctx!.dispatch({ type: 'openTab', payload: { sessionId: 's-chat', title: 'chat' } }));
+  await waitFor(() => expect(tabIds()).toHaveLength(2));
+  const chat = tabIds()[1];
+  act(() =>
+    ctx!.dispatch({ type: 'moveTabToGroup', tabId: chat, targetGroupId: 'grp-1', zone: 'right' })
+  );
+  const right = Object.keys(ctx!.state.groups).find((id) => id !== 'grp-1')!;
+  act(() => ctx!.dispatch({ type: 'openTab', payload: { sessionId: '', groupId: right } }));
+  const rightDraft = ctx!.state.groups[right].tabs[1].tabId;
+  act(() => ctx!.dispatch({ type: 'activateTab', tabId: chat }));
+  for (const [tabId, text] of [
+    [leftDraft, 'LEFT PANE DRAFT'],
+    [rightDraft, 'RIGHT BACKGROUND DRAFT'],
+  ]) {
+    saveComposerDraft(composerDraftKeyForTab(tabId), { text, images: [], files: [] });
+  }
+  const shown = (state: ChatGroupsState) =>
+    Object.fromEntries(Object.values(state.groups).map((g) => [g.groupId, g.activeTabId]));
+  expect(shown(ctx!.state)).toEqual({ 'grp-1': leftDraft, [right]: chat });
+  expect(ctx!.state.activeGroupId).toBe(right);
+  return { view, leftDraft, chat, right, rightDraft, shown };
 };
 
 describe('a new tab holding an unsent message', () => {
@@ -117,41 +160,56 @@ describe('a new tab holding an unsent message', () => {
     // right pane showing the chat "Prompt injection test", a new tab holding
     // "RIGHT BACKGROUND DRAFT" behind it. Settings, then New chat: the right
     // pane's chat was replaced by its background tab.
-    const view = mount();
-    act(() => void requestNewTab());
-    await waitFor(() => expect(tabIds()).toHaveLength(1));
-    const [leftDraft] = tabIds();
-    act(() => ctx!.dispatch({ type: 'openTab', payload: { sessionId: 's-chat', title: 'chat' } }));
-    await waitFor(() => expect(tabIds()).toHaveLength(2));
-    const chat = tabIds()[1];
-    act(() =>
-      ctx!.dispatch({ type: 'moveTabToGroup', tabId: chat, targetGroupId: 'grp-1', zone: 'right' })
-    );
-    const right = Object.keys(ctx!.state.groups).find((id) => id !== 'grp-1')!;
-    act(() => ctx!.dispatch({ type: 'openTab', payload: { sessionId: '', groupId: right } }));
-    const rightDraft = ctx!.state.groups[right].tabs[1].tabId;
-    act(() => ctx!.dispatch({ type: 'activateTab', tabId: chat }));
-    for (const [tabId, text] of [
-      [leftDraft, 'LEFT PANE DRAFT'],
-      [rightDraft, 'RIGHT BACKGROUND DRAFT'],
-    ]) {
-      saveComposerDraft(composerDraftKeyForTab(tabId), { text, images: [], files: [] });
-    }
-    const shown = () =>
-      Object.fromEntries(Object.values(ctx!.state.groups).map((g) => [g.groupId, g.activeTabId]));
-    expect(shown()).toEqual({ 'grp-1': leftDraft, [right]: chat });
-    expect(ctx!.state.activeGroupId).toBe(right);
+    const { view, leftDraft, chat, right, rightDraft, shown } = await splitWithDraftBehindChat();
 
     act(() => view.unmount());
     act(() => void requestNewTab());
     mount();
 
     await waitFor(() => expect(ctx!.state.activeGroupId).toBe('grp-1'));
-    expect(shown()).toEqual({ 'grp-1': leftDraft, [right]: chat });
+    expect(shown(ctx!.state)).toEqual({ 'grp-1': leftDraft, [right]: chat });
     expect(ctx!.state.groups[right].tabs.map((t) => t.tabId)).toEqual([chat, rightDraft]);
     expect(readComposerDraft(composerDraftKeyForTab(rightDraft))?.text).toBe(
       'RIGHT BACKGROUND DRAFT'
     );
+  });
+
+  const bySidebar = (): InitialEntry => ({ pathname: '/pair', state: { newChat: true } });
+  const byRememberedCmdT = (): InitialEntry => {
+    act(() => void requestNewTab());
+    return '/pair';
+  };
+  it.each([
+    ['the sidebar’s New chat', bySidebar],
+    ['a remembered Cmd+T', byRememberedCmdT],
+  ] as const)(
+    'an arrival by %s is in the FIRST state, before any pane mounts',
+    async (_, arrive) => {
+      // Resolved after mount, the arrival raced every pane's composer taking the
+      // focus as it mounted: measured in the dev app, the left pane's draft was
+      // resumed and the right pane's chat still ended up focused, with the caret.
+      const { view, leftDraft, chat, right, shown } = await splitWithDraftBehindChat();
+      act(() => view.unmount());
+      rendered = [];
+
+      mount(arrive());
+
+      expect(rendered[0].activeGroupId).toBe('grp-1');
+      expect(shown(rendered[0])).toEqual({ 'grp-1': leftDraft, [right]: chat });
+      await waitFor(() => expect(ctx!.state.activeGroupId).toBe('grp-1'));
+      expect(shown(ctx!.state)).toEqual({ 'grp-1': leftDraft, [right]: chat });
+    }
+  );
+
+  it('a mount that is not an arrival keeps the layout it loaded', async () => {
+    const { view, chat, right } = await splitWithDraftBehindChat();
+    act(() => view.unmount());
+    rendered = [];
+
+    mount('/pair?resumeSessionId=s-chat');
+
+    expect(rendered[0].activeGroupId).toBe(right);
+    expect(rendered[0].groups[right].activeTabId).toBe(chat);
   });
 
   it('is gone after a RELOAD, which restores nothing', async () => {

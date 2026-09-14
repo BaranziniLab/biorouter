@@ -413,6 +413,17 @@ interface ChatInputProps {
    * undefined. */
   supportsVisionOverride?: boolean;
   supportedInputMimeTypesOverride?: string[] | null;
+  /**
+   * Take the keyboard focus when this composer MOUNTS (default true). Read at
+   * mount only; later changes do nothing.
+   *
+   * False for a split pane that is not the focused one. Every pane's composer
+   * mounts at once when /pair is rebuilt (coming back from Settings or Home), a
+   * focus inside a pane makes that pane the focused one, and the last composer
+   * to mount won: measured in the dev app, after resuming the draft showing in
+   * the left pane, the caret and the focused pane were the right pane's chat.
+   */
+  autoFocus?: boolean;
 }
 
 export default function ChatInput({
@@ -447,6 +458,7 @@ export default function ChatInput({
   onWorkingDirChange,
   supportsVisionOverride,
   supportedInputMimeTypesOverride,
+  autoFocus = true,
 }: ChatInputProps) {
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
   // first render, and used to seed state rather than applied by an effect: an
@@ -1305,8 +1317,9 @@ export default function ChatInput({
     }
   };
 
+  const autoFocusAtMountRef = useRef(autoFocus);
   useEffect(() => {
-    if (textAreaRef.current) {
+    if (autoFocusAtMountRef.current && textAreaRef.current) {
       textAreaRef.current.focus();
     }
   }, []);
@@ -3079,7 +3092,7 @@ export default function ChatInput({
               relying on the parent keeping `display:flex` forever. */}
             <textarea
               data-testid="chat-input"
-              autoFocus
+              autoFocus={autoFocusAtMountRef.current}
               id="dynamic-textarea"
               // The navigation hint is only true once there is something to
               // navigate. On Home and in a brand-new session the app's primary

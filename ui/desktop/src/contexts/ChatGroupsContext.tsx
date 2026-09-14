@@ -8,6 +8,7 @@ import {
   useState,
   useCallback,
 } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   chatGroupsReducer,
   ChatGroupsAction,
@@ -29,6 +30,7 @@ import { registerCloseActiveTab } from '../components/chatGroups/closeActiveTabR
 import {
   registerNewTab,
   consumePendingNewTab,
+  hasPendingNewTab,
   acknowledgeNewTabCommit,
 } from '../components/chatGroups/newTabRegistry';
 import {
@@ -124,15 +126,39 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   const windowIdRef = useRef<string>('');
   if (!windowIdRef.current) windowIdRef.current = getWindowId();
 
-  const [state, dispatch] = useReducer(chatGroupsReducer, windowIdRef.current, (windowId) =>
+  // The navigation this provider mounts on. Read for its first state only.
+  const mountLocation = useLocation();
+  const [state, dispatch] = useReducer(chatGroupsReducer, windowIdRef.current, (windowId) => {
     // A tab with no chat survives the re-read that coming back to /pair does
     // only while it holds an unsent message — a draft, or a message whose start
     // is still in flight — and that is renderer memory, so never across a
     // reload. See `LoadChatGroupsOptions.keepSessionlessTab`.
-    loadChatGroupsOrInitial(windowId, {
+    const loaded = loadChatGroupsOrInitial(windowId, {
       keepSessionlessTab: (tabId) => holdsUnsentMessage(composerDraftKeyForTab(tabId)),
-    })
-  );
+    });
+    // An ARRIVAL (sidebar New chat, or a Cmd+T remembered while another route
+    // was showing) lands in the FIRST state, so every pane mounts already
+    // knowing which one is focused and only that pane's composer takes the
+    // caret. Resolved after mount, the arrival raced the panes' own mount
+    // focus, which moves the focus to whichever pane focused last: measured in
+    // the dev app, the draft in the left pane was resumed and the right pane's
+    // chat was left with the caret and the focus.
+    //
+    // The two dispatches that cash these requests in still run
+    // (`useNewChatTabRequests`, `consumePendingNewTab` below). Resuming is
+    // idempotent — once resumed, the tab with no chat is the one on screen in
+    // the focused pane, and resuming again returns it — so they change nothing,
+    // and they still consume the Cmd+T. Pure reads only: StrictMode calls this
+    // initializer twice.
+    const arriving =
+      (mountLocation.state as { newChat?: unknown } | null)?.newChat === true || hasPendingNewTab();
+    return arriving
+      ? chatGroupsReducer(loaded, {
+          type: 'openTab',
+          payload: { sessionId: '', resumeUnsent: true },
+        })
+      : loaded;
+  });
 
   const running = useRunningChats();
   // `completedAt` must be filtered out, exactly as AppSidebar:139 does: the

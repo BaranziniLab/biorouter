@@ -1134,6 +1134,10 @@ interface BaseChatProps {
    * Electron window out from under the focused one. Callers that mount more
    * than one BaseChat pass false for every chat that isn't focused. */
   allowWindowResize?: boolean;
+  /** Whether the composer takes the keyboard focus when it mounts (default
+   * true). A split passes false for every pane but the focused one; see
+   * `ChatInput`'s `autoFocus`. */
+  autoFocusComposer?: boolean;
   /**
    * Whether this chat may render its artifact preview panel (default true).
    *
@@ -1194,6 +1198,7 @@ function BaseChatContent({
   onRenameSession,
   onSessionUpdate,
   allowWindowResize = true,
+  autoFocusComposer = true,
   artifactPanelEnabled = true,
   renderSessionTitle,
   terminalKey,
@@ -2264,6 +2269,7 @@ function BaseChatContent({
           // creates the session in it. Before the customChatInputProps spread,
           // so callers can still override.
           onWorkingDirChange={setPendingWorkingDir}
+          autoFocus={autoFocusComposer}
           {...customChatInputProps}
         />
       </SubagentComposerSlot>
