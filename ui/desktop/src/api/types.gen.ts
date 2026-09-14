@@ -343,6 +343,18 @@ export type CancelTurnResponse = {
      */
     settled: boolean;
     /**
+     * The rows the cancelled turn's Stop wrote to the transcript, in stored
+     * order: the prose its reply had streamed (text only), any steers it had
+     * accepted, and the "Stopped." notice it now ends on (item 7). These are
+     * exactly what a reload of the chat will show, so the caller can make its
+     * view agree without re-reading the conversation — the notice's own frame
+     * on the turn stream may arrive after a client has stopped listening.
+     *
+     * Present only when this request cancelled a running turn AND waited for it
+     * to settle (`wait_for_idle` or `continuation_pending`); omitted otherwise.
+     */
+    stop_messages?: Array<Message>;
+    /**
      * The id of the turn that was cancelled, when there was one.
      */
     turn_id?: string | null;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../ui/button';
-import { toastSuccess, toastError } from '../../toasts';
+import { toastSuccess } from '../../toasts';
 import {
   loadRegistry,
   rankSkills,
@@ -11,6 +11,14 @@ import {
 } from './registry';
 import { isBrowseQuery } from './search';
 import { installRegistrySkill } from './installSkill';
+import {
+  installButtonLabel,
+  installedToast,
+  installProgressLabel,
+  registrySkillCount,
+  type LandedInstall,
+} from './installCopy';
+import { reportInstallRun, type FailedRow } from './installReport';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 
 interface Props {
@@ -29,25 +37,6 @@ const CATEGORY_LABELS: Record<SkillCategory, string> = {
 
 type Filter = 'All' | SkillCategory;
 
-/**
- * The install button's label.
- *
- * ⚠ The count goes INSIDE the conditional along with its trailing space, not
- * beside it. The original wrote `` `Install ${n > 0 ? n : ''} skill…` `` — an
- * empty substitution between two literal spaces — so the button read
- * **"Install  skills"** with a double space in the state it spends most of its
- * life in: nothing selected, and therefore disabled and in front of the user
- * from the moment the dialog opens.
- *
- * Three shapes, all pinned in `BrowseSkillsModal.test.tsx`: 0 → "Install
- * skills" (plural, because it is an invitation, not a count), 1 → "Install 1
- * skill", n → "Install n skills".
- */
-export function installButtonLabel(selectedCount: number): string {
-  const count = selectedCount > 0 ? `${selectedCount} ` : '';
-  return `Install ${count}skill${selectedCount !== 1 ? 's' : ''}`;
-}
-
 export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }: Props) {
   const [registry, setRegistry] = useState<BaamRegistry | null>(null);
   const [live, setLive] = useState(false);
@@ -57,7 +46,11 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const [filter, setFilter] = useState<Filter>('All');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [installing, setInstalling] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{
+    name: string;
+    position: number;
+    total: number;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,6 +69,25 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
 
   const isInstalled = (s: RegistrySkill) =>
     installedIds.has(s.id.toLowerCase()) || installedIds.has(s.name.toLowerCase());
+
+  // ⚠ **A selection ends when its row is seen installed: withdrawn, not hidden.**
+  // When another window (or the agent) installed a row this dialog had
+  // selected, its id stayed in `selected` and only the checkbox hid it while the
+  // row was installed — so removing the package again brought the check back
+  // by itself: Read QC checked, "1 selected", "Install 7 skills", with nobody
+  // having touched it. What the user selected it for has happened; installing it
+  // again is a new decision. So `selected` never holds an installed row, and
+  // this restores that during render — before any frame shows it — whatever put
+  // the id there: a catalog update, or a failed run re-selecting a row another
+  // window installed meanwhile. It converges in one pass: the pruned set holds
+  // no installed row, so the condition is false on the next render.
+  const installedSelection = (registry?.skills ?? []).filter(
+    (s) => selected.has(s.id) && isInstalled(s)
+  );
+  if (installedSelection.length > 0) {
+    const withdrawn = new Set(installedSelection.map((s) => s.id));
+    setSelected(new Set([...selected].filter((id) => !withdrawn.has(id))));
+  }
 
   /** Best match first under a query; registry order when there is none. */
   const filtered = useMemo(() => {
@@ -120,52 +132,76 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
       return next;
     });
 
-  const handleInstall = async () => {
-    if (installing || !registry || selected.size === 0) return;
-    const targets = registry.skills.filter((s) => selected.has(s.id) && !isInstalled(s));
-    setInstalling(true);
-    setProgress({ done: 0, total: targets.length });
+  /** The selected rows an install would act on — everything selected but not already on disk. */
+  const targets = registry
+    ? registry.skills.filter((s) => selected.has(s.id) && !isInstalled(s))
+    : [];
+  /** What the install button promises: skills, as each selected row says it holds. */
+  const selectedSkillCount = targets.reduce((sum, s) => sum + registrySkillCount(s), 0);
 
-    const failures: string[] = [];
-    let done = 0;
-    for (const skill of targets) {
+  const handleInstall = async () => {
+    if (installing || targets.length === 0) return;
+    setInstalling(true);
+
+    const landed: LandedInstall[] = [];
+    const failures: FailedRow[] = [];
+    for (const [index, skill] of targets.entries()) {
+      setProgress({ name: skill.name, position: index + 1, total: targets.length });
       try {
         const res = await installRegistrySkill(skill);
-        if (!res.ok) failures.push(`${res.name}: ${res.error ?? 'failed'}`);
+        if (!res.ok) {
+          failures.push({ id: skill.id, name: skill.name, error: res.error ?? 'failed' });
+        } else if (res.installed && res.installed.length > 0) {
+          // The daemon's account of what landed, not the row's claim.
+          landed.push(
+            ...res.installed.map((unit) => ({
+              name: unit.name,
+              skills: unit.skills.length,
+              isPackage: unit.kind === 'bundle',
+              replaced: unit.replaced,
+            }))
+          );
+        } else {
+          const skills = registrySkillCount(skill);
+          landed.push({ name: skill.name, skills, isPackage: skills > 1 });
+        }
       } catch (error) {
-        failures.push(
-          `${skill.name}: ${error instanceof Error ? error.message : 'installation failed'}`
-        );
+        failures.push({
+          id: skill.id,
+          name: skill.name,
+          error: error instanceof Error ? error.message : 'installation failed',
+        });
       }
-      done += 1;
-      setProgress({ done, total: targets.length });
     }
 
     setInstalling(false);
     setProgress(null);
 
-    const ok = targets.length - failures.length;
-    if (ok > 0) {
-      toastSuccess({
-        title: `${ok} skill${ok !== 1 ? 's' : ''} installed`,
-        msg: 'Added to Biorouter Skills',
-      });
+    if (landed.length > 0) {
+      toastSuccess(installedToast(landed));
       onInstalled();
     }
-    if (failures.length > 0) {
-      toastError({
-        title: `${failures.length} skill${failures.length !== 1 ? 's' : ''} failed`,
-        msg: failures[0],
-      });
-    }
+    // Every run, not only a failing one: a retry that lands must take back the
+    // report that said it had not. See `installReport.ts`.
+    reportInstallRun({
+      attempted: new Set(targets.map((skill) => skill.id)),
+      failures,
+      isInstalled: (id) => {
+        const row = registry?.skills.find((skill) => skill.id === id);
+        return row ? isInstalled(row) : false;
+      },
+    });
     if (failures.length === 0) onClose();
-    else
-      setSelected(
-        new Set(targets.filter((t) => failures.some((f) => f.startsWith(t.name))).map((t) => t.id))
-      );
+    // Keep exactly the rows that failed selected, by id. Matching the failure
+    // text's prefix against a name re-selected "Alignment" when "Alignment
+    // Files" failed.
+    else setSelected(new Set(failures.map((failure) => failure.id)));
   };
 
-  const selectedCount = selected.size;
+  // What an install would act on. The same number as `selected.size` now that an
+  // installed row is withdrawn from the selection (above); counted from
+  // `targets` so the footer and the install can never disagree.
+  const selectedCount = targets.length;
 
   return (
     <Dialog open onOpenChange={(open) => !open && !installing && onClose()}>
@@ -216,6 +252,8 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
               </button>
             ))}
             <div className="flex-1" />
+            {/* Counts ROWS, on purpose: it checks boxes, and a package is one box.
+                The install button is what translates a selection into skills. */}
             {selectableFiltered.length > 0 && (
               <button
                 onClick={toggleAllFiltered}
@@ -256,6 +294,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                   <div className="flex flex-col gap-1.5">
                     {items.map((skill) => {
                       const installed = isInstalled(skill);
+                      // Never true for an installed row: see the withdrawal above.
                       const checked = selected.has(skill.id);
                       return (
                         <label
@@ -326,15 +365,15 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
         <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between gap-3">
           <span className="text-xs text-text-muted">
             {progress
-              ? `Installing ${progress.done}/${progress.total}…`
+              ? installProgressLabel(progress.name, progress.position, progress.total)
               : `${selectedCount} selected`}
           </span>
           <div className="flex gap-2">
             <Button variant="outline" onClick={onClose} disabled={installing}>
               Cancel
             </Button>
-            <Button onClick={handleInstall} disabled={selectedCount === 0 || installing}>
-              {installing ? 'Installing…' : installButtonLabel(selectedCount)}
+            <Button onClick={handleInstall} disabled={targets.length === 0 || installing}>
+              {installing ? 'Installing…' : installButtonLabel(selectedSkillCount)}
             </Button>
           </div>
         </div>

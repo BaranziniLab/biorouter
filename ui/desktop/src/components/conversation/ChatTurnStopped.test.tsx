@@ -38,6 +38,42 @@ describe('ChatTurnStopped', () => {
     expect(source).toMatch(/const \{[^}]*\bstopConfirmed,[^}]*\} = useChatStream\(/);
     const tail = /<PendingToolCallList\b[\s\S]*?<\/SearchView>/.exec(source);
     expect(tail, 'BaseChat no longer ends its transcript with PendingToolCallList').not.toBeNull();
-    expect(tail![0]).toMatch(/<ChatTurnError\b[\s\S]*\{stopConfirmed && <ChatTurnStopped \/>\}/);
+    expect(tail![0]).toMatch(
+      /<ChatTurnError\b[\s\S]*\{stopConfirmed && !transcriptEndsStopped\(messages\) && \(\s*<ChatTurnStopped \/>\s*\)\}/
+    );
+  });
+
+  /**
+   * Item 7: the daemon stores the notice and the transcript draws it, so the
+   * tail line must never sit beside that row as a second "Stopped.". Asserted at
+   * the source for the same reason as the case above, and the predicate's own
+   * behaviour below.
+   */
+  it('is suppressed when the transcript already ends on the stored notice', async () => {
+    const { transcriptEndsStopped } = await import('./turnStoppedNotice');
+    const notice = {
+      id: 'n',
+      role: 'assistant',
+      created: 1,
+      content: [{ type: 'systemNotification', notificationType: 'inlineMessage', msg: 'Stopped.' }],
+      metadata: { userVisible: true, agentVisible: false },
+    } as const;
+    const reply = {
+      id: 'r',
+      role: 'assistant',
+      created: 1,
+      content: [{ type: 'text', text: 'The telescope' }],
+      metadata: { userVisible: true, agentVisible: true },
+    } as const;
+    expect(transcriptEndsStopped([reply, notice] as never)).toBe(true);
+    expect(transcriptEndsStopped([notice, reply] as never)).toBe(false);
+    expect(transcriptEndsStopped([])).toBe(false);
+  });
+
+  it('takes the transcript row’s spacing when drawn as a stored notice', () => {
+    const { container } = render(<ChatTurnStopped inTranscript />);
+    const root = container.querySelector('[data-testid="chat-turn-stopped"]');
+    expect(root?.className).not.toMatch(/\bmt-4\b/);
+    expect(screen.getByRole('status')).toHaveTextContent('Stopped.');
   });
 });

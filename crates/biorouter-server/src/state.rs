@@ -117,6 +117,12 @@ enum ContinuationLeaseUse {
 struct TurnRetirement {
     retired: AtomicBool,
     notify: Notify,
+    /// Item 7 — the rows a Stop of this turn wrote to the transcript, left here
+    /// by the runner BEFORE its guard drops, so a cancel that waited for
+    /// retirement reads a complete record. It lives on the retirement because
+    /// that is the one object the runner's guard and the cancel's handle already
+    /// share, and it has exactly the lifetime this needs: one turn.
+    stopped: StdMutex<Vec<biorouter::conversation::message::Message>>,
 }
 
 impl TurnRetirement {
@@ -124,6 +130,7 @@ impl TurnRetirement {
         Arc::new(Self {
             retired: AtomicBool::new(false),
             notify: Notify::new(),
+            stopped: StdMutex::new(Vec::new()),
         })
     }
 
@@ -176,6 +183,35 @@ impl CancelledTurn {
 
     pub async fn wait_until_settled(&self) {
         self.retirement.wait().await;
+    }
+
+    /// The rows this turn's Stop wrote to the transcript, in stored order
+    /// (item 7). Complete only once [`Self::is_settled`]: the runner records them
+    /// before its guard retires. Empty for a turn that ended any other way.
+    pub fn stop_messages(&self) -> Vec<biorouter::conversation::message::Message> {
+        self.retirement
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Where a turn's runner leaves the rows its Stop wrote, for the cancel that is
+/// waiting on the turn to retire (item 7). See [`CancelledTurn::stop_messages`].
+#[derive(Debug, Clone)]
+pub struct TurnStopRecord(Arc<TurnRetirement>);
+
+impl TurnStopRecord {
+    pub fn record(&self, rows: Vec<biorouter::conversation::message::Message>) {
+        if rows.is_empty() {
+            return;
+        }
+        self.0
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(rows);
     }
 }
 
@@ -369,6 +405,12 @@ impl TurnGuard {
     /// HTTP response that watches the turn reads from it.
     pub fn stream(&self) -> Arc<TurnStream> {
         Arc::clone(&self.stream)
+    }
+
+    /// Where the runner records what a Stop of this turn wrote (item 7). Taken
+    /// before the guard moves into supervision, and written before it drops.
+    pub fn stop_record(&self) -> TurnStopRecord {
+        TurnStopRecord(Arc::clone(&self.retirement))
     }
 }
 

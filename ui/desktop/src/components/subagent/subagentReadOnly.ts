@@ -78,8 +78,8 @@ export function isReadOnlySubagentChat(sessionType: SessionType | null | undefin
  *
  * ⚠ **Three answers, not two, and the third is the whole point.** Every source
  * of this fact except the tab badge is an ASYNCHRONOUS read — the chat store's
- * session row, and `useSubagentSession`'s own `getSession` — and neither can
- * say "not a subagent" until it has landed. A boolean therefore reports
+ * session row, which `useSubagentSession` answers from too — and that read
+ * cannot say "not a subagent" until it has landed. A boolean therefore reports
  * `false` for "no" and for "not yet" alike, and in a browser "not yet" lasted
  * measurably longer than the window the composer must not be offered in: with
  * a subagent running, the refused `/agent/resume` alone took 4.8 s and the

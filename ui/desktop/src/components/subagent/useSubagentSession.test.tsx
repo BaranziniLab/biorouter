@@ -1,26 +1,26 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import type { Session } from '../../api';
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   getSessionExtensions: vi.fn(),
   cancelTurn: vi.fn(),
+  resumeAgent: vi.fn(),
+  updateFromSession: vi.fn(async () => ({ data: {} })),
 }));
 
 vi.mock('../../api', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    getSession: mocks.getSession,
-    getSessionExtensions: mocks.getSessionExtensions,
-    cancelTurn: mocks.cancelTurn,
-  };
+  return { ...actual, ...mocks };
 });
-vi.mock('../../utils/userAction', () => ({
-  userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
-}));
+vi.mock('../../utils/userAction', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }) };
+});
 
 import { extractKnowledgeBases, useSubagentSession } from './useSubagentSession';
+import { defaultChatStreamRegistry } from '../../hooks/chatStreamStore';
 
 /**
  * The exact record `persist_spawn_context` writes (subagent_handler.rs). Two of
@@ -102,110 +102,161 @@ describe('extractKnowledgeBases', () => {
   });
 });
 
-describe('useSubagentSession', () => {
-  afterEach(() => vi.clearAllMocks());
+/**
+ * A fresh id per test: the transcript LRU (`utils/sessionNameSync`) is
+ * module-level and keyed by session id, and a reused id would load from it.
+ */
+let seq = 0;
+const nextId = (label: string) => `subagent-header-${label}-${++seq}`;
 
-  it('loads lineage, grants, and the spawn-context record for sub_agent sessions', async () => {
-    mocks.getSession.mockResolvedValue({
-      data: {
-        id: 'child-1',
-        session_type: 'sub_agent',
-        parent_session_id: 'parent-1',
-        conversation: [
-          {
-            role: 'user',
-            created: 1,
-            content: [{ type: 'text', text: '## Subagent spawn context\ntask: count' }],
-            metadata: {
-              userVisible: true,
-              agentVisible: false,
-              provenance: { kind: 'spawn_context' },
-            },
-          },
-        ],
+function row(id: string, sessionType: 'sub_agent' | 'user', text = 'task: count'): Session {
+  return {
+    id,
+    name: `Chat ${id}`,
+    working_dir: '/tmp',
+    session_type: sessionType,
+    parent_session_id: 'parent-1',
+    conversation: [
+      {
+        role: 'user',
+        created: 1,
+        content: [{ type: 'text', text: `## Subagent spawn context\n${text}` }],
+        metadata: {
+          userVisible: true,
+          agentVisible: false,
+          provenance: { kind: 'spawn_context' },
+        },
       },
-    });
+    ],
+    message_count: 1,
+    created_at: '',
+    updated_at: '',
+    extension_data: {},
+    user_set_name: false,
+  } as Session;
+}
+
+/** What `useChatStream` does for the tab: load the chat into the store. */
+async function loadIntoStore(session: Session) {
+  mocks.resumeAgent.mockImplementation(async ({ body }: { body: { session_id: string } }) => ({
+    data: { session: body.session_id === session.id ? session : undefined },
+  }));
+  await act(async () => {
+    await defaultChatStreamRegistry.getController(session.id).loadSession();
+  });
+}
+
+describe('useSubagentSession', () => {
+  beforeEach(() => {
     mocks.getSessionExtensions.mockResolvedValue({
       data: { extensions: [{ type: 'platform', name: 'developer' }] },
     });
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    defaultChatStreamRegistry.resetForTests();
+  });
 
-    const { result } = renderHook(() => useSubagentSession('child-1'));
+  it('takes lineage and the spawn-context record from the chat store, and reads no row itself', async () => {
+    const id = nextId('child');
+    await loadIntoStore(row(id, 'sub_agent'));
+
+    const { result } = renderHook(() => useSubagentSession(id));
     await waitFor(() => expect(result.current.isSubagent).toBe(true));
     expect(result.current.parentSessionId).toBe('parent-1');
     expect(result.current.extensions).toEqual(['developer']);
     expect(result.current.spawnContext).toContain('count');
 
+    // Item 10 (1.90.4), the tester's D1: the header's own `GET /sessions/{id}`
+    // was a second request for a row the store had already loaded. The grants
+    // are the one thing the row does not carry, and they are read with the proof.
+    expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.getSessionExtensions).toHaveBeenCalledTimes(1);
+    expect(mocks.getSessionExtensions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { session_id: id },
+        headers: { 'X-User-Action': 'test-key' },
+      })
+    );
+
     // Stop posts the addressable cancel — the chain Task 33 made real.
     await result.current.stop();
     expect(mocks.cancelTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: { session_id: 'child-1' },
+        body: { session_id: id },
         headers: { 'X-User-Action': 'test-key' },
       })
     );
   });
 
-  it('is inert for ordinary sessions', async () => {
+  it('shows no header until the grants are in, rather than stating none', async () => {
+    const id = nextId('grants-pending');
+    let answer!: (value: unknown) => void;
+    mocks.getSessionExtensions.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    await loadIntoStore(row(id, 'sub_agent'));
+
+    const { result } = renderHook(() => useSubagentSession(id));
+    await waitFor(() => expect(mocks.getSessionExtensions).toHaveBeenCalled());
+    expect(result.current.isSubagent).toBe(false);
+
+    await act(async () => {
+      answer({ data: { extensions: [{ type: 'platform', name: 'developer' }] } });
+    });
+    await waitFor(() => expect(result.current.isSubagent).toBe(true));
+    expect(result.current.extensions).toEqual(['developer']);
+  });
+
+  it('is inert, and silent on the wire, for ordinary sessions and before the row loads', async () => {
+    const id = nextId('ordinary');
+    const { result } = renderHook(() => useSubagentSession(id));
+    expect(result.current.isSubagent).toBe(false);
+
     // Everything a subagent session has EXCEPT the type, so the only thing that
     // can keep the header away is the `session_type` check itself.
-    mocks.getSession.mockResolvedValue({
-      data: { id: 's', session_type: 'user', parent_session_id: 'parent-1' },
+    await loadIntoStore(row(id, 'user'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    const { result } = renderHook(() => useSubagentSession('s'));
-
-    // Settle the whole load, not merely the moment the request went out.
-    // `getSession` having been CALLED resolves one microtask before the hook's
-    // own `await` continuation runs, so asserting the negative there passes
-    // even for a hook that mishandles `session_type` — the extensions read has
-    // simply not been reached yet. Awaiting the mock's own promise puts this
-    // test after the continuation that would have fired it.
-    await waitFor(() => expect(mocks.getSession).toHaveBeenCalled());
-    await mocks.getSession.mock.results[0].value;
 
     expect(result.current.isSubagent).toBe(false);
     expect(result.current.parentSessionId).toBeUndefined();
+    expect(mocks.getSession).not.toHaveBeenCalled();
     expect(mocks.getSessionExtensions).not.toHaveBeenCalled();
   });
 
   it('clears the previous child when the tab is rebound to another session', async () => {
     // ChatGroupsShell keys BaseChat by TAB id, not session id (the session is
     // explicitly rebindable), so one hook instance can outlive a sessionId
-    // change. If the effect early-returns for the new, ordinary session without
-    // clearing, the previous child's lineage, grants and Stop button stay
+    // change. The previous child's lineage, grants and Stop button must not stay
     // rendered over a chat they have nothing to do with.
-    mocks.getSession.mockImplementation(async ({ path }: { path: { session_id: string } }) =>
-      path.session_id === 'child-1'
-        ? {
-            data: {
-              id: 'child-1',
-              session_type: 'sub_agent',
-              parent_session_id: 'parent-1',
-              conversation: [
-                {
-                  role: 'user',
-                  created: 1,
-                  content: [{ type: 'text', text: '## Subagent spawn context\ntask: count' }],
-                  metadata: { provenance: { kind: 'spawn_context' } },
-                },
-              ],
-            },
-          }
-        : { data: { id: path.session_id, session_type: 'user' } }
-    );
-    mocks.getSessionExtensions.mockResolvedValue({
-      data: { extensions: [{ type: 'platform', name: 'developer' }] },
-    });
+    const child = nextId('child');
+    const ordinary = nextId('ordinary');
+    await loadIntoStore(row(child, 'sub_agent'));
 
     const { result, rerender } = renderHook(({ id }) => useSubagentSession(id), {
-      initialProps: { id: 'child-1' },
+      initialProps: { id: child },
     });
     await waitFor(() => expect(result.current.isSubagent).toBe(true));
     expect(result.current.extensions).toEqual(['developer']);
 
-    rerender({ id: 'ordinary-1' });
-    await waitFor(() => expect(result.current.isSubagent).toBe(false));
+    rerender({ id: ordinary });
+    expect(result.current.isSubagent).toBe(false);
     expect(result.current.parentSessionId).toBeUndefined();
     expect(result.current.spawnContext).toBeUndefined();
     expect(result.current.extensions).toEqual([]);
+
+    // ...and a second child's header never shows the first child's grants.
+    const second = nextId('second-child');
+    let answer!: (value: unknown) => void;
+    mocks.getSessionExtensions.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    await loadIntoStore(row(second, 'sub_agent', 'task: summarise'));
+    rerender({ id: second });
+    expect(result.current.isSubagent).toBe(false);
+    await act(async () => {
+      answer({ data: { extensions: [{ type: 'platform', name: 'todo' }] } });
+    });
+    await waitFor(() => expect(result.current.isSubagent).toBe(true));
+    expect(result.current.extensions).toEqual(['todo']);
+    expect(result.current.spawnContext).toContain('summarise');
   });
 });

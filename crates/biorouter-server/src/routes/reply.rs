@@ -2028,6 +2028,17 @@ pub struct CancelTurnResponse {
     /// Present only for a settled Stop-and-Send request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_lease: Option<String>,
+    /// The rows the cancelled turn's Stop wrote to the transcript, in stored
+    /// order: the prose its reply had streamed (text only), any steers it had
+    /// accepted, and the "Stopped." notice it now ends on (item 7). These are
+    /// exactly what a reload of the chat will show, so the caller can make its
+    /// view agree without re-reading the conversation — the notice's own frame
+    /// on the turn stream may arrive after a client has stopped listening.
+    ///
+    /// Present only when this request cancelled a running turn AND waited for it
+    /// to settle (`wait_for_idle` or `continuation_pending`); omitted otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_messages: Vec<Message>,
 }
 
 /// A generation-conditional cancel addressed a different active turn.
@@ -2348,6 +2359,7 @@ fn idle_cancel_response() -> CancelTurnResponse {
         turn_id: None,
         settled: true,
         continuation_lease: None,
+        stop_messages: Vec::new(),
     }
 }
 
@@ -2391,6 +2403,9 @@ fn admit_continuation_cancel(
                 turn_id: Some(turn_id),
                 settled: true,
                 continuation_lease: admission.commit(),
+                // The turn retired before this request arrived; whatever its
+                // Stop wrote was handed to the request that made it.
+                stop_messages: Vec::new(),
             }))
         }
         ContinuationCancelAttempt::Idle => {
@@ -2435,6 +2450,8 @@ fn admit_ordinary_cancel(
                     turn_id: None,
                     settled: true,
                     continuation_lease: None,
+                    // No turn ran yet: a child still initializing wrote nothing.
+                    stop_messages: Vec::new(),
                 }));
             }
             tracing::debug!(
@@ -2504,11 +2521,19 @@ async fn cancel_turn_bounded(
 
     let continuation_lease = continuation_admission.commit();
 
+    let settled = turn.is_settled();
     Ok(CancelTurnResponse {
         cancelled: true,
         turn_id: Some(turn.turn_id().to_string()),
-        settled: turn.is_settled(),
+        settled,
         continuation_lease,
+        // Only a settled turn's record is complete: the runner writes it before
+        // its guard retires, and an unwaited cancel returns before that.
+        stop_messages: if settled {
+            turn.stop_messages()
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -5568,6 +5593,102 @@ mod tests {
                 "a failed cancellation barrier must restore the collectable original result"
             );
             drop(guard);
+        }
+
+        /// Item 7: a Stop's cancel hands back what the stopped turn wrote, so the
+        /// window that pressed Stop shows what a reload will — without depending on
+        /// the notice's frame, which can land after it stopped reading the stream.
+        /// The runner records the rows BEFORE its guard retires; a waited cancel
+        /// therefore reads a complete record, and an unwaited one reads none.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_settled_cancel_hands_back_the_rows_the_stop_wrote() {
+            use biorouter::conversation::message::SystemNotificationType;
+
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let guard = state
+                .try_begin_turn_idempotent("stop-record-cancel", token.clone(), None)
+                .unwrap();
+            let turn_id = guard.turn_id().to_string();
+            let record = guard.stop_record();
+            let rows = vec![
+                Message::assistant()
+                    .with_id("partial")
+                    .with_text("The telescope was"),
+                Message::assistant()
+                    .with_id("notice")
+                    .with_system_notification(SystemNotificationType::InlineMessage, "Stopped.")
+                    .user_only(),
+            ];
+            let written = rows.clone();
+            let runner = tokio::spawn(async move {
+                token.cancelled().await;
+                // A runner that took a moment to write: the waited cancel must not
+                // answer before the guard below retires.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                record.record(written);
+                drop(guard);
+            });
+
+            let unwaited = CancelTurnRequest {
+                session_id: "stop-record-cancel".to_string(),
+                expected_turn_id: Some(turn_id.clone()),
+                wait_for_idle: false,
+                continuation_pending: false,
+                continuation_owner_id: None,
+            };
+            let early = cancel_turn_bounded(&state, &unwaited, Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert!(early.cancelled && !early.settled);
+            assert!(
+                early.stop_messages.is_empty(),
+                "an unsettled turn's record is incomplete, so none is handed out"
+            );
+
+            runner.await.unwrap();
+            let waited = CancelTurnRequest {
+                wait_for_idle: true,
+                ..unwaited
+            };
+            // The turn has retired, so this second, waited request finds nothing
+            // running — the idempotent answer — and is not the one that stopped it.
+            let late = cancel_turn_bounded(&state, &waited, Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert!(!late.cancelled && late.stop_messages.is_empty());
+
+            // The real shape: one waited request that trips the turn and settles.
+            let token = CancellationToken::new();
+            let guard = state
+                .try_begin_turn_idempotent("stop-record-cancel-2", token.clone(), None)
+                .unwrap();
+            let turn_id = guard.turn_id().to_string();
+            let record = guard.stop_record();
+            let written = rows.clone();
+            tokio::spawn(async move {
+                token.cancelled().await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                record.record(written);
+                drop(guard);
+            });
+            let req = CancelTurnRequest {
+                session_id: "stop-record-cancel-2".to_string(),
+                expected_turn_id: Some(turn_id),
+                wait_for_idle: true,
+                continuation_pending: false,
+                continuation_owner_id: None,
+            };
+            let response = cancel_turn_bounded(&state, &req, Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert!(response.cancelled && response.settled);
+            assert_eq!(response.stop_messages, rows);
+            let body = serde_json::to_value(&response).unwrap();
+            assert_eq!(
+                body["stop_messages"][1]["content"][0]["msg"], "Stopped.",
+                "the wire field the desktop reads: {body}"
+            );
         }
 
         #[test]

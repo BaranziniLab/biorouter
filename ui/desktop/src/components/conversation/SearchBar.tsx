@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp, Search as SearchIcon, X } from '../icons/app-icons';
 import debounce from 'lodash/debounce';
 import { Button } from '../ui/button';
+import { SEARCH_UI_ATTRIBUTE } from '../../utils/searchHighlighter';
 
 /**
  * Props for the SearchBar component
@@ -217,7 +218,10 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const belowMinimum = searchTerm.length > 0 && searchTerm.length < minSearchLength;
 
   return (
+    // The bar renders INSIDE the container it searches: without the marker its
+    // own "Aa" label and counter are counted as matches. See SEARCH_UI_ATTRIBUTE.
     <div
+      {...{ [SEARCH_UI_ATTRIBUTE]: '' }}
       className={`pointer-events-none sticky top-0 z-[60] mb-4 flex justify-center px-3 pt-2 ${isExiting ? 'search-bar-exit' : 'search-bar-enter'}${belowMinimum ? ' search-bar-has-note' : ''}`}
     >
       <div

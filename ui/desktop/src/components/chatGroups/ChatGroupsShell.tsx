@@ -33,8 +33,9 @@ import {
   subscribeSessionList,
 } from '../../utils/sessionListCache';
 import { useLiveSessionTiers } from '../../hooks/chatStreamStore';
-import { mergeSessionTiers, sessionTiersDiffer } from '../privacy/sessionTier';
-import type { SessionClassification } from '../../api';
+import { mergeSessionTiers, raiseTier, sessionTiersDiffer } from '../privacy/sessionTier';
+import { getSession, type Session, type SessionClassification } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 
 interface ChatGroupsShellProps {
   /** Mirrors the focused chat up to App's hubChat, so AppSidebar's recents
@@ -140,6 +141,16 @@ function renderLayout(
  * and a tab with no store is simply unmarked — silence, never an assertion of
  * Public.
  *
+ * # A third source: the rows the list leaves out
+ *
+ * The list is `include_subagents=false`, so a delegated subagent's tab — which
+ * the daemon opens in the background, and which has no store until someone
+ * clicks it — was in neither source. Measured 2026-09-13: a private parent's
+ * child, `privacy_tier=private` in sqlite, drawn `data-privacy="public"` after
+ * a reload. `useTabTitlesFromSessionList` reads such a tab's own row, and hands
+ * its tier in here as `outsideListTiers`. It is folded with the same `max`, so
+ * it can raise a tab and never lower one.
+ *
  * ⚠ What re-emits through `subscribeSessionList` is narrower than it looks.
  * Any `emitChange` reaches this hook — a completed `refreshSessionList`, the
  * name-channel patch, `updateCachedSessionList` (SessionListView's rename and
@@ -150,7 +161,9 @@ function renderLayout(
  * chat born in this window reaches Home recents and See-all. It is NOT how the
  * tab dot gets fixed; the live store above is, and it costs no request.
  */
-function useSessionPrivacyTiers(): Record<string, SessionClassification> {
+function useSessionPrivacyTiers(
+  outsideListTiers: Record<string, SessionClassification>
+): Record<string, SessionClassification> {
   const [cachedTiers, setCachedTiers] = useState<Record<string, SessionClassification>>({});
   const liveTiers = useLiveSessionTiers();
 
@@ -174,10 +187,13 @@ function useSessionPrivacyTiers(): Record<string, SessionClassification> {
     return unsubscribe;
   }, []);
 
-  // Memoised on the two inputs, both of which are identity-stable while
+  // Memoised on the three inputs, each of which is identity-stable while
   // unchanged: the merged object is a prop on every strip in every pane, so a
   // fresh one per render would re-render all of them once per streamed token.
-  return useMemo(() => mergeSessionTiers(cachedTiers, liveTiers), [cachedTiers, liveTiers]);
+  return useMemo(
+    () => mergeSessionTiers(cachedTiers, liveTiers, outsideListTiers),
+    [cachedTiers, liveTiers, outsideListTiers]
+  );
 }
 
 /**
@@ -228,14 +244,80 @@ function useSessionPrivacyTiers(): Record<string, SessionClassification> {
  *   2. **Downgrade a named tab to the placeholder.** A row still reading "New
  *      chat" is a lower bound, never a correction, so it is never adopted over a
  *      title that already has a real name.
+ *
+ * # The tabs the list leaves out
+ *
+ * The list is not every chat. It is `GET /sessions?include_subagents=false`, so
+ * it never carries a delegated subagent's chat — deliberately, because those are
+ * not sidebar chats and must not become sidebar chats to fix a tab. It also
+ * omits a chat that has recorded no message yet (`GET /sessions` INNER JOINs
+ * `messages`). Measured 2026-09-13: the daemon opened a private chat's subagent
+ * in a background tab (`open_tab`, `focus: false`, no title), sqlite named it
+ * `Subagent: Reply with exactly the word ECHOSUB and nothing else.`, the list
+ * held 5543 rows and not that one, and the tab read "New chat" across every
+ * reload — nothing that could name it ever ran, because only an active tab
+ * mounts the BaseChat whose load renames it.
+ *
+ * So a tab whose chat is not in the list is asked about on its own, with
+ * `GET /sessions/{id}?metadata_only=true`. That is the singular read every chat
+ * surface uses: it answers only through `session_reach`, and it carries the
+ * user's proof — without which a private parent's subagent, which is private
+ * too, answers 403 (measured) and the tab would keep the placeholder silently.
+ * A refused or failed read changes nothing.
+ *
+ * Three rules keep it from being a poll or a snap-back:
+ *
+ *   3. **Once per list, per chat.** A tab is read again only when the list
+ *      itself has changed since its last read — the moment an ordinary tab is
+ *      re-checked too — never because the shell re-rendered or the tab's own
+ *      title moved. It waits for a list: with none, it cannot know what is
+ *      left out.
+ *   4. **An answer is for the title it was asked about.** If the tab's title
+ *      changed while the read was out, the tab holds the later fact (the name
+ *      channel, the tab's own load), and the answer is dropped. Rules 1 and 2
+ *      apply to the answer as they do to a list row.
+ *   5. **Only the newest read of a chat lands.** An earlier read that answers
+ *      late is dropped rather than written over a later one.
+ *
+ * The same row reports the chat's privacy tier, which the tab strip had no
+ * source for either; it is returned for `useSessionPrivacyTiers` to fold in
+ * with `max`. That is why a tab the user named is still READ — only its name is
+ * off limits. Measured before this was so: a private subagent's tab the user
+ * had renamed kept its name and drew `data-privacy="public"`.
  */
-function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): void {
+function useTabTitlesFromSessionList(
+  groups: ReturnType<typeof useChatGroups>
+): Record<string, SessionClassification> {
   const dispatch = groups?.dispatch;
   // Read through a ref so the effect depends on the SIGNATURE below and not on
   // state identity — the shell re-renders on every streamed token, and this
   // effect resubscribes each time it re-runs.
   const stateRef = useRef(groups?.state);
   stateRef.current = groups?.state;
+
+  // The tier of each chat read on its own (see above). Raised, never lowered.
+  const [outsideListTiers, setOutsideListTiers] = useState<Record<string, SessionClassification>>(
+    {}
+  );
+  // Which list the reads below were issued against: bumped when the list array
+  // itself is replaced, so rule 3 compares numbers rather than pinning old arrays.
+  const listRef = useRef<{ rows: readonly Session[] | null; generation: number }>({
+    rows: null,
+    generation: 0,
+  });
+  // Per chat: the list generation it was last read for, and the newest read's
+  // sequence number (rule 5).
+  const readForGenerationRef = useRef(new Map<string, number>());
+  const newestReadRef = useRef(new Map<string, number>());
+  const readSeqRef = useRef(0);
+  // An answer that lands after the shell is gone has nowhere to go.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // The (session, title) pairs this hook compares, and nothing else. A tab
   // opened, closed, bound or renamed changes it; a reorder, a split or a token
@@ -253,29 +335,106 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
 
   useEffect(() => {
     if (!dispatch) return;
+
+    /** Rules 1 and 2, for a row from either source. */
+    const renameFromRow = (sessionId: string, row: Pick<Session, 'name' | 'user_set_name'>) => {
+      const state = stateRef.current;
+      if (!state || !row.name) return false;
+      for (const group of Object.values(state.groups)) {
+        for (const tab of group.tabs) {
+          if (tab.sessionId !== sessionId || tab.userSetName || row.name === tab.title) continue;
+          // Rule 2: the placeholder is a lower bound, never a correction.
+          if (isDefaultSessionName(row.name) && !isDefaultSessionName(tab.title)) continue;
+          // One dispatch per SESSION, not per tab: `renameTab` already mirrors
+          // into every tab bound to that session.
+          dispatch({
+            type: 'renameTab',
+            sessionId,
+            title: row.name,
+            userSetName: row.user_set_name ?? false,
+          });
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const titleOf = (sessionId: string): string | undefined => {
+      for (const group of Object.values(stateRef.current?.groups ?? {})) {
+        const tab = group.tabs.find((t) => t.sessionId === sessionId);
+        if (tab) return tab.title;
+      }
+      return undefined;
+    };
+
+    const readOutsideList = (sessionId: string, askedAbout: string, generation: number) => {
+      readForGenerationRef.current.set(sessionId, generation);
+      const seq = ++readSeqRef.current;
+      newestReadRef.current.set(sessionId, seq);
+      void (async () => {
+        try {
+          const response = await getSession({
+            path: { session_id: sessionId },
+            // A name, a flag and a tier: nothing here needs the conversation.
+            query: { metadata_only: true },
+            // ⚠ Not optional. A subagent of a private chat is private, and
+            // without the proof the reach gate refuses it (403, measured).
+            headers: await userActionHeaders(),
+            throwOnError: true,
+          });
+          const row = response.data;
+          if (!mountedRef.current || !row || row.id !== sessionId) return;
+          // The tier is a fact whenever it was read — the ratchet only rises —
+          // so it is kept even when the name below is not.
+          const tier = row.privacy_tier ?? undefined;
+          if (tier) {
+            setOutsideListTiers((prev) => {
+              const raised = raiseTier(prev[sessionId], tier);
+              return raised && raised !== prev[sessionId] ? { ...prev, [sessionId]: raised } : prev;
+            });
+          }
+          // Rule 5, then rule 4.
+          if (newestReadRef.current.get(sessionId) !== seq) return;
+          if (titleOf(sessionId) !== askedAbout) return;
+          renameFromRow(sessionId, row);
+        } catch {
+          // Refused (a chat this caller may not reach), deleted, or the daemon
+          // is away: the tab keeps what it has.
+        }
+      })();
+    };
+
     const reconcile = () => {
       const rows = getCachedSessionList();
       const state = stateRef.current;
       if (!rows || !state) return;
+      if (rows !== listRef.current.rows) {
+        listRef.current = { rows, generation: listRef.current.generation + 1 };
+      }
+      const { generation } = listRef.current;
       const rowById = new Map(rows.map((row) => [row.id, row]));
-      // One dispatch per SESSION, not per tab: `renameTab` already mirrors into
-      // every tab bound to that session, so a chat open twice must not dispatch
-      // twice.
-      const dispatched = new Set<string>();
+      const seen = new Set<string>();
       for (const group of Object.values(state.groups)) {
         for (const tab of group.tabs) {
-          if (!tab.sessionId || tab.userSetName || dispatched.has(tab.sessionId)) continue;
+          if (!tab.sessionId || seen.has(tab.sessionId)) continue;
+          seen.add(tab.sessionId);
           const row = rowById.get(tab.sessionId);
-          if (!row?.name || row.name === tab.title) continue;
-          // Rule 2: the placeholder is a lower bound, never a correction.
-          if (isDefaultSessionName(row.name) && !isDefaultSessionName(tab.title)) continue;
-          dispatched.add(tab.sessionId);
-          dispatch({
-            type: 'renameTab',
-            sessionId: tab.sessionId,
-            title: row.name,
-            userSetName: row.user_set_name ?? false,
-          });
+          if (row) {
+            // Rule 1 lives inside: a user-named tab is never renamed.
+            renameFromRow(tab.sessionId, row);
+          } else if (readForGenerationRef.current.get(tab.sessionId) !== generation) {
+            // Read even for a tab the user named: its NAME is left alone
+            // (rule 1, inside `renameFromRow`), but its tier is still a fact
+            // the strip has no other source for.
+            readOutsideList(tab.sessionId, tab.title, generation);
+          }
+        }
+      }
+      // Forget chats no tab holds any more, so the maps cannot grow.
+      for (const sessionId of readForGenerationRef.current.keys()) {
+        if (titleOf(sessionId) === undefined) {
+          readForGenerationRef.current.delete(sessionId);
+          newestReadRef.current.delete(sessionId);
         }
       }
     };
@@ -286,13 +445,15 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
     preloadSessionList();
     return unsubscribe;
   }, [dispatch, tabTitleSignature]);
+
+  return outsideListTiers;
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
   const terminalDock = useTerminalDock();
-  const privacyTiers = useSessionPrivacyTiers();
-  useTabTitlesFromSessionList(groups);
+  const outsideListTiers = useTabTitlesFromSessionList(groups);
+  const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
