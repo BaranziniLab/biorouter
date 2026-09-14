@@ -33,7 +33,8 @@ import {
   subscribeSessionList,
 } from '../../utils/sessionListCache';
 import { useLiveSessionTiers } from '../../hooks/chatStreamStore';
-import { mergeSessionTiers, raiseTier, sessionTiersDiffer } from '../privacy/sessionTier';
+import { mergeSessionTiers, raiseTier } from '../privacy/sessionTier';
+import { useSessionListTiers } from '../privacy/useSessionListTiers';
 import { getSession, type Session, type SessionClassification } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 
@@ -112,9 +113,9 @@ function renderLayout(
  * with one exit, the user's declassification — so a `public` is only a lower
  * bound, and a `private` holds until a declassification that BOTH sources are
  * told about (`sessionRowSync`, the change feed). {@link mergeSessionTiers}
- * folds the two with `max` and `undefined` stays unmarked. The invariant, which
+ * folds the two with `max` and `undefined` stays absent. The invariant, which
  * `ChatGroupsShell.privacy.test.tsx` pins: this map may render private-from-
- * either-source or unmarked, and can never render public over a source that
+ * either-source or absent, and can never render public over a source that
  * still holds private. There is no failure mode in which it over-marks — no
  * source here invents a tier, they only report a row. `ChatTabStrip`'s
  * `privacyTiers` prop doc states the same thing, and the two must not drift
@@ -134,12 +135,23 @@ function renderLayout(
  * on a normal launch was the Hub index route mounting `SessionsInsights`, which
  * calls `refreshSessionList()` — an incidental side effect of an unrelated
  * screen, and absent in a window that opens straight onto a chat. So the strip
- * warms it here: `preloadSessionList()` returns early when the cache is
- * non-null and swallows its own errors, costing one fetch on a cold start.
+ * warms it here, through `useSessionListTiers`: `preloadSessionList()` returns
+ * early when the cache is non-null and swallows its own errors, costing one
+ * fetch on a cold start.
  *
  * In jsdom, where the module is mocked or the fetch fails, the cache stays null
- * and a tab with no store is simply unmarked — silence, never an assertion of
- * Public.
+ * and a tab with no store is simply absent from this map.
+ *
+ * # Absent is drawn as NOT YET KNOWN, never as Public
+ *
+ * This map was right about "absent" all along; the glyph was not. Until
+ * 2026-09-14 `ChatKindIcon` rendered an absent tier as `data-privacy="public"`,
+ * and this map is empty for a subagent's tab on every mount of this shell —
+ * its only source is the per-mount read below. Measured on 1.90.4: a private
+ * chat's subagent tabs read Public for ~0.5 s (3.2 s on the tester's machine)
+ * after Settings → a sidebar chat, and every tab read Public at 440 ms after a
+ * reload. They now draw dimmed and "privacy not yet known" until their row
+ * answers (`ChatGroupsShell.tierPending.test.tsx`).
  *
  * # A third source: the rows the list leaves out
  *
@@ -164,28 +176,10 @@ function renderLayout(
 function useSessionPrivacyTiers(
   outsideListTiers: Record<string, SessionClassification>
 ): Record<string, SessionClassification> {
-  const [cachedTiers, setCachedTiers] = useState<Record<string, SessionClassification>>({});
+  // The cache half, read and warmed by the one hook every tier-drawing surface
+  // without a row of its own shares (a schedule's run list is the other).
+  const cachedTiers = useSessionListTiers();
   const liveTiers = useLiveSessionTiers();
-
-  useEffect(() => {
-    const read = () => {
-      const next: Record<string, SessionClassification> = {};
-      for (const session of getCachedSessionList() ?? []) {
-        if (session.privacy_tier) next[session.id] = session.privacy_tier;
-      }
-      // Identity-stable when nothing changed, so a list refresh that touched
-      // no tier does not re-render every strip in every pane.
-      setCachedTiers((prev) => (sessionTiersDiffer(prev, next) ? next : prev));
-    };
-    read();
-    // Subscribe BEFORE asking for the fetch. `preloadSessionList` is async but
-    // makes no such promise, and a cache that resolved between `read()` and the
-    // subscription would emit to nobody and leave the strip unmarked until the
-    // next unrelated change.
-    const unsubscribe = subscribeSessionList(read);
-    preloadSessionList();
-    return unsubscribe;
-  }, []);
 
   // Memoised on the three inputs, each of which is identity-stable while
   // unchanged: the merged object is a prop on every strip in every pane, so a

@@ -365,6 +365,21 @@ nothing, and the refusal is still chosen before the row is read, so it remains t
 private chat, a public one and an id that never existed
 (`tests/declassify_no_user_key.rs::the_keyless_refusal_is_the_same_bytes_for_every_target`).
 
+**Resetting app data is the fourth case, and unlike the other three it used to work here**
+(2026-09-14). `POST /reset` and `GET /reset/preview` took no headers at all, so a `serve`
+browser could reset — and so could anything else holding the daemon secret. Measured on a
+sandboxed daemon: holding only `X-Secret-Key`, `POST /reset {"categories":["history"]}` answered
+200 and emptied the session store, a private chat included, while `GET /sessions/{id}` for that
+chat answered 403. Both routes now answer only `X-User-Action`, which this daemon cannot check,
+so the browser loses the reset. That is the cost, and it is the same trade as reason 2 above: the
+browser's credentials and a model's are byte-identical here, and the operation destroys data that
+cannot be recovered. ⚠ **A stated private provider does not admit it either**, although it admits
+reading a private chat: reaching a chat is a question about what a model may see, and a reset is a
+decision. The Reset panel shows a note in place of its buttons and never asks for the preview
+(`ui/desktop/src/components/settings/app/resetOnBrowser.ts`), and the daemon's keyless refusal,
+`RESET_NO_USER_KEY` in `routes/reset.rs`, names the machine running the daemon as where the control
+works (`tests/reset_no_user_key.rs`).
+
 **Why.** SD-1 already required that *"the interface must explain the refusal rather than appear
 broken"*, and stated it about the model picker. The same argument covers every proof-backed
 control, and an approval card is the worst case: three buttons that look live, a bare 403 on

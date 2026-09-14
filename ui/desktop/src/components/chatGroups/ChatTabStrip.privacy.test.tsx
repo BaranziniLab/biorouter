@@ -43,11 +43,16 @@ describe('ChatTabStrip — the privacy marking on the tab glyph', () => {
     expect(screen.getAllByTestId('chat-kind-icon')[0]).toHaveAttribute('data-privacy', 'public');
   });
 
-  it('says nothing when no tier is known for the tab', () => {
+  it('draws a tab with no known tier as not yet known — neither private nor public', () => {
     renderStrip();
-    // ⚠ Unknown must render as the UNMARKED glyph. A tab the daemon has said
-    // nothing about is not a tab to claim protection for.
-    expect(screen.getAllByTestId('chat-kind-icon')[0]).toHaveAttribute('data-privacy', 'public');
+    // ⚠ A tab the daemon has said nothing about is not a tab to claim
+    // protection for, and it is not a tab to call Public either. This test
+    // used to assert `public` here, and that pinned the defect measured on
+    // 2026-09-14: a private chat's subagent tabs read Public for seconds after
+    // every Settings round-trip and reload, while their own rows were read.
+    const glyph = screen.getAllByTestId('chat-kind-icon')[0];
+    expect(glyph).toHaveAttribute('data-privacy', 'unknown');
+    expect(glyph.getAttribute('aria-label')).toBe('Chat, privacy not yet known');
   });
 
   it('survives hover and does not collide with the running dot', () => {

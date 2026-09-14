@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chatIconFor, chatKindOf } from './chatKind';
+import { chatIconFor, chatKindOf, chatPrivacyMark } from './chatKind';
 
 describe('chatKindOf', () => {
   it('reads the durable lineage fields, not the title', () => {
@@ -76,10 +76,24 @@ describe('chatIconFor', () => {
     }
   });
 
-  /** An unknown tier must read as public, never as private. */
-  it('treats an absent tier as unmarked', () => {
-    expect(chatIconFor('chat', null).Icon).toBe(chatIconFor('chat', 'public').Icon);
-    expect(chatIconFor('chat', undefined).label).toBe('Chat');
+  /**
+   * An unknown tier reads as neither private NOR public. It keeps the unmarked
+   * shape (a padlock is a claim) and says "not yet known" in its name; this
+   * test used to assert it read as Public, which pinned the 2026-09-14 defect.
+   */
+  it('gives an unknown tier the unmarked shape and says it is not yet known', () => {
+    expect(chatIconFor('chat', 'unknown').Icon).toBe(chatIconFor('chat', 'public').Icon);
+    expect(chatIconFor('chat', 'unknown').Icon).not.toBe(chatIconFor('chat', 'private').Icon);
+    expect(chatIconFor('chat', 'unknown').label).toBe('Chat, privacy not yet known');
+    for (const kind of ['branch', 'subagent', 'app', 'scheduled', 'terminal'] as const) {
+      expect(chatIconFor(kind, 'unknown').label).toMatch(/not yet known/);
+      expect(chatIconFor(kind, 'unknown').label).not.toMatch(/private/i);
+    }
+  });
+
+  it('says nothing about privacy when the master switch is off', () => {
+    expect(chatIconFor('chat', 'off')).toEqual(chatIconFor('chat', 'public'));
+    expect(chatIconFor('subagent', 'off').label).toBe('Sub-agent');
   });
 
   it('gives every kind a distinct glyph', () => {
@@ -87,5 +101,20 @@ describe('chatIconFor', () => {
       (k) => chatIconFor(k, 'public').Icon
     );
     expect(new Set(icons).size).toBe(icons.length);
+  });
+});
+
+describe('chatPrivacyMark', () => {
+  it('never turns an absent tier into public', () => {
+    expect(chatPrivacyMark(undefined, true)).toBe('unknown');
+    expect(chatPrivacyMark(null, true)).toBe('unknown');
+    expect(chatPrivacyMark('public', true)).toBe('public');
+    expect(chatPrivacyMark('private', true)).toBe('private');
+  });
+
+  it('stands down to off, whatever the tier, when nothing enforces tiers', () => {
+    for (const tier of ['private', 'public', null, undefined] as const) {
+      expect(chatPrivacyMark(tier, false)).toBe('off');
+    }
   });
 });
