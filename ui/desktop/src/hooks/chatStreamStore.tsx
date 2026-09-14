@@ -2070,8 +2070,8 @@ class ChatStreamController {
    * was the only one that asked to resume it.
    *
    * So, on the browser surface and for a subagent's chat only, the transcript
-   * comes from `GET /sessions/{id}` — the read `useSubagentSession` already
-   * makes — and the observer feed follows it while it runs. What the resume
+   * comes from `GET /sessions/{id}` — the row `useSubagentSession` then reads
+   * the tab header from — and the observer feed follows it while it runs. What the resume
    * path does next is left out on purpose, because each piece is refused or
    * worse here:
    *
