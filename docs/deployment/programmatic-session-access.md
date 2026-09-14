@@ -210,6 +210,7 @@ the caller could not open:
 | Every `/knowledge/bases/{id}…` route: pages, graph, history, location, export, preview, and the writes | A private base is refused with a knowledge-base twin of the chat refusal. A base that does not exist, and a malformed id, get the same refusal. |
 | `GET /knowledge/bases`, `GET`/`POST /knowledge/active` | The public bases only. A write to the selection cannot hide, reveal or unpin a base the caller cannot see. |
 | `GET /active_work` | The running work of public chats only. Each row carries its chat's `sessionId` and a `title` and `detail` holding the shell command or task prompt, which is the chat's content. A row whose chat is private, or cannot be read, is omitted. So is a row that names no chat at all (see below). |
+| `GET /sessions/running` | The ids of public chats with a turn in flight only. A running private chat, or one the daemon cannot read, is omitted, and an unproven caller's empty answer is identical to "nothing is running", so the omission tells it nothing. `biorouter session list` and `session watch` still report liveness truthfully: they state the terminal's configured provider on every request, so a private-provider install is handed every running id and a public one exactly the chats `GET /sessions` already lists. Until 1.90.4 this route was left unfiltered, and polling it revealed when a private chat's turns started and stopped. |
 
 A browser pointed at `biorouter serve` is a special case of this, described in
 [decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else).
@@ -259,10 +260,9 @@ reader should not infer from this page that the surface is complete:
 
 | Route | What an ungated caller gets |
 |---|---|
-| `GET /sessions/running` | The ids of sessions with a turn in flight. Left unfiltered on purpose: `biorouter session list` reads it to report whether a run is still going, and a filtered answer would report a running private chat as finished. |
 | `GET /sessions/changes` | For the ids a caller names, and any other row that changed, the provider, model and tier columns. Metadata, not titles or transcripts. |
 | `GET /sessions/insights`, `GET /sessions/activity` | Machine-wide counts and per-day usage. Aggregates that name no chat. |
-| `POST /schedule/{id}/run_now`, `POST /schedule/create` | Launch scheduled work that may run in a private session. |
+| `POST /schedule/create`, `POST /schedule/{id}/run_now`, `POST /schedule/{id}/pause`, `POST /schedule/{id}/unpause`, `DELETE /schedule/delete/{id}` | Create, launch, pause, resume or delete scheduled work. A schedule runs a workflow file in a new session rather than an existing chat, and a launched run still passes the privacy check when it binds its model — but none of these five takes the header or the proof, so an ungated caller can change what runs and when. |
 
 The daemon has no principal, so none of this is a *tier* bypass in the strict sense — a caller
 holding the secret is already inside. It is the same open problem as
