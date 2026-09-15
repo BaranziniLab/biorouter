@@ -763,6 +763,24 @@ describe('rung 2 — the panel stays mounted across a crossing', () => {
     expect(code.match(/data-preview-transcript=""/g) ?? []).toHaveLength(2);
   });
 
+  /**
+   * Each host marks the box rung 2 measures as its transcript, or the
+   * conversation's chrome reads as nothing and a replay's page header is not
+   * counted in its floor. SessionHistoryView renders its OWN transcript
+   * component rather than SessionViewComponents', which is how its marker was
+   * missed once.
+   */
+  it.each([
+    ['BaseChat.tsx', 2],
+    ['sessions/SessionHistoryView.tsx', 1],
+    ['sessions/SessionViewComponents.tsx', 1],
+  ])('%s marks its transcript for measurement', (rel, count) => {
+    const source = readFileSync(join(__dirname, '../components', rel), 'utf8');
+    expect(codeWithoutComments(source).match(/data-preview-transcript=""/g) ?? []).toHaveLength(
+      count
+    );
+  });
+
   it('hands the viewer no layout-dependent class or style', () => {
     const viewerProps = PANEL_HOOK.slice(PANEL_HOOK.indexOf('viewerProps: {'));
     expect(viewerProps).not.toMatch(/\bclassName:|\bstyle:/);

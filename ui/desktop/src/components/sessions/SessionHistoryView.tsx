@@ -121,7 +121,9 @@ const SessionMessages: React.FC<{
   const filteredMessages = filterMessagesForDisplay(messages);
 
   return (
-    <ScrollArea className="h-full w-full">
+    // `data-preview-transcript`: the box rung 2 measures as this replay's
+    // transcript, so the page header above it counts as the conversation's chrome.
+    <ScrollArea className="h-full w-full" data-preview-transcript="">
       <div className="pb-24 pt-8">
         <div className="flex flex-col space-y-6">
           {isLoading ? (
