@@ -56,6 +56,7 @@ vi.mock('../../utils/sessionListCache', () => ({
 
 vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => ({}),
+  useLiveSessionTypes: () => ({}),
 }));
 
 /**

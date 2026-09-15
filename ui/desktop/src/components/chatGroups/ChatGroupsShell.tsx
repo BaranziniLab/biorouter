@@ -32,7 +32,7 @@ import {
   preloadSessionList,
   subscribeSessionList,
 } from '../../utils/sessionListCache';
-import { useLiveSessionTiers } from '../../hooks/chatStreamStore';
+import { useLiveSessionTiers, useLiveSessionTypes } from '../../hooks/chatStreamStore';
 import { mergeSessionTiers, raiseTier } from '../privacy/sessionTier';
 import { useSessionListTiers } from '../privacy/useSessionListTiers';
 import { getSession, type Session, type SessionClassification, type SessionType } from '../../api';
@@ -71,6 +71,69 @@ function heldSessionIds(
     for (const tab of group.tabs) if (tab.sessionId) held.add(tab.sessionId);
   }
   return held;
+}
+
+/**
+ * `base`, with a type from the first of `sources` that has one for each held
+ * chat `base` has none for. The same object when nothing is filled, so the
+ * strip is not re-rendered by a merge that changed nothing.
+ */
+function fillSessionTypes(
+  base: Record<string, SessionType>,
+  held: ReadonlySet<string>,
+  sources: readonly Readonly<Record<string, SessionType>>[]
+): Record<string, SessionType> {
+  let next = base;
+  for (const sessionId of held) {
+    if (base[sessionId]) continue;
+    for (const source of sources) {
+      const sessionType = source[sessionId];
+      if (!sessionType) continue;
+      if (next === base) next = { ...base };
+      next[sessionId] = sessionType;
+      break;
+    }
+  }
+  return next;
+}
+
+function readCachedSessionTypes(): Record<string, SessionType> {
+  const types: Record<string, SessionType> = {};
+  for (const session of getCachedSessionList() ?? []) {
+    if (session.session_type) types[session.id] = session.session_type;
+  }
+  return types;
+}
+
+/**
+ * Session type per session id, as the shared session-list cache reports it —
+ * `useSessionListTiers` for the type, and seeded and followed exactly as that
+ * hook is, so a listed row's kind is on the same render as its tier.
+ *
+ * `useTabTitlesFromSessionList`'s reconcile also takes each listed tab's type,
+ * but from an EFFECT, which commits once before its update does. The list's
+ * tier does not wait for it, so a subagent's tab opened from History's subagent
+ * list committed `data-chat-kind="chat" data-privacy="private"` first
+ * (`ChatGroupsShell.subagentKind.test.tsx`, measured by a `Profiler` on the
+ * first commit).
+ */
+function useSessionListTypes(): Record<string, SessionType> {
+  const [types, setTypes] = useState<Record<string, SessionType>>(readCachedSessionTypes);
+  useEffect(() => {
+    const read = () => {
+      const next = readCachedSessionTypes();
+      setTypes((prev) => {
+        const ids = Object.keys(prev);
+        const differ =
+          ids.length !== Object.keys(next).length || ids.some((id) => prev[id] !== next[id]);
+        return differ ? next : prev;
+      });
+    };
+    read();
+    // The shell's other readers of the list warm it; this only follows it.
+    return subscribeSessionList(read);
+  }, []);
+  return types;
 }
 
 /** `map` without the chats no tab holds; the same object when there are none. */
@@ -385,20 +448,44 @@ function useSessionPrivacyTiers(
  * and "not yet known" until the row answers is the tier's deliberate state
  * (`ChatGroupsShell.tierPending.test.tsx`).
  *
- * ⚠ **A reload still draws the bubble until the row answers, on purpose.** The
- * memory is per renderer, so a reload empties it (measured: the Bot at 1.8 s).
- * That window is left as it is, rather than given a "kind not yet known" state:
+ * ⚠ **A kind arrives no later than the tier it is drawn with, from every
+ * source.** This block used to say a reload leaves every subagent tab dimmed
+ * ("privacy not yet known") until its row answers, and then changes once. That
+ * held for a BACKGROUND tab and was false for the ACTIVE one: its BaseChat
+ * loads the chat into the live store, and the store published the row's tier
+ * (`useLiveSessionTiers`) long before the session list landed and the row read
+ * could begin. Measured 2026-09-14 on b6fab4a1 after a reload, the active
+ * subagent tab read `data-chat-kind="chat" data-privacy="private"` — an
+ * undimmed plain chat, marked private — then the Bot: 649 → 1634 ms and
+ * 1000 → 2295 ms on the desktop, 385 → 1371 ms on `biorouter serve`
+ * (reproduced: 570 → 1603 ms and 895 → 1929 ms). So a tier has three sources,
+ * and each now brings the type from the same row, on the same render:
  *
- *   - the tier comes from the same row, so for that whole window the glyph is
- *     already dimmed and named "privacy not yet known", and it changes once,
- *     when the row lands;
- *   - a separate pending kind could begin only once the list has landed, since
- *     before that nothing says which tabs the list leaves out. A subagent's tab
- *     would then change twice (bubble, pending, Bot), and a new chat's tab,
- *     also out of the list until it records a message, would gain a change it
- *     does not have today;
- *   - persisting the type to survive a reload would store a fact about a
- *     session beside the tab, which nothing here does.
+ *   - **the row read** (`outsideListTiers` and this state, set together from one
+ *     answer);
+ *   - **the live store** (`useLiveSessionTypes`, written by the registry before
+ *     the tier, from the same snapshot);
+ *   - **the cached list** (`useSessionListTypes`, seeded on the first render as
+ *     `useSessionListTiers` is — the reconcile below takes a listed tab's type
+ *     too, but from an effect, which commits one frame late).
+ *
+ * The last two are folded in DURING RENDER (`fillSessionTypes`), never from an
+ * effect: an effect commits the render before it, and that commit is the
+ * `chat|private` frame this exists to remove. A type already in this state wins
+ * over both — it is the latest row this shell was handed for a chat a tab holds,
+ * and the store keeps a chat's row for the life of the renderer, so for an id
+ * reissued to a new chat (above) the store is the stale one. The store's types
+ * are written to `sessionTypeMemory` too, with the same forgetting and cap.
+ *
+ * What is left is a tab no source has answered for, which has no tier either:
+ * a background subagent tab after a reload. It is dimmed "not yet known" and
+ * changes once, when its row lands with both. It is not given a pending KIND of
+ * its own: that could begin only once the list has landed, since before that
+ * nothing says which tabs the list leaves out, so a subagent's tab would change
+ * twice (bubble, pending, Bot) and a new chat's tab — also out of the list until
+ * it records a message — would gain a change it does not have today. Nor is the
+ * type persisted to survive a reload: that would store a fact about a session
+ * beside the tab, which nothing here does.
  */
 function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): {
   outsideListTiers: Record<string, SessionClassification>;
@@ -682,13 +769,35 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
     return unsubscribe;
   }, [dispatch, tabTitleSignature]);
 
-  return { outsideListTiers, rowSessionTypes };
+  // The two sources that publish a tier during render publish a type the same
+  // way, and are folded in during render (see "from every source", above).
+  const listSessionTypes = useSessionListTypes();
+  const liveSessionTypes = useLiveSessionTypes();
+  const sessionTypes = useMemo(
+    () =>
+      fillSessionTypes(rowSessionTypes, heldSessionIds(groups?.state), [
+        listSessionTypes,
+        liveSessionTypes,
+      ]),
+    [rowSessionTypes, groups?.state, listSessionTypes, liveSessionTypes]
+  );
+  // Remembered like a row's answer: the reconcile prunes the memory to the held
+  // chats, and its cap bounds it.
+  useEffect(() => {
+    for (const sessionId of heldSessionIds(stateRef.current)) {
+      const sessionType = liveSessionTypes[sessionId];
+      if (sessionType) rememberSessionType(sessionId, sessionType);
+    }
+  }, [liveSessionTypes, tabTitleSignature]);
+
+  return { outsideListTiers, rowSessionTypes: sessionTypes };
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
   const terminalDock = useTerminalDock();
-  // Both maps are state, so each keeps its identity until its own row changes —
+  // Each map keeps its identity until one of its own sources changes — the tier
+  // map is state, the type map is memoised over state and two snapshots — and
   // the wrapper object is new per render and is never passed on.
   const { outsideListTiers, rowSessionTypes } = useTabTitlesFromSessionList(groups);
   const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
@@ -1173,9 +1282,9 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         runningSessionIds={groups.runningSessionIds}
         tabAnnotations={groups.tabAnnotations}
         privacyTiers={privacyTiers}
-        // What each tab's chat's row says it is — listed or read on its own.
-        // The strip ORs a `sub_agent` here with `tabAnnotations`, which do not
-        // survive leaving `/pair` or a reload.
+        // What each tab's chat's row says it is — read on its own, listed, or
+        // loaded by the live store. The strip ORs a `sub_agent` here with
+        // `tabAnnotations`, which do not survive leaving `/pair` or a reload.
         sessionTypes={rowSessionTypes}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives

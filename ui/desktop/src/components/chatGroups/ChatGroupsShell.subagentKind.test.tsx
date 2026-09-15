@@ -1,3 +1,4 @@
+import { Profiler } from 'react';
 import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -48,6 +49,7 @@ let cachedList: Row[] | null = null;
 let tabAnnotations: Record<string, { badge?: string; parentSessionId?: string }> = {};
 type Tab = { tabId: string; sessionId: string; title: string; userSetName: boolean };
 let tabs: Tab[] = [];
+let activeTabId = 't-parent';
 const listListeners = new Set<() => void>();
 
 vi.mock('../BaseChat', () => ({
@@ -65,9 +67,28 @@ vi.mock('../../utils/sessionListCache', () => ({
   preloadSessionList: () => {},
 }));
 
-vi.mock('../../hooks/chatStreamStore', () => ({
-  useLiveSessionTiers: () => ({}),
-}));
+/**
+ * The live chat stream store, as the shell reads it: a tier and a session type
+ * per chat whose store has loaded, published together from one row. Mocked on
+ * `useSyncExternalStore`, the way the real hooks read the registry, so an
+ * emission re-renders the shell exactly as the store's does.
+ */
+let liveTiers: Record<string, string> = {};
+let liveTypes: Record<string, string> = {};
+const liveListeners = new Set<() => void>();
+vi.mock('../../hooks/chatStreamStore', async () => {
+  const { useSyncExternalStore } = await import('react');
+  const subscribe = (listener: () => void) => {
+    liveListeners.add(listener);
+    return () => {
+      liveListeners.delete(listener);
+    };
+  };
+  return {
+    useLiveSessionTiers: () => useSyncExternalStore(subscribe, () => liveTiers),
+    useLiveSessionTypes: () => useSyncExternalStore(subscribe, () => liveTypes),
+  };
+});
 
 /**
  * One `GET /sessions/{id}` in flight. The read passes no `throwOnError`, so the
@@ -119,7 +140,7 @@ vi.mock('../../contexts/ChatGroupsContext', () => ({
       groups: {
         g1: {
           id: 'g1',
-          activeTabId: 't-parent',
+          activeTabId,
           tabs,
         },
       },
@@ -148,6 +169,46 @@ const defaultTabs = (): Tab[] => [
   },
   { tabId: 't-open', sessionId: 'open-chat', title: 'Public notes', userSetName: false },
 ];
+
+/**
+ * `kind|privacy` of alpha's glyph after EVERY commit, read from the real DOM.
+ *
+ * A `Profiler`, not an assertion after `render`: testing-library's `render` and
+ * `act` flush effects AND the renders those effects schedule before returning,
+ * so a state that is committed for one frame — painted, in the app — and
+ * replaced by an effect is invisible to an assertion made afterwards. The
+ * `onRender` callback runs inside each commit, after the DOM has been written.
+ */
+let commits: string[] = [];
+function sampleAlpha() {
+  const glyph = document.querySelector('[data-tab-id="t-alpha"] [data-testid="chat-kind-icon"]');
+  if (glyph) {
+    commits.push(`${glyph.getAttribute('data-chat-kind')}|${glyph.getAttribute('data-privacy')}`);
+  }
+}
+const shell = () => (
+  <Profiler id="shell" onRender={sampleAlpha}>
+    <ChatGroupsShell onChatChange={() => {}} />
+  </Profiler>
+);
+
+// Every describe below starts from a window whose stores have loaded nothing.
+beforeEach(() => {
+  liveTiers = {};
+  liveTypes = {};
+  liveListeners.clear();
+  activeTabId = 't-parent';
+  commits = [];
+});
+
+/** The store publishing what a loaded chat's row said, as the registry does. */
+async function emitLive(next: { tiers?: Record<string, string>; types?: Record<string, string> }) {
+  if (next.types) liveTypes = next.types;
+  if (next.tiers) liveTiers = next.tiers;
+  await act(async () => {
+    for (const listener of [...liveListeners]) listener();
+  });
+}
 
 /** The cache announcing a new list, as `refreshSessionList` does. */
 async function emitList(rows: Row[]) {
@@ -303,7 +364,13 @@ describe('ChatGroupsShell — a subagent tab whose row is IN the cached list', (
   });
 
   it('marks both subagent tabs from the listed rows, with no read of their own', async () => {
-    render(<ChatGroupsShell onChatChange={() => {}} />);
+    render(shell());
+    // From the FIRST commit: the cached list's tier is drawn on the first render
+    // (`useSessionListTiers`), so its type must be too, or a tab opened from
+    // History's subagent list commits as a private plain chat before the
+    // reconcile effect runs.
+    expect(commits[0]).toBe('subagent|private');
+    expect(commits).not.toContain('chat|private');
     await flush();
     // Nothing is left out of this list, so nothing is read on its own…
     expect(reads).toEqual([]);
@@ -696,5 +763,107 @@ describe('ChatGroupsShell — a row read nobody answered is asked again', () => 
     view.unmount();
     await advance(60_000);
     expect(readsOf('sub-alpha')).toHaveLength(1);
+  });
+});
+
+/**
+ * An ACTIVE subagent tab after a reload (follow-up 3 to PR #314).
+ *
+ * A reload empties both the workspace annotations and `sessionTypeMemory`, so
+ * the kind had one source left: the row read, which cannot start until the
+ * session list lands. The ACTIVE tab's tier does not wait for that — its
+ * BaseChat loads the chat into the live store, and the store publishes the
+ * row's tier. Measured 2026-09-14 on b6fab4a1 by an independent tester: the
+ * active subagent tab read `data-chat-kind="chat" data-privacy="private"` from
+ * 649 to 1634 ms and from 1000 to 2295 ms on the desktop, and from 385 to
+ * 1371 ms on `biorouter serve` — an undimmed plain chat, marked private — and
+ * only then the Bot. The store held `session_type: 'sub_agent'` on that same
+ * row the whole time; it now publishes it beside the tier.
+ */
+describe('ChatGroupsShell — an active subagent tab whose chat the live store has loaded', () => {
+  beforeEach(() => {
+    reads = [];
+    dispatch.mockClear();
+    tabAnnotations = {};
+    tabs = defaultTabs();
+    listListeners.clear();
+    // A reload: nothing remembered, and the session list has not landed.
+    clearSessionTypeMemory();
+    cachedList = null;
+    activeTabId = 't-alpha';
+  });
+
+  it('marks the tab from the store, before any list or row read, and never as a private plain chat', async () => {
+    render(shell());
+    await flush();
+    // Nothing has said anything yet: no list, so no row read either.
+    expect(reads).toEqual([]);
+    expect(kindOf('t-alpha')).toBe('chat');
+    expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'unknown');
+
+    // BaseChat's load lands in the store, which publishes the row it read.
+    await emitLive({ types: { 'sub-alpha': 'sub_agent' }, tiers: { 'sub-alpha': 'private' } });
+    await flush();
+
+    expect(kindOf('t-alpha')).toBe('subagent');
+    expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'private');
+    // Still no list and no read: the store was the only source.
+    expect(reads).toEqual([]);
+    // And at no commit in between was it a plain chat marked private.
+    expect(commits.length).toBeGreaterThan(1);
+    expect(commits).not.toContain('chat|private');
+    // The other tabs were not re-kinded by it.
+    expect(kindOf('t-beta')).toBe('chat');
+    expect(kindOf('t-parent')).toBe('chat');
+  });
+
+  it('keeps it through the list landing and its own row read answering', async () => {
+    render(shell());
+    await flush();
+    await emitLive({ types: { 'sub-alpha': 'sub_agent' }, tiers: { 'sub-alpha': 'private' } });
+    await flush();
+
+    await emitList([
+      { id: 'parent', name: 'Delegation', privacy_tier: 'private', session_type: 'user' },
+      { id: 'open-chat', name: 'Public notes', privacy_tier: 'public', session_type: 'user' },
+    ]);
+    await flush();
+    readOf('sub-alpha').resolve(alphaRow);
+    readOf('sub-beta').resolve(betaRow);
+    await flush();
+
+    expect(kindOf('t-alpha')).toBe('subagent');
+    expect(kindOf('t-beta')).toBe('subagent');
+    expect(commits).not.toContain('chat|private');
+  });
+
+  it('remembers what the store said, so a remount paints the Bot before anything answers', async () => {
+    const first = render(shell());
+    await flush();
+    await emitLive({ types: { 'sub-alpha': 'sub_agent' }, tiers: { 'sub-alpha': 'private' } });
+    await flush();
+    first.unmount();
+
+    // Only the memory can say it now.
+    liveTypes = {};
+    liveTiers = {};
+    commits = [];
+    render(shell());
+    expect(commits[0]).toBe('subagent|unknown');
+    expect(kindOf('t-alpha')).toBe('subagent');
+  });
+
+  it('lets a row that says otherwise win over the store, for a closed tab reissued its id', async () => {
+    render(shell());
+    await flush();
+    // A store still holding a row from before the id was reissued.
+    await emitLive({ types: { 'sub-alpha': 'sub_agent' } });
+    await flush();
+    await emitList([
+      { id: 'parent', name: 'Delegation', privacy_tier: 'private', session_type: 'user' },
+      { id: 'sub-alpha', name: 'New chat', privacy_tier: 'public', session_type: 'user' },
+    ]);
+    await flush();
+    expect(kindOf('t-alpha')).toBe('chat');
   });
 });

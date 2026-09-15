@@ -33,9 +33,10 @@ import type { TabAnnotation } from './workspaceCommandPlanner';
  * never persisted: leaving `/pair` (Settings, History) or reloading drops it,
  * and every subagent tab then read as a plain chat (measured 2026-09-14 on
  * 1.90.4). The row survives any of that, but arrives only once the shell has it
- * — from the cached session list, or from its own read of a chat the list
- * leaves out. So the annotation covers the first moments and the row covers
- * every remount after them.
+ * — from the cached session list, from the live store that loaded the chat, or
+ * from its own read of a chat the list leaves out — and always no later than
+ * the tier the same row brings. So the annotation covers the first moments and
+ * the row covers every remount after them.
  *
  * ⚠ Deliberately NOT widened by fetching the session HERE: the strip renders on
  * every keystroke of a rename, and a per-tab fetch there is how a tab strip
@@ -139,10 +140,11 @@ export interface ChatTabStripProps {
   privacyTiers?: Record<string, SessionClassification>;
   /**
    * The session type each tab's chat's row reported, per SESSION id — the
-   * cached session list's row when the list holds the chat, else the
-   * `metadata_only` read `ChatGroupsShell` makes for it. A subagent's chat is
-   * usually NOT listed, and IS listed while History's "Show subagent runs" has
-   * left the cache holding subagents, so the shell takes the type from both.
+   * cached session list's row when the list holds the chat, the live store's
+   * row when this window has loaded the chat, else the `metadata_only` read
+   * `ChatGroupsShell` makes for it. A subagent's chat is usually NOT listed,
+   * and IS listed while History's "Show subagent runs" has left the cache
+   * holding subagents, so the shell takes the type from all three.
    *
    * Only `sub_agent` is consulted (see `tabKindSource`), ORed with
    * `tabAnnotations`. It exists because the annotation does not outlive the

@@ -800,6 +800,48 @@ describe('the registry publishes what its stores say a chat is', () => {
     expect(registry.getSessionTiersSnapshot()).toEqual({ [sid]: 'private' });
   });
 
+  /**
+   * The tab's KIND, from the same row (follow-up 3 to PR #314). After a reload
+   * the active subagent tab's tier came from here while its kind waited for the
+   * session list, and it read as a private plain chat for about a second. The
+   * type is published beside the tier, and written FIRST, so a tier listener
+   * that re-renders the strip already sees the type.
+   */
+  it('publishes the session type of a loaded chat, before its tier', async () => {
+    const sid = `type-live-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({
+      data: {
+        session: boundSession(sid, { privacy_tier: 'private', session_type: 'sub_agent' }),
+      },
+    });
+
+    const registry = new ChatStreamRegistry();
+    expect(registry.getSessionTypesSnapshot()).toEqual({});
+    const seenByTierListener: unknown[] = [];
+    const stopTiers = registry.subscribeSessionTiers(() => {
+      seenByTierListener.push(registry.getSessionTypesSnapshot()[sid]);
+    });
+    let typeEmits = 0;
+    const stopTypes = registry.subscribeSessionTypes(() => {
+      typeEmits += 1;
+    });
+
+    await registry.getController(sid).loadSession();
+    await aFrame();
+    const before = registry.getSessionTypesSnapshot();
+    // Another notification from the same chat, with the type unchanged.
+    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.6' });
+    await aFrame();
+    stopTiers();
+    stopTypes();
+
+    expect(registry.getSessionTypesSnapshot()).toEqual({ [sid]: 'sub_agent' });
+    expect(seenByTierListener).toEqual(['sub_agent']);
+    // Once per chat, and identity-stable after, so no strip re-renders per token.
+    expect(typeEmits).toBe(1);
+    expect(registry.getSessionTypesSnapshot()).toBe(before);
+  });
+
   it('follows the ratchet a turn reports, without re-reading the row', async () => {
     const sid = `tier-ratchet-${++sessionSeq}`;
     mocks.resumeAgent.mockResolvedValue({ data: { session: boundSession(sid) } });

@@ -13,8 +13,10 @@ import type { SessionType } from '../../api';
  * answer from the last visit is still the answer, and the shell seeds its state
  * from here when it mounts.
  *
- * Per renderer, so per window, and never persisted: a reload starts empty. Why
- * the reload case is left as it is lives with the shell's doc of the type map.
+ * Per renderer, so per window, and never persisted: a reload starts empty. What
+ * covers a reload instead — the live store and the cached list, each folded in
+ * on the same render as the tier it brings — lives with the shell's doc of the
+ * type map ("from every source").
  *
  * # Two bounds
  *

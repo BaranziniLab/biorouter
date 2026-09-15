@@ -62,6 +62,7 @@ vi.mock('../../utils/sessionListCache', () => ({
 // `hooks/chatStreamStore.binding.test.tsx`.
 vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => liveTiers,
+  useLiveSessionTypes: () => ({}),
 }));
 
 // The THIRD source: a tab whose chat the list leaves out (a delegated
