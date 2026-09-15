@@ -1,7 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SIDEBAR_COMPACT_WIDTH } from '../components/Layout/yieldLadder';
+import {
+  PREVIEW_MAX_WIDTH,
+  PREVIEW_MIN_WIDTH,
+  PREVIEW_PREFERRED_CHAT_WIDTH,
+  PREVIEW_SIDE_STRIP_HEIGHT,
+  PREVIEW_SIDE_WIDTH,
+  PREVIEW_STACK_EDGE_HEIGHT,
+  PREVIEW_STACK_MIN_HEIGHT,
+  PREVIEW_STACK_RATIO,
+  PREVIEW_STACK_STRIP_HEIGHT,
+  PREVIEW_TRANSCRIPT_MIN_HEIGHT,
+  PREVIEW_DEFAULT_WIDTH_RATIO,
+  READABLE_CHAT_WIDTH,
+  SIDEBAR_COMPACT_WIDTH,
+} from '../components/Layout/yieldLadder';
 // Imported rather than re-parsed out of the component's source, which is what
 // this file used to do: the sidebar's bounds now live in a pure module with no
 // React and no DOM, so the values can be read directly and the regex that stood
@@ -500,4 +514,350 @@ describe.each(PAGE_HEADER_VIEWS)('$rel mounts the shared page header', ({ source
   it('hand-rolls no action row of its own', () => {
     expect(code).not.toMatch(/className="flex gap-3 mt-5"/);
   });
+});
+
+/**
+ * RUNG 2 — THE PREVIEW SPLIT, pinned at the source.
+ *
+ * The decision lives in `yieldLadder.ts` and is unit-tested there on both sides
+ * of every threshold. What this block guards is the OTHER half, which no
+ * component test can see: jsdom never loads `main.css`, never lays out a grid and
+ * never evaluates a custom property, so a render test of the split box passes
+ * whether the stylesheet agrees with the ladder or not. So the stylesheet's
+ * literals are asserted against the ladder's constants, the rules are asserted
+ * unlayered and in order, and the hosts are asserted to mount the panel the way
+ * the no-remount guarantee needs.
+ */
+const PANEL_HOOK = readFileSync(
+  join(__dirname, '../components/artifacts/useArtifactPanel.ts'),
+  'utf8'
+);
+const VIEWER = readFileSync(join(__dirname, '../components/artifacts/ArtifactViewer.tsx'), 'utf8');
+const BASE_CHAT = readFileSync(join(__dirname, '../components/BaseChat.tsx'), 'utf8');
+const PREVIEW_HOSTS = [
+  'BaseChat.tsx',
+  'sessions/SessionHistoryView.tsx',
+  'sessions/SharedSessionView.tsx',
+].map((rel) => ({ rel, source: readFileSync(join(__dirname, '../components', rel), 'utf8') }));
+
+/** The stylesheet with comments blanked (same length), so offsets survive. */
+const CSS_CODE = CSS.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
+
+/** Every rule whose selector list, whitespace-collapsed, equals `selector`. */
+function rulesFor(selector: string): { index: number; body: string }[] {
+  const wanted = selector.replace(/\s+/g, ' ').trim();
+  const found: { index: number; body: string }[] = [];
+  const pattern = /([^{}]+)\{([^{}]*)\}/g;
+  for (let match = pattern.exec(CSS_CODE); match; match = pattern.exec(CSS_CODE)) {
+    const selectors = match[1].replace(/\s+/g, ' ').trim();
+    if (selectors === wanted) found.push({ index: match.index, body: match[2] });
+  }
+  return found;
+}
+
+function onlyRule(selector: string): { index: number; body: string } {
+  const found = rulesFor(selector);
+  if (found.length !== 1)
+    throw new Error(`expected exactly one rule for ${selector}, got ${found.length}`);
+  return found[0];
+}
+
+function property(body: string, name: string): string | null {
+  const match = body.match(new RegExp(`(?:^|;|\\s)${name}:\\s*([^;]+);`));
+  return match ? match[1].replace(/\s+/g, ' ').trim() : null;
+}
+
+/** Brace depth at an offset: 0 means a top-level, unlayered rule. */
+function depthAt(index: number): number {
+  let depth = 0;
+  for (let i = 0; i < index; i += 1) {
+    if (CSS_CODE[i] === '{') depth += 1;
+    else if (CSS_CODE[i] === '}') depth -= 1;
+  }
+  return depth;
+}
+
+const SIDE = "[data-preview-split][data-preview-layout='side']";
+const STACK = "[data-preview-split][data-preview-layout='stack']";
+
+describe('rung 2 — the preview split in main.css agrees with the ladder', () => {
+  it('is one grid that clips what the flattened body used to clip', () => {
+    const grid = onlyRule('[data-preview-split][data-preview-layout]');
+    expect(property(grid.body, 'display')).toBe('grid');
+    // `clip`, never `hidden`: a hidden box is a scroll container, and the tab
+    // strip's scrollIntoView scrolled the whole split 20px sideways.
+    expect(property(grid.body, 'overflow')).toBe('clip');
+    const flattened = onlyRule(
+      "[data-preview-split][data-preview-layout] > [data-preview-area='column'], [data-preview-split][data-preview-layout] > [data-preview-area='column'] > [data-preview-area='body']"
+    );
+    expect(property(flattened.body, 'display')).toBe('contents');
+  });
+
+  it('pins the ladder’s widths', () => {
+    expect(PREVIEW_MIN_WIDTH).toBe(360);
+    expect(READABLE_CHAT_WIDTH).toBe(440);
+    expect(PREVIEW_SIDE_WIDTH).toBe(800);
+    expect(PREVIEW_SIDE_WIDTH).toBe(PREVIEW_MIN_WIDTH + READABLE_CHAT_WIDTH);
+    expect(PREVIEW_PREFERRED_CHAT_WIDTH).toBe(640);
+    expect(PREVIEW_MAX_WIDTH).toBe(920);
+    expect(PREVIEW_DEFAULT_WIDTH_RATIO).toBe(0.48);
+  });
+
+  it('pins the ladder’s heights to the tokens they mirror', () => {
+    expect(declaration('dock-height')).toBe(`${PREVIEW_STACK_STRIP_HEIGHT}px`);
+    expect(declaration('chrome-height')).toBe(`${PREVIEW_SIDE_STRIP_HEIGHT}px`);
+    expect(PREVIEW_STACK_STRIP_HEIGHT).toBe(36);
+    expect(PREVIEW_SIDE_STRIP_HEIGHT).toBe(44);
+    expect(PREVIEW_STACK_MIN_HEIGHT).toBe(200);
+    expect(PREVIEW_TRANSCRIPT_MIN_HEIGHT).toBe(146);
+    expect(PREVIEW_STACK_RATIO).toBe(0.5);
+  });
+
+  it('seats the side column’s conversation at exactly READABLE_CHAT_WIDTH', () => {
+    const side = onlyRule(SIDE);
+    expect(property(side.body, 'grid-template-columns')).toBe(
+      `minmax(${READABLE_CHAT_WIDTH}px, 1fr) var(--preview-panel-width)`
+    );
+    expect(property(side.body, 'grid-template-areas')).toBe(
+      "'header preview' 'subheader preview' 'transcript preview' 'composer preview'"
+    );
+  });
+
+  it('stacks header, sheet, transcript, composer — the composer on the bottom edge', () => {
+    const stack = onlyRule(STACK);
+    expect(property(stack.body, 'grid-template-columns')).toBe('minmax(0, 1fr)');
+    expect(property(stack.body, 'grid-template-rows')).toBe(
+      'auto auto minmax(var(--dock-height), var(--preview-stack-height)) 1fr auto'
+    );
+    expect(property(stack.body, 'grid-template-areas')).toBe(
+      "'header' 'subheader' 'preview' 'transcript' 'composer'"
+    );
+  });
+
+  it('holds the transcript’s floor at PREVIEW_TRANSCRIPT_MIN_HEIGHT below the 8px edge', () => {
+    expect(PREVIEW_STACK_EDGE_HEIGHT).toBe(8);
+    const transcript = onlyRule(
+      `${STACK}:not([data-preview-measuring]) [data-preview-area='transcript']`
+    );
+    expect(property(transcript.body, 'padding-top')).toBe(`${PREVIEW_STACK_EDGE_HEIGHT}px`);
+    expect(property(transcript.body, 'min-height')).toBe(
+      `calc(${PREVIEW_TRANSCRIPT_MIN_HEIGHT}px + ${PREVIEW_STACK_EDGE_HEIGHT}px)`
+    );
+    // Placed explicitly in BOTH layouts: auto-placed beside the resize edge, a
+    // replay's column was pushed into an implicit second column and its sheet
+    // collapsed to 0px wide.
+    for (const layout of [SIDE, STACK]) {
+      const placed = onlyRule(`${layout} > [data-preview-area='conversation']`);
+      expect(property(placed.body, 'grid-column'), layout).toBe('1');
+    }
+    const replay = onlyRule(
+      `${STACK}:not([data-preview-measuring]) > [data-preview-area='conversation']`
+    );
+    expect(property(replay.body, 'padding-top')).toBe(`${PREVIEW_STACK_EDGE_HEIGHT}px`);
+    expect(property(replay.body, 'min-height')).toBe('var(--preview-chat-floor)');
+  });
+
+  it('gives a stacked sheet the dock strip and a real bottom edge', () => {
+    const strip = onlyRule(`${STACK} > [data-testid='artifact-viewer'] > .br-tabstrip`);
+    expect(property(strip.body, 'height')).toBe('var(--dock-height)');
+    expect(property(strip.body, 'background')).toBe('var(--background-default)');
+    const sheet = onlyRule(`${STACK} > [data-testid='artifact-viewer']`);
+    expect(property(sheet.body, 'border-bottom')).toBe('1px solid var(--border-default)');
+  });
+
+  /**
+   * The edge is the panel's SIBLING, placed on the seam: the transcript's top 8px
+   * under a sheet, the panel's left 8px beside it. Inside the panel it could only
+   * have lain over the preview's content (the panel clips its own paint).
+   */
+  it('places the resize edge on the seam, 8px, covering neither side’s content', () => {
+    const stack = onlyRule(`${STACK} > .br-preview-resize-handle`);
+    expect(property(stack.body, 'grid-area')).toBe('transcript');
+    expect(property(stack.body, 'align-self')).toBe('start');
+    expect(property(stack.body, 'height')).toBe(`${PREVIEW_STACK_EDGE_HEIGHT}px`);
+    expect(property(stack.body, 'cursor')).toBe('row-resize');
+    const side = onlyRule(`${SIDE} > .br-preview-resize-handle`);
+    expect(property(side.body, 'grid-area')).toBe('preview');
+    expect(property(side.body, 'justify-self')).toBe('start');
+    expect(property(side.body, 'width')).toBe('8px');
+    expect(property(side.body, 'cursor')).toBe('col-resize');
+    const hover = onlyRule(
+      '[data-preview-split][data-preview-layout] > .br-preview-resize-handle:hover::after'
+    );
+    expect(property(hover.body, 'background')).toBe('var(--border-strong)');
+    expect(onlyRule(`${STACK} > .br-preview-resize-handle`).index).toBeGreaterThan(
+      onlyRule(`${SIDE} > .br-preview-resize-handle`).index
+    );
+  });
+
+  it('declares the stack rules AFTER the side rules they override', () => {
+    expect(onlyRule(STACK).index).toBeGreaterThan(onlyRule(SIDE).index);
+    expect(onlyRule(`${STACK} > [data-preview-area='conversation']`).index).toBeGreaterThan(
+      onlyRule(`${SIDE} > [data-preview-area='conversation']`).index
+    );
+    // The measuring template overrides the stack template at equal-or-higher
+    // specificity, so it must come after it as well.
+    expect(onlyRule(`${STACK}[data-preview-measuring]`).index).toBeGreaterThan(
+      onlyRule(STACK).index
+    );
+  });
+
+  it('is unlayered, so it beats the utilities on the same elements', () => {
+    for (const selector of [
+      '[data-preview-split][data-preview-layout]',
+      SIDE,
+      STACK,
+      `${STACK} > [data-testid='artifact-viewer']`,
+      `${STACK}[data-preview-measuring] > [data-testid='artifact-viewer']`,
+      '.br-preview-measure',
+    ]) {
+      expect(depthAt(onlyRule(selector).index), selector).toBe(0);
+    }
+  });
+
+  /**
+   * The seam is decided in JS (`previewPanelMode`), because a `@container`
+   * condition cannot read a custom property and the split box's width is what
+   * both the grid and the ladder must agree on. A container or media query that
+   * crept into these rules would be a SECOND seam, free to drift from 800.
+   */
+  it('has no container or media condition of its own', () => {
+    const start = CSS_CODE.indexOf('[data-preview-split][data-preview-layout] {');
+    const end = CSS_CODE.indexOf('.br-preview-measure {');
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const block = CSS_CODE.slice(start, end);
+    expect(block).not.toMatch(/@container|@media/);
+    for (const condition of block.match(/@(?:container|media)[^{]*/g) ?? []) {
+      expect(condition).toContain(`${PREVIEW_SIDE_WIDTH}px`);
+    }
+  });
+
+  it('transitions nothing geometric (the motion pass owns motion)', () => {
+    const start = CSS_CODE.indexOf('[data-preview-split][data-preview-layout] {');
+    const end = CSS_CODE.indexOf('.br-preview-measure {');
+    expect(CSS_CODE.slice(start, end)).not.toMatch(/transition|animation/);
+  });
+
+  it('holds a fresh sheet back with no room and no pointer events while it measures', () => {
+    const template = onlyRule(`${STACK}[data-preview-measuring]`);
+    expect(property(template.body, 'grid-template-rows')).toBe('auto auto 0px 1fr auto');
+    const sheet = onlyRule(`${STACK}[data-preview-measuring] > [data-testid='artifact-viewer']`);
+    expect(property(sheet.body, 'opacity')).toBe('0');
+    expect(property(sheet.body, 'pointer-events')).toBe('none');
+    expect(property(sheet.body, 'height')).toBe('var(--preview-provisional-height)');
+  });
+});
+
+describe('rung 2 — the panel stays mounted across a crossing', () => {
+  it.each(PREVIEW_HOSTS)('$rel renders exactly one ArtifactViewer, unkeyed', ({ source }) => {
+    const code = codeWithoutComments(source);
+    const tags = code.match(/<ArtifactViewer\b[^>]*>/g) ?? [];
+    expect(tags).toHaveLength(1);
+    expect(tags[0]).not.toMatch(/\bkey=/);
+    expect(code).toMatch(/\{\.\.\.artifactPanel\.splitPaneProps\}/);
+  });
+
+  it('BaseChat marks every piece the grid places, and flattens rather than re-parents', () => {
+    const code = codeWithoutComments(BASE_CHAT);
+    for (const area of ['column', 'body', 'header', 'subheader', 'composer']) {
+      expect(code.match(new RegExp(`data-preview-area="${area}"`, 'g')) ?? [], area).toHaveLength(
+        1
+      );
+    }
+    // The clean conversation and the transcript: one or the other is rendered.
+    expect(code.match(/data-preview-area="transcript"/g) ?? []).toHaveLength(2);
+    expect(code.match(/data-preview-transcript=""/g) ?? []).toHaveLength(2);
+  });
+
+  /**
+   * Each host marks the box rung 2 measures as its transcript, or the
+   * conversation's chrome reads as nothing and a replay's page header is not
+   * counted in its floor. SessionHistoryView renders its OWN transcript
+   * component rather than SessionViewComponents', which is how its marker was
+   * missed once.
+   */
+  it.each([
+    ['BaseChat.tsx', 2],
+    ['sessions/SessionHistoryView.tsx', 1],
+    ['sessions/SessionViewComponents.tsx', 1],
+  ])('%s marks its transcript for measurement', (rel, count) => {
+    const source = readFileSync(join(__dirname, '../components', rel), 'utf8');
+    expect(codeWithoutComments(source).match(/data-preview-transcript=""/g) ?? []).toHaveLength(
+      count
+    );
+  });
+
+  it('hands the viewer no layout-dependent class or style', () => {
+    const viewerProps = PANEL_HOOK.slice(PANEL_HOOK.indexOf('viewerProps: {'));
+    expect(viewerProps).not.toMatch(/\bclassName:|\bstyle:/);
+  });
+
+  it('never renders a different element for the other layout inside the panel', () => {
+    const code = codeWithoutComments(VIEWER);
+    expect(code).not.toMatch(/layout\s*===\s*'(?:stack|side)'\s*\?\s*\(?\s*</);
+    expect(code).not.toMatch(/layout\s*===\s*'(?:stack|side)'\s*&&\s*\(?\s*</);
+    expect(code).toContain("aria-orientation={layout === 'stack' ? 'horizontal' : 'vertical'}");
+  });
+
+  it('keeps the scroll anchor scoped to the live chat', () => {
+    expect(codeWithoutComments(BASE_CHAT)).toContain(
+      'anchorBottomOnResize={artifactPanel.isStacked}'
+    );
+    for (const { rel, source } of PREVIEW_HOSTS.slice(1)) {
+      expect(source, rel).not.toContain('anchorBottomOnResize');
+    }
+  });
+
+  it('lists `translate` in the panel’s transition, or its slide never animates', () => {
+    expect(VIEWER).toContain("'transition-[opacity,translate,transform]'");
+  });
+});
+
+/**
+ * THE PREVIEW'S TEXT MEASURE: text in the panel reads at the transcript's own
+ * 760px column, and nothing that needs width is held to it.
+ */
+describe('the preview text measure is the chat measure', () => {
+  it('reads --measure-chat plus the two 16px gutters, with no vw and no clamp', () => {
+    const rule = onlyRule('.br-preview-measure');
+    expect(property(rule.body, 'max-width')).toBe('calc(var(--measure-chat) + 2 * 16px)');
+    expect(property(rule.body, 'margin-inline')).toBe('auto');
+    expect(rule.body).not.toMatch(/vw|clamp\(/);
+  });
+
+  it('is applied at exactly two call sites: the markdown body and the code view', () => {
+    const code = codeWithoutComments(VIEWER);
+    expect(code.match(/br-preview-measure(?!-)/g) ?? []).toHaveLength(2);
+    expect(code).toContain(
+      '<div className="br-preview-measure px-4 py-3" data-preview-intrinsic="">'
+    );
+    expect(code).toContain("className={cn('min-h-full', measure && 'br-preview-measure')}");
+    // …and the code view is held only when the file is not a CSV/TSV.
+    expect(code).toContain('measure={!delimited}');
+  });
+
+  it('aligns the status strip’s content with the measured column, and only there', () => {
+    const rule = onlyRule('.br-preview-measure-strip');
+    expect(property(rule.body, 'padding-inline')).toBe(
+      'max(14px, calc((100% - var(--measure-chat) - 2 * 16px) / 2 + 14px))'
+    );
+    expect(depthAt(rule.index)).toBe(0);
+    const code = codeWithoutComments(VIEWER);
+    expect(code.match(/br-preview-measure-strip/g) ?? []).toHaveLength(1);
+    expect(code).toContain("measuredText && 'br-preview-measure-strip'");
+    expect(code).toContain('const measuredText = showingCode ? !delimited : markdown;');
+  });
+
+  it.each(['DelimitedTable', 'DirectoryTreePreview', 'ImageFilePreview'])(
+    'is absent from %s',
+    (name) => {
+      const code = codeWithoutComments(VIEWER);
+      const start = code.indexOf(`function ${name}(`);
+      expect(start, name).toBeGreaterThan(0);
+      const next = code.indexOf('\nfunction ', start + 1);
+      const body = code.slice(start, next === -1 ? undefined : next);
+      expect(body).not.toContain('br-preview-measure');
+    }
+  );
 });

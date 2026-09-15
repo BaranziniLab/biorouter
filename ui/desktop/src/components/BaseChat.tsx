@@ -1313,12 +1313,16 @@ function BaseChatContent({
   const isMobile = useIsMobile();
 
   // The artifact side panel — the ONE surface on which a generated artifact is
-  // ever displayed. Geometry, open/close and the rung-2 overlay decision all
-  // live in the shared hook, because the saved-session and shared-session views
-  // mount the same panel and must behave identically. What stays here is the
-  // part that needs a LIVE conversation: auto-open on a fresh artifact, and
+  // ever displayed. Geometry, open/close and rung 2's side-or-stacked decision
+  // all live in the shared hook, because the saved-session and shared-session
+  // views mount the same panel and must behave identically. What stays here is
+  // the part that needs a LIVE conversation: auto-open on a fresh artifact, and
   // feeding a render failure back to the agent.
-  const artifactPanel = useArtifactPanel({ isMobile, allowWindowResize });
+  const artifactPanel = useArtifactPanel({
+    isMobile,
+    allowWindowResize,
+    enabled: artifactPanelEnabled,
+  });
   const {
     splitPaneRef,
     artifact: presentedArtifact,
@@ -2356,8 +2360,19 @@ function BaseChatContent({
         {/* Custom header */}
         {renderHeader && renderHeader()}
 
-        <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
-          <div className="flex min-w-0 flex-1 flex-col">
+        {/* Rung 2's split box. With a preview mounted, `splitPaneProps` stamps
+            `data-preview-layout` and main.css turns this box into ONE grid that
+            places the header, the preview, the transcript and the composer by
+            their `data-preview-area` — beside each other, or the preview in a
+            sheet between the header and the transcript. The column and its body
+            are flattened (`display: contents`) rather than re-parented, so a
+            side ↔ stack crossing moves no DOM node and reloads no figure. */}
+        <div
+          ref={splitPaneRef}
+          {...artifactPanel.splitPaneProps}
+          className="relative flex flex-1 min-h-0 min-w-0"
+        >
+          <div data-preview-area="column" className="flex min-w-0 flex-1 flex-col">
             {/* Chat container with sticky workflow header.
                 NO `rounded-t-2xl` in the coherent layout, and its removal is a
                 bug fix rather than a taste call. This box starts at y=0 with
@@ -2378,6 +2393,7 @@ function BaseChatContent({
                 reserves for the artifact/preview sheet — so this was off-spec on
                 a second count.) */}
             <div
+              data-preview-area="body"
               className={
                 coherent
                   ? 'flex flex-col flex-1 min-h-0 relative overflow-hidden bg-background-canvas'
@@ -2385,6 +2401,7 @@ function BaseChatContent({
               }
             >
               <div
+                data-preview-area="header"
                 // Opaque, not frosted. The artifact panel's header sits flush
                 // beside this one; a translucent, blurred fill made the two
                 // bottom hairlines read at different weights so they never
@@ -2471,32 +2488,38 @@ function BaseChatContent({
                 {renderSessionHeaderActions()}
               </div>
               {subagent.isSubagent && subagent.parentSessionId && (
-                <SubagentTabHeader
-                  sessionId={sessionId}
-                  parentSessionId={subagent.parentSessionId}
-                  spawnContext={subagent.spawnContext}
-                  extensions={subagent.extensions}
-                  knowledgeBases={extractKnowledgeBases(subagent.spawnContext)}
-                  // The store's own predicate, NOT `!== ChatState.Idle`: every
-                  // session load starts in LoadingConversation, so the naive
-                  // form offered Stop for the whole of every subagent tab open
-                  // — a kill switch for a turn that had already finished.
-                  running={isRunningState(chatState)}
-                  onOpenParent={() =>
-                    // The reducer's own DEDUPE rule makes this "open or focus":
-                    // a sessionId already open anywhere activates that tab (and
-                    // focuses its group) instead of opening a second one.
-                    chatGroups?.dispatch({
-                      type: 'openTab',
-                      payload: { sessionId: subagent.parentSessionId! },
-                    })
-                  }
-                  onStop={() => void subagent.stop()}
-                />
+                // Wrapped so rung 2's grid places the subagent's second header
+                // band as one item under the first.
+                <div data-preview-area="subheader" className="flex-shrink-0">
+                  <SubagentTabHeader
+                    sessionId={sessionId}
+                    parentSessionId={subagent.parentSessionId}
+                    spawnContext={subagent.spawnContext}
+                    extensions={subagent.extensions}
+                    knowledgeBases={extractKnowledgeBases(subagent.spawnContext)}
+                    // The store's own predicate, NOT `!== ChatState.Idle`: every
+                    // session load starts in LoadingConversation, so the naive
+                    // form offered Stop for the whole of every subagent tab open
+                    // — a kill switch for a turn that had already finished.
+                    running={isRunningState(chatState)}
+                    onOpenParent={() =>
+                      // The reducer's own DEDUPE rule makes this "open or focus":
+                      // a sessionId already open anywhere activates that tab (and
+                      // focuses its group) instead of opening a second one.
+                      chatGroups?.dispatch({
+                        type: 'openTab',
+                        payload: { sessionId: subagent.parentSessionId! },
+                      })
+                    }
+                    onStop={() => void subagent.stop()}
+                  />
+                </div>
               )}
               {isCleanConversation ? (
                 <div
                   className="biorouter-clean-conversation flex-1 min-h-0 flex items-center justify-center overflow-y-auto px-4 py-10 sm:px-6 sm:py-16"
+                  data-preview-area="transcript"
+                  data-preview-transcript=""
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   data-drop-zone="true"
@@ -2521,9 +2544,16 @@ function BaseChatContent({
                       : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
                   }
                   autoScroll
+                  // A stacked preview opening above the transcript shrinks its
+                  // viewport from the TOP; this keeps the newest message against
+                  // the composer instead of sliding under it. Scoped to a stacked
+                  // sheet: every other chat keeps the scroll behaviour it had.
+                  anchorBottomOnResize={artifactPanel.isStacked}
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   data-drop-zone="true"
+                  data-preview-area="transcript"
+                  data-preview-transcript=""
                   paddingX={6}
                   paddingY={0}
                 >
@@ -2654,6 +2684,7 @@ function BaseChatContent({
               // composer's context row — the one moment the separation is doing
               // real work.
               <div
+                data-preview-area="composer"
                 className={
                   coherent
                     ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-7 bg-background-canvas'
