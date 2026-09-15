@@ -1576,6 +1576,7 @@ impl CliSession {
                         // Advisory pending tool-call hint; the CLI renders the
                         // authoritative tool request when it lands.
                         Some(Ok(AgentEvent::ToolCallPending(_))) => {}
+                        Some(Ok(AgentEvent::ToolCallsRetracted { .. } | AgentEvent::SteerWaiting { .. })) => {}
                         // #59: the ids the turn's rows were stored under. The CLI
                         // writes to the same session store it renders from and has
                         // no `expectedMessageIds` to satisfy, so this is inert here.

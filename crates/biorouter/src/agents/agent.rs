@@ -140,11 +140,33 @@ const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut of
 struct MirroredCatalogRefresh {
     pending: HashMap<String, bool>,
     changed: bool,
+    /// D16: ids announced by `ToolCallPending` whose tool request has not
+    /// landed yet, in announcement order.
+    announced: Vec<String>,
 }
 
 impl MirroredCatalogRefresh {
     fn started(&mut self, id: &str) {
         self.pending.entry(id.to_owned()).or_insert(false);
+        if !self.announced.iter().any(|known| known == id) {
+            self.announced.push(id.to_owned());
+        }
+    }
+
+    /// Every response the provider streams, mirrored or not: a tool request that
+    /// landed is no longer a skeleton waiting to be retracted.
+    fn landed(&mut self, message: &Message) {
+        for content in &message.content {
+            if let MessageContent::ToolRequest(request) = content {
+                self.announced.retain(|id| id != &request.id);
+            }
+        }
+    }
+
+    /// D16: the announced calls that will never land because the stream carrying
+    /// them is being dropped.
+    fn take_unlanded(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.announced)
     }
 
     fn observe(&mut self, message: &Message) -> bool {
@@ -1394,11 +1416,14 @@ enum NativeSupervisionWake {
     Ready(NativeSupervisionClaim),
     Complete,
     Cancelled,
+    /// A steer the person typed is queued on `steer_wake`'s agent.
+    UserSteered,
 }
 
 async fn next_native_supervision_claim(
     parent_session_id: &str,
     cancel_token: &Option<CancellationToken>,
+    steer_wake: Option<&Agent>,
 ) -> NativeSupervisionWake {
     loop {
         let mut observed = Vec::new();
@@ -1441,6 +1466,12 @@ async fn next_native_supervision_claim(
                     None => std::future::pending::<()>().await,
                 }
             } => return NativeSupervisionWake::Cancelled,
+            _ = async {
+                match steer_wake {
+                    Some(agent) => agent.user_steer_waiting().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => return NativeSupervisionWake::UserSteered,
             _ = changes.next() => {}
         }
     }
@@ -2446,7 +2477,9 @@ async fn persist_iteration_messages(
 /// Split out of the `reply_internal` generator to keep its `poll` frame small —
 /// see [`ToolBatchMaps`].
 fn soft_interrupt_message(queued: QueuedInterrupt) -> Message {
-    let QueuedInterrupt { text, provenance } = queued;
+    let QueuedInterrupt {
+        text, provenance, ..
+    } = queued;
     let body = match &provenance {
         Some(p) => match p.kind {
             ProvenanceKind::AgentInjection => {
@@ -2493,6 +2526,16 @@ async fn persist_steering_message(
     Ok((steer, published))
 }
 
+/// Store steers a turn accepted but ended without ever showing the model.
+///
+/// ⚠ **Every row this writes is marked `steer_outcome: unanswered` (D4).** It
+/// used to write them exactly like a consumed steer, so the client retired its
+/// "steering" chip as though the words had landed and the transcript showed a
+/// user bubble nothing ever replied to — the "stuck in the middle of the
+/// conversation" report. Every caller is an ending that did not read the queue:
+/// a Stop, a spend cap, a provider abort, a stream error, a forced exit that is
+/// not resumed. A normal completion never reaches here with anything queued,
+/// because it drains at its commit point and continues instead.
 async fn persist_carried_over_interrupts(
     session_manager: &SessionManager,
     session_id: &str,
@@ -2500,14 +2543,40 @@ async fn persist_carried_over_interrupts(
 ) -> Result<Vec<Message>> {
     let mut messages = Vec::with_capacity(pending.len());
     for queued in pending {
-        let mut message = soft_interrupt_message(queued);
+        let accepted_at = queued.accepted_at;
+        let mut message = soft_interrupt_message(queued)
+            .with_steer_outcome(crate::conversation::message::SteerOutcome::Unanswered);
         session_manager
             .add_message_adopting_uid(session_id, &mut message)
             .await?;
+        info!(
+            session_id,
+            latency_ms = accepted_at.elapsed().as_millis() as u64,
+            via = "carried_over",
+            "steer_consumed"
+        );
         messages.push(message);
     }
     Ok(messages)
 }
+
+/// D12c: the model-only line that precedes a steer a turn continues with after
+/// a safety stop.
+///
+/// Measured live (Versa GPT-5.5, `BIOROUTER_MAX_TURNS=2`): without it the model
+/// read "stop waiting for the child, reply now", followed the hidden supervision
+/// instruction written just before the stop instead, watched the child for
+/// 150 s, and spent the continuation's actions before it answered.
+pub const STEER_CONTINUATION_NOTE: &str =
+    "You stopped above at a safety limit. The user has since added the message that follows. \
+     Answer that message first; anything you delegated keeps running, and you can check on it \
+     afterwards.";
+
+/// D7: the model-only line that follows a partial answer a steer interrupted.
+pub(crate) const STEER_RESTART_NOTE: &str =
+    "Your previous answer above was interrupted because the user added a message, which \
+     follows. Take that message into account and continue or revise your answer; do not \
+     start over or repeat what you already wrote.";
 
 /// The terminal text for a signed turn the provider cut off before its tool
 /// arguments were complete.
@@ -3201,6 +3270,30 @@ pub enum ConfirmationOutcome {
 pub struct QueuedInterrupt {
     pub text: String,
     pub provenance: Option<crate::conversation::message::MessageProvenance>,
+    /// Identity inside this agent's queue. An item leaves the queue only once
+    /// its row is durable, by this id (D14): taking it into a local first and
+    /// persisting afterwards is how a Stop that lands in between used to drop
+    /// an accepted steer on the floor.
+    pub(crate) seq: u64,
+    /// When the steer was accepted, for the `steer_consumed` latency log.
+    pub(crate) accepted_at: std::time::Instant,
+    /// Handed to a live-steering provider whose acknowledgement has not come
+    /// back (D13/D14). Still in the queue, so every settle still sees it; not
+    /// offered to the loop-top drain, which would deliver it a second time.
+    pub(crate) in_flight: bool,
+}
+
+impl QueuedInterrupt {
+    /// Typed by a person: into this chat's composer (unstamped), or into a
+    /// subagent's tab (`UserDirect`). The only steers that may buy the turn an
+    /// extra step past a safety limit or restart a paid-for stream — another
+    /// chat's `AgentInjection` never can.
+    pub(crate) fn is_from_the_user(&self) -> bool {
+        match &self.provenance {
+            None => true,
+            Some(p) => p.kind == ProvenanceKind::UserDirect,
+        }
+    }
 }
 
 /// Identity of one run of the agent's reply loop (#69).
@@ -3254,10 +3347,20 @@ pub(super) struct SoftInterrupts {
     turn: Option<TurnId>,
     /// Cleared by `close_and_drain` once the loop has committed to exiting.
     accepting: bool,
-    /// True only for the explicit delegated handoff before the reply stream's
-    /// first poll claims this queue.
+    /// True only for an explicit handoff — a delegated child's first turn, an
+    /// interactive turn opened before `Agent::reply` (D12a), a turn continued
+    /// for a steer (the open question) — before the reply stream's first poll
+    /// claims this queue.
     prepared: bool,
     queued: Vec<QueuedInterrupt>,
+    /// Source of [`QueuedInterrupt::seq`].
+    next_seq: u64,
+    /// Client idempotency keys this turn has already accepted (D5): a steer
+    /// retried after a lost response is answered 202 again, not queued twice.
+    accepted_keys: HashSet<String>,
+    /// Opened by a runner that continues the turn for a steer typed after a
+    /// safety stop ([`Agent::take_continuation_steer`]).
+    continuable: bool,
 }
 
 impl SoftInterrupts {
@@ -3267,27 +3370,132 @@ impl SoftInterrupts {
             accepting: false,
             prepared: false,
             queued: Vec::new(),
+            next_seq: 0,
+            accepted_keys: HashSet::new(),
+            continuable: false,
         }
+    }
+
+    fn push(
+        &mut self,
+        text: String,
+        provenance: Option<crate::conversation::message::MessageProvenance>,
+    ) {
+        self.next_seq += 1;
+        self.queued.push(QueuedInterrupt {
+            text,
+            provenance,
+            seq: self.next_seq,
+            accepted_at: std::time::Instant::now(),
+            in_flight: false,
+        });
     }
 }
 
 /// Why [`Agent::try_queue_soft_interrupt`] would not take a steer (#69).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterruptRefused {
-    /// No turn is accepting: either none is running, or the running one has closed.
+    /// No turn is accepting: either none is running, or the running one has
+    /// finished settling.
     TurnEnded,
+    /// The turn has committed to ending — nothing is left in it that will read
+    /// another message — but it has not finished tearing down. A client should
+    /// send the text as a new turn once this one's terminal frame arrives.
+    TurnClosing,
 }
 
-enum LiveSteerOutcome {
-    Delivered(Vec<Message>),
+/// A steer admitted by [`Agent::try_queue_soft_interrupt_keyed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SteerAdmission {
+    /// The agent-loop turn that took it.
+    pub turn: TurnId,
+    /// The client's idempotency key had already been accepted by this turn; the
+    /// text was not queued a second time.
+    pub duplicate: bool,
+}
+
+/// The rows [`Agent::settle_interrupted_turn`] wrote, in stored order.
+#[derive(Debug, Default)]
+pub struct InterruptedTurnRows {
+    /// The streamed prose the store did not yet hold. Not re-published: every
+    /// observer already holds it chunk by chunk under the same id.
+    pub prose: Vec<Message>,
+    /// Accepted steers the turn never answered.
+    pub steers: Vec<Message>,
+    /// The durable "Stopped." notice, for a Stop.
+    pub notice: Option<Message>,
+}
+
+/// What a live-steering provider answered about one steer.
+pub(super) type LiveAckResult =
+    std::result::Result<std::result::Result<(), ProviderError>, oneshot::error::RecvError>;
+
+type LiveAckFuture = futures::future::BoxFuture<'static, (u64, LiveAckResult)>;
+
+/// Acknowledgements a live-steering provider still owes (D13). Polled as a wake
+/// of the provider wait, never awaited on their own.
+#[derive(Default)]
+pub(super) struct LiveAcks(std::sync::Mutex<FuturesUnordered<LiveAckFuture>>);
+
+impl LiveAcks {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FuturesUnordered<LiveAckFuture>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The next acknowledgement to arrive. Pending — with nothing registered —
+    /// while none is owed: only the reply loop adds one, and it does so between
+    /// two provider waits, each of which polls this afresh.
+    pub(super) fn next(&self) -> impl std::future::Future<Output = (u64, LiveAckResult)> + '_ {
+        std::future::poll_fn(move |cx| {
+            let mut acks = self.lock();
+            if acks.is_empty() {
+                return std::task::Poll::Pending;
+            }
+            match acks.poll_next_unpin(cx) {
+                std::task::Poll::Ready(Some(item)) => std::task::Poll::Ready(item),
+                _ => std::task::Poll::Pending,
+            }
+        })
+    }
+}
+
+/// What landing one live acknowledgement did.
+pub(super) enum LiveAckLanding {
+    /// Acknowledged, stored, and removed from the queue: yield it.
+    Delivered(Message),
+    /// The provider refused live steering; the steer is back in the queue.
     Disabled,
-    Cancelled(Vec<Message>),
+    /// The steer was already settled or reverted.
+    Stale,
+}
+
+/// One step of a forced exit's wait for its children.
+pub(super) enum SupervisionStep {
+    Collected(Message),
+    Complete,
+    /// The person typed a steer; the exit is a resumable one.
+    UserSteered,
+}
+
+/// How the reply loop ended, as far as a steer is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TurnExit {
+    /// `max_turns`, `max_tool_calls` or the stall stop: limits on "actions
+    /// without user input", which a steer typed afterwards may resume.
+    ResumableForUserInput,
+    /// Every other ending.
+    Final,
 }
 
 impl std::fmt::Display for InterruptRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TurnEnded => f.write_str("no turn is accepting interrupts for this session"),
+            Self::TurnClosing => f.write_str(
+                "the running turn has finished its work and is closing; send this as a new message",
+            ),
         }
     }
 }
@@ -3556,6 +3764,34 @@ pub struct Agent {
     pub(super) normalizer: crate::conversation::SharedNormalizer,
     /// Issue #56 Gate B'. See [`CachedClassification`].
     pub(super) cached_classification: CachedClassification,
+    /// What the reply loop is awaiting right now. See [`crate::agents::loop_phase`].
+    pub(super) loop_phase: crate::agents::loop_phase::LoopPhaseCell,
+    /// Acknowledgements a live-steering provider still owes. See [`LiveAcks`].
+    pub(super) live_acks: LiveAcks,
+    /// How the last reply loop on this agent ended. See [`TurnExit`].
+    pub(super) turn_exit: std::sync::Mutex<Option<TurnExit>>,
+    /// Bumped on every accepted steer. A `watch` rather than the `Notify`
+    /// above because several waits may be listening at once — the tool batch's
+    /// status wake and a `workspace_watch` parked inside it — and `notify_one`
+    /// wakes only one of them.
+    pub(super) steer_arrivals: tokio::sync::watch::Sender<u64>,
+    /// The newest steer a `SteerWaiting` frame has already been sent for.
+    pub(super) announced_steer_seq: std::sync::atomic::AtomicU64,
+}
+
+/// What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerWaitReason {
+    /// A tool call (or gating one) is running; the steer lands when it returns.
+    Tool,
+    /// A tool call is parked on an approval card; the steer lands after the
+    /// person answers it.
+    Approval,
+    /// The loop has stopped and is collecting its delegated children.
+    Delegation,
 }
 
 #[derive(Clone, Debug)]
@@ -3578,6 +3814,22 @@ pub enum AgentEvent {
     /// executed with truncated arguments, gated, persisted, or replayed.
     /// Never turn this into a `MessageContent`. See [`PendingToolCall`].
     ToolCallPending(crate::providers::base::PendingToolCall),
+    /// D16: tool calls announced by [`AgentEvent::ToolCallPending`] that will
+    /// never land — the stream carrying them was dropped to apply a steer, and
+    /// the reissued request mints new ids. Advisory exactly like the pending
+    /// frame: a client removes those skeletons, and nothing else changes.
+    ToolCallsRetracted {
+        ids: Vec<String>,
+    },
+    /// D2/D3: a steer the daemon accepted is waiting behind something the loop
+    /// deliberately does not interrupt — a running tool, an approval card. Sent
+    /// once per steer. Advisory: it cancels nothing and resolves no card; it is
+    /// what lets a client say honestly what the person's message is waiting on,
+    /// instead of drawing a running clock over a turn that is waiting for them.
+    SteerWaiting {
+        reason: SteerWaitReason,
+        tool_name: Option<String>,
+    },
     /// BR-52: the session's token counters as of the last turn/compaction
     /// boundary, emitted by the agent right after it wrote them.
     ///
@@ -3750,6 +4002,10 @@ pub(crate) enum BatchWake<T> {
     ElicitationReady,
     /// The next tool-stream item (or `None`: the batch is drained).
     Item(Option<T>),
+    /// A steer was accepted while the batch runs (D2). Nothing is cancelled —
+    /// a long tool is never killed by a steer — but the person is told what
+    /// their message is waiting behind.
+    SteerWaiting,
 }
 
 enum ProviderWake<T> {
@@ -3757,6 +4013,8 @@ enum ProviderWake<T> {
     ElicitationReady,
     Item(Option<T>),
     SteerReady,
+    /// A live-steering provider acknowledged (or refused) a steer (D13).
+    AckReady(u64, LiveAckResult),
 }
 
 async fn next_provider_wake<T, S>(
@@ -3765,6 +4023,7 @@ async fn next_provider_wake<T, S>(
     session_id: &str,
     interrupt_notify: &Notify,
     wake_for_steer: bool,
+    live_acks: &LiveAcks,
 ) -> ProviderWake<T>
 where
     S: Stream<Item = T> + Unpin,
@@ -3780,6 +4039,7 @@ where
         _ = ActionRequiredManager::global().request_arrived(session_id) => {
             ProviderWake::ElicitationReady
         }
+        (seq, acknowledgement) = live_acks.next() => ProviderWake::AckReady(seq, acknowledgement),
         _ = async {
             if wake_for_steer {
                 interrupt_notify.notified().await;
@@ -3788,6 +4048,51 @@ where
             }
         } => ProviderWake::SteerReady,
         item = stream.next() => ProviderWake::Item(item),
+    }
+}
+
+/// How the provider request came back — or didn't need to (D6).
+enum ProviderOpen<S> {
+    Opened(S),
+    /// The person steered before the provider answered: the request is dropped
+    /// and reissued with the steer in it.
+    SteerFirst,
+    Cancelled,
+}
+
+/// Wait for the provider to answer the request, unless the person steers first.
+///
+/// For a restart-steering provider, a steer that lands before the response
+/// headers used to wait out the whole time-to-first-byte — retries included —
+/// and then the stream that had just opened was dropped and requested again, so
+/// the answer arrived a full second TTFB later (measured: 13 s, then 13.5 s).
+/// Only a steer the PERSON typed abandons the open: another chat's injection
+/// never throws away a request that is already paid for.
+///
+/// Boxed by the caller, like every wake helper here, so the open future is not
+/// laid out in `reply_internal`'s generator frame.
+async fn open_provider_or_steer<S, E>(
+    open: impl std::future::Future<Output = std::result::Result<S, E>>,
+    restart_steering: bool,
+    agent: &Agent,
+    cancel_token: &Option<CancellationToken>,
+) -> std::result::Result<ProviderOpen<S>, E> {
+    let open = std::pin::pin!(open);
+    tokio::select! {
+        biased;
+        _ = async {
+            match cancel_token.as_ref() {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        } => Ok(ProviderOpen::Cancelled),
+        _ = async {
+            if !restart_steering {
+                return std::future::pending::<()>().await;
+            }
+            agent.user_steer_waiting().await;
+        } => Ok(ProviderOpen::SteerFirst),
+        opened = open => opened.map(ProviderOpen::Opened),
     }
 }
 
@@ -3808,6 +4113,8 @@ pub(crate) enum GateWake<T> {
     Ready(T),
     /// A user-action card was queued and is waiting to be surfaced.
     ElicitationReady,
+    /// A steer was accepted while gating runs (D2). See [`BatchWake::SteerWaiting`].
+    SteerWaiting,
 }
 
 /// Race the tool-gating step against a card that needs a person.
@@ -3835,7 +4142,11 @@ pub(crate) enum GateWake<T> {
 /// It is `install_extension`-shaped tools that are FINE, which is the opposite
 /// of the first guess: they are extension tools, so their bodies run in the
 /// batch where the drain is already raced.
-pub(crate) async fn next_gate_wake<T, F>(gate: &mut F, session_id: &str) -> GateWake<T>
+pub(crate) async fn next_gate_wake<T, F>(
+    gate: &mut F,
+    session_id: &str,
+    steers: Option<&Agent>,
+) -> GateWake<T>
 where
     F: std::future::Future<Output = T> + Unpin,
 {
@@ -3844,7 +4155,17 @@ where
         _ = ActionRequiredManager::global().request_arrived(session_id) => {
             GateWake::ElicitationReady
         }
+        _ = unannounced_steer(steers) => GateWake::SteerWaiting,
         ready = gate => GateWake::Ready(ready),
+    }
+}
+
+/// Resolves once a steer newer than the last one announced is queued on
+/// `agent`; never, without one. See [`Agent::next_unannounced_steer`].
+async fn unannounced_steer(agent: Option<&Agent>) {
+    match agent {
+        Some(agent) => agent.next_unannounced_steer().await,
+        None => std::future::pending::<()>().await,
     }
 }
 
@@ -3852,6 +4173,7 @@ pub(crate) async fn next_batch_wake<T, S>(
     cancel_token: &Option<CancellationToken>,
     combined: &mut S,
     session_id: &str,
+    steers: Option<&Agent>,
 ) -> BatchWake<T>
 where
     S: Stream<Item = T> + Unpin,
@@ -3865,7 +4187,41 @@ where
             }
         } => BatchWake::Cancelled,
         _ = ActionRequiredManager::global().request_arrived(session_id) => BatchWake::ElicitationReady,
+        _ = unannounced_steer(steers) => BatchWake::SteerWaiting,
         item = combined.next() => BatchWake::Item(item),
+    }
+}
+
+/// The name of the first tool in a batch, for a `SteerWaiting` frame.
+fn first_running_tool_name(requests: &[ToolRequest]) -> Option<String> {
+    requests
+        .iter()
+        .find_map(|request| request.tool_call.as_ref().ok())
+        .map(|call| call.name.to_string())
+}
+
+/// One wake of the wait on a tool's approval card.
+pub(crate) enum ApprovalWake<T> {
+    Item(Option<T>),
+    /// A steer was accepted while the card waits (D2/D3). The card is NOT
+    /// answered by it: free text is not a permission decision.
+    SteerWaiting,
+}
+
+/// `steers` is `None` when no call in the batch needs a card: announcing
+/// "waiting behind a card" there would be the dishonest label this exists to
+/// replace (a stress run caught it announcing `approval` for a plain shell call).
+pub(crate) async fn next_approval_wake<T, S>(
+    stream: &mut S,
+    steers: Option<&Agent>,
+) -> ApprovalWake<T>
+where
+    S: Stream<Item = T> + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = unannounced_steer(steers) => ApprovalWake::SteerWaiting,
+        item = stream.next() => ApprovalWake::Item(item),
     }
 }
 
@@ -4344,6 +4700,11 @@ impl Agent {
             efforts: Default::default(),
             normalizer: Default::default(),
             cached_classification: Default::default(),
+            loop_phase: Default::default(),
+            live_acks: Default::default(),
+            turn_exit: std::sync::Mutex::new(None),
+            steer_arrivals: tokio::sync::watch::Sender::new(0),
+            announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -4370,6 +4731,28 @@ impl Agent {
         }
     }
 
+    /// What the reply loop is waiting on right now, and for how many
+    /// milliseconds. See [`crate::agents::loop_phase`].
+    pub fn loop_phase_snapshot(&self) -> (crate::agents::loop_phase::LoopPhase, u64) {
+        self.loop_phase.snapshot()
+    }
+
+    /// Mark the turn as in its prologue — resolved and accepting steers, but not
+    /// yet in the reply loop. The detached runner calls this before it waits on
+    /// the session's extensions.
+    pub fn loop_phase_prologue(&self) {
+        self.loop_phase
+            .enter(crate::agents::loop_phase::LoopPhase::Prologue);
+    }
+
+    /// Mark the loop idle. The detached runner calls this once a reply stream is
+    /// over, however it ended — a stream dropped by a Stop never runs its own
+    /// tail.
+    pub fn mark_loop_idle(&self) {
+        self.loop_phase
+            .enter(crate::agents::loop_phase::LoopPhase::Idle);
+    }
+
     /// The soft-interrupt queue's guard, recovered past a poisoning. The guarded
     /// value is only ever pushed to, taken from, or re-flagged, so no invariant
     /// can be mid-update when a panic poisons it — dropping an injection because
@@ -4386,28 +4769,15 @@ impl Agent {
     ///
     /// `pub` because route-level tests put an agent into the accepting state
     /// without running a whole reply loop. Production opens through the reply
-    /// loop or the delegated handoff helper below.
+    /// loop or the handoff helper below.
     pub fn open_for_turn(&self, turn: TurnId) {
         let mut q = self.lock_interrupts();
-        if !q.queued.is_empty() {
-            warn!(
-                count = q.queued.len(),
-                "dropping interrupts left by a previous turn; they were never accepted"
-            );
-            q.queued.clear();
-        }
-        q.turn = Some(turn);
-        q.accepting = true;
-        q.prepared = false;
+        Self::reset_queue_for(&mut q, turn, false);
+        drop(q);
+        self.forget_live_acks();
     }
 
-    /// Open the interrupt queue immediately before a delegated initial prompt
-    /// crosses from the initialization queue into the agent loop. The loop
-    /// claims this exact turn on its first poll, so there is no admission gap
-    /// between the two queues.
-    pub(crate) fn prepare_soft_interrupt_turn(&self) -> TurnId {
-        let turn = TurnId::mint();
-        let mut q = self.lock_interrupts();
+    fn reset_queue_for(q: &mut SoftInterrupts, turn: TurnId, prepared: bool) {
         if !q.queued.is_empty() {
             warn!(
                 count = q.queued.len(),
@@ -4415,9 +4785,26 @@ impl Agent {
             );
             q.queued.clear();
         }
-        q.turn = Some(turn.clone());
+        q.accepted_keys.clear();
+        q.continuable = false;
+        q.turn = Some(turn);
         q.accepting = true;
-        q.prepared = true;
+        q.prepared = prepared;
+    }
+
+    /// Open the interrupt queue immediately before a turn's prompt crosses into
+    /// the agent loop — a delegated child's first turn, or (D12a) an interactive
+    /// turn about to call [`Agent::reply`], whose prologue (hooks, auto-compaction,
+    /// context) used to run with the turn lock held and the queue shut, so a
+    /// visible, running turn answered every steer with a bare 409. The loop claims
+    /// this exact turn on its first poll, so there is no admission gap between
+    /// the two.
+    pub fn prepare_soft_interrupt_turn(&self) -> TurnId {
+        let turn = TurnId::mint();
+        let mut q = self.lock_interrupts();
+        Self::reset_queue_for(&mut q, turn.clone(), true);
+        drop(q);
+        self.forget_live_acks();
         turn
     }
 
@@ -4437,11 +4824,9 @@ impl Agent {
     }
 
     /// Re-open the queue after the loop decided *not* to exit at a point where it
-    /// had already closed (a blocked Stop hook, a red done-gate, a self-critique
-    /// revision). Without this the queue would stay shut for the rest of a turn
-    /// that is demonstrably still running, and every steer would be refused.
-    /// Keeps the queue's contents — unlike [`Agent::open_for_turn`], nothing here
-    /// starts a new turn.
+    /// had already closed. Since D12b the loop closes only at its commit point, so
+    /// nothing in the loop needs this any more; it survives for tests that drive
+    /// the turn lifecycle by hand. Keeps the queue's contents.
     pub(super) fn reopen_for_more_work(&self) {
         let mut q = self.lock_interrupts();
         if q.turn.is_some() {
@@ -4456,24 +4841,58 @@ impl Agent {
         text: String,
         provenance: Option<crate::conversation::message::MessageProvenance>,
     ) -> Result<TurnId, InterruptRefused> {
+        self.try_queue_soft_interrupt_keyed(text, provenance, None)
+            .map(|admission| admission.turn)
+    }
+
+    /// [`Agent::try_queue_soft_interrupt`] with a client idempotency key (D5).
+    ///
+    /// A renderer that lost the answer to its steer — a network blip, a timeout —
+    /// retries it with the same key, and must not put the words into the turn
+    /// twice. The key is remembered for the life of the turn that accepted it;
+    /// a duplicate is answered as accepted and queues nothing.
+    pub fn try_queue_soft_interrupt_keyed(
+        &self,
+        text: String,
+        provenance: Option<crate::conversation::message::MessageProvenance>,
+        key: Option<String>,
+    ) -> Result<SteerAdmission, InterruptRefused> {
         let mut q = self.lock_interrupts();
         if !q.accepting {
-            return Err(InterruptRefused::TurnEnded);
+            return Err(if q.turn.is_some() {
+                InterruptRefused::TurnClosing
+            } else {
+                InterruptRefused::TurnEnded
+            });
         }
         let turn = q.turn.clone().ok_or(InterruptRefused::TurnEnded)?;
-        q.queued.push(QueuedInterrupt { text, provenance });
+        if let Some(key) = key {
+            if !q.accepted_keys.insert(key) {
+                return Ok(SteerAdmission {
+                    turn,
+                    duplicate: true,
+                });
+            }
+        }
+        q.push(text, provenance);
+        let seq = q.next_seq;
         drop(q);
         self.soft_interrupt_notify.notify_one();
-        Ok(turn)
+        self.steer_arrivals.send_replace(seq);
+        Ok(SteerAdmission {
+            turn,
+            duplicate: false,
+        })
     }
 
     /// Queue a user message to be injected into the running turn at the next safe
     /// loop boundary (soft interrupt). Cheap + lock-light: callable from a server
     /// route or the CLI while a turn is streaming, without cancelling it.
     ///
-    /// **Unguarded** — see [`Agent::queue_soft_interrupt_with_provenance`]. New
-    /// callers that report success to anyone want
-    /// [`Agent::try_queue_soft_interrupt`] instead.
+    /// **Unguarded** — see [`Agent::queue_soft_interrupt_with_provenance`].
+    /// Test-only since D21c: nothing in production called it, and tests that
+    /// queued through it passed whether or not the loop ever opened acceptance.
+    #[cfg(test)]
     pub fn queue_soft_interrupt(&self, text: String) {
         self.queue_soft_interrupt_with_provenance(text, None);
     }
@@ -4485,89 +4904,151 @@ impl Agent {
     /// `()`, so a caller can never learn that its text will not be consumed. That
     /// is why #69 added [`Agent::try_queue_soft_interrupt`], which is what the
     /// `/interrupt` route and `workspace_send_prompt mode:"steer"` use. This entry
-    /// point survives for in-loop producers that already know a turn is running.
-    /// Anything it leaves behind is dropped (with a warning) by the next
-    /// [`Agent::open_for_turn`] rather than injected into an unrelated turn.
+    /// point survives for unit tests of the queue itself. Anything it leaves
+    /// behind is dropped (with a warning) by the next [`Agent::open_for_turn`]
+    /// rather than injected into an unrelated turn.
+    #[cfg(test)]
     pub fn queue_soft_interrupt_with_provenance(
         &self,
         text: String,
         provenance: Option<crate::conversation::message::MessageProvenance>,
     ) {
         let mut q = self.lock_interrupts();
-        q.queued.push(QueuedInterrupt { text, provenance });
+        q.push(text, provenance);
+        let seq = q.next_seq;
         drop(q);
         self.soft_interrupt_notify.notify_one();
+        self.steer_arrivals.send_replace(seq);
     }
 
-    /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
-    /// Leaves the queue *open*: this is the mid-turn drain at the top of a loop
-    /// step, not the turn's exit (which is [`Agent::close_and_drain`]).
+    /// Take every queued soft interrupt that is not in flight to a live-steering
+    /// provider (FIFO). Leaves the queue *open*.
+    ///
+    /// ⚠ **Nothing on a production path may call this and then `.await`** before
+    /// the taken items are durable: a Stop landing in that await drops the
+    /// generator, and the runner's settle then finds an empty queue (D14). The
+    /// loop consumes through [`Agent::consume_soft_interrupts_at_boundary`],
+    /// which removes an item only after its row is stored. Test-only for that
+    /// reason.
+    #[cfg(test)]
     pub(super) fn drain_soft_interrupts(&self) -> Vec<QueuedInterrupt> {
         let mut q = self.lock_interrupts();
-        std::mem::take(&mut q.queued)
+        let (in_flight, taken): (Vec<_>, Vec<_>) = std::mem::take(&mut q.queued)
+            .into_iter()
+            .partition(|item| item.in_flight);
+        q.queued = in_flight;
+        taken
     }
 
-    async fn deliver_live_interrupts(
-        &self,
-        sender: &ProviderSteerSender,
-        session_manager: &SessionManager,
-        session_id: &str,
-        cancel_token: &Option<CancellationToken>,
-    ) -> Result<LiveSteerOutcome> {
-        let pending = self.drain_soft_interrupts();
-        let mut delivered = Vec::with_capacity(pending.len());
-        for (index, queued) in pending.iter().cloned().enumerate() {
-            let mut message = soft_interrupt_message(queued.clone());
-            let (request, acknowledged) = ProviderSteerRequest::new(message.as_concat_text());
-            if sender.send(request).is_err() {
-                self.requeue_for_this_turn(pending[index..].to_vec());
-                return Ok(LiveSteerOutcome::Disabled);
-            }
+    /// Whether a steer the PERSON typed is waiting (not an agent's injection, and
+    /// not one already in flight to a live-steering provider).
+    ///
+    /// Asked by the loop-top safety limits (D4a): `max_turns`, `max_tool_calls`
+    /// and the stall stop count "actions without user input", so a steer the user
+    /// typed resets them rather than being carried past a stop nobody asked for.
+    pub(crate) fn has_pending_user_direct_steer(&self) -> bool {
+        self.lock_interrupts()
+            .queued
+            .iter()
+            .any(|item| !item.in_flight && item.is_from_the_user())
+    }
 
-            let acknowledgement = tokio::select! {
-                biased;
-                _ = async {
-                    match cancel_token.as_ref() {
-                        Some(token) => token.cancelled().await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
-                    // The route already returned 202, so cancellation cannot
-                    // turn this accepted user input into nothing. Persist the
-                    // in-flight item and unsent tail exactly once. The provider
-                    // may have observed the first item before cancellation, but
-                    // storing the user's message is correct in either case and
-                    // avoids an unsafe blind retry after an unknown ack state.
-                    let carried_over = persist_carried_over_interrupts(
-                        session_manager,
-                        session_id,
-                        pending[index..].to_vec(),
-                    )
-                    .await?;
-                    return Ok(LiveSteerOutcome::Cancelled(carried_over));
-                },
-                acknowledgement = acknowledged => acknowledgement,
+    /// Resolves once a steer the person typed is queued — immediately, if one
+    /// already is. Cancel-safe, and every concurrent waiter wakes.
+    pub async fn user_steer_waiting(&self) {
+        // Subscribe BEFORE checking: a steer accepted after the check bumps the
+        // version this receiver has not seen, so `changed` cannot miss it.
+        let mut arrivals = self.steer_arrivals.subscribe();
+        loop {
+            if self.has_pending_user_direct_steer() {
+                return;
+            }
+            if arrivals.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+        }
+    }
+
+    /// Resolves once a steer is queued that no `SteerWaiting` frame has been sent
+    /// for yet, and records it as announced — so a long wait says "your message
+    /// is waiting" once per steer, not on every poll.
+    pub(crate) async fn next_unannounced_steer(&self) {
+        let mut arrivals = self.steer_arrivals.subscribe();
+        loop {
+            let newest = {
+                let q = self.lock_interrupts();
+                q.queued
+                    .iter()
+                    .filter(|item| !item.in_flight)
+                    .map(|item| item.seq)
+                    .max()
             };
-            match acknowledgement {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    warn!("provider rejected live steering; deferring to the next loop boundary: {error}");
-                    self.requeue_for_this_turn(pending[index..].to_vec());
-                    return Ok(LiveSteerOutcome::Disabled);
-                }
-                Err(_) => {
-                    warn!("provider live-steering channel closed; deferring to the next loop boundary");
-                    self.requeue_for_this_turn(pending[index..].to_vec());
-                    return Ok(LiveSteerOutcome::Disabled);
+            if let Some(newest) = newest {
+                let announced = self
+                    .announced_steer_seq
+                    .load(std::sync::atomic::Ordering::Acquire);
+                if newest > announced
+                    && self
+                        .announced_steer_seq
+                        .compare_exchange(
+                            announced,
+                            newest,
+                            std::sync::atomic::Ordering::AcqRel,
+                            std::sync::atomic::Ordering::Acquire,
+                        )
+                        .is_ok()
+                {
+                    return;
                 }
             }
+            if arrivals.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+        }
+    }
 
-            session_manager
+    /// Store and remove, in order, every steer the loop can consume at this
+    /// boundary, and return the stored rows for the loop to yield (D14).
+    ///
+    /// Peek, persist, then commit: each item is cloned out, written, and only
+    /// then removed from the queue by its [`QueuedInterrupt::seq`]. A Stop that
+    /// drops the reply stream mid-write leaves the unwritten items in the queue,
+    /// where the runner's settle stores them — instead of in a generator local
+    /// that dies with the stream. A failed write leaves that item and every one
+    /// behind it queued, rather than silently discarding the tail.
+    ///
+    /// A plain `async fn` whose future the loop boxes: its locals must not join
+    /// `reply_internal`'s generator frame.
+    pub(super) async fn consume_soft_interrupts_at_boundary(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<Message>> {
+        let mut consumed = Vec::new();
+        loop {
+            let next = {
+                let q = self.lock_interrupts();
+                q.queued.iter().find(|item| !item.in_flight).cloned()
+            };
+            let Some(item) = next else { break };
+            let seq = item.seq;
+            let accepted_at = item.accepted_at;
+            let mut message = soft_interrupt_message(item);
+            self.config
+                .session_manager
                 .add_message_adopting_uid(session_id, &mut message)
                 .await?;
-            delivered.push(message);
+            self.lock_interrupts()
+                .queued
+                .retain(|queued| queued.seq != seq);
+            info!(
+                session_id,
+                latency_ms = accepted_at.elapsed().as_millis() as u64,
+                via = "loop_top",
+                "steer_consumed"
+            );
+            consumed.push(message);
         }
-        Ok(LiveSteerOutcome::Delivered(delivered))
+        Ok(consumed)
     }
 
     fn close_and_take_for_turn(&self, expected_turn: &TurnId) -> Vec<QueuedInterrupt> {
@@ -4577,6 +5058,7 @@ impl Agent {
         }
         q.accepting = false;
         q.prepared = false;
+        q.continuable = false;
         q.turn = None;
         std::mem::take(&mut q.queued)
     }
@@ -4585,6 +5067,7 @@ impl Agent {
         let mut q = self.lock_interrupts();
         q.accepting = false;
         q.prepared = false;
+        q.continuable = false;
         q.turn = None;
         std::mem::take(&mut q.queued)
     }
@@ -4607,6 +5090,9 @@ impl Agent {
     /// reply stream, whose lazy tail can no longer perform the settlement.
     /// Repeated calls are harmless: the first call clears the turn and queue in
     /// the same critical section, so later calls return no messages.
+    ///
+    /// Every row it stores is marked unanswered (D4); see
+    /// `persist_carried_over_interrupts`.
     pub async fn settle_carried_over_soft_interrupts(
         &self,
         session_id: &str,
@@ -4624,8 +5110,39 @@ impl Agent {
         session_id: &str,
         cancel_token: Option<CancellationToken>,
     ) -> Result<Option<Message>> {
+        match self
+            .next_supervision_step(session_id, cancel_token, false)
+            .await?
+        {
+            SupervisionStep::Collected(message) => Ok(Some(message)),
+            SupervisionStep::Complete | SupervisionStep::UserSteered => Ok(None),
+        }
+    }
+
+    /// One step of the wait a forced exit makes for its delegated children.
+    ///
+    /// With `wake_for_user_steer`, a steer the person types while the turn is
+    /// waiting also ends the wait (the open question in fix/steer-always-lands,
+    /// decided: ACCEPT it). The caller only asks for that wake when the exit was
+    /// a safety limit counting "actions without user input", because only there
+    /// does the person's message change what the turn should do next; after a
+    /// budget stop or an abort the children are still collected and the steer is
+    /// stored as unanswered.
+    pub(super) async fn next_supervision_step(
+        &self,
+        session_id: &str,
+        cancel_token: Option<CancellationToken>,
+        wake_for_user_steer: bool,
+    ) -> Result<SupervisionStep> {
         loop {
-            match next_native_supervision_claim(session_id, &cancel_token).await {
+            let steer_wake = wake_for_user_steer.then_some(self);
+            match Box::pin(next_native_supervision_claim(
+                session_id,
+                &cancel_token,
+                steer_wake,
+            ))
+            .await
+            {
                 NativeSupervisionWake::Ready(claim) => {
                     let mut message = native_supervision_message(&claim)?;
                     if !claim
@@ -4650,11 +5167,12 @@ impl Agent {
                             .rollback_terminal_generation_collection(claim.generation);
                     }
                     persisted?;
-                    return Ok(Some(message));
+                    return Ok(SupervisionStep::Collected(message));
                 }
                 NativeSupervisionWake::Complete | NativeSupervisionWake::Cancelled => {
-                    return Ok(None)
+                    return Ok(SupervisionStep::Complete)
                 }
+                NativeSupervisionWake::UserSteered => return Ok(SupervisionStep::UserSteered),
             }
         }
     }
@@ -4664,8 +5182,16 @@ impl Agent {
     /// the normal completion path requeues those items and continues so the model
     /// can apply them. Safety and cancellation exits use the unconditional exact-
     /// turn close above and carry the items into the durable transcript instead.
+    ///
+    /// ⚠ D12b: the loop calls this at its COMMIT POINT — immediately before the
+    /// `break` that really ends the turn — and nowhere earlier. It used to run
+    /// before the done gate, self-critique and the Stop hooks, any of which can
+    /// still decide the turn keeps working, so a steer sent while one of them ran
+    /// was refused with a bare 409 by a turn that was visibly alive.
     pub fn close_and_drain(&self) -> Drained {
         let mut q = self.lock_interrupts();
+        // Nothing is in flight here: every provider call reverts the steers it
+        // left unacknowledged when it ends (`revert_in_flight_steers`).
         let taken = std::mem::take(&mut q.queued);
         if taken.is_empty() {
             q.accepting = false;
@@ -4673,6 +5199,27 @@ impl Agent {
             Drained::Empty
         } else {
             Drained::Some(taken)
+        }
+    }
+
+    /// D12b: the reply loop's commit point, immediately before the `break` that
+    /// ends a turn. `true` means a steer was waiting: it is back at the head of
+    /// the queue and the loop must `continue` to answer it. `false` means the
+    /// queue is now closed and the turn really ends.
+    pub(super) fn commit_turn_exit_or_continue(&self) -> bool {
+        match self.close_and_drain() {
+            Drained::Some(pending) => {
+                info!(
+                    count = pending.len(),
+                    "soft interrupt pending at turn exit; continuing the loop to consume it"
+                );
+                self.requeue_for_this_turn(pending);
+                true
+            }
+            Drained::Empty => {
+                self.record_turn_exit(TurnExit::Final);
+                false
+            }
         }
     }
 
@@ -4691,6 +5238,264 @@ impl Agent {
     /// here followed by an exit there is the two-step #69 removed.
     pub fn has_soft_interrupts(&self) -> bool {
         !self.lock_interrupts().queued.is_empty()
+    }
+
+    /// Hand every queued, not-yet-delivered steer to a live-steering provider,
+    /// WITHOUT waiting for it to acknowledge (D13).
+    ///
+    /// The old delivery awaited each acknowledgement inside the provider wait.
+    /// A coding agent acknowledges a steer only when its child replays the line,
+    /// and a child parked on a bridged approval card replays nothing until the
+    /// card is answered — but the card could only surface from that same wait.
+    /// Card waits on loop, loop waits on child, child waits on card: the turn
+    /// hung until the card's hour-long time-to-live or a Stop. Now each item is
+    /// marked in flight, stays in the queue (so a Stop's settle still stores it,
+    /// D14), and its acknowledgement becomes one more wake of the provider wait.
+    ///
+    /// Returns `false` when the provider's steer channel is closed; nothing was
+    /// marked and the caller disables live steering for this call.
+    pub(super) fn send_live_interrupts(&self, sender: &ProviderSteerSender) -> bool {
+        let mut q = self.lock_interrupts();
+        let acks = self.live_acks.lock();
+        for item in q.queued.iter_mut().filter(|item| !item.in_flight) {
+            let text = soft_interrupt_message(item.clone()).as_concat_text();
+            let (request, acknowledged) = ProviderSteerRequest::new(text);
+            if sender.send(request).is_err() {
+                return false;
+            }
+            item.in_flight = true;
+            let seq = item.seq;
+            acks.push(Box::pin(async move { (seq, acknowledged.await) }));
+        }
+        drop(acks);
+        drop(q);
+        self.loop_phase
+            .enter(crate::agents::loop_phase::LoopPhase::LiveAckWait);
+        true
+    }
+
+    /// Resolve one acknowledgement from a live-steering provider.
+    pub(super) async fn land_live_ack(
+        &self,
+        seq: u64,
+        acknowledgement: LiveAckResult,
+        session_id: &str,
+    ) -> Result<LiveAckLanding> {
+        match acknowledgement {
+            Ok(Ok(())) => {
+                let item = {
+                    let q = self.lock_interrupts();
+                    q.queued
+                        .iter()
+                        .find(|item| item.seq == seq && item.in_flight)
+                        .cloned()
+                };
+                // Settled or reverted while the acknowledgement was on its way.
+                let Some(item) = item else {
+                    return Ok(LiveAckLanding::Stale);
+                };
+                let accepted_at = item.accepted_at;
+                let mut message = soft_interrupt_message(item);
+                self.config
+                    .session_manager
+                    .add_message_adopting_uid(session_id, &mut message)
+                    .await?;
+                self.lock_interrupts()
+                    .queued
+                    .retain(|queued| queued.seq != seq);
+                info!(
+                    session_id,
+                    latency_ms = accepted_at.elapsed().as_millis() as u64,
+                    via = "live_ack",
+                    "steer_consumed"
+                );
+                self.settle_live_ack_phase();
+                Ok(LiveAckLanding::Delivered(message))
+            }
+            Ok(Err(error)) => {
+                warn!(
+                    "provider rejected live steering; deferring to the next loop boundary: {error}"
+                );
+                self.revert_in_flight_steers();
+                Ok(LiveAckLanding::Disabled)
+            }
+            Err(_) => {
+                warn!("provider live-steering channel closed; deferring to the next loop boundary");
+                self.revert_in_flight_steers();
+                Ok(LiveAckLanding::Disabled)
+            }
+        }
+    }
+
+    fn settle_live_ack_phase(&self) {
+        if !self
+            .lock_interrupts()
+            .queued
+            .iter()
+            .any(|item| item.in_flight)
+        {
+            self.loop_phase
+                .enter(crate::agents::loop_phase::LoopPhase::Streaming);
+        }
+    }
+
+    /// Every acknowledgement that has ALREADY arrived, without waiting for any
+    /// other. Called when a provider call ends, so an acknowledgement that raced
+    /// the end of the stream is landed rather than reverted into a duplicate.
+    pub(super) fn take_ready_live_acks(&self) -> Vec<(u64, LiveAckResult)> {
+        let mut acks = self.live_acks.lock();
+        let mut ready = Vec::new();
+        let waker = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        while let std::task::Poll::Ready(Some(item)) = acks.poll_next_unpin(&mut cx) {
+            ready.push(item);
+        }
+        ready
+    }
+
+    /// The provider call these steers were handed to is over without
+    /// acknowledging them: return them to the queue for the next boundary, as
+    /// ordinary user messages.
+    pub(super) fn revert_in_flight_steers(&self) {
+        let mut q = self.lock_interrupts();
+        for item in q.queued.iter_mut() {
+            item.in_flight = false;
+        }
+        drop(q);
+        self.forget_live_acks();
+    }
+
+    fn forget_live_acks(&self) {
+        self.live_acks.lock().clear();
+    }
+
+    /// Record how the loop is ending, for the tail and the runner (the open
+    /// question in fix/steer-always-lands). On the Agent rather than in the
+    /// generator — see [`crate::agents::loop_phase`] on why.
+    pub(super) fn record_turn_exit(&self, exit: TurnExit) {
+        *self
+            .turn_exit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(exit);
+    }
+
+    fn turn_exit_is_resumable(&self) -> bool {
+        matches!(
+            *self
+                .turn_exit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some(TurnExit::ResumableForUserInput)
+        )
+    }
+
+    /// The reply loop's tail: store what the turn leaves behind — unless the exit
+    /// was a safety limit, a runner that can continue the turn opened it, and the
+    /// person has typed a steer since. Then the steer is left in the still-open
+    /// queue for [`Agent::take_continuation_steer`], and the turn goes on.
+    pub(super) async fn settle_or_hold_for_continuation(
+        &self,
+        this_turn: &TurnId,
+        session_id: &str,
+        cancelled: bool,
+    ) -> Result<Vec<Message>> {
+        let hold = !cancelled && self.turn_exit_is_resumable() && {
+            let q = self.lock_interrupts();
+            q.continuable
+                && q.turn.as_ref() == Some(this_turn)
+                && q.queued
+                    .iter()
+                    .any(|item| !item.in_flight && item.is_from_the_user())
+        };
+        if hold {
+            info!(
+                session_id,
+                "a steer arrived after a safety stop; the turn continues"
+            );
+            return Ok(Vec::new());
+        }
+        self.settle_soft_interrupts_for_turn(this_turn, session_id)
+            .await
+    }
+
+    /// Open the queue for a turn the detached runner will continue for a steer
+    /// if it has to ([`Agent::take_continuation_steer`]). Otherwise identical to
+    /// [`Agent::prepare_soft_interrupt_turn`].
+    pub fn prepare_continuable_soft_interrupt_turn(&self) -> TurnId {
+        let turn = self.prepare_soft_interrupt_turn();
+        self.lock_interrupts().continuable = true;
+        *self
+            .turn_exit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        turn
+    }
+
+    /// After the reply stream ended: the steer the turn should continue with, if
+    /// its tail held one (see [`Agent::settle_or_hold_for_continuation`]). Takes
+    /// the first steer the person typed out of the queue and re-prepares the
+    /// SAME turn, so the next [`Agent::reply`] claims it with everything else
+    /// still queued behind.
+    pub fn take_continuation_steer(&self, session_id: &str) -> Option<Message> {
+        let resumable = self
+            .turn_exit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .is_some_and(|exit| exit == TurnExit::ResumableForUserInput);
+        if !resumable {
+            return None;
+        }
+        let mut q = self.lock_interrupts();
+        if !(q.accepting && q.continuable && q.turn.is_some()) {
+            return None;
+        }
+        let index = q
+            .queued
+            .iter()
+            .position(|item| !item.in_flight && item.is_from_the_user())?;
+        let item = q.queued.remove(index);
+        q.prepared = true;
+        drop(q);
+        info!(
+            session_id,
+            latency_ms = item.accepted_at.elapsed().as_millis() as u64,
+            via = "exit_requeue",
+            "steer_consumed"
+        );
+        Some(soft_interrupt_message(item).with_id(new_message_id()))
+    }
+
+    /// Continue the turn for the steer [`Agent::take_continuation_steer`] handed
+    /// back: store [`STEER_CONTINUATION_NOTE`] ahead of it, then reply to it. The
+    /// note is best-effort — a turn that cannot store it still answers the steer.
+    pub async fn continue_turn_for_steer(
+        &self,
+        steer: Message,
+        session_config: SessionConfig,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        let named = match persist_steering_message(
+            &self.config.session_manager,
+            &session_config.id,
+            STEER_CONTINUATION_NOTE.to_string(),
+        )
+        .await
+        {
+            Ok((_, named)) => named,
+            Err(error) => {
+                warn!(
+                    session_id = %session_config.id,
+                    "could not store the note ahead of a continuation steer: {error}"
+                );
+                None
+            }
+        };
+        let reply = self.reply(steer, session_config, cancel_token).await?;
+        Ok(match named {
+            Some(event) => stream::once(async move { Ok(event) }).chain(reply).boxed(),
+            None => reply,
+        })
     }
 
     /// The hooks manager driving user-configured lifecycle hooks.
@@ -8358,6 +9163,8 @@ impl Agent {
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         crate::agents::subagent_handle::admit_child_turn(&session_config.id);
+        self.loop_phase
+            .enter(crate::agents::loop_phase::LoopPhase::Prologue);
         let session_manager = self.config.session_manager.clone();
         // #59: everything this function persists BEFORE the reply stream is
         // constructed — the user's own message, a slash command's resolution,
@@ -9003,6 +9810,7 @@ impl Agent {
                     None,
                 );
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
+                self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::AutoCompaction);
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
                         // The swap and the basis re-pairing are one step, and both
@@ -9366,6 +10174,40 @@ impl Agent {
         notice.id.is_some().then_some(notice)
     }
 
+    /// Settle a turn whose reply stream is being abandoned — a Stop, or a stream
+    /// that failed — writing, in the order things happened (D19):
+    ///
+    /// 1. the prose the reply had streamed ([`Self::settle_stopped_reply`]),
+    /// 2. the steers the turn had accepted, marked unanswered (D4),
+    /// 3. for a Stop, the durable "Stopped." notice.
+    ///
+    /// PR #311 did this for a Stop in the runner's cancel arm only; the
+    /// stream-error path and a delegated child's consumer settled the steers
+    /// alone, so the transcript held a steer without the half-answer it reacted
+    /// to, and lost that half-answer on reload. One helper, three call sites.
+    ///
+    /// `Err` only when the steers could not be stored — the one write a caller
+    /// must report, because a 202 promised them.
+    pub async fn settle_interrupted_turn(
+        &self,
+        session_id: &str,
+        in_flight: &[Message],
+        stopped: bool,
+    ) -> Result<InterruptedTurnRows> {
+        let prose = self.settle_stopped_reply(session_id, in_flight).await;
+        let steers = self.settle_carried_over_soft_interrupts(session_id).await?;
+        let notice = if stopped {
+            self.record_turn_stopped(session_id).await
+        } else {
+            None
+        };
+        Ok(InterruptedTurnRows {
+            prose,
+            steers,
+            notice,
+        })
+    }
+
     /// Everything that decides whether a turn may end, in order: the planning
     /// gate's checklist check, then the Stop hooks (a `/goal` judge is one).
     ///
@@ -9642,6 +10484,7 @@ impl Agent {
             // real consumer, and anything a previous turn left behind is dropped
             // with a warning instead of ambushing this one.
             let this_turn = self.open_or_reuse_prepared_turn();
+            self.record_turn_exit(TurnExit::Final);
             crate::agents::subagent_handle::open_parent_continuation_admission(
                 &session_config.id,
             );
@@ -9674,6 +10517,7 @@ impl Agent {
                 {
                     match action {
                         StructuredFinalOutputAction::Emit(final_output) => {
+                            self.record_turn_exit(TurnExit::Final);
                             yield AgentEvent::Message(assistant_text(final_output));
                             break;
                         }
@@ -9704,7 +10548,21 @@ impl Agent {
                 // much of the per-turn action budget has been used, and so a
                 // budget-exhaustion stop is distinguishable from a normal completion.
                 tracing::debug!("agent action {}/{} this turn", turns_taken, max_turns);
+                // D4a: the three limits below count "actions without user input".
+                // A steer the person typed IS user input, so when one is waiting
+                // the count restarts here and the drain below hands it to the
+                // model — instead of stopping on a message that was accepted and
+                // then shown to nobody. One reset per human steer, never for an
+                // agent's injection, so the bound is still the person's typing.
+                if turns_taken > max_turns && self.has_pending_user_direct_steer() {
+                    info!(
+                        actions = turns_taken,
+                        "a steer arrived at the action limit; counting actions from it"
+                    );
+                    turns_taken = 1;
+                }
                 if turns_taken > max_turns {
+                    self.record_turn_exit(TurnExit::ResumableForUserInput);
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -9723,7 +10581,15 @@ impl Agent {
                     );
                     break;
                 }
+                if tool_calls_taken > max_tool_calls && self.has_pending_user_direct_steer() {
+                    info!(
+                        tool_calls = tool_calls_taken,
+                        "a steer arrived at the tool-call limit; counting calls from it"
+                    );
+                    tool_calls_taken = 0;
+                }
                 if tool_calls_taken > max_tool_calls {
+                    self.record_turn_exit(TurnExit::ResumableForUserInput);
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -9745,7 +10611,17 @@ impl Agent {
                 // BR-32: the stall check already told the model to wrap up and it
                 // kept going. End the turn rather than let a confirmed loop run to
                 // the `max_turns` cap.
+                if stall_deadline.is_some_and(|deadline| turns_taken > deadline)
+                    && self.has_pending_user_direct_steer()
+                {
+                    // The person has spoken since the model was told to wrap up;
+                    // their message supersedes that instruction.
+                    info!(actions = turns_taken, "a steer superseded the stall give-up");
+                    stall_deadline = None;
+                    stall_watch = crate::agents::stall::StallWatch::default();
+                }
                 if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    self.record_turn_exit(TurnExit::ResumableForUserInput);
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let reason = stall_watch
@@ -9771,6 +10647,9 @@ impl Agent {
                 // it kept working past its grace window. End the reply rather than
                 // let it spend the budget over again.
                 if budget_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    // A spend cap is not "actions without user input": a steer
+                    // buys no extra model call here, and is stored unanswered.
+                    self.record_turn_exit(TurnExit::Final);
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let snapshot = budget.snapshot_at(reply_started.elapsed());
@@ -9796,16 +10675,13 @@ impl Agent {
                 // safe boundary (after the previous turn's tools completed, before
                 // the next provider call) so the model incorporates them without a
                 // cancel-and-resend round trip that discards in-flight work.
-                for queued in self.drain_soft_interrupts() {
-                    // The framing decision (and why it is not applied to the
-                    // human's own steer) lives on `soft_interrupt_message`.
-                    let mut m = soft_interrupt_message(queued);
-                    // #41: adopt the minted uid — the retained/yielded copy
-                    // must carry the same id as the stored row, or its next
-                    // persist duplicates it instead of replaying.
-                    session_manager
-                        .add_message_adopting_uid(&session_config.id, &mut m)
-                        .await?;
+                //
+                // The framing decision (and why it is not applied to the human's
+                // own steer) lives on `soft_interrupt_message`; the #41 uid
+                // adoption and D14's store-before-remove live on
+                // `consume_soft_interrupts_at_boundary`. Boxed so its future is not
+                // laid out inside this generator's frame.
+                for m in Box::pin(self.consume_soft_interrupts_at_boundary(&session_config.id)).await? {
                     if signed_replay_context.take().is_some() {
                         conversation =
                             crate::conversation::without_bedrock_reasoning(&conversation);
@@ -10045,8 +10921,9 @@ impl Agent {
                 // `RequestLog::start` sits at the top of every provider's
                 // `stream`/`complete` body, which is inside this await. The same
                 // reasoning is what makes the bridge-URL scope above correct.
-                let mut stream = crate::session_context::SESSION_ID
-                    .scope(
+                self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::ProviderOpen);
+                let mut stream = match Box::pin(open_provider_or_steer(
+                    crate::session_context::SESSION_ID.scope(
                         Some(session_config.id.clone()),
                         coding_agent_bridge::ACTIVE_BRIDGE_URL.scope(
                             bridge_url,
@@ -10059,8 +10936,25 @@ impl Agent {
                                 live_steer_receiver,
                             ),
                         ),
-                    )
-                    .await?;
+                    ),
+                    restart_steering,
+                    self,
+                    &cancel_token,
+                ))
+                .await?
+                {
+                    ProviderOpen::Opened(stream) => stream,
+                    ProviderOpen::SteerFirst => {
+                        info!(
+                            provider = reply_provider.get_name(),
+                            "a steer arrived before the provider answered; reissuing the request with it"
+                        );
+                        restart_steer_reissue = true;
+                        continue;
+                    }
+                    ProviderOpen::Cancelled => break,
+                };
+                self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Streaming);
 
                 let mut no_tools_called = true;
                 let mut messages_to_add = Conversation::default();
@@ -10130,6 +11024,7 @@ impl Agent {
                         &session_config.id,
                         &self.soft_interrupt_notify,
                         live_steer_sender.is_some() || restart_steering,
+                        &self.live_acks,
                     )
                     .await
                     {
@@ -10142,60 +11037,79 @@ impl Agent {
                         }
                         ProviderWake::SteerReady => {
                             let Some(sender) = live_steer_sender.as_ref() else {
-                                if restart_steering && self.has_soft_interrupts() {
+                                // Restart only for the person's own steer: an
+                                // agent's injection waits for the next boundary
+                                // rather than discarding a stream already paid for.
+                                if restart_steering && self.has_pending_user_direct_steer() {
                                     info!(
                                         provider = reply_provider.get_name(),
                                         "queued steer is restarting the provider stream"
                                     );
                                     drop(stream);
+                                    // D16: the reissued request mints new ids, so a
+                                    // skeleton for a call this stream announced would
+                                    // otherwise stay on screen until the turn ends.
+                                    let retracted = mirrored_catalog.take_unlanded();
+                                    if !retracted.is_empty() {
+                                        yield AgentEvent::ToolCallsRetracted { ids: retracted };
+                                    }
                                     did_restart_for_steer_this_iteration = true;
                                     restart_steer_reissue = true;
                                     break;
                                 }
                                 continue;
                             };
-                            match self
-                                .deliver_live_interrupts(
-                                    sender,
-                                    &session_manager,
-                                    &session_config.id,
-                                    &cancel_token,
-                                )
-                                .await?
-                            {
-                                LiveSteerOutcome::Delivered(messages) => {
-                                    if !messages.is_empty()
-                                        && signed_replay_context.take().is_some()
-                                    {
+                            // D13: hand the steers over and keep polling — the
+                            // acknowledgement is its own wake below, so a card the
+                            // child is parked on can still surface meanwhile.
+                            if !self.send_live_interrupts(sender) {
+                                live_steer_sender = None;
+                                if restart_steering && self.has_pending_user_direct_steer() {
+                                    info!(
+                                        provider = reply_provider.get_name(),
+                                        "live steer was unavailable; restarting the provider stream"
+                                    );
+                                    drop(stream);
+                                    let retracted = mirrored_catalog.take_unlanded();
+                                    if !retracted.is_empty() {
+                                        yield AgentEvent::ToolCallsRetracted { ids: retracted };
+                                    }
+                                    did_restart_for_steer_this_iteration = true;
+                                    restart_steer_reissue = true;
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        ProviderWake::AckReady(seq, acknowledgement) => {
+                            match Box::pin(self.land_live_ack(seq, acknowledgement, &session_config.id)).await? {
+                                LiveAckLanding::Delivered(message) => {
+                                    if signed_replay_context.take().is_some() {
                                         conversation = crate::conversation::without_bedrock_reasoning(
                                             &conversation,
                                         );
                                     }
-                                    for message in messages {
-                                        conversation.push(message.clone());
-                                        yield AgentEvent::Message(message);
-                                    }
+                                    conversation.push(message.clone());
+                                    yield AgentEvent::Message(message);
                                 }
-                                LiveSteerOutcome::Disabled => {
+                                LiveAckLanding::Disabled => {
                                     live_steer_sender = None;
-                                    if restart_steering && self.has_soft_interrupts() {
+                                    if restart_steering && self.has_pending_user_direct_steer() {
                                         info!(
                                             provider = reply_provider.get_name(),
                                             "live steer was unavailable; restarting the provider stream"
                                         );
                                         drop(stream);
+                                        let retracted = mirrored_catalog.take_unlanded();
+                                        if !retracted.is_empty() {
+                                            yield AgentEvent::ToolCallsRetracted { ids: retracted };
+                                        }
                                         did_restart_for_steer_this_iteration = true;
                                         restart_steer_reissue = true;
                                         break;
                                     }
                                 }
-                                LiveSteerOutcome::Cancelled(messages) => {
-                                    for message in messages {
-                                        conversation.push(message.clone());
-                                        yield AgentEvent::Message(message);
-                                    }
-                                    break;
-                                }
+                                LiveAckLanding::Stale => {}
                             }
                             continue;
                         }
@@ -10270,6 +11184,7 @@ impl Agent {
                                 // `id: null` while the store minted a uid nobody
                                 // was ever told.
                                 let response = named(response);
+                                mirrored_catalog.landed(&response);
 
                                 // The mirror path (coding-agent providers). The
                                 // child ALREADY executed these calls — over the
@@ -10443,8 +11358,9 @@ impl Agent {
                                             cancel_token.clone(),
                                         );
                                         futures::pin_mut!(gate);
+                                        self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Gating);
                                         loop {
-                                            match next_gate_wake(&mut gate, &session_config.id)
+                                            match next_gate_wake(&mut gate, &session_config.id, Some(self))
                                                 .await
                                             {
                                                 GateWake::Ready(gated) => break gated?,
@@ -10457,6 +11373,12 @@ impl Agent {
                                                     {
                                                         yield AgentEvent::Message(msg);
                                                     }
+                                                }
+                                                GateWake::SteerWaiting => {
+                                                    yield AgentEvent::SteerWaiting {
+                                                        reason: SteerWaitReason::Tool,
+                                                        tool_name: None,
+                                                    };
                                                 }
                                             }
                                         }
@@ -10488,9 +11410,26 @@ impl Agent {
                                         &inspection_results,
                                     );
 
-                                    while let Some(msg) = tool_approval_stream.try_next().await? {
-                                        yield AgentEvent::Message(msg);
+                                    // D2/D3: a steer never answers a card — free text is
+                                    // not a permission decision — but the person is told
+                                    // their message is waiting behind it.
+                                    self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::ApprovalWait);
+                                    loop {
+                                        match next_approval_wake(
+                                            &mut tool_approval_stream,
+                                            (!permission_check_result.needs_approval.is_empty()).then_some(self),
+                                        ).await {
+                                            ApprovalWake::Item(Some(msg)) => yield AgentEvent::Message(msg?),
+                                            ApprovalWake::Item(None) => break,
+                                            ApprovalWake::SteerWaiting => {
+                                                yield AgentEvent::SteerWaiting {
+                                                    reason: SteerWaitReason::Approval,
+                                                    tool_name: None,
+                                                };
+                                            }
+                                        }
                                     }
+                                    self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::ToolBatch);
 
                                     tool_futures = {
                                         let mut futures_lock = tool_futures_arc.lock().await;
@@ -10558,6 +11497,7 @@ impl Agent {
                                             &cancel_token,
                                             &mut combined,
                                             &session_config.id,
+                                            Some(self),
                                         )
                                         .await
                                         {
@@ -10569,6 +11509,15 @@ impl Agent {
                                                 {
                                                     yield AgentEvent::Message(msg);
                                                 }
+                                                continue;
+                                            }
+                                            BatchWake::SteerWaiting => {
+                                                // D2: never cancels the tool. The steer
+                                                // lands at the next loop boundary.
+                                                yield AgentEvent::SteerWaiting {
+                                                    reason: SteerWaitReason::Tool,
+                                                    tool_name: first_running_tool_name(&remaining_requests),
+                                                };
                                                 continue;
                                             }
                                             BatchWake::Item(item) => item,
@@ -11100,6 +12049,20 @@ impl Agent {
                     }
                 }
 
+                // D13: the provider call is over, so it owes no more
+                // acknowledgements. Land the ones that already arrived — one
+                // may have raced the end of the stream — and return the rest to
+                // the queue for the next boundary, as ordinary user messages.
+                for (seq, acknowledgement) in self.take_ready_live_acks() {
+                    if let LiveAckLanding::Delivered(message) =
+                        Box::pin(self.land_live_ack(seq, acknowledgement, &session_config.id)).await?
+                    {
+                        conversation.push(message.clone());
+                        yield AgentEvent::Message(message);
+                    }
+                }
+                self.revert_in_flight_steers();
+
                 // A lead/worker provider advances its worker/fallback routing only
                 // after the provider stream settles. Persist that exact snapshot
                 // before any later yield can let the consumer drop this stream and
@@ -11158,6 +12121,18 @@ impl Agent {
                     // not treat the missing finish reason as a natural stop: first
                     // persist its emitted prefix below, then the next loop step
                     // drains and persists the queued steer before reissuing.
+                    //
+                    // D7: and tell the model the prefix was cut off by the person.
+                    // Without it the reissued request shows a complete-looking
+                    // partial answer followed by a new user message, and the model
+                    // started its answer again from the top — measured 5/5, an
+                    // 866-character partial followed by a 14,883-character answer
+                    // opening with the same heading.
+                    if made_user_visible_progress {
+                        messages_to_add.push(model_only_user_text_with_new_id(
+                            STEER_RESTART_NOTE,
+                        ));
+                    }
                 } else if last_finish_reason.as_deref() == Some("length") {
                         // The provider cut the response off at the output-length
                         // limit (not a natural stop) and the model called no tool,
@@ -11366,37 +12341,30 @@ impl Agent {
                 }
 
                 if let Some((code, message)) = pending_turn_abort.take() {
+                    self.record_turn_exit(TurnExit::Final);
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     deferred_turn_abort = Some((code, message));
                     break;
                 }
 
-                // BR-61 + #69: take-and-close atomically. A non-empty drain keeps
+                // BR-61 + #69 + D12b: the take-and-close happens at the COMMIT
+                // POINT — `commit_turn_exit`, immediately before each `break` that
+                // really ends the turn below — never here. A non-empty drain keeps
                 // the loop alive for one more step so the steer is answered in
-                // context (BR-61: it would otherwise sit parked until some later
-                // turn injected it out of nowhere); an empty drain closes the
-                // queue, so anything arriving afterwards is refused rather than
-                // stranded. The two must be one critical section — a separate
-                // `has_soft_interrupts` check followed by an exit is exactly the
-                // window #69 reports. Still bounded by max_turns / max_tool_calls,
-                // which are re-checked at the top.
+                // context; an empty drain closes the queue in the same critical
+                // section, so anything arriving afterwards is refused rather than
+                // stranded. Closing here instead, before the done gate,
+                // self-critique and Stop hooks (any of which may still keep the
+                // turn working), refused every steer sent while they ran with a
+                // bare 409 from a turn that was visibly alive.
                 if exit_chat {
-                    match self.close_and_drain() {
-                        Drained::Some(pending) => {
-                            info!(
-                                count = pending.len(),
-                                "soft interrupt pending at turn exit; continuing the loop to consume it"
-                            );
-                            self.requeue_for_this_turn(pending);
-                            exit_chat = false;
-                        }
-                        Drained::Empty => {}
-                    }
-                }
-
-                if exit_chat {
+                    self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::ExitGates);
                     if session.session_type == SessionType::SubAgent {
+                        if self.commit_turn_exit_or_continue() {
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
                         // Subagents get an observe-only SubagentStop instead of a
                         // blockable Stop (avoids nested runaway loops).
                         let mut payload = crate::hooks::HookPayload::new(
@@ -11559,6 +12527,10 @@ impl Agent {
                             for notice in notices {
                                 yield AgentEvent::Message(notice);
                             }
+                            if self.commit_turn_exit_or_continue() {
+                                tokio::task::yield_now().await;
+                                continue;
+                            }
                             break;
                         }
                         TurnStop::KeepWorking { feedback, notice } => {
@@ -11590,29 +12562,44 @@ impl Agent {
 
             crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
 
-            // Close and take in one critical section. Anything accepted before
-            // this close is carried into the durable transcript and emitted to
-            // observers even when a safety stop won before the next provider
-            // boundary. Anything arriving after the close is refused.
-            for message in self
-                .settle_soft_interrupts_for_turn(&this_turn, &session_config.id)
-                .await?
-            {
-                yield AgentEvent::Message(message);
-            }
-
+            // The open question in fix/steer-always-lands, decided: a steer that
+            // arrives while a forced exit waits for its children is ACCEPTED. So
+            // the queue stays open through that wait and is settled only after
+            // it — it used to close first and refuse every steer for as long as
+            // the children took. When the exit was a limit on actions without
+            // user input, the person's steer also ends the wait: the turn goes on
+            // (`settle_or_hold_for_continuation`, `take_continuation_steer`), and
+            // the children are supervised by the continued loop.
             if native_supervision_required {
-                while let Some(message) = self
-                    .next_native_supervision_message_after_forced_exit(
-                        &session_config.id,
-                        cancel_token.clone(),
-                    )
-                    .await?
+                self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::SupervisionWait);
+                // `Complete` and `UserSteered` both end the wait.
+                while let SupervisionStep::Collected(message) = Box::pin(self.next_supervision_step(
+                    &session_config.id,
+                    cancel_token.clone(),
+                    self.turn_exit_is_resumable(),
+                ))
+                .await?
                 {
                     yield AgentEvent::Message(message);
                 }
             }
 
+            // Close and take in one critical section — unless the turn continues
+            // for a steer (above). Anything accepted before this close is carried
+            // into the durable transcript, marked unanswered (D4), and emitted to
+            // observers. Anything arriving after the close is refused.
+            self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Settling);
+            for message in Box::pin(self.settle_or_hold_for_continuation(
+                &this_turn,
+                &session_config.id,
+                is_token_cancelled(&cancel_token),
+            ))
+            .await?
+            {
+                yield AgentEvent::Message(message);
+            }
+
+            self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Idle);
             if let Some((code, message)) = deferred_turn_abort {
                 yield AgentEvent::TurnAborted { code, message };
             }
@@ -13351,7 +14338,7 @@ mod tests {
 
         let wake = tokio::time::timeout(
             Duration::from_secs(5),
-            next_batch_wake(&None, &mut combined, SESSION),
+            next_batch_wake(&None, &mut combined, SESSION, None),
         )
         .await
         .expect("the elicitation must preempt the parked batch");
@@ -13417,7 +14404,7 @@ mod tests {
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(300),
-                next_batch_wake::<(String, u8), _>(&None, &mut combined, SESSION_A),
+                next_batch_wake::<(String, u8), _>(&None, &mut combined, SESSION_A, None),
             )
             .await
             .is_err(),
@@ -14144,22 +15131,29 @@ mod tests {
             )
             .unwrap();
         let (sender, mut receiver) = provider_steer_channel();
-        let provider = tokio::spawn(async move {
-            let request = receiver.recv().await.expect("steer reaches provider");
-            assert_eq!(request.text(), "change course now");
-            request.acknowledge();
-        });
-
-        let outcome = agent
-            .deliver_live_interrupts(&sender, &sm, &session.id, &None)
+        assert!(agent.send_live_interrupts(&sender));
+        // D13/D14: handed over, not yet acknowledged — so still queued (a Stop's
+        // settle would store it) and not yet written.
+        assert!(agent.has_soft_interrupts());
+        assert!(sm
+            .get_session(&session.id, true)
             .await
-            .unwrap();
-        provider.await.unwrap();
+            .unwrap()
+            .conversation
+            .is_none_or(|conversation| conversation.messages().is_empty()));
+        let request = receiver.recv().await.expect("steer reaches provider");
+        assert_eq!(request.text(), "change course now");
+        request.acknowledge();
 
-        let LiveSteerOutcome::Delivered(messages) = outcome else {
+        let (seq, acknowledgement) = agent.live_acks.next().await;
+        let LiveAckLanding::Delivered(message) = agent
+            .land_live_ack(seq, acknowledgement, &session.id)
+            .await
+            .unwrap()
+        else {
             panic!("acknowledged steering must be delivered")
         };
-        assert_eq!(messages.len(), 1);
+        assert_eq!(message.as_concat_text(), "change course now");
         assert!(!agent.has_soft_interrupts());
         let stored = sm.get_session(&session.id, true).await.unwrap();
         let stored_conversation = stored.conversation.unwrap();
@@ -14185,8 +15179,15 @@ mod tests {
         notify.notify_one();
         let mut output = futures::stream::iter(["already buffered"]);
 
-        let wake =
-            next_provider_wake(&None, &mut output, "steer-priority-session", &notify, true).await;
+        let wake = next_provider_wake(
+            &None,
+            &mut output,
+            "steer-priority-session",
+            &notify,
+            true,
+            &LiveAcks::default(),
+        )
+        .await;
 
         assert!(matches!(wake, ProviderWake::SteerReady));
     }
@@ -14466,18 +15467,20 @@ mod tests {
             .try_queue_soft_interrupt("do not lose me".into(), None)
             .unwrap();
         let (sender, mut receiver) = provider_steer_channel();
-        let provider = tokio::spawn(async move {
-            let request = receiver.recv().await.unwrap();
-            request.reject(ProviderError::RequestFailed("turn ended".into()));
-        });
+        assert!(agent.send_live_interrupts(&sender));
+        receiver
+            .recv()
+            .await
+            .unwrap()
+            .reject(ProviderError::RequestFailed("turn ended".into()));
 
+        let (seq, acknowledgement) = agent.live_acks.next().await;
         let outcome = agent
-            .deliver_live_interrupts(&sender, &sm, &session.id, &None)
+            .land_live_ack(seq, acknowledgement, &session.id)
             .await
             .unwrap();
-        provider.await.unwrap();
 
-        assert!(matches!(outcome, LiveSteerOutcome::Disabled));
+        assert!(matches!(outcome, LiveAckLanding::Disabled));
         let queued = agent.drain_soft_interrupts();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].text, "do not lose me");
@@ -14514,17 +15517,18 @@ mod tests {
             agent.try_queue_soft_interrupt(text.into(), None).unwrap();
         }
         let (sender, _receiver) = provider_steer_channel();
-        let cancel = CancellationToken::new();
-        cancel.cancel();
+        // D14: both handed to the provider and unacknowledged when the Stop
+        // lands. The runner settles WITHOUT polling the reply stream again —
+        // exactly what a Stop does — and must still find both.
+        assert!(agent.send_live_interrupts(&sender));
 
-        let outcome = agent
-            .deliver_live_interrupts(&sender, &sm, &session.id, &Some(cancel))
+        let messages = agent
+            .settle_carried_over_soft_interrupts(&session.id)
             .await
             .unwrap();
-        let LiveSteerOutcome::Cancelled(messages) = outcome else {
-            panic!("cancelled live steering must be carried over")
-        };
         assert_eq!(messages.len(), 2);
+        assert!(messages.iter().all(|message| message.metadata.steer_outcome
+            == Some(crate::conversation::message::SteerOutcome::Unanswered)));
         assert!(!agent.has_soft_interrupts());
         let stored = sm.get_session(&session.id, true).await.unwrap();
         let texts: Vec<_> = stored
@@ -14617,10 +15621,12 @@ mod tests {
         // The loop reaches its exit with nothing queued: close and drain in one step.
         assert!(matches!(agent.close_and_drain(), Drained::Empty));
 
-        // A steer arrives one instant too late.
+        // A steer arrives one instant too late. D12d: refused as CLOSING — the
+        // turn committed to ending but has not settled — which a client reads as
+        // "send it as a new turn at the terminal frame", not "no turn exists".
         let refused = agent.try_queue_soft_interrupt("too late".into(), None);
         assert!(
-            matches!(refused, Err(InterruptRefused::TurnEnded)),
+            matches!(refused, Err(InterruptRefused::TurnClosing)),
             "an interrupt after the close must be refused; got {refused:?}"
         );
 
@@ -17334,7 +18340,7 @@ mod tests {
 
         let wake = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            next_native_supervision_claim(&parent, &None),
+            next_native_supervision_claim(&parent, &None, None),
         )
         .await
         .expect("test safety deadline");
@@ -17345,7 +18351,7 @@ mod tests {
         assert!(claim.result.summary.contains("event-driven terminal"));
         assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
         assert!(matches!(
-            next_native_supervision_claim(&parent, &None).await,
+            next_native_supervision_claim(&parent, &None, None).await,
             NativeSupervisionWake::Complete
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
@@ -17384,7 +18390,7 @@ mod tests {
 
         let wake = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            next_native_supervision_claim(&parent, &None),
+            next_native_supervision_claim(&parent, &None, None),
         )
         .await
         .expect("test safety deadline");
@@ -17396,7 +18402,7 @@ mod tests {
         assert!(!claim.result.summary.contains("superseded result"));
         assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
         assert!(matches!(
-            next_native_supervision_claim(&parent, &None).await,
+            next_native_supervision_claim(&parent, &None, None).await,
             NativeSupervisionWake::Complete
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
@@ -17430,7 +18436,7 @@ mod tests {
 
         crate::agents::subagent_handle::begin_parent_closing(&parent);
         let NativeSupervisionWake::Ready(claim) =
-            next_native_supervision_claim(&parent, &None).await
+            next_native_supervision_claim(&parent, &None, None).await
         else {
             panic!("the direct follow-up terminal must reopen supervision once")
         };
@@ -17440,7 +18446,7 @@ mod tests {
 
         assert!(delegated_work_supervision_prompt(&parent).is_none());
         assert!(matches!(
-            next_native_supervision_claim(&parent, &None).await,
+            next_native_supervision_claim(&parent, &None, None).await,
             NativeSupervisionWake::Complete
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
@@ -17466,7 +18472,7 @@ mod tests {
         });
 
         assert!(matches!(
-            next_native_supervision_claim(&parent, &Some(cancel)).await,
+            next_native_supervision_claim(&parent, &Some(cancel), None).await,
             NativeSupervisionWake::Cancelled
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);

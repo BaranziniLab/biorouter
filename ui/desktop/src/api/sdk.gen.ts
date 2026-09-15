@@ -401,8 +401,14 @@ export const startTetrateSetup = <ThrowOnError extends boolean = false>(options?
  *
  * BR-61: rejected with 409 when the session has no turn in flight — with no
  * running loop to drain the queue the text would sit on the agent until some
- * unrelated later turn injected it. Clients treat 409 as "just send it as a
- * normal message".
+ * unrelated later turn injected it. The 409 carries an [`InterruptRefusal`]
+ * body naming why (D12d): only `no_turn` means "send it as a normal message
+ * now"; `turn_closing` means "send it once this turn's terminal frame arrives",
+ * because a `/reply` sent before then 409s on the single-turn lock.
+ *
+ * ⚠ The 403 refusals are untouched, byte for byte (SD-11): the keyed
+ * `Unproven` stays EMPTY and the keyless one carries [`STEER_NO_KEY`], because
+ * `biorouter session`'s `key_verdict` reads only 403 shapes.
  *
  * #69: the 409 is now decided by the *agent's own queue*, not by the turn-lock
  * check above it. Checking the lock and then queueing are two steps against

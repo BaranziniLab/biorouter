@@ -1135,7 +1135,6 @@ struct ClaudeFrameContext<'a, S> {
     model_name: &'a str,
     out_tx: &'a tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
     completed_usage: &'a mut Option<ProviderUsage>,
-    outstanding_turns: &'a mut usize,
     bridge_url: Option<&'a str>,
 }
 
@@ -1175,8 +1174,19 @@ where
                 Some(previous) => previous.combine_with(&usage),
                 None => usage,
             });
-            *context.outstanding_turns = context.outstanding_turns.saturating_sub(1);
-            if *context.outstanding_turns == 0 {
+            // D15: the turn is over at a `result` once every steer written into it
+            // has been replayed — NOT after one `result` per steer. Measured on
+            // `claude` 2.1.266 (2026-09-14): a steer written while the model is
+            // generating plain text is queued, and the CLI answers it as its OWN
+            // turn with its own `result` (replay lands after the first result);
+            // but a steer written while a tool is running is FOLDED into the
+            // running turn — replayed beside the tool result — and the CLI
+            // emits exactly ONE `result`. Counting one per steer waited forever
+            // for a second `result` from a CLI that was waiting on stdin, and
+            // the turn hung with the composer spinning (`turn_timeout` is
+            // opt-in). An unreplayed steer at a `result` is still owed its own
+            // turn, which the first case shows arrives.
+            if context.pending_steers.is_empty() {
                 ClaudeLoopOutcome::Stop(context.completed_usage.take().map(Ok))
             } else {
                 ClaudeLoopOutcome::Continue
@@ -1229,7 +1239,6 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
         .map(|duration| (tokio::time::Instant::now() + duration, duration));
     let mut terminal: Option<Result<ProviderUsage, ProviderError>> = None;
     let mut completed_usage: Option<ProviderUsage> = None;
-    let mut outstanding_turns = 1usize;
     let mut pending_steers = std::collections::VecDeque::new();
 
     let initial_line = encode_claude_prompt(&initial_prompt);
@@ -1248,7 +1257,6 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
             ClaudeLineOutcome::Continue => continue,
             ClaudeLineOutcome::Stop => break,
             ClaudeLineOutcome::SteerWritten(request) => {
-                outstanding_turns = outstanding_turns.saturating_add(1);
                 pending_steers.push_back(request);
                 continue;
             }
@@ -1272,7 +1280,6 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
             model_name: &model_name,
             out_tx: &out_tx,
             completed_usage: &mut completed_usage,
-            outstanding_turns: &mut outstanding_turns,
             bridge_url: bridge_url.as_deref(),
         };
         match apply_claude_frame(router.push_line(&line), &mut context) {
@@ -2675,6 +2682,88 @@ send({"type":"result","subtype":"success","is_error":False,
       "result":"changed course","usage":{"input_tokens":3,"output_tokens":2}})
 "#,
         )
+    }
+
+    /// D15: the shape `claude` 2.1.266 produces for a steer written while a
+    /// TOOL runs (measured 2026-09-14): the steer is replayed beside the tool
+    /// result, folded into the running turn, and the CLI emits exactly ONE
+    /// `result` — then waits on stdin for more.
+    fn folding_claude() -> FakeCli {
+        FakeCli::new(
+            r#"#!/usr/bin/env python3
+import sys, json
+
+def send(obj):
+    print(json.dumps(obj), flush=True)
+
+initial = json.loads(sys.stdin.readline())
+send({"type":"system","subtype":"init","apiKeySource":"none","session_id":"s"})
+send(initial)
+send({"type":"stream_event","event":{"type":"message_start",
+      "message":{"id":"msg_1","role":"assistant","content":[],
+                 "usage":{"input_tokens":1,"output_tokens":1}}}})
+send({"type":"stream_event","event":{"type":"content_block_start","index":0,
+      "content_block":{"type":"text","text":""}}})
+send({"type":"stream_event","event":{"type":"content_block_delta","index":0,
+      "delta":{"type":"text_delta","text":"running the tool"}}})
+send({"type":"stream_event","event":{"type":"content_block_stop","index":0}})
+send({"type":"stream_event","event":{"type":"message_delta",
+      "delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}})
+send({"type":"stream_event","event":{"type":"message_stop"}})
+
+steer = json.loads(sys.stdin.readline())
+# Folded: replayed inside the SAME turn, next to the tool result.
+send(steer)
+send({"type":"stream_event","event":{"type":"message_start",
+      "message":{"id":"msg_2","role":"assistant","content":[],
+                 "usage":{"input_tokens":3,"output_tokens":1}}}})
+send({"type":"stream_event","event":{"type":"content_block_start","index":0,
+      "content_block":{"type":"text","text":""}}})
+send({"type":"stream_event","event":{"type":"content_block_delta","index":0,
+      "delta":{"type":"text_delta","text":" and the steer"}}})
+send({"type":"stream_event","event":{"type":"content_block_stop","index":0}})
+send({"type":"stream_event","event":{"type":"message_delta",
+      "delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}})
+send({"type":"stream_event","event":{"type":"message_stop"}})
+send({"type":"result","subtype":"success","is_error":False,
+      "result":"done","usage":{"input_tokens":3,"output_tokens":4}})
+# Then wait for more input, exactly as the real CLI does.
+sys.stdin.readline()
+"#,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_steer_folded_into_a_tool_turn_ends_the_stream_at_its_one_result() {
+        let script = folding_claude();
+        let provider = provider_running(&script);
+        let messages = vec![Message::user().with_text("hello")];
+        let (steering_tx, steering_rx) = crate::providers::base::provider_steer_channel();
+        let stream = provider
+            .stream_with_steering("SYS", &messages, &[], steering_rx)
+            .await
+            .expect("the stream should open");
+        let (request, acknowledged) = ProviderSteerRequest::new("also check the logs");
+        assert!(steering_tx.send(request).is_ok(), "the turn is running");
+
+        futures::pin_mut!(stream);
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            let mut text = String::new();
+            while let Some(item) = stream.next().await {
+                let (message, _, _) = item.expect("the folded turn finishes cleanly");
+                if let Some(message) = message {
+                    text.push_str(&message.as_concat_text());
+                }
+            }
+            text
+        })
+        .await
+        .expect("D15: one `result` for a folded steer must end the stream");
+        assert!(drained.contains("and the steer"), "{drained}");
+        acknowledged
+            .await
+            .expect("the provider kept the acknowledgement")
+            .expect("the folded steer was replayed, which acknowledges it");
     }
 
     fn provider_running(script: &FakeCli) -> ClaudeCodeProvider {

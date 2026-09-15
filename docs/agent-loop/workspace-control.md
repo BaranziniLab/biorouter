@@ -228,12 +228,21 @@ started, and the command asks the daemon rather than you:
   request again with it. `attach` asks as it joins, before it reads anything you type, and
   checks the key there rather than at your first steer.
 - **A daemon started without one** — `biorouter serve`, or `biorouterd agent` with nothing piped in
-  — has nothing to check a key against, so you are never asked for one. It lets you stop and steer
-  any chat it lets you reach (a public one always, a private one when your terminal runs a private
-  model), except a subagent's: stopping, steering or sending to a subagent needs proof that a person
-  acted, which only a daemon holding a key can check, and the command prints that daemon's refusal
-  saying so ([SD-11](../deployment/serve-decisions.md#sd-11--stop-and-steering-work-on-a-daemon-with-no-key-a-subagents-tab-stays-the-persons)).
+  — has nothing to check a key against, so you are never asked for one. It lets you stop any chat
+  it lets you reach (a public one always, a private one when your terminal runs a private model),
+  except a subagent's. It does **not** let anyone steer: putting text into a turn that is already
+  running needs proof that a person acted, which only a daemon holding a key can check, so the
+  steer is refused with a sentence saying so, and the command prints it. Send the text as a new
+  message once the turn ends, or stop the turn first. Stopping or sending to a subagent is refused
+  the same way ([SD-11](../deployment/serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)).
   `attach --read-only` still follows such a session.
+
+A steer the daemon refuses with `409` now says why, in a JSON body `{"reason": …}`: `no_turn`
+(nothing is running — send it as a message), `not_accepting_yet` (a turn holds the chat but has not
+opened for steers), or `turn_closing` (the turn has finished its work and is tearing down). On
+`turn_closing` the terminal waits for that turn to let go before it sends your text as a new message,
+instead of reporting that the turn state changed three times. See
+[Steering a running turn](steering-a-running-turn.md).
 
 ```bash
 read -r -s action_key

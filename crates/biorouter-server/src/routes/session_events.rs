@@ -106,6 +106,12 @@ fn map_bus_event_for_turn(
                 name: p.name,
                 partial_args: p.partial_args,
             }),
+            AgentEvent::ToolCallsRetracted { ids } => {
+                Some(MessageEvent::ToolCallsRetracted { ids })
+            }
+            AgentEvent::SteerWaiting { reason, tool_name } => {
+                Some(MessageEvent::SteerWaiting { reason, tool_name })
+            }
             // Reconciliation #22 / #59: the accounting frame naming the ids the
             // turn's rows were actually stored under.
             //
