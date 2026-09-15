@@ -3091,14 +3091,16 @@ mod tests {
         let sid = "br71-drive-stream-cancel";
         let mut rx = session_events::subscribe(sid);
         let mut all = Conversation::new_unvalidated(Vec::new());
-        let mut stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
-
         let cancel = CancellationToken::new();
         let trip = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            trip.cancel();
-        });
+        // An agent that never yields, and a Stop that lands once the runner is
+        // parked on it — tripped by that very poll rather than by a timer.
+        let mut stream = futures::stream::poll_fn(
+            move |_| -> std::task::Poll<Option<anyhow::Result<AgentEvent>>> {
+                trip.cancel();
+                std::task::Poll::Pending
+            },
+        );
 
         let terminal_error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -3304,17 +3306,20 @@ mod tests {
                 ),
             )),
         ];
-        let mut stream = futures::stream::iter(events)
-            .chain(futures::stream::pending::<anyhow::Result<AgentEvent>>());
+        let cancel = CancellationToken::new();
+        let trip = cancel.clone();
+        // D21: the Stop lands the moment the runner asks for the item after the
+        // last one — a handshake on the stream itself, not a 150 ms bet that the
+        // five events were drained first.
+        let mut stream = futures::stream::iter(events).chain(futures::stream::poll_fn(
+            move |_| -> std::task::Poll<Option<anyhow::Result<AgentEvent>>> {
+                trip.cancel();
+                std::task::Poll::Pending
+            },
+        ));
 
         let mut rx = session_events::subscribe(&session.id);
         let mut all = Conversation::new_unvalidated(Vec::new());
-        let cancel = CancellationToken::new();
-        let trip = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            trip.cancel();
-        });
         let mut stop_record = Vec::new();
         let terminal_error = tokio::time::timeout(
             std::time::Duration::from_secs(10),

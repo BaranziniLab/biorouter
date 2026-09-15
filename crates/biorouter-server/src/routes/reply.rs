@@ -2674,6 +2674,58 @@ pub fn routes(state: Arc<AppState>) -> Router {
 mod tests {
     use super::*;
 
+    /// D21: `docs/agent-loop/workspace-control.md` linked SD-11 by a heading
+    /// that had been renamed, and the dead link sat beside text that said the
+    /// opposite of what SD-11 decided. Every `serve-decisions.md#sd-…` link in
+    /// the docs must name a heading that exists.
+    #[test]
+    fn every_link_to_a_serve_decision_names_a_heading_that_exists() {
+        fn slug(heading: &str) -> String {
+            heading
+                .trim()
+                .to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == ' ' || *c == '_')
+                .map(|c| if c == ' ' { '-' } else { c })
+                .collect()
+        }
+        fn markdown_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    markdown_files(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "md") {
+                    out.push(path);
+                }
+            }
+        }
+        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        let decisions =
+            std::fs::read_to_string(docs.join("deployment/serve-decisions.md")).unwrap();
+        let anchors: std::collections::HashSet<String> = decisions
+            .lines()
+            .filter_map(|line| line.strip_prefix("## "))
+            .map(slug)
+            .collect();
+        let mut files = Vec::new();
+        markdown_files(&docs, &mut files);
+        let mut dead = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            for (at, _) in text.match_indices("serve-decisions.md#") {
+                let rest = &text[at + "serve-decisions.md#".len()..];
+                let anchor: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                if !anchors.contains(&anchor) {
+                    dead.push(format!("{}: #{anchor}", file.display()));
+                }
+            }
+        }
+        assert!(dead.is_empty(), "dead serve-decisions anchors: {dead:#?}");
+    }
+
     #[test]
     fn error_events_preserve_machine_readable_metadata() {
         let event = MessageEvent::error(

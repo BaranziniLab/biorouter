@@ -14701,7 +14701,11 @@ pub(crate) mod tests {
         );
         let sid = target_id.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            // D21: publish once the watch has SUBSCRIBED — a handshake on the
+            // bus's own observer count, not a 150 ms bet that it had.
+            while session_events::observer_count(&sid) == 0 {
+                tokio::task::yield_now().await;
+            }
             session_events::publish(
                 &sid,
                 SessionBusEvent::TurnFinished {
