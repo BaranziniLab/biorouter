@@ -1,3 +1,4 @@
+import { withSteerRecoveries, type SteerRecovery } from '../utils/steerRecovery';
 /**
  * ProgressiveMessageList Component
  *
@@ -63,6 +64,9 @@ interface ProgressiveMessageListProps {
   lastMessageAt?: number;
   /** BR-61: a soft interrupt awaiting the agent, shown as a trailing chip. */
   pendingSteer?: PendingSteer;
+  steerRecoveries?: SteerRecovery[];
+  /** D4: re-send the text of a steer the daemon stored as unanswered. */
+  onSendAgain?: (text: string) => void;
   /**
    * Whether the reader can stop the running turn from this tab. Only a
    * delegated subagent's tab in a browser answers false: it has no composer
@@ -72,7 +76,7 @@ interface ProgressiveMessageListProps {
 }
 
 export default function ProgressiveMessageList({
-  messages,
+  messages: storedMessages,
   chat,
   toolCallNotifications = new Map(),
   isUserMessage,
@@ -91,8 +95,23 @@ export default function ProgressiveMessageList({
   turnStartedAt,
   lastMessageAt,
   pendingSteer,
+  steerRecoveries,
+  onSendAgain,
   canStopTurn = true,
 }: ProgressiveMessageListProps) {
+  const messages = useMemo(
+    () => withSteerRecoveries(storedMessages, steerRecoveries),
+    [storedMessages, steerRecoveries]
+  );
+  const recoveryIds = useMemo(
+    () =>
+      new Set(
+        steerRecoveries
+          ?.filter(({ message }) => !storedMessages.some((stored) => stored.id === message.id))
+          .map(({ message }) => message.id)
+      ),
+    [storedMessages, steerRecoveries]
+  );
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
     return messages.length <= showLoadingThreshold
@@ -298,7 +317,12 @@ export default function ProgressiveMessageList({
           >
             {isUser ? (
               !hasOnlyToolResponses(message) && (
-                <UserMessage message={message} onMessageUpdate={onMessageUpdate} />
+                <UserMessage
+                  message={message}
+                  onMessageUpdate={recoveryIds.has(message.id) ? undefined : onMessageUpdate}
+                  deliveryUnconfirmed={recoveryIds.has(message.id)}
+                  onSendAgain={isStreamingMessage ? undefined : onSendAgain}
+                />
               )
             ) : (
               <BioRouterMessage
@@ -339,6 +363,8 @@ export default function ProgressiveMessageList({
     onOpenArtifact,
     onRunInTerminal,
     workingDir,
+    onSendAgain,
+    recoveryIds,
   ]);
 
   return (

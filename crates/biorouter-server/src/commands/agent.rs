@@ -404,7 +404,11 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
             crate::routes::is_local_origin(origin.to_str().unwrap_or(""))
         }))
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        // D1: without a max-age every POST from the renderer — a steer, a Stop,
+        // a `/reply` — paid a preflight first, two requests on a connection
+        // pool that was already the bottleneck. Ten minutes is Chromium's cap.
+        .max_age(std::time::Duration::from_secs(600));
 
     // The WebSocket gates admit the daemon's own origin and, beside it, at most
     // one renderer origin its launcher declared: the dev renderer's vite page

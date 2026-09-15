@@ -5,8 +5,10 @@
  * `setViewportSize`, or DevTools device mode applies
  * `Emulation.setDeviceMetricsOverride`, which pins the renderer's viewport to a
  * fixed size regardless of the real window. The window then grows and the
- * layout does not follow it, leaving a blank band below and to the right of the
- * page. Every measurement taken afterwards is a lie, and the report that
+ * layout does not follow it, leaving an area outside the live layout below and
+ * to the right of the page (a stale ghost of the last frame, or a flat area).
+ * What that area looks like is not a test; `inner` ≠ `outer` is the only one.
+ * Every measurement taken afterwards is a lie, and the report that
  * reaches a developer is "the app stopped rescaling" — which sends them into
  * the CSS, where nothing is wrong.
  *

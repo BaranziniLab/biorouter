@@ -209,6 +209,16 @@ const REGISTRY: &[Guard] = &[
                        execution sessions by name and working directory",
             },
             Site {
+                file: "crates/biorouter/src/agents/recurring.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`/schedule sessions <id>`, the same listing typed as a slash command: a \
+                       run of a schedule whose work is private is a private chat, so a chat \
+                       that is not on a private model is shown only the runs it could list — \
+                       filtered, as `GET /schedule/{id}/sessions` filters, on the command's \
+                       one sampled capability",
+            },
+            Site {
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
@@ -785,6 +795,69 @@ const REGISTRY: &[Guard] = &[
         ],
     },
     Guard {
+        ident: "schedule_work",
+        defined_in: "crates/biorouter/src/scheduler.rs",
+        decides: "THE definition of a schedule's private work: a chat it names (creator, \
+                  current run) is private or unreadable, or the model its runs bind — \
+                  `scheduled_run_provider_name`'s declared tier — is private. Every door that \
+                  changes a schedule answers with this one function, so the HTTP routes and \
+                  the slash verbs cannot drift into two definitions",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: SESSION_REACH,
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`schedule_reach`, for an unproven public caller naming a schedule that \
+                       exists — the six `/schedule/…` writes and `POST /workflows/schedule`",
+            },
+            Site {
+                file: "crates/biorouter/src/agents/recurring.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`Agent::slash_verb_reaches`, which every `/schedule remove|delete|run|\
+                       pause|unpause|resume` and `/loop stop <id|all>` asks before it changes \
+                       anything, for a chat that is not on a private model. Independent QA, \
+                       2026-09-14: `Agent::reply` runs `execute_command` before any model \
+                       call, and a public chat accepts `POST /reply` from any holder of the \
+                       daemon secret, so the verbs paused, ran and removed a private chat's \
+                       schedule for a caller the HTTP routes refused. The import is the \
+                       module's `use` of it",
+            },
+        ],
+    },
+    Guard {
+        ident: "default_bind_refused",
+        defined_in: "crates/biorouter/src/privacy/refusal.rs",
+        decides: "DR-16 through a RESTORE: whether a chat that records no model may be bound to \
+                  a PRIVATE configured default on the caller's standing (`DefaultBind`), which \
+                  `routes::agent::RestoreStanding` decides by `new_chat_bind_decision` — the \
+                  proof on a keyed daemon, SD-12's launch-pinned exemption on a keyless one",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter/src/agents/agent.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`Agent::restore_provider_from_session`, the ONE place a restore binds \
+                       the default, asked of the constructed instance's own tier before \
+                       anything is bound. Independent QA, 2026-09-14: with only the daemon \
+                       secret, `POST /agent/restart` of a chat whose row named no provider \
+                       wrote `versa_azure` onto it",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/agent.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`RestoreStanding::refuse_before_restoring`, the same predicate asked of \
+                       the DECLARED tier by every door before it changes anything — `POST \
+                       /agent/restart` before it evicts the agent, `POST \
+                       /agent/update_working_dir` before it writes the directory, and a \
+                       workspace turn injected into a cold chat before it hydrates one",
+            },
+        ],
+    },
+    Guard {
         ident: "mints_knowledge_base",
         defined_in: SESSION_REACH,
         decides: "whether a caller may take a knowledge-base id at all — asked WITHOUT the id, \
@@ -854,14 +927,16 @@ const REGISTRY: &[Guard] = &[
         status: Status::WiredThrough("session_reach"),
         sites: &[Site {
             file: SESSION_REACH,
-            counts: c(3, 0, 0),
+            counts: c(2, 0, 0),
             kind: SiteKind::Guard,
             what: "`session_reach`'s tier lookup, deliberately `with_messages: false` so \
                    resolving a tier is never the way to load the transcript being refused; \
-                   `HttpCaller::lists_work`'s, for a row of running work that names a chat — \
-                   the same lookup, so an unreadable chat fails closed there too; and \
-                   `schedule_reach`'s, once per chat a schedule names (the one it was created \
-                   from and the one it is running in), inside one loop",
+                   and `HttpCaller::lists_work`'s, for a row of running work that names a \
+                   chat — the same lookup, so an unreadable chat fails closed there too. \
+                   `schedule_reach` asked it once per chat a schedule names until \
+                   2026-09-14, when that decision moved whole into \
+                   `scheduler::schedule_work` so the `/schedule` and `/loop` slash verbs \
+                   could answer with the same definition rather than a second one",
         }],
     },
     // ----------------------------------------------------- extension tiering

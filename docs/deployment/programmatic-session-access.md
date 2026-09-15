@@ -261,6 +261,28 @@ Before 1.90.5, a caller holding only the secret could delete the public chat a `
 with nobody present. The first repair of this recorded a standing only for schedules set going over
 HTTP, and independent QA reproduced the chain on it with one `DELETE /sessions/<that chat>`.
 
+A refused run is not a run. It does not count toward a `/loop`'s run limit, so a loop whose runs
+are all refused is not stopped for having used up its runs. Until 1.90.5 each refused tick counted,
+and independent QA watched a loop's `run_count` climb 0, 1, 2 on refusals alone.
+
+**The `/schedule` and `/loop` commands follow the same rule, and the chat is the caller.** Typing a
+command into a chat is a request made through that chat, and a public chat accepts a message from
+anything holding the secret. So a command's standing is the chat it is typed into:
+
+| The chat the command is typed into | What `/schedule remove`, `delete`, `run`, `pause`, `unpause`, `resume` and `/loop stop` may touch |
+|---|---|
+| Runs a private model | Any schedule. |
+| Runs a public model, or has no model | Only a schedule doing public work, by the same definition the routes above use. An id that names no schedule is answered the same way. |
+
+A refused command changes nothing, names only what was typed, and points at the Scheduler in the
+desktop app or a chat on a private model. `/loop stop all` stops the loops it may stop and says how
+many it left. `/schedule sessions` lists only the runs that chat could be shown, as `GET
+/schedule/{id}/sessions` does. `/schedule run` checks whether the run would be refused before it
+requests a background run, and says why when it would be. A request acknowledgement does not
+claim the asynchronous run has started; its eventual status is shown in the Scheduler. Until 1.90.5 none of these commands checked
+anything: QA paused a private chat's schedule by typing `/schedule pause <id>` into a public chat,
+one request after `POST /schedule/<id>/pause` refused the same caller.
+
 **Listings and knowledge bases apply the same rule.** They do not refuse a list; they leave out what
 the caller could not open:
 
@@ -303,6 +325,7 @@ it would be wrong:
 | `POST /interrupt` | `X-User-Action` on **every** daemon — steering a turn that is already running is the user's decision, not a capability, and no other route on a keyless daemon reaches into a turn in flight. A keyless daemon's refusal says so in words rather than with an empty `403`. |
 | `POST /agent/cancel`, `POST /agent/continuation/abandon` · `recover` | On a daemon that holds a user-action key — the desktop application's — `X-User-Action` and nothing else. A daemon that holds no key cannot check the proof at all, so these routes honour the header there instead (the table above). |
 | `POST /sessions/{id}/declassify`, `POST /sessions/{id}/diverge`, `POST /sessions/{id}/edit_message` | `X-User-Action` — these change or copy a classification, which no model may decide. |
+| `POST /agent/restart`, `POST /agent/update_working_dir`, on a chat that records no model | Both rebuild the chat's agent, and a chat whose row names no provider takes the configured default. When that default is private, this is the chat's first bind onto a private model, and it follows `POST /agent/start` exactly: `X-User-Action` on a daemon that holds a key, and on a keyless one (`biorouter serve`) only the model the daemon was launched with. A stated private model does not admit it, because choosing a chat's model is a decision rather than a capability. A refusal is `409`, says which of those it was, and changes nothing: the agent is not rebuilt and the directory is not written. A chat that records its own model is not affected. A turn a model injects into such a chat with `workspace_send_prompt` is held to the same rule, and never carries the proof. Until 1.90.5 neither route checked: independent QA restarted a public chat with only the secret, the row gained `versa_azure`, and that chat's `/loop` then ran on it with nobody present. |
 | `POST /reset`, `GET /reset/preview` | `X-User-Action` on **every** daemon, whatever the header says. A reset deletes every chat, knowledge base, schedule, skill, extension, workflow or app in the areas it names, private ones included, and the preview counts them all. Destroying the machine's data is a decision rather than a capability, so a stated private provider does not admit it, and a daemon that holds no user-action key, `biorouter serve` among them, refuses it for everyone and says where the control does work. Ungated until 1.90.5: a caller holding only the secret emptied History, a private chat included, while `GET /sessions/{id}` refused that same chat. |
 | `POST /agent/cross_affiliation_grant`, `POST /action-required/tool-confirmation` | `X-User-Action`, plus a decision-authority check on the resolving surface. |
 | `POST /knowledge/bases/{id}/ingest-conversation` | Its own Gate G: capability is derived from the model named in the request body, and every selected conversation is checked against it before a transcript is rendered. |

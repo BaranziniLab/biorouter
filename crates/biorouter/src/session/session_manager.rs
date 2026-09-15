@@ -2036,6 +2036,38 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Settlement may race a completed write whose caller was cancelled before
+    /// it removed the queued steer. Keep that row and mark it unanswered.
+    pub(crate) async fn persist_unanswered_steer(
+        &self,
+        id: &str,
+        message: &mut Message,
+    ) -> Result<()> {
+        if let Some(uid) = message.id.as_deref() {
+            let mut original = message.clone();
+            original.metadata.steer_outcome = None;
+            if self
+                .storage
+                .existing_row_matches(id, &original, uid)
+                .await?
+            {
+                let changed = sqlx::query(
+                    "UPDATE messages SET metadata_json = ? WHERE session_id = ? AND msg_uid = ? AND metadata_json = ?",
+                )
+                .bind(serde_json::to_string(&message.metadata)?)
+                .bind(id)
+                .bind(uid)
+                .bind(serde_json::to_string(&original.metadata)?)
+                .execute(self.storage.pool().await?)
+                .await?;
+                if changed.rows_affected() == 1 {
+                    return Ok(());
+                }
+            }
+        }
+        self.add_message_adopting_uid(id, message).await
+    }
+
     /// Unconditional whole-history rewrite: DELETE every message of the session
     /// and re-INSERT the supplied ones.
     ///

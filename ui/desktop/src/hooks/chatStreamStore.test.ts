@@ -898,6 +898,7 @@ describe('ChatStreamRegistry', () => {
       session_id: 's1',
       text: 'actually, use R',
       turn_id: expect.any(String),
+      expected_turn_id: vi.mocked(reply).mock.calls[0][0].body?.turn_id,
     });
     expect(vi.mocked(interrupt).mock.calls[0][0].headers).toEqual({
       'X-User-Action': 'test-key',

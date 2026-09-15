@@ -25,6 +25,7 @@ two diverge.
 |---|---|
 | [The preview panel as it stands today](current-state.md) | The measured survey: every render branch, the six supported image formats and the four lists that must agree for a seventh, the already-shipped Office renderers, the CSP and the closed-set frame-navigation policy, every cap, and the test coverage holes. The evidence base for the plan. |
 | [Preview panel expansion plan](expansion-plan.md) | The plan itself: decision records, five workstreams with their sequencing, the security analysis for embedding live web content, and the testing strategy. **Approved and executed.** |
+| [The preview panel in a narrow pane](narrow-panes.md) | Where the preview goes when a split pane is too narrow to seat it beside the conversation: beside at 800px and wider, stacked above the conversation below that, never over it. The rule's numbers, the one grid that implements it, the measuring phase, folding, the transcript's bottom anchor, what the motion pass can rely on, and which test pins what. |
 | [What shipped, and what was measured](implementation-record.md) | The execution record: the three places the implementation departed from the plan and why, what was verified against real Electron and a real browser (including the permission bypass, reproduced), the three bugs the tests caught while being written, and what is deliberately still open. |
 
 ## Related documentation

@@ -643,6 +643,7 @@ async fn drive_response(
                     // Advisory pending tool-call hint; TUI renders authoritative
                     // tool requests only.
                     Some(Ok(AgentEvent::ToolCallPending(_))) => {}
+                        Some(Ok(AgentEvent::ToolCallsRetracted { .. } | AgentEvent::SteerWaiting { .. })) => {}
                     // #59: persisted-id bookkeeping; nothing for the TUI to draw.
                     Some(Ok(AgentEvent::MessagesPersisted(_))) => {}
                     Some(Ok(AgentEvent::TurnAborted { code, message })) => {

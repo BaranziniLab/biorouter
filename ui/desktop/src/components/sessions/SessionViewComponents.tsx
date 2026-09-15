@@ -84,7 +84,9 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
   workingDir,
 }) => {
   return (
-    <ScrollArea className="h-full w-full">
+    // `data-preview-transcript`: the box rung 2 measures as a replay's transcript,
+    // so the page header above it counts as the conversation's chrome.
+    <ScrollArea className="h-full w-full" data-preview-transcript="">
       <div className="p-4">
         <div className="flex flex-col space-y-4">
           <div className="space-y-4 mb-6">

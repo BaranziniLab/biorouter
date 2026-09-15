@@ -312,6 +312,29 @@ pub struct TurnStream {
     /// Mirrors `Inner::observers` for cheap, lock-free introspection in logs
     /// and tests. Authoritative count stays under the lock.
     observers: AtomicU64,
+    /// D17: set by the orphan reaper just before it cancels, so the turn's
+    /// terminal frame can say `orphaned` rather than read as a Stop.
+    reaped: std::sync::atomic::AtomicBool,
+    /// How many decisions the orphan reaper has made. A lower bound on how long
+    /// it has been watching, which is what lets a test prove it did NOT reap
+    /// without guessing a sleep.
+    reaper_ticks: AtomicU64,
+    /// D17: the agent a person steered this turn through. While its queue holds
+    /// a steer the loop has not read, the turn owes that person an answer and
+    /// is not an orphan. Weak: the stream must never keep an agent alive.
+    steered: Mutex<SteeredAgent>,
+}
+
+/// The agent behind an accepted steer, held weakly (see `TurnStream::steered`).
+#[derive(Default)]
+struct SteeredAgent(Option<std::sync::Weak<biorouter::agents::Agent>>);
+
+impl std::fmt::Debug for SteeredAgent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SteeredAgent")
+            .field(&self.0.is_some())
+            .finish()
+    }
 }
 
 impl TurnStream {
@@ -335,7 +358,49 @@ impl TurnStream {
                 idle_since: None,
             }),
             observers: AtomicU64::new(0),
+            reaped: std::sync::atomic::AtomicBool::new(false),
+            reaper_ticks: AtomicU64::new(0),
+            steered: Mutex::new(SteeredAgent::default()),
         })
+    }
+
+    /// See the `reaper_ticks` field.
+    pub fn reaper_ticks(&self) -> u64 {
+        self.reaper_ticks.load(Ordering::Acquire)
+    }
+
+    /// Whether the orphan reaper ended this turn (D17).
+    pub fn was_reaped(&self) -> bool {
+        self.reaped.load(Ordering::Acquire)
+    }
+
+    /// A person steered this turn through `agent` without attaching to it (D17).
+    /// Restarts the orphan clock when nobody is reading, and remembers the agent
+    /// so the reaper leaves the turn alone for as long as that steer is still
+    /// queued: a turn holding a person's unread words is not abandoned.
+    pub fn note_user_activity(&self, agent: &Arc<biorouter::agents::Agent>) {
+        *self
+            .steered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            SteeredAgent(Some(Arc::downgrade(agent)));
+        let mut inner = self.lock();
+        if inner.observers == 0 {
+            inner.idle_since = Some(Instant::now());
+        }
+    }
+
+    /// Whether a steer accepted into this turn is still waiting for the loop.
+    /// Takes the agent's own queue lock, so never call it holding `inner`.
+    fn steer_still_owed(&self) -> bool {
+        let agent = self
+            .steered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        agent.is_some_and(|agent| agent.has_soft_interrupts())
     }
 
     /// Poisoning cannot leave this logically inconsistent — every critical
@@ -577,6 +642,8 @@ impl TurnStream {
                 // cancelled turn, whose pump closes the log and answers it).
                 let mut supervising_delegated_work = false;
                 let mut stream_closed = false;
+                // Sampled before the stream's lock: the agent's queue has its own.
+                let steer_owed = stream.steer_still_owed();
                 let reaped = biorouter::agents::subagent_handle::with_live_delegated_supervision(
                     &stream.session_id,
                     |supervised| {
@@ -595,17 +662,36 @@ impl TurnStream {
                         if (supervised || supervision_just_settled) && inner.observers == 0 {
                             inner.idle_since = Some(Instant::now());
                         }
+                        // D17: a turn parked on a card is waiting for a PERSON,
+                        // not abandoned. Reaping it would cancel the turn out
+                        // from under an approval the person may be about to give
+                        // from another surface (a second window, the CLI). The
+                        // card's own time-to-live still bounds the wait.
+                        if inner.observers == 0
+                            && biorouter::pending_user_action::PendingUserActions::global()
+                                .has_pending_in_session(&stream.session_id)
+                        {
+                            inner.idle_since = Some(Instant::now());
+                        }
+                        // The same for a steer the loop has not read yet: the
+                        // person is owed an answer, and the clock restarts from
+                        // the moment the loop takes it.
+                        if steer_owed && inner.observers == 0 {
+                            inner.idle_since = Some(Instant::now());
+                        }
                         let idle_long_enough = inner.ever_attached
                             && inner.observers == 0
                             && inner
                                 .idle_since
                                 .is_some_and(|since| since.elapsed() >= timeout);
                         if idle_long_enough {
+                            stream.reaped.store(true, Ordering::Release);
                             cancel.cancel();
                         }
                         idle_long_enough
                     },
                 );
+                stream.reaper_ticks.fetch_add(1, Ordering::AcqRel);
                 if stream_closed {
                     return;
                 }
@@ -1208,6 +1294,129 @@ mod tests {
             !cancel.is_cancelled(),
             "a reload-length gap must not reap a live turn"
         );
+        reaper.abort();
+    }
+
+    /// D17: a turn parked on an approval card is waiting for a PERSON, and is
+    /// not reaped for having no reader. The person may answer from a second
+    /// window or the CLI; the card's own time-to-live bounds the wait.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_parked_on_a_card_is_not_reaped() {
+        use biorouter::pending_user_action::{
+            PendingUserActions, ToolApprovalRequest, UserActionRequest,
+        };
+        let session_id = "d17-parked-card";
+        let stream = TurnStream::new(session_id, "turn-card");
+        let cancel = CancellationToken::new();
+        let timeout = Duration::from_millis(60);
+        let reaper = stream.spawn_orphan_reaper(cancel.clone(), timeout);
+        drop(stream.attach(0)); // the only reader leaves
+        let _card = PendingUserActions::global().park(
+            Some(session_id),
+            None,
+            UserActionRequest::ToolApproval(ToolApprovalRequest {
+                tool_name: "developer__shell".into(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+                risk: None,
+                preview: None,
+                requires_user_proof: false,
+            }),
+        );
+
+        // Ten decisions at a 20 ms tick is well past the 60 ms timeout. Counted,
+        // not slept: each tick is a decision the reaper actually made.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while stream.reaper_ticks() < 10 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the reaper keeps deciding");
+        assert!(
+            !cancel.is_cancelled(),
+            "a turn waiting on a person's answer must not be reaped"
+        );
+        assert!(!stream.was_reaped());
+        reaper.abort();
+    }
+
+    /// D17: an accepted steer restarts the orphan clock, so the turn the person
+    /// just steered from a surface that is not reading it is not reaped for
+    /// having no reader.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn user_activity_restarts_the_orphan_clock_and_a_reap_is_recorded() {
+        let stream = TurnStream::new("d17-activity", "turn-activity");
+        let cancel = CancellationToken::new();
+        let timeout = Duration::from_millis(1_000);
+        let reaper = stream.spawn_orphan_reaper(cancel.clone(), timeout);
+        drop(stream.attach(0));
+        // An agent with no turn open: its queue is empty, so only the clock
+        // restart can keep this turn alive.
+        let agent = Arc::new(biorouter::agents::Agent::new());
+        // Touch the turn before each of 25 reaper decisions (a 100 ms tick, so
+        // well past the timeout), synchronised on the decisions themselves.
+        for _ in 0..25 {
+            stream.note_user_activity(&agent);
+            let seen = stream.reaper_ticks();
+            tokio::time::timeout(Duration::from_secs(20), async {
+                while stream.reaper_ticks() == seen {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the reaper keeps deciding");
+        }
+        assert!(!cancel.is_cancelled(), "activity must keep the turn alive");
+        // Then leave it alone: it is reaped, and says so.
+        tokio::time::timeout(Duration::from_secs(20), cancel.cancelled())
+            .await
+            .expect("an untouched orphan is still reaped");
+        assert!(
+            stream.was_reaped(),
+            "the reap is recorded for the terminal frame"
+        );
+        reaper.abort();
+    }
+
+    /// D17: a steer accepted into a turn nobody is reading is a person's words
+    /// still owed an answer. The turn is not reaped while the loop has not read
+    /// them, however long that takes, and the clock only starts once it has.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_holding_an_unread_steer_is_not_reaped() {
+        let stream = TurnStream::new("d17-owed", "turn-owed");
+        let cancel = CancellationToken::new();
+        let timeout = Duration::from_millis(1_000);
+        let reaper = stream.spawn_orphan_reaper(cancel.clone(), timeout);
+        drop(stream.attach(0));
+        let agent = Arc::new(biorouter::agents::Agent::new());
+        agent.prepare_soft_interrupt_turn();
+        agent
+            .try_queue_soft_interrupt("also check the controls".into(), None)
+            .expect("the prepared turn accepts a steer");
+        stream.note_user_activity(&agent);
+        // Forty reaper decisions at a 100 ms tick: four timeouts' worth, with the
+        // steer still queued and nobody reading.
+        // A reap ends the reaper, so stop waiting on either outcome.
+        let start = stream.reaper_ticks();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while stream.reaper_ticks() < start + 40 && !cancel.is_cancelled() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the reaper keeps deciding");
+        assert!(
+            !cancel.is_cancelled(),
+            "a turn holding an unread steer must not be reaped"
+        );
+        // The loop takes the steer (here: the next turn clears the queue); from
+        // then on an unread turn is an orphan again.
+        agent.prepare_soft_interrupt_turn();
+        tokio::time::timeout(Duration::from_secs(20), cancel.cancelled())
+            .await
+            .expect("once the steer is read, an unread turn is still reaped");
+        assert!(stream.was_reaped());
         reaper.abort();
     }
 

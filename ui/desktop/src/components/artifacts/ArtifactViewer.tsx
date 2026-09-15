@@ -1,3 +1,4 @@
+import { usePreviewMotion } from './usePreviewMotion';
 import { UIResourceRenderer } from '@mcp-ui/client';
 import {
   type CSSProperties,
@@ -12,10 +13,16 @@ import {
 } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
-import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
+import {
+  CODE_FONT_FAMILY,
+  codeThemesByFamily,
+  GUTTER_INK_MIX,
+  withFadedGutter,
+} from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import { withPreviewActivityTracking } from '../../utils/previewActivity';
+import { PREVIEW_SIZE_MESSAGE_TYPE, withPreviewSizeReporting } from '../../utils/previewSize';
 import { sendArtifactAnnotation } from '../../utils/annotationChannel';
 import { artifactFileErrorMessage } from '../../utils/artifactFileErrors';
 import { describeUnsupportedFormat } from '../../utils/formatSupport';
@@ -28,10 +35,13 @@ import {
   ARTIFACT_PANEL_ATTR,
 } from '../../utils/tabCycle';
 import {
+  Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Camera,
   Code,
+  Copy,
   ExternalLink,
   Eye,
   File,
@@ -46,8 +56,8 @@ import {
   Search,
   X,
 } from '../icons/app-icons';
-import MarkdownContent from '../MarkdownContent';
 import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
+import type { PreviewPanelMode } from '../Layout/yieldLadder';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,7 +65,10 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
+import DelimitedTable from './DelimitedTable';
+import { annotateBrowserReason } from './captureOnBrowser';
 import DocumentPreview from './DocumentPreview';
+import MarkdownDocument from './MarkdownDocument';
 import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import type {
@@ -67,13 +80,13 @@ import type {
 } from './artifactTypes';
 import {
   basenameFromPath,
-  dirnameFromPath,
   extensionFromPath,
   imageSourceForPreview,
   isDelimitedPath,
   isMarkdownPath,
-  languageFromPath,
+  languageForText,
   languageLabel,
+  PAPER_GUTTER_EM,
   parseDelimitedTable,
   splitPathForStrip,
   STRIP_IDENT_CLASS,
@@ -142,6 +155,7 @@ const HEADER_ACTION_BUTTON_CLASS =
 interface ArtifactViewerProps {
   artifact: ArtifactSource | null;
   isOpen?: boolean;
+  motionReady?: boolean;
   isResizing?: boolean;
   onClose: () => void;
   onOpenArtifact: (artifact: ArtifactSource) => void;
@@ -161,6 +175,107 @@ interface ArtifactViewerProps {
   refreshRevision?: number;
   className?: string;
   style?: CSSProperties;
+  /**
+   * Rung 2 of the yield ladder: a column beside the conversation, or a sheet
+   * above it. The host decides (`useArtifactPanel`) and places the panel with
+   * CSS; the panel only needs it to name its resize edge's orientation. Nothing
+   * here renders differently by layout — a crossing must not remount anything.
+   */
+  layout?: PreviewPanelMode;
+  /** Stack only: the sheet is folded to its strip. */
+  folded?: boolean;
+  onToggleFold?: () => void;
+  /** A tab click or a click on the bare strip unfolds a folded sheet. */
+  onUnfold?: () => void;
+  /**
+   * The height this panel needs to show its content whole (strip included), or
+   * null when the content cannot say (an image, a live page, a directory). Called
+   * only once the content is READY — never for the loading placeholder — so the
+   * host can hold a fresh sheet back until it knows how tall to make it.
+   */
+  onContentHeightChange?: (height: number | null) => void;
+}
+
+/** The two frame names a preview's document can live in. */
+const PREVIEW_FRAME_SELECTOR = 'iframe[name="biorouter-artifact-preview"]';
+
+/**
+ * The height a panel needs to show its content whole: the panel's own chrome
+ * (tab strip, borders, the stacked sheet's resize band) plus the content's
+ * natural height.
+ *
+ * Three answers, and the difference between the last two is load-bearing:
+ *
+ *   - a number — the content said how tall it is: an element marked
+ *     `data-preview-intrinsic` whose box is its natural height (a markdown body,
+ *     a table, or with `="code"` the `<code>` of a code view), measured inside
+ *     its nearest `data-preview-scroller`; or a preview frame that reported its
+ *     intrinsic document height (`utils/previewSize.ts`);
+ *   - `null` — the content is ready and cannot say (an image, a directory tree,
+ *     a live page, a notebook, an error card): the host falls back to half;
+ *   - `undefined` — not ready yet (the loading placeholder, a frame that has not
+ *     reported). The host keeps waiting; reporting null here would size a fresh
+ *     sheet to half and then to its content, the two-step jump this exists to end.
+ *
+ * Independent of the sheet's height by construction — every term is fixed chrome
+ * or a box sized by the content and the panel's WIDTH — so the host resizing the
+ * sheet to this number cannot change the number.
+ */
+export function measurePreviewContentHeight(
+  panel: HTMLElement,
+  body: HTMLElement,
+  frameReport: { source: MessageEvent['source']; height: number } | null
+): number | null | undefined {
+  if (body.querySelector('[data-preview-loading]')) return undefined;
+  // A directory tree nests a file preview beside its rail; that preview's height
+  // says nothing about the tree's.
+  if (body.querySelector('[data-preview-opaque]')) return null;
+  const panelRect = panel.getBoundingClientRect();
+  const bodyRect = body.getBoundingClientRect();
+  const chrome = panelRect.height - bodyRect.height;
+  const frame = body.querySelector<HTMLIFrameElement>(PREVIEW_FRAME_SELECTOR);
+  if (frame) {
+    if (!frameReport || !frame.contentWindow || frameReport.source !== frame.contentWindow) {
+      return undefined;
+    }
+    const height = chrome + (frame.getBoundingClientRect().top - bodyRect.top) + frameReport.height;
+    return Number.isFinite(height) && height > 0 ? Math.ceil(height) : null;
+  }
+  const marked = body.querySelector<HTMLElement>('[data-preview-intrinsic]');
+  if (!marked) return null;
+  // `="code"`: the highlighter's block is `min-height: 100%` of the scroller, so
+  // ITS height follows the sheet and would only ever ratchet up. The `<code>`
+  // inside it is sized by the text alone.
+  const target =
+    marked.getAttribute('data-preview-intrinsic') === 'code'
+      ? marked.querySelector<HTMLElement>('code')
+      : marked;
+  if (!target) return null;
+  const scroller = marked.closest<HTMLElement>('[data-preview-scroller]') ?? body;
+  let below = 0;
+  for (let el = target.parentElement; el && el !== scroller; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    below +=
+      (Number.parseFloat(cs.paddingBottom) || 0) + (Number.parseFloat(cs.borderBottomWidth) || 0);
+  }
+  const scrollerRect = scroller.getBoundingClientRect();
+  const style = getComputedStyle(scroller);
+  const horizontalScrollbar = Math.max(
+    0,
+    scroller.offsetHeight -
+      scroller.clientHeight -
+      (Number.parseFloat(style.borderTopWidth) || 0) -
+      (Number.parseFloat(style.borderBottomWidth) || 0)
+  );
+  const contentBottom =
+    target.getBoundingClientRect().bottom -
+    scrollerRect.top +
+    scroller.scrollTop +
+    below +
+    (Number.parseFloat(style.paddingBottom) || 0) +
+    horizontalScrollbar;
+  const height = chrome + (scrollerRect.top - bodyRect.top) + contentBottom;
+  return Number.isFinite(height) && height > 0 ? Math.ceil(height) : null;
 }
 
 export interface ArtifactRenderError {
@@ -316,6 +431,7 @@ function formatBytes(value?: number) {
 export default function ArtifactViewer({
   artifact,
   isOpen = true,
+  motionReady = true,
   isResizing = false,
   onClose,
   onOpenArtifact,
@@ -327,6 +443,11 @@ export default function ArtifactViewer({
   refreshRevision = 0,
   className,
   style,
+  layout = 'side',
+  folded = false,
+  onToggleFold,
+  onUnfold,
+  onContentHeightChange,
 }: ArtifactViewerProps) {
   const { resolvedTheme } = useTheme();
   const [tabState, dispatchTabAction] = useReducer(
@@ -380,6 +501,7 @@ export default function ArtifactViewer({
   const annotationSnapshotRef = useRef(annotationSnapshot);
   annotationSnapshotRef.current = annotationSnapshot;
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
+  usePreviewMotion(previewBodyRef, { isOpen, layout, ready: motionReady });
   // The preview the tabs name in `aria-controls`. Per panel, never a literal:
   // the document resolves a shared id to its first holder, which is how every
   // composer's Send came to submit the left pane's form in a split. Only the
@@ -453,7 +575,7 @@ export default function ArtifactViewer({
         finishAnnotation();
         return;
       }
-      const shot = await window.electron?.captureRegion({
+      const shot = await window.electron?.captureRegion?.({
         x: bodyRect.left + x,
         y: bodyRect.top + y,
         width,
@@ -1015,9 +1137,74 @@ export default function ArtifactViewer({
   const visiblePreview: PreviewState =
     activeSourceKey && previewSourceKey === activeSourceKey ? preview : { kind: 'loading' };
 
+  // Tell the host how tall this panel's content needs it to be. Measured on
+  // CONTENT change only — the content's DOM changing (a file finishing loading, a
+  // tab switch), its intrinsic box resizing (a re-wrap at a new width), a frame
+  // reporting its document height, or the layout changing the panel's chrome —
+  // never on the panel's own box resizing, which is the sheet the answer sizes.
+  // One rAF coalesces a burst; nothing runs per frame at rest.
+  const panelRef = useRef<HTMLElement | null>(null);
+  const hasPanel = Boolean(activeArtifact && activeTab);
+  const frameReportRef = useRef<{ source: MessageEvent['source']; height: number } | null>(null);
+  useEffect(() => {
+    const panel = panelRef.current;
+    const body = previewBodyRef.current;
+    if (!onContentHeightChange || !panel || !body) return;
+    let frame = 0;
+    let last: number | null | undefined;
+    const observed = new Set<Element>();
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => schedule());
+    const observeIntrinsic = () => {
+      const marked = body.querySelector('[data-preview-intrinsic]');
+      const element =
+        marked?.getAttribute('data-preview-intrinsic') === 'code'
+          ? marked.querySelector('code')
+          : marked;
+      if (element && !observed.has(element)) {
+        observed.add(element);
+        resizeObserver?.observe(element);
+      }
+    };
+    const measure = () => {
+      frame = 0;
+      observeIntrinsic();
+      const next = measurePreviewContentHeight(panel, body, frameReportRef.current);
+      if (next === undefined || next === last) return;
+      last = next;
+      onContentHeightChange(next);
+    };
+    function schedule() {
+      if (!frame) frame = window.requestAnimationFrame(measure);
+    }
+    const mutationObserver =
+      typeof MutationObserver === 'undefined' ? null : new MutationObserver(schedule);
+    mutationObserver?.observe(body, { childList: true, subtree: true });
+    const handleMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: unknown; height?: unknown } | undefined;
+      if (!data || data.type !== PREVIEW_SIZE_MESSAGE_TYPE) return;
+      const height = Number(data.height);
+      if (!Number.isFinite(height) || height <= 0) return;
+      // Only a frame inside THIS panel; a second panel's figure is not ours.
+      const frames = body.querySelectorAll('iframe');
+      if (![...frames].some((candidate) => candidate.contentWindow === event.source)) return;
+      frameReportRef.current = { source: event.source, height };
+      schedule();
+    };
+    window.addEventListener('message', handleMessage);
+    schedule();
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener('message', handleMessage);
+    };
+  }, [layout, onContentHeightChange, hasPanel]);
+
   if (!activeArtifact || !activeTab) return null;
 
   const activateTab = (tab: ArtifactTab) => {
+    onUnfold?.();
     pendingNavigationKeyRef.current = artifactSourceKey(tab.artifact);
     dispatchTabAction({ type: 'activate', tabId: tab.id });
     onOpenArtifact(tab.artifact);
@@ -1063,270 +1250,303 @@ export default function ArtifactViewer({
   };
 
   return (
-    <aside
-      data-testid="artifact-viewer"
-      // The anchor Ctrl+Tab arbitrates on: a keystroke landing inside this
-      // subtree is aimed at the preview's tabs, anything else at the chat's.
-      // Deliberately not the testid above — behaviour must not hang off a
-      // promise we only made to tests.
-      {...{ [ARTIFACT_PANEL_ATTR]: '' }}
-      style={{
-        ...style,
-        contain: 'layout paint',
-        // Only transform + opacity are GPU-composited. width/flex-basis are layout
-        // props the compositor cannot promote — hinting them was ineffective and
-        // held speculative layer state permanently.
-        willChange: 'transform, opacity',
-      }}
-      className={cn(
-        'no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted',
-        // Animate only transform + opacity — width tracks instantly (drag is
-        // transition-none; window-resize should snap, not lag the edge by 180ms).
-        // Exit is a tier faster than entrance: entrance names --motion-base, exit
-        // rides the app-wide default duration (--dur-fast), so it carries no
-        // annotation of its own. The curve is the default too (--ease-out).
-        isResizing ? 'transition-none' : 'transition-[opacity,transform]',
-        !isResizing && isOpen && 'duration-[var(--motion-base)]',
-        isOpen ? 'translate-x-0 opacity-100' : 'translate-x-3 opacity-0',
-        className
-      )}
-    >
+    <>
       {onResizeStart && (
+        // THE RESIZE EDGE IS THE PANEL'S SIBLING, NOT ITS CHILD. The panel clips
+        // its own paint (`contain: paint`, `overflow: hidden`), so an edge inside
+        // it could only ever sit over the preview's content. As a sibling, rung
+        // 2's grid places it ON the seam (`.br-preview-resize-handle` in
+        // main.css): the panel's left edge beside the conversation, and the
+        // transcript's 8px top padding under a stacked sheet — covering nothing
+        // either side can use. ONE element for both layouts, so a crossing
+        // changes an attribute and mounts nothing.
         <div
           role="separator"
-          aria-orientation="vertical"
+          aria-orientation={layout === 'stack' ? 'horizontal' : 'vertical'}
           aria-label="Resize artifact panel"
           onPointerDown={onResizeStart}
-          className="group absolute inset-y-0 left-0 z-30 w-2 cursor-col-resize"
-        >
-          <div className="h-full w-px bg-transparent transition-colors group-hover:bg-border-strong" />
-        </div>
+          className="br-preview-resize-handle"
+        />
       )}
-
-      {/* The tab strip is `br-tabstrip` (shared, styles/main.css): its ground is the
+      <aside
+        ref={panelRef}
+        data-testid="artifact-viewer"
+        // The anchor Ctrl+Tab arbitrates on: a keystroke landing inside this
+        // subtree is aimed at the preview's tabs, anything else at the chat's.
+        // Deliberately not the testid above — behaviour must not hang off a
+        // promise we only made to tests.
+        {...{ [ARTIFACT_PANEL_ATTR]: '' }}
+        style={{
+          ...style,
+          contain: 'layout paint',
+        }}
+        className={cn(
+          'no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted',
+          className
+        )}
+      >
+        {/* The tab strip is `br-tabstrip` (shared, styles/main.css): its ground is the
           sidebar colour, so the window's whole 44px top edge is one continuous
           surface. Height is set here; the paint belongs to the class. */}
-      {/* `h-chrome` (44px), not the `h-[52px]` literal: the third of the three
+        {/* `h-chrome` (44px), not the `h-[52px]` literal: the third of the three
           bands that drop together, so this strip stays level with the chat header
           it sits beside. */}
-      <div className="br-tabstrip no-drag relative z-50 h-chrome flex-shrink-0">
-        {/* The tablist nests inside the strip for a11y, so it repeats the strip's
+        <div
+          className="br-tabstrip no-drag relative z-50 h-chrome flex-shrink-0"
+          // A folded sheet is only its strip, so the strip's bare ground is the
+          // biggest target there is for "show me the preview again". Only the bare
+          // ground: a tab, a menu or a button keeps its own meaning.
+          onClick={(event) => {
+            if (!folded) return;
+            const target = event.target as HTMLElement;
+            if (target === event.currentTarget || target === tabListRef.current) onUnfold?.();
+          }}
+        >
+          {/* The tablist nests inside the strip for a11y, so it repeats the strip's
             own 3px gap: `.br-tab + .br-tab::before` hangs its divider at -2px and
             only lands in the gap if the tabs are spaced the way the class expects. */}
-        <div
-          ref={tabListRef}
-          role="tablist"
-          aria-label="Open artifact previews"
-          aria-keyshortcuts="Meta+W Control+W Control+Tab Control+Shift+Tab"
-          // Rung 3 of the yield ladder (D-32): shrink to the floor, then SCROLL,
-          // then collapse into a ▾ — never wrap. This was `overflow-hidden`, so
-          // the panel's tabs did neither: past the floor they were clipped and
-          // simply unreachable, which is the failure the rung exists to prevent
-          // and which the panel feels first — it is the narrowest strip in the
-          // window, and rung 2 makes it narrower still.
-          className="br-tabstrip__scroll flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
-        >
-          {tabState.tabs.map((tab) => {
-            const TabIcon = iconForArtifact(tab.artifact);
-            const isActive = tab.id === tabState.activeTabId;
-            return (
-              // `br-tab` (shared) paints the Safari tab: only the active one is a
-              // filled pill, none carry a border, and the divider between two tabs
-              // is drawn by `.br-tab + .br-tab::before` — never added here.
-              <div
-                key={tab.id}
-                data-artifact-tab-id={tab.id}
-                data-active={isActive ? 'true' : undefined}
-                data-dragging={draggedTabId === tab.id ? 'true' : undefined}
-                data-dragover={dragOverTabId === tab.id ? 'true' : undefined}
-                className={cn(
-                  'br-tab group',
-                  // Drag affordances only — state feedback, not base styling.
-                  draggedTabId === tab.id && 'opacity-50',
-                  dragOverTabId === tab.id && 'bg-background-medium'
-                )}
-              >
-                <button
-                  ref={isActive ? activeTabButtonRef : undefined}
-                  type="button"
-                  role="tab"
-                  aria-selected={isActive}
-                  aria-controls={previewContentId}
-                  onPointerDown={(event) => beginTabPointerDrag(event, tab.id)}
-                  onClick={() => activateTabFromPointer(tab)}
-                  title={artifactHoverTitle(tab.artifact)}
-                  className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 text-left active:cursor-grabbing"
-                >
-                  <TabIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span className="br-tab__label min-w-0 flex-1 truncate">
-                    {tab.artifact.title}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => closeTab(tab.id)}
-                  aria-label={`Close ${tab.artifact.title}`}
-                  title={`Close ${tab.artifact.title}`}
+          <div
+            ref={tabListRef}
+            role="tablist"
+            aria-label="Open artifact previews"
+            aria-keyshortcuts="Meta+W Control+W Control+Tab Control+Shift+Tab"
+            // Rung 3 of the yield ladder (D-32): shrink to the floor, then SCROLL,
+            // then collapse into a ▾ — never wrap. This was `overflow-hidden`, so
+            // the panel's tabs did neither: past the floor they were clipped and
+            // simply unreachable, which is the failure the rung exists to prevent
+            // and which the panel feels first — it is the narrowest strip in the
+            // window, and rung 2 makes it narrower still.
+            className="br-tabstrip__scroll flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
+          >
+            {tabState.tabs.map((tab) => {
+              const TabIcon = iconForArtifact(tab.artifact);
+              const isActive = tab.id === tabState.activeTabId;
+              return (
+                // `br-tab` (shared) paints the Safari tab: only the active one is a
+                // filled pill, none carry a border, and the divider between two tabs
+                // is drawn by `.br-tab + .br-tab::before` — never added here.
+                <div
+                  key={tab.id}
+                  data-artifact-tab-id={tab.id}
+                  data-active={isActive ? 'true' : undefined}
+                  data-dragging={draggedTabId === tab.id ? 'true' : undefined}
+                  data-dragover={dragOverTabId === tab.id ? 'true' : undefined}
                   className={cn(
-                    'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-inner text-text-subtle transition-[background-color,color,opacity] hover:bg-overlay-hover hover:text-text-default',
-                    isActive
-                      ? 'opacity-100'
-                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                    'br-tab group',
+                    // Drag affordances only — state feedback, not base styling.
+                    draggedTabId === tab.id && 'opacity-50',
+                    dragOverTabId === tab.id && 'bg-background-medium'
                   )}
                 >
-                  <X className="h-4 w-4" aria-hidden="true" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        {showTabOverflowMenu && (
-          // Outside the scroll box, for the reason ChatTabStrip's wrap documents:
-          // inside it, the button's own width would keep alive the overflow that
-          // summoned it.
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Show all previews"
-                data-testid="artifact-tab-overflow-trigger"
-                className="br-tabstrip__overflow"
-              >
-                <ChevronDown className="h-4 w-4" aria-hidden="true" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
-              {tabState.tabs.map((tab) => {
-                const TabIcon = iconForArtifact(tab.artifact);
-                return (
-                  <DropdownMenuItem
-                    key={tab.id}
-                    data-testid={`artifact-tab-overflow-item-${tab.id}`}
-                    onSelect={() => activateTab(tab)}
-                    className={cn('gap-2', tab.id === tabState.activeTabId && 'font-medium')}
+                  <button
+                    ref={isActive ? activeTabButtonRef : undefined}
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    aria-controls={previewContentId}
+                    onPointerDown={(event) => beginTabPointerDrag(event, tab.id)}
+                    onClick={() => activateTabFromPointer(tab)}
+                    title={artifactHoverTitle(tab.artifact)}
+                    className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 text-left active:cursor-grabbing"
                   >
-                    <TabIcon className="h-4 w-4 flex-none" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate">{tab.artifact.title}</span>
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-        {(updateReady || refreshFailed) && activeArtifact.kind === 'file' && (
+                    <TabIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span className="br-tab__label min-w-0 flex-1 truncate">
+                      {tab.artifact.title}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => closeTab(tab.id)}
+                    aria-label={`Close ${tab.artifact.title}`}
+                    title={`Close ${tab.artifact.title}`}
+                    className={cn(
+                      'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-inner text-text-subtle transition-[background-color,color,opacity] hover:bg-overlay-hover hover:text-text-default',
+                      isActive
+                        ? 'opacity-100'
+                        : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                    )}
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {showTabOverflowMenu && (
+            // Outside the scroll box, for the reason ChatTabStrip's wrap documents:
+            // inside it, the button's own width would keep alive the overflow that
+            // summoned it.
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Show all previews"
+                  data-testid="artifact-tab-overflow-trigger"
+                  className="br-tabstrip__overflow"
+                >
+                  <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
+                {tabState.tabs.map((tab) => {
+                  const TabIcon = iconForArtifact(tab.artifact);
+                  return (
+                    <DropdownMenuItem
+                      key={tab.id}
+                      data-testid={`artifact-tab-overflow-item-${tab.id}`}
+                      onSelect={() => activateTab(tab)}
+                      className={cn('gap-2', tab.id === tabState.activeTabId && 'font-medium')}
+                    >
+                      <TabIcon className="h-4 w-4 flex-none" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate">{tab.artifact.title}</span>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          {(updateReady || refreshFailed) && activeArtifact.kind === 'file' && (
+            <button
+              type="button"
+              disabled={isAnnotating || isResizing}
+              title={
+                refreshFailed
+                  ? 'Could not read the update. The previous version is still displayed.'
+                  : 'Refresh after finishing your interaction.'
+              }
+              onClick={() => {
+                refreshTrackerRef.current.revision = refreshRevision;
+                deferredRefreshRef.current = false;
+                manualRefreshRef.current = true;
+                setUpdateReady(false);
+                setFileRefresh((previous) => ({
+                  scope: refreshScope,
+                  revision: previous.revision + 1,
+                }));
+              }}
+              className="shrink-0 rounded-element px-2 py-1 text-supporting text-text-muted hover:bg-overlay-hover"
+            >
+              {refreshFailed ? 'Retry update' : 'Update ready'}
+            </button>
+          )}
+          {sessionId && (
+            // Annotation is available on EVERY preview kind, not just one. Codex
+            // shipped commenting in its browser but not its document pane, and
+            // the open issue against that names our exact case: a researcher
+            // reads a generated report and cannot point at anything in it. For
+            // this audience the report IS the artifact.
+            <button
+              type="button"
+              data-testid="artifact-annotate"
+              aria-pressed={isAnnotating}
+              disabled={annotateBrowserReason() !== null}
+              onClick={() => void toggleAnnotation()}
+              className={cn(
+                HEADER_ACTION_BUTTON_CLASS,
+                'relative z-50 ml-0.5 shrink-0 disabled:cursor-not-allowed disabled:opacity-50',
+                isAnnotating && 'bg-background-accent text-text-on-accent'
+              )}
+              aria-label={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
+              title={
+                annotateBrowserReason() ??
+                (isAnnotating ? 'Cancel region selection' : 'Send a region to the chat')
+              }
+            >
+              <Camera className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+          {activeArtifact.kind !== 'mcpResource' && (
+            <button
+              type="button"
+              onClick={openStandalone}
+              className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 ml-0.5 shrink-0')}
+              aria-label="Open active artifact outside preview"
+              title="Open active artifact outside preview"
+            >
+              {activeArtifact.kind === 'html' ? (
+                <Maximize2 className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
+          )}
+          {onToggleFold && (
+            // Rendered in both layouts and hidden beside the conversation by
+            // main.css (`.br-preview-fold-toggle`): a side column has nothing to
+            // fold, and a crossing must not mount or unmount a control.
+            <button
+              type="button"
+              data-testid="artifact-fold-toggle"
+              onClick={onToggleFold}
+              aria-expanded={!folded}
+              aria-controls={previewContentId}
+              className={cn(
+                HEADER_ACTION_BUTTON_CLASS,
+                'br-preview-fold-toggle relative z-50 shrink-0'
+              )}
+              aria-label={folded ? 'Show the preview' : 'Fold the preview to its tabs'}
+              title={folded ? 'Show the preview' : 'Fold the preview to its tabs'}
+            >
+              {/* One glyph, turned by main.css when folded: swapping two icons
+                  would mount and unmount an element on every fold. */}
+              <ChevronUp className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
           <button
             type="button"
-            disabled={isAnnotating || isResizing}
-            title={
-              refreshFailed
-                ? 'Could not read the update. The previous version is still displayed.'
-                : 'Refresh after finishing your interaction.'
-            }
-            onClick={() => {
-              refreshTrackerRef.current.revision = refreshRevision;
-              deferredRefreshRef.current = false;
-              manualRefreshRef.current = true;
-              setUpdateReady(false);
-              setFileRefresh((previous) => ({
-                scope: refreshScope,
-                revision: previous.revision + 1,
-              }));
-            }}
-            className="shrink-0 rounded-element px-2 py-1 text-supporting text-text-muted hover:bg-overlay-hover"
+            onClick={onClose}
+            className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 shrink-0')}
+            aria-label="Close preview panel"
+            title="Close preview panel"
           >
-            {refreshFailed ? 'Retry update' : 'Update ready'}
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
-        )}
-        {sessionId && (
-          // Annotation is available on EVERY preview kind, not just one. Codex
-          // shipped commenting in its browser but not its document pane, and
-          // the open issue against that names our exact case: a researcher
-          // reads a generated report and cannot point at anything in it. For
-          // this audience the report IS the artifact.
-          <button
-            type="button"
-            data-testid="artifact-annotate"
-            aria-pressed={isAnnotating}
-            onClick={() => void toggleAnnotation()}
-            className={cn(
-              HEADER_ACTION_BUTTON_CLASS,
-              'relative z-50 ml-0.5 shrink-0',
-              isAnnotating && 'bg-background-accent text-text-on-accent'
-            )}
-            aria-label={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
-            title={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
-          >
-            <Camera className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
-        {activeArtifact.kind !== 'mcpResource' && (
-          <button
-            type="button"
-            onClick={openStandalone}
-            className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 ml-0.5 shrink-0')}
-            aria-label="Open active artifact outside preview"
-            title="Open active artifact outside preview"
-          >
-            {activeArtifact.kind === 'html' ? (
-              <Maximize2 className="h-4 w-4" aria-hidden="true" />
-            ) : (
-              <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            )}
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onClose}
-          className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 shrink-0')}
-          aria-label="Close preview panel"
-          title="Close preview panel"
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-        </button>
-      </div>
+        </div>
 
-      {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
+        {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
           preview sits directly on the panel ground — panel → strip → content. */}
-      <div
-        id={previewContentId}
-        data-testid="artifact-preview-content"
-        ref={previewBodyRef}
-        className="relative z-0 min-h-0 flex-1 overflow-hidden"
-      >
-        {isResizing && (
-          <div
-            data-testid="artifact-resize-shield"
-            aria-hidden="true"
-            className="absolute inset-0 z-50 cursor-col-resize"
+        <div
+          id={previewContentId}
+          data-testid="artifact-preview-content"
+          data-preview-open={isOpen ? 'true' : 'false'}
+          ref={previewBodyRef}
+          className="relative z-0 min-h-0 flex-1 overflow-hidden"
+        >
+          {isResizing && (
+            <div
+              data-testid="artifact-resize-shield"
+              aria-hidden="true"
+              className="absolute inset-0 z-50 cursor-col-resize"
+            />
+          )}
+          {isAnnotating && (
+            <AnnotationOverlay
+              onCancel={finishAnnotation}
+              onSelect={(region) => {
+                void captureAnnotation(region);
+              }}
+            />
+          )}
+          <ArtifactPreviewBody
+            preview={visiblePreview}
+            artifact={activeArtifact}
+            resolvedTheme={resolvedTheme}
+            isResizing={isResizing}
+            trustedFrameRef={trustedFrameRef}
+            onOpenArtifactInTab={openArtifactInTab}
+            isBrowsingUrl={
+              activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
+            }
+            onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
+            onLiveBrowserViewChange={handleLiveBrowserViewChange}
+            onLiveBrowserShareChange={onLiveBrowserShareChange}
+            isAnnotating={isAnnotating}
+            annotationSnapshotDataUrl={annotationSnapshot?.dataUrl ?? null}
+            refreshRevision={refreshRevision}
           />
-        )}
-        {isAnnotating && (
-          <AnnotationOverlay
-            onCancel={finishAnnotation}
-            onSelect={(region) => {
-              void captureAnnotation(region);
-            }}
-          />
-        )}
-        <ArtifactPreviewBody
-          preview={visiblePreview}
-          artifact={activeArtifact}
-          resolvedTheme={resolvedTheme}
-          isResizing={isResizing}
-          trustedFrameRef={trustedFrameRef}
-          onOpenArtifactInTab={openArtifactInTab}
-          isBrowsingUrl={
-            activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
-          }
-          onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
-          onLiveBrowserViewChange={handleLiveBrowserViewChange}
-          onLiveBrowserShareChange={onLiveBrowserShareChange}
-          isAnnotating={isAnnotating}
-          annotationSnapshotDataUrl={annotationSnapshot?.dataUrl ?? null}
-          refreshRevision={refreshRevision}
-        />
-      </div>
-    </aside>
+        </div>
+      </aside>
+    </>
   );
 }
 
@@ -1393,7 +1613,10 @@ function ArtifactPreviewBody({
 }) {
   if (preview.kind === 'loading') {
     return (
-      <div className="flex h-full items-center justify-center text-body text-text-muted">
+      <div
+        data-preview-loading=""
+        className="flex h-full items-center justify-center text-body text-text-muted"
+      >
         Loading
       </div>
     );
@@ -1414,7 +1637,9 @@ function ArtifactPreviewBody({
         aria-label={artifact.title}
         // Inject the app theme so this preview matches the expanded/opened view,
         // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
-        srcDoc={injectArtifactBrowserCsp(withHostTheme(preview.html, resolvedTheme))}
+        srcDoc={injectArtifactBrowserCsp(
+          withPreviewSizeReporting(withHostTheme(preview.html, resolvedTheme))
+        )}
         sandbox="allow-scripts allow-downloads"
         className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
       />
@@ -1746,7 +1971,7 @@ function DirectoryTreePreview({
   return (
     // The rail is real structure, so it keeps its hairline — but not a second
     // ground: both halves sit on the panel's, divided by the one border.
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0" data-preview-opaque="">
       <div className="flex w-[42%] min-w-[205px] max-w-[280px] shrink-0 flex-col border-r border-border-subtle">
         <div className="border-b border-border-subtle px-2.5 py-2">
           <div className="flex min-w-0 items-center gap-2 px-1 pb-2">
@@ -2053,8 +2278,14 @@ function CodeBlock({
   sourceLine?: number;
 }) {
   const lineCount = countLines(text);
-  const codeStyle = codeThemesByFamily[useThemeFamily()][resolvedTheme];
+  const theme = codeThemesByFamily[useThemeFamily()][resolvedTheme];
+  // The gutter is quiet by fading its INK, not the element: an `opacity` would
+  // fade the sticky gutter's opaque paper ground too, and a long line scrolled
+  // under it showed through the numbers. How far it fades is GUTTER_INK_MIX,
+  // held to 3:1 on the paper in every family by codeTheme.test.ts.
+  const codeStyle = useMemo(() => withFadedGutter(theme, GUTTER_INK_MIX), [theme]);
   const codeRef = useRef<HTMLDivElement>(null);
+  const numbered = lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES;
   const selectedLine =
     typeof sourceLine === 'number' &&
     Number.isSafeInteger(sourceLine) &&
@@ -2071,13 +2302,26 @@ function CodeBlock({
     }
   }, [selectedLine, text]);
   return (
-    <div ref={codeRef} className="min-h-full">
+    <div
+      ref={codeRef}
+      className="br-paper-code min-h-full"
+      data-numbered={numbered || undefined}
+      data-preview-intrinsic="code"
+    >
       <SyntaxHighlighter
         style={codeStyle}
         language={language}
         PreTag="div"
-        showLineNumbers={lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES}
-        wrapLines={selectedLine !== undefined}
+        showLineNumbers={numbered}
+        // Every numbered line is its own element (`[data-source-line]`), so the
+        // gutter can stick while long lines scroll under it and a requested source
+        // line paints its whole row. Still no `wrapLongLines`: combined with
+        // `showLineNumbers` the highlighter makes every line `display: flex`
+        // (highlight.js:106), which turns each token into a flex item and shreds
+        // the line across the panel's width. Long lines scroll horizontally
+        // instead, which is what a code viewer should do anyway — and it keeps
+        // indentation honest.
+        wrapLines={numbered || selectedLine !== undefined}
         lineProps={(lineNumber) => ({
           'data-source-line': lineNumber,
           ...(lineNumber === selectedLine
@@ -2088,29 +2332,45 @@ function CodeBlock({
             : {}),
         })}
         lineNumberStyle={{
-          minWidth: '2.6em',
-          paddingRight: '1.1em',
+          // The gutter is the lead plus a FIXED-width number (not the library's
+          // digits-based width); the margin before it is the line's own padding
+          // (main.css, `.br-paper-code[data-numbered] [data-source-line]`). The
+          // three add up to the paper column's edge, so code text lands exactly
+          // there and aligns with a report's prose at every panel width. Only
+          // this box sticks (main.css `.linenumber`), so a long line scrolled
+          // sideways loses ~56px under the numbers, not the whole margin. 3.5em
+          // holds four digits, and MAX_LINE_NUMBERED_LINES stops numbering
+          // before a fifth is needed.
+          minWidth: `calc(var(--paper-lead) + ${PAPER_GUTTER_EM})`,
+          boxSizing: 'border-box',
+          paddingLeft: 'var(--paper-lead)',
+          paddingRight: '1.35em',
           textAlign: 'right',
-          opacity: 0.35,
+          // Ink, slant and weight come from the `react-syntax-highlighter-line-
+          // number` entry in codeTheme.ts (comment ink, upright, 400), faded to a
+          // gutter in `codeStyle` above — never with `opacity` (see there).
           userSelect: 'none',
-          // ⚠ Corrections, not decoration. `react-syntax-highlighter` seeds the
-          // gutter span from the theme's `comment` style, and ours is italic
-          // (`codeTheme.ts`), so the line numbers leaned. Nothing reset it, so the
-          // lean was inherited rather than chosen.
-          fontStyle: 'normal',
           // A gutter is the one place where digit alignment is the whole job.
           fontVariantNumeric: 'tabular-nums',
         }}
-        // No `wrapLongLines`: combined with `showLineNumbers` the highlighter makes
-        // every line `display: flex` (highlight.js:106), which turns each token into
-        // a flex item and shreds the line across the panel's width. Long lines scroll
-        // horizontally instead, which is what a code viewer should do anyway — and it
-        // keeps indentation honest.
         customStyle={{
           margin: 0,
-          padding: '14px 16px',
+          // The inline edges come from the paper CSS variables (main.css,
+          // `.br-paper`): unnumbered code starts on the column edge; numbered code
+          // starts at the scroller's edge because each line carries the margin.
+          padding: numbered
+            ? '28px var(--paper-gutter) 48px 0'
+            : '28px var(--paper-gutter) 48px var(--paper-inset)',
           minHeight: '100%',
+          width: 'max-content',
+          minWidth: '100%',
+          boxSizing: 'border-box',
           background: 'transparent',
+          // ⚠ Load-bearing. The theme's `pre` entry sets `overflow: auto`, which
+          // makes this div a scroll container that never scrolls — and a sticky
+          // gutter sticks to its NEAREST scroll container, so it would ride along
+          // with the text. The paper scroller is the one that scrolls.
+          overflow: 'visible',
         }}
         codeTagProps={{
           style: {
@@ -2147,10 +2407,17 @@ function CopyButton({ text }: { text: string }) {
       // A control inside the status strip: bottom rung of the radius ladder,
       // and the sanctioned dense-control size. `text-label` (14px) does not fit
       // a 34px strip, but `text-supporting` (12px) would render it at metadata
-      // size and it would stop looking pressable — so `text-secondary`.
-      className="rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
+      // size and it would stop looking pressable — so `text-secondary`. The 12px
+      // icon is the one a fenced block's Copy carries (MarkdownContent), so the
+      // two Copy controls in the panel read as the same control.
+      className="inline-flex items-center gap-1 rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
     >
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? (
+        <Check className="h-3 w-3" aria-hidden="true" />
+      ) : (
+        <Copy className="h-3 w-3" aria-hidden="true" />
+      )}
+      <span>{copied ? 'Copied' : 'Copy'}</span>
     </button>
   );
 }
@@ -2159,6 +2426,14 @@ function CopyButton({ text }: { text: string }) {
 // its source code — showing raw markup would make the user read the syntax to
 // find the content. Both stay one click from the raw text. Everything else is a
 // script, and gets highlighted, line-numbered and labelled.
+//
+// PAPER. Every branch below sits on `.br-paper` — the page ground
+// (`--background-default`), which is byte-for-byte the ground an Auto
+// Visualiser chart paints, so a report, its table and its figure read as one
+// family of surface. The scroller is a size container and the content column is
+// the chat measure (760px) centred in it; content that is naturally wider (a
+// wide table, a long code line) keeps the column's LEFT edge and runs on to the
+// right, so every kind shares one left edge at any panel width.
 function TextFilePreview({
   file,
   resolvedTheme,
@@ -2181,25 +2456,42 @@ function TextFilePreview({
 
   const lineCount = useMemo(() => countLines(file.text), [file.text]);
   const showingCode = showRaw || !renderable;
+  // Parsed once: the table renders these rows and the strip states their shape.
+  const tableRows = useMemo(
+    () =>
+      delimited
+        ? parseDelimitedTable(file.text, extensionFromPath(file.path) === 'tsv' ? '\t' : ',')
+        : null,
+    [delimited, file.path, file.text]
+  );
 
   const code = (
     <CodeBlock
       text={file.text}
-      language={languageFromPath(file.path, file.mimeType)}
+      language={languageForText(file.path, file.mimeType, file.text)}
       resolvedTheme={resolvedTheme}
       sourceLine={sourceLine}
     />
   );
 
   const { directory, name } = splitPathForStrip(file.path);
+  const tableShape =
+    tableRows && tableRows.length > 0
+      ? { rows: tableRows.length - 1, columns: tableRows[0].length }
+      : null;
+  const countText = showingCode
+    ? `${lineCount.toLocaleString()} line${lineCount === 1 ? '' : 's'}`
+    : tableShape
+      ? `${tableShape.rows.toLocaleString()} row${tableShape.rows === 1 ? '' : 's'} · ${tableShape.columns.toLocaleString()} column${tableShape.columns === 1 ? '' : 's'}`
+      : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="br-paper flex h-full min-h-0 flex-col">
       {/* The one status strip (design spec H): 34px, a bottom hairline, and the
-          content below it sits on the panel ground — no sub-header, no card. */}
+          content below it sits on the paper — no sub-header, no card. */}
       <div
         data-testid="artifact-status-strip"
-        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5"
+        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5 br-preview-measure-strip"
       >
         <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>
           {languageLabel(file.path, file.mimeType)}
@@ -2208,9 +2500,14 @@ function TextFilePreview({
           <span className="text-text-subtle">{directory}</span>
           <span className="text-text-default">{name}</span>
         </span>
-        {showingCode && (
-          <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
-            {lineCount.toLocaleString()} line{lineCount === 1 ? '' : 's'}
+        {/* The count yields first, and whole: never pushes the name or the
+            controls out of the strip (main.css, `.br-paper-strip-count`). */}
+        {countText && (
+          <span
+            data-testid="artifact-strip-count"
+            className={cn(STRIP_IDENT_CLASS, 'br-paper-strip-count tabular-nums')}
+          >
+            <span>{countText}</span>
           </span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -2241,14 +2538,16 @@ function TextFilePreview({
           )}
         </div>
       </div>
-      {/* `bg-background-code` when the code view is showing, for the same reason
-          MarkdownContent does it: the syntax palette is measured against
-          --background-code, but the panel root paints --background-muted, and the
-          highlighter renders transparent — so the reader was seeing the palette
-          on a surface it was never verified against. In Parchment dark that put
-          `comment` at 4.14:1, under AA. Only the code view switches ground; the
-          markdown and preview branches keep the panel's own surface. */}
-      <div className={cn('min-h-0 flex-1 overflow-auto', showingCode && 'bg-background-code')}>
+      {/* One ground for every view. The code view used to switch to
+          --background-code here; on paper it does not need to, because every
+          family's syntax palette is ALSO measured against --background-default
+          (scripts/generate-themes.mjs, "paper ground"), and in light that ground
+          only raises the ratios. */}
+      <div
+        data-preview-scroller=""
+        className="br-paper-scroll min-h-0 flex-1 overflow-auto"
+        data-view={showingCode ? 'code' : markdown ? 'prose' : html ? 'html' : 'table'}
+      >
         {showingCode &&
           sourceLine !== undefined &&
           (sourceLine > lineCount || lineCount > MAX_LINE_NUMBERED_LINES) && (
@@ -2261,15 +2560,7 @@ function TextFilePreview({
         {showingCode ? (
           code
         ) : markdown ? (
-          <div className="px-4 py-3">
-            {/* Anchor relative image/link paths against the FILE's own directory
-                (not the app cwd), and let sibling-file links open in this panel. */}
-            <MarkdownContent
-              content={file.text}
-              workingDir={dirnameFromPath(file.path)}
-              onOpenArtifact={onOpenArtifact}
-            />
-          </div>
+          <MarkdownDocument text={file.text} path={file.path} onOpenArtifact={onOpenArtifact} />
         ) : html ? (
           // Same sandbox + theme injection as the figure preview above. `allow-popups`
           // is withheld so the framed HTML can't window.open() into a real BrowserWindow
@@ -2278,70 +2569,19 @@ function TextFilePreview({
             name="biorouter-artifact-preview"
             aria-label={file.title}
             srcDoc={injectArtifactBrowserCsp(
-              withPreviewActivityTracking(
-                withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)
+              withPreviewSizeReporting(
+                withPreviewActivityTracking(
+                  withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)
+                )
               )
             )}
             sandbox="allow-scripts allow-downloads"
             className="h-full w-full bg-white"
           />
         ) : (
-          <DelimitedTable
-            text={file.text}
-            delimiter={extensionFromPath(file.path) === 'tsv' ? '\t' : ','}
-          />
+          <DelimitedTable rows={tableRows ?? []} maxRows={MAX_TABLE_ROWS} />
         )}
       </div>
-    </div>
-  );
-}
-
-function DelimitedTable({ text, delimiter }: { text: string; delimiter: string }) {
-  const rows = parseDelimitedTable(text, delimiter);
-  if (rows.length === 0) {
-    return <div className="p-4 text-body text-text-muted">This file has no rows.</div>;
-  }
-
-  const [header, ...body] = rows;
-  const shown = body.slice(0, MAX_TABLE_ROWS);
-  const hidden = body.length - shown.length;
-
-  return (
-    <div className="h-full overflow-auto">
-      <table className="w-full border-collapse text-left text-secondary">
-        <thead className="sticky top-0 bg-background-muted">
-          <tr>
-            {header.map((cell, index) => (
-              <th
-                key={index}
-                className="whitespace-nowrap border-b border-border-subtle px-3 py-2 font-medium text-text-default"
-              >
-                {cell}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((row, rowIndex) => (
-            <tr key={rowIndex} className="even:bg-background-muted/40">
-              {header.map((_, cellIndex) => (
-                <td
-                  key={cellIndex}
-                  className="border-b border-border-subtle px-3 py-1.5 text-text-muted"
-                >
-                  {row[cellIndex] ?? ''}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {hidden > 0 && (
-        <div className="px-3 py-2 text-supporting text-text-muted">
-          {hidden.toLocaleString()} more row{hidden === 1 ? '' : 's'} not shown. Open the raw view
-          for the full file.
-        </div>
-      )}
     </div>
   );
 }

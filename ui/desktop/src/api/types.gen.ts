@@ -1534,15 +1534,40 @@ export type InterruptAccepted = {
 };
 
 /**
+ * The JSON body of a `POST /interrupt` 409.
+ */
+export type InterruptRefusal = {
+    reason: InterruptRefusalReason;
+    /**
+     * The server's turn that holds the chat, when there is one.
+     */
+    turn_id?: string | null;
+};
+
+/**
+ * Why `POST /interrupt` answered 409 — the body of that refusal.
+ *
+ * It used to be a bare 409, which every client read as "no turn, send it as a
+ * normal message" — including when a turn was plainly running and only its
+ * queue was not yet (or no longer) open, where the fallback 409s too.
+ */
+export type InterruptRefusalReason = 'no_turn' | 'not_accepting_yet' | 'turn_closing';
+
+/**
  * Request body for the soft-interrupt route.
  */
 export type InterruptRequest = {
+    /**
+     * Exact original turn addressed by a retry, independent of its idempotency key.
+     */
+    expected_turn_id?: string | null;
     session_id: string;
     text: string;
     /**
-     * Client idempotency key for a steer submitted while a delegated child is
-     * still waiting for its initial runtime. Ordinary active-turn interrupts
-     * do not require it.
+     * Client idempotency key. For a delegated child still waiting for its
+     * initial runtime it names the queued input; for a running turn it
+     * makes a retry after a lost response safe — the same key is answered 202
+     * again and the text is not queued twice.
      */
     turn_id?: string | null;
 };
@@ -2196,6 +2221,13 @@ export type MessageEvent = {
     partial_args?: string | null;
     type: 'ToolCallPending';
 } | {
+    ids: Array<string>;
+    type: 'ToolCallsRetracted';
+} | {
+    reason: SteerWaitReason;
+    tool_name?: string | null;
+    type: 'SteerWaiting';
+} | {
     conversation: Conversation;
     token_state: TokenState;
     type: 'UpdateConversation';
@@ -2232,6 +2264,7 @@ export type MessageMetadata = {
      */
     pinned?: boolean;
     provenance?: MessageProvenance | null;
+    steerOutcome?: SteerOutcome | null;
     /**
      * Whether the message should be visible to the user in the UI
      */
@@ -3056,6 +3089,30 @@ export type RunNowResponse = {
  */
 export type RunningSessionsResponse = {
     session_ids: Array<string>;
+    /**
+     * What each listed session's reply loop is waiting on, for the ones whose
+     * agent is live — so a turn that looks frozen can be named (a tool, a
+     * card, the provider's first byte) instead of guessed at. Diagnostic, and
+     * filtered exactly like `session_ids`.
+     */
+    turn_phases?: Array<RunningTurnPhase>;
+};
+
+/**
+ * One entry of [`RunningSessionsResponse::turn_phases`].
+ */
+export type RunningTurnPhase = {
+    /**
+     * `prologue`, `auto_compaction`, `provider_open`, `streaming`, `gating`,
+     * `approval_wait`, `tool_batch`, `live_ack_wait`, `exit_gates`,
+     * `supervision_wait`, `settling` or `idle`.
+     */
+    phase: string;
+    /**
+     * How long ago the loop entered that phase.
+     */
+    phase_age_ms: number;
+    session_id: string;
 };
 
 export type SaveWorkflowRequest = {
@@ -3743,6 +3800,16 @@ export type StartAgentRequest = {
     workflow_id?: string | null;
     working_dir: string;
 };
+
+/**
+ * See [`MessageMetadata::steer_outcome`].
+ */
+export type SteerOutcome = 'unanswered';
+
+/**
+ * What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].
+ */
+export type SteerWaitReason = 'tool' | 'approval' | 'delegation';
 
 export type StopAgentRequest = {
     session_id: string;
@@ -4745,6 +4812,10 @@ export type RestartAgentErrors = {
      */
     404: unknown;
     /**
+     * The chat records no model, the configured default it would be restarted onto is private, and the request carried no user-action proof (on a daemon that holds no key: the default is not the one it was launched with). Plain text saying which; nothing was restarted
+     */
+    409: unknown;
+    /**
      * The delegated child is still initializing
      */
     424: unknown;
@@ -5025,7 +5096,7 @@ export type UpdateWorkingDirErrors = {
      */
     404: unknown;
     /**
-     * Conflict - the working directory is fixed once a chat has messages, or a turn is in flight
+     * Conflict - the working directory is fixed once a chat has messages, or a turn is in flight, or the chat records no model and restarting it would bind a private configured default without user-action proof (nothing is written)
      */
     409: unknown;
     /**
@@ -5753,14 +5824,16 @@ export type InterruptErrors = {
      */
     403: unknown;
     /**
-     * No turn is accepting interrupts for this session
+     * No turn is accepting interrupts for this session; the body says whether none is running, one has not opened its queue yet, or one is closing
      */
-    409: unknown;
+    409: InterruptRefusal;
     /**
      * Internal server error
      */
     500: unknown;
 };
+
+export type InterruptError = InterruptErrors[keyof InterruptErrors];
 
 export type InterruptResponses = {
     /**

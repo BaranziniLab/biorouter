@@ -8,7 +8,7 @@ import MessageCopyLink from './MessageCopyLink';
 import { MessageMeta, MessageMetaAction } from './MessageMeta';
 import { ProvenanceChip } from './ProvenanceChip';
 import { formatMessageTimestamp } from '../utils/timeUtils';
-import { ChevronDown, ChevronUp, Edit } from './icons/app-icons';
+import { ChevronDown, ChevronUp, Edit, Send } from './icons/app-icons';
 import { Button } from './ui/button';
 import { ResourceRefChip, ResourceRefText } from './ResourceRefChip';
 import { joinComposerText, removeComposerRefAt, splitComposerText } from '../utils/composerRefs';
@@ -36,9 +36,21 @@ type ClampState = 'collapsed' | 'expanding' | 'open';
 interface UserMessageProps {
   message: Message;
   onMessageUpdate?: (messageId: string, newContent: string, editType?: 'diverge' | 'edit') => void;
+  /**
+   * D4: send this message's text as a new message. Offered only for a steer
+   * the daemon stored as unanswered, and only while no turn is running —
+   * absent otherwise, which hides the control.
+   */
+  onSendAgain?: (text: string) => void;
+  deliveryUnconfirmed?: boolean;
 }
 
-export default function UserMessage({ message, onMessageUpdate }: UserMessageProps) {
+export default function UserMessage({
+  message,
+  onMessageUpdate,
+  onSendAgain,
+  deliveryUnconfirmed = false,
+}: UserMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -457,6 +469,32 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                           mimeType={block.mimeType}
                         />
                       ) : null
+                    )}
+                  </div>
+                )}
+
+                {/* D4: a steer the turn accepted and then ended without reading.
+                    Stored so the words are never lost, and drawn as what it is
+                    — it used to look exactly like a delivered message, sitting
+                    unanswered in the middle of the conversation. */}
+                {(deliveryUnconfirmed || message.metadata?.steerOutcome === 'unanswered') && (
+                  <div
+                    data-testid="steer-unanswered"
+                    className="mt-1.5 flex items-center justify-end gap-2.5 text-supporting text-text-muted"
+                  >
+                    <span>
+                      {deliveryUnconfirmed
+                        ? 'Delivery unconfirmed. Check the transcript before sending again.'
+                        : 'Not answered: the turn ended before the agent read this.'}
+                    </span>
+                    {onSendAgain && (
+                      <MessageMetaAction
+                        onClick={() => onSendAgain(displayText)}
+                        icon={<Send />}
+                        aria-label="Send this message again"
+                      >
+                        Send again
+                      </MessageMetaAction>
                     )}
                   </div>
                 )}

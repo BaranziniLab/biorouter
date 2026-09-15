@@ -183,19 +183,75 @@ describe('the main-process half, read from main.ts and preload.ts', () => {
     return args[0] as ts.ObjectLiteralExpression;
   };
 
-  /** Its own top-level entries, by name; a spread is `...<expression>`. */
-  const topLevel = (options: ts.ObjectLiteralExpression) =>
-    options.properties.map((property) =>
-      ts.isSpreadAssignment(property)
-        ? `...${property.expression.getText(mainAst)}`
-        : property.name!.getText(mainAst).replace(/^['"]|['"]$/g, '')
+  /**
+   * One entry's key, as the name the option really sets; a spread is
+   * `...<expression>`, and a key whose name only running the code could tell is
+   * `[?<source>]`.
+   *
+   * ⚠ **A key is not its source text.** This used to return the text with quotes
+   * trimmed from its ends, so `['vibrancy']: 'window'` came back as
+   * `['vibrancy']` and `["transparent"]: true` as `["transparent"]` — each sets
+   * exactly the option it names, and each passed "no vibrancy and no
+   * transparency" (verified by mutation). A computed key is unwrapped when its
+   * expression is a literal, and marked when it is not, so the assertions can
+   * refuse what they cannot read instead of reading past it.
+   */
+  const keyOf = (property: ts.ObjectLiteralElementLike, source: ts.SourceFile): string => {
+    if (ts.isSpreadAssignment(property)) return `...${property.expression.getText(source)}`;
+    const name = property.name;
+    if (ts.isComputedPropertyName(name)) {
+      let expression = name.expression;
+      while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+      return ts.isStringLiteralLike(expression) || ts.isNumericLiteral(expression)
+        ? expression.text
+        : `[?${expression.getText(source)}]`;
+    }
+    return ts.isIdentifier(name) ||
+      ts.isPrivateIdentifier(name) ||
+      ts.isStringLiteralLike(name) ||
+      ts.isNumericLiteral(name)
+      ? name.text
+      : `[?${name.getText(source)}]`;
+  };
+
+  /** Its own top-level entries, by the name each one sets. */
+  const topLevel = (options: ts.ObjectLiteralExpression, source = mainAst) =>
+    options.properties.map((property) => keyOf(property, source));
+
+  it('reads a key by the name it sets, however it is written', () => {
+    const source = ts.createSourceFile(
+      'options.ts',
+      'const w = new BrowserWindow({ a: 1, "b": 2, [\'c\']: 3, ["d"]: 4, [`e`]: 5, [(\'f\')]: 6, ' +
+        'g, h() {}, get i() { return 1; }, 7: 8, [key]: 9, [`j${k}`]: 10, ...rest });',
+      ts.ScriptTarget.Latest,
+      true
     );
+    const literal = (source.statements[0] as ts.VariableStatement).declarationList.declarations[0]
+      .initializer as ts.NewExpression;
+    expect(topLevel(literal.arguments![0] as ts.ObjectLiteralExpression, source)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+      'f',
+      'g',
+      'h',
+      'i',
+      '7',
+      '[?key]',
+      '[?`j${k}`]',
+      '...rest',
+    ]);
+  });
 
   const chatWindowOptions = () => windowOptions('mainWindow');
 
   it('gives the chat window an opaque background that is the app canvas', () => {
+    // By the name it sets, so a second, quoted `'backgroundColor'` written after
+    // this one — which is the one Electron would use — makes two, not one.
     const background = chatWindowOptions().properties.filter(
-      (p) => p.name?.getText(mainAst) === 'backgroundColor'
+      (p) => keyOf(p, mainAst) === 'backgroundColor'
     );
     expect(background, 'exactly one top-level backgroundColor').toHaveLength(1);
     expect(oneline(background[0])).toMatch(
@@ -213,8 +269,10 @@ describe('the main-process half, read from main.ts and preload.ts', () => {
     expect(keys).toContain('webPreferences');
     expect(keys).not.toContain('vibrancy');
     expect(keys).not.toContain('transparent');
-    // A spread could carry either key in without naming it here.
+    // A spread could carry either key in without naming it here, and so could a
+    // key computed at run time.
     expect(keys.filter((k) => k.startsWith('...'))).toEqual([]);
+    expect(keys.filter((k) => k.startsWith('[?'))).toEqual([]);
     // Nor put back after construction.
     expect(main).not.toMatch(/\.setVibrancy\(/);
     // The launcher keeps both on purpose — it is a floating chip — and writes

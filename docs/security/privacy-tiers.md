@@ -132,6 +132,27 @@ this section is the ledger.
     on the default model; and, against the first repair, the same with the re-time left out.
     ⚠ The daemon follows `schedule.json`, which a chat's shell can write, so the file remains a way
     around these routes, the recorded standing included.
+  - **The `/schedule` and `/loop` commands** answer to the same definition, with the chat they are
+    typed into as the caller (2026-09-14). `Agent::reply` runs a slash command before any model
+    call, and a public chat accepts a message from anything holding the secret, so the commands
+    were a second door: QA paused a private chat's schedule with `/schedule pause <id>` typed into
+    a public chat, one request after `POST /schedule/<id>/pause` refused the same caller. A chat on
+    a private model may manage any schedule. Any other chat may pause, run, resume, remove or
+    `/loop stop` only a schedule doing public work, by `scheduler::schedule_work`, which is also
+    what `schedule_reach` now asks, so the two doors cannot drift. `/loop stop all` leaves the rest
+    and says how many; `/schedule sessions` lists only the runs that chat could list. A refused
+    tick no longer counts toward a `/loop`'s run limit, and `/schedule run` says a run was refused
+    rather than that it started.
+  - **Restoring a chat that records no model** onto the configured default (`POST /agent/restart`,
+    `POST /agent/update_working_dir`, a workspace turn injected into a cold chat) is a first bind,
+    and follows `POST /agent/start`'s rule (2026-09-14): a private default needs the user-action
+    proof on a daemon holding a key, and a keyless daemon keeps SD-12's launch-pinned exemption.
+    `Agent::restore_provider_from_session` is the one place the default is bound, so it takes the
+    caller's standing (`privacy::refusal::DefaultBind`) and every door has to decide it. QA had
+    restarted a public chat with only the secret: the row gained `versa_azure`, and that chat's
+    `/loop`, which the run-time rule above trusts because moving a chat onto a private model was
+    the person's act, then ran private with nobody present. With the restore gated, that premise
+    holds again on every HTTP door, so the rule itself is unchanged.
   - **The row-change feed.** `GET /sessions/changes` reports a change only for a chat `GET
     /sessions` would show the caller, judged both on the tier the change was recorded with and on
     the chat's row as it is now. It observes only those chats' rows, and a change it withholds

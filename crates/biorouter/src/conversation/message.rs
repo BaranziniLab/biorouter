@@ -934,6 +934,40 @@ pub struct MessageMetadata {
         skip_serializing_if = "Option::is_none"
     )]
     pub provenance: Option<MessageProvenance>,
+    /// What became of a steer — a message the person added to a turn that was
+    /// already running. Absent on every other row, and on a steer the turn went
+    /// on to answer.
+    //
+    // `Unanswered` marks a steer the daemon had ACCEPTED (it answered 202) but
+    // the turn ended before the model ever read it: a Stop, a spend cap, a
+    // provider abort, a stream error. The row is still stored — the person's
+    // words are never discarded — but a client must not draw it as a delivered
+    // message, because nothing ever replied to it (defect D4 in
+    // fix/steer-always-lands). Lenient and defaulted for the reason `pinned` is.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_steer_outcome",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub steer_outcome: Option<SteerOutcome>,
+}
+
+/// See [`MessageMetadata::steer_outcome`].
+#[derive(ToSchema, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerOutcome {
+    /// Accepted into a turn that ended before the model read it.
+    Unanswered,
+}
+
+fn deserialize_lenient_steer_outcome<'de, D>(
+    deserializer: D,
+) -> Result<Option<SteerOutcome>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 impl Default for MessageMetadata {
@@ -943,6 +977,7 @@ impl Default for MessageMetadata {
             agent_visible: true,
             pinned: false,
             provenance: None,
+            steer_outcome: None,
         }
     }
 }
@@ -955,6 +990,7 @@ impl MessageMetadata {
             agent_visible: true,
             pinned: false,
             provenance: None,
+            steer_outcome: None,
         }
     }
 
@@ -965,6 +1001,7 @@ impl MessageMetadata {
             agent_visible: false,
             pinned: false,
             provenance: None,
+            steer_outcome: None,
         }
     }
 
@@ -975,6 +1012,7 @@ impl MessageMetadata {
             agent_visible: false,
             pinned: false,
             provenance: None,
+            steer_outcome: None,
         }
     }
 
@@ -1360,6 +1398,13 @@ impl Message {
     /// Stamp this message's origin (BR-71). See [`MessageProvenance`].
     pub fn with_provenance(mut self, provenance: MessageProvenance) -> Self {
         self.metadata.provenance = Some(provenance);
+        self
+    }
+
+    /// Mark a steer the turn ended without answering (see
+    /// [`MessageMetadata::steer_outcome`]).
+    pub fn with_steer_outcome(mut self, outcome: SteerOutcome) -> Self {
+        self.metadata.steer_outcome = Some(outcome);
         self
     }
 }

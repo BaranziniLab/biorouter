@@ -254,6 +254,69 @@ describe('pending steer', () => {
     expect(activity?.phase).toBe('steering');
   });
 
+  it('names the tool a steer is waiting behind', () => {
+    const activity = deriveTrailingActivity({
+      ...live,
+      messages: [message('assistant', [toolRequest('t1')])],
+      pendingSteer: PENDING,
+    });
+
+    expect(activity?.label).toBe('Your message will be added when developer__shell finishes');
+  });
+
+  it('uses the tool the daemon said the steer waits behind', () => {
+    const activity = deriveTrailingActivity({
+      ...live,
+      messages: [message('assistant', [text('Delegating now.')])],
+      pendingSteer: { ...PENDING, waitingOn: { reason: 'tool', toolName: 'workspace__watch' } },
+    });
+
+    expect(activity?.phase).toBe('steering');
+    expect(activity?.label).toBe('Your message will be added when workspace__watch finishes');
+  });
+
+  /**
+   * D3 — live, 2026-09-13: "Steering the current turn · 4m 1s" plus "Still
+   * working…" sat under an unanswered Run Shell? card. The turn was waiting on
+   * the PERSON, and the steer outranked the card that said so.
+   */
+  it('yields to a turn that is waiting for the user, with no clock', () => {
+    const activity = deriveTrailingActivity({
+      ...live,
+      chatState: ChatState.WaitingForUserInput,
+      messages: [message('assistant', [toolRequest('t1')])],
+      pendingSteer: PENDING,
+    });
+
+    expect(activity?.phase).not.toBe('steering');
+    expect(activity?.phase).toBe('steerQueued');
+    expect(activity?.since).toBeUndefined();
+    expect(activity?.label).toBe('Your message will be added after you answer the card');
+  });
+
+  it('yields to an approval card on screen, with no clock', () => {
+    const confirmation = message('assistant', [
+      {
+        type: 'actionRequired',
+        data: {
+          actionType: 'toolConfirmation',
+          id: 'confirm-1',
+          toolName: 'developer__shell',
+          arguments: {},
+        },
+      } as unknown as Message['content'][number],
+    ]);
+    const activity = deriveTrailingActivity({
+      ...live,
+      messages: [confirmation],
+      pendingSteer: PENDING,
+    });
+
+    expect(activity?.phase).toBe('steerQueued');
+    expect(activity?.since).toBeUndefined();
+    expect(activity?.steerText).toBe('actually, use R');
+  });
+
   it('still never shows on a historical replay', () => {
     expect(
       deriveTrailingActivity({

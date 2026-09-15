@@ -1,13 +1,14 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { AppTooltipLayer } from '../ui/AppTooltipLayer';
 import MarkdownContent from '../MarkdownContent';
+import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
-import { artifactSourceFromResource, titleFromResourceUri } from './artifactUtils';
+import { artifactSourceFromResource, PAPER_GUTTER_EM, titleFromResourceUri } from './artifactUtils';
 import {
   onArtifactAnnotation,
   resetAnnotationChannelForTests,
@@ -24,6 +25,12 @@ vi.mock('utif2', () => ({
   decodeImage: decodeTiffImage,
   toRGBA8: tiffToRgba,
 }));
+
+/** The `rgb(r, g, b)` spelling jsdom reports for an inline `#rrggbb` colour. */
+function hexToRgb(hex: string) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 function installElectronMock() {
   Object.defineProperty(window, 'electron', {
@@ -615,7 +622,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
     });
     let resolveCapture!: (value: { path: string; width: number; height: number }) => void;
-    vi.mocked(window.electron.captureRegion).mockReturnValueOnce(
+    vi.mocked(window.electron.captureRegion!).mockReturnValueOnce(
       new Promise((resolve) => {
         resolveCapture = resolve;
       })
@@ -1278,6 +1285,341 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     // A quoted field keeps its comma instead of splitting into a new column.
     expect(screen.getByRole('cell', { name: 'TP53, alias' })).toBeInTheDocument();
     expect(screen.getAllByRole('row')).toHaveLength(3);
+  });
+
+  // Paper: a data table reads by column. Numbers are marked so they right-align
+  // in tabular figures, a sentence column is clipped to one line (so an
+  // off-screen wrap cannot set the height of the rows you can see), and a
+  // missing value is marked so it can recede.
+  it('marks numeric, sentence and missing cells in a written CSV', async () => {
+    installElectronMock();
+    const description = 'MYC proto-oncogene, bHLH transcription factor; master regulator';
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'deseq.csv',
+      path: '/work/deseq.csv',
+      mimeType: 'text/csv',
+      text: `gene,padj,description\nMYC,1.264e-03,"${description}"\nCDK4,NA,cyclin dependent kinase 4 regulator of the G1 phase\n`,
+      size: 160,
+      found: true,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'deseq.csv', path: '/work/deseq.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('columnheader', { name: 'padj' })).toBeInTheDocument();
+    });
+    expect(screen.getByRole('columnheader', { name: 'padj' })).toHaveAttribute('data-numeric');
+    expect(screen.getByRole('columnheader', { name: 'gene' })).not.toHaveAttribute('data-numeric');
+    expect(screen.getByRole('cell', { name: 'NA' })).toHaveAttribute('data-missing');
+    expect(screen.getByTitle(description)).toHaveClass('br-paper-cell-clip');
+    // A quiet row index hangs in the margin, and a trailing filler cell takes
+    // the slack so the columns stay packed instead of stretching (main.css).
+    const firstRow = screen.getAllByRole('row')[1];
+    expect(firstRow.firstElementChild).toHaveClass('br-paper-rownum');
+    expect(firstRow.firstElementChild).toHaveTextContent('1');
+    expect(firstRow.lastElementChild).toHaveClass('br-paper-fill');
+    expect(screen.getAllByRole('row')[0].lastElementChild).toHaveClass('br-paper-fill');
+    // The strip states the table's shape, with a noun, instead of a line count.
+    expect(screen.getByText('2 rows · 3 columns')).toBeInTheDocument();
+    // The header's filler carries the overflow hint through the opaque sticky
+    // header row (main.css, `.br-paper-fill-hint`).
+    expect(
+      screen.getAllByRole('row')[0].lastElementChild!.querySelector('.br-paper-fill-hint')
+    ).not.toBeNull();
+  });
+
+  // A `shrink-0` count ("70 rows · 11 columns") kept its full width in a
+  // narrow panel: it squeezed the file name to nothing and then pushed Table /
+  // Raw past the panel's edge, where neither could be clicked. The count is
+  // now the first thing to give way (main.css, `.br-paper-strip-count`, whose
+  // geometry artifactPaper.test.ts pins); the controls still never shrink.
+  it.each([
+    ['a table', false, '2 rows · 1 column'],
+    ['the raw view', true, '3 lines'],
+  ])('lets the strip count yield before the controls in %s', async (_view, raw, count) => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'genes.csv',
+      path: '/work/genes.csv',
+      mimeType: 'text/csv',
+      text: 'gene\nMYC\nCDK4\n',
+      size: 16,
+      found: true,
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'genes.csv', path: '/work/genes.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    const strip = await screen.findByTestId('artifact-status-strip');
+    if (raw) fireEvent.click(within(strip).getByRole('button', { name: 'Raw' }));
+    const counter = await within(strip).findByTestId('artifact-strip-count');
+    expect(counter).toHaveTextContent(count);
+    expect(counter).toHaveClass('br-paper-strip-count');
+    expect(counter).not.toHaveClass('shrink-0');
+    // The controls' group is what never shrinks.
+    const controls = within(strip).getByRole('button', { name: 'Raw' }).closest('.ml-auto');
+    expect(controls).toHaveClass('shrink-0');
+  });
+
+  it('states a table shape as rows and columns, singular and plural', async () => {
+    installElectronMock();
+    const header = Array.from({ length: 11 }, (_, i) => `col${i + 1}`).join(',');
+    const body = Array.from({ length: 70 }, (_, r) =>
+      Array.from({ length: 11 }, (_, c) => (c === 0 ? `GENE${r}` : String(r * c))).join(',')
+    ).join('\n');
+    const read = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    read.mockResolvedValue({
+      kind: 'text',
+      title: 'deseq-results.csv',
+      path: '/w/deseq-results.csv',
+      mimeType: 'text/csv',
+      text: `${header}\n${body}\n`,
+      size: 2000,
+      found: true,
+    });
+
+    const { unmount } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'deseq-results.csv', path: '/w/deseq-results.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    const strip = await screen.findByTestId('artifact-status-strip');
+    await waitFor(() => expect(strip).toHaveTextContent('70 rows · 11 columns'));
+    expect(strip).toHaveTextContent(/^CSV/);
+    unmount();
+
+    read.mockResolvedValue({
+      kind: 'text',
+      title: 'one.csv',
+      path: '/w/one.csv',
+      mimeType: 'text/csv',
+      text: 'gene\nMYC\n',
+      size: 9,
+      found: true,
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'one.csv', path: '/w/one.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(screen.getByText('1 row · 1 column')).toBeInTheDocument());
+  });
+
+  // Prism's bundled `csv` grammar has two token kinds, so a raw results table
+  // rendered in one colour, and `tsv` has no grammar at all (zero tokens). The
+  // raw grammars in styles/prismGrammars.ts give the header, quoted strings, a
+  // missing value and the delimiter their own stops — and deliberately leave
+  // numbers in ink, because a column of amber digits is a wall, not a hint.
+  it('highlights a raw CSV by structure and leaves its numbers in ink', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'deseq.csv',
+      path: '/w/deseq.csv',
+      mimeType: 'text/csv',
+      text: 'gene,baseMean,padj,description\nMYC,1204.5,1.2e-03,"proto-oncogene, bHLH"\nCDK4,980,NA,"cyclin dependent kinase 4"\n',
+      size: 120,
+      found: true,
+    });
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'deseq.csv', path: '/w/deseq.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() =>
+      expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(0)
+    );
+    const tokens = [...container.querySelectorAll<HTMLElement>('.br-paper-code code .token')];
+    const colours = new Set(tokens.map((token) => token.style.color).filter(Boolean));
+    expect(colours.size, [...colours].join(' ')).toBeGreaterThanOrEqual(4);
+    const numberInks = new Set(
+      THEME_FAMILY_IDS.flatMap((family) =>
+        (['light', 'dark'] as const).map((mode) =>
+          hexToRgb(GENERATED_THEMES[family][mode].syntax.number)
+        )
+      )
+    );
+    for (const token of tokens) {
+      expect(numberInks.has(token.style.color), `"${token.textContent}" is number-coloured`).toBe(
+        false
+      );
+    }
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^CSV/);
+  });
+
+  it('highlights a raw TSV, which Prism has no grammar for', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'sample-sheet.tsv',
+      path: '/w/sample-sheet.tsv',
+      mimeType: 'text/tab-separated-values',
+      text: 'sample\tcondition\tfastq\nS1\ttumour\ts3://bucket/S1.fq.gz\nS2\tNA\ts3://bucket/S2.fq.gz\n',
+      size: 90,
+      found: true,
+    });
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'sample-sheet.tsv', path: '/w/sample-sheet.tsv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() =>
+      expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(0)
+    );
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^TSV/);
+  });
+
+  // R Markdown opens with YAML front matter and ```{r setup} chunks. Unhandled,
+  // the front matter became a stack of bold setext headings and every chunk
+  // rendered as unhighlighted text, because `language-{r` never matched.
+  it('lifts R Markdown front matter into a title and highlights {r} chunks', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'methods.Rmd',
+      path: '/work/methods.Rmd',
+      mimeType: 'text/markdown',
+      text:
+        '---\ntitle: "Methods"\nauthor: "Baranzini Lab"\nparams:\n  fdr: 0.05\n---\n\n' +
+        '```{r setup, include=FALSE}\nlibrary(DESeq2)\nx <- TRUE\n```\n\n' +
+        'A paragraph hard-wrapped\nat the source width.\n',
+      size: 200,
+      found: true,
+    });
+
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'methods.Rmd', path: '/work/methods.Rmd' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1, name: 'Methods' })).toBeInTheDocument();
+    });
+    expect(screen.getByText('Baranzini Lab')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /params/ })).not.toBeInTheDocument();
+    // Nothing the file says is dropped: the rest sits behind a disclosure, and
+    // the disclosure starts CLOSED — the report, not its YAML, opens the page.
+    expect(screen.getByText('Front matter')).toBeInTheDocument();
+    const disclosure = screen.getByText('Front matter').closest('details');
+    expect(disclosure).not.toBeNull();
+    expect(disclosure!.open).toBe(false);
+    const chunk = container.querySelector('.br-paper-doc > .br-paper-prose .biorouter-md-code');
+    expect(chunk).not.toBeNull();
+    expect(chunk!.querySelector('.token')).not.toBeNull();
+    // The chunk's label is the fence id as written.
+    expect(chunk!.querySelector('.biorouter-md-code-lang')).toHaveTextContent(/^r$/);
+    // A markdown FILE soft-wraps: the source's hard wrap is a space, not <br>.
+    const paragraph = screen.getByText(/A paragraph hard-wrapped/);
+    expect(paragraph.querySelector('br')).toBeNull();
+    expect(container.querySelector('.br-paper-doc br')).toBeNull();
+  });
+
+  // The gutter sticks while long lines scroll under it, on an opaque paper
+  // ground. An `opacity` on the number span faded that ground too, so the code
+  // scrolled beneath showed through the numbers; the ink is faded instead.
+  it('fades the line-number ink, never the sticky gutter itself', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'wide.py',
+      path: '/work/wide.py',
+      mimeType: 'text/x-python',
+      text: `import os\nVALUES = [${'"GENE", '.repeat(80)}]\nprint(VALUES)\n`,
+      size: 700,
+      found: true,
+    });
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'wide.py', path: '/work/wide.py' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(container.querySelectorAll('.linenumber')).toHaveLength(3));
+    const gutter = container.querySelector<HTMLElement>('.linenumber')!;
+    // (jsdom drops `color-mix`, so the mixed ink itself is asserted in codeTheme.test.ts.)
+    expect(gutter.style.opacity).toBe('');
+    expect(gutter.getAttribute('style')).not.toContain('opacity');
+    // Every numbered line is its own element, so the gutter has a row to stick in.
+    expect(container.querySelectorAll('.br-paper-code [data-source-line]')).toHaveLength(3);
+    // Only the lead and the number stick. The column's margin belongs to each
+    // line (main.css), so a wide panel no longer pins ~170px of blank paper
+    // over a long line scrolled sideways.
+    expect(gutter.style.paddingLeft).toBe('var(--paper-lead)');
+    expect(gutter.style.minWidth).toBe(`calc(var(--paper-lead) + ${PAPER_GUTTER_EM})`);
+    expect(gutter.getAttribute('style')).not.toContain('--paper-code-start-numbered');
+  });
+
+  it('highlights a .txt that is really a run log', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'run.txt',
+      path: '/work/run.txt',
+      mimeType: 'text/plain',
+      text:
+        '2026-09-14 08:05:51 INFO  [nextflow] Launching\n' +
+        '2026-09-14 08:31:13 WARN  [process] retrying\n' +
+        '2026-09-14 08:48:05 ERROR [multiqc] truncated\n',
+      size: 130,
+      found: true,
+    });
+
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'run.txt', path: '/work/run.txt' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText('3 lines')).toBeInTheDocument());
+    // As `text` this rendered zero token spans; the log grammar marks the levels.
+    expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(2);
   });
 
   it('renders a written HTML file with a Preview/Raw toggle', async () => {

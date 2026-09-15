@@ -323,6 +323,21 @@ what did not" section first**; the rest of that document is the design, not the 
     The trait's `_armed` defaults DROP the standing — only for test doubles.
     Renderer schedule writes go through `ui/desktop/src/schedule.ts` alone; a source guard in
     `schedule.userProof.test.ts` fails on any other importer of a generated schedule function.
+    ⚠ **The `/schedule` and `/loop` verbs are a second door** (a public chat takes `/reply` from any
+    secret holder, and `execute_command` runs before the model): they ask `slash_verb_reaches` on
+    ONE sampled `CallCapability` — a private chat manages anything, any other chat only work
+    `scheduler::schedule_work` calls public. That one function is also what `schedule_reach` asks;
+    never re-spell "private work" at a door. A refused tick is a `ScheduledRunRefused` and gives
+    its `max_runs` firing back; `/schedule run` asks `scheduled_run_preflight` before requesting
+    a background run and acknowledges the request without claiming execution has started.
+  - **A restore binds a chat's FIRST model** when its row names none: `restart`,
+    `update_working_dir` and a workspace turn into a cold chat go through
+    `Agent::restore_provider_from_session(session, DefaultBind)`, and the door computes the
+    standing with `routes::agent::RestoreStanding` (= `new_chat_bind_decision` on a private
+    default: proof on a keyed daemon, SD-12 on a keyless one) and asks `refuse_before_restoring`
+    before it changes anything. Ungated, a secret-only restart wrote `versa_azure` onto a public
+    chat and made the `(None, CreatorChat)` run-time cell trust a bind no person made (QA,
+    2026-09-14).
   - `GET /sessions/changes` shows a change only through `lists_session` — on the tier it was
     recorded with AND the chat's row as it is now (`visible_changes`) — observes only those rows,
     and a withheld change must never answer a poll early — a poll that returns when a private row
@@ -606,6 +621,21 @@ was removed to make it true:
   Preview/Raw toggle; `.csv`/`.tsv` → a real table (quoted fields honoured,
   capped at 500 rows) with a Table/Raw toggle; everything else → syntax-
   highlighted, line-numbered code with a language chip and Copy.
+  **Every text preview sits on "paper"** — `.br-paper`, painting
+  `--background-default`, the exact ground an Auto Visualiser chart paints
+  (`artifactPaper.test.ts` pins the two together) — with a 760px column
+  (`.br-paper-measure`, PROVISIONAL until the geometry track's
+  `.br-preview-measure` lands inside the scroller) and one left edge for prose,
+  code and tables. Fenced blocks, inline code and notebook source sit in the
+  shared `--background-well` token, not `--background-code` (which in dark *is*
+  the page). Selection is renderer-wide Biorouter orange from `--selection-hue`
+  / `--selection-alpha` — literals in a bare `:root`/`.dark` pair that no family
+  may re-declare, because Alma Mater re-points the coral scale to teal. All of
+  it is authored CSS in `main.css` ("Preview paper"), placed right after the
+  `code [class~='token']` rule, never Tailwind strings. The pieces live in
+  `MarkdownDocument.tsx`, `DelimitedTable.tsx`, `CodeBlock` in
+  `ArtifactViewer.tsx`, and `styles/prismGrammars.ts` (raw CSV/TSV grammars,
+  R/Python call tokens, log refinements).
 - **Syntax highlighting** follows the app theme *and* the theme family. The one
   palette lives in `ui/desktop/src/styles/codeTheme.ts` and is selected as
   `codeThemesByFamily[useThemeFamily()][useResolvedTheme()]` — the identical
@@ -1263,6 +1293,35 @@ Test the gate where it is: the unit tests in `agents/agent.rs`
 line said 102 for long enough that a "pre + N" assertion against it would have read a
 shortfall of ninety-six as a pass; re-measure rather than trusting the figure, which
 moved 197 → 198 between this line being written and the branch carrying it landing).
+
+### Steering a running turn
+
+A steer (`POST /interrupt`, "Add this message to the current turn") is accepted into the agent's
+soft-interrupt queue and must always reach the loop or be stored as unanswered. Reference:
+[`docs/agent-loop/steering-a-running-turn.md`](docs/agent-loop/steering-a-running-turn.md).
+
+- **The queue opens before the prologue and closes only at the commit point.** The runner
+  (`workspace/turn.rs` `prepare_turn`) opens it before the extension wait; the loop drains it
+  immediately before the `break` that really ends a turn (`commit_turn_exit_or_continue`), never
+  before the done gate, self-critique or Stop hooks. A `409` names its reason
+  (`no_turn` / `not_accepting_yet` / `turn_closing`); the 403 shapes are untouched (SD-11).
+- **A steer leaves the queue only after its row is stored** (`consume_soft_interrupts_at_boundary`,
+  `land_live_ack`), and every row a turn carries past an ending that did not read it is marked
+  `steer_outcome: unanswered`. A steer the person typed resets `max_turns` / `max_tool_calls` /
+  the stall stop; a spend cap does not.
+- ⚠ **Every new wait in the reply loop needs a steer arm, and it goes in a `Box::pin`'d helper**
+  (`next_batch_wake`, `next_gate_wake`, `next_approval_wake`, `open_provider_or_steer`,
+  `next_native_supervision_claim`). State lives on `Agent` — `loop_phase`, `live_acks`,
+  `turn_exit`, `steer_arrivals` — never as generator locals (the stack cliff). Several waits can
+  listen at once, which is why they use the `steer_arrivals` watch and not `notify_one`.
+- **The renderer owns a steer until the daemon answers** (retry with one idempotency key), retires
+  its chip by message id, treats every frame including `Ping` as a heartbeat, and reconciles a
+  silent or orphaned running state with `/agent/resume`.
+- **Observers are capped at two** (`MAX_LIVE_OBSERVER_STREAMS`): 2 observers + 2 renderer
+  long-polls + 1 `/reply` must leave one of Chromium's six connections free.
+- Tests: `cargo test -p biorouter --test steer_always_lands`, the three stack-margin binaries
+  (`soft_interrupt_agent_loop`, `turn_abort_tests`, `subagent_delegation`), and
+  `ui/desktop/src/hooks/chatStreamStore.steerLands.test.tsx`.
 
 ### Browser access (`biorouter serve`)
 

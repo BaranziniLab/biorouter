@@ -8,7 +8,7 @@ import {
   getToolResponses,
 } from '../types/message';
 
-export type TrailingPhase = 'thinking' | 'running' | 'compacting' | 'steering';
+export type TrailingPhase = 'thinking' | 'running' | 'compacting' | 'steering' | 'steerQueued';
 
 export interface TrailingActivity {
   phase: TrailingPhase;
@@ -16,8 +16,8 @@ export interface TrailingActivity {
   label: string;
   /**
    * The user's own words, echoed back while a soft interrupt is in flight.
-   * Only set for phase 'steering' — every other phase narrates the AGENT, and
-   * putting user text in them would misattribute it.
+   * Only set for phases 'steering' and 'steerQueued' — every other phase
+   * narrates the AGENT, and putting user text in them would misattribute it.
    */
   steerText?: string;
   /**
@@ -49,6 +49,11 @@ export interface PendingSteer {
   text: string;
   /** Client clock (ms) the steer was issued at — the indicator's timer origin. */
   since: number;
+  /**
+   * What the daemon said the accepted steer is waiting behind (its
+   * `SteerWaiting` frame): a running tool, named when it could be, or a card.
+   */
+  waitingOn?: { reason: 'tool' | 'approval' | 'delegation'; toolName?: string };
 }
 
 const isToolResponseOnly = (m: Message) =>
@@ -70,6 +75,20 @@ const awaitsToolConfirmation = (m: Message) =>
   getToolConfirmationContent(m) !== undefined ||
   getElicitationContent(m) !== undefined ||
   getSecretRequestContent(m) !== undefined;
+
+/** The name of a tool the last assistant message requested and nothing has
+ * answered yet, when there is one. */
+function outstandingToolName(last: Message | undefined): string | undefined {
+  if (!last || last.role !== 'assistant') return undefined;
+  const answered = new Set(getToolResponses(last).map((r) => r.id));
+  const request = getToolRequests(last).find((r) => !answered.has(r.id));
+  if (!request) return undefined;
+  // The daemon sends either the wrapped `ToolResult` shape or the bare call.
+  const call = request.toolCall as
+    | { status?: string; value?: { name?: string }; name?: string }
+    | undefined;
+  return call?.status === 'success' ? call.value?.name : call?.name;
+}
 
 /**
  * Derives the trailing "still working" indicator from facts alone.
@@ -94,29 +113,52 @@ export function deriveTrailingActivity({
   //     there and a replayed session can never show a live indicator.
   if (!isTurnActive) return null;
 
-  // (a2) BR-61 — a soft interrupt is in flight. This OUTRANKS every branch
+  const last = messages[messages.length - 1];
+
+  // (a2) The turn is waiting on the PERSON — a card is on screen, or the
+  //      conversation is still loading. This OUTRANKS a pending steer (D3):
+  //      "Steering the current turn · 4m 1s" plus "Still working…" under an
+  //      unanswered Run Shell? card told the user the agent was busy while it
+  //      was waiting for them, and the same wait with no steer showed nothing
+  //      at all. A steer never answers a card, so say honestly what it waits
+  //      behind — with no clock and no nudge, because nothing is working.
+  const waitsOnTheUser =
+    chatState === ChatState.WaitingForUserInput ||
+    (last !== undefined && awaitsToolConfirmation(last)) ||
+    pendingSteer?.waitingOn?.reason === 'approval';
+  if (chatState === ChatState.LoadingConversation) return null;
+  if (waitsOnTheUser) {
+    if (!pendingSteer) return null;
+    return {
+      phase: 'steerQueued',
+      label: 'Your message will be added after you answer the card',
+      steerText: pendingSteer.text,
+      since: undefined,
+    };
+  }
+
+  // (a3) BR-61 — a soft interrupt is in flight. This outranks every branch
   //      below, including the ones that deliberately return null (streaming
-  //      prose, a tool-confirmation card): those all narrate what the AGENT is
-  //      doing, and none of them would tell the user that the message that just
-  //      left their composer was heard. Without this the press is followed by
-  //      seconds of nothing, which reads as a dropped input.
+  //      prose): those all narrate what the AGENT is doing, and none of them
+  //      would tell the user that the message that just left their composer
+  //      was heard. Without this the press is followed by seconds of nothing,
+  //      which reads as a dropped input.
   if (pendingSteer) {
+    const runningTool =
+      pendingSteer.waitingOn?.reason === 'tool'
+        ? (pendingSteer.waitingOn.toolName ?? 'the running tool')
+        : outstandingToolName(last);
     return {
       phase: 'steering',
-      label: 'Steering the current turn',
+      label: runningTool
+        ? `Your message will be added when ${runningTool} finishes`
+        : 'Steering the current turn',
       steerText: pendingSteer.text,
       since: pendingSteer.since,
     };
   }
 
-  // (b) The pill above the composer already narrates these, and a card is on
-  //     screen demanding input. Do not double-narrate.
-  if (chatState === ChatState.WaitingForUserInput) return null;
-  if (chatState === ChatState.LoadingConversation) return null;
-
-  const last = messages[messages.length - 1];
   if (!last) return null;
-  if (awaitsToolConfirmation(last)) return null;
 
   const since = lastMessageAt ?? turnStartedAt;
 

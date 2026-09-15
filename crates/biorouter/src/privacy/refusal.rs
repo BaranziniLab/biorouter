@@ -98,6 +98,53 @@ pub const fn raise_needs_user_action(current: ProviderTier, incoming: ProviderTi
     !current.is_private() && incoming.is_private()
 }
 
+/// What a caller may let a chat that records NO model take when it is restored
+/// onto the configured default (`Agent::restore_provider_from_session`).
+///
+/// Such a chat has no capability of its own, so binding a private default to it
+/// is a first bind and a raise from Public — the bind `POST /agent/start`
+/// refuses a caller without the user-action proof on a daemon that holds a key
+/// (`routes::agent::new_chat_bind_decision`, SD-12). The restore is the same
+/// bind reached through another door: `POST /agent/restart`, `POST
+/// /agent/update_working_dir` and a workspace turn injected into a cold chat.
+/// Independent QA, 2026-09-14, with only the daemon secret: a restart of a
+/// public chat whose row named no provider answered 200, wrote `versa_azure`
+/// onto the row, and that chat's `/loop` then ran private with nobody present.
+///
+/// Decided by the caller's door — which alone can see the proof and the launch
+/// state — and HANDED to the restore, which is the one place the bind happens,
+/// so no door can bind the default without having decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultBind {
+    /// The default may be bound whatever its tier: the person proved the
+    /// request, tiers are off, or a keyless daemon's SD-12 exemption holds.
+    MayRaise,
+    /// Only a PUBLIC default may be bound; a private one is refused with
+    /// [`PrivacyRefusal::DefaultBindNeedsUser`] and the chat is left unbound.
+    PublicOnly,
+}
+
+/// Is binding the configured default, of `default_tier`, refused on `standing`?
+///
+/// A row that records a model is not a default bind at all — the restore binds
+/// that row's own model, and Gate A answers for it — so this is `false` for
+/// one. Otherwise it is DR-16's raise predicate from Public, asked only of a
+/// caller without the standing to raise.
+///
+/// Pure, and asked twice on purpose, exactly as `scheduler::scheduled_run_refusal`
+/// is: a door asks it of the DECLARED tier before anything changes (so a refused
+/// request evicts no agent and writes no working directory), and the restore asks
+/// it again of the constructed instance's own tier, which is what the bind uses.
+pub const fn default_bind_refused(
+    standing: DefaultBind,
+    row_records_a_model: bool,
+    default_tier: ProviderTier,
+) -> bool {
+    !row_records_a_model
+        && matches!(standing, DefaultBind::PublicOnly)
+        && raise_needs_user_action(ProviderTier::Public, default_tier)
+}
+
 /// A privacy boundary refused an operation.
 ///
 /// It is an ordinary `std::error::Error` carried inside `anyhow::Error`, so
@@ -208,6 +255,25 @@ pub enum PrivacyRefusal {
         ASK_THE_USER_TO_SWITCH
     )]
     CapabilityConfigNeedsUser { key: String },
+
+    /// DR-16 through a RESTORE: a chat that records no model was about to be
+    /// bound to the configured default, that default is private, and the caller
+    /// has no standing to make that first bind ([`DefaultBind::PublicOnly`]).
+    ///
+    /// `{requested}` is the configured default's name. The caller did not type
+    /// it, but it is what the request would have bound, and it is the daemon's
+    /// configuration rather than a chat's content (§14.4).
+    #[error(
+        "This chat records no model of its own, so starting it again would put it on the \
+         configured default, '{requested}', which is a private model. Starting a chat on a \
+         private model {}, and this request carried no proof that it came from the person at \
+         the keyboard, so the chat was not started on it and is unchanged. Do not retry; the \
+         same call will be refused again. If this chat genuinely needs a private model, stop and \
+         {}",
+        USER_ACTION_REFUSAL_MARKER,
+        ASK_THE_USER_TO_SWITCH
+    )]
+    DefaultBindNeedsUser { requested: String },
 
     /// R4 / §8.2: a public-capability session may never gain private reach, not
     /// even through a child it spawns. A subagent is an extension of the chat
@@ -394,6 +460,7 @@ impl PrivacyRefusal {
             | Self::ToolTierRaise { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
+            | Self::DefaultBindNeedsUser { .. }
             // A spawn refusal is about the CAPABILITY the parent has, not about
             // a session whose stored contents collided with a model. Inventing a
             // classification for it would put a fabricated pair on the GUI card.
@@ -419,6 +486,7 @@ impl PrivacyRefusal {
             | Self::ToolTierRaise { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
+            | Self::DefaultBindNeedsUser { .. }
             // The refused bind was necessarily private (a raise is the only
             // thing DR-21's guard fires on), but this is a refusal about a
             // channel rather than about a session/model pair, so it reports the
@@ -448,6 +516,9 @@ impl PrivacyRefusal {
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
+            // About WHO may bind a chat's first model, not about contents that
+            // collided with one, so it names no session and seeds no card.
+            | Self::DefaultBindNeedsUser { .. }
             | Self::PrivateChildOfPublicParent { .. }
             | Self::PublicChildOfPrivateParent { .. }
             // §14.4: an app refusal reaches the app's own page and the model
@@ -1248,6 +1319,35 @@ mod tests {
         assert!(!raise_needs_user_action(Public, Public)); // sideways
         assert!(!raise_needs_user_action(Private, Private)); // sideways
         assert!(!raise_needs_user_action(Private, Public)); // downward — Gate A's job, not this one
+    }
+
+    /// DR-16 through a restore, at every corner: only a PRIVATE default standing
+    /// in for a model the row does not record, on a standing that may not raise.
+    #[test]
+    fn only_a_private_default_for_a_chat_that_records_no_model_needs_standing() {
+        use DefaultBind::{MayRaise, PublicOnly};
+        use ProviderTier::{Private, Public};
+        assert!(default_bind_refused(PublicOnly, false, Private)); // the one refusal
+        assert!(!default_bind_refused(MayRaise, false, Private)); // the person, or SD-12
+        assert!(!default_bind_refused(PublicOnly, false, Public)); // a public default raises nothing
+                                                                   // A row's own model is not a default bind, whatever the standing.
+        for standing in [PublicOnly, MayRaise] {
+            for tier in [Private, Public] {
+                assert!(
+                    !default_bind_refused(standing, true, tier),
+                    "{standing:?} {tier:?}"
+                );
+            }
+        }
+        // The refusal is a DR-16 one: it carries the renderer's marker and names
+        // only the default it would have bound.
+        let text = PrivacyRefusal::DefaultBindNeedsUser {
+            requested: "versa_azure".into(),
+        }
+        .to_string();
+        assert!(text.contains(USER_ACTION_REFUSAL_MARKER), "{text}");
+        assert!(text.contains(ASK_THE_USER_TO_SWITCH), "{text}");
+        assert!(text.contains("'versa_azure'"), "{text}");
     }
 
     #[test]
