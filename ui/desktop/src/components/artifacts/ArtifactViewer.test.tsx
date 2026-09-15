@@ -1510,6 +1510,38 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(container.querySelector('.br-paper-doc br')).toBeNull();
   });
 
+  // The gutter sticks while long lines scroll under it, on an opaque paper
+  // ground. An `opacity` on the number span faded that ground too, so the code
+  // scrolled beneath showed through the numbers; the ink is faded instead.
+  it('fades the line-number ink, never the sticky gutter itself', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'wide.py',
+      path: '/work/wide.py',
+      mimeType: 'text/x-python',
+      text: `import os\nVALUES = [${'"GENE", '.repeat(80)}]\nprint(VALUES)\n`,
+      size: 700,
+      found: true,
+    });
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'wide.py', path: '/work/wide.py' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(container.querySelectorAll('.linenumber')).toHaveLength(3));
+    const gutter = container.querySelector<HTMLElement>('.linenumber')!;
+    // (jsdom drops `color-mix`, so the mixed ink itself is asserted in codeTheme.test.ts.)
+    expect(gutter.style.opacity).toBe('');
+    expect(gutter.getAttribute('style')).not.toContain('opacity');
+    // Every numbered line is its own element, so the gutter has a row to stick in.
+    expect(container.querySelectorAll('.br-paper-code [data-source-line]')).toHaveLength(3);
+  });
+
   it('highlights a .txt that is really a run log', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({

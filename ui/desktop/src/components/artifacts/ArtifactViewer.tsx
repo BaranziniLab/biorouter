@@ -12,7 +12,7 @@ import {
 } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
-import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
+import { CODE_FONT_FAMILY, codeThemesByFamily, withFadedGutter } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import { withPreviewActivityTracking } from '../../utils/previewActivity';
@@ -2060,16 +2060,7 @@ function CodeBlock({
   // The gutter is quiet by fading its INK, not the element: an `opacity` would
   // fade the sticky gutter's opaque paper ground too, and a long line scrolled
   // under it showed through the numbers. Same 55% as the old `opacity: 0.55`.
-  const codeStyle = useMemo(() => {
-    const gutter = theme['react-syntax-highlighter-line-number'];
-    return {
-      ...theme,
-      'react-syntax-highlighter-line-number': {
-        ...gutter,
-        color: `color-mix(in srgb, ${gutter?.color} 55%, transparent)`,
-      },
-    };
-  }, [theme]);
+  const codeStyle = useMemo(() => withFadedGutter(theme, '55%'), [theme]);
   const codeRef = useRef<HTMLDivElement>(null);
   const numbered = lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES;
   const selectedLine =

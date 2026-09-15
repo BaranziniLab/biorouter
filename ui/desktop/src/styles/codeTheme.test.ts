@@ -7,6 +7,7 @@ import {
   codeThemeDark,
   codeThemeLight,
   codeThemesByFamily,
+  withFadedGutter,
 } from './codeTheme';
 import { GENERATED_THEMES } from './themes.generated';
 
@@ -170,6 +171,21 @@ describe('code theme', () => {
         expect(theme['property.log-label'].color).toBe(palette.plain);
       }
     }
+  });
+
+  it('fades a gutter by mixing its ink, leaving every other entry alone', () => {
+    const faded = withFadedGutter(codeThemeLight, '55%');
+    expect(faded['react-syntax-highlighter-line-number']).toEqual({
+      color: `color-mix(in srgb, ${codePalettes.light.comment} 55%, transparent)`,
+      fontStyle: 'normal',
+      fontWeight: 400,
+    });
+    expect(faded['react-syntax-highlighter-line-number']).not.toHaveProperty('opacity');
+    expect(faded.keyword).toBe(codeThemeLight.keyword);
+    // The shared theme object is not mutated for chat and notebooks.
+    expect(codeThemeLight['react-syntax-highlighter-line-number'].color).toBe(
+      codePalettes.light.comment
+    );
   });
 
   // Every family must be registered for BOTH modes: the consumer indexes

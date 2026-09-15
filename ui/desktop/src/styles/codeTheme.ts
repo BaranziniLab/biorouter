@@ -213,6 +213,28 @@ export const codeThemeAlmaDark = build(GENERATED_THEMES['alma-mater'].dark.synta
 export const codeThemeRocheLight = build(GENERATED_THEMES['roche-limit'].light.syntax, '9%');
 export const codeThemeRocheDark = build(GENERATED_THEMES['roche-limit'].dark.syntax, '10%');
 
+/**
+ * The same theme with its line-number gutter ink faded to `amount` of the
+ * comment ink by MIXING, never with `opacity`.
+ *
+ * The artifact panel's gutter is sticky and paints an opaque paper ground so a
+ * long line scrolled under it stays hidden; an `opacity` on the number span
+ * fades that ground along with the digits, and the code showed through.
+ */
+export function withFadedGutter(
+  theme: Record<string, CSSProperties>,
+  amount: string
+): Record<string, CSSProperties> {
+  const gutter = theme['react-syntax-highlighter-line-number'] ?? {};
+  return {
+    ...theme,
+    'react-syntax-highlighter-line-number': {
+      ...gutter,
+      color: `color-mix(in srgb, ${gutter.color} ${amount}, transparent)`,
+    },
+  };
+}
+
 /** Parchment themes, keyed by resolved mode (kept for back-compat). */
 export const codeThemes = { light: codeThemeLight, dark: codeThemeDark } as const;
 
