@@ -259,6 +259,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   const [stackDrag, setStackDrag] = useState<StackDrag | null>(null);
 
   const splitPaneRef = useRef<HTMLDivElement>(null);
+  const openRequestRef = useRef(0);
   const closeTimerRef = useRef<number | null>(null);
   const openFrameRef = useRef<number | null>(null);
   const measureTimerRef = useRef<number | null>(null);
@@ -273,6 +274,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
 
   useEffect(() => {
     return () => {
+      openRequestRef.current += 1;
       if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
       if (openFrameRef.current) window.cancelAnimationFrame(openFrameRef.current);
       if (measureTimerRef.current) window.clearTimeout(measureTimerRef.current);
@@ -318,6 +320,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
 
   const openArtifact = useCallback(
     async (artifact: ArtifactSource) => {
+      const request = ++openRequestRef.current;
       if (closeTimerRef.current) {
         window.clearTimeout(closeTimerRef.current);
         closeTimerRef.current = null;
@@ -334,6 +337,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
         setContentHeight(null);
         await ensureFits();
       }
+      if (request !== openRequestRef.current) return;
 
       // Prime rung 2 BEFORE the panel exists: the observer below only starts once
       // an artifact is presented, so without this the first frame would paint the
@@ -367,6 +371,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   );
 
   const closePanel = useCallback(() => {
+    openRequestRef.current += 1;
     if (openFrameRef.current) {
       window.cancelAnimationFrame(openFrameRef.current);
       openFrameRef.current = null;
@@ -389,6 +394,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   }, [stopMeasuring]);
 
   const reset = useCallback(() => {
+    openRequestRef.current += 1;
     resizeCleanupRef.current?.();
     if (closeTimerRef.current) {
       window.clearTimeout(closeTimerRef.current);
