@@ -4196,13 +4196,19 @@ pub(crate) enum ApprovalWake<T> {
     SteerWaiting,
 }
 
-pub(crate) async fn next_approval_wake<T, S>(stream: &mut S, steers: &Agent) -> ApprovalWake<T>
+/// `steers` is `None` when no call in the batch needs a card: announcing
+/// "waiting behind a card" there would be the dishonest label this exists to
+/// replace (a stress run caught it announcing `approval` for a plain shell call).
+pub(crate) async fn next_approval_wake<T, S>(
+    stream: &mut S,
+    steers: Option<&Agent>,
+) -> ApprovalWake<T>
 where
     S: Stream<Item = T> + Unpin,
 {
     tokio::select! {
         biased;
-        _ = steers.next_unannounced_steer() => ApprovalWake::SteerWaiting,
+        _ = unannounced_steer(steers) => ApprovalWake::SteerWaiting,
         item = stream.next() => ApprovalWake::Item(item),
     }
 }
@@ -11365,7 +11371,10 @@ impl Agent {
                                     // their message is waiting behind it.
                                     self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::ApprovalWait);
                                     loop {
-                                        match next_approval_wake(&mut tool_approval_stream, self).await {
+                                        match next_approval_wake(
+                                            &mut tool_approval_stream,
+                                            (!permission_check_result.needs_approval.is_empty()).then_some(self),
+                                        ).await {
                                             ApprovalWake::Item(Some(msg)) => yield AgentEvent::Message(msg?),
                                             ApprovalWake::Item(None) => break,
                                             ApprovalWake::SteerWaiting => {
