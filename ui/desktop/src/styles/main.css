@@ -3635,8 +3635,13 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   min-height: 0;
   /* The flattened body used to clip the header band's own overflow in a pane
      narrower than the band's controls (under CHAT_MIN_WIDTH, a splitter drag's
-     reach). With the body flattened, the grid is the box that must. */
-  overflow: hidden;
+     reach). With the body flattened, the grid is the box that must.
+
+     `clip`, not `hidden`: a `hidden` box is still a scroll container, and the tab
+     strip's `scrollIntoView` scrolled it — measured at a 250px pane, the whole
+     split sat 20px to the left, the preview and the transcript with it. A
+     clipped box cannot be scrolled at all. */
+  overflow: clip;
 }
 
 [data-preview-split][data-preview-layout] > [data-preview-area='column'],

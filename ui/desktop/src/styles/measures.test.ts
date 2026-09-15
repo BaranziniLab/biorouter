@@ -584,7 +584,9 @@ describe('rung 2 — the preview split in main.css agrees with the ladder', () =
   it('is one grid that clips what the flattened body used to clip', () => {
     const grid = onlyRule('[data-preview-split][data-preview-layout]');
     expect(property(grid.body, 'display')).toBe('grid');
-    expect(property(grid.body, 'overflow')).toBe('hidden');
+    // `clip`, never `hidden`: a hidden box is a scroll container, and the tab
+    // strip's scrollIntoView scrolled the whole split 20px sideways.
+    expect(property(grid.body, 'overflow')).toBe('clip');
     const flattened = onlyRule(
       "[data-preview-split][data-preview-layout] > [data-preview-area='column'], [data-preview-split][data-preview-layout] > [data-preview-area='column'] > [data-preview-area='body']"
     );
