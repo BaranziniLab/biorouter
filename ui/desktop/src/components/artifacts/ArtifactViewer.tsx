@@ -13,7 +13,12 @@ import {
 } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
-import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
+import {
+  CODE_FONT_FAMILY,
+  codeThemesByFamily,
+  GUTTER_INK_MIX,
+  withFadedGutter,
+} from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import { withPreviewActivityTracking } from '../../utils/previewActivity';
@@ -30,11 +35,13 @@ import {
   ARTIFACT_PANEL_ATTR,
 } from '../../utils/tabCycle';
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Camera,
   Code,
+  Copy,
   ExternalLink,
   Eye,
   File,
@@ -49,7 +56,6 @@ import {
   Search,
   X,
 } from '../icons/app-icons';
-import MarkdownContent from '../MarkdownContent';
 import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
 import type { PreviewPanelMode } from '../Layout/yieldLadder';
 import {
@@ -59,7 +65,10 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
+import DelimitedTable from './DelimitedTable';
+import { annotateBrowserReason } from './captureOnBrowser';
 import DocumentPreview from './DocumentPreview';
+import MarkdownDocument from './MarkdownDocument';
 import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import type {
@@ -71,13 +80,13 @@ import type {
 } from './artifactTypes';
 import {
   basenameFromPath,
-  dirnameFromPath,
   extensionFromPath,
   imageSourceForPreview,
   isDelimitedPath,
   isMarkdownPath,
-  languageFromPath,
+  languageForText,
   languageLabel,
+  PAPER_GUTTER_EM,
   parseDelimitedTable,
   splitPathForStrip,
   STRIP_IDENT_CLASS,
@@ -566,7 +575,7 @@ export default function ArtifactViewer({
         finishAnnotation();
         return;
       }
-      const shot = await window.electron?.captureRegion({
+      const shot = await window.electron?.captureRegion?.({
         x: bodyRect.left + x,
         y: bodyRect.top + y,
         width,
@@ -1430,14 +1439,18 @@ export default function ArtifactViewer({
               type="button"
               data-testid="artifact-annotate"
               aria-pressed={isAnnotating}
+              disabled={annotateBrowserReason() !== null}
               onClick={() => void toggleAnnotation()}
               className={cn(
                 HEADER_ACTION_BUTTON_CLASS,
-                'relative z-50 ml-0.5 shrink-0',
+                'relative z-50 ml-0.5 shrink-0 disabled:cursor-not-allowed disabled:opacity-50',
                 isAnnotating && 'bg-background-accent text-text-on-accent'
               )}
               aria-label={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
-              title={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
+              title={
+                annotateBrowserReason() ??
+                (isAnnotating ? 'Cancel region selection' : 'Send a region to the chat')
+              }
             >
               <Camera className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -2258,22 +2271,21 @@ function CodeBlock({
   language,
   resolvedTheme,
   sourceLine,
-  measure = true,
 }: {
   text: string;
   language: string;
   resolvedTheme: 'light' | 'dark';
   sourceLine?: number;
-  /**
-   * Hold the text column to `--measure-chat` (`.br-preview-measure`). True for
-   * text, code, logs and a markdown file's raw view; false for a CSV/TSV's raw
-   * rows, which are records that want the panel's full width.
-   */
-  measure?: boolean;
 }) {
   const lineCount = countLines(text);
-  const codeStyle = codeThemesByFamily[useThemeFamily()][resolvedTheme];
+  const theme = codeThemesByFamily[useThemeFamily()][resolvedTheme];
+  // The gutter is quiet by fading its INK, not the element: an `opacity` would
+  // fade the sticky gutter's opaque paper ground too, and a long line scrolled
+  // under it showed through the numbers. How far it fades is GUTTER_INK_MIX,
+  // held to 3:1 on the paper in every family by codeTheme.test.ts.
+  const codeStyle = useMemo(() => withFadedGutter(theme, GUTTER_INK_MIX), [theme]);
   const codeRef = useRef<HTMLDivElement>(null);
+  const numbered = lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES;
   const selectedLine =
     typeof sourceLine === 'number' &&
     Number.isSafeInteger(sourceLine) &&
@@ -2292,15 +2304,24 @@ function CodeBlock({
   return (
     <div
       ref={codeRef}
-      className={cn('min-h-full', measure && 'br-preview-measure')}
+      className="br-paper-code min-h-full"
+      data-numbered={numbered || undefined}
       data-preview-intrinsic="code"
     >
       <SyntaxHighlighter
         style={codeStyle}
         language={language}
         PreTag="div"
-        showLineNumbers={lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES}
-        wrapLines={selectedLine !== undefined}
+        showLineNumbers={numbered}
+        // Every numbered line is its own element (`[data-source-line]`), so the
+        // gutter can stick while long lines scroll under it and a requested source
+        // line paints its whole row. Still no `wrapLongLines`: combined with
+        // `showLineNumbers` the highlighter makes every line `display: flex`
+        // (highlight.js:106), which turns each token into a flex item and shreds
+        // the line across the panel's width. Long lines scroll horizontally
+        // instead, which is what a code viewer should do anyway — and it keeps
+        // indentation honest.
+        wrapLines={numbered || selectedLine !== undefined}
         lineProps={(lineNumber) => ({
           'data-source-line': lineNumber,
           ...(lineNumber === selectedLine
@@ -2311,29 +2332,45 @@ function CodeBlock({
             : {}),
         })}
         lineNumberStyle={{
-          minWidth: '2.6em',
-          paddingRight: '1.1em',
+          // The gutter is the lead plus a FIXED-width number (not the library's
+          // digits-based width); the margin before it is the line's own padding
+          // (main.css, `.br-paper-code[data-numbered] [data-source-line]`). The
+          // three add up to the paper column's edge, so code text lands exactly
+          // there and aligns with a report's prose at every panel width. Only
+          // this box sticks (main.css `.linenumber`), so a long line scrolled
+          // sideways loses ~56px under the numbers, not the whole margin. 3.5em
+          // holds four digits, and MAX_LINE_NUMBERED_LINES stops numbering
+          // before a fifth is needed.
+          minWidth: `calc(var(--paper-lead) + ${PAPER_GUTTER_EM})`,
+          boxSizing: 'border-box',
+          paddingLeft: 'var(--paper-lead)',
+          paddingRight: '1.35em',
           textAlign: 'right',
-          opacity: 0.35,
+          // Ink, slant and weight come from the `react-syntax-highlighter-line-
+          // number` entry in codeTheme.ts (comment ink, upright, 400), faded to a
+          // gutter in `codeStyle` above — never with `opacity` (see there).
           userSelect: 'none',
-          // ⚠ Corrections, not decoration. `react-syntax-highlighter` seeds the
-          // gutter span from the theme's `comment` style, and ours is italic
-          // (`codeTheme.ts`), so the line numbers leaned. Nothing reset it, so the
-          // lean was inherited rather than chosen.
-          fontStyle: 'normal',
           // A gutter is the one place where digit alignment is the whole job.
           fontVariantNumeric: 'tabular-nums',
         }}
-        // No `wrapLongLines`: combined with `showLineNumbers` the highlighter makes
-        // every line `display: flex` (highlight.js:106), which turns each token into
-        // a flex item and shreds the line across the panel's width. Long lines scroll
-        // horizontally instead, which is what a code viewer should do anyway — and it
-        // keeps indentation honest.
         customStyle={{
           margin: 0,
-          padding: '14px 16px',
+          // The inline edges come from the paper CSS variables (main.css,
+          // `.br-paper`): unnumbered code starts on the column edge; numbered code
+          // starts at the scroller's edge because each line carries the margin.
+          padding: numbered
+            ? '28px var(--paper-gutter) 48px 0'
+            : '28px var(--paper-gutter) 48px var(--paper-inset)',
           minHeight: '100%',
+          width: 'max-content',
+          minWidth: '100%',
+          boxSizing: 'border-box',
           background: 'transparent',
+          // ⚠ Load-bearing. The theme's `pre` entry sets `overflow: auto`, which
+          // makes this div a scroll container that never scrolls — and a sticky
+          // gutter sticks to its NEAREST scroll container, so it would ride along
+          // with the text. The paper scroller is the one that scrolls.
+          overflow: 'visible',
         }}
         codeTagProps={{
           style: {
@@ -2370,10 +2407,17 @@ function CopyButton({ text }: { text: string }) {
       // A control inside the status strip: bottom rung of the radius ladder,
       // and the sanctioned dense-control size. `text-label` (14px) does not fit
       // a 34px strip, but `text-supporting` (12px) would render it at metadata
-      // size and it would stop looking pressable — so `text-secondary`.
-      className="rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
+      // size and it would stop looking pressable — so `text-secondary`. The 12px
+      // icon is the one a fenced block's Copy carries (MarkdownContent), so the
+      // two Copy controls in the panel read as the same control.
+      className="inline-flex items-center gap-1 rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
     >
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? (
+        <Check className="h-3 w-3" aria-hidden="true" />
+      ) : (
+        <Copy className="h-3 w-3" aria-hidden="true" />
+      )}
+      <span>{copied ? 'Copied' : 'Copy'}</span>
     </button>
   );
 }
@@ -2382,6 +2426,14 @@ function CopyButton({ text }: { text: string }) {
 // its source code — showing raw markup would make the user read the syntax to
 // find the content. Both stay one click from the raw text. Everything else is a
 // script, and gets highlighted, line-numbered and labelled.
+//
+// PAPER. Every branch below sits on `.br-paper` — the page ground
+// (`--background-default`), which is byte-for-byte the ground an Auto
+// Visualiser chart paints, so a report, its table and its figure read as one
+// family of surface. The scroller is a size container and the content column is
+// the chat measure (760px) centred in it; content that is naturally wider (a
+// wide table, a long code line) keeps the column's LEFT edge and runs on to the
+// right, so every kind shares one left edge at any panel width.
 function TextFilePreview({
   file,
   resolvedTheme,
@@ -2404,36 +2456,42 @@ function TextFilePreview({
 
   const lineCount = useMemo(() => countLines(file.text), [file.text]);
   const showingCode = showRaw || !renderable;
-  // Whether the text below reads at the chat measure: code and raw text (not a
-  // CSV's raw rows), and a markdown file's rendered prose. A table and a page do
-  // not, and their strip keeps the panel's own inset.
-  const measuredText = showingCode ? !delimited : markdown;
+  // Parsed once: the table renders these rows and the strip states their shape.
+  const tableRows = useMemo(
+    () =>
+      delimited
+        ? parseDelimitedTable(file.text, extensionFromPath(file.path) === 'tsv' ? '\t' : ',')
+        : null,
+    [delimited, file.path, file.text]
+  );
 
   const code = (
     <CodeBlock
       text={file.text}
-      language={languageFromPath(file.path, file.mimeType)}
+      language={languageForText(file.path, file.mimeType, file.text)}
       resolvedTheme={resolvedTheme}
       sourceLine={sourceLine}
-      measure={!delimited}
     />
   );
 
   const { directory, name } = splitPathForStrip(file.path);
+  const tableShape =
+    tableRows && tableRows.length > 0
+      ? { rows: tableRows.length - 1, columns: tableRows[0].length }
+      : null;
+  const countText = showingCode
+    ? `${lineCount.toLocaleString()} line${lineCount === 1 ? '' : 's'}`
+    : tableShape
+      ? `${tableShape.rows.toLocaleString()} row${tableShape.rows === 1 ? '' : 's'} · ${tableShape.columns.toLocaleString()} column${tableShape.columns === 1 ? '' : 's'}`
+      : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="br-paper flex h-full min-h-0 flex-col">
       {/* The one status strip (design spec H): 34px, a bottom hairline, and the
-          content below it sits on the panel ground — no sub-header, no card. */}
+          content below it sits on the paper — no sub-header, no card. */}
       <div
         data-testid="artifact-status-strip"
-        className={cn(
-          'flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5',
-          // The strip names the column under it, so it starts where that column
-          // starts. Without this a short file in a wide panel read as indented:
-          // its lines began 64px in from a strip that began at the edge.
-          measuredText && 'br-preview-measure-strip'
-        )}
+        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5 br-preview-measure-strip"
       >
         <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>
           {languageLabel(file.path, file.mimeType)}
@@ -2442,9 +2500,14 @@ function TextFilePreview({
           <span className="text-text-subtle">{directory}</span>
           <span className="text-text-default">{name}</span>
         </span>
-        {showingCode && (
-          <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
-            {lineCount.toLocaleString()} line{lineCount === 1 ? '' : 's'}
+        {/* The count yields first, and whole: never pushes the name or the
+            controls out of the strip (main.css, `.br-paper-strip-count`). */}
+        {countText && (
+          <span
+            data-testid="artifact-strip-count"
+            className={cn(STRIP_IDENT_CLASS, 'br-paper-strip-count tabular-nums')}
+          >
+            <span>{countText}</span>
           </span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -2475,16 +2538,15 @@ function TextFilePreview({
           )}
         </div>
       </div>
-      {/* `bg-background-code` when the code view is showing, for the same reason
-          MarkdownContent does it: the syntax palette is measured against
-          --background-code, but the panel root paints --background-muted, and the
-          highlighter renders transparent — so the reader was seeing the palette
-          on a surface it was never verified against. In Parchment dark that put
-          `comment` at 4.14:1, under AA. Only the code view switches ground; the
-          markdown and preview branches keep the panel's own surface. */}
+      {/* One ground for every view. The code view used to switch to
+          --background-code here; on paper it does not need to, because every
+          family's syntax palette is ALSO measured against --background-default
+          (scripts/generate-themes.mjs, "paper ground"), and in light that ground
+          only raises the ratios. */}
       <div
         data-preview-scroller=""
-        className={cn('min-h-0 flex-1 overflow-auto', showingCode && 'bg-background-code')}
+        className="br-paper-scroll min-h-0 flex-1 overflow-auto"
+        data-view={showingCode ? 'code' : markdown ? 'prose' : html ? 'html' : 'table'}
       >
         {showingCode &&
           sourceLine !== undefined &&
@@ -2498,17 +2560,7 @@ function TextFilePreview({
         {showingCode ? (
           code
         ) : markdown ? (
-          // The 760px reading rule: prose in the preview is held to the
-          // transcript's own measure and centred like the transcript column.
-          <div className="br-preview-measure px-4 py-3" data-preview-intrinsic="">
-            {/* Anchor relative image/link paths against the FILE's own directory
-                (not the app cwd), and let sibling-file links open in this panel. */}
-            <MarkdownContent
-              content={file.text}
-              workingDir={dirnameFromPath(file.path)}
-              onOpenArtifact={onOpenArtifact}
-            />
-          </div>
+          <MarkdownDocument text={file.text} path={file.path} onOpenArtifact={onOpenArtifact} />
         ) : html ? (
           // Same sandbox + theme injection as the figure preview above. `allow-popups`
           // is withheld so the framed HTML can't window.open() into a real BrowserWindow
@@ -2527,62 +2579,9 @@ function TextFilePreview({
             className="h-full w-full bg-white"
           />
         ) : (
-          <DelimitedTable
-            text={file.text}
-            delimiter={extensionFromPath(file.path) === 'tsv' ? '\t' : ','}
-          />
+          <DelimitedTable rows={tableRows ?? []} maxRows={MAX_TABLE_ROWS} />
         )}
       </div>
-    </div>
-  );
-}
-
-function DelimitedTable({ text, delimiter }: { text: string; delimiter: string }) {
-  const rows = parseDelimitedTable(text, delimiter);
-  if (rows.length === 0) {
-    return <div className="p-4 text-body text-text-muted">This file has no rows.</div>;
-  }
-
-  const [header, ...body] = rows;
-  const shown = body.slice(0, MAX_TABLE_ROWS);
-  const hidden = body.length - shown.length;
-
-  return (
-    <div className="h-full overflow-auto" data-preview-scroller="">
-      <table className="w-full border-collapse text-left text-secondary" data-preview-intrinsic="">
-        <thead className="sticky top-0 bg-background-muted">
-          <tr>
-            {header.map((cell, index) => (
-              <th
-                key={index}
-                className="whitespace-nowrap border-b border-border-subtle px-3 py-2 font-medium text-text-default"
-              >
-                {cell}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((row, rowIndex) => (
-            <tr key={rowIndex} className="even:bg-background-muted/40">
-              {header.map((_, cellIndex) => (
-                <td
-                  key={cellIndex}
-                  className="border-b border-border-subtle px-3 py-1.5 text-text-muted"
-                >
-                  {row[cellIndex] ?? ''}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {hidden > 0 && (
-        <div className="px-3 py-2 text-supporting text-text-muted">
-          {hidden.toLocaleString()} more row{hidden === 1 ? '' : 's'} not shown. Open the raw view
-          for the full file.
-        </div>
-      )}
     </div>
   );
 }

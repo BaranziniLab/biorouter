@@ -723,7 +723,7 @@ describe('rung 2 — the preview split in main.css agrees with the ladder', () =
    */
   it('has no container or media condition of its own', () => {
     const start = CSS_CODE.indexOf('[data-preview-split][data-preview-layout] {');
-    const end = CSS_CODE.indexOf('.br-preview-measure {');
+    const end = CSS_CODE.indexOf('body.biorouter-window-resizing .biorouter-sidebar-inset-depth', start);
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     const block = CSS_CODE.slice(start, end);
@@ -735,7 +735,7 @@ describe('rung 2 — the preview split in main.css agrees with the ladder', () =
 
   it('transitions nothing geometric (the motion pass owns motion)', () => {
     const start = CSS_CODE.indexOf('[data-preview-split][data-preview-layout] {');
-    const end = CSS_CODE.indexOf('.br-preview-measure {');
+    const end = CSS_CODE.indexOf('body.biorouter-window-resizing .biorouter-sidebar-inset-depth', start);
     expect(CSS_CODE.slice(start, end)).not.toMatch(/transition|animation/);
   });
 
@@ -820,45 +820,36 @@ describe('rung 2 — the panel stays mounted across a crossing', () => {
  * 760px column, and nothing that needs width is held to it.
  */
 describe('the preview text measure is the chat measure', () => {
-  it('reads --measure-chat plus the two 16px gutters, with no vw and no clamp', () => {
+  it('caps the content at 760px with responsive gutters outside the text measure', () => {
     const rule = onlyRule('.br-preview-measure');
-    expect(property(rule.body, 'max-width')).toBe('calc(var(--measure-chat) + 2 * 16px)');
+    expect(property(rule.body, 'max-width')).toBe('var(--measure-chat)');
+    expect(property(rule.body, 'box-sizing')).toBe('content-box');
     expect(property(rule.body, 'margin-inline')).toBe('auto');
-    expect(rule.body).not.toMatch(/vw|clamp\(/);
+    expect(property(rule.body, 'padding-inline')).toBe('var(--paper-gutter)');
   });
 
-  it('is applied at exactly two call sites: the markdown body and the code view', () => {
-    const code = codeWithoutComments(VIEWER);
-    expect(code.match(/br-preview-measure(?!-)/g) ?? []).toHaveLength(2);
-    expect(code).toContain(
-      '<div className="br-preview-measure px-4 py-3" data-preview-intrinsic="">'
+  it('keeps intrinsic sizing on extracted prose, table and code components', () => {
+    const prose = readFileSync(
+      join(__dirname, '../components/artifacts/MarkdownDocument.tsx'),
+      'utf8'
     );
-    expect(code).toContain("className={cn('min-h-full', measure && 'br-preview-measure')}");
-    // …and the code view is held only when the file is not a CSV/TSV.
-    expect(code).toContain('measure={!delimited}');
+    const table = readFileSync(
+      join(__dirname, '../components/artifacts/DelimitedTable.tsx'),
+      'utf8'
+    );
+    expect(prose).toContain('data-preview-intrinsic=""');
+    expect(table).toContain('data-preview-intrinsic=""');
+    expect(table).toContain('data-preview-scroller=""');
+    expect(VIEWER).toContain('data-preview-intrinsic="code"');
+    expect(VIEWER).toContain('data-preview-scroller=""');
   });
 
-  it('aligns the status strip’s content with the measured column, and only there', () => {
+  it('aligns the status strip to the reading column while preserving its full-width rule', () => {
     const rule = onlyRule('.br-preview-measure-strip');
     expect(property(rule.body, 'padding-inline')).toBe(
-      'max(14px, calc((100% - var(--measure-chat) - 2 * 16px) / 2 + 14px))'
+      'max(14px, calc((100% - var(--measure-chat)) / 2))'
     );
     expect(depthAt(rule.index)).toBe(0);
-    const code = codeWithoutComments(VIEWER);
-    expect(code.match(/br-preview-measure-strip/g) ?? []).toHaveLength(1);
-    expect(code).toContain("measuredText && 'br-preview-measure-strip'");
-    expect(code).toContain('const measuredText = showingCode ? !delimited : markdown;');
+    expect(codeWithoutComments(VIEWER).match(/br-preview-measure-strip/g) ?? []).toHaveLength(1);
   });
-
-  it.each(['DelimitedTable', 'DirectoryTreePreview', 'ImageFilePreview'])(
-    'is absent from %s',
-    (name) => {
-      const code = codeWithoutComments(VIEWER);
-      const start = code.indexOf(`function ${name}(`);
-      expect(start, name).toBeGreaterThan(0);
-      const next = code.indexOf('\nfunction ', start + 1);
-      const body = code.slice(start, next === -1 ? undefined : next);
-      expect(body).not.toContain('br-preview-measure');
-    }
-  );
 });

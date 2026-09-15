@@ -8,9 +8,16 @@ import {
   dirnameFromPath,
   extensionFromPath,
   fileArtifactPathsFromToolCall,
+  analyzeDelimitedColumns,
+  frontMatterFields,
+  isMissingCell,
+  languageForText,
   languageFromPath,
   languageLabel,
+  looksLikeLog,
   looksLikePreviewableFile,
+  normalizeCodeLanguage,
+  splitFrontMatter,
   parseDelimitedTable,
   pathFromArtifactHref,
   resolveArtifactPath,
@@ -272,6 +279,245 @@ describe('languageFromPath', () => {
     expect(languageFromPath('/w/noext', 'application/json')).toBe('json');
     expect(languageFromPath('/w/noext')).toBe('text');
   });
+
+  // Each of these reached Prism as an unregistered name (or as `text`) and
+  // rendered as plain, unhighlighted monospace. One row per mapped extension,
+  // so a deleted row fails by name.
+  it.each([
+    ['bash', 'bash'],
+    ['sh', 'bash'],
+    ['zsh', 'bash'],
+    ['env', 'bash'],
+    ['bat', 'batch'],
+    ['cc', 'cpp'],
+    ['hpp', 'cpp'],
+    ['h', 'c'],
+    ['cfg', 'ini'],
+    ['conf', 'ini'],
+    ['cjs', 'javascript'],
+    ['mjs', 'javascript'],
+    ['js', 'javascript'],
+    ['cts', 'typescript'],
+    ['mts', 'typescript'],
+    ['ts', 'typescript'],
+    ['tsx', 'tsx'],
+    ['jsx', 'jsx'],
+    ['cs', 'csharp'],
+    ['cwl', 'yaml'],
+    ['yml', 'yaml'],
+    ['htm', 'html'],
+    ['jl', 'julia'],
+    ['json', 'json'],
+    ['jsonc', 'json'],
+    ['jsonl', 'json'],
+    ['kt', 'kotlin'],
+    ['log', 'log'],
+    ['md', 'markdown'],
+    ['markdown', 'markdown'],
+    ['rmd', 'markdown'],
+    ['qmd', 'markdown'],
+    ['mk', 'makefile'],
+    ['nf', 'groovy'],
+    ['pl', 'perl'],
+    ['pm', 'perl'],
+    ['ps1', 'powershell'],
+    ['py', 'python'],
+    ['smk', 'python'],
+    ['rb', 'ruby'],
+    ['rs', 'rust'],
+    ['svg', 'xml'],
+    ['tex', 'latex'],
+    ['toml', 'toml'],
+    ['txt', 'text'],
+    // The structured raw-view grammars (styles/prismGrammars.ts): Prism's own
+    // `csv` has two token kinds and there is no `tsv` grammar at all.
+    ['csv', 'csv-table'],
+    ['tsv', 'tsv-table'],
+  ])('maps .%s to %s', (ext, language) => {
+    expect(languageFromPath(`/w/file.${ext}`)).toBe(language);
+  });
+
+  it.each([
+    ['Dockerfile', 'docker'],
+    ['Makefile', 'makefile'],
+    ['GNUmakefile', 'makefile'],
+    ['Justfile', 'makefile'],
+    ['Snakefile', 'python'],
+    ['dockerfile', 'docker'],
+  ])('reads the conventional file name %s as %s', (name, language) => {
+    expect(languageFromPath(`/w/${name}`)).toBe(language);
+  });
+});
+
+describe('languageForText', () => {
+  const log = [
+    '2026-09-14 08:05:51.970 INFO  [nextflow] Launching',
+    '2026-09-14 08:08:45.404 INFO  [executor] awsbatch',
+    '2026-09-14 08:31:13.096 WARN  [process] retrying',
+    '2026-09-14 08:48:05.219 ERROR [multiqc] truncated',
+  ].join('\n');
+
+  it('reads a .txt that is really a run log as a log', () => {
+    expect(looksLikeLog(log)).toBe(true);
+    expect(languageForText('/w/pipeline-run.txt', 'text/plain', log)).toBe('log');
+  });
+
+  it('leaves a prose .txt as plain text, and never overrides a real language', () => {
+    const prose = 'Paired design.\nAdjust for donor and batch.\nSee the report for details.';
+    expect(looksLikeLog(prose)).toBe(false);
+    expect(languageForText('/w/notes.txt', 'text/plain', prose)).toBe('text');
+    expect(languageForText('/w/run.py', 'text/x-python', log)).toBe('python');
+  });
+
+  // The bar is HALF of the first 40 non-empty lines, and at least three of
+  // them. A third let meeting notes that quote a few log lines read as a log.
+  it('needs half the opening lines to look like log lines', () => {
+    const logLine = (i: number) => `2026-09-14 08:0${i}:00 INFO step ${i}`;
+    const proseLine = (i: number) => `A sentence about the analysis, number ${i}.`;
+    const mix = (logs: number, prose: number) =>
+      [
+        ...Array.from({ length: logs }, (_, i) => logLine(i)),
+        ...Array.from({ length: prose }, (_, i) => proseLine(i)),
+      ].join('\n\n');
+    expect(looksLikeLog(mix(4, 4))).toBe(true); // exactly half
+    expect(looksLikeLog(mix(4, 5))).toBe(false); // 4 of 9: over a third, under half
+    expect(looksLikeLog(mix(2, 0))).toBe(false); // all log lines, but only two
+    expect(looksLikeLog(mix(3, 0))).toBe(true);
+    // Only the first 40 non-empty lines count: a log that starts after them is prose.
+    expect(looksLikeLog(`${mix(0, 40)}\n${mix(40, 0)}`)).toBe(false);
+  });
+
+  it('keeps a quoted log excerpt in meeting notes as prose', () => {
+    const notes = [
+      'Standup notes, 14 September.',
+      'The overnight run failed at MultiQC. Relevant lines:',
+      '2026-09-14 08:31:13 WARN  [process] retrying',
+      '2026-09-14 08:48:05 ERROR [multiqc] truncated',
+      'ERROR shows up again on the rerun',
+      'Action: rerun with more memory on the MultiQC step.',
+      'Owner: the pipeline on-call.',
+      'Next check-in on Thursday.',
+    ].join('\n');
+    expect(looksLikeLog(notes)).toBe(false);
+  });
+});
+
+describe('normalizeCodeLanguage', () => {
+  it('accepts R Markdown / Quarto chunk headers', () => {
+    expect(normalizeCodeLanguage('{r')).toBe('r');
+    expect(normalizeCodeLanguage('{r setup, include=FALSE}')).toBe('r');
+    expect(normalizeCodeLanguage('{python}')).toBe('python');
+  });
+
+  it('lower-cases kernel names, because Prism is case-sensitive', () => {
+    expect(normalizeCodeLanguage('R')).toBe('r');
+    expect(normalizeCodeLanguage('ir')).toBe('r');
+    expect(normalizeCodeLanguage('Python3')).toBe('python');
+    expect(normalizeCodeLanguage('')).toBe('text');
+    expect(normalizeCodeLanguage(null)).toBe('text');
+  });
+
+  it.each([
+    ['console', 'shell-session'],
+    ['ipython', 'python'],
+    ['ipython3', 'python'],
+    ['python3', 'python'],
+    ['snakemake', 'python'],
+    ['ir', 'r'],
+    ['rscript', 'r'],
+    ['jl', 'julia'],
+    ['nextflow', 'groovy'],
+    ['nf', 'groovy'],
+    ['plain', 'text'],
+    ['plaintext', 'text'],
+    ['txt', 'text'],
+    ['zsh', 'bash'],
+  ])('aliases %s to %s', (raw, language) => {
+    expect(normalizeCodeLanguage(raw)).toBe(language);
+  });
+
+  it('cuts a chunk header at whitespace, a comma or a closing brace', () => {
+    expect(normalizeCodeLanguage('{r, echo=FALSE}')).toBe('r');
+    expect(normalizeCodeLanguage('{python}')).toBe('python');
+    expect(normalizeCodeLanguage('  Bash  ')).toBe('bash');
+    // Anything Prism already knows passes through unchanged.
+    expect(normalizeCodeLanguage('sql')).toBe('sql');
+  });
+});
+
+describe('front matter', () => {
+  const rmd =
+    '---\ntitle: "Paired tumour vs normal"\nauthor: "Baranzini Lab"\ndate: 2026-09-14\n' +
+    'output:\n  html_document:\n    toc: true\nparams:\n  fdr: 0.05\n---\n\n## Cohort\n';
+
+  it('splits a leading YAML block off the body', () => {
+    const { frontMatter, body } = splitFrontMatter(rmd);
+    expect(frontMatter).toContain('title: "Paired tumour vs normal"');
+    expect(body).toBe('\n## Cohort\n');
+  });
+
+  it('leaves a document without front matter, or with a mid-document rule, alone', () => {
+    expect(splitFrontMatter('# Title\n\n---\n\ntext').frontMatter).toBeNull();
+  });
+
+  it('lifts the scalar title fields and keeps everything else verbatim', () => {
+    const fields = frontMatterFields(splitFrontMatter(rmd).frontMatter!);
+    expect(fields.title).toBe('Paired tumour vs normal');
+    expect(fields.byline).toEqual(['Baranzini Lab', '2026-09-14']);
+    expect(fields.rest).toBe('output:\n  html_document:\n    toc: true\nparams:\n  fdr: 0.05');
+  });
+
+  it.each([
+    'title: >-\n  A wrapped title',
+    'author: [Alice, Bob]',
+    'title: |\n  A literal title',
+    'title: First line\n  continued',
+  ])('keeps structured header YAML intact: %s', (yaml) => {
+    const fields = frontMatterFields(yaml);
+    expect(fields.title).toBeUndefined();
+    expect(fields.byline).toEqual([]);
+    expect(fields.rest).toBe(yaml);
+  });
+
+  it('does not lift a list-valued author', () => {
+    const fields = frontMatterFields('author:\n  - A. Person\n  - B. Person');
+    expect(fields.byline).toEqual([]);
+    expect(fields.rest).toContain('- A. Person');
+  });
+});
+
+describe('analyzeDelimitedColumns', () => {
+  it('finds numeric columns through exponents, signs, separators and NA', () => {
+    const header = ['gene', 'log2fc', 'padj', 'count', 'chrom'];
+    const rows = [
+      ['MYC', '2.982', '1.264e-03', '1,204', 'chr14'],
+      ['CDK4', '-0.757', 'NA', '980', 'chr2'],
+      ['TP53', '0.1', '4.2E-7', '12', 'chrX'],
+    ];
+    expect(analyzeDelimitedColumns(header, rows).map((c) => c.numeric)).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('marks sentence columns, which are the only ones clipped', () => {
+    const columns = analyzeDelimitedColumns(
+      ['id', 'description'],
+      [['MYC', 'MYC proto-oncogene, bHLH transcription factor; master regulator']]
+    );
+    expect(columns[0].prose).toBe(false);
+    expect(columns[1].prose).toBe(true);
+  });
+
+  it('treats the spellings R, pandas and Excel use for no value as missing', () => {
+    for (const value of ['', 'NA', 'nan', 'NULL', 'None', 'N/A', '#N/A']) {
+      expect(isMissingCell(value), value).toBe(true);
+    }
+    expect(isMissingCell('0')).toBe(false);
+  });
 });
 
 describe('languageLabel', () => {
@@ -282,6 +528,20 @@ describe('languageLabel', () => {
     expect(languageLabel('/w/q.sql')).toBe('SQL');
     expect(languageLabel('/w/x.py')).toBe('Python');
     expect(languageLabel('/w/notes.txt')).toBe('Text');
+  });
+
+  it('names the languages the panel added grammars or rows for', () => {
+    expect(languageLabel('/w/run.bat')).toBe('Batch');
+    expect(languageLabel('/w/Dockerfile')).toBe('Dockerfile');
+    expect(languageLabel('/w/paper.tex')).toBe('LaTeX');
+    expect(languageLabel('/w/Makefile')).toBe('Makefile');
+    expect(languageLabel('/w/build.ps1')).toBe('PowerShell');
+    expect(languageLabel('/w/salmon-quant.log')).toBe('Log');
+    expect(languageLabel('/w/rnaseq.nf')).toBe('Nextflow');
+    expect(languageLabel('/w/rules.smk')).toBe('Snakemake');
+    expect(languageLabel('/w/Snakefile')).toBe('Snakemake');
+    // The label is the FILE's: a .txt the preview highlights as a log is still Text.
+    expect(languageLabel('/w/pipeline-run.txt')).toBe('Text');
   });
 
   it('keeps acronyms uppercase rather than title-casing them', () => {

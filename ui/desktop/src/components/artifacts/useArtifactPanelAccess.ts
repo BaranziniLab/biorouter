@@ -310,7 +310,10 @@ export function useArtifactPanelAccess({
       if (!panel) return null;
       const rect = panel.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return null;
-      const shot = await window.electron?.captureRegion({
+      // ⚠ Optional on the METHOD, not only the bridge: a `biorouter serve`
+      // browser's bridge has no `captureRegion` (captureOnBrowser.ts), and a
+      // throw here reached the agent as the tool's result.
+      const shot = await window.electron?.captureRegion?.({
         x: rect.left,
         y: rect.top,
         width: rect.width,

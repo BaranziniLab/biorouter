@@ -408,3 +408,69 @@ describe('local file panel access', () => {
     expect(panelAccessFor('session-web')?.describe().sourceRevision).toBe('10:1');
   });
 });
+
+/**
+ * A `biorouter serve` browser has no Electron main process, so the bridge
+ * `renderer.tsx` installs there carries no `captureRegion`. The capture used to
+ * optional-chain only the bridge, so the agent's panel capture threw "is not a
+ * function" there, and the workspace channel handed the model that TypeError as
+ * the tool's result (measured on serve, 2026-09-14). A missing method is a
+ * capture that did not happen: `null`, like every other one.
+ */
+describe('panel capture on a bridge without captureRegion', () => {
+  const htmlArtifact: ArtifactSource = {
+    kind: 'html',
+    title: 'hello.html',
+    html: '<h1>Hello panel</h1>',
+  };
+
+  /** The panel element's box. jsdom measures nothing, and a zero box never reaches the call. */
+  function measurePanel() {
+    const panel = document.querySelector<HTMLElement>(`[${ARTIFACT_PANEL_ATTR}]`);
+    expect(panel).not.toBeNull();
+    vi.spyOn(panel as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 900,
+      y: 44,
+      left: 900,
+      top: 44,
+      right: 1260,
+      bottom: 620,
+      width: 360,
+      height: 576,
+      toJSON: () => ({}),
+    });
+  }
+
+  function installBridge(bridge: Record<string, unknown>) {
+    Object.defineProperty(window, 'electron', { configurable: true, value: bridge });
+  }
+
+  // The positive control first, through the SAME harness and the same box: a
+  // bridge that has the method is asked for the panel and its answer comes back.
+  // Without it, a null below could be the zero-box early return, not the fix.
+  it('reaches the capture call when the bridge has the method', async () => {
+    const shot = { path: '/tmp/panel.png', width: 360, height: 576 };
+    const captureRegion = vi.fn(async () => shot);
+    installBridge({ captureRegion, deleteTempFile: vi.fn() });
+    render(<Harness share={null} shownArtifact={htmlArtifact} />);
+    await waitFor(() => expect(panelAccessFor('session-web')).not.toBeNull());
+    measurePanel();
+
+    await expect(panelAccessFor('session-web')?.capture()).resolves.toEqual(shot);
+    expect(captureRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 900, y: 44, width: 360, height: 576, label: 'panel' })
+    );
+  });
+
+  it.each([
+    ['the browser bridge (no captureRegion)', () => ({ deleteTempFile: () => {} })],
+    ['a bridge with no methods at all', () => ({})],
+  ])('answers null instead of throwing on %s', async (_name, bridge) => {
+    installBridge(bridge());
+    render(<Harness share={null} shownArtifact={htmlArtifact} />);
+    await waitFor(() => expect(panelAccessFor('session-web')).not.toBeNull());
+    measurePanel();
+
+    await expect(panelAccessFor('session-web')?.capture()).resolves.toBeNull();
+  });
+});

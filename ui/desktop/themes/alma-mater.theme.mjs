@@ -42,6 +42,7 @@ export default {
       'background-card': '#ffffff',
       'background-muted': '#f4f4f2',
       'background-code': '#f5f5f3',
+      'background-well': '#f5f5f3',
       'background-medium': '#ecece9',
       'background-strong': '#dcdcd8',
       // A tooltip is a surface, so it is shared rather than set to this
@@ -137,7 +138,10 @@ export default {
     syntax: {
       plain: '#052049',
       comment: '#586780',
-      keyword: '#0f388a',
+      // #0f388a until the preview paper: navy on the #052049 navy ink, so a
+      // keyword differed from an identifier by weight alone. #0b67a8 separates
+      // by hue — 5.97:1 on #ffffff, 5.47:1 on the #f5f5f3 well.
+      keyword: '#0b67a8',
       string: '#007242',
       number: '#8a5a00',
       func: '#6c247c',
@@ -195,6 +199,7 @@ export default {
       'background-card': '#1b1b19',
       'background-muted': '#232320',
       'background-code': '#1b1b19',
+      'background-well': '#232320',
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
