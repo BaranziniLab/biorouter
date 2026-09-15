@@ -26,10 +26,12 @@ import {
   deleteWorkflow,
   WorkflowManifest,
   startAgent,
-  scheduleWorkflow,
   setWorkflowSlashCommand,
   workflowToYaml,
 } from '../../api';
+// Through `schedule.ts`, never the generated `scheduleWorkflow`: that module is
+// where every schedule write carries the person's proof and reads a refusal.
+import { scheduleWorkflowById } from '../../schedule';
 import ImportWorkflowForm, { ImportWorkflowButton } from './ImportWorkflowForm';
 import CreateEditWorkflowModal from './CreateEditWorkflowModal';
 import { generateDeepLink, Workflow } from '../../workflow';
@@ -301,12 +303,11 @@ export default function WorkflowsView() {
 
     setIsSavingSchedule(true);
     try {
-      await scheduleWorkflow({
-        body: {
-          id: scheduleWorkflowManifest.id,
-          cron_schedule: scheduleCron,
-        },
-      });
+      // ⚠ Awaited AND read. This call used to send no proof and ignore the
+      // answer, so a refused save — the daemon refuses a schedule whose work is
+      // private to a caller it cannot believe (issue #56) — still toasted
+      // "Schedule saved" over a workflow that was never scheduled.
+      await scheduleWorkflowById(scheduleWorkflowManifest.id, scheduleCron);
 
       // Named here too. The confirmation is the last chance to notice that the
       // wrong row's button was pressed, and "Workflow will run ..." says
@@ -323,8 +324,14 @@ export default function WorkflowsView() {
       await loadSavedWorkflows();
     } catch (error) {
       console.error('Failed to save schedule:', error);
-      const errorMsg = error instanceof Error ? error.message : 'Failed to save schedule';
-      setError(errorMsg);
+      // A toast with the daemon's own words, and the dialog left open on the
+      // schedule as it still is. Not `setError`: that state is the LIST's load
+      // error, and it replaced a list that had loaded fine with "Couldn't load
+      // workflows" (see `handleStartWorkflowChat`).
+      toastError({
+        title: 'Schedule not saved',
+        msg: error instanceof Error ? error.message : 'Failed to save schedule',
+      });
     } finally {
       setIsSavingSchedule(false);
     }
@@ -335,12 +342,9 @@ export default function WorkflowsView() {
 
     setIsSavingSchedule(true);
     try {
-      await scheduleWorkflow({
-        body: {
-          id: scheduleWorkflowManifest.id,
-          cron_schedule: null,
-        },
-      });
+      // ⚠ The worse half of the same defect: a refused removal toasted
+      // "will no longer run automatically" while the schedule kept running.
+      await scheduleWorkflowById(scheduleWorkflowManifest.id, null);
 
       toastSuccess({
         title: 'Schedule removed',
@@ -352,8 +356,10 @@ export default function WorkflowsView() {
       await loadSavedWorkflows();
     } catch (error) {
       console.error('Failed to remove schedule:', error);
-      const errorMsg = error instanceof Error ? error.message : 'Failed to remove schedule';
-      setError(errorMsg);
+      toastError({
+        title: 'Schedule not removed',
+        msg: error instanceof Error ? error.message : 'Failed to remove schedule',
+      });
     } finally {
       setIsSavingSchedule(false);
     }

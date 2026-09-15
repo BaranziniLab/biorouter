@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   startAgent: vi.fn(),
   setView: vi.fn(),
   userActionHeaders: vi.fn(),
+  scheduleWorkflow: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock('../../workflow/workflow_management', () => ({
@@ -23,6 +26,12 @@ vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
   setWorkflowSlashCommand: mocks.setWorkflowSlashCommand,
   startAgent: mocks.startAgent,
+  scheduleWorkflow: mocks.scheduleWorkflow,
+}));
+vi.mock('../../toasts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../toasts')>()),
+  toastSuccess: mocks.toastSuccess,
+  toastError: mocks.toastError,
 }));
 vi.mock('../../utils/userAction', () => ({ userActionHeaders: mocks.userActionHeaders }));
 vi.mock('../../utils/workingDir', () => ({ getInitialWorkingDir: () => '/tmp/workspace' }));
@@ -399,5 +408,92 @@ describe('the schedule dialog names the workflow it is about to schedule', () =>
 
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveAttribute('aria-describedby');
+  });
+});
+
+/**
+ * Issue #56. The daemon refuses `POST /workflows/schedule` for a schedule whose
+ * work is private unless the request carries the person's proof. This page
+ * called the generated client itself, sent no proof and never read the answer,
+ * so in the dev GUI on a private default (measured 2026-09-14) "Save" got a 403
+ * and toasted "Schedule saved", and "Remove schedule" got a 403 and toasted
+ * "will no longer run automatically" while the row still read "Runs at 03:00 am"
+ * and the scheduler still held the job.
+ */
+describe("the Workflows page's schedule writes carry the proof and read the answer", () => {
+  const REFUSAL = "That schedule's work is private, or there is no schedule with that id.";
+  const unscheduled = {
+    id: 'workflow-1',
+    file_path: '/tmp/one.yaml',
+    last_modified: '2026-07-11',
+    workflow: { title: 'Cohort review', description: 'one' },
+  };
+  const scheduled = { ...unscheduled, schedule_cron: '0 0 3 * * *' };
+
+  async function openDialog(row: typeof unscheduled, title: string) {
+    mocks.listSavedWorkflows.mockResolvedValue([row]);
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+    await screen.findByText('Cohort review');
+    fireEvent.click(screen.getByTitle(title));
+    return screen.findByRole('dialog');
+  }
+
+  it('Save sends the proof, and a refusal is an error rather than "Schedule saved"', async () => {
+    mocks.scheduleWorkflow.mockResolvedValue({
+      error: REFUSAL,
+      response: { ok: false, status: 403 },
+    });
+    const dialog = await openDialog(unscheduled, 'Add schedule');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+    expect(mocks.scheduleWorkflow).toHaveBeenCalledTimes(1);
+    expect(mocks.scheduleWorkflow.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        body: expect.objectContaining({ id: 'workflow-1' }),
+        headers: { 'X-User-Action': 'proof-of-user' },
+      })
+    );
+    expect(mocks.toastError.mock.calls[0][0].msg).toContain(REFUSAL);
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    // The dialog stays on the schedule as it still is, and the list is not
+    // replaced by "Couldn't load workflows".
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn.t load workflows/)).not.toBeInTheDocument();
+  });
+
+  it('Remove schedule sends the proof, and a refusal never says the schedule stopped', async () => {
+    mocks.scheduleWorkflow.mockResolvedValue({
+      error: REFUSAL,
+      response: { ok: false, status: 403 },
+    });
+    const dialog = await openDialog(scheduled, 'Edit schedule');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove schedule' }));
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
+    expect(mocks.scheduleWorkflow.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        body: { id: 'workflow-1', cron_schedule: null },
+        headers: { 'X-User-Action': 'proof-of-user' },
+      })
+    );
+    expect(mocks.toastError.mock.calls[0][0].msg).toContain(REFUSAL);
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('an accepted save still says so, and closes the dialog', async () => {
+    mocks.scheduleWorkflow.mockResolvedValue({ data: {}, response: { ok: true, status: 200 } });
+    const dialog = await openDialog(unscheduled, 'Add schedule');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledTimes(1));
+    expect(mocks.toastSuccess.mock.calls[0][0].title).toBe('Schedule saved');
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

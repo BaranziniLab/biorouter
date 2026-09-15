@@ -514,6 +514,7 @@ pub(crate) async fn add_schedule(
         creator_session_id: None,
         last_error: None,
         owns_source: None,
+        armed_with_private_reach: None,
     };
 
     let store = local()?;
@@ -922,6 +923,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         }
     }
 

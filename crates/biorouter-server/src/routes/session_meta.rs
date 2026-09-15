@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use axum::{extract::Query, extract::State, http::HeaderMap, routing::get, Json, Router};
 use biorouter::privacy::SessionClassification;
-use biorouter::session_meta::{SessionMetaDelta, SessionMetaEvents};
+use biorouter::session_meta::{SessionMetaChanged, SessionMetaDelta, SessionMetaEvents};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
@@ -118,10 +118,11 @@ fn parse_ids(raw: Option<&str>) -> Vec<String> {
     params(SessionChangesQuery),
     responses(
         (status = 200, description = "The session-row delta since `since`, holding only the chats \
-                                      this caller could open: a change to a private chat is \
-                                      omitted for a caller with neither the user-action proof nor \
-                                      a private capability, as the chat is from `GET /sessions`, \
-                                      and such a change never answers that caller's poll early", body = SessionMetaDelta),
+                                      this caller could open: a change is omitted for a caller with \
+                                      neither the user-action proof nor a private capability when \
+                                      its chat was private when it changed, is private now, or no \
+                                      longer exists, as the chat is from `GET /sessions`, and such \
+                                      a change never answers that caller's poll early", body = SessionMetaDelta),
         (status = 401, description = "Unauthorized - invalid secret key"),
     )
 )]
@@ -147,10 +148,16 @@ pub async fn session_changes(
     // `{"session_id":…,"provider_name":"versa_azure","model_name":…,
     // "privacy_tier":"private"}` while `GET /sessions/{that id}` refused it.
     //
-    // A change is shown exactly when `GET /sessions` would show its chat
+    // A change is shown only while `GET /sessions` would show its chat
     // (`HttpCaller::lists_session`), and the caller is resolved ONCE for the
-    // life of the poll. The row's own stored tier decides, so a chat that went
-    // private while the poll was parked is withheld from the moment it did.
+    // life of the poll.
+    //
+    // ⚠ **Asked of the chat as it is NOW, not only as the change recorded it.**
+    // The ring keeps a change for as long as it holds it, stamped with the tier
+    // the row had then — so filtering on that stamp alone kept handing a
+    // secret-only caller a chat's earlier public binding after the chat had gone
+    // private, whatever ids the poll named, while `GET /sessions/{id}` refused
+    // the same caller (independent QA, 2026-09-14). See `visible_changes`.
     let caller = crate::routes::session_reach::http_caller(&headers).await;
     let may_show = |tier: Option<&str>| {
         caller.lists_session(
@@ -158,6 +165,9 @@ pub async fn session_changes(
                 .unwrap_or(SessionClassification::Private),
         )
     };
+    // A caller admitted to a private chat is admitted to every chat, so it is
+    // answered without reading a single row back.
+    let shows_every_chat = caller.lists_session(SessionClassification::Private);
 
     // Claimed for the life of this poll and released when it answers, so the
     // row map is pruned against the union of every live watcher rather than
@@ -200,6 +210,10 @@ pub async fn session_changes(
         delta
             .changes
             .retain(|change| may_show(change.privacy_tier.as_deref()));
+        if !shows_every_chat && !delta.changes.is_empty() {
+            delta.changes =
+                visible_changes(&state, std::mem::take(&mut delta.changes), &may_show).await;
+        }
         if !delta.changes.is_empty() || delta.truncated {
             return Json(delta);
         }
@@ -221,6 +235,50 @@ pub async fn session_changes(
         let wait = POLL_INTERVAL.min(deadline - now);
         let _ = events.wait_for_change(examined, wait).await;
     }
+}
+
+/// `changes`, keeping only those whose chat the caller could open AS IT IS NOW.
+///
+/// Every change here already passed the filter on the tier it was recorded
+/// with. This is the second half: the chat's current row, read back through the
+/// same narrow four-column read the poll observes with. A change is kept when
+/// that row is still there and `may_show` admits its current tier, so the answer
+/// never outruns `GET /sessions`:
+///
+/// * a chat that went private after the change was recorded — its earlier
+///   public binding is withheld, as the chat is;
+/// * a chat that is gone — `GET /sessions` lists nothing for it either;
+/// * a store that cannot be read — withheld, the fail-closed side; the caller
+///   polls again.
+///
+/// ⚠ Withheld here means withheld from the ANSWER only, and the poll then parks
+/// exactly as it does for a change it never saw, so how soon it returns says
+/// nothing about the chat either.
+async fn visible_changes(
+    state: &AppState,
+    changes: Vec<SessionMetaChanged>,
+    may_show: impl Fn(Option<&str>) -> bool,
+) -> Vec<SessionMetaChanged> {
+    let mut named: Vec<String> = changes.iter().map(|c| c.session_id.clone()).collect();
+    named.sort();
+    named.dedup();
+    let Ok(rows) = state
+        .session_manager()
+        .storage()
+        .session_meta_rows(&named)
+        .await
+    else {
+        return Vec::new();
+    };
+    let still_shown: std::collections::HashSet<String> = rows
+        .into_iter()
+        .filter(|row| may_show(row.privacy_tier.as_deref()))
+        .map(|row| row.session_id)
+        .collect();
+    changes
+        .into_iter()
+        .filter(|change| still_shown.contains(&change.session_id))
+        .collect()
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

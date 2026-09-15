@@ -810,24 +810,49 @@ pub async fn work_reach(
 /// never reads it: SD-10 gives a `biorouter serve` browser its operator's tier
 /// on listings and knowledge bases only. That browser states its host's model
 /// in [`CALLER_PROVIDER_HEADER`] (SD-12), which is what reaches here.
+///
+/// # What an admission carries forward
+///
+/// The decision above is about the model a run resolves NOW, and a run resolves
+/// it again when it starts — the chat a schedule was made from can be deleted in
+/// between, and the run then falls back to the configured default. So an
+/// admission says whether the caller could reach private work at all
+/// ([`ScheduleAdmission::private_reach`]), a route that arms the schedule hands
+/// that to the scheduler, and a run armed by a caller that could not is refused
+/// if it would bind a private model (`scheduler::scheduled_run_refusal`).
+/// Measured before that existed (independent QA, 2026-09-14): with only the
+/// secret, re-time a schedule made from a public chat to every minute — public
+/// work, admitted — delete that public chat, and the next tick started a new
+/// chat on the private default with nobody present.
+///
+/// ⚠ **The record is not only this gate's.** A schedule `/loop`, `/schedule` or
+/// `manage_schedule` made in a public chat reaches none of these routes and
+/// records no standing, and deleting that chat needs only the secret — so the
+/// chain above needed no arming request at all (independent QA, 2026-09-14, on
+/// the first repair). A run on NO record is refused the private default when it
+/// stands in for a creator chat that is gone
+/// (`scheduler::RunModelSource::DefaultInPlaceOfCreator`); nothing here decides
+/// that, and nothing here needs to.
 pub async fn schedule_reach(
     manager: &SessionManager,
     schedule: Option<&biorouter::scheduler::ScheduledJob>,
     headers: &HeaderMap,
-) -> Result<(), SessionOutOfReach> {
+) -> Result<ScheduleAdmission, SessionOutOfReach> {
     let enforced = biorouter::privacy::privacy_tiers_enabled();
     if !enforced {
-        return Ok(());
+        return Ok(ScheduleAdmission {
+            private_reach: None,
+        });
     }
     let capability = caller_capability(headers).await;
     let proof = user_action_proof(headers);
     // A caller admitted to a target this daemon cannot even read is admitted to
     // every target — the same observation `HttpCaller::lists_work` fast-paths
     // on — so the desktop's every click is answered without a store read or a
-    // registry walk.
-    let target = if refuse_unless_reachable(enforced, TargetTier::Unreadable, capability, proof)
-        .is_ok()
-    {
+    // registry walk. It is also exactly the standing a run is later held to.
+    let private_reach =
+        refuse_unless_reachable(enforced, TargetTier::Unreadable, capability, proof).is_ok();
+    let target = if private_reach {
         TargetTier::Unreadable
     } else {
         match schedule {
@@ -857,7 +882,23 @@ pub async fn schedule_reach(
         }
     };
     refuse_unless_reachable(enforced, target, capability, proof)
+        .map(|()| ScheduleAdmission {
+            private_reach: Some(private_reach),
+        })
         .map_err(SessionOutOfReach::for_schedule)
+}
+
+/// What [`schedule_reach`] let through — the standing a route records on the
+/// schedule it arms, so a run that starts later is held to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleAdmission {
+    /// `Some(true)`: the caller could reach private work — the user-action
+    /// proof, or a stated private capability. `Some(false)`: it was admitted
+    /// only because the schedule's work was public when it asked. `None`: tiers
+    /// are off, so nothing was decided and nothing is recorded.
+    ///
+    /// Handed to the scheduler as `ScheduledJob::armed_with_private_reach`.
+    pub private_reach: Option<bool>,
 }
 
 /// A schedule's work, reduced to the one bit the gate turns on — see
@@ -1955,7 +1996,7 @@ mod tests {
                 schedule_rs,
                 "async fn run_now_handler(",
                 "schedule_reach(",
-                "match scheduler.run_now(&id)",
+                ".run_now_armed(&id",
                 "the run itself, a new chat bound to the schedule's model",
             ),
             (
@@ -1969,14 +2010,14 @@ mod tests {
                 schedule_rs,
                 "async fn unpause_schedule(",
                 "schedule_reach(",
-                "scheduler.unpause_schedule(",
+                ".unpause_schedule_armed(&id",
                 "the resume, which re-arms unattended runs",
             ),
             (
                 schedule_rs,
                 "async fn update_schedule(",
                 "schedule_reach(",
-                ".update_schedule(&id",
+                ".update_schedule_armed(&id",
                 "the re-time, and the job it answers with",
             ),
             (
@@ -1991,7 +2032,7 @@ mod tests {
                 workflow_rs,
                 "async fn schedule_workflow(",
                 "schedule_reach(",
-                ".schedule_workflow(file_path",
+                ".schedule_workflow_armed(file_path",
                 "the scheduler's add, re-time or removal for that workflow",
             ),
         ] {
@@ -4219,6 +4260,77 @@ mod bypass_tests {
             waited >= std::time::Duration::from_millis(2000),
             "a private chat's change woke a secret-only poll after {waited:?}: {body}"
         );
+
+        // PHASE 5 — a change recorded while its chat was PUBLIC, read after the
+        // chat went private. The ring keeps a change stamped with the tier the
+        // row had THEN, and filtering on that stamp alone kept handing it to a
+        // secret-only caller — naming the chat or a missing id alike — while
+        // `GET /sessions/{id}` refused the same caller (independent QA,
+        // 2026-09-14, on this branch).
+        let went_private = seed_chat(
+            &state,
+            "Row feed went private (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+        let gone = seed_chat(
+            &state,
+            "Row feed deleted (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+        let pair = [went_private.id(), gone.id()];
+        let (_, before, _, _) = poll_row_changes(state.clone(), 0, &pair, 50, &[PROOF]).await;
+        let (_, before, _, _) = poll_row_changes(state.clone(), before, &pair, 50, &[PROOF]).await;
+        rebind_row(
+            &state,
+            went_private.id(),
+            "anthropic",
+            "claude-went-private",
+        )
+        .await;
+        rebind_row(&state, gone.id(), "anthropic", "claude-then-deleted").await;
+        let (body, _, changed, _) = poll_row_changes(state.clone(), before, &pair, 3000, &[]).await;
+        assert!(
+            changed.contains(&went_private.id().to_string())
+                && changed.contains(&gone.id().to_string()),
+            "precondition: both changes were recorded while their chats were public and are \
+             reported to a secret-only caller: {body}"
+        );
+
+        state
+            .session_manager()
+            .update(went_private.id())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        state
+            .session_manager()
+            .delete_session(gone.id())
+            .await
+            .unwrap();
+        for ids in [&[went_private.id()][..], &[gone.id()][..], &[absent][..]] {
+            let (body, _, _, _) = poll_row_changes(state.clone(), before, ids, 1200, &[]).await;
+            assert!(
+                !body.contains(went_private.id()),
+                "naming {ids:?}, a secret-only caller was handed the earlier binding of a chat \
+                 that is private now: {body}"
+            );
+            assert!(
+                !body.contains(gone.id()),
+                "naming {ids:?}, a secret-only caller was handed the binding of a chat that no \
+                 longer exists: {body}"
+            );
+        }
+        // The person still reads the chat that went private, and every change
+        // it made on the way.
+        let (body, _, changed, _) =
+            poll_row_changes(state.clone(), before, &[went_private.id()], 3000, &[PROOF]).await;
+        assert!(
+            changed.contains(&went_private.id().to_string()),
+            "the person lost the change of a chat that went private: {body}"
+        );
     }
 
     /// Pull the id set out of a `GET /sessions/running` body.
@@ -4461,6 +4573,7 @@ mod bypass_tests {
             creator_session_id: chat.map(str::to_owned),
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         };
 
         for (headers, sees_private) in [(Vec::new(), false), (vec![PROOF], true)] {

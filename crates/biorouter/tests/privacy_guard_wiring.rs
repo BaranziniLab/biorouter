@@ -643,14 +643,20 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_meta.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`GET /sessions/changes`: ONE predicate asked of both the rows the poll \
-                       observes and the changes it answers with. Observed only for chats the \
-                       caller could open, so naming a private chat cannot make the poll publish \
-                       — and so answer, or move the revision — when that chat's row moves; \
-                       answered only with those chats' changes, since the ring is process-wide \
-                       and holds rows other windows watch",
+                what: "`GET /sessions/changes`: ONE predicate (the `may_show` closure) asked of \
+                       the rows the poll observes, of the tier each change was recorded with, \
+                       and — through `visible_changes` — of that chat's row as it is NOW. \
+                       Observed only for chats the caller could open, so naming a private chat \
+                       cannot make the poll publish — and so answer, or move the revision — when \
+                       that chat's row moves; answered only with changes to chats the caller \
+                       could still open, since the ring is process-wide, holds rows other \
+                       windows watch, and keeps a change stamped with the tier its chat had \
+                       then (a chat that went private kept leaking its earlier public binding, \
+                       independent QA 2026-09-14). The second call asks it once at `Private`, \
+                       so a caller that could open every chat is answered without reading a row \
+                       back",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session.rs",
@@ -750,7 +756,10 @@ const REGISTRY: &[Guard] = &[
                   SCHEDULE: its work is private when a chat it names (creator, current run) is \
                   private or unreadable, or when the model its runs bind is private; an id that \
                   names no schedule is answered as a private one. The same pure decision as \
-                  every other row, so work that is public stays open to any secret holder",
+                  every other row, so work that is public stays open to any secret holder. An \
+                  admission also says whether the caller could reach private work at all, and \
+                  each arming door records that on the job, because a run resolves its model \
+                  again when it starts (`scheduler::scheduled_run_refusal`)",
         status: Status::Wired,
         sites: &[
             Site {

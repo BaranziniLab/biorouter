@@ -122,7 +122,7 @@ async fn create_schedule(
     //
     // The job the gate is asked about is the job this handler creates, built
     // from the same request fields, so the answer cannot be about another one.
-    let job = ScheduledJob {
+    let mut job = ScheduledJob {
         id: req.id,
         source: req.workflow_source,
         cron: req.cron,
@@ -137,10 +137,15 @@ async fn create_schedule(
         creator_session_id: None,
         last_error: None,
         owns_source: None,
+        armed_with_private_reach: None,
     };
-    crate::routes::session_reach::schedule_reach(state.session_manager(), Some(&job), &headers)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    let admission =
+        crate::routes::session_reach::schedule_reach(state.session_manager(), Some(&job), &headers)
+            .await
+            .map_err(IntoResponse::into_response)?;
+    // What a run of this job is later held to: a caller admitted only to
+    // public work does not get a private run by the model moving afterwards.
+    job.armed_with_private_reach = admission.private_reach;
 
     // ⚠ The id names a FILE. `Path::join` throws its base away when the argument
     // is absolute and `..` resolves in the kernel, so an unvalidated `req.id`
@@ -380,9 +385,13 @@ async fn run_now_handler(
     // refused the same caller. The job is resolved once, gated, and the same
     // resolved job is what the display name below is read from.
     let job = named_schedule(&state, &id).await;
-    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
-        .await
-        .map_err(|refusal| (refusal.status, refusal.message.to_string()))?;
+    let admission = crate::routes::session_reach::schedule_reach(
+        state.session_manager(),
+        job.as_ref(),
+        &headers,
+    )
+    .await
+    .map_err(|refusal| (refusal.status, refusal.message.to_string()))?;
 
     let (workflow_display_name, workflow_version_opt) = if let Some(job) = job {
         let workflow_display_name = std::path::Path::new(&job.source)
@@ -427,7 +436,9 @@ async fn run_now_handler(
 
     tracing::info!("Server: Calling scheduler.run_now() for job '{}'", id);
 
-    match scheduler.run_now(&id).await {
+    // `_armed`: THIS run is held to this caller's standing. Admitted to public
+    // work, it is refused if the model moves to a private one before it binds.
+    match scheduler.run_now_armed(&id, admission.private_reach).await {
         Ok(session_id) => Ok(Json(RunNowResponse { session_id })),
         Err(e) => {
             eprintln!("Error running schedule '{}' now: {:?}", id, e);
@@ -630,18 +641,26 @@ async fn unpause_schedule(
     // Issue #56: resuming re-arms unattended runs on the schedule's model —
     // `run_now` on a timer — so it asks what `run_now` asks.
     let job = named_schedule(&state, &id).await;
-    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    let admission = crate::routes::session_reach::schedule_reach(
+        state.session_manager(),
+        job.as_ref(),
+        &headers,
+    )
+    .await
+    .map_err(IntoResponse::into_response)?;
 
-    scheduler.unpause_schedule(&id).await.map_err(|e| {
-        eprintln!("Error unpausing schedule '{}': {:?}", id, e);
-        match e {
-            biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .into_response()
-    })?;
+    // Recorded with the resume: its runs are held to this caller's standing.
+    scheduler
+        .unpause_schedule_armed(&id, admission.private_reach)
+        .await
+        .map_err(|e| {
+            eprintln!("Error unpausing schedule '{}': {:?}", id, e);
+            match e {
+                biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+            .into_response()
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -684,12 +703,18 @@ async fn update_schedule(
     // field `GET /schedule/list` beside it redacts for that caller. Gated first,
     // and the answer is redacted exactly as the listing is.
     let job = named_schedule(&state, &id).await;
-    crate::routes::session_reach::schedule_reach(state.session_manager(), job.as_ref(), &headers)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    let admission = crate::routes::session_reach::schedule_reach(
+        state.session_manager(),
+        job.as_ref(),
+        &headers,
+    )
+    .await
+    .map_err(IntoResponse::into_response)?;
 
+    // Recorded with the new time, even an unchanged one: its runs are held to
+    // this caller's standing.
     scheduler
-        .update_schedule(&id, req.cron)
+        .update_schedule_armed(&id, req.cron, admission.private_reach)
         .await
         .map_err(|e| {
             eprintln!("Error updating schedule '{}': {:?}", id, e);

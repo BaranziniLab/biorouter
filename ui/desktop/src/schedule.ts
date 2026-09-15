@@ -9,6 +9,7 @@ import {
   runNowHandler as apiRunScheduleNow,
   killRunningJob as apiKillRunningJob,
   inspectRunningJob as apiInspectRunningJob,
+  scheduleWorkflow as apiScheduleWorkflow,
   SessionDisplayInfo,
 } from './api';
 import { userActionHeaders } from './utils/userAction';
@@ -20,6 +21,15 @@ import { userActionHeaders } from './utils/userAction';
 // resume or delete a schedule whose work is private. None of that is an error
 // the Schedules view could tell from a real one — `schedule.userProof.test.ts`
 // holds the line.
+//
+// ⚠ **Every schedule write goes through this module, the Workflows page's
+// included.** `WorkflowsView` used to call the generated `scheduleWorkflow`
+// itself, with no proof and without reading the answer. Once the daemon gated
+// `POST /workflows/schedule`, its "Add schedule", re-time and "Remove schedule"
+// were each refused, and each still toasted success — the removal telling the
+// person a private schedule had stopped when it had not (measured 2026-09-14).
+// A write that lives here is covered by the proof test; one that does not is
+// covered by nothing.
 
 export interface ScheduledJob {
   id: string;
@@ -114,12 +124,16 @@ function failureMessage(
  * for a 400, a 404 or a refusal, and the view toasted "paused" over a schedule
  * that was not. A refusal is now common enough to matter: the daemon refuses a
  * schedule whose work is private to a caller it cannot believe (issue #56).
+ *
+ * ⚠ **A request that never got an answer failed too.** When `fetch` itself
+ * rejects, the client resolves `{ error }` with no `response` at all, and a
+ * check that looked only at `response.ok` read that as success.
  */
 function throwIfRefused(
   prefix: string,
   response: { error?: unknown; response?: { ok?: boolean; status?: number } } | undefined
 ): void {
-  if (response?.response && response.response.ok === false) {
+  if (response?.error !== undefined || response?.response?.ok === false) {
     throw new Error(failureMessage(prefix, response));
   }
 }
@@ -252,6 +266,30 @@ export async function updateSchedule(scheduleId: string, cron: string): Promise<
     throw new Error(failureMessage('Failed to update schedule', response));
   } catch (error) {
     console.error(`Error updating schedule ${scheduleId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Schedule a saved workflow by its id, re-time its schedule, or — with `cron`
+ * `null` — remove it. `POST /workflows/schedule`, the Workflows page's
+ * "Add schedule", "Edit schedule" and "Remove schedule".
+ *
+ * The route answers 200 with no body, so a refusal is the only thing to read,
+ * and it is read: the daemon refuses a schedule whose work is private to a
+ * caller it cannot believe (issue #56), and nothing else on that page would
+ * notice.
+ */
+export async function scheduleWorkflowById(workflowId: string, cron: string | null): Promise<void> {
+  const prefix = cron === null ? 'Failed to remove schedule' : 'Failed to save schedule';
+  try {
+    const response = await apiScheduleWorkflow<true>({
+      body: { id: workflowId, cron_schedule: cron },
+      headers: await userActionHeaders(),
+    });
+    throwIfRefused(prefix, response);
+  } catch (error) {
+    console.error(`Error scheduling workflow ${workflowId}:`, error);
     throw error;
   }
 }
