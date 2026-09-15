@@ -1426,6 +1426,7 @@ function BaseChatContent({
     turnStartedAt,
     lastMessageAt,
     pendingSteer,
+    steerRecoveries,
     pendingContinuation,
     agentReady,
     notifications: toolCallNotifications,
@@ -2570,6 +2571,7 @@ function BaseChatContent({
                               turnStartedAt={turnStartedAt}
                               lastMessageAt={lastMessageAt}
                               pendingSteer={pendingSteer}
+                              steerRecoveries={steerRecoveries}
                               onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
                               canStopTurn={!subagentTabReadOnly}
                               onRenderingComplete={handleRenderingComplete}

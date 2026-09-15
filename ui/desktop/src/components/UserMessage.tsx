@@ -42,9 +42,10 @@ interface UserMessageProps {
    * absent otherwise, which hides the control.
    */
   onSendAgain?: (text: string) => void;
+  deliveryUnconfirmed?: boolean;
 }
 
-export default function UserMessage({ message, onMessageUpdate, onSendAgain }: UserMessageProps) {
+export default function UserMessage({ message, onMessageUpdate, onSendAgain, deliveryUnconfirmed = false }: UserMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -471,12 +472,12 @@ export default function UserMessage({ message, onMessageUpdate, onSendAgain }: U
                     Stored so the words are never lost, and drawn as what it is
                     — it used to look exactly like a delivered message, sitting
                     unanswered in the middle of the conversation. */}
-                {message.metadata?.steerOutcome === 'unanswered' && (
+                {(deliveryUnconfirmed || message.metadata?.steerOutcome === 'unanswered') && (
                   <div
                     data-testid="steer-unanswered"
                     className="mt-1.5 flex items-center justify-end gap-2.5 text-supporting text-text-muted"
                   >
-                    <span>Not answered: the turn ended before the agent read this.</span>
+                    <span>{deliveryUnconfirmed ? 'Delivery unconfirmed. Check the transcript before sending again.' : 'Not answered: the turn ended before the agent read this.'}</span>
                     {onSendAgain && (
                       <MessageMetaAction
                         onClick={() => onSendAgain(displayText)}

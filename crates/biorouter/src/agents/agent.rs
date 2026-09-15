@@ -3357,7 +3357,7 @@ pub(super) struct SoftInterrupts {
     next_seq: u64,
     /// Client idempotency keys this turn has already accepted (D5): a steer
     /// retried after a lost response is answered 202 again, not queued twice.
-    accepted_keys: HashSet<String>,
+    accepted_keys: Vec<(String, TurnId)>,
     /// Opened by a runner that continues the turn for a steer typed after a
     /// safety stop ([`Agent::take_continuation_steer`]).
     continuable: bool,
@@ -3371,7 +3371,7 @@ impl SoftInterrupts {
             prepared: false,
             queued: Vec::new(),
             next_seq: 0,
-            accepted_keys: HashSet::new(),
+            accepted_keys: Vec::new(),
             continuable: false,
         }
     }
@@ -4785,7 +4785,6 @@ impl Agent {
             );
             q.queued.clear();
         }
-        q.accepted_keys.clear();
         q.continuable = false;
         q.turn = Some(turn);
         q.accepting = true;
@@ -4849,7 +4848,7 @@ impl Agent {
     ///
     /// A renderer that lost the answer to its steer — a network blip, a timeout —
     /// retries it with the same key, and must not put the words into the turn
-    /// twice. The key is remembered for the life of the turn that accepted it;
+    /// twice. The most recent 256 keys survive closure and subsequent turns;
     /// a duplicate is answered as accepted and queues nothing.
     pub fn try_queue_soft_interrupt_keyed(
         &self,
@@ -4858,6 +4857,15 @@ impl Agent {
         key: Option<String>,
     ) -> Result<SteerAdmission, InterruptRefused> {
         let mut q = self.lock_interrupts();
+        if let Some((_, turn)) = key
+            .as_ref()
+            .and_then(|key| q.accepted_keys.iter().find(|(held, _)| held == key))
+        {
+            return Ok(SteerAdmission {
+                turn: turn.clone(),
+                duplicate: true,
+            });
+        }
         if !q.accepting {
             return Err(if q.turn.is_some() {
                 InterruptRefused::TurnClosing
@@ -4867,12 +4875,11 @@ impl Agent {
         }
         let turn = q.turn.clone().ok_or(InterruptRefused::TurnEnded)?;
         if let Some(key) = key {
-            if !q.accepted_keys.insert(key) {
-                return Ok(SteerAdmission {
-                    turn,
-                    duplicate: true,
-                });
+            const RECEIPT_LIMIT: usize = 256;
+            if q.accepted_keys.len() == RECEIPT_LIMIT {
+                q.accepted_keys.remove(0);
             }
+            q.accepted_keys.push((key, turn.clone()));
         }
         q.push(text, provenance);
         let seq = q.next_seq;
@@ -15698,6 +15705,31 @@ mod tests {
             matches!(agent.close_and_drain(), Drained::Empty),
             "ordinary stale interrupts must retain the existing drop-on-new-turn contract"
         );
+    }
+
+    #[tokio::test]
+    async fn steer_receipt_survives_closure_and_successor_turn() {
+        let agent = Agent::new();
+        let original = TurnId::new("receipt-original");
+        agent.open_for_turn(original.clone());
+        let accepted = agent
+            .try_queue_soft_interrupt_keyed("once".into(), None, Some("receipt-key".into()))
+            .unwrap();
+        assert!(!accepted.duplicate);
+        assert!(matches!(agent.close_and_drain(), Drained::Some(_)));
+        assert!(matches!(agent.close_and_drain(), Drained::Empty));
+        let retry = agent
+            .try_queue_soft_interrupt_keyed("once".into(), None, Some("receipt-key".into()))
+            .unwrap();
+        assert!(retry.duplicate);
+        assert_eq!(retry.turn, original);
+        agent.open_for_turn(TurnId::new("receipt-successor"));
+        let retry = agent
+            .try_queue_soft_interrupt_keyed("once".into(), None, Some("receipt-key".into()))
+            .unwrap();
+        assert!(retry.duplicate);
+        assert_eq!(retry.turn, original);
+        assert!(!agent.has_soft_interrupts());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

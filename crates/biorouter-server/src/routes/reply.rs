@@ -1761,6 +1761,9 @@ pub struct InterruptRequest {
     /// again and the text is not queued twice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// Exact original turn addressed by a retry, independent of its idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_turn_id: Option<String>,
 }
 
 /// Why `POST /interrupt` answered 409 — the body of that refusal.
@@ -2003,7 +2006,18 @@ pub async fn interrupt(
     if req.text.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST.into_response());
     }
-    if let Some(turn_id) = req.turn_id.clone() {
+    if let Some(turn_id) = req
+        .turn_id
+        .as_deref()
+        .and_then(|key| state.steer_receipt(&req.session_id, key))
+    {
+        return Ok((StatusCode::ACCEPTED, Json(InterruptAccepted { turn_id })));
+    }
+    if let Some(turn_id) = req
+        .turn_id
+        .clone()
+        .filter(|_| req.expected_turn_id.is_none())
+    {
         let queued_message = crate::workspace::turn::stamp_user_direct_if_subagent(
             Message::user()
                 .with_id(turn_id.clone())
@@ -2017,6 +2031,7 @@ pub async fn interrupt(
         ) {
             biorouter::agents::subagent_handle::InitialInputDisposition::Queued
             | biorouter::agents::subagent_handle::InitialInputDisposition::Duplicate => {
+                state.record_steer_receipt(&req.session_id, &turn_id, &turn_id);
                 return Ok((StatusCode::ACCEPTED, Json(InterruptAccepted { turn_id })));
             }
             biorouter::agents::subagent_handle::InitialInputDisposition::NotInitializing => {}
@@ -2055,13 +2070,28 @@ pub async fn interrupt(
             .map_err(IntoResponse::into_response)?,
     };
     let (phase, phase_age_ms) = agent.loop_phase_snapshot();
-    match agent.try_queue_soft_interrupt_keyed(req.text, provenance, req.turn_id) {
+    let admission = state.with_steer_target(&session_id, req.expected_turn_id.as_deref(), || {
+        agent.try_queue_soft_interrupt_keyed(req.text, provenance, req.turn_id.clone())
+    });
+    let Some(admission) = admission else {
+        return Err(interrupt_conflict(
+            &state,
+            &session_id,
+            InterruptRefusalReason::NoTurn,
+        ));
+    };
+    match admission {
         Ok(admission) => {
             // Instrumentation for "a steer never landed": the phase it was
             // accepted into is what it is waiting behind. Paired with the
             // agent's `steer_consumed` line.
-            if let Some(stream) = state.active_turn_stream(&session_id) {
-                stream.note_user_activity(&agent);
+            if let Some(key) = req.turn_id.as_deref() {
+                state.record_steer_receipt(&session_id, key, admission.turn.as_str());
+            }
+            if !admission.duplicate {
+                if let Some(stream) = state.active_turn_stream(&session_id) {
+                    stream.note_user_activity(&agent);
+                }
             }
             tracing::info!(
                 session_id,
@@ -4880,6 +4910,7 @@ mod tests {
                         session_id: session_id.to_string(),
                         text: text.to_string(),
                         turn_id: turn_id.map(str::to_string),
+                        expected_turn_id: None,
                     })
                     .unwrap(),
                 ))
@@ -5092,6 +5123,69 @@ mod tests {
             }
         }
 
+        #[tokio::test(flavor = "multi_thread")]
+        async fn steer_receipt_survives_closed_idle_and_successor_turns() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let sid = "receipt-lifecycle";
+            let guard = begin_turn(&state, sid).unwrap();
+            let agent = state.get_agent(sid.into()).await.unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("original-steer-turn"));
+            let send = || {
+                routes(Arc::clone(&state)).oneshot(interrupt_request_with_turn(
+                    sid,
+                    "once",
+                    Some("lifecycle-key"),
+                ))
+            };
+            assert_eq!(send().await.unwrap().status(), StatusCode::ACCEPTED);
+            assert!(matches!(
+                agent.close_and_drain(),
+                biorouter::agents::Drained::Some(_)
+            ));
+            assert!(matches!(
+                agent.close_and_drain(),
+                biorouter::agents::Drained::Empty
+            ));
+            assert_eq!(send().await.unwrap().status(), StatusCode::ACCEPTED);
+            drop(guard);
+            assert_eq!(send().await.unwrap().status(), StatusCode::ACCEPTED);
+            let _successor = begin_turn(&state, sid).unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("successor-steer-turn"));
+            let response = send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["turn_id"], "original-steer-turn");
+            assert!(!agent.has_soft_interrupts());
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_evicted_steer_receipt_cannot_enter_a_successor_turn() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let sid = "receipt-evicted";
+            let _successor = begin_turn(&state, sid).unwrap();
+            let agent = state.get_agent(sid.into()).await.unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("successor-steer-turn"));
+            state.record_steer_receipt(sid, "old-key", "old-turn");
+            for n in 0..4096 {
+                state.record_steer_receipt(sid, &format!("key-{n}"), "other-turn");
+            }
+            assert!(state.steer_receipt(sid, "old-key").is_none());
+            let request = Request::builder().uri("/interrupt").method("POST")
+                .header("content-type", "application/json").header("x-secret-key", "test-secret")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
+                .body(Body::from(serde_json::json!({"session_id": sid, "text": "once", "turn_id": "old-key", "expected_turn_id": "old-turn"}).to_string())).unwrap();
+            assert_eq!(
+                routes(state).oneshot(request).await.unwrap().status(),
+                StatusCode::CONFLICT
+            );
+            assert!(!agent.has_soft_interrupts());
+        }
+
         /// D12d: a 409 says WHY, so a client can tell "no turn — send it now"
         /// from "the turn is closing — send it at its terminal frame". The 403
         /// shapes are not touched (SD-11); only the 409 gained a body.
@@ -5227,6 +5321,7 @@ mod tests {
                         workflow_name: None,
                         workflow_version: None,
                         turn_id: turn_id.map(str::to_string),
+                        expected_turn_id: None,
                         continuation_lease: None,
                         reasoning_effort: None,
                         from_seq: None,

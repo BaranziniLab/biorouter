@@ -224,6 +224,53 @@ describe('D5 — the controller owns a steer until the daemon answers it', () =>
     await submit;
   });
 
+  it('queries the accepted receipt after Finish even when the echo was missed', async () => {
+    const { controller, driving, submit, turnId } = await drivingTurn('steer-settled-receipt');
+    mocks.interrupt
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({ data: { turn_id: turnId }, response: { status: 202 } });
+    vi.useFakeTimers();
+    try {
+      const steering = controller.steer('only once');
+      await vi.advanceTimersByTimeAsync(0);
+      driving.push({ type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent);
+      driving.close();
+      await submit;
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(steering).resolves.toBe(true);
+      expect(mocks.interrupt).toHaveBeenCalledTimes(2);
+      expect(mocks.interrupt.mock.calls[1][0]).toMatchObject({
+        body: { expected_turn_id: turnId },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not send an echoed steer again when its retry is refused', async () => {
+    const { controller, driving, submit } = await drivingTurn('steer-echo-refusal');
+    let reject!: (result: unknown) => void;
+    mocks.interrupt.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          reject = resolve;
+        })
+    );
+    const steering = controller.steer('only once');
+    await vi.waitFor(() => expect(mocks.interrupt).toHaveBeenCalledTimes(1));
+    driving.push({
+      type: 'Message',
+      message: userText('steer-echo', 'only once'),
+      token_state: tokenState,
+    } as MessageEvent);
+    await vi.waitFor(() => expect(controller.getSnapshot().pendingSteer).toBeUndefined());
+    reject({ error: { reason: 'no_turn' }, response: { status: 409 } });
+    await expect(steering).resolves.toBe(true);
+    driving.push({ type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent);
+    driving.close();
+    await submit;
+  });
+
   it('retries a steer whose POST never answers', async () => {
     const { controller, driving, submit } = await drivingTurn('steer-hung');
     mocks.interrupt
