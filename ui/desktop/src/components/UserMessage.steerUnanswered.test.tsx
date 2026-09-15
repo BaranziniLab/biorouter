@@ -40,6 +40,17 @@ describe('an unanswered steer', () => {
     expect(screen.queryByRole('button', { name: 'Send this message again' })).toBeNull();
   });
 
+  it('keeps unconfirmed text visible and offers an explicit retry', () => {
+    const onSendAgain = vi.fn();
+    render(<UserMessage message={steer()} deliveryUnconfirmed onSendAgain={onSendAgain} />);
+    expect(screen.getByText('use the 2024 cohort')).toBeVisible();
+    expect(
+      screen.getByText('Delivery unconfirmed. Check the transcript before sending again.')
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Send this message again' }));
+    expect(onSendAgain).toHaveBeenCalledWith('use the 2024 cohort');
+  });
+
   it('draws a delivered steer as an ordinary message', () => {
     render(<UserMessage message={steer()} onSendAgain={vi.fn()} />);
     expect(screen.queryByTestId('steer-unanswered')).toBeNull();

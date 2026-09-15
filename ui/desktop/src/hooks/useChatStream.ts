@@ -1,3 +1,4 @@
+import type { SteerRecovery } from '../utils/steerRecovery';
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { ChatState } from '../types/chatState';
 import { Message, Session, TokenState } from '../api';
@@ -60,6 +61,7 @@ interface UseChatStreamReturn {
   lastMessageAt?: number;
   /** BR-61: a soft interrupt issued but not yet echoed back by the agent. */
   pendingSteer?: PendingSteer;
+  steerRecoveries?: SteerRecovery[];
   pendingContinuation?: PendingContinuationView;
   /** F5: the daemon confirmed that this chat's last Stop ended a running turn. Transient. */
   stopConfirmed?: StopConfirmedView;
@@ -140,6 +142,7 @@ export function useChatStream({
     turnStartedAt: snapshot.turnStartedAt,
     lastMessageAt: snapshot.lastMessageAt,
     pendingSteer: snapshot.pendingSteer,
+    steerRecoveries: snapshot.steerRecoveries,
     pendingContinuation: snapshot.pendingContinuation,
     stopConfirmed: snapshot.stopConfirmed,
     agentReady: snapshot.agentReady,

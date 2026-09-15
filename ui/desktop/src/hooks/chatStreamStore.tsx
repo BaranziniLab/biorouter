@@ -4369,8 +4369,9 @@ class ChatStreamController {
     // and a hung POST held the chip for ten minutes.
     const key = newTurnId();
     const expectedTurnId = this.activeTurnId;
+    const steerMessageId = `steer:${key}`;
     const baseline = this.steerBaseline;
-    const recoveryAnchor = this.messagesRef.at(-1)?.id;
+    const recoveryAnchor = this.messagesRef[this.messagesRef.length - 1]?.id ?? undefined;
     const recoveryIndex = this.messagesRef.length;
     let ambiguous = false;
     let backoffMs = ChatStreamController.STEER_RETRY_FIRST_MS;
@@ -4394,7 +4395,7 @@ class ChatStreamController {
               headers: await userActionHeaders(),
               throwOnError: true,
             });
-            if (response.data?.conversation?.some((message) => message.id === key)) {
+            if (response.data?.conversation?.some((message) => message.id === steerMessageId)) {
               retract();
               return true;
             }
@@ -4404,17 +4405,20 @@ class ChatStreamController {
           retract();
           this.updateSnapshot((prev) => ({
             ...prev,
-            steerRecoveries: [...(prev.steerRecoveries ?? []), {
-              afterMessageId: recoveryAnchor,
-              index: recoveryIndex,
-              message: {
-                id: key,
-                role: 'user',
-                created: Math.floor(issued.since / 1000),
-                content: [{ type: 'text', text: trimmed }],
-                metadata: { userVisible: true, agentVisible: false },
+            steerRecoveries: [
+              ...(prev.steerRecoveries ?? []),
+              {
+                afterMessageId: recoveryAnchor,
+                index: recoveryIndex,
+                message: {
+                  id: steerMessageId,
+                  role: 'user',
+                  created: Math.floor(issued.since / 1000),
+                  content: [{ type: 'text', text: trimmed }],
+                  metadata: { userVisible: true, agentVisible: false },
+                },
               },
-            }],
+            ],
           }));
           return true;
         }

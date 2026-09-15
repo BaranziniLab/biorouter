@@ -3388,13 +3388,16 @@ impl SoftInterrupts {
         &mut self,
         text: String,
         provenance: Option<crate::conversation::message::MessageProvenance>,
+        key: Option<String>,
     ) {
         self.next_seq += 1;
         self.queued.push(QueuedInterrupt {
             text,
             provenance,
             seq: self.next_seq,
-            message_id: new_message_id(),
+            message_id: key
+                .map(|key| format!("steer:{key}"))
+                .unwrap_or_else(new_message_id),
             created: chrono::Utc::now().timestamp(),
             accepted_at: std::time::Instant::now(),
             in_flight: false,
@@ -4884,14 +4887,14 @@ impl Agent {
             });
         }
         let turn = q.turn.clone().ok_or(InterruptRefused::TurnEnded)?;
-        if let Some(key) = key {
+        if let Some(key) = key.as_ref() {
             const RECEIPT_LIMIT: usize = 256;
             if q.accepted_keys.len() == RECEIPT_LIMIT {
                 q.accepted_keys.remove(0);
             }
-            q.accepted_keys.push((key, turn.clone()));
+            q.accepted_keys.push((key.clone(), turn.clone()));
         }
-        q.push(text, provenance);
+        q.push(text, provenance, key);
         let seq = q.next_seq;
         drop(q);
         self.soft_interrupt_notify.notify_one();
@@ -4931,7 +4934,7 @@ impl Agent {
         provenance: Option<crate::conversation::message::MessageProvenance>,
     ) {
         let mut q = self.lock_interrupts();
-        q.push(text, provenance);
+        q.push(text, provenance, None);
         let seq = q.next_seq;
         drop(q);
         self.soft_interrupt_notify.notify_one();

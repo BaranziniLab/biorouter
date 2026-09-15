@@ -99,8 +99,19 @@ export default function ProgressiveMessageList({
   onSendAgain,
   canStopTurn = true,
 }: ProgressiveMessageListProps) {
-  const messages = useMemo(() => withSteerRecoveries(storedMessages, steerRecoveries), [storedMessages, steerRecoveries]);
-  const recoveryIds = useMemo(() => new Set(steerRecoveries?.filter(({ message }) => !storedMessages.some((stored) => stored.id === message.id)).map(({ message }) => message.id)), [storedMessages, steerRecoveries]);
+  const messages = useMemo(
+    () => withSteerRecoveries(storedMessages, steerRecoveries),
+    [storedMessages, steerRecoveries]
+  );
+  const recoveryIds = useMemo(
+    () =>
+      new Set(
+        steerRecoveries
+          ?.filter(({ message }) => !storedMessages.some((stored) => stored.id === message.id))
+          .map(({ message }) => message.id)
+      ),
+    [storedMessages, steerRecoveries]
+  );
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
     return messages.length <= showLoadingThreshold

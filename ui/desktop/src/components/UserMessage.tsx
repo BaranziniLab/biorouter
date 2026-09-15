@@ -45,7 +45,12 @@ interface UserMessageProps {
   deliveryUnconfirmed?: boolean;
 }
 
-export default function UserMessage({ message, onMessageUpdate, onSendAgain, deliveryUnconfirmed = false }: UserMessageProps) {
+export default function UserMessage({
+  message,
+  onMessageUpdate,
+  onSendAgain,
+  deliveryUnconfirmed = false,
+}: UserMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -477,7 +482,11 @@ export default function UserMessage({ message, onMessageUpdate, onSendAgain, del
                     data-testid="steer-unanswered"
                     className="mt-1.5 flex items-center justify-end gap-2.5 text-supporting text-text-muted"
                   >
-                    <span>{deliveryUnconfirmed ? 'Delivery unconfirmed. Check the transcript before sending again.' : 'Not answered: the turn ended before the agent read this.'}</span>
+                    <span>
+                      {deliveryUnconfirmed
+                        ? 'Delivery unconfirmed. Check the transcript before sending again.'
+                        : 'Not answered: the turn ended before the agent read this.'}
+                    </span>
                     {onSendAgain && (
                       <MessageMetaAction
                         onClick={() => onSendAgain(displayText)}
