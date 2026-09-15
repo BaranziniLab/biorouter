@@ -3658,17 +3658,24 @@ mod tests {
         let cancel = CancellationToken::new();
         let signal = cancel.clone();
         let id = session.id.clone();
-        let stream = async_stream::stream! {
+        let stream = futures::stream::once(async {
             let mut tx = pool.begin().await.unwrap();
-            sqlx::query("UPDATE sessions SET name = name WHERE id = ?").bind(&id).execute(&mut *tx).await.unwrap();
+            sqlx::query("UPDATE sessions SET name = name WHERE id = ?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
             // Cancellation is raised only after SQLite holds the write lock.
             // Keeping this transaction in the suspended stream reproduces a
             // stopped steer write without sleeps or a production test hook.
             signal.cancel();
             std::future::pending::<()>().await;
             drop(tx);
-            yield Ok(AgentEvent::Message(Message::assistant().with_text("unreachable")));
-        }.boxed();
+            Ok(AgentEvent::Message(
+                Message::assistant().with_text("unreachable"),
+            ))
+        })
+        .boxed();
         let mut all = Conversation::new_unvalidated(Vec::new());
         let mut stopped = Vec::new();
         let failed = tokio::time::timeout(
