@@ -79,7 +79,9 @@ export function extensionFromPath(value: string): string {
 // The bioinformatics rows are the ones an agent in this app actually writes and
 // that the extension alone got wrong: a Nextflow `.nf` reached Prism as `nf`
 // (unregistered, so plain) and a `.log` was forced to `text` although refractor
-// ships a `log` grammar.
+// ships a `log` grammar. CSV and TSV map to the structured raw-view grammars in
+// styles/prismGrammars.ts; Prism's own `csv` has two token kinds and there is
+// no `tsv` at all.
 const PRISM_LANGUAGES: Record<string, string> = {
   bash: 'bash',
   bat: 'batch',
@@ -88,6 +90,7 @@ const PRISM_LANGUAGES: Record<string, string> = {
   cjs: 'javascript',
   cs: 'csharp',
   conf: 'ini',
+  csv: 'csv-table',
   cts: 'typescript',
   cwl: 'yaml',
   env: 'bash',
@@ -124,19 +127,35 @@ const PRISM_LANGUAGES: Record<string, string> = {
   tex: 'latex',
   toml: 'toml',
   ts: 'typescript',
+  tsv: 'tsv-table',
   tsx: 'tsx',
   txt: 'text',
   yml: 'yaml',
   zsh: 'bash',
 };
 
-// Files named by convention rather than by extension.
+// Files named by convention rather than by extension (case-insensitive). Checked
+// before the extension, because these names have none to go on.
 const PRISM_BASENAMES: Record<string, string> = {
   dockerfile: 'docker',
+  gnumakefile: 'makefile',
+  justfile: 'makefile',
   makefile: 'makefile',
   snakefile: 'python',
 };
 
+/**
+ * The code view's line-number gutter width, at the 13px code size. Mirrored by
+ * `--paper-code-gutter: calc(3.5 * 13px)` in main.css, which hangs the gutter
+ * exactly this far left of the paper column's edge so code text lands on it.
+ */
+export const PAPER_GUTTER_EM = '3.5em';
+
+/**
+ * The Prism language for a file: its conventional basename, then its extension
+ * (mapped, then raw — Prism's own registry knows `r`, `sql`, `go`, …), then its
+ * MIME type, then plain text.
+ */
 export function languageFromPath(value: string, mimeType?: string): string {
   const ext = extensionFromPath(value);
   const byName = PRISM_BASENAMES[basenameFromPath(value).toLowerCase()];
@@ -156,20 +175,20 @@ const LOG_LINE_RE =
   /^\s*(?:\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|\[?\d{2}:\d{2}:\d{2}|\[?(?:TRACE|DEBUG|INFO|NOTICE|WARN(?:ING)?|ERROR|FATAL|CRITICAL)\b)/;
 
 /**
- * True when a plain-text file is really a log: at least a third of its first
- * non-empty lines open with a timestamp or a level. Agents write run output to
- * `.txt` as often as to `.log`, and a log reads far better with its levels,
- * dates and numbers picked out. Prose `.txt` stays plain — the `log` grammar
- * colours stray numbers and quotes, which is noise in a paragraph.
+ * True when a plain-text file is really a log: at least HALF of its first 40
+ * non-empty lines open with a timestamp or a level, and at least three do.
+ * Agents write run output to `.txt` as often as to `.log`, and a log reads far
+ * better with its levels and dates picked out. Prose `.txt` stays plain — the
+ * `log` grammar colours stray numbers and quotes, which is noise in a paragraph
+ * — and a third was too low a bar: notes that quote a few log lines crossed it.
  */
 export function looksLikeLog(text: string): boolean {
   const lines = text
-    .split(/\r?\n/, 200)
+    .split(/\r?\n/, 400)
     .filter((line) => line.trim() !== '')
-    .slice(0, 60);
-  if (lines.length < 3) return false;
+    .slice(0, 40);
   const hits = lines.filter((line) => LOG_LINE_RE.test(line)).length;
-  return hits / lines.length >= 1 / 3;
+  return hits >= 3 && hits / lines.length >= 1 / 2;
 }
 
 /** The Prism language for a text file, using its CONTENT where the name is not enough. */
@@ -273,10 +292,11 @@ export function isMissingCell(value: string): boolean {
  *
  * `numeric`: at least 90% of the present values parse as a number (thousands
  * separators, exponents and percentages included), so the column is set
- * right-aligned in tabular figures and its digits line up. `prose`: the values
- * are long enough to be sentences, so that column — and only that column — may
- * wrap; every other cell stays on one line so an identifier or an exponent can
- * never break mid-token.
+ * right-aligned in tabular figures and its digits line up. `prose`: the mean
+ * value is longer than 32 characters, so the column reads as sentences and is
+ * clipped to 44ch with an ellipsis (the full value is the cell's title). No
+ * cell ever wraps: a wrapped cell off to the right set the height of the whole
+ * row, and an identifier or an exponent must never break mid-token.
  */
 export function analyzeDelimitedColumns(
   header: string[],
@@ -309,6 +329,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   csharp: 'C#',
   css: 'CSS',
   csv: 'CSV',
+  'csv-table': 'CSV',
   docker: 'Dockerfile',
   html: 'HTML',
   ini: 'INI',
@@ -316,6 +337,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   json: 'JSON',
   jsx: 'JSX',
   latex: 'LaTeX',
+  log: 'Log',
   makefile: 'Makefile',
   markdown: 'Markdown',
   matlab: 'MATLAB',
@@ -325,6 +347,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   text: 'Text',
   toml: 'TOML',
   tsv: 'TSV',
+  'tsv-table': 'TSV',
   tsx: 'TSX',
   typescript: 'TypeScript',
   xml: 'XML',

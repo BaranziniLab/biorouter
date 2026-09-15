@@ -37,7 +37,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readdir } from 'node:fs/promises';
-import { buildScopes, resolveRaw, resolveHex, contrast } from './lib/theme-tokens.mjs';
+import { blend, buildScopes, resolveRaw, resolveHex, contrast } from './lib/theme-tokens.mjs';
 import { buildGraphPalette } from './lib/graph-palette.mjs';
 import * as graphSpec from '../themes/graph.mjs';
 import {
@@ -531,6 +531,38 @@ const failures = [];
             failures.push(
               `${t.id}.${mode}: syntax "${s}" ${t[mode].syntax[s]} on ${label} ${cg} = ${c.toFixed(2)}:1 (need 4.5)`
             );
+          }
+        }
+      }
+      // …and under a selection. `::selection` (main.css) sets a translucent
+      // Biorouter-orange ground and deliberately no `color`, so every syntax
+      // stop is read on that tint composited over whatever it was selected on.
+      // A selection is transient and user-driven, so the floor is 3:1 rather
+      // than 4.5 — but a stop that dissolves into the tint (a comment ink the
+      // same lightness as the composite) fails here, not in someone's eye.
+      {
+        const hue = resolveHex('--selection-hue', scope);
+        const alphaRaw = resolveRaw('--selection-alpha', scope);
+        const alpha =
+          alphaRaw && /^\d+(\.\d+)?%$/.test(alphaRaw) ? parseFloat(alphaRaw) / 100 : null;
+        if (!hue || alpha === null) {
+          failures.push(
+            `${t.id}.${mode}: selection tint does not resolve (--selection-hue ${hue}, --selection-alpha ${alphaRaw})`
+          );
+        } else {
+          for (const [label, token] of [
+            ['paper ground', '--background-default'],
+            ['paper well', '--background-well'],
+          ]) {
+            const composite = blend(hue, alpha, resolveHex(token, scope));
+            for (const s of SYNTAX_STOPS) {
+              const c = contrast(t[mode].syntax[s], composite);
+              if (c < 3) {
+                failures.push(
+                  `${t.id}.${mode}: syntax "${s}" ${t[mode].syntax[s]} under selection on ${label} (${composite}) = ${c.toFixed(2)}:1 (need 3)`
+                );
+              }
+            }
           }
         }
       }

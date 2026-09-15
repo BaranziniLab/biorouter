@@ -592,6 +592,21 @@ was removed to make it true:
   Preview/Raw toggle; `.csv`/`.tsv` → a real table (quoted fields honoured,
   capped at 500 rows) with a Table/Raw toggle; everything else → syntax-
   highlighted, line-numbered code with a language chip and Copy.
+  **Every text preview sits on "paper"** — `.br-paper`, painting
+  `--background-default`, the exact ground an Auto Visualiser chart paints
+  (`artifactPaper.test.ts` pins the two together) — with a 760px column
+  (`.br-paper-measure`, PROVISIONAL until the geometry track's
+  `.br-preview-measure` lands inside the scroller) and one left edge for prose,
+  code and tables. Fenced blocks, inline code and notebook source sit in the
+  shared `--background-well` token, not `--background-code` (which in dark *is*
+  the page). Selection is renderer-wide Biorouter orange from `--selection-hue`
+  / `--selection-alpha` — literals in a bare `:root`/`.dark` pair that no family
+  may re-declare, because Alma Mater re-points the coral scale to teal. All of
+  it is authored CSS in `main.css` ("Preview paper"), placed right after the
+  `code [class~='token']` rule, never Tailwind strings. The pieces live in
+  `MarkdownDocument.tsx`, `DelimitedTable.tsx`, `CodeBlock` in
+  `ArtifactViewer.tsx`, and `styles/prismGrammars.ts` (raw CSV/TSV grammars,
+  R/Python call tokens, log refinements).
 - **Syntax highlighting** follows the app theme *and* the theme family. The one
   palette lives in `ui/desktop/src/styles/codeTheme.ts` and is selected as
   `codeThemesByFamily[useThemeFamily()][useResolvedTheme()]` — the identical

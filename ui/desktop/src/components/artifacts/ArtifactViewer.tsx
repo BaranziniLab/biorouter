@@ -28,10 +28,12 @@ import {
   ARTIFACT_PANEL_ATTR,
 } from '../../utils/tabCycle';
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   Camera,
   Code,
+  Copy,
   ExternalLink,
   Eye,
   File,
@@ -46,7 +48,6 @@ import {
   Search,
   X,
 } from '../icons/app-icons';
-import MarkdownContent from '../MarkdownContent';
 import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
 import {
   DropdownMenu,
@@ -55,7 +56,9 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
+import DelimitedTable from './DelimitedTable';
 import DocumentPreview from './DocumentPreview';
+import MarkdownDocument from './MarkdownDocument';
 import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import type {
@@ -67,18 +70,14 @@ import type {
 } from './artifactTypes';
 import {
   basenameFromPath,
-  dirnameFromPath,
   extensionFromPath,
-  analyzeDelimitedColumns,
-  frontMatterFields,
   imageSourceForPreview,
   isDelimitedPath,
   isMarkdownPath,
-  isMissingCell,
   languageForText,
   languageLabel,
+  PAPER_GUTTER_EM,
   parseDelimitedTable,
-  splitFrontMatter,
   splitPathForStrip,
   STRIP_IDENT_CLASS,
   STRIP_LABEL_CLASS,
@@ -92,10 +91,6 @@ const MAX_TABLE_ROWS = 500;
 
 // Line numbers stop helping once a file is long enough that nobody is counting.
 const MAX_LINE_NUMBERED_LINES = 5_000;
-
-// The code view's gutter width. Mirrored by `--paper-code-gutter` in main.css,
-// which hangs the gutter exactly this far left of the paper column's edge.
-const PAPER_GUTTER_EM = '3.5em';
 
 const MAX_TIFF_DIMENSION = 8_192;
 const MAX_TIFF_PIXELS = 32_000_000;
@@ -2061,7 +2056,20 @@ function CodeBlock({
   sourceLine?: number;
 }) {
   const lineCount = countLines(text);
-  const codeStyle = codeThemesByFamily[useThemeFamily()][resolvedTheme];
+  const theme = codeThemesByFamily[useThemeFamily()][resolvedTheme];
+  // The gutter is quiet by fading its INK, not the element: an `opacity` would
+  // fade the sticky gutter's opaque paper ground too, and a long line scrolled
+  // under it showed through the numbers. Same 55% as the old `opacity: 0.55`.
+  const codeStyle = useMemo(() => {
+    const gutter = theme['react-syntax-highlighter-line-number'];
+    return {
+      ...theme,
+      'react-syntax-highlighter-line-number': {
+        ...gutter,
+        color: `color-mix(in srgb, ${gutter?.color} 55%, transparent)`,
+      },
+    };
+  }, [theme]);
   const codeRef = useRef<HTMLDivElement>(null);
   const numbered = lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES;
   const selectedLine =
@@ -2080,15 +2088,24 @@ function CodeBlock({
     }
   }, [selectedLine, text]);
   return (
-    // `data-numbered` tells the paper CSS whether a gutter exists, so the code's
-    // left edge can land on the column edge either way (main.css, "paper").
+    // `br-paper-code` is the hook for the authored rules in main.css (block
+    // lines, the sticky gutter, the selected row). `data-numbered` says whether
+    // a gutter exists, so the code's left edge lands on the column edge either way.
     <div ref={codeRef} className="br-paper-code min-h-full" data-numbered={numbered || undefined}>
       <SyntaxHighlighter
         style={codeStyle}
         language={language}
         PreTag="div"
         showLineNumbers={numbered}
-        wrapLines={selectedLine !== undefined}
+        // Every numbered line is its own element (`[data-source-line]`), so the
+        // gutter can stick while long lines scroll under it and a requested source
+        // line paints its whole row. Still no `wrapLongLines`: combined with
+        // `showLineNumbers` the highlighter makes every line `display: flex`
+        // (highlight.js:106), which turns each token into a flex item and shreds
+        // the line across the panel's width. Long lines scroll horizontally
+        // instead, which is what a code viewer should do anyway — and it keeps
+        // indentation honest.
+        wrapLines={numbered || selectedLine !== undefined}
         lineProps={(lineNumber) => ({
           'data-source-line': lineNumber,
           ...(lineNumber === selectedLine
@@ -2099,39 +2116,45 @@ function CodeBlock({
             : {}),
         })}
         lineNumberStyle={{
-          // A FIXED gutter width, not the library's digits-based one, so the
-          // paper CSS can hang the gutter exactly one width left of the column
-          // edge: the code text then aligns with a report's prose at every
-          // panel width. 3.5em holds four digits, and MAX_LINE_NUMBERED_LINES
-          // stops numbering before a fifth is needed.
-          minWidth: PAPER_GUTTER_EM,
+          // The gutter's box runs from the scroller's left edge to the paper
+          // column's edge: its left padding is the margin the column sits in, and
+          // the number itself takes a FIXED width (not the library's digits-based
+          // one) so code text lands exactly on the column edge and aligns with a
+          // report's prose at every panel width. Because the box already starts
+          // at x=0, the sticky `left: 0` in main.css never moves it: the gutter
+          // stays put and opaque while a long line scrolls under it. 3.5em holds
+          // four digits, and MAX_LINE_NUMBERED_LINES stops numbering before a
+          // fifth is needed.
+          minWidth: `calc(var(--paper-code-start-numbered) + ${PAPER_GUTTER_EM})`,
           boxSizing: 'border-box',
+          paddingLeft: 'var(--paper-code-start-numbered)',
           paddingRight: '1.35em',
           textAlign: 'right',
-          // Quiet, not invisible: the `linenumber` entry in codeTheme.ts sets
-          // the family's comment ink, upright; this takes it down to a gutter.
-          opacity: 0.55,
+          // Ink, slant and weight come from the `react-syntax-highlighter-line-
+          // number` entry in codeTheme.ts (comment ink, upright, 400), faded to a
+          // gutter in `codeStyle` above — never with `opacity` (see there).
           userSelect: 'none',
           // A gutter is the one place where digit alignment is the whole job.
           fontVariantNumeric: 'tabular-nums',
         }}
-        // No `wrapLongLines`: combined with `showLineNumbers` the highlighter makes
-        // every line `display: flex` (highlight.js:106), which turns each token into
-        // a flex item and shreds the line across the panel's width. Long lines scroll
-        // horizontally instead, which is what a code viewer should do anyway — and it
-        // keeps indentation honest.
         customStyle={{
           margin: 0,
-          // The inline edge comes from the paper CSS variables: the column edge,
-          // less the gutter when there is one. See `.br-paper-code` in main.css.
+          // The inline edges come from the paper CSS variables (main.css,
+          // `.br-paper`): unnumbered code starts on the column edge; numbered code
+          // starts at the scroller's edge because the gutter carries the margin.
           padding: numbered
-            ? '28px var(--paper-gutter) 48px var(--paper-code-start-numbered)'
+            ? '28px var(--paper-gutter) 48px 0'
             : '28px var(--paper-gutter) 48px var(--paper-inset)',
           minHeight: '100%',
           width: 'max-content',
           minWidth: '100%',
           boxSizing: 'border-box',
           background: 'transparent',
+          // ⚠ Load-bearing. The theme's `pre` entry sets `overflow: auto`, which
+          // makes this div a scroll container that never scrolls — and a sticky
+          // gutter sticks to its NEAREST scroll container, so it would ride along
+          // with the text. The paper scroller is the one that scrolls.
+          overflow: 'visible',
         }}
         codeTagProps={{
           style: {
@@ -2168,10 +2191,17 @@ function CopyButton({ text }: { text: string }) {
       // A control inside the status strip: bottom rung of the radius ladder,
       // and the sanctioned dense-control size. `text-label` (14px) does not fit
       // a 34px strip, but `text-supporting` (12px) would render it at metadata
-      // size and it would stop looking pressable — so `text-secondary`.
-      className="rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
+      // size and it would stop looking pressable — so `text-secondary`. The 12px
+      // icon is the one a fenced block's Copy carries (MarkdownContent), so the
+      // two Copy controls in the panel read as the same control.
+      className="inline-flex items-center gap-1 rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
     >
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? (
+        <Check className="h-3 w-3" aria-hidden="true" />
+      ) : (
+        <Copy className="h-3 w-3" aria-hidden="true" />
+      )}
+      <span>{copied ? 'Copied' : 'Copy'}</span>
     </button>
   );
 }
@@ -2210,6 +2240,7 @@ function TextFilePreview({
 
   const lineCount = useMemo(() => countLines(file.text), [file.text]);
   const showingCode = showRaw || !renderable;
+  // Parsed once: the table renders these rows and the strip states their shape.
   const tableRows = useMemo(
     () =>
       delimited
@@ -2255,8 +2286,8 @@ function TextFilePreview({
         ) : (
           tableShape && (
             <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
-              {tableShape.rows.toLocaleString()} row{tableShape.rows === 1 ? '' : 's'} ×{' '}
-              {tableShape.columns.toLocaleString()}
+              {tableShape.rows.toLocaleString()} row{tableShape.rows === 1 ? '' : 's'} ·{' '}
+              {tableShape.columns.toLocaleString()} column{tableShape.columns === 1 ? '' : 's'}
             </span>
           )
         )}
@@ -2309,7 +2340,7 @@ function TextFilePreview({
         {showingCode ? (
           code
         ) : markdown ? (
-          <MarkdownDocument file={file} onOpenArtifact={onOpenArtifact} />
+          <MarkdownDocument text={file.text} path={file.path} onOpenArtifact={onOpenArtifact} />
         ) : html ? (
           // Same sandbox + theme injection as the figure preview above. `allow-popups`
           // is withheld so the framed HTML can't window.open() into a real BrowserWindow
@@ -2326,159 +2357,7 @@ function TextFilePreview({
             className="h-full w-full bg-white"
           />
         ) : (
-          <DelimitedTable rows={tableRows ?? []} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * A markdown file as a document: its front matter lifted into a title block, the
- * body set as prose in the paper column.
- */
-function MarkdownDocument({
-  file,
-  onOpenArtifact,
-}: {
-  file: Extract<ArtifactFilePreview, { kind: 'text' | 'html' }>;
-  onOpenArtifact?: (artifact: ArtifactSource) => void;
-}) {
-  const { frontMatter, body } = useMemo(() => splitFrontMatter(file.text), [file.text]);
-  const header = useMemo(
-    () => (frontMatter === null ? null : frontMatterFields(frontMatter)),
-    [frontMatter]
-  );
-  return (
-    // PROVISIONAL `br-paper-measure`: the 760px column. The panel-geometry track
-    // owns the measure wrapper (`.br-preview-measure`); swap this class for
-    // theirs when it lands. The prose styling does not depend on which one it is.
-    <article className="br-paper-measure br-paper-doc">
-      {header && (header.title || header.byline.length > 0 || header.rest) && (
-        <header className="br-paper-frontmatter">
-          {header.title && <h1 className="br-paper-title">{header.title}</h1>}
-          {header.subtitle && <p className="br-paper-subtitle">{header.subtitle}</p>}
-          {header.byline.length > 0 && (
-            <p className="br-paper-byline">
-              {header.byline.map((part, index) => (
-                <span key={index}>{part}</span>
-              ))}
-            </p>
-          )}
-          {header.rest && (
-            // The rest of the front matter is configuration, not prose: one
-            // quiet disclosure away, as the YAML it is — never dropped, and not
-            // a second box stacked under the title before the report begins.
-            <details className="br-paper-frontmatter-more">
-              <summary>Front matter</summary>
-              <MarkdownContent
-                content={`\`\`\`yaml\n${header.rest}\n\`\`\``}
-                className="br-paper-prose br-paper-frontmatter-yaml"
-                softLineBreaks
-              />
-            </details>
-          )}
-        </header>
-      )}
-      {/* Anchor relative image/link paths against the FILE's own directory
-          (not the app cwd), and let sibling-file links open in this panel. */}
-      <MarkdownContent
-        content={body}
-        className="br-paper-prose"
-        workingDir={dirnameFromPath(file.path)}
-        onOpenArtifact={onOpenArtifact}
-        softLineBreaks
-      />
-    </article>
-  );
-}
-
-function DelimitedTable({ rows }: { rows: string[][] }) {
-  const { header, shown, hidden, columns } = useMemo(() => {
-    const [head = [], ...body] = rows;
-    const visible = body.slice(0, MAX_TABLE_ROWS);
-    return {
-      header: head,
-      shown: visible,
-      hidden: body.length - visible.length,
-      columns: analyzeDelimitedColumns(head, visible),
-    };
-  }, [rows]);
-
-  // The frame's left edge is the column edge — unless the table is too wide to
-  // show whole from there, in which case it yields just enough to bring the last
-  // column into view, and only a table wider than the whole panel scrolls. That
-  // needs the table's real width, which CSS cannot read, so it is published as a
-  // custom property the frame's padding resolves against (main.css).
-  const frameRef = useRef<HTMLDivElement>(null);
-  const tableRef = useRef<HTMLTableElement>(null);
-  useEffect(() => {
-    const frame = frameRef.current;
-    const table = tableRef.current;
-    if (!frame || !table || typeof ResizeObserver === 'undefined') return;
-    const sync = () => frame.style.setProperty('--paper-table-width', `${table.offsetWidth}px`);
-    sync();
-    const observer = new ResizeObserver(sync);
-    observer.observe(table);
-    return () => observer.disconnect();
-  }, [rows]);
-
-  if (rows.length === 0) {
-    return <div className="br-paper-measure br-paper-empty">This file has no rows.</div>;
-  }
-
-  return (
-    // Its own scroller, so the header can stick: a sticky cell sticks to its
-    // nearest scrolling ancestor, and the frame's left padding puts the table on
-    // the column edge while letting a wide table run past the column's right.
-    <div className="br-paper-table-scroll">
-      <div ref={frameRef} className="br-paper-table-frame">
-        <table ref={tableRef} className="br-paper-table">
-          <thead>
-            <tr>
-              {header.map((cell, index) => (
-                <th key={index} scope="col" data-numeric={columns[index]?.numeric || undefined}>
-                  {cell}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((row, rowIndex) => (
-              <tr key={rowIndex}>
-                {header.map((_, cellIndex) => {
-                  const value = row[cellIndex] ?? '';
-                  const prose = columns[cellIndex]?.prose;
-                  return (
-                    <td
-                      key={cellIndex}
-                      data-numeric={columns[cellIndex]?.numeric || undefined}
-                      data-prose={prose || undefined}
-                      data-missing={isMissingCell(value) || undefined}
-                    >
-                      {/* A sentence column is clipped to one line, never wrapped:
-                          a wrapped cell off to the right sets the height of the
-                          whole row, so rows you CAN see went uneven for text you
-                          could not. The full value is the title, and Raw. */}
-                      {prose ? (
-                        <span className="br-paper-cell-clip" title={value}>
-                          {value}
-                        </span>
-                      ) : (
-                        value
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {hidden > 0 && (
-          <p className="br-paper-table-note">
-            {hidden.toLocaleString()} more row{hidden === 1 ? '' : 's'} not shown. Open the raw view
-            for the full file.
-          </p>
+          <DelimitedTable rows={tableRows ?? []} maxRows={MAX_TABLE_ROWS} />
         )}
       </div>
     </div>

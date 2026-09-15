@@ -77,6 +77,38 @@ describe('NotebookPreview', () => {
     );
     // Plain text renders no token spans; the R grammar does (`TRUE`, `15`).
     expect(container.querySelector('section[aria-label="Code cell 1"] code .token')).not.toBeNull();
+    // No cell cards: the source sits in the paper well, the prompt in the margin.
+    expect(
+      container.querySelector('section[aria-label="Code cell 1"] .br-paper-well')
+    ).not.toBeNull();
+  });
+
+  it('restates the light selection tint inside the sandboxed output', () => {
+    render(
+      <ThemeProvider>
+        <NotebookPreview
+          file={notebookFile(
+            JSON.stringify({
+              cells: [
+                {
+                  cell_type: 'code',
+                  source: ['df'],
+                  outputs: [
+                    {
+                      output_type: 'execute_result',
+                      data: { 'text/html': '<table border="1"></table>' },
+                    },
+                  ],
+                },
+              ],
+            })
+          )}
+          resolvedTheme="light"
+        />
+      </ThemeProvider>
+    );
+    const srcdoc = screen.getByTitle('HTML notebook output').getAttribute('srcdoc') ?? '';
+    expect(srcdoc).toContain('::selection{background:rgba(207,109,71,0.24)}');
   });
 
   it('shows a readable error for malformed notebook JSON', () => {
@@ -171,7 +203,9 @@ describe('NotebookPreview HTML output theming', () => {
     // A separate document: the renderer's orange selection and the paper table
     // treatment are restated inside it, since it cannot load main.css. pandas
     // writes `<table border="1">`, which only `border:0` on the table undoes.
-    expect(srcdoc).toContain('::selection{background:rgba(232, 137, 95, 0.3)}');
+    // The dark tint is the renderer's: #e8895f at 24%, never Paper's 30% slab.
+    expect(srcdoc).toContain('::selection{background:rgba(232,137,95,0.24)}');
     expect(srcdoc).toContain('table{border:0;');
+    expect(srcdoc).toContain('td,th{border:0;border-bottom:1px solid');
   });
 });

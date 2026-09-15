@@ -8,6 +8,7 @@ import {
   codeThemeLight,
   codeThemesByFamily,
 } from './codeTheme';
+import { GENERATED_THEMES } from './themes.generated';
 
 function luminance(hex: string): number {
   const channels = [1, 3, 5]
@@ -89,29 +90,91 @@ describe('code theme', () => {
     expect(codePalettesRoche.dark.palette.func).not.toBe('#1e88e5');
   });
 
-  // Every family must be registered for BOTH modes: the consumer indexes
-  // codeThemesByFamily[family][mode] with no fallback, so a missing entry is a
-  // runtime undefined rather than a type error at the call site.
   // react-syntax-highlighter merges the theme's `comment` entry (italic) over a
   // call site's lineNumberStyle, and strips from the DOM every class a theme
-  // KEY names. So the gutter entry must sit on the last class of the three and
-  // must not be keyed `linenumber`, which is the class the gutter is found by.
-  it('keeps the line-number gutter upright without stripping its class', () => {
+  // KEY names — each half of a dotted key included. So the gutter entry must
+  // sit on the last class of the three, and no key may be named after a class
+  // something else selects on: `linenumber` (the gutter hook), `table` (the
+  // Prism/Tailwind collision rule in main.css) or `token`.
+  it('keeps the line-number gutter upright without stripping a hook class', () => {
     for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
       for (const mode of ['light', 'dark'] as const) {
         const theme = codeThemesByFamily[family][mode];
         expect(theme['react-syntax-highlighter-line-number']?.fontStyle).toBe('normal');
-        expect(theme).not.toHaveProperty('linenumber');
+        expect(theme['react-syntax-highlighter-line-number']?.fontWeight).toBe(400);
+        const classes = new Set(Object.keys(theme).flatMap((key) => key.split('.')));
+        for (const hook of ['linenumber', 'table', 'token']) {
+          expect(classes.has(hook), `${family}.${mode} keys "${hook}"`).toBe(false);
+        }
       }
     }
   });
 
-  it('gives log severity its own hue instead of one keyword colour', () => {
-    const theme = codeThemeLight;
-    expect(theme['level.error'].color).toBe(codePalettes.light.deleted);
-    expect(theme['level.warning'].color).not.toBe(theme['level.info'].color);
+  // A config file is mostly keys and literals. YAML aliases its keys to
+  // `atrule` and its true/false/null to `important`, both keyword-coloured, so
+  // every key and literal rendered as the keyword hue at weight 600 — a bold
+  // coral wall. The pair keys win over the aliases.
+  it('does not paint YAML and JSON keys or literals in the keyword colour', () => {
+    for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
+      for (const mode of ['light', 'dark'] as const) {
+        const theme = codeThemesByFamily[family][mode];
+        const { keyword, func, number } = GENERATED_THEMES[family][mode].syntax;
+        const where = `${family}.${mode}`;
+        expect(theme['key.atrule'].color, where).toBe(func);
+        expect(theme['key.atrule'].fontWeight, where).toBe(400);
+        for (const literal of ['boolean.important', 'null.important', 'null.keyword']) {
+          expect(theme[literal].color, `${where} ${literal}`).toBe(number);
+          expect(theme[literal].color, `${where} ${literal}`).not.toBe(keyword);
+          expect(theme[literal].fontWeight, `${where} ${literal}`).toBe(400);
+        }
+        expect(theme.property.color, where).toBe(func);
+        expect(theme['attr-name'].color, where).toBe(func);
+      }
+    }
   });
 
+  // Hue carries a keyword's role; 600 made a SQL file a column of bold words.
+  // A class name stays 600, because at 500 it thinned until it read as ink.
+  it('sets keywords at 500 and class names at 600', () => {
+    for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
+      for (const mode of ['light', 'dark'] as const) {
+        const theme = codeThemesByFamily[family][mode];
+        const { type } = GENERATED_THEMES[family][mode].syntax;
+        expect(theme.keyword.fontWeight).toBe(500);
+        expect(theme['keyword.module'].fontWeight).toBe(500);
+        expect(theme.important.fontWeight).toBe(500);
+        expect(theme['class-name']).toEqual({ color: type, fontWeight: 600 });
+        // `float`/`int` in the function hue read exactly like the call beside them.
+        expect(theme.builtin.color).toBe(type);
+        expect(theme['decorator.annotation'].color).toBe(type);
+      }
+    }
+  });
+
+  it('gives each log severity its own hue, and keeps log prose in ink', () => {
+    for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
+      for (const mode of ['light', 'dark'] as const) {
+        const theme = codeThemesByFamily[family][mode];
+        const palette = GENERATED_THEMES[family][mode].syntax;
+        const levels = ['level.error', 'level.warning', 'level.info', 'level.debug'].map(
+          (key) => theme[key].color
+        );
+        expect(new Set(levels).size, `${family}.${mode} level hues`).toBe(4);
+        expect(theme['level.error']).toEqual({ color: palette.deleted, fontWeight: 600 });
+        expect(theme['level.warning']).toEqual({ color: palette.number, fontWeight: 600 });
+        expect(theme['level.info']).toEqual({ color: palette.func, fontWeight: 400 });
+        // Timestamps recede; a Nextflow task hash is not number speckle; a
+        // `Completed at:` label is not painted like a JSON key.
+        expect(theme['date.number'].color).toBe(palette.comment);
+        expect(theme['task-hash'].color).toBe(palette.operator);
+        expect(theme['property.log-label'].color).toBe(palette.plain);
+      }
+    }
+  });
+
+  // Every family must be registered for BOTH modes: the consumer indexes
+  // codeThemesByFamily[family][mode] with no fallback, so a missing entry is a
+  // runtime undefined rather than a type error at the call site.
   it('registers every theme family in both modes', () => {
     for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
       expect(codeThemesByFamily[family]?.light, `${family}.light`).toBeDefined();

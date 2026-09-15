@@ -138,7 +138,10 @@ export default {
     syntax: {
       plain: '#052049',
       comment: '#586780',
-      keyword: '#0f388a',
+      // #0f388a until the preview paper: navy on the #052049 navy ink, so a
+      // keyword differed from an identifier by weight alone. #0b67a8 separates
+      // by hue — 5.97:1 on #ffffff, 5.47:1 on the #f5f5f3 well.
+      keyword: '#0b67a8',
       string: '#007242',
       number: '#8a5a00',
       func: '#6c247c',

@@ -17,14 +17,15 @@ import {
 type NotebookFile = Extract<ArtifactFilePreview, { kind: 'text' | 'html' }>;
 
 /**
- * The renderer's `::selection` tint (main.css, `--selection`), restated for the
- * sandboxed output document, which cannot load the stylesheet. Family-invariant
- * on purpose: Alma Mater re-points the coral scale to teal, and selection is
- * Biorouter orange in every family.
+ * The renderer's `::selection` tint (main.css: `--selection-hue` at
+ * `--selection-alpha`), restated for the sandboxed output document, which
+ * cannot load the stylesheet. #cf6d47 / #e8895f at 24% in both modes.
+ * Family-invariant on purpose: Alma Mater re-points the coral scale to teal,
+ * and selection is Biorouter orange in every family.
  */
 const SELECTION_TINT = {
-  light: 'rgba(207, 109, 71, 0.24)',
-  dark: 'rgba(232, 137, 95, 0.3)',
+  light: 'rgba(207,109,71,0.24)',
+  dark: 'rgba(232,137,95,0.24)',
 } as const;
 
 type NotebookOutput = {
@@ -151,7 +152,7 @@ function NotebookOutputView({
 
   const markdown = joined(data['text/markdown']);
   if (markdown) {
-    return <MarkdownContent content={markdown} className="br-paper-prose" softLineBreaks />;
+    return <MarkdownContent content={markdown} className="br-paper-prose" variant="document" />;
   }
 
   const plain = joined(data['text/plain']);
@@ -246,7 +247,7 @@ export default function NotebookPreview({
         )}
       </div>
       <div className="br-paper-scroll min-h-0 flex-1 overflow-auto">
-        {/* PROVISIONAL `br-paper-measure` — see MarkdownDocument in ArtifactViewer. */}
+        {/* PROVISIONAL `br-paper-measure` — see MarkdownDocument.tsx. */}
         <div className="br-paper-measure br-paper-nb">
           {notebook.cells.map((cell, index) => {
             const source = joined(cell.source);
@@ -259,7 +260,7 @@ export default function NotebookPreview({
                   className="br-paper-nb-cell"
                   data-kind="markdown"
                 >
-                  <MarkdownContent content={source} className="br-paper-prose" softLineBreaks />
+                  <MarkdownContent content={source} className="br-paper-prose" variant="document" />
                 </section>
               );
             }

@@ -209,7 +209,7 @@ export const GENERATED_THEMES = {
       syntax: {
         plain: '#052049',
         comment: '#586780',
-        keyword: '#0f388a',
+        keyword: '#0b67a8',
         string: '#007242',
         number: '#8a5a00',
         func: '#6c247c',

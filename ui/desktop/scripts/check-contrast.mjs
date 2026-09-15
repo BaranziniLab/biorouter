@@ -317,8 +317,10 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // on the tint composited over its ground. Selected body text owes 4.5:1;
   // muted runs (a caption, a table note) owe 3:1 — selection is a transient,
   // user-driven state, and holding muted to 4.5 would force the tint so pale
-  // it stops reading as a selection in dark. Measured on the three grounds a
-  // selection lands on in the panel.
+  // it stops reading as a selection in dark. A link (`--text-accent`) is held
+  // to the same 3:1: in Alma Mater the accent is teal, and a teal link on an
+  // orange tint is exactly the pair nobody would have measured by eye. Measured
+  // on the three grounds a selection lands on in the panel.
   {
     const alphaRaw = resolveRaw('--selection-alpha', scope);
     const alpha = alphaRaw && /^\d+(\.\d+)?%$/.test(alphaRaw) ? parseFloat(alphaRaw) / 100 : null;
@@ -344,6 +346,15 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
         assertOverTint(
           `${theme}: text-muted under selection over ${g}`,
           '--text-muted',
+          '--selection-hue',
+          alpha,
+          g,
+          3.0,
+          scope
+        );
+        assertOverTint(
+          `${theme}: text-accent under selection over ${g}`,
+          '--text-accent',
           '--selection-hue',
           alpha,
           g,

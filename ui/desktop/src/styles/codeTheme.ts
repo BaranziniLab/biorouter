@@ -11,6 +11,10 @@
  * Both the chat markdown renderer and the artifact preview import from here.
  */
 import type { CSSProperties } from 'react';
+// Side effect: the CSV/TSV raw grammars, R/Python call tokens and the log
+// refinements the mapping below keys on. Imported here so every highlighter
+// that reads this palette also gets the grammars it was written for.
+import './prismGrammars';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from './themes.generated';
 import type { ThemeFamilyId } from './themes.generated';
 
@@ -78,6 +82,15 @@ function build(p: SyntaxPalette, tint: string): PrismTheme {
     tabSize: 2,
   };
 
+  // ⚠ A stylesheet key is not only a colour: react-syntax-highlighter REMOVES
+  // from the rendered span every class it finds a key for — each half of a
+  // dotted key included (create-element.js, `allStylesheetSelectors`). A key
+  // named `linenumber`, `table` or `token` would strip the very class main.css
+  // and the tests select on. Style those in CSS.
+  //
+  // Dotted keys (`key.atrule`) match a token carrying both classes and are
+  // merged AFTER the single-class keys (`createStyleObject`), which is the only
+  // way to beat an alias Prism appends later in the class list.
   return {
     'code[class*="language-"]': base,
     'pre[class*="language-"]': { ...base, margin: 0, padding: 0, overflow: 'auto' },
@@ -90,34 +103,57 @@ function build(p: SyntaxPalette, tint: string): PrismTheme {
     punctuation: { color: p.operator },
     operator: { color: p.operator },
     entity: { color: p.operator },
-    url: { color: p.func },
+    url: { color: p.func, textDecoration: 'underline', textUnderlineOffset: '2px' },
 
-    property: { color: p.plain },
+    // KEYS take the function hue at body weight: JSON/TOML/CSS keys and a raw
+    // CSV header (`property`), YAML keys (`key`, aliased `atrule`), markup
+    // attribute names. A config file is mostly keys; in ink they read as
+    // undifferentiated text, and in the keyword colour (YAML's `atrule`) at 600
+    // every key and literal was a bold coral wall.
+    property: { color: p.func },
+    // …except the `log` grammar's prose labels (`Module rseqc:`, `Notes:`),
+    // which prismGrammars.ts aliases so a log message is not painted blue.
+    'property.log-label': { color: p.plain },
+    'key.atrule': { color: p.func, fontWeight: 400 },
     tag: { color: p.keyword },
-    'attr-name': { color: p.number },
+    'attr-name': { color: p.func },
     'attr-value': { color: p.string },
     selector: { color: p.type },
     atrule: { color: p.keyword },
 
     boolean: { color: p.number },
+    // YAML aliases its literals to `important` (keyword, 500) and JSON its
+    // `null` to `keyword`: a value is a value, so they take the number hue.
+    'boolean.important': { color: p.number, fontWeight: 400 },
+    'null.important': { color: p.number, fontWeight: 400 },
+    'null.keyword': { color: p.number, fontWeight: 400 },
     number: { color: p.number },
     constant: { color: p.number },
     symbol: { color: p.number },
+    // Shell `$VAR`, SQL `@var`: a value you did not write inline.
+    variable: { color: p.number },
 
     string: { color: p.string },
     char: { color: p.string },
     regex: { color: p.string },
 
-    keyword: { color: p.keyword, fontWeight: 600 },
-    'keyword.module': { color: p.keyword, fontWeight: 600 },
-    builtin: { color: p.keyword },
-    important: { color: p.keyword, fontWeight: 600 },
+    // Weight 500, not 600. At 13px mono a semibold keyword out-weighs the
+    // identifiers it governs and a SQL file read as a column of bold words;
+    // hue carries the role, and weight only has to separate it from ink.
+    keyword: { color: p.keyword, fontWeight: 500 },
+    'keyword.module': { color: p.keyword, fontWeight: 500 },
+    important: { color: p.keyword, fontWeight: 500 },
+    // The type hue, not the function hue: `float`/`int`/`set` in the function
+    // hue read exactly like the `getLogger(` call beside them.
+    builtin: { color: p.type },
 
     function: { color: p.func },
+    // Stays 600: at 500 a class name thinned until it read as ink.
     'class-name': { color: p.type, fontWeight: 600 },
     namespace: { color: p.type },
-
-    variable: { color: p.plain },
+    // Python decorators arrive as `decorator annotation punctuation`, so the
+    // single-class `punctuation` greyed them out.
+    'decorator.annotation': { color: p.type },
 
     // ⚠ The line-number gutter. react-syntax-highlighter gives every number span
     // the classes `comment linenumber react-syntax-highlighter-line-number` and
@@ -138,10 +174,12 @@ function build(p: SyntaxPalette, tint: string): PrismTheme {
 
     // The `log` grammar (a `.log`, or a `.txt` the preview recognises as one).
     // Every level used to share the one keyword colour, so an ERROR read like an
-    // INFO; severity now reads by hue. Timestamps step back to the comment ink
-    // rather than painting the whole left column in the number colour. Pair keys
-    // (`level.error`) because the grammar emits `level error important` and the
-    // pair is merged after the singles, so it beats `important`.
+    // INFO; severity now reads by hue, and only the two that need a reader's eye
+    // are heavy. Timestamps step back to the comment ink rather than painting
+    // the whole left column in the number colour, and a Nextflow task hash
+    // (`4f/a1c2e9`) takes operator ink instead of number-coloured speckle. Pair
+    // keys (`level.error`) because the grammar emits `level error important`
+    // and the pair is merged after the singles, so it beats `important`.
     'level.error': { color: p.deleted, fontWeight: 600 },
     'level.warning': { color: p.number, fontWeight: 600 },
     'level.info': { color: p.func, fontWeight: 400 },
@@ -149,6 +187,12 @@ function build(p: SyntaxPalette, tint: string): PrismTheme {
     'level.trace': { color: p.comment, fontStyle: 'normal' },
     'date.number': { color: p.comment },
     'time.number': { color: p.comment },
+    'task-hash': { color: p.operator },
+
+    // Markdown's raw view: headings and emphasis read as structure.
+    'title.important': { color: p.keyword, fontWeight: 600 },
+    bold: { fontWeight: 600 },
+    italic: { fontStyle: 'italic' },
 
     // Diff rows tint the whole line, not just the glyphs.
     deleted: {
