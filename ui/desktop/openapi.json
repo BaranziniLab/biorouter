@@ -10,7 +10,7 @@
     "license": {
       "name": "Apache-2.0"
     },
-    "version": "1.90.4"
+    "version": "1.90.5"
   },
   "paths": {
     "/action-required/secrets": {
@@ -8785,6 +8785,11 @@
           "text"
         ],
         "properties": {
+          "expected_turn_id": {
+            "type": "string",
+            "description": "Exact original turn addressed by a retry, independent of its idempotency key.",
+            "nullable": true
+          },
           "session_id": {
             "type": "string"
           },

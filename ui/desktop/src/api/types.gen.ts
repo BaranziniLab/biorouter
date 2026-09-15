@@ -1557,6 +1557,10 @@ export type InterruptRefusalReason = 'no_turn' | 'not_accepting_yet' | 'turn_clo
  * Request body for the soft-interrupt route.
  */
 export type InterruptRequest = {
+    /**
+     * Exact original turn addressed by a retry, independent of its idempotency key.
+     */
+    expected_turn_id?: string | null;
     session_id: string;
     text: string;
     /**
