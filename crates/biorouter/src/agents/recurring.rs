@@ -16,7 +16,10 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 
 use crate::conversation::message::Message;
-use crate::scheduler::{get_default_scheduled_workflows_dir, ScheduledJob};
+use crate::privacy::CallCapability;
+use crate::scheduler::{
+    get_default_scheduled_workflows_dir, schedule_work, scheduled_run_preflight, ScheduledJob,
+};
 use crate::scheduler_trait::SchedulerTrait;
 
 use super::goal::ellipsize;
@@ -154,6 +157,26 @@ fn format_job_line(job: &ScheduledJob) -> String {
     format!("- `{}`: cron `{}`{state}{runs}{last}", job.id, job.cron)
 }
 
+/// What a `/schedule` or `/loop` verb typed into a chat that is NOT running a
+/// private model is told when the schedule it names is one that chat may not
+/// touch — issue #56.
+///
+/// Fixed text around the two things the person typed (`command`, `id`), and
+/// nothing else: no model, no chat, no reason specific to the schedule. It says
+/// the same thing for a schedule whose work is private and for an id that names
+/// no schedule, for the reason `routes::session_reach::SCHEDULE_OUT_OF_REACH`
+/// does — which chat a schedule acts for is exactly what the listing redacts.
+fn slash_verb_out_of_reach(command: &str, id: &str) -> String {
+    format!(
+        "`/{command} {id}` changed nothing. This chat is not running a private model, so its \
+         `/schedule` and `/loop` commands may manage only schedules whose work is public, and \
+         `{id}` is not one of them, or there is no schedule with that id; the two are answered \
+         the same way. A schedule's work is private when its runs use a private model or act \
+         for a private chat. Nothing was run, paused, resumed or removed. To manage it, use the \
+         Scheduler in the desktop app, or type the command in a chat running a private model."
+    )
+}
+
 impl Agent {
     /// The scheduler service: the injected one when available (server/GUI),
     /// otherwise a lazily-created in-process [`crate::scheduler::Scheduler`]
@@ -189,16 +212,50 @@ impl Agent {
     /// — the private default standing in for a creator chat that is gone
     /// (`scheduler::RunModelSource::DefaultInPlaceOfCreator`).
     ///
-    /// Not a tool call, so there is no admitted `CallCapability` to inherit: the
-    /// master switch and the bound model are read here, once each.
-    pub(crate) async fn private_reach_of_this_chat(&self) -> Option<bool> {
-        if !crate::privacy::privacy_tiers_enabled() {
-            return None;
+    /// Not a tool call, so there is no admitted `CallCapability` to inherit: each
+    /// slash command samples ONE (`CallCapability::sample`) and every decision it
+    /// makes — whether a verb reaches a schedule, and what it records — reads
+    /// that one, so a model swapped mid-command cannot be gated on one tier and
+    /// recorded on another.
+    pub(crate) fn private_reach_of_this_chat(cap: CallCapability) -> Option<bool> {
+        (cap.enforced() && cap.tier().is_private()).then_some(true)
+    }
+
+    /// Issue #56 — may a `/schedule` or `/loop` verb typed into this chat touch
+    /// `job` (`None`: the id names no schedule)?
+    ///
+    /// A slash command's standing is the chat it runs in. `Agent::reply` runs
+    /// `execute_command` for every user message before any model call, and a
+    /// public chat accepts `POST /reply` from any holder of the daemon secret — so
+    /// without this, a caller refused `POST /schedule/<id>/pause` (403) typed
+    /// `/schedule pause <id>` into a public chat and got `paused: true`
+    /// (independent QA, 2026-09-14).
+    ///
+    /// * A chat on a private model may manage any schedule — the counterpart of
+    ///   an HTTP caller that states a private capability.
+    /// * A chat on a public model, or with none bound, may manage only a schedule
+    ///   whose work is public, by `scheduler::schedule_work` — THE definition the
+    ///   daemon's schedule routes answer with. An id that names no schedule is
+    ///   answered as private work, as those routes answer it.
+    async fn slash_verb_reaches(&self, cap: CallCapability, job: Option<&ScheduledJob>) -> bool {
+        if !cap.enforced() || cap.tier().is_private() {
+            return true;
         }
-        match self.provider().await {
-            Ok(provider) if provider.tier().is_private() => Some(true),
-            _ => None,
+        match job {
+            Some(job) => schedule_work(job, &self.config.session_manager)
+                .await
+                .is_public(),
+            None => false,
         }
+    }
+
+    /// The schedule `id` names, as the scheduler holds it now.
+    async fn named_schedule(scheduler: &Arc<dyn SchedulerTrait>, id: &str) -> Option<ScheduledJob> {
+        scheduler
+            .list_scheduled_jobs()
+            .await
+            .into_iter()
+            .find(|job| job.id == id)
     }
 
     /// Write a one-prompt workflow file and register it as a cron job.
@@ -211,6 +268,7 @@ impl Agent {
         prompt: &str,
         session_id: &str,
         max_runs: Option<u32>,
+        cap: CallCapability,
     ) -> Result<String> {
         let scheduler = self.scheduler().await?;
         let suffix: String = uuid::Uuid::new_v4()
@@ -261,13 +319,80 @@ impl Agent {
             // refused unless this says someone with private reach made it. A
             // public chat's `/loop` records nothing, so deleting that chat — which
             // takes only the daemon secret — cannot turn its runs private.
-            armed_with_private_reach: self.private_reach_of_this_chat().await,
+            armed_with_private_reach: Self::private_reach_of_this_chat(cap),
         };
         if let Err(e) = scheduler.add_scheduled_job(job, false).await {
             let _ = tokio::fs::remove_file(&path).await;
             return Err(anyhow!("Failed to schedule job: {e}"));
         }
         Ok(id)
+    }
+
+    /// `/loop stop <id|all>`, on the command's one sampled capability.
+    ///
+    /// Issue #56: `all` stops every loop this chat may stop and COUNTS the ones
+    /// it may not, which are left running and never named; a single id this chat
+    /// may not touch is refused and nothing is stopped.
+    async fn stop_loops(&self, target: &str, cap: CallCapability) -> Result<Message> {
+        let scheduler = self.scheduler().await?;
+        let (ids, left) = if target == "all" {
+            let mut ids = Vec::new();
+            let mut left = 0usize;
+            for job in scheduler
+                .list_scheduled_jobs()
+                .await
+                .into_iter()
+                .filter(|j| j.id.starts_with(LOOP_ID_PREFIX))
+            {
+                if self.slash_verb_reaches(cap, Some(&job)).await {
+                    ids.push(job.id);
+                } else {
+                    left += 1;
+                }
+            }
+            (ids, left)
+        } else {
+            let job = Self::named_schedule(&scheduler, target).await;
+            if !self.slash_verb_reaches(cap, job.as_ref()).await {
+                return Ok(
+                    Message::assistant().with_text(slash_verb_out_of_reach("loop stop", target))
+                );
+            }
+            (vec![target.to_string()], 0)
+        };
+        let left_note = match left {
+            0 => String::new(),
+            1 => " One other loop was left running: its work is private, so it can be stopped \
+                   only from the Scheduler in the desktop app or from a chat running a private \
+                   model."
+                .to_string(),
+            n => format!(
+                " {n} other loops were left running: their work is private, so they can be \
+                 stopped only from the Scheduler in the desktop app or from a chat running a \
+                 private model."
+            ),
+        };
+        if ids.is_empty() {
+            let text = if left == 0 {
+                "No active loops.".to_string()
+            } else {
+                format!("No loop was stopped.{left_note}")
+            };
+            return Ok(Message::assistant().with_text(text));
+        }
+        let mut stopped = Vec::new();
+        for id in ids {
+            if let Err(e) = scheduler.remove_scheduled_job(&id, true).await {
+                return Ok(
+                    Message::assistant().with_text(format!("Could not stop loop '{id}': {e}"))
+                );
+            }
+            stopped.push(id);
+        }
+        Ok(Message::assistant().with_text(format!(
+            "Stopped loop(s): {}.{left_note}",
+            stopped.join(", ")
+        )))
     }
 
     /// `/loop` slash command: `<interval> <prompt>` creates a recurring task;
@@ -304,6 +429,10 @@ impl Agent {
             return Ok(Some(Message::assistant().with_text(text)));
         }
 
+        // Issue #56: ONE sample of this chat's capability for the whole command —
+        // what it may stop and what a new loop records are read off the same one.
+        let cap = CallCapability::sample(&self.provider).await;
+
         if let Some(target) = arg
             .strip_prefix("stop")
             .or_else(|| arg.strip_prefix("cancel"))
@@ -315,36 +444,7 @@ impl Agent {
                     "Specify which loop to stop: `/loop stop <id|all>` (see `/loop` for ids).",
                 )));
             }
-            let scheduler = self.scheduler().await?;
-            let ids: Vec<String> = if target == "all" {
-                scheduler
-                    .list_scheduled_jobs()
-                    .await
-                    .into_iter()
-                    .filter(|j| j.id.starts_with(LOOP_ID_PREFIX))
-                    .map(|j| j.id)
-                    .collect()
-            } else {
-                vec![target.to_string()]
-            };
-            if ids.is_empty() {
-                return Ok(Some(Message::assistant().with_text("No active loops.")));
-            }
-            let mut stopped = Vec::new();
-            for id in ids {
-                match scheduler.remove_scheduled_job(&id, true).await {
-                    Ok(()) => stopped.push(id),
-                    Err(e) => {
-                        return Ok(Some(
-                            Message::assistant()
-                                .with_text(format!("Could not stop loop '{id}': {e}")),
-                        ))
-                    }
-                }
-            }
-            return Ok(Some(
-                Message::assistant().with_text(format!("Stopped loop(s): {}", stopped.join(", "))),
-            ));
+            return self.stop_loops(target, cap).await.map(Some);
         }
 
         let (token, prompt) = arg
@@ -365,7 +465,14 @@ impl Agent {
 
         let max_runs = loop_max_runs();
         let id = self
-            .create_recurring_job(LOOP_ID_PREFIX, &cron, prompt, session_id, Some(max_runs))
+            .create_recurring_job(
+                LOOP_ID_PREFIX,
+                &cron,
+                prompt,
+                session_id,
+                Some(max_runs),
+                cap,
+            )
             .await?;
         Ok(Some(Message::assistant().with_text(format!(
             "🔁 Loop `{id}` created; runs {human} (cron `{cron}`).\n\
@@ -404,11 +511,14 @@ impl Agent {
             return Ok(Some(Message::assistant().with_text(text)));
         }
 
+        // Issue #56: ONE sample of this chat's capability for the whole command.
+        let cap = CallCapability::sample(&self.provider).await;
+
         let (verb, rest) = arg
             .split_once(char::is_whitespace)
             .map(|(v, r)| (v, r.trim()))
             .unwrap_or((arg, ""));
-        if let Some(message) = self.schedule_management(verb, rest).await? {
+        if let Some(message) = self.schedule_management(verb, rest, cap).await? {
             return Ok(Some(message));
         }
 
@@ -427,7 +537,7 @@ impl Agent {
             ));
         }
         let id = self
-            .create_recurring_job(SCHEDULE_ID_PREFIX, &cron, &prompt, session_id, None)
+            .create_recurring_job(SCHEDULE_ID_PREFIX, &cron, &prompt, session_id, None, cap)
             .await?;
         Ok(Some(Message::assistant().with_text(format!(
             "📅 Schedule `{id}` created; runs {human} (cron `{cron}`).\n\
@@ -441,7 +551,18 @@ impl Agent {
 
     /// Management verbs of `/schedule`. Returns `Ok(None)` when `verb` is not
     /// a management verb (the caller then treats the input as a creation spec).
-    async fn schedule_management(&self, verb: &str, rest: &str) -> Result<Option<Message>> {
+    ///
+    /// Issue #56: every verb that changes or runs a schedule first asks
+    /// [`Self::slash_verb_reaches`] on the chat's ONE sampled capability, and a
+    /// refusal changes nothing. `sessions` filters instead, as `GET
+    /// /schedule/{id}/sessions` does: a run's chat is listed exactly when this
+    /// chat would be shown it in a listing.
+    async fn schedule_management(
+        &self,
+        verb: &str,
+        rest: &str,
+        cap: CallCapability,
+    ) -> Result<Option<Message>> {
         const VERBS: &[&str] = &[
             "remove", "delete", "run", "pause", "unpause", "resume", "sessions",
         ];
@@ -452,17 +573,27 @@ impl Agent {
             return Ok(Some(Message::assistant().with_text(SCHEDULE_USAGE)));
         }
 
+        let scheduler = self.scheduler().await?;
+        if verb == "sessions" {
+            return self
+                .schedule_sessions(&scheduler, rest, cap)
+                .await
+                .map(Some);
+        }
+        let job = Self::named_schedule(&scheduler, rest).await;
+        if !self.slash_verb_reaches(cap, job.as_ref()).await {
+            return Ok(Some(Message::assistant().with_text(
+                slash_verb_out_of_reach(&format!("schedule {verb}"), rest),
+            )));
+        }
+
         match verb {
             "remove" | "delete" => {
-                let scheduler = self.scheduler().await?;
-                let owns = scheduler
-                    .list_scheduled_jobs()
-                    .await
-                    .iter()
-                    .find(|j| j.id == rest)
+                let owns = job
+                    .as_ref()
                     .map(|j| owns_workflow_file(&j.source))
                     .unwrap_or(false);
-                return Ok(Some(
+                Ok(Some(
                     match scheduler.remove_scheduled_job(rest, owns).await {
                         Ok(()) => {
                             Message::assistant().with_text(format!("Removed schedule `{rest}`."))
@@ -470,74 +601,115 @@ impl Agent {
                         Err(e) => Message::assistant()
                             .with_text(format!("Could not remove schedule '{rest}': {e}")),
                     },
-                ));
+                ))
             }
             "run" => {
-                let scheduler = self.scheduler().await?;
+                let Some(job) = job else {
+                    return Ok(Some(
+                        Message::assistant()
+                            .with_text(format!("There is no schedule with the id `{rest}`.")),
+                    ));
+                };
+                if job.currently_running {
+                    return Ok(Some(Message::assistant().with_text(format!(
+                        "`{rest}` is already running, so another run was not started."
+                    ))));
+                }
+                // This run keeps the command's reach even if the target changes
+                // before execution. Its transient false never re-arms the job.
+                let standing = cap.enforced().then_some(cap.tier().is_private());
+                // Issue #56: this reply used to say "Started" before the run
+                // existed, and the run was then refused (independent QA,
+                // 2026-09-14). Ask the run's own decision first and say so. The run
+                // asks again when it starts.
+                if let Some(refusal) = scheduled_run_preflight(
+                    &job,
+                    &self.config.session_manager,
+                    cap.enforced(),
+                    standing.or(job.armed_with_private_reach),
+                )
+                .await
+                {
+                    return Ok(Some(
+                        Message::assistant()
+                            .with_text(format!("`{rest}` was not started. {refusal}")),
+                    ));
+                }
                 let id = rest.to_string();
-                // This one run is held to this chat's standing; nothing is recorded.
-                let standing = self.private_reach_of_this_chat().await;
                 tokio::spawn(async move {
                     if let Err(e) = scheduler.run_now_armed(&id, standing).await {
                         tracing::error!("/schedule run '{}' failed: {}", id, e);
                     }
                 });
                 Ok(Some(Message::assistant().with_text(format!(
-                    "▶️ Started `{rest}` in the background; results appear under \
+                    "▶️ Requested a background run of `{rest}`; check its status and results under \
                      `/schedule sessions {rest}`."
                 ))))
             }
-            "pause" => {
-                return Ok(Some(
-                    match self.scheduler().await?.pause_schedule(rest).await {
-                        Ok(()) => {
-                            Message::assistant().with_text(format!("Paused schedule `{rest}`."))
-                        }
-                        Err(e) => {
-                            Message::assistant().with_text(format!("Could not pause '{rest}': {e}"))
-                        }
-                    },
-                ));
-            }
+            "pause" => Ok(Some(match scheduler.pause_schedule(rest).await {
+                Ok(()) => Message::assistant().with_text(format!("Paused schedule `{rest}`.")),
+                Err(e) => Message::assistant().with_text(format!("Could not pause '{rest}': {e}")),
+            })),
             "unpause" | "resume" => {
                 // A resume is an arming: it records this chat's standing, and
                 // records nothing from a public chat.
-                let standing = self.private_reach_of_this_chat().await;
-                return Ok(Some(
-                    match self
-                        .scheduler()
-                        .await?
-                        .unpause_schedule_armed(rest, standing)
-                        .await
-                    {
+                let standing = Self::private_reach_of_this_chat(cap);
+                Ok(Some(
+                    match scheduler.unpause_schedule_armed(rest, standing).await {
                         Ok(()) => {
                             Message::assistant().with_text(format!("Resumed schedule `{rest}`."))
                         }
                         Err(e) => Message::assistant()
                             .with_text(format!("Could not resume '{rest}': {e}")),
                     },
-                ));
-            }
-            "sessions" => {
-                let sessions = self
-                    .scheduler()
-                    .await?
-                    .sessions(rest, 5)
-                    .await
-                    .map_err(|e| anyhow!("Could not list sessions for '{rest}': {e}"))?;
-                let text = if sessions.is_empty() {
-                    format!("No runs recorded yet for `{rest}`.")
-                } else {
-                    let lines: Vec<String> = sessions
-                        .iter()
-                        .map(|(id, s)| format!("- `{}`: {}", id, s.created_at))
-                        .collect();
-                    format!("Recent runs of `{rest}`:\n{}", lines.join("\n"))
-                };
-                Ok(Some(Message::assistant().with_text(text)))
+                ))
             }
             _ => unreachable!("verb membership checked above"),
         }
+    }
+
+    /// `/schedule sessions <id>`: the schedule's recent runs this chat may be
+    /// shown.
+    ///
+    /// Filtered, not refused, as `GET /schedule/{id}/sessions` filters through
+    /// `lists_session`: a run of a private schedule is a private chat, and a chat
+    /// that is not running a private model is listed only public ones
+    /// (`privacy::visibility::appears_in_list`). The empty answer does not say
+    /// whether anything was withheld — it varies with this chat's capability,
+    /// never with the schedule.
+    async fn schedule_sessions(
+        &self,
+        scheduler: &Arc<dyn SchedulerTrait>,
+        id: &str,
+        cap: CallCapability,
+    ) -> Result<Message> {
+        const SHOWN: usize = 5;
+        // Read past the ones withheld, so a filtered list is not merely shorter.
+        let read = if cap.enforced() { SHOWN * 10 } else { SHOWN };
+        let sessions = scheduler
+            .sessions(id, read)
+            .await
+            .map_err(|e| anyhow!("Could not list sessions for '{id}': {e}"))?;
+        let lines: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| {
+                !cap.enforced()
+                    || crate::privacy::visibility::appears_in_list(cap.tier(), s.privacy_tier)
+            })
+            .take(SHOWN)
+            .map(|(run, s)| format!("- `{}`: {}", run, s.created_at))
+            .collect();
+        let text = if !lines.is_empty() {
+            format!("Recent runs of `{id}`:\n{}", lines.join("\n"))
+        } else if cap.restricts_private_data() {
+            format!(
+                "No runs of `{id}` that this chat can see. A run of a schedule whose work is \
+                 private is a private chat, and this chat is not running a private model."
+            )
+        } else {
+            format!("No runs recorded yet for `{id}`.")
+        };
+        Ok(Message::assistant().with_text(text))
     }
 }
 
@@ -824,5 +996,289 @@ mod standing_tests {
                 "a resume from a chat on {tier:?}"
             );
         }
+    }
+
+    // ── Issue #56: a slash command's standing is the chat it runs in ──────────
+
+    /// A chat row in `chat`'s session store: `provider` recorded on it, and
+    /// classified private when `private`.
+    async fn row(chat: &Chat, provider: Option<&str>, private: bool) -> String {
+        let sessions = &chat.agent.config.session_manager;
+        let session = sessions
+            .create_session(
+                PathBuf::from("."),
+                "slash reach fixture".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let mut update = sessions.update(&session.id);
+        if let Some(provider) = provider {
+            update = update.provider_name(provider);
+        }
+        if private {
+            update = update.raise_privacy(
+                crate::privacy::SessionClassification::Private,
+                "turn:versa_azure",
+            );
+        }
+        update.apply().await.unwrap();
+        session.id
+    }
+
+    /// Add a dormant schedule made from `creator`.
+    async fn seed(chat: &Chat, id: &str, creator: &str, paused: bool) {
+        let workflow = chat._dir.path().join(format!("{id}.yaml"));
+        std::fs::write(&workflow, "prompt: probe\n").unwrap();
+        let job = ScheduledJob {
+            id: id.to_string(),
+            source: workflow.to_string_lossy().into_owned(),
+            cron: "0 0 0 1 1 *".to_string(),
+            last_run: None,
+            currently_running: false,
+            paused,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 0,
+            max_runs: None,
+            creator_session_id: Some(creator.to_string()),
+            last_error: None,
+            owns_source: None,
+            armed_with_private_reach: None,
+        };
+        chat.scheduler.add_scheduled_job(job, false).await.unwrap();
+    }
+
+    async fn job(chat: &Chat, id: &str) -> Option<ScheduledJob> {
+        chat.scheduler
+            .list_scheduled_jobs()
+            .await
+            .into_iter()
+            .find(|job| job.id == id)
+    }
+
+    async fn say(chat: &Chat, command: &str) -> String {
+        let (name, params) = command.trim_start_matches('/').split_once(' ').unwrap();
+        let reply = if name == "loop" {
+            chat.agent
+                .handle_loop_command(params, &chat.session_id)
+                .await
+        } else {
+            chat.agent
+                .handle_schedule_command(params, &chat.session_id)
+                .await
+        };
+        reply
+            .unwrap()
+            .expect("the command answers")
+            .as_concat_text()
+    }
+
+    /// Independent QA, 2026-09-14: `POST /schedule/<private>/pause` was refused
+    /// 403 to a caller holding only the daemon secret, and the same caller typing
+    /// `/schedule pause <private>` into a public chat got `paused: true`.
+    ///
+    /// Every verb that changes or runs a schedule, from a chat on a public model
+    /// and from one with no model, on each way a schedule's work is private — a
+    /// private creator, a creator bound to a private model (what a secret-only
+    /// restart left behind), and an id naming nothing. Each is refused in the
+    /// fixed words and changes nothing.
+    #[tokio::test]
+    async fn a_public_chats_slash_verbs_do_not_reach_private_work() {
+        for tier in [Some(ProviderTier::Public), None] {
+            let chat = chat(tier).await;
+            let private_creator = row(&chat, Some("br-public-probe"), true).await;
+            let bound_private = row(&chat, Some("versa_azure"), false).await;
+            seed(&chat, "task-private", &private_creator, false).await;
+            seed(&chat, "task-private-paused", &private_creator, true).await;
+            seed(&chat, "task-private-model", &bound_private, false).await;
+            seed(&chat, "loop-private", &private_creator, false).await;
+
+            for command in [
+                "/schedule pause task-private",
+                "/schedule pause task-private-model",
+                "/schedule run task-private",
+                "/schedule run task-private-model",
+                "/schedule remove task-private",
+                "/schedule delete task-private-model",
+                "/schedule resume task-private-paused",
+                "/schedule unpause task-private-paused",
+                "/loop stop loop-private",
+                "/loop stop task-private",
+                "/schedule pause task-that-does-not-exist",
+            ] {
+                let reply = say(&chat, command).await;
+                assert!(
+                    reply.contains("changed nothing") && !reply.contains("Started"),
+                    "{command} from a chat on {tier:?} was not refused: {reply}"
+                );
+                assert!(
+                    !reply.contains(&private_creator) && !reply.contains("versa_azure"),
+                    "the refusal named something the person did not type: {reply}"
+                );
+            }
+            for id in ["task-private", "task-private-model", "loop-private"] {
+                let job = job(&chat, id)
+                    .await
+                    .expect("a refused verb removed a schedule");
+                assert!(!job.paused, "{id} was paused by a refused verb");
+                assert_eq!(job.run_count, 0, "{id}");
+                assert!(
+                    !job.currently_running && job.last_error.is_none(),
+                    "{id} ran"
+                );
+            }
+            let paused = job(&chat, "task-private-paused").await.unwrap();
+            assert!(paused.paused, "a refused resume resumed it");
+            assert_eq!(paused.armed_with_private_reach, None);
+
+            // `/loop stop all` stops the loops in reach and leaves the rest.
+            let public_creator = row(&chat, Some("br-public-probe"), false).await;
+            seed(&chat, "loop-public", &public_creator, false).await;
+            let reply = say(&chat, "/loop stop all").await;
+            assert!(
+                reply.contains("loop-public") && reply.contains("One other loop was left running"),
+                "{reply}"
+            );
+            assert!(!reply.contains("loop-private"), "{reply}");
+            assert!(job(&chat, "loop-public").await.is_none());
+            assert!(
+                job(&chat, "loop-private").await.is_some(),
+                "`/loop stop all` in a public chat stopped a private chat's loop"
+            );
+        }
+    }
+
+    /// The other half, without which the refusals above would pass on a build
+    /// that refused every verb: a chat on a private model manages private work,
+    /// and a public chat still manages PUBLIC work — the whole Schedules surface
+    /// of an install configured with a public model.
+    #[tokio::test]
+    async fn a_private_chat_manages_any_schedule_and_a_public_chat_manages_public_work() {
+        for (tier, creator_is_private) in
+            [(ProviderTier::Private, true), (ProviderTier::Public, false)]
+        {
+            let chat = chat(Some(tier)).await;
+            let creator = row(&chat, Some("br-public-probe"), creator_is_private).await;
+            seed(&chat, "task-work", &creator, false).await;
+            seed(&chat, "loop-work", &creator, false).await;
+
+            assert!(say(&chat, "/schedule pause task-work")
+                .await
+                .contains("Paused"));
+            assert!(job(&chat, "task-work").await.unwrap().paused);
+            assert!(say(&chat, "/schedule resume task-work")
+                .await
+                .contains("Resumed"));
+            let resumed = job(&chat, "task-work").await.unwrap();
+            assert!(!resumed.paused);
+            assert_eq!(
+                resumed.armed_with_private_reach,
+                (tier == ProviderTier::Private).then_some(true),
+                "a resume records the chat's standing, and nothing from a public chat"
+            );
+            // The run's model cannot be built here, so it fails in the
+            // background; what matters is that the verb reached it.
+            assert!(say(&chat, "/schedule run task-work")
+                .await
+                .contains("Requested a background run"));
+            for _ in 0..100 {
+                if job(&chat, "task-work")
+                    .await
+                    .is_some_and(|job| !job.currently_running && job.last_error.is_some())
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(say(&chat, "/schedule remove task-work")
+                .await
+                .contains("Removed"));
+            assert!(job(&chat, "task-work").await.is_none());
+            assert!(say(&chat, "/loop stop all").await.contains("loop-work"));
+            assert!(job(&chat, "loop-work").await.is_none());
+        }
+    }
+
+    /// Independent QA, 2026-09-14: `/schedule run <id>` answered "▶️ Started …"
+    /// and the run was then refused. The measured chain: a `/schedule` made in a
+    /// chat that records no model, on an install whose default is private, run
+    /// from that same chat. It must not claim a start.
+    #[tokio::test]
+    async fn a_schedule_run_that_cannot_start_does_not_say_it_started() {
+        let chat = chat(None).await;
+        let versa_default = std::collections::HashMap::from([(
+            "BIOROUTER_PROVIDER".to_string(),
+            "versa_azure".to_string(),
+        )]);
+        let reply = crate::config::with_config_overrides(
+            versa_default.clone(),
+            say(&chat, "/schedule @yearly probe the queue"),
+        )
+        .await;
+        assert!(reply.contains("created"), "{reply}");
+        let id = only_job(&chat.scheduler).await.id;
+        let reply = crate::config::with_config_overrides(
+            versa_default,
+            say(&chat, &format!("/schedule run {id}")),
+        )
+        .await;
+        assert!(
+            !reply.contains("Started"),
+            "a run that could not start was reported as started: {reply}"
+        );
+        assert!(
+            reply.contains("changed nothing") || reply.contains("was not started"),
+            "{reply}"
+        );
+        let job = only_job(&chat.scheduler).await;
+        assert!(!job.currently_running && job.last_error.is_none() && job.run_count == 0);
+    }
+
+    /// `/schedule sessions <id>` filters rather than refuses, as `GET
+    /// /schedule/{id}/sessions` does: a public chat is shown a schedule's public
+    /// runs and never its private ones.
+    #[tokio::test]
+    async fn a_public_chat_is_shown_only_the_runs_it_could_list() {
+        let chat = chat(Some(ProviderTier::Public)).await;
+        let creator = row(&chat, Some("br-public-probe"), false).await;
+        seed(&chat, "task-runs", &creator, false).await;
+        let sessions = &chat.agent.config.session_manager;
+        let mut runs = Vec::new();
+        for private in [false, true] {
+            let run = sessions
+                .create_session(
+                    PathBuf::from("."),
+                    "Scheduled job: task-runs".to_string(),
+                    SessionType::Scheduled,
+                )
+                .await
+                .unwrap();
+            let mut update = sessions
+                .update(&run.id)
+                .schedule_id(Some("task-runs".into()));
+            if private {
+                update = update.raise_privacy(
+                    crate::privacy::SessionClassification::Private,
+                    "turn:versa_azure",
+                );
+            }
+            update.apply().await.unwrap();
+            // The listing skips a chat with no messages.
+            sessions
+                .add_message(&run.id, &ConversationMessage::user().with_text("probe"))
+                .await
+                .unwrap();
+            runs.push(run.id);
+        }
+        let reply = say(&chat, "/schedule sessions task-runs").await;
+        assert!(
+            reply.contains(&runs[0]),
+            "the public run is listed: {reply}"
+        );
+        assert!(
+            !reply.contains(&runs[1]),
+            "a public chat was shown a private run: {reply}"
+        );
     }
 }

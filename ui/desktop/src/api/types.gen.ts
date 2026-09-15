@@ -4745,6 +4745,10 @@ export type RestartAgentErrors = {
      */
     404: unknown;
     /**
+     * The chat records no model, the configured default it would be restarted onto is private, and the request carried no user-action proof (on a daemon that holds no key: the default is not the one it was launched with). Plain text saying which; nothing was restarted
+     */
+    409: unknown;
+    /**
      * The delegated child is still initializing
      */
     424: unknown;
@@ -5025,7 +5029,7 @@ export type UpdateWorkingDirErrors = {
      */
     404: unknown;
     /**
-     * Conflict - the working directory is fixed once a chat has messages, or a turn is in flight
+     * Conflict - the working directory is fixed once a chat has messages, or a turn is in flight, or the chat records no model and restarting it would bind a private configured default without user-action proof (nothing is written)
      */
     409: unknown;
     /**

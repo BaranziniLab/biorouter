@@ -12000,9 +12000,24 @@ impl Agent {
 
     /// Restore the provider from session data or fall back to global config
     /// This is used when resuming a session to restore the provider state
-    pub async fn restore_provider_from_session(&self, session: &Session) -> Result<()> {
+    ///
+    /// ⚠ Issue #56, DR-16. A row that records no provider takes the configured
+    /// default here, and when that default is PRIVATE that is a chat's first bind
+    /// onto a private model — the bind `POST /agent/start` refuses a caller
+    /// without the user-action proof. `default_bind` is the caller's standing for
+    /// it, decided by the door that can see the proof, and this is the ONE place
+    /// the default is bound, so every door (restart, working-directory change, a
+    /// workspace turn into a cold chat) has to have decided. Independent QA,
+    /// 2026-09-14: with only the daemon secret, `POST /agent/restart` of such a
+    /// chat bound `versa_azure` and that chat's `/loop` then ran private.
+    pub async fn restore_provider_from_session(
+        &self,
+        session: &Session,
+        default_bind: crate::privacy::refusal::DefaultBind,
+    ) -> Result<()> {
         let config = Config::global();
 
+        let row_records_a_model = session.provider_name.is_some();
         let provider_name = session
             .provider_name
             .clone()
@@ -12035,6 +12050,21 @@ impl Agent {
         let provider = crate::providers::create_from_persisted(&provider_name, model_config)
             .await
             .map_err(|e| anyhow!("Could not create provider: {}", e))?;
+
+        // The instance's own tier, which is what the bind below uses. A door has
+        // already asked the same predicate of the DECLARED tier before changing
+        // anything; the two can disagree (`ollama` off-machine), so this is the
+        // answer that counts. Nothing has been bound yet, and nothing is.
+        if crate::privacy::refusal::default_bind_refused(
+            default_bind,
+            row_records_a_model,
+            provider.tier(),
+        ) {
+            return Err(crate::privacy::PrivacyRefusal::DefaultBindNeedsUser {
+                requested: provider_name,
+            }
+            .into());
+        }
 
         // ⚠ Issue #56. This re-binds the row's OWN recorded provider, and Gate A
         // can refuse it: a row that is (private, public `provider_name`) makes
@@ -12086,7 +12116,13 @@ impl Agent {
         if self.bound_provider_unchecked().await.is_some() || session.provider_name.is_none() {
             return Ok(());
         }
-        self.restore_provider_from_session(session).await
+        // The row records a provider, so no default is bound and the standing is
+        // never consulted; the most restrictive one is passed regardless.
+        self.restore_provider_from_session(
+            session,
+            crate::privacy::refusal::DefaultBind::PublicOnly,
+        )
+        .await
     }
 
     /// Override the system prompt with a custom template
@@ -19759,7 +19795,13 @@ mod gate_a_bind_tests {
                         None,
                         BioRouterMode::Auto,
                     ));
-                    cold.restore_provider_from_session(&row).await.unwrap();
+                    // The row records its own binding, so no default is bound.
+                    cold.restore_provider_from_session(
+                        &row,
+                        crate::privacy::refusal::DefaultBind::PublicOnly,
+                    )
+                    .await
+                    .unwrap();
                     let restored = cold.bound_provider_unchecked().await.unwrap();
                     assert_eq!(
                         serde_json::to_value(restored.restore_binding()).unwrap(),

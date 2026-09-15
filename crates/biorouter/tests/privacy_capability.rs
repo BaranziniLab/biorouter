@@ -234,6 +234,26 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/agents/recurring.rs",
+        count: 2,
+        what: "the `/loop` and `/schedule` slash commands, one sample each \
+               (`handle_loop_command`, `handle_schedule_command`), taken after the \
+               read-only `list` answer returns. Not a tool call: `Agent::reply` runs \
+               `execute_command` for every user message BEFORE any model call, so no \
+               loop sample exists yet to inherit, and a public chat accepts that \
+               message from any holder of the daemon secret. The one pair decides \
+               everything the command does — whether a verb may pause, run, resume or \
+               remove a schedule (`slash_verb_reaches`: a chat on a private model may \
+               manage any, any other chat only work `scheduler::schedule_work` calls \
+               public) and the standing a create, resume or run records \
+               (`private_reach_of_this_chat`) — so a model swapped mid-command cannot \
+               be gated on one tier and recorded on another. Independent QA, \
+               2026-09-14: before it, `/schedule pause <private>` typed into a public \
+               chat paused a schedule `POST /schedule/<id>/pause` refused the same \
+               caller",
+    },
+    Site {
+        needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/extension_manager.rs",
         count: 2,
         what: "`extension_reach` (Gate E's discovery filter and mark, which \
