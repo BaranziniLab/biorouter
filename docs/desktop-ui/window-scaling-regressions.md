@@ -2,7 +2,10 @@
 
 > **What this is.** The recurring regression where resizing the Biorouter window
 > stops changing the layout, the one product cause behind it, and the four ways
-> the same symptom appears when nothing is wrong with the app at all.
+> the same symptom appears when nothing is wrong with the app at all — plus its
+> sibling: while the window is dragged or resized, a frame that arrives late leaves
+> part of the window uncovered, and until 2026-09-14 that part showed a colour the
+> app never paints. Now it shows the app's canvas; the lag itself remains.
 > **Status:** Current.
 > **Audience:** anyone who has just been told "the app doesn't rescale", and
 > agents driving the dev GUI.
@@ -40,6 +43,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
 | Everything tracks, but the view is **Settings**, **Home**, **Chat history** or a saved/shared transcript, and its column stops at 760px | **Not a layout bug.** All of them read the chat measure by decision — see *Settings and Chat history, on the chat measure* below. |
 | Everything tracks, but content stays the same width | **The real one.** A fixed pixel cap — see below. |
+| Part of the window has no live layout — a flat area, or a stale copy of what was there — while the window is dragged or resized | **A different symptom**, and what the area looks like does not tell you which. If `inner` ≠ `outer`, it is the viewport pin. If `inner` = `outer`, a frame is late and the window's native background shows where it does not reach — see *Unpainted window area* below. |
 
 ## The real product cause: a fixed pixel cap
 
@@ -233,6 +237,176 @@ at the source that no `<ReadableContent` in any of the eleven listed files is
 left on the default size — and that none of them declares a second `max-w-*`, which would
 silently take precedence over the column. The widths themselves were measured in
 the running app.
+
+## Unpainted window area: what a late frame uncovers (2026-09-14)
+
+**Symptom.** While the window is dragged or resized, part of it is a flat area with
+nothing of the app in it — no tab strip, no borders, no text — usually a band along
+the right or bottom edge. It is not a layout that failed to reflow: the layout is
+fine, and the band is outside it.
+
+**Cause.** A window's frame and the page inside it are drawn by different
+processes. Whenever the window's size moves ahead of the compositor's last frame,
+the part of the window that frame does not cover shows the window's **native
+background**. Until this date the chat window had `vibrancy: 'window'` and no
+`backgroundColor`, so that background was the vibrancy material over Electron's
+default `#FFF`: a white band across a dark app, and a blank hole where panes and
+tabs belong on a light one. The material showed nowhere else, because the page
+paints `--background-app` edge to edge and the sidebar is opaque.
+
+**The rule.** The chat window's native background is the app's canvas, and nothing
+sits between them:
+
+- `main.ts` creates the chat window with **no `vibrancy`** and
+  `backgroundColor: initialWindowCanvas(...)` — the canvas of the theme the app last
+  showed, remembered in `settings.json` as `windowCanvasMode`, or the OS appearance
+  on a first launch.
+- `ThemeProvider` reports every resolved theme (on mount, on a click, on an OS flip
+  under **System**) over `set-window-canvas`, and main calls `setBackgroundColor`.
+  The payload is a mode, never a colour, and only windows in `windowMap` are
+  painted — the launcher runs the same renderer in a transparent window on purpose.
+- The two colours live in `utils/windowCanvas.ts` and must equal `--background-app`
+  in every theme family. ⚠ Both halves are needed, and each was measured alone:
+  removing vibrancy left Electron's `#FFF` showing; setting `#131312` with vibrancy
+  kept left the material on top of it. Only the pair made the band dark.
+
+**What it does not do.** It does not make a frame arrive sooner. A frame that is late
+still leaves part of the window without current content, for as long as it is late;
+what changed is only the colour of that part, which is now the app's canvas and never
+a colour the app does not paint. Under the `stall` amplifier below (the GPU process
+stopped for 2 s around a grow from 1150×800 to 1560×820), the fixed build still shows
+the stale 1150-wide frame extended by about 410 px for about 100 frames — in the dark
+canvas where it had been white. Measured twice: about 105 frames by the independent
+verification, and 102 of 177 frames on the final build (`measure.sh` given an
+impossible canvas, `0,0,255`, so the canvas-coloured edge counts: a 468 px flat right
+edge, 410 px of extension plus the page's own margin, then the repainted 278 px
+margin). With the real canvas the same run counts 0. And the light canvas **is** white
+(`#FFFFFF`), so in light mode on this machine the band looks the same before and after;
+the difference is visible in dark mode, and wherever the band used to cover the
+sidebar.
+
+**Why no rendered test catches it.** jsdom has no window, no compositor and no late
+frame. `utils/windowCanvas.test.ts` therefore asserts at the source: the chat
+window's options carry the canvas and no top-level `vibrancy`, `transparent` or
+spread, the IPC handler validates the mode and checks `windowMap` before it paints,
+and every `--background-app` in `main.css` resolves to `WINDOW_CANVAS`.
+`contexts/ThemeContext.windowCanvas.test.tsx` drives the real theme buttons and an
+OS flip and reads what reached the bridge. Each assertion was broken on purpose once
+and went red for that reason.
+
+⚠ The options are read with the TypeScript parser, to the object's real closing
+brace. The first version sliced `main.ts` from the constructor to the first
+`webPreferences: {`, so a `vibrancy` or `transparent` written after that block —
+where the launcher's own `vibrancy` sits — passed all 25 tests; an independent
+verification found it by mutation. A source guard that reads a window of text is
+only as good as the guess about where the thing it guards will be written.
+
+### How to measure it
+
+`ui/desktop/scripts/window-paint/measure.sh` captures **only the app's window** at
+about 50 frames a second while one driver runs, and counts frames with an
+unpainted band (a column or row block at the edge that is flat and is not the
+canvas colour). It never records the screen. By construction it cannot see a band
+in the canvas colour, so after this change a `0` means "no colour the app does not
+paint", not "no late frame".
+
+```bash
+source ~/biorouter-runs/fx-<run>/state.env    # your OWN instance
+cd ui/desktop/scripts/window-paint
+./measure.sh "$ELECTRON_PID" /tmp/wp/shrink 20,20,19 size 1750 800 1150 800 60 16
+./measure.sh "$ELECTRON_PID" /tmp/wp/stall  20,20,19 stall 2 1460 820
+```
+
+Four things decide whether the number means anything:
+
+1. **Measure in dark mode.** The canvas argument is what the capture reports for
+   `--background-app` (`20,20,19` dark, `255,255,255` light on an sRGB display). The
+   old band was white, so in light mode it was the canvas colour to this rule — and
+   to a person, everywhere except where it replaced the sidebar.
+2. **Keep the window partly uncovered.** A fully covered window is *hidden*: its
+   renderer stops producing frames, and a resize under cover shows the renderer's
+   stale frame extended with the **page's** own colour, which is not this defect.
+   Check `document.visibilityState` first.
+3. **Resize from one process.** `osascript` costs ~150 ms a call, so a "16 ms" drag
+   becomes a slideshow; `axdrive.swift` does it through the Accessibility API. It
+   still is not AppKit's live-resize loop, which only a real pointer drives.
+4. **The `stall` driver is an amplifier, and says so.** It SIGSTOPs your instance's
+   GPU process around one resize — a compositor that is late, as it is on a machine
+   at load 40, held long enough to measure. Never point it at another instance.
+
+A negative control belongs in every run you cite: on a fixed build, have the
+renderer report the wrong mode over CDP (`window.electron.setWindowCanvas('light')`
+while the app is dark) and re-run `stall`. It must go red.
+
+### The measurements
+
+One clean dev instance, no DevTools emulation ever applied, dark Parchment, window
+at 1150×800 and at least partly uncovered. Baseline is `main` at `1038a113`; the fix
+is this change on `b7e7bfcc`. Frames with a band / frames captured:
+
+| Run | Load before / after | Before | After |
+|---|---|---|---|
+| Stepped shrink 1750→1150, 60 steps @16 ms (four runs before, three after) | 9–58 / 10 | 29/133, 14/138, 12/130, 19/130 — a white 18–28 px sliver | 0/138, 0/140, 0/145 |
+| Stepped grow 1150→1750, same stepping | 9–58 / 10 | 0 in every run | 0 in every run |
+| One jump grow and shrink; a 60-step move | 9–58 / 10 | 0 | 0 |
+| Resize to 1600×900 under an opaque cover, then uncover | 9 / 9 | 0/362 | 0/363 |
+| GPU process stopped 2 s around a grow to 1560×820 | 9–11 / 9 | 106/201 and 95/168, band 418 px right + 28 px bottom, `255,255,255` | 0/180; the stale frame is extended in the dark canvas |
+| The same, region capture of the band **on screen** | 73 / 9 | every frame `255,255,255` | every frame `20,20,19` |
+| Theme clicked Light, then Dark, in Settings; then the stall | — / 10 | — | 0/178 |
+| Negative control: renderer reports `light` while dark; the stall | — / 10 | — | 111/194 white |
+| Final build (follow-up commit), stepped shrink as above, three runs; then its negative control | — / 33–37 | — | 0/195, 0/189, 0/190; control 34/185, a white 18–28 px sliver |
+
+Two variants built only to separate the causes (not shipped): no vibrancy with the
+default background, 76/175 white; vibrancy with a `#131312` background, 104/177
+white. Steady state is unchanged: light-mode window captures at 1150×800 before
+and after differ by no pixel beyond ±3 in the title band, right edge and bottom edge, the sidebar
+ground is the same colour, and the rounded corners are transparent in both.
+
+### Telling it from the viewport pin
+
+A DevTools pin (*Viewport emulation*, below) also leaves part of the window outside
+the live layout, and **what that part looks like is not a test**. Measured on the
+fixed build: a pin set with `Emulation.setDeviceMetricsOverride` — 700×800 inside an
+1150×800 window, and 1048×720 inside 1440×1000 — leaves a **ghost of the last
+full-size frame** outside the emulated viewport, in both themes: stale heatmap cells, a
+duplicate toast, a second composer, sidebar rows. The ghost survives moving the
+window. On `b7e7bfcc` without this change the same area was flat white. So a pin
+can show a stale ghost or a flat area, and a late frame can leave stale content or a
+flat area too; never identify either by its colour.
+
+The reliable test is the viewport: `innerWidth` ≠ `outerWidth` is a pin. One command
+answers it — `launch-dev-gui.sh viewport <run>` for an instance you launched, or
+`npm run cdp:viewport-check -- <port>` for any CDP port (both also compare the height,
+allowing for the title bar). A late frame reads `inner` = `outer` throughout and lives
+exactly as long as the compositor is late, while a pin **persists**. Something you can
+still screenshot seconds later on an instance whose `inner` = `outer` is a badly
+starved compositor, a hidden window, or an orphaned pin taken at exactly the window's
+size (blind spot 1 under *Viewport emulation*) — not a late frame you can ignore.
+
+### What the 2026-09-14 report was
+
+The operator dragged a preview-panel prototype window (a two-pane split: a chat with
+an artifact panel open beside **Poem and shell command**) and saw a flat light-grey
+area where a third of the window should have been. Those instances were restarted
+and resized by their own agents before this could be read from them, so no capture
+of that moment exists. What the evidence supports:
+
+- **Not a live pin when it was checked:** all four instances then read
+  `inner` = `outer`. Only an orphaned pin taken at exactly the window's size could
+  hide from that (blind spot 1 below), and no script in those agents' scratch
+  directories applies `Emulation.setDeviceMetricsOverride` at all.
+- **Not a hidden renderer alone:** a window resized under cover shows its stale frame
+  extended with the page's own colour, and was repainted by the first capture after
+  it was uncovered (captures ~20 ms apart) in every run here.
+- **Consistent with a late compositor:** a band exactly one pane wide beside a
+  two-pane layout is what a window grown by half shows before its first frame at the
+  new size, on a machine at load ~40 running six Electron instances. A colour that is
+  not the page's is the native background, which is what this change replaces.
+
+⚠ The **light grey** did not reproduce. On this machine the vibrancy material and
+Electron's default background both render pure white — in window-only captures and
+in on-screen region captures, active and inactive — so every band measured here is
+white. Do not read a white band as a different bug from a grey one.
 
 ## The four impostors
 

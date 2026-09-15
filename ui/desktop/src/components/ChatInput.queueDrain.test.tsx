@@ -112,6 +112,7 @@ import {
   sendArtifactAnnotation,
   type ArtifactAnnotation,
 } from '../utils/annotationChannel';
+import { resetComposerQueuesForTests } from '../utils/composerQueues';
 
 const QUEUED_TEXT = 'summarise the second table too';
 const DIRECT_TEXT = 'plot the residuals';
@@ -124,6 +125,9 @@ type StopFn = (continuationPending?: boolean) => boolean | void | Promise<boolea
 beforeEach(() => {
   vi.clearAllMocks();
   resetAnnotationChannelForTests();
+  // Every test here mounts the same chat, and a composer unmounted at the end of
+  // one test parks its queue for that chat, so the next would claim it.
+  resetComposerQueuesForTests();
   Object.assign(window, {
     appConfig: {
       get: (key: string) => (key === 'BIOROUTER_WORKING_DIR' ? '/tmp/workdir' : undefined),

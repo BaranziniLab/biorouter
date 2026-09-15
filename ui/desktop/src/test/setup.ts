@@ -4,6 +4,7 @@ import { cleanup, configure } from '@testing-library/react';
 import { ASYNC_UTIL_TIMEOUT_MS, TEST_TIMEOUT_MS, MIN_TIMEOUT_HEADROOM } from './timeouts';
 import { assertNoUnexpectedNetworkAttempts, installOfflineFetch } from './networkGuard';
 import { client } from '../api/client.gen';
+import { resetComposerQueuesForTests } from '../utils/composerQueues';
 
 // This is the standard setup to ensure that React Testing Library's
 // automatic cleanup runs after each test.
@@ -13,8 +14,18 @@ import { client } from '../api/client.gen';
 // separate hook could not be ordered after `cleanup()` from here — and it has to
 // be after it, because unmounting is what flushes the passive effects that make
 // these calls. See src/test/networkGuard.ts.
+//
+// The composer-queue reset is here for the same ordering reason. A composer that
+// unmounts PARKS its queue in a module-scope map (utils/composerQueues.ts) so the
+// message survives a tab switch, and the next composer mounted for that chat id
+// claims and sends it. Unmounting happens in `cleanup()`, so the reset has to
+// follow it: a reset before cleanup would be refilled by the park. Without it, a
+// message queued in one test was sent by the next test that reused the chat id
+// (ChatInput.splitPaneSend.test.tsx, red on main at 2ce70fc5 once #313's test and
+// #315's parking met).
 afterEach(() => {
   cleanup();
+  resetComposerQueuesForTests();
   assertNoUnexpectedNetworkAttempts(expect.getState().testPath);
 });
 

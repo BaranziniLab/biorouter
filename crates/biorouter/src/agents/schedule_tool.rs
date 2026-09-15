@@ -380,7 +380,7 @@ impl Agent {
         match action.as_str() {
             "list" => self.handle_list_jobs(scheduler).await,
             "create" => {
-                self.handle_create_job(scheduler, arguments, creator_session_id, cancel)
+                self.handle_create_job(scheduler, arguments, creator_session_id, cap, cancel)
                     .await
             }
             "run_now" => {
@@ -507,6 +507,7 @@ impl Agent {
         scheduler: Arc<dyn SchedulerTrait>,
         arguments: serde_json::Value,
         creator_session_id: &str,
+        cap: crate::privacy::CallCapability,
         cancellation_token: Option<&CancellationToken>,
     ) -> ToolResult<Vec<Content>> {
         let workflow_path = arguments
@@ -622,6 +623,14 @@ impl Agent {
             creator_session_id: Some(creator_session_id.to_string()),
             last_error: None,
             owns_source: None,
+            // Issue #56. The standing of the CHAT, not of the person who allowed
+            // the card: the card promises "on this chat's model", so a person who
+            // allowed a public chat's schedule did not choose a private one. A
+            // private chat records `Some(true)`; any other records nothing, and
+            // then a run that finds this chat gone is refused the private default
+            // (`scheduler::scheduled_run_refusal`) rather than silently taking it.
+            // Never `Some(false)` — see `Agent::private_reach_of_this_chat`.
+            armed_with_private_reach: (cap.enforced() && cap.tier().is_private()).then_some(true),
         };
 
         match scheduler.add_scheduled_job(job, true).await {
@@ -655,7 +664,12 @@ impl Agent {
         )
         .await?;
 
-        match scheduler.run_now(&job_id).await {
+        // Issue #56. The card above is proof-backed, so a person just allowed
+        // THIS run: it is held to their standing, as the desktop's Run now is,
+        // and nothing is recorded on the schedule. Without it a run the person
+        // allowed was refused on the schedule's own record and told to resume or
+        // re-save instead (independent QA, 2026-09-14).
+        match scheduler.run_now_armed(&job_id, Some(true)).await {
             Ok(session_id) => Ok(vec![Content::text(format!(
                 "Successfully started job '{}'. Session ID: {}",
                 job_id, session_id
@@ -711,7 +725,10 @@ impl Agent {
         )
         .await?;
 
-        match scheduler.unpause_schedule(&job_id).await {
+        // Issue #56. A person allowed the resume on a proof-backed card, which is
+        // the desktop's Resume button by another door: it records their standing,
+        // so the remedy a refused run names works from here too.
+        match scheduler.unpause_schedule_armed(&job_id, Some(true)).await {
             Ok(()) => Ok(vec![Content::text(format!(
                 "Successfully unpaused job '{}'",
                 job_id
@@ -979,6 +996,9 @@ mod tests {
     struct RecordingScheduler {
         jobs: tokio::sync::Mutex<Vec<ScheduledJob>>,
         calls: std::sync::Mutex<Vec<String>>,
+        /// The standing each `_armed` mutation was handed, as `"<call> <id>
+        /// <standing>"` — issue #56's record of who armed a schedule.
+        standings: std::sync::Mutex<Vec<String>>,
     }
 
     impl RecordingScheduler {
@@ -1054,6 +1074,30 @@ mod tests {
             Ok("scheduled-run-session".to_string())
         }
 
+        async fn run_now_armed(
+            &self,
+            id: &str,
+            armed_with_private_reach: Option<bool>,
+        ) -> Result<String, SchedulerError> {
+            self.standings
+                .lock()
+                .unwrap()
+                .push(format!("run_now {id} {armed_with_private_reach:?}"));
+            self.run_now(id).await
+        }
+
+        async fn unpause_schedule_armed(
+            &self,
+            id: &str,
+            armed_with_private_reach: Option<bool>,
+        ) -> Result<(), SchedulerError> {
+            self.standings
+                .lock()
+                .unwrap()
+                .push(format!("unpause {id} {armed_with_private_reach:?}"));
+            self.unpause_schedule(id).await
+        }
+
         async fn sessions(
             &self,
             sched_id: &str,
@@ -1118,6 +1162,7 @@ mod tests {
             creator_session_id: None,
             last_error: None,
             owns_source: None,
+            armed_with_private_reach: None,
         }
     }
 
@@ -1447,6 +1492,128 @@ mod tests {
         let text = running.await.unwrap().expect("an approved delete succeeds");
         assert!(text.contains("nightly"), "{text}");
         assert_eq!(fx.scheduler.mutations(), vec!["remove nightly".to_string()]);
+    }
+
+    /// A provider whose only interesting property is its tier; no turn runs.
+    struct TierProvider(crate::privacy::ProviderTier);
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for TierProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::new(
+                "tier",
+                "Tier",
+                "",
+                "m",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+        fn get_name(&self) -> &str {
+            "tier-test-provider"
+        }
+        fn tier(&self) -> crate::privacy::ProviderTier {
+            self.0
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            unreachable!("no test here runs a turn")
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("m")
+        }
+    }
+
+    /// Issue #56. What an approved `create` records as the standing of whoever
+    /// armed the schedule: the CHAT's, because the card promises "on this chat's
+    /// model". A public chat's schedule records nothing — so a run that finds the
+    /// chat deleted is refused the private default instead of taking it — and a
+    /// private chat's records `Some(true)`, so the person deleting that chat
+    /// does not stop its schedule. Independent QA, 2026-09-14: every create
+    /// recorded `None`, which is what let one secret-only DELETE of the public
+    /// chat turn such a schedule's runs private.
+    #[tokio::test]
+    async fn an_approved_create_records_the_standing_of_the_chat_that_asked() {
+        use crate::privacy::ProviderTier;
+        for (tier, want) in [
+            (None, None),
+            (Some(ProviderTier::Public), None),
+            (Some(ProviderTier::Private), Some(true)),
+        ] {
+            let fx = fixture(|_| Vec::new()).await;
+            if let Some(tier) = tier {
+                *fx.agent.provider.lock().await = Some(Arc::new(TierProvider(tier)));
+            }
+            let running = spawn_call(
+                &fx,
+                serde_json::json!({
+                    "action": "create",
+                    "workflow_path": fx.workflow.to_string_lossy(),
+                    "cron_expression": "0 0 1 * * *",
+                }),
+                None,
+            );
+            let (card, running) = approval_card(&fx.session.id, running).await;
+            approve(&fx.session.id, &card);
+            running.await.unwrap().expect("an approved create succeeds");
+            let jobs = fx.scheduler.jobs.lock().await.clone();
+            assert_eq!(jobs.len(), 1, "{jobs:?}");
+            assert_eq!(
+                jobs[0].armed_with_private_reach, want,
+                "a create from a chat on {tier:?}"
+            );
+        }
+    }
+
+    /// Issue #56, independent QA's defect 2 (2026-09-14). A run the person just
+    /// allowed on a proof-backed card was started on the schedule's OWN record,
+    /// so a schedule last re-armed by a public-only request refused it and told
+    /// the person to resume or re-save instead. The run is now held to the
+    /// person's standing, and a resume allowed the same way records it — the
+    /// desktop's Run now and Resume buttons by another door.
+    #[tokio::test]
+    async fn a_run_or_resume_the_person_allowed_carries_their_standing() {
+        let fx = fixture(|workflow| {
+            let mut refused_before = job("nightly", workflow);
+            refused_before.armed_with_private_reach = Some(false);
+            let mut paused = job("nightly-paused", workflow);
+            paused.paused = true;
+            paused.armed_with_private_reach = Some(false);
+            vec![refused_before, paused]
+        })
+        .await;
+        for (action, id) in [("run_now", "nightly"), ("unpause", "nightly-paused")] {
+            let running = spawn_call(
+                &fx,
+                serde_json::json!({ "action": action, "job_id": id }),
+                None,
+            );
+            let (card, running) = approval_card(&fx.session.id, running).await;
+            approve(&fx.session.id, &card);
+            running
+                .await
+                .unwrap()
+                .unwrap_or_else(|e| panic!("an approved {action} succeeds: {e}"));
+        }
+        assert_eq!(
+            fx.scheduler.standings.lock().unwrap().clone(),
+            vec![
+                "run_now nightly Some(true)".to_string(),
+                "unpause nightly-paused Some(true)".to_string(),
+            ]
+        );
     }
 
     /// The guard against over-gating: reading the schedule changes nothing, so

@@ -13,6 +13,7 @@ import {
   ipcMain,
   Menu,
   MenuItem,
+  nativeTheme,
   Notification,
   powerSaveBlocker,
   screen,
@@ -93,6 +94,7 @@ import {
   saveSettings,
   updateEnvironmentVariables,
 } from './utils/settings';
+import { initialWindowCanvas, isWindowCanvasMode, WINDOW_CANVAS } from './utils/windowCanvas';
 import * as crypto from 'crypto';
 // import electron from "electron";
 import * as yaml from 'yaml';
@@ -1418,7 +1420,31 @@ const createChat = async (
   const mainWindow = new BrowserWindow({
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
     trafficLightPosition: process.platform === 'darwin' ? { x: 20, y: 16 } : undefined,
-    vibrancy: process.platform === 'darwin' ? 'window' : undefined,
+    // NO `vibrancy`, and an OPAQUE background that is the app's own canvas.
+    //
+    // The window's native background is what shows wherever the renderer's last
+    // frame does not reach: during a live resize or a shrink that lands a step
+    // ahead of its frame, and for as long as a loaded GPU process is late with
+    // one. It used to be the `vibrancy: 'window'` material over Electron's
+    // default `#FFF`, so those moments painted a flat band with no app pixels in
+    // it — white across a dark app, a blank hole where panes and tabs belong on
+    // a light one. The measurements, before and after, are in
+    // docs/desktop-ui/window-scaling-regressions.md ("Unpainted window area").
+    //
+    // ⚠ BOTH halves, each measured alone: without vibrancy but with the default
+    // background the band stayed white, and a canvas background under vibrancy
+    // left the material on top of it. The material was never visible otherwise
+    // — the page paints its canvas edge to edge and the sidebar is opaque, so
+    // steady-state captures before and after match — so it is not the look; do
+    // not restore it for "the sidebar vibrancy". `backgroundColor` without
+    // `transparent` keeps the standard window: rounded corners, traffic lights
+    // and drag regions are untouched. The renderer keeps the colour in step with
+    // the theme over `set-window-canvas` (utils/windowCanvas.ts), and
+    // utils/windowCanvas.test.ts guards all of it.
+    backgroundColor: initialWindowCanvas(
+      loadSettings().windowCanvasMode,
+      nativeTheme.shouldUseDarkColors
+    ),
     frame: process.platform !== 'darwin',
     x: initialBounds?.x ?? mainWindowState.x,
     y: initialBounds?.y ?? mainWindowState.y,
@@ -6053,6 +6079,28 @@ async function appMain() {
         window.webContents.send('theme-changed', themeData);
       }
     });
+  });
+
+  // The renderer's resolved theme, so the window's native background is the
+  // canvas the page paints (utils/windowCanvas.ts). Sent by ThemeProvider on
+  // mount and on every change, including one that follows the OS.
+  //
+  // ONLY CHAT WINDOWS. The launcher loads the same renderer and preload, and it
+  // is a transparent window on purpose: an opaque background from its own
+  // ThemeProvider would turn its floating chip into a rectangle. `windowMap` is
+  // exactly the set `createChat` builds, the same membership test the window
+  // gesture channels use. The payload is a mode, never a colour, so a renderer
+  // cannot paint the window anything the app does not.
+  ipcMain.on('set-window-canvas', (event, mode: unknown) => {
+    if (!isWindowCanvasMode(mode)) return;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed() || !windowMap.has(win.id)) return;
+    win.setBackgroundColor(WINDOW_CANVAS[mode]);
+    const settings = loadSettings();
+    if (settings.windowCanvasMode !== mode) {
+      settings.windowCanvasMode = mode;
+      saveSettings(settings);
+    }
   });
 
   ipcMain.on('reload-app', (event) => {

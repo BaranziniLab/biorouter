@@ -119,10 +119,22 @@ this section is the ledger.
     that caller on a daemon holding a key. Before the gate, a caller holding only the secret
     started such runs and was handed the new private chat's id, and `PUT /schedule/{id}` answered
     with the private creating chat the listing redacts. A schedule doing public work stays open.
+    Because a run works out its model again when it starts, each request that sets a schedule
+    going also records whether its caller could reach private work
+    (`ScheduledJob::armed_with_private_reach`), and a run that would bind a private model on a
+    schedule a public-only caller last set going is refused before it builds anything
+    (`scheduler::scheduled_run_refusal`). So is a run on a schedule nobody with private reach set
+    going, when its creating chat no longer gives a model and the private default would stand in
+    for it (`RunModelSource::DefaultInPlaceOfCreator`). `/loop`, `/schedule` and
+    `manage_schedule`'s `create` record `true` only when the chat that made the schedule runs a
+    private model. Independent QA measured the gap each closes: with only the secret, re-time a
+    schedule made from a public chat, delete that chat, and the next tick started a private chat
+    on the default model; and, against the first repair, the same with the re-time left out.
     ⚠ The daemon follows `schedule.json`, which a chat's shell can write, so the file remains a way
-    around these routes.
+    around these routes, the recorded standing included.
   - **The row-change feed.** `GET /sessions/changes` reports a change only for a chat `GET
-    /sessions` would show the caller. It observes only those chats' rows, and a change it withholds
+    /sessions` would show the caller, judged both on the tier the change was recorded with and on
+    the chat's row as it is now. It observes only those chats' rows, and a change it withholds
     never answers a poll early. Before this, naming a private chat was enough to be told its
     provider, model and tier on every switch.
 

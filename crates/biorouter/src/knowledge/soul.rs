@@ -828,6 +828,7 @@ pub async fn ensure_meditation_schedule(
         creator_session_id: None,
         last_error: None,
         owns_source: None,
+        armed_with_private_reach: None,
     };
     scheduler
         .add_scheduled_job(job, true)
@@ -1301,6 +1302,7 @@ mod tests {
             creator_session_id: None,
             last_error: Some("preserved diagnostic".to_string()),
             owns_source: None,
+            armed_with_private_reach: None,
         }];
         let metadata_before = serde_json::to_value(&jobs[0]).unwrap();
 

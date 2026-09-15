@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
+import type { WindowCanvasMode } from './windowCanvas';
 
 export interface EnvToggles {
   BIOROUTER_SERVER__MEMORY: boolean;
@@ -28,6 +29,14 @@ export interface Settings {
   enableWakelock: boolean;
   spellcheckEnabled: boolean;
   externalBiorouterd?: ExternalBiorouterdConfig;
+  /**
+   * The theme the app last showed, as reported by a renderer over
+   * `set-window-canvas`. A new chat window is created with that theme's canvas
+   * as its native background, so a frame that arrives late never exposes a
+   * colour the app does not paint (see utils/windowCanvas.ts). Absent on a first
+   * launch, when the window follows the OS like the page does.
+   */
+  windowCanvasMode?: WindowCanvasMode;
 }
 
 function getSettingsFile(): string {

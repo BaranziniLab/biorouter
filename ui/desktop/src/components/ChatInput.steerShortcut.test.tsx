@@ -70,12 +70,16 @@ vi.mock('../toasts', () => ({
 
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
+import { resetComposerQueuesForTests } from '../utils/composerQueues';
 
 const QUEUED_TEXT = 'summarise the second table too';
 const COMPOSER_TEXT = 'plot the residuals instead';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Every test here mounts the same chat, and a composer unmounted at the end of
+  // one test parks its queue for that chat, so the next would claim it.
+  resetComposerQueuesForTests();
   Object.assign(window, {
     appConfig: {
       get: (key: string) => (key === 'BIOROUTER_WORKING_DIR' ? '/tmp/workdir' : undefined),

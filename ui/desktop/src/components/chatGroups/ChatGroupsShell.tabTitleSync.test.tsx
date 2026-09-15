@@ -56,6 +56,7 @@ vi.mock('../../utils/sessionListCache', () => ({
 
 vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => ({}),
+  useLiveSessionTypes: () => ({}),
 }));
 
 /**
@@ -65,6 +66,11 @@ vi.mock('../../hooks/chatStreamStore', () => ({
 type ReadCall = {
   options: { path: { session_id: string }; query?: unknown; headers?: unknown };
   resolve: (row: Partial<Session>) => void;
+  /**
+   * The daemon's refusal as the client hands it over: the read passes no
+   * `throwOnError`, so a 403 resolves with the status rather than throwing.
+   */
+  refuse: () => void;
   reject: (error: unknown) => void;
 };
 let reads: ReadCall[] = [];
@@ -72,7 +78,17 @@ vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
   getSession: (options: ReadCall['options']) =>
     new Promise((resolve, reject) => {
-      reads.push({ options, resolve: (row) => resolve({ data: row }), reject });
+      reads.push({
+        options,
+        resolve: (row) => resolve({ data: row }),
+        refuse: () =>
+          resolve({
+            data: undefined,
+            error: 'That chat is private, or there is no chat with that id.',
+            response: { status: 403 },
+          }),
+        reject,
+      });
     }),
 }));
 
@@ -255,8 +271,7 @@ describe('ChatGroupsShell — tab titles are reconciled against the session list
 
     render(<ChatGroupsShell onChatChange={() => {}} />);
     await flush();
-    for (const read of reads)
-      read.reject('That chat is private, or there is no chat with that id.');
+    for (const read of reads) read.refuse();
     await flush();
 
     expect(renameDispatches()).toEqual([]);
