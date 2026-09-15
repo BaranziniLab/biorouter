@@ -65,6 +65,7 @@ import {
   retainTabComposerDrafts,
   unsentComposerTabs,
 } from '../utils/composerDrafts';
+import { retainComposerQueues } from '../utils/composerQueues';
 import { toastError, toastInfo, toastWarning } from '../toasts';
 
 /**
@@ -186,6 +187,20 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     retainTabComposerDrafts(
       leafGroupIds(state.layout).flatMap((id) =>
         state.groups[id].tabs.filter((tab) => !tab.sessionId).map((tab) => tab.tabId)
+      )
+    );
+  }, [state]);
+
+  // A chat's queued messages live as long as the chat is open in a tab here.
+  // Closing the tab drops them (and their temp images), so opening the chat
+  // again later can never send a message queued behind a turn long finished.
+  // Same timing as the drafts above: after the commit's unmount cleanups, so a
+  // composer closing with its tab has already parked what it held.
+  // See `utils/composerQueues.ts`.
+  useEffect(() => {
+    retainComposerQueues(
+      leafGroupIds(state.layout).flatMap((id) =>
+        state.groups[id].tabs.map((tab) => tab.sessionId).filter(Boolean)
       )
     );
   }, [state]);
