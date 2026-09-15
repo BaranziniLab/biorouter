@@ -2712,8 +2712,7 @@ mod tests {
         let mut dead = Vec::new();
         for file in files {
             let text = std::fs::read_to_string(&file).unwrap();
-            for (at, _) in text.match_indices("serve-decisions.md#") {
-                let rest = &text[at + "serve-decisions.md#".len()..];
+            for rest in text.split("serve-decisions.md#").skip(1) {
                 let anchor: String = rest
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')

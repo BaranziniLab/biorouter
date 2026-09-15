@@ -628,7 +628,7 @@ async fn d14_a_stop_during_the_ack_wait_keeps_the_accepted_steer() {
     let (provider, chunks, opened) = live_ack_provider();
     let (agent, session_id, _work) = agent_with(provider.clone()).await;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let stream = agent
+    let mut stream = agent
         .reply(
             Message::user().with_text("go"),
             config(&session_id, 8),
@@ -636,7 +636,6 @@ async fn d14_a_stop_during_the_ack_wait_keeps_the_accepted_steer() {
         )
         .await
         .unwrap();
-    tokio::pin!(stream);
 
     // Drive the stream by hand until the provider holds the steer request.
     let mut opened = Some(opened);

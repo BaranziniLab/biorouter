@@ -346,6 +346,7 @@ export default function ProgressiveMessageList({
     onOpenArtifact,
     onRunInTerminal,
     workingDir,
+    onSendAgain,
   ]);
 
   return (

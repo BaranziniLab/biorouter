@@ -902,12 +902,7 @@ async fn run_turn_body(
         Err(e) => {
             // A steer accepted during the prologue is stored, marked unanswered,
             // before the failure is reported.
-            if let Err(error) =
-                settle_accepted_interrupts(&session_id, &mut all_messages, &agent).await
-            {
-                tracing::error!("turn: failed to settle accepted interrupts: {error}");
-            }
-            agent.mark_loop_idle();
+            abandon_prepared_turn(&session_id, &agent).await;
             let turn_messages = (&all_messages, turn_message_start);
             report_reply_start_failure(&session_id, &e, &cancel_token, turn_messages, &outcome);
             return;
@@ -1661,7 +1656,7 @@ mod tests {
             .find("state.take_extension_loading_task(session_id).await;")
             .expect("run_turn's setup no longer waits for the session's extensions");
         let reply = src
-            .find(".reply(user_message, session_config.clone(), Some(cancel_token.clone()))")
+            .find("let stream = match agent\n        .reply(")
             .expect("run_turn_body no longer calls reply");
         assert!(
             take < open && open < wait,

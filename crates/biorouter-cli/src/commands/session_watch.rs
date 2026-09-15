@@ -1745,7 +1745,7 @@ async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Resu
             // false "[not sent] the turn state changed three times". Wait for
             // that turn to let go first; then the ordinary refusal sends the
             // text as a new turn.
-            if interrupt_refusal_reason(&body) == Some("turn_closing") {
+            if interrupt_refusal_reason(&body).as_deref() == Some("turn_closing") {
                 wait_for_turn_to_end(session_id).await;
             }
             Ok(SteerOutcome::Refused)
@@ -1756,12 +1756,11 @@ async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Resu
 
 /// The `reason` a `POST /interrupt` 409 carries (`no_turn`, `not_accepting_yet`,
 /// `turn_closing`), or `None` for an older daemon's bare 409.
-fn interrupt_refusal_reason(body: &str) -> Option<&str> {
-    let start = body.find("\"reason\"")?;
-    let rest = &body[start + "\"reason\"".len()..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    rest.split('"').next()
+fn interrupt_refusal_reason(body: &str) -> Option<String> {
+    json_object(body)?
+        .get("reason")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// Wait, bounded, until `session_id` no longer holds a turn. Best-effort: an
@@ -4084,11 +4083,11 @@ mod tests {
     #[test]
     fn an_interrupt_refusal_reason_is_read_from_the_409_body() {
         assert_eq!(
-            interrupt_refusal_reason(r#"{"reason":"turn_closing","turn_id":"turn-4"}"#),
+            interrupt_refusal_reason(r#"{"reason":"turn_closing","turn_id":"turn-4"}"#).as_deref(),
             Some("turn_closing")
         );
         assert_eq!(
-            interrupt_refusal_reason(r#"{ "reason" : "no_turn" }"#),
+            interrupt_refusal_reason(r#"{ "reason" : "no_turn" }"#).as_deref(),
             Some("no_turn")
         );
         assert_eq!(

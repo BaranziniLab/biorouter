@@ -1242,6 +1242,35 @@ line said 102 for long enough that a "pre + N" assertion against it would have r
 shortfall of ninety-six as a pass; re-measure rather than trusting the figure, which
 moved 197 → 198 between this line being written and the branch carrying it landing).
 
+### Steering a running turn
+
+A steer (`POST /interrupt`, "Add this message to the current turn") is accepted into the agent's
+soft-interrupt queue and must always reach the loop or be stored as unanswered. Reference:
+[`docs/agent-loop/steering-a-running-turn.md`](docs/agent-loop/steering-a-running-turn.md).
+
+- **The queue opens before the prologue and closes only at the commit point.** The runner
+  (`workspace/turn.rs` `prepare_turn`) opens it before the extension wait; the loop drains it
+  immediately before the `break` that really ends a turn (`commit_turn_exit_or_continue`), never
+  before the done gate, self-critique or Stop hooks. A `409` names its reason
+  (`no_turn` / `not_accepting_yet` / `turn_closing`); the 403 shapes are untouched (SD-11).
+- **A steer leaves the queue only after its row is stored** (`consume_soft_interrupts_at_boundary`,
+  `land_live_ack`), and every row a turn carries past an ending that did not read it is marked
+  `steer_outcome: unanswered`. A steer the person typed resets `max_turns` / `max_tool_calls` /
+  the stall stop; a spend cap does not.
+- ⚠ **Every new wait in the reply loop needs a steer arm, and it goes in a `Box::pin`'d helper**
+  (`next_batch_wake`, `next_gate_wake`, `next_approval_wake`, `open_provider_or_steer`,
+  `next_native_supervision_claim`). State lives on `Agent` — `loop_phase`, `live_acks`,
+  `turn_exit`, `steer_arrivals` — never as generator locals (the stack cliff). Several waits can
+  listen at once, which is why they use the `steer_arrivals` watch and not `notify_one`.
+- **The renderer owns a steer until the daemon answers** (retry with one idempotency key), retires
+  its chip by message id, treats every frame including `Ping` as a heartbeat, and reconciles a
+  silent or orphaned running state with `/agent/resume`.
+- **Observers are capped at two** (`MAX_LIVE_OBSERVER_STREAMS`): 2 observers + 2 renderer
+  long-polls + 1 `/reply` must leave one of Chromium's six connections free.
+- Tests: `cargo test -p biorouter --test steer_always_lands`, the three stack-margin binaries
+  (`soft_interrupt_agent_loop`, `turn_abort_tests`, `subagent_delegation`), and
+  `ui/desktop/src/hooks/chatStreamStore.steerLands.test.tsx`.
+
 ### Browser access (`biorouter serve`)
 
 `biorouter serve` (alias `headless`) starts `biorouterd`, points it at the built interface and

@@ -12519,18 +12519,15 @@ impl Agent {
             // the children are supervised by the continued loop.
             if native_supervision_required {
                 self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::SupervisionWait);
-                let resumable = self.turn_exit_is_resumable();
-                loop {
-                    match Box::pin(self.next_supervision_step(
-                        &session_config.id,
-                        cancel_token.clone(),
-                        resumable,
-                    ))
-                    .await?
-                    {
-                        SupervisionStep::Collected(message) => yield AgentEvent::Message(message),
-                        SupervisionStep::Complete | SupervisionStep::UserSteered => break,
-                    }
+                // `Complete` and `UserSteered` both end the wait.
+                while let SupervisionStep::Collected(message) = Box::pin(self.next_supervision_step(
+                    &session_config.id,
+                    cancel_token.clone(),
+                    self.turn_exit_is_resumable(),
+                ))
+                .await?
+                {
+                    yield AgentEvent::Message(message);
                 }
             }
 

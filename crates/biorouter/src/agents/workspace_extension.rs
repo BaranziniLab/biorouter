@@ -4802,8 +4802,7 @@ impl WorkspaceClient {
             receivers.retain(|(id, _, _)| !completed.iter().any(|done| &done.id == id));
         }
 
-        let mut cancelled = false;
-        let mut steered = false;
+        let mut parked = ParkOutcome::default();
         let done_now = if wait_all {
             receivers.is_empty()
         } else {
@@ -4818,25 +4817,15 @@ impl WorkspaceClient {
             } else {
                 completed.len() + 1
             };
-            // D2: the CALLER's agent, so a steer the person types while this
-            // watch parks ends it early. A watch is a read-only wait, and the
-            // model cannot read the person's message until the tool returns —
-            // up to ten minutes, measured live at 122 s.
-            let caller_agent = match crate::execution::manager::AgentManager::instance().await {
-                Ok(manager) => manager.peek_agent(caller_session_id).await,
-                Err(_) => None,
-            };
-            let parked = Self::park_for_completions_or_steer(
+            parked = Self::park_for_the_caller(
+                caller_session_id,
                 receivers,
                 &mut completed,
                 want,
                 timeout,
                 cancel,
-                caller_agent.as_deref(),
             )
             .await;
-            cancelled = parked.cancelled;
-            steered = parked.steered;
         }
 
         let still_running: Vec<&String> = args
@@ -4851,9 +4840,9 @@ impl WorkspaceClient {
             timeout,
             clamped_from,
             unknown_liveness,
-            cancelled,
+            parked.cancelled,
         );
-        if steered {
+        if parked.steered {
             report.text.push_str(STEERED_WATCH_NOTE);
         }
         if !report.collections.is_empty() {
@@ -4866,6 +4855,37 @@ impl WorkspaceClient {
             report.commit_collections_if_inline(remains_inline);
         }
         Ok(vec![Content::text(report.text)])
+    }
+
+    /// Park on behalf of `caller_session_id`, listening for a steer the person
+    /// types into THAT turn (D2): a watch is a read-only wait, and the model
+    /// cannot read the person's message until the tool returns — up to ten
+    /// minutes, measured live at 122 s.
+    async fn park_for_the_caller(
+        caller_session_id: &str,
+        receivers: Vec<(
+            String,
+            crate::session_events::Subscription,
+            Option<WatchedBackground>,
+        )>,
+        completed: &mut Vec<WatchedCompletion>,
+        want: usize,
+        timeout: std::time::Duration,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> ParkOutcome {
+        let caller_agent = match crate::execution::manager::AgentManager::instance().await {
+            Ok(manager) => manager.peek_agent(caller_session_id).await,
+            Err(_) => None,
+        };
+        Self::park_for_completions_or_steer(
+            receivers,
+            completed,
+            want,
+            timeout,
+            cancel,
+            caller_agent.as_deref(),
+        )
+        .await
     }
 
     /// [`Self::park_for_completions_or_steer`] with no steer to listen for.
@@ -5063,6 +5083,7 @@ impl WorkspaceClient {
 }
 
 /// How [`WorkspaceClient::park_for_completions_or_steer`] ended.
+#[derive(Default)]
 struct ParkOutcome {
     cancelled: bool,
     /// The person added a message to the watching turn (D2).

@@ -268,6 +268,7 @@ describe('D8 — a /reply the daemon refused is not a dropped connection', () =>
           (options as { onSseError?: (e: unknown) => void }).onSseError?.(
             new Error('SSE failed: 409 Conflict')
           );
+          yield* [] as MessageEvent[];
         })(),
       }))
       .mockResolvedValueOnce({ stream: foreign.stream });

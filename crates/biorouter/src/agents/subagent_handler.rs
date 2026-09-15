@@ -855,6 +855,14 @@ fn get_agent_messages(
         // Handoff without an admission gap: queued child input remains accepted
         // until the live agent interrupt queue is open. The reply loop reuses
         // this exact prepared turn on its first poll rather than clearing it.
+        //
+        // ⚠ Deliberately NOT `prepare_continuable_soft_interrupt_turn`. The
+        // detached runner continues a turn for a steer typed after a safety stop
+        // (fix/steer-always-lands, the open question); a delegated child's run
+        // does not — its parent is waiting on ONE result. So a steer typed into
+        // the child's tab after its action limit is stored `unanswered` by the
+        // settle after this stream (and shown so), never silently dropped and
+        // never answered by a continuation the parent is not waiting for.
         agent.prepare_soft_interrupt_turn();
         let pending_user_inputs =
             crate::agents::subagent_handle::mark_initial_runtime_ready(&session_id);
