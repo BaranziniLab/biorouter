@@ -2478,7 +2478,11 @@ async fn persist_iteration_messages(
 /// see [`ToolBatchMaps`].
 fn soft_interrupt_message(queued: QueuedInterrupt) -> Message {
     let QueuedInterrupt {
-        text, provenance, ..
+        text,
+        provenance,
+        message_id,
+        created,
+        ..
     } = queued;
     let body = match &provenance {
         Some(p) => match p.kind {
@@ -2496,7 +2500,8 @@ fn soft_interrupt_message(queued: QueuedInterrupt) -> Message {
         // Unstamped: the human's own typed soft interrupt.
         None => text,
     };
-    let mut m = Message::user().with_text(body);
+    let mut m = Message::user().with_id(message_id).with_text(body);
+    m.created = created;
     if let Some(p) = provenance {
         m = m.with_provenance(p);
     }
@@ -2547,7 +2552,7 @@ async fn persist_carried_over_interrupts(
         let mut message = soft_interrupt_message(queued)
             .with_steer_outcome(crate::conversation::message::SteerOutcome::Unanswered);
         session_manager
-            .add_message_adopting_uid(session_id, &mut message)
+            .persist_unanswered_steer(session_id, &mut message)
             .await?;
         info!(
             session_id,
@@ -3275,6 +3280,9 @@ pub struct QueuedInterrupt {
     /// persisting afterwards is how a Stop that lands in between used to drop
     /// an accepted steer on the floor.
     pub(crate) seq: u64,
+    // Stable even if cancellation wins after the database commits.
+    pub(crate) message_id: String,
+    pub(crate) created: i64,
     /// When the steer was accepted, for the `steer_consumed` latency log.
     pub(crate) accepted_at: std::time::Instant,
     /// Handed to a live-steering provider whose acknowledgement has not come
@@ -3386,6 +3394,8 @@ impl SoftInterrupts {
             text,
             provenance,
             seq: self.next_seq,
+            message_id: new_message_id(),
+            created: chrono::Utc::now().timestamp(),
             accepted_at: std::time::Instant::now(),
             in_flight: false,
         });
@@ -5470,7 +5480,7 @@ impl Agent {
             via = "exit_requeue",
             "steer_consumed"
         );
-        Some(soft_interrupt_message(item).with_id(new_message_id()))
+        Some(soft_interrupt_message(item))
     }
 
     /// Continue the turn for the steer [`Agent::take_continuation_steer`] handed
@@ -15497,6 +15507,77 @@ mod tests {
             .unwrap()
             .conversation
             .is_none_or(|conversation| conversation.messages().is_empty()));
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_steer_commit_updates_the_same_row() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "committed steer".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        for in_flight in [false, true] {
+            agent.prepare_soft_interrupt_turn();
+            agent
+                .try_queue_soft_interrupt(format!("committed steer {in_flight}"), None)
+                .unwrap();
+            let queued = {
+                let mut q = agent.lock_interrupts();
+                q.queued[0].in_flight = in_flight;
+                q.queued[0].clone()
+            };
+            // The transaction committed, but cancellation won before the loop
+            // observed completion and removed this exact item from its queue.
+            let mut committed = soft_interrupt_message(queued);
+            sm.add_message_adopting_uid(&session.id, &mut committed)
+                .await
+                .unwrap();
+            let settled = agent
+                .settle_carried_over_soft_interrupts(&session.id)
+                .await
+                .unwrap();
+            assert_eq!(settled.len(), 1);
+            assert_eq!(settled[0].id, committed.id);
+            assert_eq!(settled[0].created, committed.created);
+            let stored = sm
+                .get_session(&session.id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap();
+            let copies: Vec<_> = stored
+                .messages()
+                .iter()
+                .filter(|row| row.as_concat_text() == committed.as_concat_text())
+                .collect();
+            assert_eq!(
+                copies.len(),
+                1,
+                "settlement must not duplicate the committed steer"
+            );
+            assert_eq!(
+                copies[0].metadata.steer_outcome,
+                Some(crate::conversation::message::SteerOutcome::Unanswered)
+            );
+            assert!(agent
+                .settle_carried_over_soft_interrupts(&session.id)
+                .await
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[tokio::test]
