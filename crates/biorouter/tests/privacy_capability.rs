@@ -245,9 +245,9 @@ const EXPECTED: &[Site] = &[
                everything the command does — whether a verb may pause, run, resume or \
                remove a schedule (`slash_verb_reaches`: a chat on a private model may \
                manage any, any other chat only work `scheduler::schedule_work` calls \
-               public) and the standing a create, resume or run records \
-               (`private_reach_of_this_chat`) — so a model swapped mid-command cannot \
-               be gated on one tier and recorded on another. Independent QA, \
+               public) and the durable standing a create or resume records \
+               (`private_reach_of_this_chat`), plus the transient standing of run-now — so a \
+               model swapped mid-command cannot be gated on one tier and recorded on another. Independent QA, \
                2026-09-14: before it, `/schedule pause <private>` typed into a public \
                chat paused a schedule `POST /schedule/<id>/pause` refused the same \
                caller",

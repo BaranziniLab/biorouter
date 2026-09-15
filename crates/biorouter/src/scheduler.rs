@@ -414,6 +414,27 @@ pub const SCHEDULED_RUN_CREATOR_GONE: &str =
      run it on this model, resume or re-save the schedule in the desktop app, or from a session \
      running a private model.";
 
+/// A run [`scheduled_run_refusal`] refused, as the error [`execute_job`] ends
+/// with. Its text is the refusal's, word for word, so `last_error` reads exactly
+/// as it did.
+///
+/// A TYPE rather than an `anyhow!` string for one reader: a timer tick that was
+/// refused did not run, and must not spend a `/loop`'s `max_runs` budget
+/// ([`RunCompletion::uncount`]). Independent QA, 2026-09-14: a `/loop` whose
+/// runs were refused climbed `run_count` 0 → 1 → 2, so a hundred refusals would
+/// have auto-stopped a loop that never ran once. A string compare would break
+/// the day the sentence is reworded; a downcast does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduledRunRefused(pub &'static str);
+
+impl std::fmt::Display for ScheduledRunRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ScheduledRunRefused {}
+
 /// Issue #56 — may a run of a schedule armed as `armed_with_private_reach`
 /// bind a model of `run_tier`, found as `source`? `None` when it may; the
 /// refusal otherwise.
@@ -446,27 +467,6 @@ pub const SCHEDULED_RUN_CREATOR_GONE: &str =
 /// `Provider::tier`, before any extension is added or any chat is made, because
 /// the two are not guaranteed to agree and the instance is what the bind
 /// actually uses.
-/// A run [`scheduled_run_refusal`] refused, as the error [`execute_job`] ends
-/// with. Its text is the refusal's, word for word, so `last_error` reads exactly
-/// as it did.
-///
-/// A TYPE rather than an `anyhow!` string for one reader: a timer tick that was
-/// refused did not run, and must not spend a `/loop`'s `max_runs` budget
-/// ([`RunCompletion::uncount`]). Independent QA, 2026-09-14: a `/loop` whose
-/// runs were refused climbed `run_count` 0 → 1 → 2, so a hundred refusals would
-/// have auto-stopped a loop that never ran once. A string compare would break
-/// the day the sentence is reworded; a downcast does not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScheduledRunRefused(pub &'static str);
-
-impl std::fmt::Display for ScheduledRunRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-impl std::error::Error for ScheduledRunRefused {}
-
 pub fn scheduled_run_refusal(
     enforced: bool,
     armed_with_private_reach: Option<bool>,
