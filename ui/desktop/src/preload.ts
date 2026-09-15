@@ -372,7 +372,14 @@ type ElectronAPI = {
   hasAcceptedWorkflowBefore: (workflow: Workflow) => Promise<boolean>;
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
-  captureRegion: (payload: {
+  /**
+   * A compositor grab of part of this window, saved to a temp file. Optional, so
+   * the compiler makes every caller optional-call it: the bridge `renderer.tsx`
+   * installs for a `biorouter serve` browser has no main process to grab with and
+   * does not carry it, and a bare call threw there — leaving the region overlay
+   * up, and handing the agent a TypeError (components/artifacts/captureOnBrowser.ts).
+   */
+  captureRegion?: (payload: {
     x: number;
     y: number;
     width: number;

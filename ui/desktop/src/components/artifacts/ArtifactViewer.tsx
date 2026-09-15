@@ -55,6 +55,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
+import { annotateBrowserReason } from './captureOnBrowser';
 import DocumentPreview from './DocumentPreview';
 import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
@@ -453,7 +454,7 @@ export default function ArtifactViewer({
         finishAnnotation();
         return;
       }
-      const shot = await window.electron?.captureRegion({
+      const shot = await window.electron?.captureRegion?.({
         x: bodyRect.left + x,
         y: bodyRect.top + y,
         width,
@@ -1243,18 +1244,25 @@ export default function ArtifactViewer({
           // the open issue against that names our exact case: a researcher
           // reads a generated report and cannot point at anything in it. For
           // this audience the report IS the artifact.
+          // ⚠ Not in a browser, though (SD-8): a `biorouter serve` page has no
+          // compositor to grab, so the control says so instead of opening a
+          // selection no drag can finish (captureOnBrowser.ts).
           <button
             type="button"
             data-testid="artifact-annotate"
             aria-pressed={isAnnotating}
+            disabled={annotateBrowserReason() !== null}
             onClick={() => void toggleAnnotation()}
             className={cn(
               HEADER_ACTION_BUTTON_CLASS,
-              'relative z-50 ml-0.5 shrink-0',
+              'relative z-50 ml-0.5 shrink-0 disabled:cursor-not-allowed disabled:opacity-50',
               isAnnotating && 'bg-background-accent text-text-on-accent'
             )}
             aria-label={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
-            title={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
+            title={
+              annotateBrowserReason() ??
+              (isAnnotating ? 'Cancel region selection' : 'Send a region to the chat')
+            }
           >
             <Camera className="h-4 w-4" aria-hidden="true" />
           </button>

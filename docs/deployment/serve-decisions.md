@@ -380,6 +380,20 @@ decision. The Reset panel shows a note in place of its buttons and never asks fo
 `RESET_NO_USER_KEY` in `routes/reset.rs`, names the machine running the daemon as where the control
 works (`tests/reset_no_user_key.rs`).
 
+**Capturing the preview panel is the fifth case, and the only one that has nothing to do with the
+proof** (2026-09-14). A person's "Send a region to the chat" and the agent's
+`workspace_read_panel { capture: true }` both end in `captureRegion`, a compositor grab by the
+Electron window — the only thing that sees into the sandboxed frames most previews draw in — and
+the bridge `renderer.tsx` installs for a browser has no window and no such method. Both call sites
+guarded the bridge and not the method, so in a browser the drag threw, the selection overlay stayed
+up until Escape, and the agent was handed `renderer error: TypeError: window.electron?.captureRegion
+is not a function` as the tool's result (measured on `serve`). The calls now treat a missing method
+as a capture that did not happen; the camera button is disabled with its reason as the tooltip; and
+the agent is told a capture can never succeed on this surface and to read the panel's text instead,
+which does work, rather than that it failed "right now". A DOM-walking screenshot library is not a
+fallback: it returns an empty box for a sandboxed frame, a blank picture captioned as the user's
+selection. `ui/desktop/src/components/artifacts/captureOnBrowser.ts` holds the words.
+
 **Why.** SD-1 already required that *"the interface must explain the refusal rather than appear
 broken"*, and stated it about the model picker. The same argument covers every proof-backed
 control, and an approval card is the worst case: three buttons that look live, a bare 403 on

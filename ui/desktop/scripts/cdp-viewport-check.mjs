@@ -12,8 +12,10 @@
 // WHY THIS EXISTS. `agent-browser set_viewport`, Playwright's `setViewportSize`
 // and DevTools device mode all apply `Emulation.setDeviceMetricsOverride`, which
 // fixes the renderer's viewport regardless of the real window. Resizing the OS
-// window then changes nothing on screen, a blank band opens below and to the
-// right of the page, and every measurement taken afterwards is a lie. It reads
+// window then changes nothing on screen, an area outside the live layout opens
+// below and to the right of the page (a stale ghost of the last frame, or a flat
+// area — never identify it by how it looks; inner != outer, below, is the only
+// test), and every measurement taken afterwards is a lie. It reads
 // exactly like a layout regression and is not one — see
 // docs/desktop-ui/window-scaling-regressions.md, "Viewport emulation pins
 // innerWidth". Measured on 2026-09-08 across two running instances:

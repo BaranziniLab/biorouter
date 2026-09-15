@@ -615,7 +615,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
     });
     let resolveCapture!: (value: { path: string; width: number; height: number }) => void;
-    vi.mocked(window.electron.captureRegion).mockReturnValueOnce(
+    vi.mocked(window.electron.captureRegion!).mockReturnValueOnce(
       new Promise((resolve) => {
         resolveCapture = resolve;
       })
