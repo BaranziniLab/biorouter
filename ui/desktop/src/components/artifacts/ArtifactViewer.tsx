@@ -2414,6 +2414,10 @@ function TextFilePreview({
 
   const lineCount = useMemo(() => countLines(file.text), [file.text]);
   const showingCode = showRaw || !renderable;
+  // Whether the text below reads at the chat measure: code and raw text (not a
+  // CSV's raw rows), and a markdown file's rendered prose. A table and a page do
+  // not, and their strip keeps the panel's own inset.
+  const measuredText = showingCode ? !delimited : markdown;
 
   const code = (
     <CodeBlock
@@ -2433,7 +2437,13 @@ function TextFilePreview({
           content below it sits on the panel ground — no sub-header, no card. */}
       <div
         data-testid="artifact-status-strip"
-        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5"
+        className={cn(
+          'flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5',
+          // The strip names the column under it, so it starts where that column
+          // starts. Without this a short file in a wide panel read as indented:
+          // its lines began 64px in from a strip that began at the edge.
+          measuredText && 'br-preview-measure-strip'
+        )}
       >
         <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>
           {languageLabel(file.path, file.mimeType)}

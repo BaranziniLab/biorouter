@@ -828,13 +828,25 @@ describe('the preview text measure is the chat measure', () => {
 
   it('is applied at exactly two call sites: the markdown body and the code view', () => {
     const code = codeWithoutComments(VIEWER);
-    expect(code.match(/br-preview-measure/g) ?? []).toHaveLength(2);
+    expect(code.match(/br-preview-measure(?!-)/g) ?? []).toHaveLength(2);
     expect(code).toContain(
       '<div className="br-preview-measure px-4 py-3" data-preview-intrinsic="">'
     );
     expect(code).toContain("className={cn('min-h-full', measure && 'br-preview-measure')}");
     // …and the code view is held only when the file is not a CSV/TSV.
     expect(code).toContain('measure={!delimited}');
+  });
+
+  it('aligns the status strip’s content with the measured column, and only there', () => {
+    const rule = onlyRule('.br-preview-measure-strip');
+    expect(property(rule.body, 'padding-inline')).toBe(
+      'max(14px, calc((100% - var(--measure-chat) - 2 * 16px) / 2 + 14px))'
+    );
+    expect(depthAt(rule.index)).toBe(0);
+    const code = codeWithoutComments(VIEWER);
+    expect(code.match(/br-preview-measure-strip/g) ?? []).toHaveLength(1);
+    expect(code).toContain("measuredText && 'br-preview-measure-strip'");
+    expect(code).toContain('const measuredText = showingCode ? !delimited : markdown;');
   });
 
   it.each(['DelimitedTable', 'DirectoryTreePreview', 'ImageFilePreview'])(

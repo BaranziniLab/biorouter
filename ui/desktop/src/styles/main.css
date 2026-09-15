@@ -3876,6 +3876,16 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   margin-inline: auto;
 }
 
+/* The status strip over a measured column keeps its full-width hairline and
+   insets its CONTENT to the column's edge, so the file's name and its first line
+   share a left edge. Without it a three-line file in a 920px panel read as
+   indented: the strip began at the panel's edge and the text 64px further in.
+   `100%` is the panel's width (a padding percentage resolves against the
+   containing block), and 14px is the strip's own inset (`px-3.5`). */
+.br-preview-measure-strip {
+  padding-inline: max(14px, calc((100% - var(--measure-chat) - 2 * 16px) / 2 + 14px));
+}
+
 body.biorouter-window-resizing .biorouter-sidebar-inset-depth,
 body.biorouter-window-resizing .biorouter-sidebar-shell,
 body.biorouter-window-resizing [data-slot='sidebar-gap'],
