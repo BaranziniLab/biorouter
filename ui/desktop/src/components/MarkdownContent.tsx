@@ -1,5 +1,13 @@
-import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  memo,
+  useMemo,
+  createContext,
+  useContext,
+} from 'react';
+import ReactMarkdown, { defaultUrlTransform, type Options } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
@@ -23,6 +31,7 @@ import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTy
 import {
   imageSourceForPreview,
   looksLikePreviewableFile,
+  normalizeCodeLanguage,
   resolveMarkdownImageSource,
 } from './artifacts/artifactUtils';
 import {
@@ -39,6 +48,7 @@ interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttrib
   workingDir?: string;
   knownFilePaths?: KnownFilePaths;
   onRunInTerminal?: (command: string) => boolean;
+  variant?: 'chat' | 'document';
 }
 
 interface MarkdownContentProps {
@@ -60,20 +70,45 @@ interface MarkdownContentProps {
    * transcript on every streaming frame.
    */
   onRunInTerminal?: (command: string) => boolean;
+  /**
+   * `chat` (the default) renders a message; `document` renders a FILE the user
+   * opened in the artifact panel — a report, an R Markdown source, a notebook's
+   * markdown cell. One switch, because a file differs from a message in three
+   * ways that must not drift apart:
+   *
+   * - Line breaks. Chat keeps `remark-breaks` on purpose: a model's single
+   *   newline is a line it meant. Authors hard-wrap a markdown file at 80-100
+   *   columns, and turning every wrap into `<br>` rendered the panel's reports
+   *   ragged at the source's width. A document follows CommonMark: a single
+   *   newline is a space.
+   * - Fenced code. Chat soft-wraps a long line to the bubble. A document keeps
+   *   the line and scrolls inside its well, as a code viewer does.
+   * - The hook. The root carries `data-variant`, for authored CSS that styles a
+   *   document without a caller-chosen class name.
+   */
+  variant?: 'chat' | 'document';
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
 const CodeBlock = memo(function CodeBlock({
   language,
+  label,
   fenceLanguage,
   children,
   onRunInTerminal,
+  wrapLongLines = true,
 }: {
+  /** The Prism grammar: the fence id, normalised (`normalizeCodeLanguage`). */
   language: string;
+  /**
+   * The header label: the fence id AS WRITTEN (`r` for ```{r setup}, `Python3`
+   * for ```Python3). Chat upper-cases it in CSS; a document shows it as is.
+   */
+  label: string;
   /**
    * The WHOLE fence identifier, which `language` is not.
    *
-   * `language` comes from MarkdownCode's `/language-(\w+)/` and drives the
+   * `language` comes from MarkdownCode's `/language-\{?(\w+)/` and drives the
    * header label and the highlighter; `\w` stops at a hyphen, so a
    * ```shell-session fence arrives there as `shell`. The runnable decision must
    * see `shell-session` — see utils/shellCommandBlock.ts.
@@ -81,6 +116,12 @@ const CodeBlock = memo(function CodeBlock({
   fenceLanguage: string | null;
   children: string;
   onRunInTerminal?: (command: string) => boolean;
+  /**
+   * Chat soft-wraps a long line to the bubble. A document (`variant="document"`)
+   * keeps the line and lets the block scroll sideways, which is what a code
+   * viewer does and what keeps indentation honest.
+   */
+  wrapLongLines?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   /**
@@ -138,16 +179,22 @@ const CodeBlock = memo(function CodeBlock({
         PreTag="div"
         customStyle={{
           margin: 0,
-          padding: '12px',
+          // Overridable, so a surface that restyles the block (the artifact
+          // panel's paper) can set its own inset without an !important fight
+          // with an inline style. Chat never sets it and keeps 12px.
+          padding: 'var(--md-code-pad, 12px)',
           background: 'transparent',
-          width: '100%',
-          maxWidth: '100%',
+          // A kept line needs the block to be as wide as its longest line, so
+          // the body (`overflow-x: auto`) scrolls it; a wrapped one fits.
+          width: wrapLongLines ? '100%' : 'max-content',
+          minWidth: '100%',
+          maxWidth: wrapLongLines ? '100%' : 'none',
         }}
         codeTagProps={{
           style: {
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            overflowWrap: 'break-word',
+            ...(wrapLongLines
+              ? { whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word' }
+              : { whiteSpace: 'pre' }),
             fontFamily: CODE_FONT_FAMILY,
             fontSize: CODE_FONT_SIZE,
             lineHeight: CODE_LINE_HEIGHT,
@@ -160,7 +207,7 @@ const CodeBlock = memo(function CodeBlock({
         {children}
       </SyntaxHighlighter>
     );
-  }, [codeStyle, language, children]);
+  }, [codeStyle, language, children, wrapLongLines]);
 
   return (
     // `bg-background-code`, not `bg-background-muted`: the syntax palette in
@@ -172,11 +219,21 @@ const CodeBlock = memo(function CodeBlock({
     // are still distinct and the generator measures against the code one.
     // The highlighter itself renders transparent, so this div IS the ground the
     // reader sees.
-    <div className="w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-code">
+    //
+    // `not-prose` is a correction, not decoration. The wrapper's inline-code
+    // recipe (`prose-code:bg-background-medium px-1 py-0.5 rounded-sm`) targets
+    // every `<code>` under `.prose`, and the highlighter's own `<code>` is one —
+    // so each line of every fenced block painted an inline-code chip and the
+    // first line sat 4px right of the rest. The typography plugin's element
+    // variants skip `.not-prose` subtrees; nothing inside this block wants them.
+    //
+    // The `biorouter-md-code*` names are hooks for surfaces that restyle the
+    // block in authored CSS (the artifact panel's paper, main.css).
+    <div className="biorouter-md-code not-prose w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-code">
       {/* Header bar */}
-      <div className="flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">
-        <span className="text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
-          {language || 'code'}
+      <div className="biorouter-md-code-head flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">
+        <span className="biorouter-md-code-lang text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
+          {label || 'code'}
         </span>
         <div className="flex items-center gap-1">
           {/* Run sits to the LEFT so Copy keeps the position it has always had.
@@ -226,7 +283,9 @@ const CodeBlock = memo(function CodeBlock({
         </div>
       </div>
       {/* Code body */}
-      <div className="w-full overflow-x-auto">{memoizedSyntaxHighlighter}</div>
+      <div className="biorouter-md-code-body w-full overflow-x-auto">
+        {memoizedSyntaxHighlighter}
+      </div>
     </div>
   );
 });
@@ -319,7 +378,7 @@ function ArtifactLinkButton({
       // Same fill, padding, family and size as the inline-code recipe, so the
       // text is unchanged and only its role is.
       <span
-        className={`${ARTIFACT_LINK_BASE_CLASS} bg-background-medium px-1 py-0.5 text-text-default`}
+        className={`${ARTIFACT_LINK_BASE_CLASS} biorouter-inline-code bg-background-medium px-1 py-0.5 text-text-default`}
       >
         {children}
       </span>
@@ -335,7 +394,7 @@ function ArtifactLinkButton({
     <button
       type="button"
       className={`${ARTIFACT_LINK_BASE_CLASS} ${LINK_CLASS} ${
-        inlineCode ? 'bg-background-medium px-1 py-0.5' : ''
+        inlineCode ? 'biorouter-inline-code bg-background-medium px-1 py-0.5' : ''
       }`}
       onClick={() => onOpenArtifact(artifact)}
       title={`Preview ${artifact.title} in the side panel`}
@@ -470,6 +529,12 @@ function openExternalLink(event: React.MouseEvent<HTMLAnchorElement>, href: stri
   void opener(href);
 }
 
+// Inside a markdown link, the link IS the destination. Inline code in its text
+// (`[\`results.csv\`](results.csv)`) used to become a second file-link button
+// nested inside the link's own button — invalid HTML that React warns about, and
+// two click targets for one link. Code under a link renders as plain inline code.
+const InsideLinkContext = createContext(false);
+
 const MarkdownCode = memo(
   React.forwardRef(function MarkdownCode(
     {
@@ -480,11 +545,16 @@ const MarkdownCode = memo(
       workingDir,
       knownFilePaths,
       onRunInTerminal,
+      variant,
       ...props
     }: CodeProps,
     ref: React.Ref<HTMLElement>
   ) {
-    const match = /language-(\w+)/.exec(className || '');
+    // `\{?` admits R Markdown / Quarto chunk headers (```{r setup}), which
+    // reach here as `language-{r`; `\w` alone rejected them, so every chunk
+    // rendered as an unhighlighted plain block. The name is normalised (case,
+    // kernel aliases) before it reaches Prism, whose registry is case-sensitive.
+    const match = /language-\{?(\w+)/.exec(className || '');
     // The same identifier, unabridged. `\w` stops at a hyphen, so `match[1]` is
     // `shell` for BOTH ```shell and ```shell-session — fine for a header label
     // and a Prism alias, wrong for deciding whether a block may be executed,
@@ -493,14 +563,18 @@ const MarkdownCode = memo(
     // behaviour.
     const fenceMatch = /language-([\w.+-]+)/.exec(className || '');
     const text = String(children);
-    const artifact = !match
-      ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths)
-      : null;
+    const insideLink = useContext(InsideLinkContext);
+    const artifact =
+      !match && !insideLink
+        ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths)
+        : null;
     return !inline && match ? (
       <CodeBlock
-        language={match[1]}
+        language={normalizeCodeLanguage(match[1])}
+        label={match[1]}
         fenceLanguage={fenceMatch ? fenceMatch[1] : null}
         onRunInTerminal={onRunInTerminal}
+        wrapLongLines={variant !== 'document'}
       >
         {text.replace(/\n$/, '')}
       </CodeBlock>
@@ -518,7 +592,11 @@ const MarkdownCode = memo(
       // the single inline-code recipe. This used to also carry `bg-inline-code`,
       // a second, competing fill that only won via a specificity ladder in
       // main.css.
-      <code ref={ref} {...props} className="break-all whitespace-pre-wrap font-mono">
+      <code
+        ref={ref}
+        {...props}
+        className="biorouter-inline-code break-all whitespace-pre-wrap font-mono"
+      >
         {children}
       </code>
     );
@@ -610,6 +688,18 @@ const MarkdownParagraph = ({
   return <p {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}</p>;
 };
 
+// Module-level so ReactMarkdown sees the same array identity on every render.
+// Chat (`variant="chat"`) keeps `remark-breaks`; a document does not.
+const HARD_BREAK_REMARK_PLUGINS: NonNullable<Options['remarkPlugins']> = [
+  remarkGfm,
+  remarkBreaks,
+  [remarkMath, { singleDollarTextMath: false }],
+];
+const SOFT_BREAK_REMARK_PLUGINS: NonNullable<Options['remarkPlugins']> = [
+  remarkGfm,
+  [remarkMath, { singleDollarTextMath: false }],
+];
+
 const MarkdownContent = memo(function MarkdownContent({
   content,
   className = '',
@@ -617,6 +707,7 @@ const MarkdownContent = memo(function MarkdownContent({
   workingDir,
   knownFilePaths,
   onRunInTerminal,
+  variant = 'chat',
 }: MarkdownContentProps) {
   const [processedContent, setProcessedContent] = useState(content);
 
@@ -632,6 +723,7 @@ const MarkdownContent = memo(function MarkdownContent({
 
   return (
     <div
+      data-variant={variant}
       className={`w-full overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
       prose-pre:p-0 prose-pre:m-0 prose-pre:bg-transparent prose-pre:rounded-none !p-0
       prose-pre:[&:has(>code)]:p-3 prose-pre:[&>code]:p-0
@@ -658,7 +750,9 @@ const MarkdownContent = memo(function MarkdownContent({
     >
       <ReactMarkdown
         urlTransform={artifactAwareUrlTransform}
-        remarkPlugins={[remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: false }]]}
+        remarkPlugins={
+          variant === 'document' ? SOFT_BREAK_REMARK_PLUGINS : HARD_BREAK_REMARK_PLUGINS
+        }
         rehypePlugins={[
           [
             rehypeKatex,
@@ -672,8 +766,11 @@ const MarkdownContent = memo(function MarkdownContent({
           ],
         ]}
         components={{
-          a: ({ href, children, node: _node, ...props }) => {
-            if (!href) return <>{children}</>;
+          a: ({ href, children: linkChildren, node: _node, ...props }) => {
+            if (!href) return <>{linkChildren}</>;
+            const children = (
+              <InsideLinkContext.Provider value={true}>{linkChildren}</InsideLinkContext.Provider>
+            );
             if (isLocalFileReference(href)) {
               // A link to a sibling/local file. If there is a panel to open it in,
               // preview it there; otherwise render it as styled, inert text with a
@@ -748,6 +845,7 @@ const MarkdownContent = memo(function MarkdownContent({
               workingDir={workingDir}
               knownFilePaths={knownFilePaths}
               onRunInTerminal={onRunInTerminal}
+              variant={variant}
             />
           ),
           p: ({ node: _node, ...props }) => (
@@ -763,6 +861,18 @@ const MarkdownContent = memo(function MarkdownContent({
               {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
             </li>
           ),
+          // A document's table scrolls inside its own frame when it is wider
+          // than the column (main.css, `.biorouter-md-table-scroll`), rather
+          // than being clipped by this root's `overflow-x-hidden`. Chat keeps
+          // the bare table.
+          table: ({ node: _node, ...props }) =>
+            variant === 'document' ? (
+              <div className="biorouter-md-table-scroll">
+                <table {...props} />
+              </div>
+            ) : (
+              <table {...props} />
+            ),
           td: ({ children, node: _node, ...props }) => (
             <td {...props}>
               {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}

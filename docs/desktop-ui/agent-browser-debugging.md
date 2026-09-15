@@ -87,8 +87,10 @@ viewport to a fixed size regardless of the real window. **The override outlives
 your `agent-browser close`** — measured: a viewport pinned at 1440×900 was still
 pinned after the session that set it had closed. Detaching does not undo the
 emulation, it only removes the one session that could have. What the next person
-sees is an app that no longer scales with its window, with a blank band below and
-to the right of the page. It reads as a CSS regression and is not one. This repo
+sees is an app that no longer scales with its window, with an area outside the live
+layout below and to the right of the page (a stale ghost of the last frame, or a flat
+area). Do not identify it by how it looks: `innerWidth` ≠ `outerWidth` is the only
+test. It reads as a CSS regression and is not one. This repo
 has burned hours on it at least twice; the full story, and the measurements, are
 in [When the app "stops scaling with the window"](window-scaling-regressions.md),
 under *Viewport emulation pins `innerWidth`*.

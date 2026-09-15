@@ -341,7 +341,7 @@ in `main.css` moved onto it.
 
 | Owned by the family | Shared by all families |
 |---|---|
-| `text-default`, `text-muted`, `text-subtle`, `text-inverse` | `background-app`, `-canvas`, `-default`, `-card`, `-muted`, `-code`, `-medium`, `-strong`, `-inverse` |
+| `text-default`, `text-muted`, `text-subtle`, `text-inverse` | `background-app`, `-canvas`, `-default`, `-card`, `-muted`, `-code`, `-well`, `-medium`, `-strong`, `-inverse` |
 | `sidebar-foreground`, `sidebar-accent-foreground` | `border-subtle`, `-strong`, `-input`, `-default` |
 | the 10 syntax stops, the 19 terminal stops | `sidebar`, `-hover`, `-active`, `-accent`, `-border` |
 | `background-accent`, `-accent-hover`, `border-accent`, `text-accent`, `text-on-accent`, `accent-bar`, `sidebar-icon`, `swatch` | `ring`, `sidebar-ring`, `background-focus`, `border-focus` |
@@ -373,6 +373,30 @@ and on the shared `#f4f4f2` they measured 4.35:1 and 4.37:1 — just under AA. T
 about 2.5% to `#976517` and `#107a85` (4.55 and 4.60). The generator refuses to emit on a contrast
 failure, so this was caught at build time rather than by eye.
 
+### The preview paper, its well, and a selection no family owns
+
+The artifact panel's text previews (markdown, CSV/TSV, code, logs, notebooks) paint
+`--background-default` — `#ffffff` / `#1b1b19` in every family, which is byte-for-byte the ground
+an Auto Visualiser chart paints (`bg` in `autovisualiser/templates/_common.js`, pinned by
+`artifactPaper.test.ts`). Fenced blocks, inline code and notebook source sit in a new shared neutral,
+**`--background-well`** (`#f5f5f3` light, `#232320` dark: 1.09:1 off the page in both modes). It is
+its own token because `--background-code` cannot do the job — in dark it *is* the page. Like every
+neutral, it is declared in all three theme files and in `main.css`'s hand-authored `:root` / `.dark`
+base block, and the generator emits it per family as `wellGround`.
+
+**Selection is Biorouter orange in every family, and deliberately not a theme token.**
+`--selection-hue` (`#cf6d47` light, `#e8895f` dark) and `--selection-alpha` (`24%` both) live in a
+bare `:root` / `.dark` pair outside every `[data-theme]` block, as literals — Alma Mater re-points
+`--color-coral-*` and the accent tokens to teal, so a selection built on them turned teal there.
+`::selection` sets no `color`, so every ink survives under the tint. `artifactPaper.test.ts` fails
+if any family block re-declares them. Separate documents (a chart, an `.html` file, a PDF or
+spreadsheet page) cannot see the rule; the notebook's sandboxed HTML output restates the tint, and
+the terminal keeps its own per-family `selectionBackground`.
+
+Two syntax stops moved to fit the paper, both along their own hue: Parchment dark `comment`
+`#8d8266` → `#958a6c` (4.14:1 on the well), and Alma Mater light `keyword` `#0f388a` → `#0b67a8`,
+which was navy on the navy ink and separated from an identifier by weight alone.
+
 ### What it costs a new family
 
 Strictly less than before. The neutral half of a definition is now copied verbatim from any
@@ -384,9 +408,13 @@ lets the guards resolve a family in isolation.
 ### Guards
 
 - `npm run themes` refuses to emit if any syntax stop, terminal stop or sandboxed-surface pair
-  falls below its floor on the **shared** grounds.
-- `check-contrast.mjs` asserts 330 pairs across three families × two modes, including the
-  canvas/muted step described in §5.
+  falls below its floor on the **shared** grounds. Syntax stops are held to 4.5:1 on
+  `--background-code`, `--background-default` **and** `--background-well`, and to 3:1 under the
+  selection tint composited over the paper and the well.
+- `check-contrast.mjs` asserts 404 pairs across three families × two modes (measured 2026-09-14;
+  re-measure rather than trusting the figure), including the canvas/muted step described in §5,
+  body and muted ink on the well, the well's step off the page, and text-default (4.5:1),
+  text-muted and text-accent (3:1) under the selection tint over three grounds.
 - `boot-splash.test.ts`, `artifactUtils.test.ts` and `NotebookPreview.test.tsx` each used to assert
   that the families' **grounds** were all distinct. That premise is now inverted, and all three were
   rewritten rather than deleted: they assert that the **ink** still differs three ways *and* that

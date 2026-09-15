@@ -58,6 +58,11 @@ export type ThemeModeData = {
   /** The surface the syntax palette is measured against (--background-code). */
   codeGround: string;
   /**
+   * The paper well a fenced block sits in (--background-well). The palette is
+   * held to AA here too, and on --background-default, by the generator.
+   */
+  wellGround: string;
+  /**
    * Resolved literal values for the five semantic tokens a CSP-sandboxed
    * surface has to inline.
    *
@@ -113,6 +118,7 @@ export const GENERATED_THEMES = {
         inserted: '#1f7a3d',
       },
       codeGround: '#f5f5f3',
+      wellGround: '#f5f5f3',
       surface: {
         background: '#ffffff',
         foreground: '#2a2520',
@@ -149,7 +155,7 @@ export const GENERATED_THEMES = {
       mark: { navy: '#18a3ac', coral: '#b85a32' },
       syntax: {
         plain: '#e8e1d2',
-        comment: '#8d8266',
+        comment: '#958a6c',
         keyword: '#e8895f',
         string: '#7fbf6a',
         number: '#d9a441',
@@ -160,6 +166,7 @@ export const GENERATED_THEMES = {
         inserted: '#7ac87c',
       },
       codeGround: '#1b1b19',
+      wellGround: '#232320',
       surface: {
         background: '#1b1b19',
         foreground: '#f4f0e6',
@@ -202,7 +209,7 @@ export const GENERATED_THEMES = {
       syntax: {
         plain: '#052049',
         comment: '#586780',
-        keyword: '#0f388a',
+        keyword: '#0b67a8',
         string: '#007242',
         number: '#8a5a00',
         func: '#6c247c',
@@ -212,6 +219,7 @@ export const GENERATED_THEMES = {
         inserted: '#007242',
       },
       codeGround: '#f5f5f3',
+      wellGround: '#f5f5f3',
       surface: {
         background: '#ffffff',
         foreground: '#052049',
@@ -259,6 +267,7 @@ export const GENERATED_THEMES = {
         inserted: '#5fbf74',
       },
       codeGround: '#1b1b19',
+      wellGround: '#232320',
       surface: {
         background: '#1b1b19',
         foreground: '#f2f3f4',
@@ -311,6 +320,7 @@ export const GENERATED_THEMES = {
         inserted: '#12805c',
       },
       codeGround: '#f5f5f3',
+      wellGround: '#f5f5f3',
       surface: {
         background: '#ffffff',
         foreground: '#1f1e1c',
@@ -358,6 +368,7 @@ export const GENERATED_THEMES = {
         inserted: '#3dd68c',
       },
       codeGround: '#1b1b19',
+      wellGround: '#232320',
       surface: {
         background: '#1b1b19',
         foreground: '#ededea',

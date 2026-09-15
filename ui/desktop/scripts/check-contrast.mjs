@@ -35,6 +35,7 @@ import {
   assertBlockOrder,
   blend,
   resolveHex,
+  resolveRaw,
   contrast as ratioOf,
 } from './lib/theme-tokens.mjs';
 
@@ -294,6 +295,75 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   );
   assert(`${theme}: text-muted on code ground`, '--text-muted', '--background-code', 4.5, scope);
   assert(`${theme}: text-subtle on code ground`, '--text-subtle', '--background-code', 4.5, scope);
+
+  // The artifact panel's paper (main.css, "Preview paper"). Inline code and
+  // fenced blocks sit in `--background-well` on the `--background-default`
+  // page, so the well must carry body ink AND be a visible step off the page —
+  // a well equal to its page is no well, which is the case `--background-code`
+  // is in dark and the reason the well is its own token. Same 1.05 floor as the
+  // muted/canvas step above, for the same reason: it catches a collapse.
+  assert(`${theme}: text-default on paper well`, '--text-default', '--background-well', 4.5, scope);
+  assert(`${theme}: text-muted on paper well`, '--text-muted', '--background-well', 4.5, scope);
+  assert(
+    `${theme}: paper well is a step off the page`,
+    '--background-well',
+    '--background-default',
+    1.05,
+    scope
+  );
+
+  // Selection (main.css, `::selection`). A translucent Biorouter-orange tint
+  // that deliberately leaves the ink alone, so what the eye reads is each ink
+  // on the tint composited over its ground. Selected body text owes 4.5:1;
+  // muted runs (a caption, a table note) owe 3:1 — selection is a transient,
+  // user-driven state, and holding muted to 4.5 would force the tint so pale
+  // it stops reading as a selection in dark. A link (`--text-accent`) is held
+  // to the same 3:1: in Alma Mater the accent is teal, and a teal link on an
+  // orange tint is exactly the pair nobody would have measured by eye. Measured
+  // on the three grounds a selection lands on in the panel.
+  {
+    const alphaRaw = resolveRaw('--selection-alpha', scope);
+    const alpha = alphaRaw && /^\d+(\.\d+)?%$/.test(alphaRaw) ? parseFloat(alphaRaw) / 100 : null;
+    if (alpha === null) {
+      failures++;
+      rows.push([
+        'UNRESOLVED',
+        '',
+        `${theme}: selection alpha`,
+        `--selection-alpha is ${alphaRaw}`,
+      ]);
+    } else {
+      for (const g of ['--background-default', '--background-well', '--background-muted']) {
+        assertOverTint(
+          `${theme}: text-default under selection over ${g}`,
+          '--text-default',
+          '--selection-hue',
+          alpha,
+          g,
+          4.5,
+          scope
+        );
+        assertOverTint(
+          `${theme}: text-muted under selection over ${g}`,
+          '--text-muted',
+          '--selection-hue',
+          alpha,
+          g,
+          3.0,
+          scope
+        );
+        assertOverTint(
+          `${theme}: text-accent under selection over ${g}`,
+          '--text-accent',
+          '--selection-hue',
+          alpha,
+          g,
+          3.0,
+          scope
+        );
+      }
+    }
+  }
 
   // Focus (D-15) is a surface shift. Text must stay legible on the focused fill,
   // and the focused edge must be distinguishable from the resting one.

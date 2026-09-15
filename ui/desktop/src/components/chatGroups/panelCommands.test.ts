@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PANEL_CAPTURE_NEEDS_DESKTOP_DETAIL } from '../artifacts/captureOnBrowser';
 import {
   registerPanelAccess,
   resetPanelAccessRegistry,
@@ -6,6 +7,7 @@ import {
   type PanelAccessor,
   type PanelTextSnapshot,
 } from '../artifacts/panelAccessRegistry';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import { runPanelCommand } from './panelCommands';
 import type { WorkspaceCommand } from './workspaceCommandRegistry';
 
@@ -132,7 +134,11 @@ describe('reading the panel', () => {
     );
     const result = await runPanelCommand(read('s1'));
     expect(result.ok).toBe(false);
-    expect(result.detail).toContain('capture_panel');
+    // The call the model is actually offered. `capture_panel` is a retired name
+    // (workspace_extension.rs RETIRED_TOOL_NAMES), and prose that routes to one
+    // is how a model keeps calling it.
+    expect(result.detail).toContain('workspace_read_panel with capture: true');
+    expect(result.detail).not.toMatch(/(^|[^_])capture_panel/);
   });
 
   it('distinguishes a closed panel from a chat that is not on screen here', async () => {
@@ -449,6 +455,64 @@ describe('capturing the panel', () => {
     expect(result.ok).toBe(false);
     expect(result.data?.screenshot_path).toBeUndefined();
     expect(window.electron.deleteTempFile).toHaveBeenCalledWith('/tmp/stale-panel.png');
+  });
+});
+
+/**
+ * A `biorouter serve` browser has no compositor to grab, so every capture there
+ * comes back `null` (`captureOnBrowser.ts`). The desktop's "could not be captured
+ * right now" is true of a hidden-then-navigated view and false of a browser,
+ * where no retry will ever succeed — and the read refusal's "capture it instead"
+ * would close the loop, sending the model from one to the other and back.
+ */
+describe('a chat open in a web browser', () => {
+  beforeEach(() => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+  });
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('is told a capture can never succeed here, and to read instead', async () => {
+    registerPanelAccess('s1', accessor({ capture: async () => null }));
+    const result = await runPanelCommand(capture('s1'));
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe(PANEL_CAPTURE_NEEDS_DESKTOP_DETAIL);
+    expect(result.detail).not.toContain('right now');
+    expect(result.data?.screenshot_path).toBeUndefined();
+  });
+
+  it('is not sent to capture content that has no text', async () => {
+    registerPanelAccess(
+      's1',
+      accessor({
+        describe: () => ({ open: true, kind: 'file', title: 'plot.png' }),
+        readText: async () => null,
+      })
+    );
+    const result = await runPanelCommand(read('s1'));
+    expect(result.ok).toBe(false);
+    // Neither the advertised call nor the retired name: both would route to a capture.
+    expect(result.detail).not.toContain('capture: true');
+    expect(result.detail).not.toContain('capture_panel');
+    expect(result.detail).toContain('web browser');
+  });
+
+  it('still returns a capture that did happen', async () => {
+    // The surface decides only what an EMPTY capture means; it must never stand
+    // in for the capture itself.
+    registerPanelAccess('s1', accessor());
+    const result = await runPanelCommand(capture('s1'));
+    expect(result.ok).toBe(true);
+    expect(result.data?.screenshot_path).toBe('/tmp/capture-panel-abc.png');
+  });
+});
+
+describe('an empty capture on the desktop', () => {
+  it('still reads as a moment, not a surface', async () => {
+    registerPanelAccess('s1', accessor({ capture: async () => null }));
+    const result = await runPanelCommand(capture('s1'));
+    expect(result.detail).toBe('the panel could not be captured right now');
   });
 });
 
