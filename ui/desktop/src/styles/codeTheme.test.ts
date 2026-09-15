@@ -7,9 +7,10 @@ import {
   codeThemeDark,
   codeThemeLight,
   codeThemesByFamily,
+  GUTTER_INK_MIX,
   withFadedGutter,
 } from './codeTheme';
-import { GENERATED_THEMES } from './themes.generated';
+import { GENERATED_THEMES, THEME_FAMILY_IDS } from './themes.generated';
 
 function luminance(hex: string): number {
   const channels = [1, 3, 5]
@@ -186,6 +187,29 @@ describe('code theme', () => {
     expect(codeThemeLight['react-syntax-highlighter-line-number'].color).toBe(
       codePalettes.light.comment
     );
+  });
+
+  // The panel's line numbers are the comment ink mixed toward transparent and
+  // composited on the paper. At 55% that came to about 2.3:1 in every family —
+  // numbers you had to hunt for. A gutter should recede, not disappear.
+  it('keeps the faded gutter at 3:1 on the paper in every family and mode', () => {
+    const amount = parseFloat(GUTTER_INK_MIX) / 100;
+    expect(GUTTER_INK_MIX).toBe(`${amount * 100}%`);
+    const channels = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    for (const family of THEME_FAMILY_IDS) {
+      for (const mode of ['light', 'dark'] as const) {
+        const { syntax, surface } = GENERATED_THEMES[family][mode];
+        const [ink, paper] = [channels(syntax.comment), channels(surface.background)];
+        const composite = `#${ink
+          .map((v, i) => Math.round(v * amount + paper[i] * (1 - amount)))
+          .map((v) => v.toString(16).padStart(2, '0'))
+          .join('')}`;
+        expect(
+          contrast(composite, surface.background),
+          `${family}.${mode} gutter ${composite} on ${surface.background}`
+        ).toBeGreaterThanOrEqual(3);
+      }
+    }
   });
 
   // Every family must be registered for BOTH modes: the consumer indexes

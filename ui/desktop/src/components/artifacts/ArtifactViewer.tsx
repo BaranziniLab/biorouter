@@ -12,7 +12,12 @@ import {
 } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
-import { CODE_FONT_FAMILY, codeThemesByFamily, withFadedGutter } from '../../styles/codeTheme';
+import {
+  CODE_FONT_FAMILY,
+  codeThemesByFamily,
+  GUTTER_INK_MIX,
+  withFadedGutter,
+} from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import { withPreviewActivityTracking } from '../../utils/previewActivity';
@@ -2067,8 +2072,9 @@ function CodeBlock({
   const theme = codeThemesByFamily[useThemeFamily()][resolvedTheme];
   // The gutter is quiet by fading its INK, not the element: an `opacity` would
   // fade the sticky gutter's opaque paper ground too, and a long line scrolled
-  // under it showed through the numbers. Same 55% as the old `opacity: 0.55`.
-  const codeStyle = useMemo(() => withFadedGutter(theme, '55%'), [theme]);
+  // under it showed through the numbers. How far it fades is GUTTER_INK_MIX,
+  // held to 3:1 on the paper in every family by codeTheme.test.ts.
+  const codeStyle = useMemo(() => withFadedGutter(theme, GUTTER_INK_MIX), [theme]);
   const codeRef = useRef<HTMLDivElement>(null);
   const numbered = lineCount > 1 && lineCount <= MAX_LINE_NUMBERED_LINES;
   const selectedLine =
@@ -2115,18 +2121,18 @@ function CodeBlock({
             : {}),
         })}
         lineNumberStyle={{
-          // The gutter's box runs from the scroller's left edge to the paper
-          // column's edge: its left padding is the margin the column sits in, and
-          // the number itself takes a FIXED width (not the library's digits-based
-          // one) so code text lands exactly on the column edge and aligns with a
-          // report's prose at every panel width. Because the box already starts
-          // at x=0, the sticky `left: 0` in main.css never moves it: the gutter
-          // stays put and opaque while a long line scrolls under it. 3.5em holds
-          // four digits, and MAX_LINE_NUMBERED_LINES stops numbering before a
-          // fifth is needed.
-          minWidth: `calc(var(--paper-code-start-numbered) + ${PAPER_GUTTER_EM})`,
+          // The gutter is the lead plus a FIXED-width number (not the library's
+          // digits-based width); the margin before it is the line's own padding
+          // (main.css, `.br-paper-code[data-numbered] [data-source-line]`). The
+          // three add up to the paper column's edge, so code text lands exactly
+          // there and aligns with a report's prose at every panel width. Only
+          // this box sticks (main.css `.linenumber`), so a long line scrolled
+          // sideways loses ~56px under the numbers, not the whole margin. 3.5em
+          // holds four digits, and MAX_LINE_NUMBERED_LINES stops numbering
+          // before a fifth is needed.
+          minWidth: `calc(var(--paper-lead) + ${PAPER_GUTTER_EM})`,
           boxSizing: 'border-box',
-          paddingLeft: 'var(--paper-code-start-numbered)',
+          paddingLeft: 'var(--paper-lead)',
           paddingRight: '1.35em',
           textAlign: 'right',
           // Ink, slant and weight come from the `react-syntax-highlighter-line-
@@ -2140,7 +2146,7 @@ function CodeBlock({
           margin: 0,
           // The inline edges come from the paper CSS variables (main.css,
           // `.br-paper`): unnumbered code starts on the column edge; numbered code
-          // starts at the scroller's edge because the gutter carries the margin.
+          // starts at the scroller's edge because each line carries the margin.
           padding: numbered
             ? '28px var(--paper-gutter) 48px 0'
             : '28px var(--paper-gutter) 48px var(--paper-inset)',
@@ -2262,6 +2268,11 @@ function TextFilePreview({
     tableRows && tableRows.length > 0
       ? { rows: tableRows.length - 1, columns: tableRows[0].length }
       : null;
+  const countText = showingCode
+    ? `${lineCount.toLocaleString()} line${lineCount === 1 ? '' : 's'}`
+    : tableShape
+      ? `${tableShape.rows.toLocaleString()} row${tableShape.rows === 1 ? '' : 's'} · ${tableShape.columns.toLocaleString()} column${tableShape.columns === 1 ? '' : 's'}`
+      : null;
 
   return (
     <div className="br-paper flex h-full min-h-0 flex-col">
@@ -2278,17 +2289,15 @@ function TextFilePreview({
           <span className="text-text-subtle">{directory}</span>
           <span className="text-text-default">{name}</span>
         </span>
-        {showingCode ? (
-          <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
-            {lineCount.toLocaleString()} line{lineCount === 1 ? '' : 's'}
+        {/* The count yields first, and whole: never pushes the name or the
+            controls out of the strip (main.css, `.br-paper-strip-count`). */}
+        {countText && (
+          <span
+            data-testid="artifact-strip-count"
+            className={cn(STRIP_IDENT_CLASS, 'br-paper-strip-count tabular-nums')}
+          >
+            <span>{countText}</span>
           </span>
-        ) : (
-          tableShape && (
-            <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
-              {tableShape.rows.toLocaleString()} row{tableShape.rows === 1 ? '' : 's'} ·{' '}
-              {tableShape.columns.toLocaleString()} column{tableShape.columns === 1 ? '' : 's'}
-            </span>
-          )
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <CopyButton text={file.text} />

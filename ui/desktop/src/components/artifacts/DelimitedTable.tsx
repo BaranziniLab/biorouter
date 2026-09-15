@@ -68,7 +68,12 @@ export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; ma
                   {cell}
                 </th>
               ))}
-              <th className="br-paper-fill" aria-hidden="true" />
+              {/* The filler also carries the overflow hint through the opaque
+                  sticky header, which would otherwise paint over the scroller's
+                  own hint and notch it at this row (main.css). */}
+              <th className="br-paper-fill" aria-hidden="true">
+                <span className="br-paper-fill-hint" />
+              </th>
             </tr>
           </thead>
           <tbody>

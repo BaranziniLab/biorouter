@@ -214,6 +214,15 @@ export const codeThemeRocheLight = build(GENERATED_THEMES['roche-limit'].light.s
 export const codeThemeRocheDark = build(GENERATED_THEMES['roche-limit'].dark.syntax, '10%');
 
 /**
+ * How much of the comment ink the artifact panel's line numbers keep. A gutter
+ * should recede behind the code, not vanish: at 55% the numbers composited to
+ * about 2.3:1 on the paper in every family and were hard to find. 70% is the
+ * least that holds 3:1 on the paper in all three families and both modes, which
+ * codeTheme.test.ts asserts.
+ */
+export const GUTTER_INK_MIX = '70%';
+
+/**
  * The same theme with its line-number gutter ink faded to `amount` of the
  * comment ink by MIXING, never with `opacity`.
  *

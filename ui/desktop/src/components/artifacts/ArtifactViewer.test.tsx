@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -8,7 +8,11 @@ import MarkdownContent from '../MarkdownContent';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
-import { artifactSourceFromResource, titleFromResourceUri } from './artifactUtils';
+import {
+  artifactSourceFromResource,
+  PAPER_GUTTER_EM,
+  titleFromResourceUri,
+} from './artifactUtils';
 import {
   onArtifactAnnotation,
   resetAnnotationChannelForTests,
@@ -1330,6 +1334,52 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.getAllByRole('row')[0].lastElementChild).toHaveClass('br-paper-fill');
     // The strip states the table's shape, with a noun, instead of a line count.
     expect(screen.getByText('2 rows · 3 columns')).toBeInTheDocument();
+    // The header's filler carries the overflow hint through the opaque sticky
+    // header row (main.css, `.br-paper-fill-hint`).
+    expect(
+      screen.getAllByRole('row')[0].lastElementChild!.querySelector(
+        '.br-paper-fill-hint'
+      )
+    ).not.toBeNull();
+  });
+
+  // A `shrink-0` count ("70 rows · 11 columns") kept its full width in a
+  // narrow panel: it squeezed the file name to nothing and then pushed Table /
+  // Raw past the panel's edge, where neither could be clicked. The count is
+  // now the first thing to give way (main.css, `.br-paper-strip-count`, whose
+  // geometry artifactPaper.test.ts pins); the controls still never shrink.
+  it.each([
+    ['a table', false, '2 rows · 1 column'],
+    ['the raw view', true, '3 lines'],
+  ])('lets the strip count yield before the controls in %s', async (_view, raw, count) => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'genes.csv',
+      path: '/work/genes.csv',
+      mimeType: 'text/csv',
+      text: 'gene\nMYC\nCDK4\n',
+      size: 16,
+      found: true,
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'genes.csv', path: '/work/genes.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    const strip = await screen.findByTestId('artifact-status-strip');
+    if (raw) fireEvent.click(within(strip).getByRole('button', { name: 'Raw' }));
+    const counter = await within(strip).findByTestId('artifact-strip-count');
+    expect(counter).toHaveTextContent(count);
+    expect(counter).toHaveClass('br-paper-strip-count');
+    expect(counter).not.toHaveClass('shrink-0');
+    // The controls' group is what never shrinks.
+    const controls = within(strip).getByRole('button', { name: 'Raw' }).closest('.ml-auto');
+    expect(controls).toHaveClass('shrink-0');
   });
 
   it('states a table shape as rows and columns, singular and plural', async () => {
@@ -1540,6 +1590,12 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(gutter.getAttribute('style')).not.toContain('opacity');
     // Every numbered line is its own element, so the gutter has a row to stick in.
     expect(container.querySelectorAll('.br-paper-code [data-source-line]')).toHaveLength(3);
+    // Only the lead and the number stick. The column's margin belongs to each
+    // line (main.css), so a wide panel no longer pins ~170px of blank paper
+    // over a long line scrolled sideways.
+    expect(gutter.style.paddingLeft).toBe('var(--paper-lead)');
+    expect(gutter.style.minWidth).toBe(`calc(var(--paper-lead) + ${PAPER_GUTTER_EM})`);
+    expect(gutter.getAttribute('style')).not.toContain('--paper-code-start-numbered');
   });
 
   it('highlights a .txt that is really a run log', async () => {

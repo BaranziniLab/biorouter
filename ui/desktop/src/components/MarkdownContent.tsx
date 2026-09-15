@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
+import React, { useState, useEffect, useRef, memo, useMemo, createContext, useContext } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Options } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -521,6 +521,12 @@ function openExternalLink(event: React.MouseEvent<HTMLAnchorElement>, href: stri
   void opener(href);
 }
 
+// Inside a markdown link, the link IS the destination. Inline code in its text
+// (`[\`results.csv\`](results.csv)`) used to become a second file-link button
+// nested inside the link's own button — invalid HTML that React warns about, and
+// two click targets for one link. Code under a link renders as plain inline code.
+const InsideLinkContext = createContext(false);
+
 const MarkdownCode = memo(
   React.forwardRef(function MarkdownCode(
     {
@@ -549,9 +555,9 @@ const MarkdownCode = memo(
     // behaviour.
     const fenceMatch = /language-([\w.+-]+)/.exec(className || '');
     const text = String(children);
-    const artifact = !match
-      ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths)
-      : null;
+    const insideLink = useContext(InsideLinkContext);
+    const artifact =
+      !match && !insideLink ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths) : null;
     return !inline && match ? (
       <CodeBlock
         language={normalizeCodeLanguage(match[1])}
@@ -750,8 +756,11 @@ const MarkdownContent = memo(function MarkdownContent({
           ],
         ]}
         components={{
-          a: ({ href, children, node: _node, ...props }) => {
-            if (!href) return <>{children}</>;
+          a: ({ href, children: linkChildren, node: _node, ...props }) => {
+            if (!href) return <>{linkChildren}</>;
+            const children = (
+              <InsideLinkContext.Provider value={true}>{linkChildren}</InsideLinkContext.Provider>
+            );
             if (isLocalFileReference(href)) {
               // A link to a sibling/local file. If there is a panel to open it in,
               // preview it there; otherwise render it as styled, inert text with a
@@ -842,6 +851,18 @@ const MarkdownContent = memo(function MarkdownContent({
               {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
             </li>
           ),
+          // A document's table scrolls inside its own frame when it is wider
+          // than the column (main.css, `.biorouter-md-table-scroll`), rather
+          // than being clipped by this root's `overflow-x-hidden`. Chat keeps
+          // the bare table.
+          table: ({ node: _node, ...props }) =>
+            variant === 'document' ? (
+              <div className="biorouter-md-table-scroll">
+                <table {...props} />
+              </div>
+            ) : (
+              <table {...props} />
+            ),
           td: ({ children, node: _node, ...props }) => (
             <td {...props}>
               {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
