@@ -176,6 +176,31 @@ impl Agent {
             .cloned()
     }
 
+    /// Issue #56. What a slash command run in this chat records as the standing of
+    /// whoever armed a schedule (`ScheduledJob::armed_with_private_reach`):
+    /// `Some(true)` when this chat runs a private model — whoever sent the
+    /// message reached a private chat, which the turn gate does not admit on a
+    /// public caller's word — and `None` otherwise.
+    ///
+    /// ⚠ **Never `Some(false)`.** A public chat's schedule runs on that chat's
+    /// public model, and moving the chat onto a private model later is the
+    /// person's act (`TierRaiseNeedsUser`); a `false` here would refuse the
+    /// schedule's runs from then on. `None` refuses only the one move nobody chose
+    /// — the private default standing in for a creator chat that is gone
+    /// (`scheduler::RunModelSource::DefaultInPlaceOfCreator`).
+    ///
+    /// Not a tool call, so there is no admitted `CallCapability` to inherit: the
+    /// master switch and the bound model are read here, once each.
+    pub(crate) async fn private_reach_of_this_chat(&self) -> Option<bool> {
+        if !crate::privacy::privacy_tiers_enabled() {
+            return None;
+        }
+        match self.provider().await {
+            Ok(provider) if provider.tier().is_private() => Some(true),
+            _ => None,
+        }
+    }
+
     /// Write a one-prompt workflow file and register it as a cron job.
     /// `max_runs` bounds total firings (`Some` for `/loop`, `None` for durable
     /// `/schedule`).
@@ -230,7 +255,13 @@ impl Agent {
             creator_session_id: Some(session_id.to_string()),
             last_error: None,
             owns_source: None,
-            armed_with_private_reach: None,
+            // Issue #56. The standing of the chat the schedule acts for. Its runs
+            // take this chat's model while the chat gives one; once it does not,
+            // they fall back to the configured default, and a PRIVATE default is
+            // refused unless this says someone with private reach made it. A
+            // public chat's `/loop` records nothing, so deleting that chat — which
+            // takes only the daemon secret — cannot turn its runs private.
+            armed_with_private_reach: self.private_reach_of_this_chat().await,
         };
         if let Err(e) = scheduler.add_scheduled_job(job, false).await {
             let _ = tokio::fs::remove_file(&path).await;
@@ -444,8 +475,10 @@ impl Agent {
             "run" => {
                 let scheduler = self.scheduler().await?;
                 let id = rest.to_string();
+                // This one run is held to this chat's standing; nothing is recorded.
+                let standing = self.private_reach_of_this_chat().await;
                 tokio::spawn(async move {
-                    if let Err(e) = scheduler.run_now(&id).await {
+                    if let Err(e) = scheduler.run_now_armed(&id, standing).await {
                         tracing::error!("/schedule run '{}' failed: {}", id, e);
                     }
                 });
@@ -467,8 +500,16 @@ impl Agent {
                 ));
             }
             "unpause" | "resume" => {
+                // A resume is an arming: it records this chat's standing, and
+                // records nothing from a public chat.
+                let standing = self.private_reach_of_this_chat().await;
                 return Ok(Some(
-                    match self.scheduler().await?.unpause_schedule(rest).await {
+                    match self
+                        .scheduler()
+                        .await?
+                        .unpause_schedule_armed(rest, standing)
+                        .await
+                    {
                         Ok(()) => {
                             Message::assistant().with_text(format!("Resumed schedule `{rest}`."))
                         }
@@ -595,5 +636,193 @@ mod tests {
         assert!(parse_schedule_spec("\"0 9 *\" do things").is_err());
         assert!(parse_schedule_spec("\"0 9 * * 1").is_err()); // unclosed quote
         assert!(parse_schedule_spec("tomorrow do things").is_err());
+    }
+}
+
+/// Issue #56: what `/loop`, `/schedule` and their resume record as the standing
+/// of whoever armed the schedule (`ScheduledJob::armed_with_private_reach`).
+///
+/// Independent QA, 2026-09-14: a `/loop` made in a public chat recorded nothing,
+/// and one secret-only `DELETE` of that chat turned its runs private. The run is
+/// now refused that fallback (`scheduler::scheduled_run_refusal`); what these
+/// pin is the other half — that a PRIVATE chat's schedule records the standing
+/// that keeps it running once the person deletes the chat, and that a public
+/// chat's never records a `false` that would refuse it after the person moves
+/// the chat onto a private model.
+#[cfg(test)]
+mod standing_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::conversation::message::Message as ConversationMessage;
+    use crate::model::ModelConfig;
+    use crate::privacy::ProviderTier;
+    use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+    use crate::providers::errors::ProviderError;
+    use crate::scheduler::Scheduler;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use rmcp::model::Tool;
+    use std::path::PathBuf;
+
+    /// A provider whose only interesting property is its tier; no turn runs.
+    struct TieredProvider(ProviderTier);
+
+    #[async_trait::async_trait]
+    impl Provider for TieredProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("tiered", "Tiered", "", "tiered-model", vec![], "", vec![])
+        }
+        fn get_name(&self) -> &str {
+            match self.0 {
+                ProviderTier::Private => "versa_azure",
+                ProviderTier::Public => "openai",
+            }
+        }
+        fn tier(&self) -> ProviderTier {
+            self.0
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[ConversationMessage],
+            _tools: &[Tool],
+        ) -> Result<(ConversationMessage, ProviderUsage), ProviderError> {
+            unreachable!("no test here runs a turn")
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("tiered-model")
+        }
+    }
+
+    struct Chat {
+        _dir: tempfile::TempDir,
+        agent: Agent,
+        scheduler: Arc<Scheduler>,
+        session_id: String,
+    }
+
+    /// A chat bound to a model of `tier` (or to none), over a real scheduler.
+    async fn chat(tier: Option<ProviderTier>) -> Chat {
+        let dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(dir.path().join("schedule.json"), session_manager.clone())
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager.clone(),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            Some(scheduler.clone()),
+            BioRouterMode::Auto,
+        ));
+        let session = session_manager
+            .create_session(
+                PathBuf::from("."),
+                "standing probe".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        if let Some(tier) = tier {
+            agent
+                .update_provider(Arc::new(TieredProvider(tier)), &session.id)
+                .await
+                .unwrap();
+        }
+        Chat {
+            _dir: dir,
+            agent,
+            scheduler,
+            session_id: session.id,
+        }
+    }
+
+    async fn only_job(scheduler: &Scheduler) -> ScheduledJob {
+        let jobs = scheduler.list_scheduled_jobs().await;
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        jobs.into_iter().next().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_loop_or_schedule_records_its_chats_standing_and_never_a_false() {
+        for (tier, want) in [
+            (Some(ProviderTier::Private), Some(true)),
+            (Some(ProviderTier::Public), None),
+            (None, None),
+        ] {
+            for command in [
+                "/loop 1d probe the queue",
+                "/schedule @daily probe the queue",
+            ] {
+                let chat = chat(tier).await;
+                let (name, params) = command.trim_start_matches('/').split_once(' ').unwrap();
+                let reply = if name == "loop" {
+                    chat.agent
+                        .handle_loop_command(params, &chat.session_id)
+                        .await
+                } else {
+                    chat.agent
+                        .handle_schedule_command(params, &chat.session_id)
+                        .await
+                };
+                let reply = reply.unwrap().expect("the command answers");
+                assert!(
+                    reply.as_concat_text().contains("created"),
+                    "{command}: {}",
+                    reply.as_concat_text()
+                );
+                let job = only_job(&chat.scheduler).await;
+                assert_eq!(
+                    job.creator_session_id.as_deref(),
+                    Some(chat.session_id.as_str())
+                );
+                assert_eq!(
+                    job.armed_with_private_reach, want,
+                    "{command} in a chat on {tier:?} recorded the wrong standing"
+                );
+            }
+        }
+    }
+
+    /// `/schedule resume` is an arming: a private chat's records `Some(true)`,
+    /// and a public chat's leaves whatever the schedule held.
+    #[tokio::test]
+    async fn a_schedule_resume_records_a_private_chats_standing_only() {
+        for (tier, want) in [
+            (ProviderTier::Private, Some(true)),
+            (ProviderTier::Public, Some(false)),
+        ] {
+            let chat = chat(Some(tier)).await;
+            chat.agent
+                .handle_schedule_command("@daily probe the queue", &chat.session_id)
+                .await
+                .unwrap();
+            let id = only_job(&chat.scheduler).await.id;
+            chat.scheduler.pause_schedule(&id).await.unwrap();
+            // As a public-only HTTP caller's re-time would have left it.
+            chat.scheduler
+                .update_schedule_armed(&id, "0 0 0 * * *".to_string(), Some(false))
+                .await
+                .unwrap();
+            let reply = chat
+                .agent
+                .handle_schedule_command(&format!("resume {id}"), &chat.session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                reply.as_concat_text().contains("Resumed"),
+                "{}",
+                reply.as_concat_text()
+            );
+            let job = only_job(&chat.scheduler).await;
+            assert!(!job.paused);
+            assert_eq!(
+                job.armed_with_private_reach, want,
+                "a resume from a chat on {tier:?}"
+            );
+        }
     }
 }

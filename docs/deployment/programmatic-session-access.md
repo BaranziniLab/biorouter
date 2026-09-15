@@ -226,21 +226,40 @@ an install configured with a public model, that covers every schedule not create
 chat. `biorouter schedule add`, `remove` and `run-now` state the terminal's configured provider,
 so they pass on an install configured with a private model.
 
-**A run is held to the caller that set it going.** The gate judges the model a schedule's runs use
-at the moment of the request, but a run works out its model again when it starts. If the chat a
-schedule was created from is deleted, or stops recording a provider, the run falls back to the
-configured default. So each request that creates, re-times or resumes a schedule, or schedules a
-saved workflow, records on the schedule whether its caller could reach private work
-(`armed_with_private_reach` in `schedule.json` and in `GET /schedule/list`). A run whose model
-turns out to be private, on a schedule last set going by a caller that could not reach private
-work, is not started. It creates no chat, and the schedule's `last_error` says why. To run it, the
-person resumes or re-saves the schedule in the desktop app, or a program on a private model does
-the same through these routes. `POST /schedule/{id}/run_now` holds the one run it starts to its
-own caller and records nothing on the schedule. Before 1.90.5, a caller holding only the secret
-could re-time a schedule created from a public chat, delete that chat, and have the next tick
-start a new chat on a private default with nobody present. Schedules created by `/loop`, by the
-`manage_schedule` tool, or by a `biorouter schedule add` that found no daemon record nothing and
-run as before.
+**A run is held to whoever set it going.** The gate judges the model a schedule's runs use at the
+moment of the request, but a run works out its model again when it starts. If the chat a schedule
+was created from is deleted, or stops recording a provider, the run falls back to the configured
+default. So each schedule records whether whoever set it going could reach private work
+(`armed_with_private_reach` in `schedule.json` and in `GET /schedule/list`):
+
+| Who set it going | What is recorded |
+|---|---|
+| A request that creates, re-times or resumes a schedule, or schedules a saved workflow | `true` if the caller could reach private work (the proof, or a stated private model), otherwise `false` |
+| `/loop`, `/schedule`, or the `manage_schedule` tool's `create` | `true` if the chat it was made in runs a private model, otherwise nothing |
+| `/schedule resume` in a chat | `true` if that chat runs a private model, otherwise nothing (the earlier record stays) |
+| The `manage_schedule` tool's `unpause`, allowed by the person on its card | `true` |
+| `biorouter schedule add` with no daemon, the daily meditation, any row from before 1.90.5 | nothing |
+
+A run whose model turns out to be private is not started in two cases. It creates no chat, and the
+schedule's `last_error` says why.
+
+- The schedule records `false`: a caller that could reach only public work set it going.
+- The schedule records nothing, and the chat it was made from no longer gives a model (deleted,
+  unreadable, or recording none), so the private default would stand in for that chat's model.
+  Deleting a public chat needs nothing but the secret, so this case needs no request to the
+  schedule at all.
+
+Otherwise the run starts as it always has: a schedule that names no chat runs on the configured
+default, and one whose creating chat still records a model runs on that model. To run a refused
+schedule, the person resumes or re-saves it in the desktop app, or a program on a private model does
+the same through these routes. `POST /schedule/{id}/run_now`, and a `manage_schedule` `run_now` the
+person allowed on its card, hold the one run they start to their own caller and record nothing on
+the schedule.
+
+Before 1.90.5, a caller holding only the secret could delete the public chat a `/loop` or
+`manage_schedule` schedule was made in, and the next tick started a new chat on a private default
+with nobody present. The first repair of this recorded a standing only for schedules set going over
+HTTP, and independent QA reproduced the chain on it with one `DELETE /sessions/<that chat>`.
 
 **Listings and knowledge bases apply the same rule.** They do not refuse a list; they leave out what
 the caller could not open:

@@ -315,7 +315,12 @@ what did not" section first**; the rest of that document is the design, not the 
     through the scheduler's `_armed` methods (`ScheduledJob::armed_with_private_reach`), and
     `execute_job` refuses a private model on a public-only record (`scheduled_run_refusal`).
     Without it, deleting a public creator chat moved a secret-only caller's schedule onto the
-    private default. The trait's `_armed` defaults DROP the standing — only for test doubles.
+    private default. ⚠ **And on NO record, when the private default stands in for a creator chat
+    that is gone** (`RunModelSource::DefaultInPlaceOfCreator`): `/loop`, `/schedule` and
+    `manage_schedule` jobs record `true` only from a private chat, so a public chat's schedule
+    needed no arming request at all — one secret-only `DELETE /sessions/<creator>` (QA, 2026-09-14).
+    Never record `false` from a chat: a person who later moves that chat private would be refused.
+    The trait's `_armed` defaults DROP the standing — only for test doubles.
     Renderer schedule writes go through `ui/desktop/src/schedule.ts` alone; a source guard in
     `schedule.userProof.test.ts` fails on any other importer of a generated schedule function.
   - `GET /sessions/changes` shows a change only through `lists_session` — on the tier it was

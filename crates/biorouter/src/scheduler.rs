@@ -320,34 +320,70 @@ pub struct ScheduledJob {
     /// file actually lives.
     #[serde(default)]
     pub owns_source: Option<bool>,
-    /// Issue #56. Could the HTTP request that last ARMED this schedule — created
-    /// it, re-timed it, resumed it, or scheduled its workflow — reach private
-    /// work? The daemon's schedule routes record their caller's answer here
-    /// (`routes::session_reach::schedule_reach`), and a run reads it back.
+    /// Issue #56. Could whoever last ARMED this schedule — created it, re-timed
+    /// it, resumed it, or scheduled its workflow — reach private work? A run
+    /// reads it back ([`scheduled_run_refusal`]).
     ///
-    /// * `Some(true)` — the person at the keyboard, or a caller stating a private
-    ///   model. Its runs may bind whatever model they resolve.
+    /// Who records it:
+    /// * The daemon's schedule routes, from their caller
+    ///   (`routes::session_reach::schedule_reach`) — `Some(true)` or `Some(false)`.
+    /// * `/loop`, `/schedule` and `platform__manage_schedule`'s `create`, from the
+    ///   CHAT that made the schedule, because the schedule acts for that chat and
+    ///   `create`'s card promises "on this chat's model": `Some(true)` when that
+    ///   chat runs a private model, `None` otherwise (never `Some(false)`, which
+    ///   would refuse the schedule once a person moves that chat to a private
+    ///   model).
+    /// * A person's proof-backed approval of `platform__manage_schedule`'s
+    ///   `unpause` — `Some(true)`, exactly as the desktop's Resume button.
+    ///
+    /// What each value lets a run do:
+    /// * `Some(true)` — the person at the keyboard, or a caller or chat on a
+    ///   private model. Its runs may bind whatever model they resolve.
     /// * `Some(false)` — a caller that could reach only public work. The routes
     ///   admit such a caller only to a schedule whose runs resolve a PUBLIC model
-    ///   at that moment, but a run resolves its model again when it starts: the
-    ///   chat it was created from can be deleted, or can stop recording a
-    ///   provider, and the run then falls back to the configured default. So a
+    ///   at that moment, but a run resolves its model again when it starts. So a
     ///   run that would bind a private model on such a record is refused before
-    ///   it starts ([`scheduled_run_refusal`]) and says so in [`Self::last_error`].
-    ///   Measured before this field existed (independent QA, 2026-09-14): with
-    ///   only the daemon secret, re-time a schedule made from a public chat to
-    ///   every minute, delete that public chat, and the next tick started a new
-    ///   chat on the private default with nobody present.
-    /// * `None` — not armed over HTTP: `/loop`, `manage_schedule`, a CLI with no
-    ///   daemon to ask, or a row written before this field. Runs as it always
-    ///   has. ⚠ The file is not a boundary, and this does not pretend otherwise:
-    ///   a shell that can write `schedule.json` can write `true` here, which is
-    ///   the residual `docs/deployment/programmatic-session-access.md` records.
+    ///   it starts, and says so in [`Self::last_error`]. Measured before this
+    ///   field existed (independent QA, 2026-09-14): with only the daemon secret,
+    ///   re-time a schedule made from a public chat to every minute, delete that
+    ///   public chat, and the next tick started a new chat on the private default
+    ///   with nobody present.
+    /// * `None` — nobody who could reach private work is recorded as having armed
+    ///   it: a public chat's `/loop`, a CLI with no daemon to ask, the daily
+    ///   meditation, or any row written before this field. It runs on the model
+    ///   it resolves EXCEPT one: when the chat it was made from no longer gives a
+    ///   model (deleted, unreadable, or recording none) and the run would fall
+    ///   back to a PRIVATE default ([`RunModelSource::DefaultInPlaceOfCreator`]).
+    ///   Deleting a public chat takes nothing but the daemon secret, so without
+    ///   that exception the QA chain above needed no arming request at all: one
+    ///   `DELETE /sessions/<public creator>` turned every such schedule's runs
+    ///   private (independent QA, 2026-09-14, on this branch — ticks created
+    ///   `scheduled`/`versa_azure`/`private` chats with an empty `last_error`).
     ///
-    /// Written only by the `_armed` mutations below; every other writer leaves it
-    /// as it found it.
+    /// ⚠ The file is not a boundary, and this does not pretend otherwise: a shell
+    /// that can write `schedule.json` can write `true` here, which is the residual
+    /// `docs/deployment/programmatic-session-access.md` records.
+    ///
+    /// Written only by the `_armed` mutations below and by the creating surfaces
+    /// named above; every other writer leaves it as it found it.
     #[serde(default)]
     pub armed_with_private_reach: Option<bool>,
+}
+
+/// Where the model a scheduled run binds came from — the half of
+/// [`resolve_scheduled_provider`]'s answer that [`scheduled_run_refusal`] needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunModelSource {
+    /// The chat the schedule was made from records a model, and the run takes it.
+    CreatorChat,
+    /// The schedule names no chat, so the run takes the configured default — what
+    /// it has always done, and what whoever made it chose.
+    ConfiguredDefault,
+    /// The schedule names a chat that no longer gives a model — deleted,
+    /// unreadable, or recording none — so the run takes the configured default in
+    /// its place. Nobody chose that model for this schedule: it moved when the
+    /// chat went, and deleting a public chat needs nothing but the daemon secret.
+    DefaultInPlaceOfCreator,
 }
 
 /// What a scheduled run is told when it would bind a private model on the word
@@ -363,11 +399,44 @@ pub const SCHEDULED_RUN_NEEDS_PRIVATE_REACH: &str =
      run it on this model, resume or re-save the schedule in the desktop app, or from a session \
      running a private model.";
 
+/// What a scheduled run is told when the chat its schedule was made from no
+/// longer gives a model, the configured default it would fall back to is
+/// private, and nobody who could reach private work armed the schedule — see
+/// [`RunModelSource::DefaultInPlaceOfCreator`].
+///
+/// Fixed text, for the reason [`SCHEDULED_RUN_NEEDS_PRIVATE_REACH`] is: it names
+/// no model, chat or schedule.
+pub const SCHEDULED_RUN_CREATOR_GONE: &str =
+    "This run was not started. The chat this schedule was made from no longer exists, cannot be \
+     read, or records no model, so the run would have used the configured default model instead \
+     — and that model is private. Nobody who could reach private work chose that model for this \
+     schedule, so starting it would begin a private chat with nobody present. Nothing was run. To \
+     run it on this model, resume or re-save the schedule in the desktop app, or from a session \
+     running a private model.";
+
 /// Issue #56 — may a run of a schedule armed as `armed_with_private_reach`
-/// bind a model of `run_tier`? `None` when it may; the refusal otherwise.
+/// bind a model of `run_tier`, found as `source`? `None` when it may; the
+/// refusal otherwise.
 ///
 /// Pure, so every corner is asserted rather than argued. `enforced` is DR-15's
-/// master switch, read by the caller: with tiers off nothing here refuses.
+/// master switch, read by the caller: with tiers off nothing here refuses. A
+/// public model is never refused. On a private one:
+///
+/// | standing      | `CreatorChat` | `ConfiguredDefault` | `DefaultInPlaceOfCreator` |
+/// |---------------|---------------|---------------------|---------------------------|
+/// | `Some(true)`  | runs          | runs                | runs                      |
+/// | `Some(false)` | refused       | refused             | refused                   |
+/// | `None`        | runs          | runs                | **refused**               |
+///
+/// ⚠ **The bottom-right cell is the one that needs no arming request.** A
+/// schedule made in a public chat records `None`, and its runs are public while
+/// that chat names a public model. Deleting that chat takes only the daemon
+/// secret, and the next run fell back to the private default with an empty
+/// `last_error` (independent QA, 2026-09-14). A `CreatorChat` run is not in that
+/// position: moving a chat onto a private model is the person's act
+/// (`TierRaiseNeedsUser`), and session ids are not reissued
+/// (`session_id_high_water`), so a creator that still resolves is the chat the
+/// schedule was made from, bound by someone who could bind it.
 ///
 /// ⚠ **[`execute_job`] asks it twice, and both are load-bearing.** First with
 /// the DECLARED tier of the provider the run resolved
@@ -380,10 +449,18 @@ pub const SCHEDULED_RUN_NEEDS_PRIVATE_REACH: &str =
 pub fn scheduled_run_refusal(
     enforced: bool,
     armed_with_private_reach: Option<bool>,
+    source: RunModelSource,
     run_tier: crate::privacy::ProviderTier,
 ) -> Option<&'static str> {
-    (enforced && armed_with_private_reach == Some(false) && run_tier.is_private())
-        .then_some(SCHEDULED_RUN_NEEDS_PRIVATE_REACH)
+    if !enforced || !run_tier.is_private() {
+        return None;
+    }
+    match (armed_with_private_reach, source) {
+        (Some(true), _) => None,
+        (Some(false), _) => Some(SCHEDULED_RUN_NEEDS_PRIVATE_REACH),
+        (None, RunModelSource::DefaultInPlaceOfCreator) => Some(SCHEDULED_RUN_CREATOR_GONE),
+        (None, RunModelSource::CreatorChat | RunModelSource::ConfiguredDefault) => None,
+    }
 }
 
 /// May the scheduler delete `job.source` when the job is removed?
@@ -2226,7 +2303,13 @@ impl Scheduler {
     }
 }
 
-/// The `(provider_name, model_config)` a scheduled run binds.
+/// The `(provider_name, model_config)` a scheduled run binds, and where that
+/// model came from.
+///
+/// The source is read off the SAME creator read the model is, and returned
+/// with it: [`scheduled_run_refusal`] turns on whether the default is standing
+/// in for a creator chat, and a second read could see a chat that was deleted
+/// in between and answer about a model this run did not resolve.
 ///
 /// Issue #56 (§9.3 C2). This used to read `Config::global()` and nothing else,
 /// which is wrong twice over:
@@ -2245,11 +2328,15 @@ impl Scheduler {
 /// schedules route) behaves exactly as it did before. A creator row that is
 /// gone, or that records no provider, also falls back rather than failing: the
 /// chat may legitimately have been deleted long after the schedule was made.
+/// That fallback is [`RunModelSource::DefaultInPlaceOfCreator`], and whether a
+/// run may take it onto a PRIVATE default is [`scheduled_run_refusal`]'s call.
 async fn resolve_scheduled_provider(
     job: &ScheduledJob,
     session_manager: &SessionManager,
-) -> Result<(String, crate::model::ModelConfig)> {
-    match creator_binding(job, session_manager).await {
+) -> Result<(String, crate::model::ModelConfig, RunModelSource)> {
+    let binding = creator_binding(job, session_manager).await;
+    let source = binding.source();
+    match binding {
         CreatorBinding::Bound {
             provider_name,
             model_config,
@@ -2266,7 +2353,7 @@ async fn resolve_scheduled_provider(
                     crate::model::ModelConfig::new(&model_name)?
                 }
             };
-            return Ok((provider_name, model_config));
+            return Ok((provider_name, model_config, source));
         }
         CreatorBinding::NoProvider(creator_id) => tracing::warn!(
             job = %job.id,
@@ -2286,7 +2373,11 @@ async fn resolve_scheduled_provider(
     let config = Config::global();
     let provider_name = config.get_biorouter_provider()?;
     let model_name = config.get_biorouter_model()?;
-    Ok((provider_name, crate::model::ModelConfig::new(&model_name)?))
+    Ok((
+        provider_name,
+        crate::model::ModelConfig::new(&model_name)?,
+        source,
+    ))
 }
 
 /// What the chat a schedule was created from says about the model its runs
@@ -2304,6 +2395,21 @@ enum CreatorBinding {
         provider_name: String,
         model_config: Option<crate::model::ModelConfig>,
     },
+}
+
+impl CreatorBinding {
+    /// Where a run that reads this binding gets its model. The ONE mapping:
+    /// [`resolve_scheduled_provider`] returns it beside the model, and the tests
+    /// ask it of each shape without needing a configured default.
+    fn source(&self) -> RunModelSource {
+        match self {
+            CreatorBinding::Bound { .. } => RunModelSource::CreatorChat,
+            CreatorBinding::NoCreator => RunModelSource::ConfiguredDefault,
+            CreatorBinding::NoProvider(_) | CreatorBinding::Unreadable(..) => {
+                RunModelSource::DefaultInPlaceOfCreator
+            }
+        }
+    }
 }
 
 async fn creator_binding(job: &ScheduledJob, session_manager: &SessionManager) -> CreatorBinding {
@@ -2396,18 +2502,21 @@ async fn execute_job(
 
     // Issue #56 (§9.3 C2 / R5). The creating chat's model first, the global
     // default only as a fallback — see [`resolve_scheduled_provider`].
-    let (provider_name, model_config) =
+    let (provider_name, model_config, model_source) =
         resolve_scheduled_provider(&job, agent.config.session_manager.as_ref()).await?;
 
     // Issue #56. The schedule routes admitted whoever armed this job on the
     // model its runs resolved THEN; this is the model they resolve NOW. A job
     // armed by a request that could reach only public work does not start a
     // private-capability chat with nobody present, whatever moved in between —
-    // see `ScheduledJob::armed_with_private_reach`. Read ONCE for both checks.
+    // and neither does a job nobody with private reach armed, once its creator
+    // chat is gone and the private default stands in for that chat's model. See
+    // `ScheduledJob::armed_with_private_reach`. Read ONCE for both checks.
     let tiers_enforced = crate::privacy::privacy_tiers_enabled();
     if let Some(refusal) = scheduled_run_refusal(
         tiers_enforced,
         job.armed_with_private_reach,
+        model_source,
         crate::workflow::privacy::declared_provider_tier(&provider_name).await,
     ) {
         return Err(anyhow!(refusal));
@@ -2437,6 +2546,7 @@ async fn execute_job(
     if let Some(refusal) = scheduled_run_refusal(
         tiers_enforced,
         job.armed_with_private_reach,
+        model_source,
         agent_provider.tier(),
     ) {
         return Err(anyhow!(refusal));
@@ -4903,12 +5013,13 @@ mod privacy_c2_tests {
         job.creator_session_id = Some(creator.id.clone());
 
         // 1. The run resolves the creating chat's model, not the global default.
-        let (provider_name, model_config) =
+        let (provider_name, model_config, source) =
             resolve_scheduled_provider(&job, session_manager.as_ref())
                 .await
                 .unwrap();
         assert_eq!(provider_name, "versa_azure");
         assert_eq!(model_config.model_name, "gpt-5.5");
+        assert_eq!(source, RunModelSource::CreatorChat);
 
         // 2. ...and that name really is a private provider, so the bind below is
         //    not passing for the wrong reason. This is the registry's own
@@ -4971,7 +5082,7 @@ mod privacy_c2_tests {
         let from_global = resolve_scheduled_provider(&job, session_manager.as_ref()).await;
 
         match (from_missing, from_global) {
-            (Ok((a, _)), Ok((b, _))) => assert_eq!(a, b),
+            (Ok((a, _, _)), Ok((b, _, _))) => assert_eq!(a, b),
             (Err(_), Err(_)) => {}
             (a, b) => {
                 panic!("a missing creator must fall back to the global default: {a:?} vs {b:?}")
@@ -5149,51 +5260,161 @@ mod armed_standing_tests {
 
     // ── Issue #56: a run is held to the standing of the request that armed it ──
 
-    /// Every corner of the run-time rule. The one cell that refuses is a run on a
-    /// private model armed by a request that could reach only public work; every
-    /// other record — the person's, a program's on a private model, and a row no
-    /// HTTP request armed — runs as it always has, and so does anything at all
-    /// with tiers switched off.
+    /// Every corner of the run-time rule, as a table written out rather than
+    /// derived. Two kinds of cell refuse, and only on a private model with tiers
+    /// on: a public-only arming request (whatever the model's source), and — the
+    /// cell independent QA found open on 2026-09-14 — a schedule nobody with
+    /// private reach armed whose creator chat is gone, so the private default is
+    /// standing in for that chat's model. Everything else runs as it always has.
     #[test]
-    fn a_run_is_refused_only_when_public_only_standing_would_bind_a_private_model() {
+    fn a_run_is_refused_only_where_nobody_with_private_reach_chose_its_private_model() {
         use crate::privacy::ProviderTier::{Private, Public};
-        for enforced in [true, false] {
-            for armed in [Some(true), Some(false), None] {
+        use RunModelSource::{ConfiguredDefault, CreatorChat, DefaultInPlaceOfCreator};
+        const REACH: Option<&str> = Some(SCHEDULED_RUN_NEEDS_PRIVATE_REACH);
+        const GONE: Option<&str> = Some(SCHEDULED_RUN_CREATOR_GONE);
+        // (standing, source, answer on a PRIVATE model with tiers on)
+        let table: [(Option<bool>, RunModelSource, Option<&str>); 9] = [
+            (Some(true), CreatorChat, None),
+            (Some(true), ConfiguredDefault, None),
+            (Some(true), DefaultInPlaceOfCreator, None),
+            (Some(false), CreatorChat, REACH),
+            (Some(false), ConfiguredDefault, REACH),
+            (Some(false), DefaultInPlaceOfCreator, REACH),
+            (None, CreatorChat, None),
+            (None, ConfiguredDefault, None),
+            (None, DefaultInPlaceOfCreator, GONE),
+        ];
+        for (armed, source, on_private) in table {
+            for enforced in [true, false] {
                 for tier in [Private, Public] {
-                    let refused = scheduled_run_refusal(enforced, armed, tier);
-                    let want = enforced && armed == Some(false) && tier == Private;
+                    let want = if enforced && tier == Private {
+                        on_private
+                    } else {
+                        None
+                    };
                     assert_eq!(
-                        refused.is_some(),
+                        scheduled_run_refusal(enforced, armed, source, tier),
                         want,
-                        "enforced={enforced} armed={armed:?} tier={tier:?} answered {refused:?}"
+                        "enforced={enforced} armed={armed:?} source={source:?} tier={tier:?}"
                     );
-                    if let Some(text) = refused {
-                        assert_eq!(text, SCHEDULED_RUN_NEEDS_PRIVATE_REACH);
-                    }
                 }
             }
         }
     }
 
-    /// The refusal lands in `last_error`, which `GET /schedule/list` shows to
-    /// any holder of the daemon secret, so it names nothing.
+    /// Which source each shape of creator gives, read through the one mapping
+    /// the run uses. A chat that is gone and a chat that records no model both
+    /// hand the run to the default in that chat's place; only a schedule that
+    /// names no chat takes the default as its own.
+    #[tokio::test]
+    async fn a_creator_that_no_longer_gives_a_model_is_a_default_in_its_place() {
+        let temp_dir = tempdir().unwrap();
+        let session_manager = SessionManager::new(temp_dir.path().to_path_buf());
+        let bound = session_manager
+            .create_session(
+                PathBuf::from("."),
+                "bound creator".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .update(&bound.id)
+            .provider_name("openai")
+            .model_config(crate::model::ModelConfig::new_or_fail("gpt-4o"))
+            .apply()
+            .await
+            .unwrap();
+        let unbound = session_manager
+            .create_session(
+                PathBuf::from("."),
+                "creator with no model".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let deleted = session_manager
+            .create_session(
+                PathBuf::from("."),
+                "deleted creator".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .update(&deleted.id)
+            .provider_name("openai")
+            .model_config(crate::model::ModelConfig::new_or_fail("gpt-4o"))
+            .apply()
+            .await
+            .unwrap();
+
+        let source_for = |creator: Option<&str>| {
+            let mut job = dormant_job("source-probe", Path::new("/does/not/matter.yaml"));
+            job.creator_session_id = creator.map(str::to_owned);
+            job
+        };
+        let job = source_for(Some(&deleted.id));
+        assert_eq!(
+            creator_binding(&job, &session_manager).await.source(),
+            RunModelSource::CreatorChat,
+            "precondition: the creator resolves before it is deleted"
+        );
+        session_manager.delete_session(&deleted.id).await.unwrap();
+
+        for (creator, want) in [
+            (None, RunModelSource::ConfiguredDefault),
+            (Some(bound.id.as_str()), RunModelSource::CreatorChat),
+            (
+                Some(unbound.id.as_str()),
+                RunModelSource::DefaultInPlaceOfCreator,
+            ),
+            (
+                Some(deleted.id.as_str()),
+                RunModelSource::DefaultInPlaceOfCreator,
+            ),
+            (
+                Some("20000101_999"),
+                RunModelSource::DefaultInPlaceOfCreator,
+            ),
+        ] {
+            let job = source_for(creator);
+            assert_eq!(
+                creator_binding(&job, &session_manager).await.source(),
+                want,
+                "creator {creator:?}"
+            );
+        }
+    }
+
+    /// The refusals land in `last_error`, which `GET /schedule/list` shows to
+    /// any holder of the daemon secret, so they name nothing.
     #[test]
     fn the_scheduled_run_refusal_names_no_model_chat_or_schedule() {
-        let text = SCHEDULED_RUN_NEEDS_PRIVATE_REACH.to_lowercase();
-        // Fixed text with no placeholder, and no provider's name in it.
-        for leak in [
-            "versa",
-            "azure",
-            "anthropic",
-            "openai",
-            "ollama",
-            "llama",
-            "{",
-            "}",
+        for text in [
+            SCHEDULED_RUN_NEEDS_PRIVATE_REACH,
+            SCHEDULED_RUN_CREATOR_GONE,
         ] {
-            assert!(!text.contains(leak), "the refusal names {leak:?}: {text}");
+            let text = text.to_lowercase();
+            // Fixed text with no placeholder, and no provider's name in it.
+            for leak in [
+                "versa",
+                "azure",
+                "anthropic",
+                "openai",
+                "ollama",
+                "llama",
+                "{",
+                "}",
+            ] {
+                assert!(!text.contains(leak), "the refusal names {leak:?}: {text}");
+            }
+            assert!(text.contains("nothing was run"), "{text}");
         }
-        assert!(text.contains("nothing was run"));
+        assert_ne!(
+            SCHEDULED_RUN_NEEDS_PRIVATE_REACH, SCHEDULED_RUN_CREATOR_GONE,
+            "the two refusals say different things about why"
+        );
     }
 
     /// The record each mutation leaves, read back from the FILE — a run reads

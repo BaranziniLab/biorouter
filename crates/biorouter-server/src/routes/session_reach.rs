@@ -824,6 +824,15 @@ pub async fn work_reach(
 /// secret, re-time a schedule made from a public chat to every minute — public
 /// work, admitted — delete that public chat, and the next tick started a new
 /// chat on the private default with nobody present.
+///
+/// ⚠ **The record is not only this gate's.** A schedule `/loop`, `/schedule` or
+/// `manage_schedule` made in a public chat reaches none of these routes and
+/// records no standing, and deleting that chat needs only the secret — so the
+/// chain above needed no arming request at all (independent QA, 2026-09-14, on
+/// the first repair). A run on NO record is refused the private default when it
+/// stands in for a creator chat that is gone
+/// (`scheduler::RunModelSource::DefaultInPlaceOfCreator`); nothing here decides
+/// that, and nothing here needs to.
 pub async fn schedule_reach(
     manager: &SessionManager,
     schedule: Option<&biorouter::scheduler::ScheduledJob>,

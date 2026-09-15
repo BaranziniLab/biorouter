@@ -18,6 +18,15 @@
 //! nobody present, because a run resolves its model again when it starts and
 //! falls back to the private default once its creator is gone.
 //!
+//! PHASE D pins the same chain with the arming request left out, which is how
+//! independent QA broke PHASE C's fix on this branch (2026-09-14): a schedule
+//! `/loop`, `/schedule` or `manage_schedule` wrote in a PUBLIC chat, or any row
+//! from before the standing existed, records none — and with only the secret,
+//! ONE `DELETE /sessions/<that chat>` made ticks at 16:54, 16:55 and 16:56
+//! create `scheduled`/`versa_azure`/`private` chats with an empty `last_error`.
+//! Re-measured before the repair on a dev GUI daemon (17:18:00, chat
+//! `20260915_1`). No arming request is sent to any schedule in that phase.
+//!
 //! ⚠ **Its own binary, and ONE test in it, on purpose.** Seeding a schedule
 //! registers a task on tokio-cron-scheduler, which is process-global while each
 //! `#[tokio::test]` brings its own runtime; a second test's add fails with
@@ -33,7 +42,9 @@ mod test_sandbox;
 use axum::{body::Body, http::Request, Router};
 use biorouter::model::ModelConfig;
 use biorouter::privacy::SessionClassification;
-use biorouter::scheduler::{ScheduledJob, SCHEDULED_RUN_NEEDS_PRIVATE_REACH};
+use biorouter::scheduler::{
+    ScheduledJob, SCHEDULED_RUN_CREATOR_GONE, SCHEDULED_RUN_NEEDS_PRIVATE_REACH,
+};
 use biorouter::session::SessionType;
 use biorouter_server::routes::session_reach::{CALLER_PROVIDER_HEADER, SCHEDULE_OUT_OF_REACH};
 use biorouter_server::state::AppState;
@@ -213,6 +224,26 @@ async fn a_schedules_private_work_is_changed_only_by_a_caller_that_could_reach_i
     // PHASE C's timer scenario, on a chat of its own so its every-second cron
     // never races the checks made on the others.
     let tick_chat = seed_chat(&state, "Schedule reach tick (fixture)", "anthropic", false).await;
+    // PHASE D's chats: a public chat a `/loop` was made in, a chat that records
+    // no model, and a private chat whose `/loop` recorded its standing.
+    let loop_chat = seed_chat(&state, "Schedule reach loop (fixture)", "anthropic", false).await;
+    let modelless_chat = state
+        .session_manager()
+        .create_session(
+            PathBuf::from("/tmp/schedule_write_reach"),
+            "Schedule reach no model (fixture)".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id;
+    let private_loop_chat = seed_chat(
+        &state,
+        "Schedule reach private loop (fixture)",
+        "versa_azure",
+        true,
+    )
+    .await;
     let dir = tempfile::tempdir().unwrap();
     let workflow = dir.path().join("probe.yaml");
     std::fs::write(
@@ -227,12 +258,22 @@ async fn a_schedules_private_work_is_changed_only_by_a_caller_that_could_reach_i
         ("sr-public-creator", Some(public_chat.as_str())),
         ("sr-private-creator", Some(private_chat.as_str())),
         ("sr-tick", Some(tick_chat.as_str())),
+        ("sr-loop-shaped", Some(loop_chat.as_str())),
+        ("sr-creator-no-model", Some(modelless_chat.as_str())),
+        ("sr-default-shaped", None),
     ] {
         scheduler
             .add_scheduled_job(job(id, &workflow, creator), true)
             .await
             .unwrap_or_else(|e| panic!("seeding {id}: {e}"));
     }
+    // What a private chat's `/loop` records (`Agent::private_reach_of_this_chat`).
+    let mut private_loop = job("sr-private-loop", &workflow, Some(&private_loop_chat));
+    private_loop.armed_with_private_reach = Some(true);
+    scheduler
+        .add_scheduled_job(private_loop, true)
+        .await
+        .unwrap_or_else(|e| panic!("seeding sr-private-loop: {e}"));
 
     // ── PHASE A: a public default. ──────────────────────────────────────────
 
@@ -701,6 +742,156 @@ async fn a_schedules_private_work_is_changed_only_by_a_caller_that_could_reach_i
             204,
         )
         .await;
+
+    // ── PHASE D: the same chain with NO arming request. ─────────────────────
+    // A schedule made in a public chat the way `/loop`, `/schedule` and
+    // `manage_schedule` make one there — or any row from before the standing
+    // existed — records none. Nothing below re-times, resumes or creates it over
+    // HTTP before its chat goes.
+    probe.check(
+        standing(probe.job("sr-loop-shaped").await).is_none(),
+        "precondition: the public chat's schedule records no standing".to_string(),
+    );
+    let loop_model = biorouter::scheduler::scheduled_run_provider_name(
+        &probe.job("sr-loop-shaped").await.unwrap(),
+        state.session_manager(),
+    )
+    .await;
+    probe.check(
+        loop_model.as_deref() == Some("anthropic"),
+        format!("precondition: its runs take the public chat's model, got {loop_model:?}"),
+    );
+
+    // ONE request, secret only: delete that public chat.
+    probe
+        .admitted(
+            "DELETE the loop's public creator (secret only)",
+            "DELETE",
+            &format!("/sessions/{loop_chat}"),
+            None,
+            &[],
+            200,
+        )
+        .await;
+
+    // The timer, with nothing armed: the in-process re-time records nothing.
+    state
+        .scheduler()
+        .update_schedule("sr-loop-shaped", "* * * * * *".to_string())
+        .await
+        .unwrap();
+    probe.check(
+        standing(probe.job("sr-loop-shaped").await).is_none(),
+        "the in-process re-time recorded a standing, so the chain below is not the QA one"
+            .to_string(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let loop_error = loop {
+        let error = probe
+            .job("sr-loop-shaped")
+            .await
+            .and_then(|job| job.last_error);
+        if error
+            .as_deref()
+            .is_some_and(|e| e.contains(SCHEDULED_RUN_CREATOR_GONE))
+            || std::time::Instant::now() >= deadline
+        {
+            break error;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    probe.check(
+        loop_error
+            .as_deref()
+            .is_some_and(|e| e.contains(SCHEDULED_RUN_CREATOR_GONE)),
+        format!(
+            "after one secret-only DELETE of its public chat, the timer's run was not refused \
+             the private default: {loop_error:?}"
+        ),
+    );
+    let loop_runs = state
+        .scheduler()
+        .sessions("sr-loop-shaped", 50)
+        .await
+        .map(|runs| runs.len());
+    probe.check(
+        loop_runs.as_ref().is_ok_and(|runs| *runs == 0),
+        format!("the refused timer still started a chat for the loop: {loop_runs:?}"),
+    );
+    // The person stops it; a pause is not an arming and records nothing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (status, _) = probe
+            .send("POST", "/schedule/sr-loop-shaped/pause", None, &[PROOF])
+            .await;
+        if status == 204 || std::time::Instant::now() >= deadline {
+            probe.check(
+                status == 204,
+                format!("could not pause sr-loop-shaped: {status}"),
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // A creator that records no model hands the run to the default the same way.
+    let modelless = state.scheduler().run_now("sr-creator-no-model").await;
+    probe.check(
+        modelless
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains(SCHEDULED_RUN_CREATOR_GONE)),
+        format!("a run whose creator records no model took the private default: {modelless:?}"),
+    );
+
+    // What still runs. A private chat's loop, after the PERSON deletes that
+    // chat: it recorded the standing that lets it take the default. It gets
+    // past the standing check and fails further on, with no credentials here.
+    probe
+        .admitted(
+            "DELETE the private loop's chat (the person)",
+            "DELETE",
+            &format!("/sessions/{private_loop_chat}"),
+            None,
+            &[PROOF],
+            200,
+        )
+        .await;
+    // And a schedule that names no chat takes the default as its own, as the
+    // CLI's offline `schedule add` and the daily meditation always have.
+    for id in ["sr-private-loop", "sr-default-shaped"] {
+        let ran = state.scheduler().run_now(id).await;
+        probe.check(
+            !ran.as_ref().is_err_and(|e| {
+                let e = e.to_string();
+                e.contains(SCHEDULED_RUN_CREATOR_GONE)
+                    || e.contains(SCHEDULED_RUN_NEEDS_PRIVATE_REACH)
+            }),
+            format!("{id} was refused on standing: {ran:?}"),
+        );
+    }
+
+    // The remedy the refusal names: the person re-saves the loop's schedule.
+    probe
+        .admitted(
+            "PUT sr-loop-shaped by the person",
+            "PUT",
+            "/schedule/sr-loop-shaped",
+            Some(json!({ "cron": FAR_CRON })),
+            &[PROOF],
+            200,
+        )
+        .await;
+    probe.check(
+        standing(probe.job("sr-loop-shaped").await) == Some(true),
+        "the person's re-save of the loop did not record their standing".to_string(),
+    );
+    let resaved_loop = state.scheduler().run_now("sr-loop-shaped").await;
+    probe.check(
+        !resaved_loop
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains(SCHEDULED_RUN_CREATOR_GONE)),
+        format!("a loop the person re-armed was still refused: {resaved_loop:?}"),
+    );
 
     std::env::remove_var("BIOROUTER_PROVIDER");
     std::env::remove_var("BIOROUTER_MODEL");
