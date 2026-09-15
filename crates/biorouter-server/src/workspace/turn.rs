@@ -976,14 +976,13 @@ async fn drive_turn_with_continuations<'a>(
     loop {
         let terminal_error = drive_stream(
             session_id,
-            &mut stream,
+            stream,
             cancel_token,
             all_messages,
             Some(agent.as_ref()),
             stopped_rows,
         )
         .await;
-        drop(stream);
         if terminal_error || cancel_token.is_cancelled() {
             return terminal_error;
         }
@@ -1359,17 +1358,15 @@ async fn publish_stream_failure(
 /// the cancel that is waiting on this turn, so the window that pressed Stop can
 /// show what a reload will show without re-reading the whole chat. Left empty by
 /// every ending that is not a Stop.
-async fn drive_stream<S>(
+async fn drive_stream(
     session_id: &str,
-    stream: &mut S,
+    stream: futures::stream::BoxStream<'_, anyhow::Result<AgentEvent>>,
     cancel_token: &CancellationToken,
     all_messages: &mut Conversation,
     agent: Option<&biorouter::agents::Agent>,
     stop_record: &mut Vec<Message>,
-) -> bool
-where
-    S: futures::Stream<Item = anyhow::Result<AgentEvent>> + Unpin,
-{
+) -> bool {
+    let mut stream = Some(stream);
     // Item 7: what this iteration has streamed and the store may not yet hold —
     // every `Message` since the last `MessagesPersisted` (the agent publishes the
     // ids an iteration took right after writing it). A Stop drops the stream
@@ -1398,6 +1395,8 @@ where
         let item = tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::info!("turn: cancelled");
+                // Release any suspended SQLite transaction before settlement writes.
+                drop(stream.take());
                 if let Some(agent) = agent {
                     // The prose first, so the store reads in the order things
                     // happened: the reply was streaming when a steer arrived, and
@@ -1409,7 +1408,7 @@ where
                 }
                 break;
             }
-            item = stream.next() => item,
+            item = stream.as_mut().expect("the stream is live until cancellation").next() => item,
         };
         let Some(item) = item else { break };
 
@@ -1471,6 +1470,7 @@ where
                 session_events::publish(session_id, SessionBusEvent::Agent(event));
             }
             Err(e) => {
+                drop(stream.take());
                 // `"inference_error"`, the code `/reply`'s own arm for this
                 // exact `Ok(Some(Err(e)))` case has always published — NOT
                 // `"stream_error"`, which the desktop mints for itself when the
@@ -2596,7 +2596,7 @@ mod tests {
         let sid = "br71-drive-stream-abort";
         let mut rx = session_events::subscribe(sid);
         let mut all = Conversation::new_unvalidated(Vec::new());
-        let mut stream = futures::stream::iter(vec![Ok(AgentEvent::TurnAborted {
+        let stream = futures::stream::iter(vec![Ok(AgentEvent::TurnAborted {
             code: TurnAbortCode::ProviderFailure {
                 kind: ProviderErrorKind::RateLimit,
             },
@@ -2605,7 +2605,7 @@ mod tests {
 
         let terminal_error = drive_stream(
             sid,
-            &mut stream,
+            stream.boxed(),
             &CancellationToken::new(),
             &mut all,
             None,
@@ -2669,7 +2669,7 @@ mod tests {
         let sid = "br71-private-provider-abort-log";
         let mut rx = session_events::subscribe(sid);
         let mut all = Conversation::new_unvalidated(Vec::new());
-        let mut stream = futures::stream::iter(vec![Ok(AgentEvent::TurnAborted {
+        let stream = futures::stream::iter(vec![Ok(AgentEvent::TurnAborted {
             code: TurnAbortCode::ProviderFailure {
                 kind: ProviderErrorKind::InvalidRequest,
             },
@@ -2688,7 +2688,7 @@ mod tests {
 
         let terminal_error = drive_stream(
             sid,
-            &mut stream,
+            stream.boxed(),
             &CancellationToken::new(),
             &mut all,
             None,
@@ -2746,7 +2746,7 @@ mod tests {
         let message = Message::assistant()
             .with_text("durable answer")
             .with_id(message_id);
-        let mut stream = futures::stream::iter(vec![
+        let stream = futures::stream::iter(vec![
             Ok(AgentEvent::Message(message)),
             Ok(AgentEvent::MessagesPersisted(vec![PersistedMessage {
                 id: message_id.to_string(),
@@ -2756,7 +2756,7 @@ mod tests {
 
         let terminal_error = drive_stream(
             sid,
-            &mut stream,
+            stream.boxed(),
             &CancellationToken::new(),
             &mut all,
             None,
@@ -3090,7 +3090,7 @@ mod tests {
         let trip = cancel.clone();
         // An agent that never yields, and a Stop that lands once the runner is
         // parked on it — tripped by that very poll rather than by a timer.
-        let mut stream = futures::stream::poll_fn(
+        let stream = futures::stream::poll_fn(
             move |_| -> std::task::Poll<Option<anyhow::Result<AgentEvent>>> {
                 trip.cancel();
                 std::task::Poll::Pending
@@ -3099,7 +3099,14 @@ mod tests {
 
         let terminal_error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            drive_stream(sid, &mut stream, &cancel, &mut all, None, &mut Vec::new()),
+            drive_stream(
+                sid,
+                stream.boxed(),
+                &cancel,
+                &mut all,
+                None,
+                &mut Vec::new(),
+            ),
         )
         .await
         .expect("a cancelled turn must escape a stalled agent stream");
@@ -3153,13 +3160,13 @@ mod tests {
 
         let mut rx = session_events::subscribe(&session.id);
         let mut all = Conversation::new_unvalidated(Vec::new());
-        let mut stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
+        let stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
         let cancel = CancellationToken::new();
         cancel.cancel();
         let mut stop_record = Vec::new();
         let terminal_error = drive_stream(
             &session.id,
-            &mut stream,
+            stream.boxed(),
             &cancel,
             &mut all,
             Some(&agent),
@@ -3306,7 +3313,7 @@ mod tests {
         // D21: the Stop lands the moment the runner asks for the item after the
         // last one — a handshake on the stream itself, not a 150 ms bet that the
         // five events were drained first.
-        let mut stream = futures::stream::iter(events).chain(futures::stream::poll_fn(
+        let stream = futures::stream::iter(events).chain(futures::stream::poll_fn(
             move |_| -> std::task::Poll<Option<anyhow::Result<AgentEvent>>> {
                 trip.cancel();
                 std::task::Poll::Pending
@@ -3320,7 +3327,7 @@ mod tests {
             std::time::Duration::from_secs(10),
             drive_stream(
                 &session.id,
-                &mut stream,
+                stream.boxed(),
                 &cancel,
                 &mut all,
                 Some(&agent),
@@ -3450,7 +3457,7 @@ mod tests {
             None,
             BioRouterMode::Auto,
         ));
-        let mut stream = futures::stream::iter(vec![Ok(AgentEvent::Message(
+        let stream = futures::stream::iter(vec![Ok(AgentEvent::Message(
             Message::assistant()
                 .with_id("whole")
                 .with_text("A whole answer."),
@@ -3460,7 +3467,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let terminal_error = drive_stream(
             &session.id,
-            &mut stream,
+            stream.boxed(),
             &cancel,
             &mut all,
             Some(&agent),
@@ -3546,14 +3553,14 @@ mod tests {
                     .with_text(text),
             ))
         };
-        let mut stream = futures::stream::iter(vec![
+        let stream = futures::stream::iter(vec![
             chunk("Half of the answer"),
             chunk(", and a little more"),
             Err(anyhow::anyhow!("provider hung up")),
         ]);
         let terminal_error = drive_stream(
             &session.id,
-            &mut stream,
+            stream.boxed(),
             &CancellationToken::new(),
             &mut all,
             Some(&agent),
@@ -3613,6 +3620,99 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn cancellation_releases_a_suspended_write_before_settling_steers() {
+        use biorouter::agents::{Agent, AgentConfig};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::session::SessionManager;
+
+        let data = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new(data.path().to_path_buf()));
+        let session = sessions
+            .create_session(
+                data.path().to_path_buf(),
+                "cancel write".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions.clone(),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        agent.prepare_soft_interrupt_turn();
+        agent
+            .try_queue_soft_interrupt("keep my correction".into(), None)
+            .unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(data.path().join("sessions/sessions.db")),
+            )
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let signal = cancel.clone();
+        let id = session.id.clone();
+        let stream = async_stream::stream! {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query("UPDATE sessions SET name = name WHERE id = ?").bind(&id).execute(&mut *tx).await.unwrap();
+            // Cancellation is raised only after SQLite holds the write lock.
+            // Keeping this transaction in the suspended stream reproduces a
+            // stopped steer write without sleeps or a production test hook.
+            signal.cancel();
+            std::future::pending::<()>().await;
+            drop(tx);
+            yield Ok(AgentEvent::Message(Message::assistant().with_text("unreachable")));
+        }.boxed();
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stopped = Vec::new();
+        let failed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            drive_stream(
+                &session.id,
+                stream,
+                &cancel,
+                &mut all,
+                Some(&agent),
+                &mut stopped,
+            ),
+        )
+        .await
+        .expect(
+            "settlement must release the stream's writer, not wait for SQLite's 5s busy timeout",
+        );
+        assert!(!failed);
+        let stored = sessions
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let steers: Vec<_> = stored
+            .messages()
+            .iter()
+            .filter(|message| message.as_concat_text() == "keep my correction")
+            .collect();
+        assert_eq!(steers.len(), 1);
+        assert_eq!(
+            steers[0].metadata.steer_outcome,
+            Some(biorouter::conversation::message::SteerOutcome::Unanswered)
+        );
+        assert!(stored
+            .messages()
+            .iter()
+            .any(|message| matches!(message.content.as_slice(),
+                [biorouter::conversation::message::MessageContent::SystemNotification(notice)]
+                    if notice.msg == "Stopped."
+            )));
+        assert!(!agent.has_soft_interrupts());
+    }
+
     /// A mid-stream inference failure keeps `/reply`'s wire code.
     ///
     /// `"stream_error"` is not a free string: the desktop mints it itself for a
@@ -3629,11 +3729,11 @@ mod tests {
         let sid = "br71-drive-stream-error";
         let mut rx = session_events::subscribe(sid);
         let mut all = Conversation::new_unvalidated(Vec::new());
-        let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
+        let stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
 
         let terminal_error = drive_stream(
             sid,
-            &mut stream,
+            stream.boxed(),
             &CancellationToken::new(),
             &mut all,
             None,

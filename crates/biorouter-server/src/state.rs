@@ -70,6 +70,7 @@ struct ActiveTurn {
 #[derive(Debug, Default)]
 struct TurnRegistry {
     turns: HashMap<String, ActiveTurn>,
+    steer_receipts: Vec<(String, String, String)>,
     continuation_leases: HashMap<String, ContinuationLeaseRecord>,
     stopping_sessions: HashMap<String, usize>,
     /// D18: this daemon's lease time-to-live, when a test set one. Per
@@ -960,6 +961,63 @@ impl AppState {
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
         }))
+    }
+
+    /// Hold the session turn generation fixed across the synchronous admission.
+    pub(crate) fn with_steer_target<T>(
+        &self,
+        session_id: &str,
+        expected: Option<&str>,
+        admit: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let registry = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(expected) = expected {
+            let matches = registry.turns.get(session_id).is_some_and(|turn| {
+                turn.finished_at.is_none()
+                    && (turn.turn_id == expected
+                        || turn.idempotency_key.as_deref() == Some(expected))
+            });
+            if !matches {
+                return None;
+            }
+        }
+        Some(admit())
+    }
+
+    pub(crate) fn steer_receipt(&self, session_id: &str, key: &str) -> Option<String> {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .steer_receipts
+            .iter()
+            .rev()
+            .find(|(session, held, _)| session == session_id && held == key)
+            .map(|(_, _, turn)| turn.clone())
+    }
+
+    /// Retained separately from the agent LRU and current turn. Old retries carry
+    /// their target turn too, so eviction cannot send them into a successor.
+    pub(crate) fn record_steer_receipt(&self, session_id: &str, key: &str, turn: &str) {
+        let mut registry = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registry
+            .steer_receipts
+            .iter()
+            .any(|(session, held, _)| session == session_id && held == key)
+        {
+            return;
+        }
+        if registry.steer_receipts.len() == 4096 {
+            registry.steer_receipts.remove(0);
+        }
+        registry
+            .steer_receipts
+            .push((session_id.into(), key.into(), turn.into()));
     }
 
     /// Claim one of the [`MAX_LIVE_OBSERVER_STREAMS`] slots for following a

@@ -1,3 +1,4 @@
+import type { SteerRecovery } from '../utils/steerRecovery';
 import React, { createContext, useContext, useSyncExternalStore } from 'react';
 import { ChatState } from '../types/chatState';
 import {
@@ -489,6 +490,7 @@ export function steerWasEchoed(
 }
 
 export interface ChatStreamSnapshot {
+  steerRecoveries?: SteerRecovery[];
   session?: Session;
   messages: Message[];
   chatState: ChatState;
@@ -4366,14 +4368,60 @@ class ChatStreamController {
     // the queue and ran as a NEW turn after the one they were meant to steer —
     // and a hung POST held the chip for ten minutes.
     const key = newTurnId();
+    const expectedTurnId = this.activeTurnId;
+    const steerMessageId = `steer:${key}`;
+    const baseline = this.steerBaseline;
+    const recoveryAnchor = this.messagesRef[this.messagesRef.length - 1]?.id ?? undefined;
+    const recoveryIndex = this.messagesRef.length;
+    let ambiguous = false;
     let backoffMs = ChatStreamController.STEER_RETRY_FIRST_MS;
     for (;;) {
-      const outcome = await this.postSteerOnce(trimmed, key);
+      const outcome = await this.postSteerOnce(trimmed, key, expectedTurnId);
       if (outcome.kind === 'accepted') {
         this.lastInteractionTime = Date.now();
         return true;
       }
       if (outcome.kind === 'refused') {
+        if (steerWasEchoed(issued, this.messagesRef, baseline)) {
+          retract();
+          return true;
+        }
+        if (ambiguous) {
+          // A bounded receipt may have expired, or the daemon may have restarted.
+          // The keyed stored row still proves acceptance; absence does not.
+          try {
+            const response = await getSession({
+              path: { session_id: this.sessionId },
+              headers: await userActionHeaders(),
+              throwOnError: true,
+            });
+            if (response.data?.conversation?.some((message) => message.id === steerMessageId)) {
+              retract();
+              return true;
+            }
+          } catch {
+            // Preserve a recoverable copy instead of resending uncertain work.
+          }
+          retract();
+          this.updateSnapshot((prev) => ({
+            ...prev,
+            steerRecoveries: [
+              ...(prev.steerRecoveries ?? []),
+              {
+                afterMessageId: recoveryAnchor,
+                index: recoveryIndex,
+                message: {
+                  id: steerMessageId,
+                  role: 'user',
+                  created: Math.floor(issued.since / 1000),
+                  content: [{ type: 'text', text: trimmed }],
+                  metadata: { userVisible: true, agentVisible: false },
+                },
+              },
+            ],
+          }));
+          return true;
+        }
         // A 409 (the turn ended, or is closing), a 400 or a 403: the caller
         // queues or sends the text instead. Retract the optimistic chip in the
         // same breath — leaving "Steering…" up while the text takes the
@@ -4382,17 +4430,17 @@ class ChatStreamController {
         console.warn('Soft interrupt rejected, falling back to a normal send:', outcome.detail);
         return false;
       }
+      ambiguous = true;
       console.warn(
         `Soft interrupt got no answer (${outcome.detail}); retrying with the same key in ${backoffMs} ms`
       );
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
       backoffMs = Math.min(backoffMs * 2, ChatStreamController.STEER_RETRY_MAX_MS);
-      if (!this.isRunning()) {
-        // The turn ended while the answer was lost. If its echo arrived, the
-        // daemon did take it; otherwise the caller keeps the words.
-        const landed = steerWasEchoed(issued, this.messagesRef, this.steerBaseline);
+      // Completion is not proof of refusal: query the retained receipt even
+      // after Finish, unless the transcript already proves acceptance.
+      if (steerWasEchoed(issued, this.messagesRef, baseline)) {
         retract();
-        return landed;
+        return true;
       }
     }
   };
@@ -4409,7 +4457,8 @@ class ChatStreamController {
    */
   private async postSteerOnce(
     text: string,
-    key: string
+    key: string,
+    expectedTurnId: string | null
   ): Promise<
     | { kind: 'accepted' }
     | { kind: 'refused'; detail: unknown }
@@ -4430,6 +4479,7 @@ class ChatStreamController {
             session_id: this.sessionId,
             text,
             turn_id: key,
+            ...(expectedTurnId ? { expected_turn_id: expectedTurnId } : {}),
           },
           headers: await userActionHeaders(),
           // The fields form keeps the status, which decides retry-or-refuse.

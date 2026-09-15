@@ -224,6 +224,92 @@ describe('D5 — the controller owns a steer until the daemon answers it', () =>
     await submit;
   });
 
+  it('queries the accepted receipt after Finish even when the echo was missed', async () => {
+    const { controller, driving, submit, turnId } = await drivingTurn('steer-settled-receipt');
+    mocks.interrupt
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({ data: { turn_id: turnId }, response: { status: 202 } });
+    vi.useFakeTimers();
+    try {
+      const steering = controller.steer('only once');
+      await vi.advanceTimersByTimeAsync(0);
+      driving.push({ type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent);
+      driving.close();
+      await submit;
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(steering).resolves.toBe(true);
+      expect(mocks.interrupt).toHaveBeenCalledTimes(2);
+      expect(mocks.interrupt.mock.calls[1][0]).toMatchObject({
+        body: { expected_turn_id: turnId },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not send an echoed steer again when its retry is refused', async () => {
+    const { controller, driving, submit } = await drivingTurn('steer-echo-refusal');
+    let reject!: (result: unknown) => void;
+    mocks.interrupt.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          reject = resolve;
+        })
+    );
+    const steering = controller.steer('only once');
+    await vi.waitFor(() => expect(mocks.interrupt).toHaveBeenCalledTimes(1));
+    driving.push({
+      type: 'Message',
+      message: userText('steer-echo', 'only once'),
+      token_state: tokenState,
+    } as MessageEvent);
+    await vi.waitFor(() => expect(controller.getSnapshot().pendingSteer).toBeUndefined());
+    reject({ error: { reason: 'no_turn' }, response: { status: 409 } });
+    await expect(steering).resolves.toBe(true);
+    driving.push({ type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent);
+    driving.close();
+    await submit;
+  });
+
+  it.each([false, true])(
+    'reconciles an evicted receipt without automatically resending (stored=%s)',
+    async (stored) => {
+      const { sid, controller, driving, submit } = await drivingTurn('steer-evicted');
+      mocks.interrupt
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockResolvedValueOnce({ error: { reason: 'no_turn' }, response: { status: 409 } });
+      mocks.getSession.mockImplementation(async () => {
+        const key = (mocks.interrupt.mock.calls[0][0] as { body: { turn_id: string } }).body
+          .turn_id;
+        return {
+          data: session(sid, stored ? [userText(`steer:${key}`, 'only once')] : []),
+        } as never;
+      });
+      vi.useFakeTimers();
+      try {
+        const steering = controller.steer('only once');
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect(steering).resolves.toBe(true);
+        const recoveries = controller.getSnapshot().steerRecoveries ?? [];
+        expect(recoveries).toHaveLength(stored ? 0 : 1);
+        if (!stored) {
+          expect(recoveries[0].message.content).toEqual([{ type: 'text', text: 'only once' }]);
+          expect(recoveries[0].index).toBe(1);
+          expect(
+            controller
+              .getSnapshot()
+              .messages.some((message) => message.id === recoveries[0].message.id)
+          ).toBe(false);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+      driving.push({ type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent);
+      driving.close();
+      await submit;
+    }
+  );
+
   it('retries a steer whose POST never answers', async () => {
     const { controller, driving, submit } = await drivingTurn('steer-hung');
     mocks.interrupt
