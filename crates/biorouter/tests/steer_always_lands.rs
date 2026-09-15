@@ -893,6 +893,17 @@ async fn a_steer_while_a_forced_exit_waits_for_children_is_accepted_and_continue
         matches!(e, AgentEvent::Message(m) if m.as_concat_text().contains("reached my action limit"))
     })
     .await;
+    // Handshake: the loop has broken and is parked waiting for its children —
+    // the window that used to refuse every steer.
+    tokio::time::timeout(BOUND, async {
+        while agent.loop_phase_snapshot().0
+            != biorouter::agents::loop_phase::LoopPhase::SupervisionWait
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the forced exit waits for its children");
     agent
         .try_queue_soft_interrupt("never mind the children, summarise now".into(), None)
         .expect("a steer while the forced exit waits for children must be accepted");
