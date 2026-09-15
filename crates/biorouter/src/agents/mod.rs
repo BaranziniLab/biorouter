@@ -27,6 +27,7 @@ pub mod goal;
 pub mod knowledge_source_tool;
 pub mod knowledge_tool;
 mod large_response_handler;
+pub mod loop_phase;
 pub mod mcp_client;
 pub mod mcp_pool;
 pub mod mistakes;
@@ -124,7 +125,8 @@ pub mod workspace_summary;
 
 pub use agent::{
     Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained, ExtensionLoadResult,
-    InterruptRefused, PersistedMessage, TurnId,
+    InterruptRefused, InterruptedTurnRows, PersistedMessage, SteerAdmission, SteerWaitReason,
+    TurnId,
 };
 pub use budget::ReplyBudget;
 pub use effort::ReasoningEffort;

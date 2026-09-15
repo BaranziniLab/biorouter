@@ -72,6 +72,16 @@ struct TurnRegistry {
     turns: HashMap<String, ActiveTurn>,
     continuation_leases: HashMap<String, ContinuationLeaseRecord>,
     stopping_sessions: HashMap<String, usize>,
+    /// D18: this daemon's lease time-to-live, when a test set one. Per
+    /// registry rather than process-wide so a test cannot shorten the leases of
+    /// every other test running beside it.
+    lease_ttl: Option<std::time::Duration>,
+}
+
+impl TurnRegistry {
+    fn lease_ttl(&self) -> std::time::Duration {
+        self.lease_ttl.unwrap_or_else(continuation_lease_ttl)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -497,6 +507,55 @@ impl Drop for TurnGuard {
     }
 }
 
+/// How long a Stop-and-Send lease may stay unclaimed (D18). 120 s, far past any
+/// real Stop-and-Send (the successor is sent the moment the cancel settles);
+/// `BIOROUTER_CONTINUATION_LEASE_TTL_MS` overrides it for tests.
+fn continuation_lease_ttl() -> std::time::Duration {
+    std::env::var("BIOROUTER_CONTINUATION_LEASE_TTL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_secs(120))
+}
+
+/// Abandon `token` if it is still pending. See
+/// `AppState::schedule_continuation_lease_expiry`.
+fn expire_continuation_lease(registry: &Arc<StdMutex<TurnRegistry>>, token: &str) {
+    let expired = {
+        let mut registry = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(lease) = registry.continuation_leases.get_mut(token) else {
+            return;
+        };
+        let pending = match &lease.state {
+            ContinuationLeaseState::Reserved { mark } => {
+                mark.rollback();
+                true
+            }
+            ContinuationLeaseState::Live => true,
+            ContinuationLeaseState::Consumed { .. }
+            | ContinuationLeaseState::Lost { .. }
+            | ContinuationLeaseState::Abandoned { .. } => false,
+        };
+        if !pending {
+            return;
+        }
+        lease.state = ContinuationLeaseState::Abandoned {
+            resolved_at: Instant::now(),
+        };
+        (lease.session_id.clone(), lease.superseded_turn_id.clone())
+    };
+    tracing::warn!(
+        session_id = %expired.0,
+        superseded_turn_id = %expired.1,
+        "a Stop-and-Send continuation lease was never claimed; abandoning it"
+    );
+    // Outside the registry lock, like every other abandonment: the handle
+    // registry has its own locks.
+    biorouter::agents::subagent_handle::abandon_continuation_for_turn(&expired.0, &expired.1);
+}
+
 /// Drop retired entries once nothing can still be addressing them by key.
 ///
 /// Called from the two places that already hold the registry lock — a guard
@@ -786,10 +845,20 @@ fn consume_continuation_claim_group(
 /// instant enough tabs were closed to drop the observer count. The turns
 /// themselves had all completed server-side minutes earlier.
 ///
-/// Three leaves at least half of a six-connection budget free for `/reply` and
-/// for ordinary request/response traffic. `/reply` is deliberately NOT counted
-/// here: a turn stream is bounded by its turn rather than by a tab, and
-/// refusing one would break the thing the app exists to do.
+/// ⚠ **Count every long-lived connection the renderer holds, not only these.**
+/// This constant used to be three, documented as "leaving half the pool free",
+/// and the arithmetic left out what else parks a socket: the renderer also
+/// holds two ~25 s long-polls for its whole life (`GET /catalog/changes` and
+/// `GET /sessions/changes`) and the running turn's
+/// `/reply` stream. Three observers plus those three is six — the entire pool,
+/// with nothing left for the steer, the Stop, or the `/reply` preflight, which
+/// then sat 3–25 s in the browser's queue over an idle daemon (measured live,
+/// 2026-09-13, before the renderer leak beside it was also fixed). Two leaves
+/// `2 + 2 + 1 = 5`, one slot always free for request/response traffic;
+/// [`tests::the_observer_budget_leaves_a_connection_for_a_steer_or_a_stop`]
+/// pins that sum. `/reply` is still never refused: a turn stream is bounded by
+/// its turn rather than by a tab, and refusing one would break the thing the
+/// app exists to do.
 ///
 /// Err low rather than high. The two mistakes are not comparable: set too high
 /// and the wedge above is still reachable and takes the whole app with it; set
@@ -806,7 +875,7 @@ fn consume_continuation_claim_group(
 /// degraded mode rather than a second bug — but it is much more traffic than
 /// reading that loop suggests. Repairing the reset is the client-side
 /// follow-up; do not raise this budget to paper over it.
-pub const MAX_LIVE_OBSERVER_STREAMS: usize = 3;
+pub const MAX_LIVE_OBSERVER_STREAMS: usize = 2;
 
 /// Permission to hold one session-observer stream open, released on drop.
 ///
@@ -1150,7 +1219,7 @@ impl AppState {
         expected_turn_id: &str,
         owner_id: &str,
     ) -> ContinuationCancelAttempt {
-        let (turn, admission) = {
+        let (turn, admission, ttl) = {
             let mut registry = self
                 .active_turns
                 .lock()
@@ -1194,15 +1263,19 @@ impl AppState {
                 }
                 Err(_) => unreachable!("reservation only refuses a closing parent"),
             };
+            let ttl = registry.lease_ttl();
             if turn.finished_at.is_some() {
+                // Only spawns; it takes no lock until the lease's time is up.
+                self.schedule_continuation_lease_expiry(&admission.token, ttl);
                 return ContinuationCancelAttempt::Retired {
                     turn_id: turn.turn_id.clone(),
                     admission,
                 };
             }
-            (turn, admission)
+            (turn, admission, ttl)
         };
 
+        self.schedule_continuation_lease_expiry(&admission.token, ttl);
         turn.cancel.cancel();
         ContinuationCancelAttempt::Cancelled {
             turn: CancelledTurn {
@@ -1211,6 +1284,29 @@ impl AppState {
             },
             admission,
         }
+    }
+
+    /// D18: a Stop-and-Send lease that is never claimed must not wedge the chat.
+    ///
+    /// Reserved and Live leases used to have no expiry. A renderer that lost its
+    /// lease — reloaded, crashed, its successor `/reply` never sent — left every
+    /// lease-less `/reply` answering 409 `continuation_lease_required` and every
+    /// steer answering 409 (no turn runs), and a parent supervising the child
+    /// waited on `continuation_pending` forever. After
+    /// [`continuation_lease_ttl`] a lease still pending is abandoned exactly as
+    /// `POST /agent/continuation/abandon` would, and the child's handle is told,
+    /// so supervision wakes. A lease already claimed, lost or abandoned is left
+    /// alone.
+    fn schedule_continuation_lease_expiry(&self, token: &str, ttl: std::time::Duration) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let registry = Arc::clone(&self.active_turns);
+        let token = token.to_string();
+        handle.spawn(async move {
+            tokio::time::sleep(ttl).await;
+            expire_continuation_lease(&registry, &token);
+        });
     }
 
     pub fn commit_continuation_lease(&self, token: &str) -> bool {
@@ -1397,6 +1493,9 @@ impl AppState {
                 state: ContinuationLeaseState::Live,
             },
         );
+        let ttl = registry.lease_ttl();
+        drop(registry);
+        self.schedule_continuation_lease_expiry(&token, ttl);
         Ok(ContinuationRecovery::Recovered {
             continuation_lease: token,
             superseded_turn_id: superseded_turn_id.to_string(),
@@ -1619,6 +1718,26 @@ impl AppState {
             .map(|turn| turn.turn_id.clone())
     }
 
+    /// D18: shorten this daemon's continuation-lease time-to-live. Test-only.
+    #[cfg(test)]
+    pub(crate) fn set_continuation_lease_ttl_for_test(&self, ttl: std::time::Duration) {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lease_ttl = Some(ttl);
+    }
+
+    /// The live frame log of the turn running in `session_id`, if one is.
+    pub fn active_turn_stream(&self, session_id: &str) -> Option<Arc<TurnStream>> {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turns
+            .get(session_id)
+            .filter(|turn| turn.finished_at.is_none())
+            .map(|turn| Arc::clone(&turn.stream))
+    }
+
     /// Does this session hold a turn — running or retained for replay — that
     /// `turn_id` names?
     ///
@@ -1828,6 +1947,32 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    /// The long-polls the desktop renderer keeps parked for its whole life, each
+    /// on its own connection: `GET /catalog/changes` (`ConfigContext`) and
+    /// `GET /sessions/changes` (`utils/sessionRowSync`). A third long-poll added
+    /// to the renderer must raise this and lower `MAX_LIVE_OBSERVER_STREAMS`.
+    const RENDERER_LONG_POLLS: usize = 2;
+
+    /// Chromium's per-host connection limit, shared by every window of the app
+    /// (one origin, one network process).
+    const BROWSER_CONNECTIONS_PER_HOST: usize = 6;
+
+    /// D1: observers, the renderer's long-polls and one running `/reply` must
+    /// leave at least one of the browser's connections free, or a steer and a
+    /// Stop queue in the browser behind sockets that never finish.
+    #[test]
+    fn the_observer_budget_leaves_a_connection_for_a_steer_or_a_stop() {
+        let parked = std::hint::black_box(super::MAX_LIVE_OBSERVER_STREAMS)
+            + std::hint::black_box(RENDERER_LONG_POLLS)
+            + 1;
+        assert!(
+            parked < BROWSER_CONNECTIONS_PER_HOST,
+            "{parked} parked connections leave no slot for request/response traffic \
+             out of {}",
+            BROWSER_CONNECTIONS_PER_HOST
+        );
+    }
+
     use super::*;
 
     /// Begin a turn with a throwaway token and no idempotency key.
@@ -2263,6 +2408,62 @@ mod tests {
         assert!(state.is_turn_active("s1"));
         assert!(state.cancel_turn("s1").is_some());
         assert!(second_token.is_cancelled());
+    }
+
+    /// D18: a Stop-and-Send lease its renderer never claims — reloaded, crashed,
+    /// its successor `/reply` never sent — expires, so the chat is not wedged
+    /// behind `continuation_lease_required` forever and a supervising parent is
+    /// released.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unclaimed_continuation_lease_expires_and_frees_the_chat() {
+        let state = AppState::new().await.unwrap();
+        // Long enough that the refusal below is observed before it fires; the
+        // wait afterwards is a bounded condition, not a guessed sleep.
+        state.set_continuation_lease_ttl_for_test(std::time::Duration::from_millis(3_000));
+        let retired = begin(&state, "lease-ttl-child").unwrap();
+        let retired_id = retired.turn_id().to_string();
+        drop(retired);
+        let admission = match state.cancel_turn_for_continuation_owned(
+            "lease-ttl-child",
+            &retired_id,
+            "a-window-that-reloaded",
+        ) {
+            ContinuationCancelAttempt::Retired { admission, .. } => admission,
+            other => panic!("expected exact retired admission, got {other:?}"),
+        };
+        admission.mark().unwrap().commit();
+        assert!(state.commit_continuation_lease(admission.token()));
+
+        assert!(
+            matches!(
+                state.try_begin_turn_idempotent_with_continuation(
+                    "lease-ttl-child",
+                    CancellationToken::new(),
+                    Some("unrelated-send".into()),
+                    None,
+                ),
+                Err(TurnBeginFailure::ContinuationLease(
+                    ContinuationLeaseFailure::Required
+                ))
+            ),
+            "while the lease is pending a lease-less send is refused"
+        );
+
+        let freed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Ok(guard) = state.try_begin_turn_idempotent_with_continuation(
+                    "lease-ttl-child",
+                    CancellationToken::new(),
+                    Some("unrelated-send".into()),
+                    None,
+                ) {
+                    return guard;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(freed.is_ok(), "an expired lease must stop wedging the chat");
     }
 
     #[tokio::test(flavor = "multi_thread")]

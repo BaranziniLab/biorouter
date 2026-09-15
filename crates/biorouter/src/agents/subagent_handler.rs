@@ -855,6 +855,14 @@ fn get_agent_messages(
         // Handoff without an admission gap: queued child input remains accepted
         // until the live agent interrupt queue is open. The reply loop reuses
         // this exact prepared turn on its first poll rather than clearing it.
+        //
+        // ⚠ Deliberately NOT `prepare_continuable_soft_interrupt_turn`. The
+        // detached runner continues a turn for a steer typed after a safety stop
+        // (fix/steer-always-lands, the open question); a delegated child's run
+        // does not — its parent is waiting on ONE result. So a steer typed into
+        // the child's tab after its action limit is stored `unanswered` by the
+        // settle after this stream (and shown so), never silently dropped and
+        // never answered by a continuation the parent is not waiting for.
         agent.prepare_soft_interrupt_turn();
         let pending_user_inputs =
             crate::agents::subagent_handle::mark_initial_runtime_ready(&session_id);
@@ -872,6 +880,10 @@ fn get_agent_messages(
         // rather than the pre-persistence one. Keep the copy that rewrite needs.
         let mut transcript_message = user_message.clone();
         let mut conversation = Conversation::new_unvalidated(vec![transcript_message.clone()]);
+        // D19: what this iteration has streamed and the store may not yet hold,
+        // for the stream-error settlement below. Reset at every
+        // `MessagesPersisted`, exactly like the detached runner's copy.
+        let mut in_flight = Conversation::new_unvalidated(Vec::new());
 
         if let Some(activities) = workflow.activities {
             for activity in activities {
@@ -1030,28 +1042,39 @@ fn get_agent_messages(
                         &session_id,
                         crate::session_events::SessionBusEvent::Agent(event.clone()),
                     );
-                    // NINE arms, no wildcard: a `_ => {}` here would silently
-                    // swallow a tenth `AgentEvent` variant instead of failing
+                    // No wildcard: a `_ => {}` here would silently
+                    // swallow a new `AgentEvent` variant instead of failing
                     // the build.
                     match event {
-                        AgentEvent::Message(msg) => conversation.push(msg),
+                        AgentEvent::Message(msg) => {
+                            in_flight.push(msg.clone());
+                            conversation.push(msg)
+                        }
                         AgentEvent::McpNotification(_)
                         | AgentEvent::ModelChange { .. }
                         | AgentEvent::ToolCallPending(_)
+                        // Advisory display frames for an observer tab (D2/D16);
+                        // the parent accumulates nothing from them.
+                        | AgentEvent::ToolCallsRetracted { .. }
+                        | AgentEvent::SteerWaiting { .. }
                         // Issue #56 Gate B, addressed to a HUMAN reading a
                         // composer. A subagent has no composer and its parent is
                         // not the user, so the parent accumulates nothing from
                         // it; the tee above still publishes it for an observer
                         // tab watching the child.
                         | AgentEvent::PrivacyProviderPinned { .. }
+                        | AgentEvent::TokenUsage(_) => {}
                         // #59: the subagent's own rows are already carried by
                         // the `Message` events above (which now name
                         // themselves); the parent has no `expectedMessageIds`
                         // to satisfy. The TEE above still publishes this — an
-                        // observer tab DOES need it. Do not drop it.
-                        | AgentEvent::MessagesPersisted(_)
-                        | AgentEvent::TokenUsage(_) => {}
+                        // observer tab DOES need it. Do not drop it. Here it only
+                        // retires the in-flight rows it names as durable (D19).
+                        AgentEvent::MessagesPersisted(_) => {
+                            in_flight = Conversation::new_unvalidated(Vec::new());
+                        }
                         AgentEvent::HistoryReplaced(updated_conversation) => {
+                            in_flight = Conversation::new_unvalidated(Vec::new());
                             conversation = updated_conversation;
                         }
                         AgentEvent::TurnAborted { code, message } => {
@@ -1070,6 +1093,17 @@ fn get_agent_messages(
                 Err(e) => {
                     tracing::error!("Error receiving message from subagent: {}", e);
                     aborted = Some(("stream_error".to_string(), e.to_string()));
+                    // D19: keep the half-answer the child had streamed, BEFORE
+                    // the steers settled below, so its transcript reads in the
+                    // order things happened. The same helper the detached runner
+                    // uses; the steers themselves are settled by the idempotent
+                    // pass after this loop.
+                    for message in agent
+                        .settle_stopped_reply(&session_id, in_flight.messages())
+                        .await
+                    {
+                        conversation.push(message);
+                    }
                     break;
                 }
             }

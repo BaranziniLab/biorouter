@@ -116,13 +116,14 @@ impl Provider for SteeringProvider {
 
         if n == 0 {
             // The steer lands mid-stream, after this iteration already drained.
+            //
+            // D21c: through the GUARDED entry point every production producer
+            // uses. These tests used the unguarded push, which has no production
+            // caller and would pass even if the loop never opened acceptance.
             if let Some(agent) = self.agent.get() {
-                match self.provenance.clone() {
-                    Some(p) => {
-                        agent.queue_soft_interrupt_with_provenance(self.steer.clone(), Some(p))
-                    }
-                    None => agent.queue_soft_interrupt(self.steer.clone()),
-                }
+                agent
+                    .try_queue_soft_interrupt(self.steer.clone(), self.provenance.clone())
+                    .expect("a steer offered mid-turn must be accepted");
             }
             return Ok((
                 Message::assistant().with_text("Done. I used Python."),
@@ -678,13 +679,20 @@ async fn the_reply_loop_opens_the_acceptance_window_and_closes_it_at_exit() {
     );
 }
 
+/// D4a (was `max_turn_stop_carries_an_already_accepted_user_direct_interrupt`,
+/// deliberately inverted). `max_turns` counts "actions without user input", and
+/// a steer the person typed IS user input: it used to be carried past the stop,
+/// stored and echoed exactly like a consumed steer, and never answered — the
+/// "stuck in the middle of the conversation" report. Now it restarts the count
+/// and the model reads it in the same turn.
 #[tokio::test(flavor = "multi_thread")]
-async fn max_turn_stop_carries_an_already_accepted_user_direct_interrupt() {
+async fn a_user_steer_at_the_action_limit_is_answered_not_carried() {
     use biorouter::agents::InterruptRefused;
 
     struct LimitSteeringProvider {
         calls: AtomicUsize,
         agent: OnceLock<Arc<Agent>>,
+        seen: std::sync::Mutex<Vec<Vec<String>>>,
     }
 
     #[async_trait]
@@ -692,22 +700,34 @@ async fn max_turn_stop_carries_an_already_accepted_user_direct_interrupt() {
         async fn complete(
             &self,
             _system_prompt: &str,
-            _messages: &[Message],
+            messages: &[Message],
             _tools: &[Tool],
         ) -> Result<(Message, ProviderUsage), ProviderError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.agent
-                .get()
-                .expect("agent installed before the provider runs")
-                .try_queue_soft_interrupt(
-                    "accepted just before the action limit".into(),
-                    Some(MessageProvenance {
-                        kind: ProvenanceKind::UserDirect,
-                        from_session_id: Some("parent-session".into()),
-                        from_session_name: Some("Parent".into()),
-                    }),
-                )
-                .expect("the first provider call runs inside an accepting turn");
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(
+                messages
+                    .iter()
+                    .flat_map(|m| m.content.iter())
+                    .filter_map(|c| match c {
+                        MessageContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            );
+            if n == 0 {
+                self.agent
+                    .get()
+                    .expect("agent installed before the provider runs")
+                    .try_queue_soft_interrupt(
+                        "accepted just before the action limit".into(),
+                        Some(MessageProvenance {
+                            kind: ProvenanceKind::UserDirect,
+                            from_session_id: Some("parent-session".into()),
+                            from_session_name: Some("Parent".into()),
+                        }),
+                    )
+                    .expect("the first provider call runs inside an accepting turn");
+            }
             Ok((
                 Message::assistant().with_text("This would normally finish."),
                 ProviderUsage::new(
@@ -769,6 +789,7 @@ async fn max_turn_stop_carries_an_already_accepted_user_direct_interrupt() {
     let provider = Arc::new(LimitSteeringProvider {
         calls: AtomicUsize::new(0),
         agent: OnceLock::new(),
+        seen: std::sync::Mutex::new(Vec::new()),
     });
     agent
         .update_provider(provider.clone() as Arc<dyn Provider>, &session.id)
@@ -803,16 +824,26 @@ async fn max_turn_stop_carries_an_already_accepted_user_direct_interrupt() {
 
     assert_eq!(
         provider.calls.load(Ordering::SeqCst),
-        1,
-        "the action limit must stop before a second provider call"
+        2,
+        "a steer the person typed at the action limit must buy exactly one more model call"
+    );
+    assert!(
+        provider.seen.lock().unwrap()[1]
+            .iter()
+            .any(|text| text == "accepted just before the action limit"),
+        "the second model call must carry the steer"
     );
     let carried = emitted
         .iter()
         .find(|message| message.as_concat_text() == "accepted just before the action limit")
-        .expect("the accepted interrupt must be emitted after the safety stop");
+        .expect("the accepted interrupt must be emitted");
     assert_eq!(
         carried.metadata.provenance.as_ref().map(|p| &p.kind),
         Some(&ProvenanceKind::UserDirect)
+    );
+    assert_eq!(
+        carried.metadata.steer_outcome, None,
+        "a steer the model read is not unanswered"
     );
 
     let stored = session_manager

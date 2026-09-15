@@ -67,8 +67,14 @@ export default function TurnActivityIndicator({
           aria-hidden="true"
           className="relative flex h-4 w-4 flex-shrink-0 items-center justify-center text-text-default/80"
         >
-          <span className="absolute h-4 w-4 rounded-full border border-current animate-[biorouter-working-ring_1.8s_ease-out_infinite]" />
-          <span className="absolute h-2.5 w-2.5 rounded-full bg-current opacity-20 animate-[biorouter-working-glow_1.8s_ease-in-out_infinite]" />
+          {/* D3: nothing is working while a steer waits behind a card, so
+              nothing animates — the pulse is a claim of activity. */}
+          {activity.phase !== 'steerQueued' && (
+            <>
+              <span className="absolute h-4 w-4 rounded-full border border-current animate-[biorouter-working-ring_1.8s_ease-out_infinite]" />
+              <span className="absolute h-2.5 w-2.5 rounded-full bg-current opacity-20 animate-[biorouter-working-glow_1.8s_ease-in-out_infinite]" />
+            </>
+          )}
           <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
         </span>
 

@@ -312,3 +312,105 @@ async fn the_human_readable_error_message_is_still_emitted() {
         "and the machine-checkable abort must accompany it"
     );
 }
+
+/// D4b: a steer the turn accepted and then aborted without ever showing the
+/// model is stored — the person's words are never discarded — but marked
+/// `unanswered`, so no client draws it as a message that landed.
+///
+/// Before the marker the carried-over row was byte-for-byte a consumed steer:
+/// the desktop retired its "steering" chip on its echo, and the transcript
+/// showed a user bubble nothing ever replied to (live, 5/5 at Stop).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steer_accepted_before_a_provider_abort_is_stored_as_unanswered() {
+    use biorouter::conversation::message::SteerOutcome;
+
+    /// Queues a steer from inside the provider call — the turn is certainly
+    /// accepting then — and then fails with an abort-classified error.
+    struct SteerThenAbort {
+        agent: std::sync::OnceLock<Arc<Agent>>,
+    }
+
+    #[async_trait]
+    impl Provider for SteerThenAbort {
+        async fn complete(
+            &self,
+            _system_prompt: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.agent
+                .get()
+                .expect("agent installed before the turn")
+                .try_queue_soft_interrupt("use the other dataset".into(), None)
+                .expect("a running turn accepts a steer");
+            Err(ProviderError::Authentication("403 Forbidden".into()))
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            system_prompt: &str,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.complete(system_prompt, messages, tools).await
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("mock-model").unwrap()
+        }
+
+        fn metadata() -> ProviderMetadata {
+            HappyProvider::metadata()
+        }
+
+        fn get_name(&self) -> &str {
+            "mock-steer-then-abort"
+        }
+    }
+
+    let provider = Arc::new(SteerThenAbort {
+        agent: std::sync::OnceLock::new(),
+    });
+    let (agent, session_id, _work) = agent_with(provider.clone()).await;
+    let agent = Arc::new(agent);
+    assert!(provider.agent.set(Arc::clone(&agent)).is_ok());
+
+    let session_config = SessionConfig {
+        id: session_id.clone(),
+        schedule_id: None,
+        max_turns: Some(4),
+        max_tool_calls: None,
+        budget: None,
+        retry_config: None,
+        reasoning_effort: None,
+    };
+    let stream = agent
+        .reply(Message::user().with_text("go"), session_config, None)
+        .await
+        .unwrap();
+    tokio::pin!(stream);
+    let mut steer_rows = Vec::new();
+    let mut aborted = false;
+    while let Some(event) = stream.next().await {
+        match event.unwrap() {
+            AgentEvent::Message(m) if m.as_concat_text() == "use the other dataset" => {
+                steer_rows.push(m)
+            }
+            AgentEvent::TurnAborted { .. } => aborted = true,
+            _ => {}
+        }
+    }
+
+    assert!(aborted, "the provider failure must still abort the turn");
+    assert_eq!(
+        steer_rows.len(),
+        1,
+        "the accepted steer must be stored once"
+    );
+    assert_eq!(
+        steer_rows[0].metadata.steer_outcome,
+        Some(SteerOutcome::Unanswered),
+        "a steer the model never read must not look delivered"
+    );
+}

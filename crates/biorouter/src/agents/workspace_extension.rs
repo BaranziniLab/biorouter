@@ -4802,7 +4802,7 @@ impl WorkspaceClient {
             receivers.retain(|(id, _, _)| !completed.iter().any(|done| &done.id == id));
         }
 
-        let mut cancelled = false;
+        let mut parked = ParkOutcome::default();
         let done_now = if wait_all {
             receivers.is_empty()
         } else {
@@ -4817,8 +4817,15 @@ impl WorkspaceClient {
             } else {
                 completed.len() + 1
             };
-            cancelled =
-                Self::park_for_completions(receivers, &mut completed, want, timeout, cancel).await;
+            parked = Self::park_for_the_caller(
+                caller_session_id,
+                receivers,
+                &mut completed,
+                want,
+                timeout,
+                cancel,
+            )
+            .await;
         }
 
         let still_running: Vec<&String> = args
@@ -4827,14 +4834,17 @@ impl WorkspaceClient {
             .filter(|id| !completed.iter().any(|done| &done.id == *id))
             .collect();
 
-        let report = Self::watch_report(
+        let mut report = Self::watch_report(
             &completed,
             &still_running,
             timeout,
             clamped_from,
             unknown_liveness,
-            cancelled,
+            parked.cancelled,
         );
+        if parked.steered {
+            report.text.push_str(STEERED_WATCH_NOTE);
+        }
         if !report.collections.is_empty() {
             let remains_inline =
                 crate::agents::large_response_handler::text_will_remain_inline_for_tool(
@@ -4847,10 +4857,40 @@ impl WorkspaceClient {
         Ok(vec![Content::text(report.text)])
     }
 
-    /// Park until `want` conversations have published a terminal event, or the
-    /// deadline passes — whichever comes first. A timeout is not an error; the
-    /// caller reports whatever arrived. Parking only observes completions;
-    /// [`Self::watch_report`] decides which exact claims were actually rendered.
+    /// Park on behalf of `caller_session_id`, listening for a steer the person
+    /// types into THAT turn (D2): a watch is a read-only wait, and the model
+    /// cannot read the person's message until the tool returns — up to ten
+    /// minutes, measured live at 122 s.
+    async fn park_for_the_caller(
+        caller_session_id: &str,
+        receivers: Vec<(
+            String,
+            crate::session_events::Subscription,
+            Option<WatchedBackground>,
+        )>,
+        completed: &mut Vec<WatchedCompletion>,
+        want: usize,
+        timeout: std::time::Duration,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> ParkOutcome {
+        let caller_agent = match crate::execution::manager::AgentManager::instance().await {
+            Ok(manager) => manager.peek_agent(caller_session_id).await,
+            Err(_) => None,
+        };
+        Self::park_for_completions_or_steer(
+            receivers,
+            completed,
+            want,
+            timeout,
+            cancel,
+            caller_agent.as_deref(),
+        )
+        .await
+    }
+
+    /// [`Self::park_for_completions_or_steer`] with no steer to listen for.
+    /// Returns whether the turn's token cancelled the park.
+    #[cfg(test)]
     async fn park_for_completions(
         receivers: Vec<(
             String,
@@ -4862,6 +4902,28 @@ impl WorkspaceClient {
         timeout: std::time::Duration,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> bool {
+        Self::park_for_completions_or_steer(receivers, completed, want, timeout, cancel, None)
+            .await
+            .cancelled
+    }
+
+    /// Park until `want` conversations have published a terminal event, the
+    /// deadline passes, the turn is cancelled, or — with `caller` — the person
+    /// adds a message to the watching turn (D2). A timeout is not an error; the
+    /// caller reports whatever arrived. Parking only observes completions;
+    /// [`Self::watch_report`] decides which exact claims were actually rendered.
+    async fn park_for_completions_or_steer(
+        receivers: Vec<(
+            String,
+            crate::session_events::Subscription,
+            Option<WatchedBackground>,
+        )>,
+        completed: &mut Vec<WatchedCompletion>,
+        want: usize,
+        timeout: std::time::Duration,
+        cancel: &tokio_util::sync::CancellationToken,
+        caller: Option<&crate::agents::Agent>,
+    ) -> ParkOutcome {
         let deadline = tokio::time::Instant::now() + timeout;
         // Cancelled when this function returns, **however** it returns — the
         // deadline, a cancel, or every watcher exiting.
@@ -4898,12 +4960,22 @@ impl WorkspaceClient {
         // deadline; this token and the explicit workspace_watch lease are its
         // boundaries.
         let mut cancelled = false;
+        let mut steered = false;
         let _ = tokio::time::timeout_at(deadline, async {
             while completed.len() < want {
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => {
                         cancelled = true;
+                        break;
+                    }
+                    () = async {
+                        match caller {
+                            Some(agent) => agent.user_steer_waiting().await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        steered = true;
                         break;
                     }
                     entry = rx.recv() => match entry {
@@ -4914,7 +4986,7 @@ impl WorkspaceClient {
             }
         })
         .await;
-        cancelled
+        ParkOutcome { cancelled, steered }
     }
 
     /// The `workspace_watch` reply: what finished, what is still running, and —
@@ -5009,6 +5081,20 @@ impl WorkspaceClient {
         }
     }
 }
+
+/// How [`WorkspaceClient::park_for_completions_or_steer`] ended.
+#[derive(Default)]
+struct ParkOutcome {
+    cancelled: bool,
+    /// The person added a message to the watching turn (D2).
+    steered: bool,
+}
+
+/// Appended to a `workspace_watch` that returned because the person steered.
+const STEERED_WATCH_NOTE: &str =
+    "\n(Returned early: the user added a message to this turn. The conversations above were \
+     not affected and keep running; read the user's message, then watch again if you still \
+     need to.)";
 
 struct RenderedWatchReport<'a> {
     text: String,
@@ -13526,6 +13612,119 @@ pub(crate) mod tests {
         assert!(handle.latest_generation_collected());
     }
 
+    /// D2: `workspace_watch` parks for up to ten minutes, and the model cannot
+    /// read a steer until the tool returns — measured live at 122 s for a
+    /// 180 s watch. A steer the PERSON types into the watching turn ends the
+    /// watch early; the children keep running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_watch_returns_early_when_the_person_steers_the_watching_turn() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::session_events;
+
+        let child = unique_id("watch-steered");
+        let _handle = BackgroundSubagent::register(
+            "watch-steered-parent",
+            &child,
+            "never finishes",
+            CancellationToken::new(),
+        );
+        let events = session_events::subscribe(&child);
+        let temp = tempfile::TempDir::new().unwrap();
+        let caller = std::sync::Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                std::sync::Arc::new(crate::session::SessionManager::new(
+                    temp.path().to_path_buf(),
+                )),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        caller.open_for_turn(crate::agents::TurnId::new("the-watching-turn"));
+
+        let parked_caller = std::sync::Arc::clone(&caller);
+        let parked = tokio::spawn(async move {
+            let mut completed = Vec::new();
+            let outcome = WorkspaceClient::park_for_completions_or_steer(
+                vec![(child, events, None)],
+                &mut completed,
+                1,
+                std::time::Duration::from_secs(600),
+                &CancellationToken::new(),
+                Some(parked_caller.as_ref()),
+            )
+            .await;
+            (outcome.cancelled, outcome.steered, completed.len())
+        });
+        // Whether this lands before or after the park arms, the park must see
+        // it: the wait subscribes before it checks.
+        caller
+            .try_queue_soft_interrupt("stop waiting, summarise what you have".into(), None)
+            .unwrap();
+
+        let (cancelled, steered, completed) =
+            tokio::time::timeout(std::time::Duration::from_secs(20), parked)
+                .await
+                .expect("a steer must end a ten-minute watch early")
+                .unwrap();
+        assert!(steered && !cancelled);
+        assert_eq!(
+            completed, 0,
+            "nothing finished; the watch just stopped waiting"
+        );
+    }
+
+    /// An AGENT's injection is not the person: it waits for the watch like any
+    /// other boundary.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_injection_does_not_end_a_watch_early() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::session_events;
+
+        let child = unique_id("watch-injected");
+        let _handle = BackgroundSubagent::register(
+            "watch-injected-parent",
+            &child,
+            "never finishes",
+            CancellationToken::new(),
+        );
+        let events = session_events::subscribe(&child);
+        let temp = tempfile::TempDir::new().unwrap();
+        let caller = crate::agents::Agent::with_config(crate::agents::AgentConfig::new(
+            std::sync::Arc::new(crate::session::SessionManager::new(
+                temp.path().to_path_buf(),
+            )),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        caller.open_for_turn(crate::agents::TurnId::new("the-watching-turn"));
+        caller
+            .try_queue_soft_interrupt(
+                "from another chat".into(),
+                Some(crate::conversation::message::MessageProvenance {
+                    kind: crate::conversation::message::ProvenanceKind::AgentInjection,
+                    from_session_id: Some("other".into()),
+                    from_session_name: Some("Other".into()),
+                }),
+            )
+            .unwrap();
+        let mut completed = Vec::new();
+        let outcome = WorkspaceClient::park_for_completions_or_steer(
+            vec![(child, events, None)],
+            &mut completed,
+            1,
+            std::time::Duration::from_millis(50),
+            &CancellationToken::new(),
+            Some(&caller),
+        )
+        .await;
+        assert!(
+            !outcome.steered,
+            "an agent injection must not end the watch"
+        );
+    }
+
     #[tokio::test]
     async fn a_result_after_watch_expiry_stays_uncollected_until_a_later_watch_receives_it() {
         use crate::agents::subagent_handle::BackgroundSubagent;
@@ -14523,7 +14722,11 @@ pub(crate) mod tests {
         );
         let sid = target_id.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            // D21: publish once the watch has SUBSCRIBED — a handshake on the
+            // bus's own observer count, not a 150 ms bet that it had.
+            while session_events::observer_count(&sid) == 0 {
+                tokio::task::yield_now().await;
+            }
             session_events::publish(
                 &sid,
                 SessionBusEvent::TurnFinished {

@@ -1436,6 +1436,15 @@ function BaseChatContent({
     sessionId,
     onStreamFinish,
   });
+
+  // D4: re-send a steer the daemon stored as unanswered. Stable, so the message
+  // list's memoised render is not rebuilt on every render of this component.
+  const handleSendAgain = useCallback(
+    (text: string) => {
+      void handleSubmit(text);
+    },
+    [handleSubmit]
+  );
   const sessionTodos = useSessionTodos(sessionId, session, messages, reviewOpen);
 
   // BR-71 §4.5 — the glass-box header on a subagent's tab. Inert (and silent on
@@ -2561,6 +2570,7 @@ function BaseChatContent({
                               turnStartedAt={turnStartedAt}
                               lastMessageAt={lastMessageAt}
                               pendingSteer={pendingSteer}
+                              onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
                               canStopTurn={!subagentTabReadOnly}
                               onRenderingComplete={handleRenderingComplete}
                               onMessageUpdate={onMessageUpdate}

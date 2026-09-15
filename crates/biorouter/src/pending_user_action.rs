@@ -625,6 +625,13 @@ impl PendingUserActions {
             .collect()
     }
 
+    /// Whether any card answerable in `session_id` is still waiting (D17).
+    pub fn has_pending_in_session(&self, session_id: &str) -> bool {
+        self.lock()
+            .values()
+            .any(|entry| entry.answerable_in(session_id))
+    }
+
     /// Whether this exact session-scoped approval requires proof of a human
     /// action. A foreign session learns nothing and cannot satisfy the check.
     pub fn requires_user_proof_in_session(&self, session_id: &str, id: &str) -> bool {
