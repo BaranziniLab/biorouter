@@ -2061,7 +2061,7 @@ pub async fn interrupt(
             // accepted into is what it is waiting behind. Paired with the
             // agent's `steer_consumed` line.
             if let Some(stream) = state.active_turn_stream(&session_id) {
-                stream.note_user_activity();
+                stream.note_user_activity(&agent);
             }
             tracing::info!(
                 session_id,

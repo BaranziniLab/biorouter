@@ -998,7 +998,7 @@ async fn drive_turn_with_continuations<'a>(
             SessionBusEvent::Agent(AgentEvent::Message(steer.clone())),
         );
         stream = match agent
-            .reply(steer, session_config.clone(), Some(cancel_token.clone()))
+            .continue_turn_for_steer(steer, session_config.clone(), Some(cancel_token.clone()))
             .await
         {
             Ok(next) => next,

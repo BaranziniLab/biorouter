@@ -921,5 +921,37 @@ async fn a_steer_while_a_forced_exit_waits_for_children_is_accepted_and_continue
     );
     assert_eq!(steer.metadata.steer_outcome, None);
 
+    // The continuation tells the model where it stopped and to answer the
+    // person first, in the call that carries the steer, right before it.
     delegated.complete(biorouter::agents::SubagentResult::from_error("done"));
+    let calls_before = provider.calls.load(Ordering::SeqCst);
+    let continued = agent
+        .continue_turn_for_steer(steer, config(&session_id, 1), None)
+        .await
+        .expect("the continuation opens");
+    tokio::time::timeout(BOUND, async {
+        tokio::pin!(continued);
+        while let Some(event) = continued.next().await {
+            event.expect("the continuation does not error");
+        }
+    })
+    .await
+    .expect("the continuation finishes");
+    let seen = provider.seen.lock().unwrap();
+    let call = seen[calls_before..]
+        .iter()
+        .find(|call| {
+            call.iter()
+                .any(|t| t == "never mind the children, summarise now")
+        })
+        .expect("a model call carries the steer");
+    let at = call
+        .iter()
+        .position(|t| t == "never mind the children, summarise now")
+        .unwrap();
+    assert_eq!(
+        call.get(at.wrapping_sub(1)).map(String::as_str),
+        Some(biorouter::agents::STEER_CONTINUATION_NOTE),
+        "the continuation note sits right before the steer"
+    );
 }

@@ -126,7 +126,7 @@ pub mod workspace_summary;
 pub use agent::{
     Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained, ExtensionLoadResult,
     InterruptRefused, InterruptedTurnRows, PersistedMessage, SteerAdmission, SteerWaitReason,
-    TurnId,
+    TurnId, STEER_CONTINUATION_NOTE,
 };
 pub use budget::ReplyBudget;
 pub use effort::ReasoningEffort;

@@ -2560,6 +2560,18 @@ async fn persist_carried_over_interrupts(
     Ok(messages)
 }
 
+/// D12c: the model-only line that precedes a steer a turn continues with after
+/// a safety stop.
+///
+/// Measured live (Versa GPT-5.5, `BIOROUTER_MAX_TURNS=2`): without it the model
+/// read "stop waiting for the child, reply now", followed the hidden supervision
+/// instruction written just before the stop instead, watched the child for
+/// 150 s, and spent the continuation's actions before it answered.
+pub const STEER_CONTINUATION_NOTE: &str =
+    "You stopped above at a safety limit. The user has since added the message that follows. \
+     Answer that message first; anything you delegated keeps running, and you can check on it \
+     afterwards.";
+
 /// D7: the model-only line that follows a partial answer a steer interrupted.
 pub(crate) const STEER_RESTART_NOTE: &str =
     "Your previous answer above was interrupted because the user added a message, which \
@@ -5452,6 +5464,38 @@ impl Agent {
             "steer_consumed"
         );
         Some(soft_interrupt_message(item).with_id(new_message_id()))
+    }
+
+    /// Continue the turn for the steer [`Agent::take_continuation_steer`] handed
+    /// back: store [`STEER_CONTINUATION_NOTE`] ahead of it, then reply to it. The
+    /// note is best-effort — a turn that cannot store it still answers the steer.
+    pub async fn continue_turn_for_steer(
+        &self,
+        steer: Message,
+        session_config: SessionConfig,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        let named = match persist_steering_message(
+            &self.config.session_manager,
+            &session_config.id,
+            STEER_CONTINUATION_NOTE.to_string(),
+        )
+        .await
+        {
+            Ok((_, named)) => named,
+            Err(error) => {
+                warn!(
+                    session_id = %session_config.id,
+                    "could not store the note ahead of a continuation steer: {error}"
+                );
+                None
+            }
+        };
+        let reply = self.reply(steer, session_config, cancel_token).await?;
+        Ok(match named {
+            Some(event) => stream::once(async move { Ok(event) }).chain(reply).boxed(),
+            None => reply,
+        })
     }
 
     /// The hooks manager driving user-configured lifecycle hooks.

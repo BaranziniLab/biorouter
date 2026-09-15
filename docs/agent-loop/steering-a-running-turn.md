@@ -31,7 +31,7 @@ The loop records what it is awaiting in a phase on the `Agent` (never in the rep
 | `max_turns`, `max_tool_calls`, stall stop | A steer the person typed restarts the count ("actions without user input") and is answered. One typed after the loop broke, while it waits for children, ends that wait and the runner continues the same turn with it — same turn id, one `TurnFinished`. |
 | Spend cap, provider abort, stream error, structured final output | Stored with `steerOutcome: "unanswered"`, after any prose the reply had streamed. |
 | Stop | Stored unanswered, between the partial reply and the "Stopped." notice. |
-| Orphan reap | Never while a card is parked; an accepted steer restarts the clock. A reap finishes as `reason: "orphaned"`. |
+| Orphan reap | Never while a card is parked or an accepted steer is still unread; the clock restarts from the moment the loop reads it. A reap finishes as `reason: "orphaned"`. |
 
 A steer is removed from the queue only after its row is stored, so a Stop landing mid-write leaves it for the runner's settle rather than dropping it.
 
