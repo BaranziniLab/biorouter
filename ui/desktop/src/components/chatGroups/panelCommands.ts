@@ -4,6 +4,8 @@ import {
   type PanelDescriptor,
   type PanelTextSnapshot,
 } from '../artifacts/panelAccessRegistry';
+import { PANEL_CAPTURE_NEEDS_DESKTOP_DETAIL } from '../artifacts/captureOnBrowser';
+import { isBrowserSurface } from '../../utils/surface';
 import { sanitizeUntrustedLabel } from '../../utils/untrustedText';
 import type { WorkspaceCommand, WorkspaceCommandResult } from './workspaceCommandRegistry';
 
@@ -135,7 +137,15 @@ export async function runPanelCommand(cmd: WorkspaceCommand): Promise<WorkspaceC
         // A refusal still carries the descriptor, so it still carries the
         // page-chosen title. `kind` is the only field interpolated into the
         // prose, and it comes from a closed vocabulary the panel owns.
-        detail: `the panel is showing ${descriptor.kind ?? 'something'} with no readable text; use capture_panel to see it`,
+        // ⚠ Not "capture it" in a browser, where no capture can succeed and the
+        // capture refusal says to read instead: that pair is a loop.
+        // ⚠ And name the ADVERTISED call. This said "use capture_panel", which is
+        // no tool the model is offered: `workspace_capture_panel` was folded into
+        // `workspace_read_panel { capture: true }` and survives only as a
+        // dispatcher alias (RETIRED_TOOL_NAMES in workspace_extension.rs).
+        detail: isBrowserSurface()
+          ? `the panel is showing ${descriptor.kind ?? 'something'} with no readable text, and this chat is open in a web browser, which cannot capture it`
+          : `the panel is showing ${descriptor.kind ?? 'something'} with no readable text; use workspace_read_panel with capture: true to see it`,
         data: { panel: boundedPanelDescriptor(descriptor) },
       };
     }
@@ -173,6 +183,11 @@ export async function runPanelCommand(cmd: WorkspaceCommand): Promise<WorkspaceC
 
   const shot = await panel.capture();
   if (!shot) {
+    // A browser served by `biorouter serve` can never capture (its bridge has no
+    // `captureRegion`), so "right now" there would send the model back to retry.
+    // Asked only once the capture is empty: the surface explains a missing
+    // picture, it never stands in for one.
+    if (isBrowserSurface()) return { ok: false, detail: PANEL_CAPTURE_NEEDS_DESKTOP_DETAIL };
     // `capturePage` returns an empty image rather than rejecting when the view
     // was hidden and then navigated, so this is a real outcome, not a bug.
     return { ok: false, detail: 'the panel could not be captured right now' };

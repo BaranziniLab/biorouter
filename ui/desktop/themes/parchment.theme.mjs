@@ -47,6 +47,7 @@ export default {
       'background-card': '#ffffff',
       'background-muted': '#f4f4f2',
       'background-code': '#f5f5f3',
+      'background-well': '#f5f5f3',
       'background-medium': '#ecece9',
       'background-strong': '#dcdcd8',
       // The tooltip fill. Warm near-black, not `#000`. This was per family —
@@ -170,6 +171,7 @@ export default {
       'background-card': '#1b1b19',
       'background-muted': '#232320',
       'background-code': '#1b1b19',
+      'background-well': '#232320',
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
@@ -221,7 +223,10 @@ export default {
     },
     syntax: {
       plain: '#e8e1d2',
-      comment: '#8d8266',
+      // #8d8266 until the paper well: 4.53:1 on the code ground but 4.14:1 on
+      // the #232320 well a fenced block sits in. Lifted along its own hue
+      // (the sanctioned repair — retune the family's ink, never its ground).
+      comment: '#958a6c',
       keyword: '#e8895f',
       string: '#7fbf6a',
       number: '#d9a441',
