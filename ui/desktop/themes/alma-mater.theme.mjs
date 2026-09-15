@@ -42,6 +42,7 @@ export default {
       'background-card': '#ffffff',
       'background-muted': '#f4f4f2',
       'background-code': '#f5f5f3',
+      'background-well': '#f5f5f3',
       'background-medium': '#ecece9',
       'background-strong': '#dcdcd8',
       // A tooltip is a surface, so it is shared rather than set to this
@@ -195,6 +196,7 @@ export default {
       'background-card': '#1b1b19',
       'background-muted': '#232320',
       'background-code': '#1b1b19',
+      'background-well': '#232320',
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',

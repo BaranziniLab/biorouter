@@ -119,6 +119,37 @@ function build(p: SyntaxPalette, tint: string): PrismTheme {
 
     variable: { color: p.plain },
 
+    // ⚠ The line-number gutter. react-syntax-highlighter gives every number span
+    // the classes `comment linenumber react-syntax-highlighter-line-number` and
+    // merges the matching entries of THIS object over the caller's
+    // `lineNumberStyle`, in that class order — so the `comment` entry above
+    // (italic, comment ink) used to win over any `fontStyle: 'normal'` a call
+    // site passed, and every gutter in the app leaned. This key is the LAST of
+    // the three, so it is the one that sticks.
+    //
+    // Keyed on the long name, not `linenumber`, on purpose: in inline-style mode
+    // the library strips every class that names a stylesheet key from the DOM,
+    // and `.linenumber` is the hook tests and CSS select the gutter by.
+    'react-syntax-highlighter-line-number': {
+      color: p.comment,
+      fontStyle: 'normal',
+      fontWeight: 400,
+    },
+
+    // The `log` grammar (a `.log`, or a `.txt` the preview recognises as one).
+    // Every level used to share the one keyword colour, so an ERROR read like an
+    // INFO; severity now reads by hue. Timestamps step back to the comment ink
+    // rather than painting the whole left column in the number colour. Pair keys
+    // (`level.error`) because the grammar emits `level error important` and the
+    // pair is merged after the singles, so it beats `important`.
+    'level.error': { color: p.deleted, fontWeight: 600 },
+    'level.warning': { color: p.number, fontWeight: 600 },
+    'level.info': { color: p.func, fontWeight: 400 },
+    'level.debug': { color: p.comment, fontWeight: 400 },
+    'level.trace': { color: p.comment, fontStyle: 'normal' },
+    'date.number': { color: p.comment },
+    'time.number': { color: p.comment },
+
     // Diff rows tint the whole line, not just the glyphs.
     deleted: {
       color: p.deleted,

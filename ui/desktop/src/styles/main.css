@@ -660,6 +660,11 @@
      surface — `comment` rendered at 4.15:1, under AA. One token, one ground,
      and every family's syntax palette is measured against it by the generator. */
   --background-code: #f5f5f3;
+  /* The paper well (theme-contract.mjs): a fenced block or inline code set into
+     the artifact panel's page ground. One step off `--background-default` in
+     BOTH modes — 1.09:1 here and in dark — which `--background-code` is not,
+     since in dark it IS the page. */
+  --background-well: #f5f5f3;
   --background-medium: #ecece9;
   --background-strong: #dcdcd8;
   /* The tooltip fill. Warm near-black, NOT `--color-black`. This used to be
@@ -856,6 +861,7 @@
   --background-card: var(--color-neutral-900);
   --background-muted: #232320;
   --background-code: var(--color-neutral-900);
+  --background-well: #232320;
   --background-medium: var(--color-neutral-800);
   --background-strong: #3a3a36;
   --background-inverse: #ededea;
@@ -986,6 +992,7 @@
   --background-card: #ffffff;
   --background-muted: #f4f4f2;
   --background-code: #f5f5f3;
+  --background-well: #f5f5f3;
   --background-medium: #ecece9;
   --background-strong: #dcdcd8;
   --background-inverse: #1f1e1c;
@@ -1048,6 +1055,7 @@
   --background-card: #1b1b19;
   --background-muted: #232320;
   --background-code: #1b1b19;
+  --background-well: #232320;
   --background-medium: #2c2c29;
   --background-strong: #3a3a36;
   --background-inverse: #ededea;
@@ -1142,6 +1150,7 @@
   --background-card: #ffffff;
   --background-muted: #f4f4f2;
   --background-code: #f5f5f3;
+  --background-well: #f5f5f3;
   --background-medium: #ecece9;
   --background-strong: #dcdcd8;
   --background-inverse: #1f1e1c;
@@ -1204,6 +1213,7 @@
   --background-card: #1b1b19;
   --background-muted: #232320;
   --background-code: #1b1b19;
+  --background-well: #232320;
   --background-medium: #2c2c29;
   --background-strong: #3a3a36;
   --background-inverse: #ededea;
@@ -1259,6 +1269,7 @@
   --color-background-default: var(--background-default);
   --color-background-muted: var(--background-muted);
   --color-background-code: var(--background-code);
+  --color-background-well: var(--background-well);
   --color-background-medium: var(--background-medium);
   --color-background-strong: var(--background-strong);
   --color-background-inverse: var(--background-inverse);
@@ -4288,4 +4299,502 @@ code [class~='token'] {
 
 .biorouter-heatmap-months {
   font-size: var(--heat-month-font, 11px);
+}
+
+/* ── Selection: Biorouter orange, renderer-wide ─────────────────────────────
+   Chromium's default highlight is blue (#afd3f9 light, #5b7fa5 dark), and in
+   dark it left body text at 3.67:1 and a code comment at 1.10:1. The brand hue
+   at low alpha keeps the INK: no `color` is set, so every token colour, link and
+   muted run stays itself under the tint (Chromium's highlight inheritance
+   carries this onto Prism's token spans).
+
+   FAMILY-INVARIANT BY CONSTRUCTION. These live in a bare `:root` / `.dark`
+   pair that no `[data-theme]` block overrides, and they are literals rather
+   than `--accent-bar` / `--color-coral-*`, because Alma Mater re-points that
+   whole scale to teal — a selection built on it turned teal there.
+   #cf6d47 is coral-500 (the Parchment swatch and brand-gradient start), and
+   #e8895f is coral-400, the dark accent. check-contrast.mjs composites the tint
+   over the paper and code grounds and holds text-default and text-muted to
+   4.5:1 under it, in every family and mode.
+
+   Separate documents (a chart, an .html file, a PDF page) cannot see this rule.
+   The notebook's sandboxed HTML output restates it (NotebookPreview.tsx). */
+:root {
+  --selection-hue: #cf6d47;
+  --selection-alpha: 24%;
+}
+
+.dark {
+  --selection-hue: #e8895f;
+  /* Higher than light's 24%: over the dark page that alpha composited to a
+     brown that read as a smudge rather than a selection. Text still clears
+     8.9:1 under it; muted runs clear the 3:1 selection floor on the well. */
+  --selection-alpha: 30%;
+}
+
+@layer base {
+  ::selection {
+    background-color: color-mix(in srgb, var(--selection-hue) var(--selection-alpha), transparent);
+  }
+}
+
+/* ── Preview paper: the artifact panel's text surfaces ──────────────────────
+   Markdown, CSV/TSV, code, plain text and notebooks all sit on ONE ground —
+   `--background-default`, which is #ffffff / #1b1b19 in every family and is
+   exactly what an Auto Visualiser chart paints (`bg` in
+   crates/biorouter-mcp/src/autovisualiser/templates/_common.js; pinned by
+   artifactPaper.test.ts). A report and its figure are one family of surface.
+
+   One column, one left edge. The content column is the chat measure (760px)
+   centred in the scroller, with a responsive gutter at narrow widths. Prose is
+   capped at the column. Content that is naturally WIDER — a data table, a long
+   code line — keeps the column's left edge and runs on into the right margin,
+   scrolling only when it passes the panel's edge. So a report, a CSV and a
+   script opened side by side in tabs start their first glyph at the same x.
+
+   Hairlines only: nothing here draws a box around a box. The one filled shape
+   is the faint code well (fenced blocks, inline code, notebook source).
+
+   Authored CSS on purpose, not Tailwind strings: under BIOROUTER_NO_HMR the
+   class scanner is blind and a new utility silently never generates. Unlayered,
+   so it wins over the typography plugin and the `prose-*` utilities without a
+   specificity ladder; the `.prose` doubling below only has to beat the
+   unlayered `.prose table` rules earlier in this file. */
+.br-paper {
+  /* Every length below that says `cqw` resolves against `.br-paper-scroll`,
+     the size container the content lives in — custom properties substitute
+     where they are USED, so these are declared once here. */
+  --paper-gutter: clamp(16px, 4.5cqw, 32px);
+  --paper-inset: max(var(--paper-gutter), calc((100cqw - var(--measure-chat)) / 2));
+  /* The code view's gutter is `PAPER_GUTTER_EM` (3.5em) at the 13px code size;
+     hanging it this far left of the column edge puts code text ON the edge. */
+  --paper-code-gutter: calc(3.5 * 13px);
+  --paper-code-start-numbered: max(10px, calc(var(--paper-inset) - var(--paper-code-gutter)));
+  background-color: var(--background-default);
+  color: var(--text-default);
+}
+
+.br-paper-scroll {
+  container-type: inline-size;
+}
+
+/* PROVISIONAL — the panel-geometry track owns the 760px measure wrapper
+   (`.br-preview-measure`). Replace this class with theirs when it lands; nothing
+   below depends on its name. `content-box` so the cap is the TEXT width and the
+   gutter sits outside it. */
+.br-paper-measure {
+  box-sizing: content-box;
+  max-width: var(--measure-chat);
+  margin-inline: auto;
+  padding-inline: var(--paper-gutter);
+}
+
+.br-paper-doc {
+  padding-block: 40px 88px;
+}
+
+.br-paper-empty {
+  padding-block: 40px;
+  color: var(--text-muted);
+}
+
+/* ── Prose ── */
+.br-paper-prose.prose {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text-default);
+}
+
+/* A fenced block reaches the page as `<pre>` wrapping the block, so a report
+   that OPENS with a code chunk (every R Markdown setup chunk) needs the reset
+   one level down too. */
+.br-paper-prose.prose > :first-child,
+.br-paper-prose.prose > pre:first-child > .biorouter-md-code {
+  margin-top: 0;
+}
+
+.br-paper-prose.prose :where(p) {
+  margin: 0 0 1em;
+}
+
+.br-paper-prose.prose :where(h1) {
+  margin: 0 0 0.75em;
+  font-size: 26px;
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.012em;
+}
+
+.br-paper-prose.prose :where(h2) {
+  margin: 2.2em 0 0.6em;
+  font-size: 19px;
+  line-height: 1.35;
+  font-weight: 700;
+  letter-spacing: -0.006em;
+}
+
+.br-paper-prose.prose :where(h3) {
+  margin: 1.8em 0 0.5em;
+  font-size: 16px;
+  line-height: 1.45;
+  font-weight: 700;
+}
+
+.br-paper-prose.prose :where(h4) {
+  margin: 1.6em 0 0.4em;
+}
+
+.br-paper-prose.prose :where(ul, ol) {
+  margin: 0 0 1em;
+  padding-left: 1.35em;
+}
+
+.br-paper-prose.prose :where(li) {
+  margin: 0.3em 0;
+  padding-left: 0.25em;
+}
+
+.br-paper-prose.prose :where(li > p) {
+  margin: 0;
+}
+
+.br-paper-prose.prose :where(blockquote) {
+  margin: 1.6em 0;
+  padding: 0 0 0 1.1em;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
+  font-style: normal;
+}
+
+.br-paper-prose.prose :where(hr) {
+  margin: 2.5em 0;
+  border-color: var(--border-subtle);
+}
+
+.br-paper-prose.prose :where(img) {
+  border-radius: 6px;
+}
+
+/* Inline code, and the file-link chips that share its recipe. Chat's
+   `break-all` split a short identifier across lines mid-word (`tximpor|t`); on
+   paper a chip moves to the next line whole, and only a token longer than the
+   whole line (a long path) is broken. */
+.br-paper-prose .biorouter-inline-code {
+  padding: 0.12em 0.38em;
+  border-radius: 5px;
+  background-color: var(--background-well);
+  font-size: 0.86em;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Fenced code: a faint well with a soft radius and no hairline — on paper the
+   tint alone is the edge. Its header stops being a bar: the language sits in
+   the well's corner in lower-case mono, the way it was written in the fence. */
+.br-paper-prose .biorouter-md-code {
+  --md-code-pad: 2px 16px 14px;
+  margin: 1.1em 0 1.2em;
+  border: 0;
+  border-radius: 10px;
+  background-color: var(--background-well);
+}
+
+.br-paper-prose .biorouter-md-code-head {
+  height: 30px;
+  padding: 0 6px 0 16px;
+  border: 0;
+  background: transparent;
+}
+
+.br-paper-prose .biorouter-md-code-lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* A block directly under its heading belongs to it: as close as a paragraph. */
+.br-paper-prose.prose :where(h1, h2, h3, h4) + pre > .biorouter-md-code {
+  margin-top: 0.6em;
+}
+
+/* Tables inside a report: booktabs, not a grid. A firm rule under the header
+   and after the last row, hairlines between, figures in tabular digits. */
+.br-paper-prose.prose table {
+  margin: 1.6em 0 1.8em;
+  font-size: 13.5px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-paper-prose.prose thead th {
+  height: auto;
+  padding: 0 16px 8px 0;
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  vertical-align: bottom;
+}
+
+.br-paper-prose.prose tbody td {
+  height: auto;
+  padding: 8px 16px 8px 0;
+}
+
+.br-paper-prose.prose tbody tr:last-child td {
+  border-bottom: 1px solid var(--border-strong);
+}
+
+/* Front matter lifted into a title block (MarkdownDocument). */
+.br-paper-frontmatter {
+  margin: 0 0 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.br-paper-title {
+  margin: 0;
+  color: var(--text-default);
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.br-paper-subtitle {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.br-paper-byline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.br-paper-byline > span + span::before {
+  content: '·';
+  margin-right: 12px;
+  color: var(--text-subtle);
+}
+
+.br-paper-frontmatter-more {
+  margin: 14px 0 0;
+}
+
+.br-paper-frontmatter-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.br-paper-frontmatter-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.br-paper-frontmatter-more > summary::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--motion-fast) ease;
+}
+
+.br-paper-frontmatter-more[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.br-paper-frontmatter-more > summary:hover {
+  color: var(--text-default);
+}
+
+.br-paper-frontmatter-yaml.prose .biorouter-md-code {
+  margin: 12px 0 0;
+}
+
+/* ── Delimited table (CSV / TSV) ── */
+.br-paper-table-scroll {
+  height: 100%;
+  overflow: auto;
+  container-type: inline-size;
+}
+
+.br-paper-table-frame {
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  /* Left: the column edge, yielding only as far as a wide table needs to show
+     its last column, and never past the gutter. `--paper-table-width` is the
+     table's measured width (DelimitedTable); without it this is the column edge. */
+  padding: 20px var(--paper-gutter) 56px
+    max(
+      var(--paper-gutter),
+      min(
+        var(--paper-inset),
+        calc(100cqw - var(--paper-table-width, 0px) - var(--paper-gutter))
+      )
+    );
+}
+
+.br-paper-table {
+  min-width: min(var(--measure-chat), calc(100cqw - 2 * var(--paper-gutter)));
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--text-default);
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-paper-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 24px 8px 0;
+  /* A box-shadow, not a border: a sticky cell's border scrolls away under
+     `border-collapse`, and this rule has to stay with the header. */
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+  background-color: var(--background-default);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.br-paper-table td {
+  padding: 7px 24px 7px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.br-paper-table :is(th, td):last-child {
+  padding-right: 0;
+}
+
+.br-paper-table [data-numeric] {
+  text-align: right;
+}
+
+/* Every row is one line tall. A column of sentences is clipped with an
+   ellipsis (the cell carries the full value as its title); an identifier or an
+   exponent is never broken. */
+.br-paper-cell-clip {
+  display: block;
+  max-width: 44ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.br-paper-table td[data-missing] {
+  color: var(--text-subtle);
+}
+
+.br-paper-table tbody tr:hover td {
+  background-color: var(--background-muted);
+}
+
+.br-paper-table-note {
+  margin: 16px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ── Code view ── */
+.br-paper-code {
+  width: 100%;
+}
+
+/* ── Notebook ── */
+.br-paper-nb {
+  padding-block: 36px 88px;
+}
+
+.br-paper-nb-cell {
+  position: relative;
+  margin: 0 0 24px;
+}
+
+.br-paper-nb-cell[data-kind='markdown'] {
+  margin-top: 8px;
+}
+
+.br-paper-well {
+  overflow-x: auto;
+  border-radius: 10px;
+  background-color: var(--background-well);
+}
+
+/* The execution prompt hangs in the left margin when there is one… */
+.br-paper-nb-prompt {
+  position: absolute;
+  top: 12px;
+  right: calc(100% + 14px);
+  color: var(--text-subtle);
+  font: 12px/20px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* …and sits above the cell when there is not. */
+@container (width < 900px) {
+  .br-paper-nb-prompt {
+    position: static;
+    margin: 0 0 4px;
+  }
+}
+
+.br-paper-nb-outputs {
+  padding-top: 8px;
+}
+
+.br-paper-nb-output + .br-paper-nb-output {
+  margin-top: 6px;
+}
+
+.br-paper-nb-stream {
+  margin: 0;
+  padding: 2px 16px;
+  color: var(--text-default);
+  white-space: pre-wrap;
+}
+
+.br-paper-nb-error {
+  margin: 0;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background-color: color-mix(in srgb, var(--text-danger) 8%, transparent);
+  color: var(--text-danger);
+}
+
+.br-paper-nb-figure {
+  padding: 6px 16px;
+}
+
+.br-paper-nb-output > iframe {
+  display: block;
+  width: calc(100% - 16px);
+  margin-left: 16px;
+}
+
+.br-paper-nb-output > .br-paper-prose {
+  padding-inline: 16px;
 }

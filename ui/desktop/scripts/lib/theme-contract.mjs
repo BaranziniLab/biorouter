@@ -44,6 +44,12 @@ export const SEMANTIC_TOKENS = [
   'background-card',
   'background-muted',
   'background-code',
+  // The faint well set INTO a document surface — a fenced block or inline code
+  // in the artifact panel's paper, a notebook cell's source. It is not
+  // `background-code`: that one is a panel a hair off the page in light and the
+  // card ground itself in dark, and a well that equals the page it sits on is
+  // no well. Shared, and every syntax palette is measured on it.
+  'background-well',
   'background-medium',
   'background-strong',
   'background-inverse',

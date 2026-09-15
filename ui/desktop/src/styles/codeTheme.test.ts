@@ -92,6 +92,26 @@ describe('code theme', () => {
   // Every family must be registered for BOTH modes: the consumer indexes
   // codeThemesByFamily[family][mode] with no fallback, so a missing entry is a
   // runtime undefined rather than a type error at the call site.
+  // react-syntax-highlighter merges the theme's `comment` entry (italic) over a
+  // call site's lineNumberStyle, and strips from the DOM every class a theme
+  // KEY names. So the gutter entry must sit on the last class of the three and
+  // must not be keyed `linenumber`, which is the class the gutter is found by.
+  it('keeps the line-number gutter upright without stripping its class', () => {
+    for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
+      for (const mode of ['light', 'dark'] as const) {
+        const theme = codeThemesByFamily[family][mode];
+        expect(theme['react-syntax-highlighter-line-number']?.fontStyle).toBe('normal');
+        expect(theme).not.toHaveProperty('linenumber');
+      }
+    }
+  });
+
+  it('gives log severity its own hue instead of one keyword colour', () => {
+    const theme = codeThemeLight;
+    expect(theme['level.error'].color).toBe(codePalettes.light.deleted);
+    expect(theme['level.warning'].color).not.toBe(theme['level.info'].color);
+  });
+
   it('registers every theme family in both modes', () => {
     for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
       expect(codeThemesByFamily[family]?.light, `${family}.light`).toBeDefined();

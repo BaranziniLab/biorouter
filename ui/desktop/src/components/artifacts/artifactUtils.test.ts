@@ -8,9 +8,16 @@ import {
   dirnameFromPath,
   extensionFromPath,
   fileArtifactPathsFromToolCall,
+  analyzeDelimitedColumns,
+  frontMatterFields,
+  isMissingCell,
+  languageForText,
   languageFromPath,
   languageLabel,
+  looksLikeLog,
   looksLikePreviewableFile,
+  normalizeCodeLanguage,
+  splitFrontMatter,
   parseDelimitedTable,
   pathFromArtifactHref,
   resolveArtifactPath,
@@ -271,6 +278,116 @@ describe('languageFromPath', () => {
   it('falls back to the mime type, then plain text', () => {
     expect(languageFromPath('/w/noext', 'application/json')).toBe('json');
     expect(languageFromPath('/w/noext')).toBe('text');
+  });
+
+  // Each of these reached Prism as an unregistered name (or as `text`) and
+  // rendered as plain, unhighlighted monospace.
+  it('maps the pipeline languages the extension alone got wrong', () => {
+    expect(languageFromPath('/w/rnaseq.nf')).toBe('groovy');
+    expect(languageFromPath('/w/salmon-quant.log')).toBe('log');
+    expect(languageFromPath('/w/rules.smk')).toBe('python');
+    expect(languageFromPath('/w/Snakefile')).toBe('python');
+    expect(languageFromPath('/w/Dockerfile')).toBe('docker');
+    expect(languageFromPath('/w/fit.jl')).toBe('julia');
+  });
+});
+
+describe('languageForText', () => {
+  const log = [
+    '2026-09-14 08:05:51.970 INFO  [nextflow] Launching',
+    '2026-09-14 08:08:45.404 INFO  [executor] awsbatch',
+    '2026-09-14 08:31:13.096 WARN  [process] retrying',
+    '2026-09-14 08:48:05.219 ERROR [multiqc] truncated',
+  ].join('\n');
+
+  it('reads a .txt that is really a run log as a log', () => {
+    expect(looksLikeLog(log)).toBe(true);
+    expect(languageForText('/w/pipeline-run.txt', 'text/plain', log)).toBe('log');
+  });
+
+  it('leaves a prose .txt as plain text, and never overrides a real language', () => {
+    const prose = 'Paired design.\nAdjust for donor and batch.\nSee the report for details.';
+    expect(looksLikeLog(prose)).toBe(false);
+    expect(languageForText('/w/notes.txt', 'text/plain', prose)).toBe('text');
+    expect(languageForText('/w/run.py', 'text/x-python', log)).toBe('python');
+  });
+});
+
+describe('normalizeCodeLanguage', () => {
+  it('accepts R Markdown / Quarto chunk headers', () => {
+    expect(normalizeCodeLanguage('{r')).toBe('r');
+    expect(normalizeCodeLanguage('{r setup, include=FALSE}')).toBe('r');
+    expect(normalizeCodeLanguage('{python}')).toBe('python');
+  });
+
+  it('lower-cases kernel names, because Prism is case-sensitive', () => {
+    expect(normalizeCodeLanguage('R')).toBe('r');
+    expect(normalizeCodeLanguage('ir')).toBe('r');
+    expect(normalizeCodeLanguage('Python3')).toBe('python');
+    expect(normalizeCodeLanguage('')).toBe('text');
+  });
+});
+
+describe('front matter', () => {
+  const rmd =
+    '---\ntitle: "Paired tumour vs normal"\nauthor: "Baranzini Lab"\ndate: 2026-09-14\n' +
+    'output:\n  html_document:\n    toc: true\nparams:\n  fdr: 0.05\n---\n\n## Cohort\n';
+
+  it('splits a leading YAML block off the body', () => {
+    const { frontMatter, body } = splitFrontMatter(rmd);
+    expect(frontMatter).toContain('title: "Paired tumour vs normal"');
+    expect(body).toBe('\n## Cohort\n');
+  });
+
+  it('leaves a document without front matter, or with a mid-document rule, alone', () => {
+    expect(splitFrontMatter('# Title\n\n---\n\ntext').frontMatter).toBeNull();
+  });
+
+  it('lifts the scalar title fields and keeps everything else verbatim', () => {
+    const fields = frontMatterFields(splitFrontMatter(rmd).frontMatter!);
+    expect(fields.title).toBe('Paired tumour vs normal');
+    expect(fields.byline).toEqual(['Baranzini Lab', '2026-09-14']);
+    expect(fields.rest).toBe('output:\n  html_document:\n    toc: true\nparams:\n  fdr: 0.05');
+  });
+
+  it('does not lift a list-valued author', () => {
+    const fields = frontMatterFields('author:\n  - A. Person\n  - B. Person');
+    expect(fields.byline).toEqual([]);
+    expect(fields.rest).toContain('- A. Person');
+  });
+});
+
+describe('analyzeDelimitedColumns', () => {
+  it('finds numeric columns through exponents, signs, separators and NA', () => {
+    const header = ['gene', 'log2fc', 'padj', 'count', 'chrom'];
+    const rows = [
+      ['MYC', '2.982', '1.264e-03', '1,204', 'chr14'],
+      ['CDK4', '-0.757', 'NA', '980', 'chr2'],
+      ['TP53', '0.1', '4.2E-7', '12', 'chrX'],
+    ];
+    expect(analyzeDelimitedColumns(header, rows).map((c) => c.numeric)).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('marks sentence columns, which are the only ones clipped', () => {
+    const columns = analyzeDelimitedColumns(
+      ['id', 'description'],
+      [['MYC', 'MYC proto-oncogene, bHLH transcription factor; master regulator']]
+    );
+    expect(columns[0].prose).toBe(false);
+    expect(columns[1].prose).toBe(true);
+  });
+
+  it('treats the spellings R, pandas and Excel use for no value as missing', () => {
+    for (const value of ['', 'NA', 'nan', 'NULL', 'None', 'N/A', '#N/A']) {
+      expect(isMissingCell(value), value).toBe(true);
+    }
+    expect(isMissingCell('0')).toBe(false);
   });
 });
 

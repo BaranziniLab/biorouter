@@ -59,6 +59,26 @@ describe('NotebookPreview', () => {
     expect(htmlOutput.getAttribute('srcdoc')).toContain("default-src 'none'");
   });
 
+  // IRkernel declares its language as `R`; Prism's registry is case-sensitive,
+  // so these cells used to render as plain text.
+  it('highlights an R-kernel notebook', () => {
+    const { container } = render(
+      <ThemeProvider>
+        <NotebookPreview
+          file={notebookFile(
+            JSON.stringify({
+              metadata: { kernelspec: { language: 'R' }, language_info: { name: 'R' } },
+              cells: [{ cell_type: 'code', source: ['x <- TRUE\n', 'y <- 15'], outputs: [] }],
+            })
+          )}
+          resolvedTheme="light"
+        />
+      </ThemeProvider>
+    );
+    // Plain text renders no token spans; the R grammar does (`TRUE`, `15`).
+    expect(container.querySelector('section[aria-label="Code cell 1"] code .token')).not.toBeNull();
+  });
+
   it('shows a readable error for malformed notebook JSON', () => {
     render(
       <ThemeProvider>
@@ -148,5 +168,10 @@ describe('NotebookPreview HTML output theming', () => {
     expect(srcdoc).toContain("default-src 'none'");
     expect(srcdoc).toContain("style-src 'unsafe-inline'");
     expect(srcdoc).not.toContain('script-src');
+    // A separate document: the renderer's orange selection and the paper table
+    // treatment are restated inside it, since it cannot load main.css. pandas
+    // writes `<table border="1">`, which only `border:0` on the table undoes.
+    expect(srcdoc).toContain('::selection{background:rgba(232, 137, 95, 0.3)}');
+    expect(srcdoc).toContain('table{border:0;');
   });
 });

@@ -26,6 +26,7 @@
  *   terminal.background   = the family's own `terminalGround` token
  *   terminal.cursorAccent = the same ground
  *   code ground (CODE_BG) = `--background-code`
+ *   paper well (wellGround) = `--background-well`
  *   splash.bg             = `--background-muted`
  *   surface.*             = the five semantic tokens in SURFACE_TOKENS
  *   GRAPH_PALETTE.ground  = `--background-muted`, and with it all 35 solved
@@ -147,6 +148,7 @@ const scopeFor = (theme, mode) => {
 };
 const ground = (theme, mode) => resolveRaw(theme.terminalGround[mode], scopeFor(theme, mode));
 const codeGround = (theme, mode) => resolveRaw('--background-code', scopeFor(theme, mode));
+const wellGround = (theme, mode) => resolveRaw('--background-well', scopeFor(theme, mode));
 
 /**
  * The semantic tokens that a sandboxed surface has to inline as a literal hex.
@@ -191,6 +193,7 @@ function tsFor(theme) {
 ${obj(d.syntax, 6)}
     },
     codeGround: '${codeGround(theme, mode)}',
+    wellGround: '${wellGround(theme, mode)}',
     surface: {
 ${obj(surface(theme, mode), 6)}
     },
@@ -333,6 +336,11 @@ export type ThemeModeData = {
   syntax: SyntaxPalette;
   /** The surface the syntax palette is measured against (--background-code). */
   codeGround: string;
+  /**
+   * The paper well a fenced block sits in (--background-well). The palette is
+   * held to AA here too, and on --background-default, by the generator.
+   */
+  wellGround: string;
   /**
    * Resolved literal values for the five semantic tokens a CSP-sandboxed
    * surface has to inline.
@@ -506,13 +514,24 @@ const failures = [];
     for (const mode of ['light', 'dark']) {
       const scope = scopes[`${t.id}:${mode}`];
       if (!scope) continue;
-      const cg = resolveRaw('--background-code', scope);
-      for (const s of SYNTAX_STOPS) {
-        const c = contrast(t[mode].syntax[s], cg);
-        if (c < 4.5) {
-          failures.push(
-            `${t.id}.${mode}: syntax "${s}" ${t[mode].syntax[s]} on code ground ${cg} = ${c.toFixed(2)}:1 (need 4.5)`
-          );
+      // Every ground a syntax palette is actually painted on, not just the one
+      // it was first tuned for. The artifact panel's paper shows the code view
+      // on the page ground and fenced blocks in the well; a palette that clears
+      // AA on --background-code alone would pass here while failing there,
+      // which is exactly how `comment` once shipped at 4.15:1 with this green.
+      for (const [label, token] of [
+        ['code ground', '--background-code'],
+        ['paper ground', '--background-default'],
+        ['paper well', '--background-well'],
+      ]) {
+        const cg = resolveRaw(token, scope);
+        for (const s of SYNTAX_STOPS) {
+          const c = contrast(t[mode].syntax[s], cg);
+          if (c < 4.5) {
+            failures.push(
+              `${t.id}.${mode}: syntax "${s}" ${t[mode].syntax[s]} on ${label} ${cg} = ${c.toFixed(2)}:1 (need 4.5)`
+            );
+          }
         }
       }
       const tg = resolveRaw(t.terminalGround[mode], scope);

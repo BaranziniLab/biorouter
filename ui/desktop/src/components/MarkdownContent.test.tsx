@@ -42,6 +42,42 @@ function installElectronMock(
 }
 
 describe('MarkdownContent', () => {
+  describe('fenced blocks', () => {
+    // The wrapper's inline-code recipe (`prose-code:bg-background-medium
+    // px-1 py-0.5`) matched the highlighter's own <code>, painting a chip on
+    // every line of every block and nudging the first line 4px right. The
+    // typography plugin's element variants skip `.not-prose` subtrees; jsdom
+    // runs no Tailwind, so the guard is that the opt-out reaches the DOM.
+    it('opts the fenced block out of the inline-code recipe', async () => {
+      const { container } = render(
+        <MarkdownContent content={'```python\nimport numpy as np\n```'} />
+      );
+      await waitFor(() => expect(container.querySelector('.biorouter-md-code')).not.toBeNull());
+      expect(container.querySelector('.biorouter-md-code')).toHaveClass('not-prose');
+      expect(container.querySelector('.biorouter-md-code code .token')).not.toBeNull();
+    });
+
+    it('highlights an R Markdown chunk header', async () => {
+      const { container } = render(
+        <MarkdownContent content={'```{r setup, include=FALSE}\nx <- TRUE\n```'} />
+      );
+      await waitFor(() => expect(container.querySelector('.biorouter-md-code')).not.toBeNull());
+      expect(container.querySelector('.biorouter-md-code-lang')?.textContent).toBe('r');
+      // Plain text renders no token spans; the R grammar does (`TRUE`, `<-`).
+      expect(container.querySelector('.biorouter-md-code code .token')).not.toBeNull();
+    });
+  });
+
+  describe('line breaks', () => {
+    it('keeps chat hard breaks, and soft-wraps a document when asked', async () => {
+      const { container, rerender } = render(<MarkdownContent content={'one\ntwo'} />);
+      await waitFor(() => expect(container.querySelector('p')).not.toBeNull());
+      expect(container.querySelector('p br')).not.toBeNull();
+      rerender(<MarkdownContent content={'one\ntwo'} softLineBreaks />);
+      await waitFor(() => expect(container.querySelector('p br')).toBeNull());
+    });
+  });
+
   describe('HTML Security Integration', () => {
     it('renders safe markdown content normally', async () => {
       const content = `# Test Title

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform, type Options } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
@@ -23,6 +23,7 @@ import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTy
 import {
   imageSourceForPreview,
   looksLikePreviewableFile,
+  normalizeCodeLanguage,
   resolveMarkdownImageSource,
 } from './artifacts/artifactUtils';
 import {
@@ -60,6 +61,17 @@ interface MarkdownContentProps {
    * transcript on every streaming frame.
    */
   onRunInTerminal?: (command: string) => boolean;
+  /**
+   * Render single newlines as the SPACE CommonMark says they are, instead of as
+   * `<br>`.
+   *
+   * Chat keeps `remark-breaks` on purpose: a model's single newline is a line it
+   * meant. A markdown FILE is different — authors hard-wrap source at 80-100
+   * columns, and turning every wrap into a break rendered the artifact panel's
+   * reports ragged, with lines ending mid-sentence at the source's width rather
+   * than the column's. The panel and notebook cells pass this.
+   */
+  softLineBreaks?: boolean;
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
@@ -138,7 +150,10 @@ const CodeBlock = memo(function CodeBlock({
         PreTag="div"
         customStyle={{
           margin: 0,
-          padding: '12px',
+          // Overridable, so a surface that restyles the block (the artifact
+          // panel's paper) can set its own inset without an !important fight
+          // with an inline style. Chat never sets it and keeps 12px.
+          padding: 'var(--md-code-pad, 12px)',
           background: 'transparent',
           width: '100%',
           maxWidth: '100%',
@@ -172,10 +187,20 @@ const CodeBlock = memo(function CodeBlock({
     // are still distinct and the generator measures against the code one.
     // The highlighter itself renders transparent, so this div IS the ground the
     // reader sees.
-    <div className="w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-code">
+    //
+    // `not-prose` is a correction, not decoration. The wrapper's inline-code
+    // recipe (`prose-code:bg-background-medium px-1 py-0.5 rounded-sm`) targets
+    // every `<code>` under `.prose`, and the highlighter's own `<code>` is one —
+    // so each line of every fenced block painted an inline-code chip and the
+    // first line sat 4px right of the rest. The typography plugin's element
+    // variants skip `.not-prose` subtrees; nothing inside this block wants them.
+    //
+    // The `biorouter-md-code*` names are hooks for surfaces that restyle the
+    // block in authored CSS (the artifact panel's paper, main.css).
+    <div className="biorouter-md-code not-prose w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-code">
       {/* Header bar */}
-      <div className="flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">
-        <span className="text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
+      <div className="biorouter-md-code-head flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">
+        <span className="biorouter-md-code-lang text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
           {language || 'code'}
         </span>
         <div className="flex items-center gap-1">
@@ -226,7 +251,9 @@ const CodeBlock = memo(function CodeBlock({
         </div>
       </div>
       {/* Code body */}
-      <div className="w-full overflow-x-auto">{memoizedSyntaxHighlighter}</div>
+      <div className="biorouter-md-code-body w-full overflow-x-auto">
+        {memoizedSyntaxHighlighter}
+      </div>
     </div>
   );
 });
@@ -319,7 +346,7 @@ function ArtifactLinkButton({
       // Same fill, padding, family and size as the inline-code recipe, so the
       // text is unchanged and only its role is.
       <span
-        className={`${ARTIFACT_LINK_BASE_CLASS} bg-background-medium px-1 py-0.5 text-text-default`}
+        className={`${ARTIFACT_LINK_BASE_CLASS} biorouter-inline-code bg-background-medium px-1 py-0.5 text-text-default`}
       >
         {children}
       </span>
@@ -335,7 +362,7 @@ function ArtifactLinkButton({
     <button
       type="button"
       className={`${ARTIFACT_LINK_BASE_CLASS} ${LINK_CLASS} ${
-        inlineCode ? 'bg-background-medium px-1 py-0.5' : ''
+        inlineCode ? 'biorouter-inline-code bg-background-medium px-1 py-0.5' : ''
       }`}
       onClick={() => onOpenArtifact(artifact)}
       title={`Preview ${artifact.title} in the side panel`}
@@ -484,7 +511,11 @@ const MarkdownCode = memo(
     }: CodeProps,
     ref: React.Ref<HTMLElement>
   ) {
-    const match = /language-(\w+)/.exec(className || '');
+    // `\{?` admits R Markdown / Quarto chunk headers (```{r setup}), which
+    // reach here as `language-{r`; `\w` alone rejected them, so every chunk
+    // rendered as an unhighlighted plain block. The name is normalised (case,
+    // kernel aliases) before it reaches Prism, whose registry is case-sensitive.
+    const match = /language-\{?(\w+)/.exec(className || '');
     // The same identifier, unabridged. `\w` stops at a hyphen, so `match[1]` is
     // `shell` for BOTH ```shell and ```shell-session — fine for a header label
     // and a Prism alias, wrong for deciding whether a block may be executed,
@@ -498,7 +529,7 @@ const MarkdownCode = memo(
       : null;
     return !inline && match ? (
       <CodeBlock
-        language={match[1]}
+        language={normalizeCodeLanguage(match[1])}
         fenceLanguage={fenceMatch ? fenceMatch[1] : null}
         onRunInTerminal={onRunInTerminal}
       >
@@ -518,7 +549,11 @@ const MarkdownCode = memo(
       // the single inline-code recipe. This used to also carry `bg-inline-code`,
       // a second, competing fill that only won via a specificity ladder in
       // main.css.
-      <code ref={ref} {...props} className="break-all whitespace-pre-wrap font-mono">
+      <code
+        ref={ref}
+        {...props}
+        className="biorouter-inline-code break-all whitespace-pre-wrap font-mono"
+      >
         {children}
       </code>
     );
@@ -610,6 +645,17 @@ const MarkdownParagraph = ({
   return <p {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}</p>;
 };
 
+// Module-level so ReactMarkdown sees the same array identity on every render.
+const HARD_BREAK_REMARK_PLUGINS: NonNullable<Options['remarkPlugins']> = [
+  remarkGfm,
+  remarkBreaks,
+  [remarkMath, { singleDollarTextMath: false }],
+];
+const SOFT_BREAK_REMARK_PLUGINS: NonNullable<Options['remarkPlugins']> = [
+  remarkGfm,
+  [remarkMath, { singleDollarTextMath: false }],
+];
+
 const MarkdownContent = memo(function MarkdownContent({
   content,
   className = '',
@@ -617,6 +663,7 @@ const MarkdownContent = memo(function MarkdownContent({
   workingDir,
   knownFilePaths,
   onRunInTerminal,
+  softLineBreaks = false,
 }: MarkdownContentProps) {
   const [processedContent, setProcessedContent] = useState(content);
 
@@ -658,7 +705,7 @@ const MarkdownContent = memo(function MarkdownContent({
     >
       <ReactMarkdown
         urlTransform={artifactAwareUrlTransform}
-        remarkPlugins={[remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: false }]]}
+        remarkPlugins={softLineBreaks ? SOFT_BREAK_REMARK_PLUGINS : HARD_BREAK_REMARK_PLUGINS}
         rehypePlugins={[
           [
             rehypeKatex,

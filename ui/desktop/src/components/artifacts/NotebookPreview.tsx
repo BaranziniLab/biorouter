@@ -6,6 +6,7 @@ import { cn } from '../../utils';
 import MarkdownContent from '../MarkdownContent';
 import type { ArtifactFilePreview } from './artifactTypes';
 import {
+  normalizeCodeLanguage,
   sandboxedSurface,
   splitPathForStrip,
   STRIP_IDENT_CLASS,
@@ -14,6 +15,17 @@ import {
 } from './artifactUtils';
 
 type NotebookFile = Extract<ArtifactFilePreview, { kind: 'text' | 'html' }>;
+
+/**
+ * The renderer's `::selection` tint (main.css, `--selection`), restated for the
+ * sandboxed output document, which cannot load the stylesheet. Family-invariant
+ * on purpose: Alma Mater re-points the coral scale to teal, and selection is
+ * Biorouter orange in every family.
+ */
+const SELECTION_TINT = {
+  light: 'rgba(207, 109, 71, 0.24)',
+  dark: 'rgba(232, 137, 95, 0.3)',
+} as const;
 
 type NotebookOutput = {
   output_type?: string;
@@ -59,7 +71,12 @@ function joined(value: unknown) {
  */
 function safeNotebookHtml(html: string, resolvedTheme: 'light' | 'dark', themeFamily: ThemeFamily) {
   const { background, foreground, border } = sandboxedSurface(themeFamily, resolvedTheme);
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:12px}img,svg{max-width:100%;height:auto}table{border-collapse:collapse}td,th{border:1px solid ${border};padding:4px 7px}</style></head><body>${html}</body></html>`;
+  // Paper, restated for a separate document: the page font stack (--font-body)
+  // and a booktabs table — `border:0` on the table too, because pandas emits
+  // `<table border="1">` and the attribute alone drew a full grid. `::selection`
+  // is restated for the same reason: the renderer-wide Biorouter-orange
+  // selection in main.css cannot reach into this document (SELECTION_TINT).
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/1.5 Arial,"Helvetica Neue",Helvetica,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:12px 0}img,svg{max-width:100%;height:auto}table{border:0;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{border:0;border-bottom:1px solid ${border};padding:5px 16px 5px 0;text-align:right}th{font-weight:600}::selection{background:${SELECTION_TINT[resolvedTheme]}}</style></head><body>${html}</body></html>`;
 }
 
 function NotebookOutputView({
@@ -75,7 +92,7 @@ function NotebookOutputView({
     const traceback =
       output.traceback?.join('\n') || [output.ename, output.evalue].filter(Boolean).join(': ');
     return (
-      <pre className="overflow-auto whitespace-pre-wrap rounded-element bg-status-danger/10 p-3 font-mono text-code text-status-danger">
+      <pre className="br-paper-nb-error overflow-auto whitespace-pre-wrap font-mono text-code">
         {traceback || 'Notebook execution failed.'}
       </pre>
     );
@@ -83,18 +100,14 @@ function NotebookOutputView({
 
   const stream = joined(output.text);
   if (stream) {
-    return (
-      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-code text-text-default">
-        {stream}
-      </pre>
-    );
+    return <pre className="br-paper-nb-stream overflow-auto font-mono text-code">{stream}</pre>;
   }
 
   const data = output.data ?? {};
   const png = joined(data['image/png']);
   if (png) {
     return (
-      <div className="overflow-auto p-3">
+      <div className="br-paper-nb-figure overflow-auto">
         <img src={`data:image/png;base64,${png.replace(/\s/g, '')}`} alt="Notebook output" />
       </div>
     );
@@ -103,7 +116,7 @@ function NotebookOutputView({
   const jpeg = joined(data['image/jpeg']);
   if (jpeg) {
     return (
-      <div className="overflow-auto p-3">
+      <div className="br-paper-nb-figure overflow-auto">
         <img src={`data:image/jpeg;base64,${jpeg.replace(/\s/g, '')}`} alt="Notebook output" />
       </div>
     );
@@ -112,7 +125,7 @@ function NotebookOutputView({
   const svg = joined(data['image/svg+xml']);
   if (svg) {
     return (
-      <div className="overflow-auto p-3">
+      <div className="br-paper-nb-figure overflow-auto">
         <img
           src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`}
           alt="Notebook output"
@@ -138,28 +151,29 @@ function NotebookOutputView({
 
   const markdown = joined(data['text/markdown']);
   if (markdown) {
-    return (
-      <div className="px-3 py-2">
-        <MarkdownContent content={markdown} />
-      </div>
-    );
+    return <MarkdownContent content={markdown} className="br-paper-prose" softLineBreaks />;
   }
 
   const plain = joined(data['text/plain']);
   if (plain) {
-    return (
-      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-code text-text-default">
-        {plain}
-      </pre>
-    );
+    return <pre className="br-paper-nb-stream overflow-auto font-mono text-code">{plain}</pre>;
   }
 
   const json = data['application/json'];
   if (json !== undefined) {
+    // Structured data is code-like, so it is highlighted like the cell above it
+    // — on the paper, not in a well: an output is the notebook's answer, and
+    // the well is reserved for the source that produced it.
     return (
-      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-code text-text-default">
+      <SyntaxHighlighter
+        style={codeThemesByFamily[themeFamily][resolvedTheme]}
+        language="json"
+        PreTag="div"
+        customStyle={{ margin: 0, padding: '2px 16px', background: 'transparent' }}
+        codeTagProps={{ style: { fontFamily: CODE_FONT_FAMILY, whiteSpace: 'pre-wrap' } }}
+      >
         {typeof json === 'string' ? json : JSON.stringify(json, null, 2)}
-      </pre>
+      </SyntaxHighlighter>
     );
   }
 
@@ -196,17 +210,23 @@ export default function NotebookPreview({
   }
 
   const notebook = parsed.notebook;
-  const language =
-    notebook.metadata?.language_info?.name || notebook.metadata?.kernelspec?.language || 'python';
+  // Normalised: an IRkernel notebook declares `R`, and Prism's registry is
+  // case-sensitive, so its cells used to render as unhighlighted text.
+  const language = normalizeCodeLanguage(
+    notebook.metadata?.language_info?.name || notebook.metadata?.kernelspec?.language || 'python'
+  );
   const kernel = notebook.metadata?.kernelspec?.display_name;
   const { directory, name } = splitPathForStrip(file.path);
   const cellCount = notebook.cells.length;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* The one status strip (design spec H): a 34px row on the panel ground
-          with a bottom hairline — the same strip every other file preview uses,
-          so the notebook reads in the panel's voice instead of its own. */}
+    // Paper, like every other text preview (see TextFilePreview): no cell cards.
+    // A cell is vertical rhythm on the page; a code cell's source sits in the
+    // same faint well a fenced block uses, its prompt hanging in the margin.
+    <div className="br-paper flex h-full min-h-0 flex-col">
+      {/* The one status strip (design spec H): a 34px row with a bottom
+          hairline — the same strip every other file preview uses, so the
+          notebook reads in the panel's voice instead of its own. */}
       <div
         data-testid="artifact-status-strip"
         className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5"
@@ -225,8 +245,9 @@ export default function NotebookPreview({
           </span>
         )}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto max-w-5xl space-y-3 p-4">
+      <div className="br-paper-scroll min-h-0 flex-1 overflow-auto">
+        {/* PROVISIONAL `br-paper-measure` — see MarkdownDocument in ArtifactViewer. */}
+        <div className="br-paper-measure br-paper-nb">
           {notebook.cells.map((cell, index) => {
             const source = joined(cell.source);
             const executionLabel = cell.execution_count ?? ' ';
@@ -235,9 +256,10 @@ export default function NotebookPreview({
                 <section
                   key={index}
                   aria-label={`Markdown cell ${index + 1}`}
-                  className="rounded-container border border-border-subtle bg-background-default px-4 py-3"
+                  className="br-paper-nb-cell"
+                  data-kind="markdown"
                 >
-                  <MarkdownContent content={source} />
+                  <MarkdownContent content={source} className="br-paper-prose" softLineBreaks />
                 </section>
               );
             }
@@ -247,35 +269,31 @@ export default function NotebookPreview({
                 <section
                   key={index}
                   aria-label={`Code cell ${index + 1}`}
-                  className="overflow-hidden rounded-container border border-border-subtle bg-background-default"
+                  className="br-paper-nb-cell"
+                  data-kind="code"
                 >
-                  <div className="flex min-w-0">
-                    {/* The execution gutter: mono metadata, `tabular-nums` so the
-                        counter does not shift the code as it widens. */}
-                    <div className="w-[72px] shrink-0 px-2 py-3 text-right font-mono text-supporting tabular-nums text-text-muted">
-                      In [{executionLabel}]:
-                    </div>
-                    <div className="min-w-0 flex-1 overflow-auto border-l border-border-subtle">
-                      <SyntaxHighlighter
-                        style={codeThemesByFamily[themeFamily][resolvedTheme]}
-                        language={language}
-                        PreTag="div"
-                        customStyle={{ margin: 0, padding: '12px 14px', background: 'transparent' }}
-                        codeTagProps={{
-                          style: { fontFamily: CODE_FONT_FAMILY, whiteSpace: 'pre' },
-                        }}
-                      >
-                        {source.replace(/\r?\n$/, '')}
-                      </SyntaxHighlighter>
-                    </div>
+                  {/* The execution prompt: mono metadata, `tabular-nums` so the
+                      counter does not shift as it widens. */}
+                  <div className="br-paper-nb-prompt" aria-hidden="true">
+                    [{executionLabel}]
+                  </div>
+                  <div className="br-paper-well br-paper-nb-source">
+                    <SyntaxHighlighter
+                      style={codeThemesByFamily[themeFamily][resolvedTheme]}
+                      language={language}
+                      PreTag="div"
+                      customStyle={{ margin: 0, padding: '12px 16px', background: 'transparent' }}
+                      codeTagProps={{
+                        style: { fontFamily: CODE_FONT_FAMILY, whiteSpace: 'pre' },
+                      }}
+                    >
+                      {source.replace(/\r?\n$/, '')}
+                    </SyntaxHighlighter>
                   </div>
                   {(cell.outputs?.length ?? 0) > 0 && (
-                    <div className="border-t border-border-subtle">
+                    <div className="br-paper-nb-outputs">
                       {cell.outputs?.map((output, outputIndex) => (
-                        <div
-                          key={outputIndex}
-                          className={cn(outputIndex > 0 && 'border-t border-border-subtle')}
-                        >
+                        <div key={outputIndex} className="br-paper-nb-output">
                           <NotebookOutputView
                             output={output}
                             resolvedTheme={resolvedTheme}
@@ -293,9 +311,10 @@ export default function NotebookPreview({
               <section
                 key={index}
                 aria-label={`Raw cell ${index + 1}`}
-                className="overflow-auto whitespace-pre-wrap rounded-container border border-border-subtle bg-background-default p-4 font-mono text-code"
+                className="br-paper-nb-cell"
+                data-kind="raw"
               >
-                {source}
+                <pre className="br-paper-nb-stream overflow-auto font-mono text-code">{source}</pre>
               </section>
             );
           })}

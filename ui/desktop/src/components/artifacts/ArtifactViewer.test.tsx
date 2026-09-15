@@ -1280,6 +1280,117 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.getAllByRole('row')).toHaveLength(3);
   });
 
+  // Paper: a data table reads by column. Numbers are marked so they right-align
+  // in tabular figures, a sentence column is clipped to one line (so an
+  // off-screen wrap cannot set the height of the rows you can see), and a
+  // missing value is marked so it can recede.
+  it('marks numeric, sentence and missing cells in a written CSV', async () => {
+    installElectronMock();
+    const description = 'MYC proto-oncogene, bHLH transcription factor; master regulator';
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'deseq.csv',
+      path: '/work/deseq.csv',
+      mimeType: 'text/csv',
+      text: `gene,padj,description\nMYC,1.264e-03,"${description}"\nCDK4,NA,cyclin dependent kinase 4 regulator of the G1 phase\n`,
+      size: 160,
+      found: true,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'deseq.csv', path: '/work/deseq.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('columnheader', { name: 'padj' })).toBeInTheDocument();
+    });
+    expect(screen.getByRole('columnheader', { name: 'padj' })).toHaveAttribute('data-numeric');
+    expect(screen.getByRole('columnheader', { name: 'gene' })).not.toHaveAttribute('data-numeric');
+    expect(screen.getByRole('cell', { name: 'NA' })).toHaveAttribute('data-missing');
+    expect(screen.getByTitle(description)).toHaveClass('br-paper-cell-clip');
+    // The strip states the table's shape instead of a line count.
+    expect(screen.getByText(/2 rows × 3/)).toBeInTheDocument();
+  });
+
+  // R Markdown opens with YAML front matter and ```{r setup} chunks. Unhandled,
+  // the front matter became a stack of bold setext headings and every chunk
+  // rendered as unhighlighted text, because `language-{r` never matched.
+  it('lifts R Markdown front matter into a title and highlights {r} chunks', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'methods.Rmd',
+      path: '/work/methods.Rmd',
+      mimeType: 'text/markdown',
+      text:
+        '---\ntitle: "Methods"\nauthor: "Baranzini Lab"\nparams:\n  fdr: 0.05\n---\n\n' +
+        '```{r setup, include=FALSE}\nlibrary(DESeq2)\nx <- TRUE\n```\n\n' +
+        'A paragraph hard-wrapped\nat the source width.\n',
+      size: 200,
+      found: true,
+    });
+
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'methods.Rmd', path: '/work/methods.Rmd' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1, name: 'Methods' })).toBeInTheDocument();
+    });
+    expect(screen.getByText('Baranzini Lab')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /params/ })).not.toBeInTheDocument();
+    // Nothing the file says is dropped: the rest sits behind a disclosure.
+    expect(screen.getByText('Front matter')).toBeInTheDocument();
+    const chunk = container.querySelector('.br-paper-doc > .br-paper-prose .biorouter-md-code');
+    expect(chunk).not.toBeNull();
+    expect(chunk!.querySelector('.token')).not.toBeNull();
+    // A markdown FILE soft-wraps: the source's hard wrap is a space, not <br>.
+    const paragraph = screen.getByText(/A paragraph hard-wrapped/);
+    expect(paragraph.querySelector('br')).toBeNull();
+  });
+
+  it('highlights a .txt that is really a run log', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'run.txt',
+      path: '/work/run.txt',
+      mimeType: 'text/plain',
+      text:
+        '2026-09-14 08:05:51 INFO  [nextflow] Launching\n' +
+        '2026-09-14 08:31:13 WARN  [process] retrying\n' +
+        '2026-09-14 08:48:05 ERROR [multiqc] truncated\n',
+      size: 130,
+      found: true,
+    });
+
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'run.txt', path: '/work/run.txt' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText('3 lines')).toBeInTheDocument());
+    // As `text` this rendered zero token spans; the log grammar marks the levels.
+    expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(2);
+  });
+
   it('renders a written HTML file with a Preview/Raw toggle', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({

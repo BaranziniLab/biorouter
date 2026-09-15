@@ -75,35 +75,72 @@ export function extensionFromPath(value: string): string {
 
 // Extension -> Prism language. Anything missing falls through to the extension
 // itself (Prism knows `r`, `sql`, `go`, `json`, …), then to plain text.
+//
+// The bioinformatics rows are the ones an agent in this app actually writes and
+// that the extension alone got wrong: a Nextflow `.nf` reached Prism as `nf`
+// (unregistered, so plain) and a `.log` was forced to `text` although refractor
+// ships a `log` grammar.
 const PRISM_LANGUAGES: Record<string, string> = {
   bash: 'bash',
+  bat: 'batch',
   cc: 'cpp',
+  cfg: 'ini',
+  cjs: 'javascript',
   cs: 'csharp',
   conf: 'ini',
+  cts: 'typescript',
+  cwl: 'yaml',
+  env: 'bash',
   h: 'c',
   hpp: 'cpp',
   htm: 'html',
+  jl: 'julia',
   js: 'javascript',
+  jsonc: 'json',
   jsonl: 'json',
   jsx: 'jsx',
-  log: 'text',
+  kt: 'kotlin',
+  log: 'log',
   markdown: 'markdown',
   md: 'markdown',
+  mjs: 'javascript',
+  mk: 'makefile',
+  mts: 'typescript',
+  // Nextflow is a Groovy DSL; Prism has no grammar of its own for it.
+  nf: 'groovy',
+  pl: 'perl',
+  pm: 'perl',
+  ps1: 'powershell',
   py: 'python',
   // R Markdown / Quarto are markdown with fenced R chunks.
   qmd: 'markdown',
+  rb: 'ruby',
   rmd: 'markdown',
   rs: 'rust',
   sh: 'bash',
+  // Snakemake rules are Python with a few keywords on top.
+  smk: 'python',
+  svg: 'xml',
+  tex: 'latex',
   toml: 'toml',
   ts: 'typescript',
   tsx: 'tsx',
   txt: 'text',
   yml: 'yaml',
+  zsh: 'bash',
+};
+
+// Files named by convention rather than by extension.
+const PRISM_BASENAMES: Record<string, string> = {
+  dockerfile: 'docker',
+  makefile: 'makefile',
+  snakefile: 'python',
 };
 
 export function languageFromPath(value: string, mimeType?: string): string {
   const ext = extensionFromPath(value);
+  const byName = PRISM_BASENAMES[basenameFromPath(value).toLowerCase()];
+  if (byName) return byName;
   const mapped = PRISM_LANGUAGES[ext];
   if (mapped) return mapped;
   if (ext) return ext;
@@ -113,20 +150,177 @@ export function languageFromPath(value: string, mimeType?: string): string {
   return 'text';
 }
 
+// A timestamp or a level word at the start of a line — the two shapes every
+// pipeline runner, scheduler and aligner in this domain prints.
+const LOG_LINE_RE =
+  /^\s*(?:\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|\[?\d{2}:\d{2}:\d{2}|\[?(?:TRACE|DEBUG|INFO|NOTICE|WARN(?:ING)?|ERROR|FATAL|CRITICAL)\b)/;
+
+/**
+ * True when a plain-text file is really a log: at least a third of its first
+ * non-empty lines open with a timestamp or a level. Agents write run output to
+ * `.txt` as often as to `.log`, and a log reads far better with its levels,
+ * dates and numbers picked out. Prose `.txt` stays plain — the `log` grammar
+ * colours stray numbers and quotes, which is noise in a paragraph.
+ */
+export function looksLikeLog(text: string): boolean {
+  const lines = text
+    .split(/\r?\n/, 200)
+    .filter((line) => line.trim() !== '')
+    .slice(0, 60);
+  if (lines.length < 3) return false;
+  const hits = lines.filter((line) => LOG_LINE_RE.test(line)).length;
+  return hits / lines.length >= 1 / 3;
+}
+
+/** The Prism language for a text file, using its CONTENT where the name is not enough. */
+export function languageForText(path: string, mimeType: string | undefined, text: string): string {
+  const language = languageFromPath(path, mimeType);
+  return language === 'text' && looksLikeLog(text) ? 'log' : language;
+}
+
+// Fence / kernel names that are not Prism names. Prism's own aliases already
+// cover `py`, `sh`, `shell`, `yml`, `js`; this is only what they miss.
+const FENCE_LANGUAGE_ALIASES: Record<string, string> = {
+  console: 'shell-session',
+  ipython: 'python',
+  ipython3: 'python',
+  ir: 'r',
+  jl: 'julia',
+  nextflow: 'groovy',
+  nf: 'groovy',
+  plain: 'text',
+  plaintext: 'text',
+  python3: 'python',
+  rscript: 'r',
+  snakemake: 'python',
+  txt: 'text',
+  zsh: 'bash',
+};
+
+/**
+ * Normalise a fenced-block info string or a notebook kernel language to a Prism
+ * language name.
+ *
+ * Two real misses this closes: R Markdown / Quarto chunks are written
+ * ```` ```{r setup, include=FALSE} ````, which reaches the renderer as
+ * `language-{r` and never matched `/language-(\w+)/`; and an IRkernel notebook
+ * declares its language as `R`, and Prism's registry is case-sensitive.
+ */
+export function normalizeCodeLanguage(raw: string | null | undefined): string {
+  const name = (raw ?? '')
+    .trim()
+    .replace(/^\{/, '')
+    .split(/[\s,}]/)[0]
+    .toLowerCase();
+  if (!name) return 'text';
+  return FENCE_LANGUAGE_ALIASES[name] ?? name;
+}
+
+/**
+ * Split a leading YAML front-matter block off a markdown document.
+ *
+ * R Markdown, Quarto and most static-site markdown open with one. Unsplit, the
+ * `---` fences read as a setext heading rule and every `key: value` line became
+ * a bold heading.
+ */
+export function splitFrontMatter(text: string): { frontMatter: string | null; body: string } {
+  const match = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/.exec(text);
+  if (!match) return { frontMatter: null, body: text };
+  return { frontMatter: match[1], body: text.slice(match[0].length) };
+}
+
+/**
+ * The document-header fields of a front-matter block, and whatever is left.
+ *
+ * Only top-level SCALAR `title` / `subtitle` / `author` / `date` are lifted; a
+ * list-valued author or anything nested stays in `rest`, verbatim, so nothing
+ * the file says is ever dropped from the preview.
+ */
+export function frontMatterFields(yaml: string): {
+  title?: string;
+  subtitle?: string;
+  byline: string[];
+  rest: string;
+} {
+  const fields: Record<string, string> = {};
+  const rest: string[] = [];
+  for (const line of yaml.split(/\r?\n/)) {
+    const match = /^(title|subtitle|author|date):[ \t]*(\S.*?)[ \t]*$/.exec(line);
+    if (match && !fields[match[1]]) {
+      fields[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2');
+    } else {
+      rest.push(line);
+    }
+  }
+  return {
+    title: fields.title,
+    subtitle: fields.subtitle,
+    byline: [fields.author, fields.date].filter((value): value is string => Boolean(value)),
+    rest: rest.join('\n').trim(),
+  };
+}
+
+const MISSING_CELL_VALUES = new Set(['', 'na', 'nan', 'null', 'none', 'n/a', '#n/a']);
+const NUMERIC_CELL_RE = /^[-+\u2212]?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d+)?(?:[eE][-+]?\d+)?%?$/;
+
+/** An empty cell or one of the spellings R, pandas and Excel write for "no value". */
+export function isMissingCell(value: string): boolean {
+  return MISSING_CELL_VALUES.has(value.trim().toLowerCase());
+}
+
+/**
+ * Per-column reading hints for a delimited table.
+ *
+ * `numeric`: at least 90% of the present values parse as a number (thousands
+ * separators, exponents and percentages included), so the column is set
+ * right-aligned in tabular figures and its digits line up. `prose`: the values
+ * are long enough to be sentences, so that column — and only that column — may
+ * wrap; every other cell stays on one line so an identifier or an exponent can
+ * never break mid-token.
+ */
+export function analyzeDelimitedColumns(
+  header: string[],
+  rows: string[][]
+): { numeric: boolean; prose: boolean }[] {
+  return header.map((_, index) => {
+    let present = 0;
+    let numeric = 0;
+    let length = 0;
+    for (const row of rows) {
+      const value = (row[index] ?? '').trim();
+      if (isMissingCell(value)) continue;
+      present++;
+      length += value.length;
+      if (/\d/.test(value) && NUMERIC_CELL_RE.test(value)) numeric++;
+    }
+    return {
+      numeric: present > 0 && numeric / present >= 0.9,
+      prose: present > 0 && length / present > 32,
+    };
+  });
+}
+
 // Names that title-casing gets wrong: acronyms ("Csv") and camel-cased brands
 // ("Typescript"). Keyed by the Prism language, or by extension where it differs.
 const LANGUAGE_LABELS: Record<string, string> = {
   bash: 'Shell',
+  batch: 'Batch',
   cpp: 'C++',
   csharp: 'C#',
   css: 'CSS',
   csv: 'CSV',
+  docker: 'Dockerfile',
   html: 'HTML',
   ini: 'INI',
   javascript: 'JavaScript',
   json: 'JSON',
   jsx: 'JSX',
+  latex: 'LaTeX',
+  makefile: 'Makefile',
   markdown: 'Markdown',
+  matlab: 'MATLAB',
+  powershell: 'PowerShell',
+  sas: 'SAS',
   sql: 'SQL',
   text: 'Text',
   toml: 'TOML',
@@ -143,6 +337,8 @@ export function languageLabel(value: string, mimeType?: string): string {
   if (ext === 'r') return 'R';
   if (ext === 'rmd') return 'R Markdown';
   if (ext === 'qmd') return 'Quarto';
+  if (ext === 'nf') return 'Nextflow';
+  if (ext === 'smk' || basenameFromPath(value).toLowerCase() === 'snakefile') return 'Snakemake';
   const language = languageFromPath(value, mimeType);
   return LANGUAGE_LABELS[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
 }
