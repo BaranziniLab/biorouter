@@ -12,6 +12,7 @@ activities:
   - Test extension discovery and management
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
   - Verify session-anchored file links and live updates without losing preview edits
+  - Exercise paper previews, syntax highlighting, and responsive panel motion
   - Build, lint, and execute an Apps SDK v2 reference app
   - Create and orchestrate subagents for meta-testing
   - Validate live steering, detached supervision, close-tab survival, and provider restoration
@@ -315,9 +316,10 @@ prompt: |
   4. Create a small fictional queue-option report at {{ workspace_dir }}/preview-links/reports/summary.md. Resolve and verify its absolute path, then include a clickable link to that exact file in the response. In a later response, refer to the same unique `summary.md`; verify that the desktop opens the same file. A qualified relative link must instead resolve from the actual session working directory. An ambiguous basename must not silently open a different file.
   5. With the report open, update a numeric value using the same byte width and recompute its comparison. Require the existing preview to update after the successful write, without opening another tab. Update the existing self-test app's visible title through the current tool schema and include a small editable notes field for the next check, rebuilding if necessary; require its existing managed preview to update at the same URL.
   6. In the desktop, type an unsaved form value and blur the field before another app update. Require an explicit Update ready action, with the typed value intact. Annotation, resize, and active or reconnecting app work must also defer automatic reload. Explicit refresh must retain app IndexedDB state. External websites must not reload because a local tool finished. Do not broaden network or private-file permissions to pass these checks.
-  7. Record setup, exact verified file links, successful write/build results, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md. If desktop interaction is unavailable, record click navigation, same-tab visual updates, and edit preservation as NOT OBSERVABLE, never PASS; source-file existence is not GUI evidence.
+  7. Create small synthetic Markdown, CSV, TSV, Python, R, and plain-text fixtures under {{ workspace_dir }}/preview-links only. Include repeated text `LYCHEE5` and a long code line. Verify the exact saved contents and return clickable absolute links. In the desktop, inspect the paper ground, syntax tokens, orange selection, and horizontal scrolling. Repeatedly open and close the panel, resize the actual window between stacked and side layouts, and check that an embedded page keeps its unsaved value. Enable Reduce Motion and verify that transitions stop. A delayed older open must not replace a newer file or reopen a closed panel. Never use a DevTools viewport override as evidence of a real window resize.
+  8. Record setup, exact verified file links, successful write/build results, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md. If desktop interaction is unavailable, record click navigation, same-tab visual updates, edit preservation, styling, and motion as NOT OBSERVABLE, never PASS; source-file existence is not GUI evidence.
   {% if cleanup_after == "true" %}
-  8. After recording the result, call `delete_app` for exactly `{{ preview_app_id }}` only if this run created it. Preserve every pre-existing app, including on failure.
+  9. After recording the result, call `delete_app` for exactly `{{ preview_app_id }}` only if this run created it. Preserve every pre-existing app, including on failure.
   {% endif %}
   {% endif %}
   
