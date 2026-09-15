@@ -1,4 +1,12 @@
-import React, { useState, useEffect, useRef, memo, useMemo, createContext, useContext } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  memo,
+  useMemo,
+  createContext,
+  useContext,
+} from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Options } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -557,7 +565,9 @@ const MarkdownCode = memo(
     const text = String(children);
     const insideLink = useContext(InsideLinkContext);
     const artifact =
-      !match && !insideLink ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths) : null;
+      !match && !insideLink
+        ? artifactSourceFromMarkdownValue(text, workingDir, knownFilePaths)
+        : null;
     return !inline && match ? (
       <CodeBlock
         language={normalizeCodeLanguage(match[1])}

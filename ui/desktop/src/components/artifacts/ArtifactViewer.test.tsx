@@ -8,11 +8,7 @@ import MarkdownContent from '../MarkdownContent';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
-import {
-  artifactSourceFromResource,
-  PAPER_GUTTER_EM,
-  titleFromResourceUri,
-} from './artifactUtils';
+import { artifactSourceFromResource, PAPER_GUTTER_EM, titleFromResourceUri } from './artifactUtils';
 import {
   onArtifactAnnotation,
   resetAnnotationChannelForTests,
@@ -1337,9 +1333,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     // The header's filler carries the overflow hint through the opaque sticky
     // header row (main.css, `.br-paper-fill-hint`).
     expect(
-      screen.getAllByRole('row')[0].lastElementChild!.querySelector(
-        '.br-paper-fill-hint'
-      )
+      screen.getAllByRole('row')[0].lastElementChild!.querySelector('.br-paper-fill-hint')
     ).not.toBeNull();
   });
 

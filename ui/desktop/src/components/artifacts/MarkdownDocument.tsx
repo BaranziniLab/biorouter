@@ -32,7 +32,7 @@ export default function MarkdownDocument({
     // wrapper (`.br-preview-measure`); swap this class for theirs when it lands.
     // The prose styling does not depend on which one it is.
     <article className="br-paper-measure br-paper-doc">
-      {header && (header.title || header.byline.length > 0 || header.rest) && (
+      {header && (header.title || header.subtitle || header.byline.length > 0 || header.rest) && (
         <header className="br-paper-frontmatter">
           {header.title && <h1 className="br-paper-title">{header.title}</h1>}
           {header.subtitle && <p className="br-paper-subtitle">{header.subtitle}</p>}

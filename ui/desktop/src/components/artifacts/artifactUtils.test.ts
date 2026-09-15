@@ -467,6 +467,18 @@ describe('front matter', () => {
     expect(fields.rest).toBe('output:\n  html_document:\n    toc: true\nparams:\n  fdr: 0.05');
   });
 
+  it.each([
+    'title: >-\n  A wrapped title',
+    'author: [Alice, Bob]',
+    'title: |\n  A literal title',
+    'title: First line\n  continued',
+  ])('keeps structured header YAML intact: %s', (yaml) => {
+    const fields = frontMatterFields(yaml);
+    expect(fields.title).toBeUndefined();
+    expect(fields.byline).toEqual([]);
+    expect(fields.rest).toBe(yaml);
+  });
+
   it('does not lift a list-valued author', () => {
     const fields = frontMatterFields('author:\n  - A. Person\n  - B. Person');
     expect(fields.byline).toEqual([]);

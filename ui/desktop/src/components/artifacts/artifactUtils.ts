@@ -263,9 +263,14 @@ export function frontMatterFields(yaml: string): {
 } {
   const fields: Record<string, string> = {};
   const rest: string[] = [];
-  for (const line of yaml.split(/\r?\n/)) {
+  const lines = yaml.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
     const match = /^(title|subtitle|author|date):[ \t]*(\S.*?)[ \t]*$/.exec(line);
-    if (match && !fields[match[1]]) {
+    // Keep structured YAML intact in the disclosure instead of separating its
+    // key from a block value or lifting a collection as a literal heading.
+    const structured =
+      match && (/^[>|[\]{}&*!#]/.test(match[2]) || /^\s+\S/.test(lines[index + 1] ?? ''));
+    if (match && !structured && !fields[match[1]]) {
       fields[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2');
     } else {
       rest.push(line);

@@ -150,7 +150,7 @@ describe('artifact panel paper', () => {
     expect(ruleBody('.br-paper-table .br-paper-fill')).toContain('width: auto;');
     expect(ruleBody('.br-paper-table')).toContain('width: max-content;');
     expect(ruleBody('.br-paper-table')).toContain(
-      'min-width: calc(var(--paper-column) + var(--paper-rownum-width));'
+      'min-width: min( calc(var(--paper-column) + var(--paper-rownum-width)), calc(100cqw - var(--paper-lead) - var(--paper-gutter)) );'
     );
   });
 
