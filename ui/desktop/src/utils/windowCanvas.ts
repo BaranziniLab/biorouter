@@ -13,7 +13,9 @@
  * docs/desktop-ui/window-scaling-regressions.md ("Unpainted window area").
  *
  * The fix makes that fallback the app's own canvas, so a late frame reads as the
- * app still settling instead of as a hole. A chat window is created with the
+ * app still settling instead of as a hole. It does not make the frame any less late:
+ * the uncovered part is still there for as long as the frame is, in the canvas
+ * colour — which in light mode is the same white it always was. A chat window is created with the
  * canvas of the theme it last showed (remembered in settings) and the renderer
  * reports every resolved-theme change over `set-window-canvas`.
  *

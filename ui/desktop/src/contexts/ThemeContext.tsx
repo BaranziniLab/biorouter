@@ -135,8 +135,11 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
       const resolved = resolveTheme(preference);
       setResolvedTheme(resolved);
 
-      // Broadcast to other windows via Electron (carry the family so windows converge)
-      window.electron?.broadcastThemeChange({
+      // Broadcast to other windows via Electron (carry the family so windows converge).
+      // ⚠ Optional-called on the METHOD, not only the bridge: a `biorouter serve`
+      // browser installs a bridge with no other windows and no such method, and a
+      // throw here escaped every Mode and Palette click there (renderer.tsx).
+      window.electron?.broadcastThemeChange?.({
         mode: resolved,
         useSystemTheme: preference === 'system',
         theme: resolved,
@@ -152,7 +155,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
       saveThemeFamily(family);
       applyFamilyToDocument(family);
 
-      window.electron?.broadcastThemeChange({
+      window.electron?.broadcastThemeChange?.({
         mode: resolvedTheme,
         useSystemTheme: userThemePreference === 'system',
         theme: resolvedTheme,
@@ -204,7 +207,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
       }
     };
 
-    return window.electron.on('theme-changed', handleThemeChanged);
+    return window.electron.on?.('theme-changed', handleThemeChanged);
   }, []);
 
   // Apply theme to document whenever resolvedTheme changes — and to the native

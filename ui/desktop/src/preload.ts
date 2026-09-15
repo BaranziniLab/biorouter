@@ -307,7 +307,13 @@ type ElectronAPI = {
     callback: (event: Electron.IpcRendererEvent, ...args: unknown[]) => void
   ) => void;
   emit: (channel: string, ...args: unknown[]) => void;
-  broadcastThemeChange: (themeData: {
+  /**
+   * Tell the other windows the theme changed. Optional, so the compiler makes
+   * every caller optional-call it: the bridge `renderer.tsx` installs for a
+   * `biorouter serve` browser has no other windows and does not carry it, and a
+   * bare call threw inside every Appearance click there.
+   */
+  broadcastThemeChange?: (themeData: {
     mode: string;
     useSystemTheme: boolean;
     theme: string;

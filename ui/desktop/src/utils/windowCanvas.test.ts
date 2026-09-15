@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { THEME_FAMILY_IDS } from '../styles/themes.generated';
 import {
@@ -138,38 +139,104 @@ describe('WINDOW_CANVAS is the canvas main.css paints', () => {
 describe('the main-process half, read from main.ts and preload.ts', () => {
   const strip = (text: string) =>
     text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
-  const main = strip(readFileSync(join(__dirname, '../main.ts'), 'utf8'));
+  const mainText = readFileSync(join(__dirname, '../main.ts'), 'utf8');
+  const main = strip(mainText);
   const preload = strip(readFileSync(join(__dirname, '../preload.ts'), 'utf8'));
 
-  const slice = (source: string, marker: string, end: string) => {
-    const start = source.indexOf(marker);
-    expect(start, `${marker} missing`).toBeGreaterThan(-1);
-    const stop = source.indexOf(end, start);
-    expect(stop, `${marker} never closed by ${JSON.stringify(end)}`).toBeGreaterThan(start);
-    return source.slice(start, stop);
+  /**
+   * ⚠ Parsed, not sliced. This used to cut main.ts from the constructor to the
+   * first `webPreferences: {`, so an option written AFTER that block — which is
+   * exactly where the launcher's own `vibrancy` sits — was never read, and a
+   * `vibrancy` or `transparent` put back there passed every assertion. The
+   * TypeScript parser ends the object literal at its real closing brace, whatever
+   * is nested in it, and hands back its properties rather than a string to grep.
+   */
+  const mainAst = ts.createSourceFile('main.ts', mainText, ts.ScriptTarget.Latest, true);
+  const collect = <T extends ts.Node>(test: (node: ts.Node) => node is T): T[] => {
+    const found: T[] = [];
+    const visit = (node: ts.Node) => {
+      if (test(node)) found.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(mainAst);
+    return found;
+  };
+  const oneline = (node: ts.Node) => node.getText(mainAst).replace(/\s+/g, ' ');
+
+  /** The options object of `const <name> = new BrowserWindow({ … })`, whole. */
+  const windowOptions = (name: string): ts.ObjectLiteralExpression => {
+    const found = collect(
+      (node): node is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === name &&
+        !!node.initializer &&
+        ts.isNewExpression(node.initializer) &&
+        node.initializer.expression.getText(mainAst) === 'BrowserWindow'
+    );
+    expect(found, `exactly one \`const ${name} = new BrowserWindow(…)\``).toHaveLength(1);
+    const args = (found[0].initializer as ts.NewExpression).arguments ?? [];
+    expect(args, `${name}: one options argument`).toHaveLength(1);
+    expect(ts.isObjectLiteralExpression(args[0]), `${name}: options are an object literal`).toBe(
+      true
+    );
+    return args[0] as ts.ObjectLiteralExpression;
   };
 
-  /** The chat window's options: from its constructor to its webPreferences. */
-  const chatWindowOptions = () =>
-    slice(main, 'const mainWindow = new BrowserWindow({', 'webPreferences: {');
+  /** Its own top-level entries, by name; a spread is `...<expression>`. */
+  const topLevel = (options: ts.ObjectLiteralExpression) =>
+    options.properties.map((property) =>
+      ts.isSpreadAssignment(property)
+        ? `...${property.expression.getText(mainAst)}`
+        : property.name!.getText(mainAst).replace(/^['"]|['"]$/g, '')
+    );
+
+  const chatWindowOptions = () => windowOptions('mainWindow');
 
   it('gives the chat window an opaque background that is the app canvas', () => {
-    expect(chatWindowOptions()).toMatch(
-      /backgroundColor:\s*initialWindowCanvas\(\s*loadSettings\(\)\.windowCanvasMode,\s*nativeTheme\.shouldUseDarkColors\s*\)/
+    const background = chatWindowOptions().properties.filter(
+      (p) => p.name?.getText(mainAst) === 'backgroundColor'
+    );
+    expect(background, 'exactly one top-level backgroundColor').toHaveLength(1);
+    expect(oneline(background[0])).toMatch(
+      /^backgroundColor: initialWindowCanvas\( ?loadSettings\(\)\.windowCanvasMode, nativeTheme\.shouldUseDarkColors ?\)$/
     );
   });
 
   // ⚠ Either of these puts a colour the app never paints back behind the page:
-  // the material over the background, or no background at all.
+  // the material over the background, or no background at all. Read from the
+  // WHOLE options object, before and after webPreferences alike.
   it('gives the chat window no vibrancy and no transparency', () => {
-    expect(chatWindowOptions()).not.toMatch(/vibrancy/);
-    expect(chatWindowOptions()).not.toMatch(/transparent/);
-    // The launcher keeps both on purpose — it is a floating chip — so the
-    // assertions above are reading the chat window, not a file that lost them.
-    expect(slice(main, 'const launcherWindow = new BrowserWindow({', '});')).toMatch(/vibrancy:/);
+    const keys = topLevel(chatWindowOptions());
+    // The object really was read to its end: webPreferences is inside it, and
+    // so is what follows it.
+    expect(keys).toContain('webPreferences');
+    expect(keys).not.toContain('vibrancy');
+    expect(keys).not.toContain('transparent');
+    // A spread could carry either key in without naming it here.
+    expect(keys.filter((k) => k.startsWith('...'))).toEqual([]);
+    // Nor put back after construction.
+    expect(main).not.toMatch(/\.setVibrancy\(/);
+    // The launcher keeps both on purpose — it is a floating chip — and writes
+    // `vibrancy` after its webPreferences, so this proves the reader sees an
+    // option in exactly the position the old slice could not.
+    const launcher = topLevel(windowOptions('launcherWindow'));
+    expect(launcher).toContain('vibrancy');
+    expect(launcher.indexOf('vibrancy')).toBeGreaterThan(launcher.indexOf('webPreferences'));
   });
 
-  const handler = () => slice(main, "ipcMain.on('set-window-canvas'", '\n  });');
+  /** The `set-window-canvas` listener, to the balanced end of its call. */
+  const handler = () => {
+    const found = collect(
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        node.expression.getText(mainAst) === 'ipcMain.on' &&
+        ts.isStringLiteral(node.arguments[0]) &&
+        node.arguments[0].text === 'set-window-canvas'
+    );
+    expect(found, "exactly one ipcMain.on('set-window-canvas', …)").toHaveLength(1);
+    return strip(found[0].getText(mainAst));
+  };
 
   it('lets a renderer set only one of the two canvases, never a colour', () => {
     const h = handler();

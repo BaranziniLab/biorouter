@@ -3,8 +3,9 @@
 > **What this is.** The recurring regression where resizing the Biorouter window
 > stops changing the layout, the one product cause behind it, and the four ways
 > the same symptom appears when nothing is wrong with the app at all — plus its
-> sibling, a window that shows an area with **no app pixels at all** while it is
-> dragged or resized, which was a product defect in the window's native background.
+> sibling: while the window is dragged or resized, a frame that arrives late leaves
+> part of the window uncovered, and until 2026-09-14 that part showed a colour the
+> app never paints. Now it shows the app's canvas; the lag itself remains.
 > **Status:** Current.
 > **Audience:** anyone who has just been told "the app doesn't rescale", and
 > agents driving the dev GUI.
@@ -42,7 +43,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
 | Everything tracks, but the view is **Settings**, **Home**, **Chat history** or a saved/shared transcript, and its column stops at 760px | **Not a layout bug.** All of them read the chat measure by decision — see *Settings and Chat history, on the chat measure* below. |
 | Everything tracks, but content stays the same width | **The real one.** A fixed pixel cap — see below. |
-| Part of the window is a flat area with **no app pixels** — no tabs, no borders, no text — while `inner` = `outer` | **A different symptom.** The window's native background is showing where the renderer's last frame does not reach — see *Unpainted window area* below. If `inner` ≠ `outer`, it is the viewport pin instead. |
+| Part of the window has no live layout — a flat area, or a stale copy of what was there — while the window is dragged or resized | **A different symptom**, and what the area looks like does not tell you which. If `inner` ≠ `outer`, it is the viewport pin. If `inner` = `outer`, a frame is late and the window's native background shows where it does not reach — see *Unpainted window area* below. |
 
 ## The real product cause: a fixed pixel cap
 
@@ -237,7 +238,7 @@ left on the default size — and that none of them declares a second `max-w-*`, 
 silently take precedence over the column. The widths themselves were measured in
 the running app.
 
-## Unpainted window area: a band with no app pixels (2026-09-14)
+## Unpainted window area: what a late frame uncovers (2026-09-14)
 
 **Symptom.** While the window is dragged or resized, part of it is a flat area with
 nothing of the app in it — no tab strip, no borders, no text — usually a band along
@@ -269,21 +270,45 @@ sits between them:
   removing vibrancy left Electron's `#FFF` showing; setting `#131312` with vibrancy
   kept left the material on top of it. Only the pair made the band dark.
 
+**What it does not do.** It does not make a frame arrive sooner. A frame that is late
+still leaves part of the window without current content, for as long as it is late;
+what changed is only the colour of that part, which is now the app's canvas and never
+a colour the app does not paint. Under the `stall` amplifier below (the GPU process
+stopped for 2 s around a grow from 1150×800 to 1560×820), the fixed build still shows
+the stale 1150-wide frame extended by about 410 px for about 100 frames — in the dark
+canvas where it had been white. Measured twice: about 105 frames by the independent
+verification, and 102 of 177 frames on the final build (`measure.sh` given an
+impossible canvas, `0,0,255`, so the canvas-coloured edge counts: a 468 px flat right
+edge, 410 px of extension plus the page's own margin, then the repainted 278 px
+margin). With the real canvas the same run counts 0. And the light canvas **is** white
+(`#FFFFFF`), so in light mode on this machine the band looks the same before and after;
+the difference is visible in dark mode, and wherever the band used to cover the
+sidebar.
+
 **Why no rendered test catches it.** jsdom has no window, no compositor and no late
 frame. `utils/windowCanvas.test.ts` therefore asserts at the source: the chat
-window's options carry the canvas and neither `vibrancy` nor `transparent`, the IPC
-handler validates the mode and checks `windowMap` before it paints, and every
-`--background-app` in `main.css` resolves to `WINDOW_CANVAS`.
+window's options carry the canvas and no top-level `vibrancy`, `transparent` or
+spread, the IPC handler validates the mode and checks `windowMap` before it paints,
+and every `--background-app` in `main.css` resolves to `WINDOW_CANVAS`.
 `contexts/ThemeContext.windowCanvas.test.tsx` drives the real theme buttons and an
 OS flip and reads what reached the bridge. Each assertion was broken on purpose once
 and went red for that reason.
+
+⚠ The options are read with the TypeScript parser, to the object's real closing
+brace. The first version sliced `main.ts` from the constructor to the first
+`webPreferences: {`, so a `vibrancy` or `transparent` written after that block —
+where the launcher's own `vibrancy` sits — passed all 25 tests; an independent
+verification found it by mutation. A source guard that reads a window of text is
+only as good as the guess about where the thing it guards will be written.
 
 ### How to measure it
 
 `ui/desktop/scripts/window-paint/measure.sh` captures **only the app's window** at
 about 50 frames a second while one driver runs, and counts frames with an
 unpainted band (a column or row block at the edge that is flat and is not the
-canvas colour). It never records the screen.
+canvas colour). It never records the screen. By construction it cannot see a band
+in the canvas colour, so after this change a `0` means "no colour the app does not
+paint", not "no late frame".
 
 ```bash
 source ~/biorouter-runs/fx-<run>/state.env    # your OWN instance
@@ -329,6 +354,7 @@ is this change on `b7e7bfcc`. Frames with a band / frames captured:
 | The same, region capture of the band **on screen** | 73 / 9 | every frame `255,255,255` | every frame `20,20,19` |
 | Theme clicked Light, then Dark, in Settings; then the stall | — / 10 | — | 0/178 |
 | Negative control: renderer reports `light` while dark; the stall | — / 10 | — | 111/194 white |
+| Final build (follow-up commit), stepped shrink as above, three runs; then its negative control | — / 33–37 | — | 0/195, 0/189, 0/190; control 34/185, a white 18–28 px sliver |
 
 Two variants built only to separate the causes (not shipped): no vibrancy with the
 default background, 76/175 white; vibrancy with a `#131312` background, 104/177
@@ -338,12 +364,24 @@ ground is the same colour, and the rounded corners are transparent in both.
 
 ### Telling it from the viewport pin
 
-A DevTools pin (*Viewport emulation*, below) also leaves a band beside the page,
-white in both themes. The difference is time: a pin **persists**, survives moving
-the window and reads `inner` ≠ `outer`, while this band lives exactly as long as
-the compositor is late and `inner` = `outer` throughout. A band you can still
-screenshot seconds later on an instance whose `inner` = `outer` is a compositor that
-is badly starved, or a hidden window — not a pin.
+A DevTools pin (*Viewport emulation*, below) also leaves part of the window outside
+the live layout, and **what that part looks like is not a test**. Measured on the
+fixed build: a pin set with `Emulation.setDeviceMetricsOverride` — 700×800 inside an
+1150×800 window, and 1048×720 inside 1440×1000 — leaves a **ghost of the last
+full-size frame** outside the emulated viewport, in both themes: stale heatmap cells, a
+duplicate toast, a second composer, sidebar rows. The ghost survives moving the
+window. On `b7e7bfcc` without this change the same area was flat white. So a pin
+can show a stale ghost or a flat area, and a late frame can leave stale content or a
+flat area too; never identify either by its colour.
+
+The reliable test is the viewport: `innerWidth` ≠ `outerWidth` is a pin. One command
+answers it — `launch-dev-gui.sh viewport <run>` for an instance you launched, or
+`npm run cdp:viewport-check -- <port>` for any CDP port (both also compare the height,
+allowing for the title bar). A late frame reads `inner` = `outer` throughout and lives
+exactly as long as the compositor is late, while a pin **persists**. Something you can
+still screenshot seconds later on an instance whose `inner` = `outer` is a badly
+starved compositor, a hidden window, or an orphaned pin taken at exactly the window's
+size (blind spot 1 under *Viewport emulation*) — not a late frame you can ignore.
 
 ### What the 2026-09-14 report was
 

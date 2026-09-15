@@ -1,9 +1,10 @@
 #!/bin/bash
 # measure.sh <electron-pid> <out-dir> <canvas R,G,B> <driver> [args...]
 #
-# Does the Biorouter window ever show an area with no app pixels while it is resized
-# or moved? Captures ONLY that window at ~50 frames/s (wincap) while one driver runs,
-# and prints how many frames carried an unpainted band. See
+# Does the Biorouter window ever show a colour the app does not paint while it is
+# resized or moved? Captures ONLY that window at ~50 frames/s (wincap) while one driver
+# runs, and prints how many frames carried an unpainted band. It cannot see a late
+# frame whose uncovered part is the canvas colour, so 0 does not mean "no lag". See
 # docs/desktop-ui/window-scaling-regressions.md, "Unpainted window area".
 #
 # drivers
