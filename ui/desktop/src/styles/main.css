@@ -3835,6 +3835,11 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   display: none;
 }
 
+/* A folded sheet's chevron points down: the way it will open. */
+.br-preview-fold-toggle[aria-expanded='false'] > svg {
+  rotate: 180deg;
+}
+
 /* A FRESH SHEET TAKES NO ROOM UNTIL IT KNOWS ITS HEIGHT. While its content is
    reporting (`useArtifactPanel`'s measuring phase) the sheet's row is 0, so the
    conversation does not move; the panel is laid out at the default height —

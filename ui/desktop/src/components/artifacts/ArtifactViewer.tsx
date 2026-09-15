@@ -1485,11 +1485,9 @@ export default function ArtifactViewer({
               aria-label={folded ? 'Show the preview' : 'Fold the preview to its tabs'}
               title={folded ? 'Show the preview' : 'Fold the preview to its tabs'}
             >
-              {folded ? (
-                <ChevronDown className="h-4 w-4" aria-hidden="true" />
-              ) : (
-                <ChevronUp className="h-4 w-4" aria-hidden="true" />
-              )}
+              {/* One glyph, turned by main.css when folded: swapping two icons
+                  would mount and unmount an element on every fold. */}
+              <ChevronUp className="h-4 w-4" aria-hidden="true" />
             </button>
           )}
           <button

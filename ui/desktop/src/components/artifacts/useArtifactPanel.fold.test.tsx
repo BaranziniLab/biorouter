@@ -309,6 +309,17 @@ describe('rung 2 — a crossing re-renders attributes, never the panel', () => {
         <ArtifactViewer {...props} layout="side" />
       </ThemeProvider>
     );
+    // Folding and unfolding turn one glyph; they mount nothing either.
+    rerender(
+      <ThemeProvider>
+        <ArtifactViewer {...props} layout="stack" folded />
+      </ThemeProvider>
+    );
+    rerender(
+      <ThemeProvider>
+        <ArtifactViewer {...props} layout="stack" folded={false} />
+      </ThemeProvider>
+    );
     await Promise.resolve();
     observer.disconnect();
 
