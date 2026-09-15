@@ -5321,7 +5321,6 @@ mod tests {
                         workflow_name: None,
                         workflow_version: None,
                         turn_id: turn_id.map(str::to_string),
-                        expected_turn_id: None,
                         continuation_lease: None,
                         reasoning_effort: None,
                         from_seq: None,
