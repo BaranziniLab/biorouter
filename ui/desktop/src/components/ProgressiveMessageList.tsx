@@ -63,6 +63,8 @@ interface ProgressiveMessageListProps {
   lastMessageAt?: number;
   /** BR-61: a soft interrupt awaiting the agent, shown as a trailing chip. */
   pendingSteer?: PendingSteer;
+  /** D4: re-send the text of a steer the daemon stored as unanswered. */
+  onSendAgain?: (text: string) => void;
   /**
    * Whether the reader can stop the running turn from this tab. Only a
    * delegated subagent's tab in a browser answers false: it has no composer
@@ -91,6 +93,7 @@ export default function ProgressiveMessageList({
   turnStartedAt,
   lastMessageAt,
   pendingSteer,
+  onSendAgain,
   canStopTurn = true,
 }: ProgressiveMessageListProps) {
   const [renderedCount, setRenderedCount] = useState(() => {
@@ -298,7 +301,11 @@ export default function ProgressiveMessageList({
           >
             {isUser ? (
               !hasOnlyToolResponses(message) && (
-                <UserMessage message={message} onMessageUpdate={onMessageUpdate} />
+                <UserMessage
+                  message={message}
+                  onMessageUpdate={onMessageUpdate}
+                  onSendAgain={isStreamingMessage ? undefined : onSendAgain}
+                />
               )
             ) : (
               <BioRouterMessage

@@ -2085,14 +2085,14 @@ export default function ChatInput({
   );
 
   const steerText = useCallback(
-    (content: string) => {
+    (content: string, putBack?: () => boolean) => {
       if (!onSteer) return;
       void onSteer(content).then((accepted) => {
         if (accepted) {
           // The agent echoes the steer back as a user message on the live stream
           // once it consumes it, so nothing is appended to the transcript here.
           LocalMessageStorage.addMessage(content);
-        } else {
+        } else if (!putBack?.()) {
           sendOrQueueText(content);
         }
       });
@@ -2115,11 +2115,24 @@ export default function ChatInput({
 
   /** BR-61: send a queued message into the running turn without stopping it. */
   const handleSteerMessage = (messageId: string) => {
-    const messageToSteer = queuedMessages.find((msg) => msg.id === messageId);
+    const index = queuedMessages.findIndex((msg) => msg.id === messageId);
+    const messageToSteer = queuedMessages[index];
     if (!messageToSteer || !canSteer) return;
 
     setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
-    steerText(messageToSteer.content);
+    // D5: a steer the daemon refuses while a turn is still running goes back
+    // where it was in the queue, not to the back of it — "Add now" on the
+    // first of three rows must not quietly make it the last.
+    steerText(messageToSteer.content, () => {
+      if (!isLoadingRef.current) return false;
+      setQueuedMessages((prev) => {
+        if (prev.some((msg) => msg.id === messageToSteer.id)) return prev;
+        const next = [...prev];
+        next.splice(Math.min(index, next.length), 0, messageToSteer);
+        return next;
+      });
+      return true;
+    });
   };
 
   /**

@@ -212,7 +212,21 @@ type StreamDrainOptions = {
   onFirstEvent?: () => void;
   queuedInitializingChildMessage?: Message;
   hadTransportError?: () => boolean;
+  /**
+   * D8: the daemon refused this `/reply` before admitting a turn (a 409 the
+   * generated SSE client swallows into an empty stream). Answered by
+   * `onRefusedBeforeAdmission` instead of the dropped-connection path.
+   */
+  refusedBeforeAdmission?: () => boolean;
+  onRefusedBeforeAdmission?: () => Promise<void>;
 };
+
+/** D9: a driving stream with no frame — not even the daemon's 500 ms `Ping` —
+ * for this long is treated as a half-open connection. */
+export const STREAM_SILENCE_MS = 10_000;
+const STREAM_WATCHDOG_TICK_MS = 2_000;
+/** D9: how many times a reconcile retries a daemon it cannot reach at all. */
+const MAX_UNREACHABLE_RECONCILES = 3;
 
 function isInitializingResume(value: unknown): boolean {
   return (value as ResumeInitializationEnvelope | null | undefined)?.initializing === true;
@@ -422,30 +436,57 @@ function pushMessage(currentMessages: Message[], incomingMsg: Message): Message[
 }
 
 /**
+ * What the transcript held when a steer was pressed: the ids of its rows, and —
+ * for the rare row that carries no id — how many rows there were.
+ */
+export interface SteerBaseline {
+  knownIds: ReadonlySet<string>;
+  count: number;
+}
+
+export function steerBaseline(messages: Message[]): SteerBaseline {
+  return {
+    knownIds: new Set(messages.map((m) => m.id).filter((id): id is string => !!id)),
+    count: messages.length,
+  };
+}
+
+/**
  * BR-61 — has the agent consumed the soft interrupt we are optimistically
  * showing? The agent echoes a steer back onto the live stream as an ordinary
  * user message once it injects it, and that echo is the ONLY reliable signal
  * that it landed.
  *
- * `afterCount` is the transcript length at the moment the steer was issued, so
- * only messages that arrived AFTER the press can satisfy it. Matching on text
- * alone would let a user who steers with the same words as an earlier prompt
- * clear the indicator against their own history, the instant it appeared.
+ * Only a row that was not in the transcript at the moment of the press can
+ * satisfy it — matching on text alone would let a user who steers with the
+ * same words as an earlier prompt clear the indicator against their own history.
+ *
+ * ⚠ D10: "not there at the press" is decided by message IDENTITY, not by index.
+ * It used to be "every row past the transcript's length at the press", and a
+ * mid-turn history rewrite (auto or recovery compaction, a signed-turn rollback,
+ * a backlog resync) shrinks the transcript: the echo then lands BELOW that
+ * index, is never matched, and "Steering the current turn" stayed up for the
+ * rest of the turn.
+ *
+ * ⚠ D4: an echo marked `steerOutcome: 'unanswered'` is NOT a landing. The turn
+ * ended before the model read it; retiring the chip on it told the person their
+ * words had been delivered.
  */
 export function steerWasEchoed(
   pending: { text: string } | undefined,
   messages: Message[],
-  afterCount: number
+  baseline: SteerBaseline
 ): boolean {
   if (!pending) return false;
   const wanted = pending.text.trim();
   if (!wanted) return false;
-  return messages
-    .slice(afterCount)
-    .some(
-      (m) =>
-        m.role === 'user' && m.content.some((c) => c.type === 'text' && c.text.trim() === wanted)
-    );
+  return messages.some(
+    (m, index) =>
+      (m.id ? !baseline.knownIds.has(m.id) : index >= baseline.count) &&
+      m.role === 'user' &&
+      m.metadata?.steerOutcome !== 'unanswered' &&
+      m.content.some((c) => c.type === 'text' && c.text.trim() === wanted)
+  );
 }
 
 export interface ChatStreamSnapshot {
@@ -1399,6 +1440,7 @@ class ChatStreamController {
     // wake every subscriber (#22).
     if (next === this.snapshot) return;
     this.snapshot = next;
+    if (isRunningState(next.chatState)) this.armRunningInvariant();
     // Replay hold: the write has landed (getSnapshot is current), React just
     // isn't told yet. The LRU write is deferred with it — it would otherwise
     // re-serialise the whole transcript once per replayed frame.
@@ -1460,7 +1502,7 @@ class ChatStreamController {
     this.viewNamesEveryStoredRow = false;
     this.updateSnapshot((prev) => {
       // BR-61: the echo of our own steer is what retires the optimistic chip.
-      const steerLanded = steerWasEchoed(prev.pendingSteer, messages, this.steerAfterCount);
+      const steerLanded = steerWasEchoed(prev.pendingSteer, messages, this.steerBaseline);
       return {
         ...prev,
         messages,
@@ -1470,8 +1512,8 @@ class ChatStreamController {
     });
   };
 
-  /** Transcript length when the in-flight steer was issued. See steerWasEchoed. */
-  private steerAfterCount = 0;
+  /** The transcript when the in-flight steer was issued. See steerWasEchoed. */
+  private steerBaseline: SteerBaseline = { knownIds: new Set(), count: 0 };
 
   /**
    * #22 — apply one streamed `Message` event as a SINGLE snapshot swap.
@@ -1535,7 +1577,7 @@ class ChatStreamController {
 
     this.updateSnapshot((prev) => {
       // BR-61: the echo of our own steer is what retires the optimistic chip.
-      const steerLanded = steerWasEchoed(prev.pendingSteer, messages, this.steerAfterCount);
+      const steerLanded = steerWasEchoed(prev.pendingSteer, messages, this.steerBaseline);
       let pendingToolCalls = prev.pendingToolCalls;
       if (landedIds.size > 0) {
         const remaining = pendingToolCalls.filter((p) => !landedIds.has(p.id));
@@ -1694,6 +1736,28 @@ class ChatStreamController {
         session: { ...prev.session, privacy_tier: tier, privacy_reason: reason },
       };
     });
+  };
+
+  private retractPendingToolCalls = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    const retracted = new Set(ids);
+    this.updateSnapshot((prev) => {
+      const remaining = prev.pendingToolCalls.filter((p) => !retracted.has(p.id));
+      return remaining.length === prev.pendingToolCalls.length
+        ? prev
+        : { ...prev, pendingToolCalls: remaining };
+    });
+  };
+
+  private noteSteerWaiting = (
+    reason: 'tool' | 'approval' | 'delegation',
+    toolName: string | undefined
+  ): void => {
+    this.updateSnapshot((prev) =>
+      prev.pendingSteer
+        ? { ...prev, pendingSteer: { ...prev.pendingSteer, waitingOn: { reason, toolName } } }
+        : prev
+    );
   };
 
   private clearPendingToolCalls = (): void => {
@@ -2585,6 +2649,9 @@ class ChatStreamController {
     try {
       for await (const event of stream) {
         if (this.activeStreamId !== streamId) return;
+        // D9: EVERY frame is proof the connection is alive — the daemon's Ping
+        // above all, which carries nothing else and was discarded unseen.
+        if (source === 'driver') this.lastFrameAt = Date.now();
         if (eventCount === 0) options.onFirstEvent?.();
         eventCount += 1;
 
@@ -2720,6 +2787,17 @@ class ChatStreamController {
             return;
           case 'MessagesPersisted':
             break;
+          case 'ToolCallsRetracted':
+            // D16: the stream that announced these was dropped to apply a steer,
+            // and the reissued request mints new ids — without this the skeletons
+            // sat on screen, looking like frozen tool calls, until the turn ended.
+            this.retractPendingToolCalls(event.ids);
+            break;
+          case 'SteerWaiting':
+            // D2/D3: the daemon says what an accepted steer waits behind, so the
+            // indicator can name it instead of running a clock over a card.
+            this.noteSteerWaiting(event.reason, event.tool_name ?? undefined);
+            break;
           case 'PrivacyProviderPinned':
             this.applyTurnBinding(event);
             break;
@@ -2767,6 +2845,10 @@ class ChatStreamController {
         this.activeStreamId === streamId &&
         !this.abortController?.signal.aborted
       ) {
+        if (eventCount === 0 && options.refusedBeforeAdmission?.()) {
+          await options.onRefusedBeforeAdmission?.();
+          return;
+        }
         if (
           eventCount === 0 &&
           options.queuedInitializingChildMessage &&
@@ -2786,6 +2868,26 @@ class ChatStreamController {
         // re-attaching loses nothing where the error card loses the rest of the
         // turn. Only if the turn really is gone does the card below stand.
         if (await this.reattachAfterDrop(streamId)) return;
+        // D9: the immediate re-attaches are spent. Ask the daemon — the only
+        // authority — before painting a failure: while it still names this
+        // turn the controller keeps rejoining it with backoff (the turn is
+        // alive and will be reaped if nobody reads it), and if it names another
+        // turn that one is attached. Only a daemon naming no turn, or one that
+        // cannot be reached at all, leaves the card below standing.
+        const droppedTurnId = this.activeTurnId;
+        if (droppedTurnId && this.activeStreamId === streamId) {
+          // The drained socket is nobody's any more; left on the field it
+          // would read as a live turn and the reconcile would stand down.
+          const drained = this.abortController;
+          this.abortController = null;
+          drained?.abort();
+          this.reconcilesInFlight += 1;
+          try {
+            if (await this.reconcileTurn(droppedTurnId)) return;
+          } finally {
+            this.reconcilesInFlight -= 1;
+          }
+        }
         this.ambiguousRetryTurnId = this.activeTurnId;
         await this.finishCurrentStream({
           message: 'The connection closed before Biorouter received a completion status.',
@@ -2804,6 +2906,201 @@ class ChatStreamController {
       // error, a `return` from a stale stream id — may leave the transcript
       // held back. `endReplayHold` is a no-op when no hold is open.
       this.endReplayHold();
+    }
+  }
+
+  private runningInvariantArmed = false;
+  private reconcilesInFlight = 0;
+
+  /**
+   * D11: a running `chatState` must have something that can end it — a live
+   * driver socket, an observer feed, an attach or a submit in flight, a Stop
+   * in flight, or a reconcile. A spinner with none of those spins forever,
+   * because nothing is left that could deliver the turn's terminal frame. Two
+   * consecutive failed checks (10 s) are logged and reconciled with the daemon.
+   */
+  private armRunningInvariant(): void {
+    if (this.runningInvariantArmed) return;
+    this.runningInvariantArmed = true;
+    let strikes = 0;
+    const tick = () => {
+      if (!this.isRunning()) {
+        this.runningInvariantArmed = false;
+        return;
+      }
+      const owned =
+        this.hasLiveTurn() ||
+        this.observing ||
+        this.attachesInFlight > 0 ||
+        this.reconcilesInFlight > 0 ||
+        this.submitInFlight ||
+        !!this.stopInFlight ||
+        this.stopPending;
+      strikes = owned ? 0 : strikes + 1;
+      if (strikes >= 2) {
+        strikes = 0;
+        console.warn(
+          `Chat ${this.sessionId} shows a running turn with no stream, observer or request that could end it ` +
+            `(turn ${this.activeTurnId ?? 'unknown'}); asking the daemon`
+        );
+        void this.reconcileOrphanedRunningState();
+      }
+      setTimeout(tick, 5_000);
+    };
+    setTimeout(tick, 5_000);
+  }
+
+  private async reconcileOrphanedRunningState(): Promise<void> {
+    const turnId = this.activeTurnId;
+    this.reconcilesInFlight += 1;
+    try {
+      if (turnId && (await this.reconcileTurn(turnId))) return;
+      if (this.hasLiveTurn() || this.observing || !this.isRunning()) return;
+      await this.reloadTranscriptFromDaemon();
+      this.retireActiveTurn();
+      await this.finishCurrentStream();
+    } finally {
+      this.reconcilesInFlight -= 1;
+    }
+  }
+
+  /** D9: when a frame last arrived on the stream this controller drives. */
+  private lastFrameAt = 0;
+  /** D9: the driving stream the silence watchdog is watching, if any. */
+  private watchdogStreamId: number | null = null;
+  /** D9: bumped by every reconcile, so an older one stands down. */
+  private reconcileGeneration = 0;
+  /** D11: attaches whose POST has not answered — a running state is honest
+   * while one is in flight even though no socket is published yet. */
+  private attachesInFlight = 0;
+
+  /**
+   * D9: watch a driving stream for silence. The daemon sends a `Ping` every
+   * 500 ms, so a connection that delivers nothing for {@link STREAM_SILENCE_MS}
+   * is half-open — and a `reader.read()` with no deadline spun the composer
+   * forever over it (30 minutes of fake time, still `Streaming`). Past that
+   * point the socket is closed and the daemon is asked what the turn is doing.
+   */
+  private armStreamWatchdog(streamId: number): void {
+    this.lastFrameAt = Date.now();
+    if (this.watchdogStreamId === streamId) return;
+    this.watchdogStreamId = streamId;
+    const tick = () => {
+      if (this.watchdogStreamId !== streamId) return;
+      if (this.activeStreamId !== streamId || !this.hasLiveTurn()) {
+        this.watchdogStreamId = null;
+        return;
+      }
+      const silentFor = Date.now() - this.lastFrameAt;
+      if (
+        silentFor >= STREAM_SILENCE_MS &&
+        this.isRunning() &&
+        !this.stopPending &&
+        !this.stopInFlight
+      ) {
+        this.watchdogStreamId = null;
+        console.warn(
+          `Turn stream silent for ${silentFor} ms (session ${this.sessionId}, turn ${this.activeTurnId ?? 'unknown'}, ` +
+            `pending steer ${this.snapshot.pendingSteer ? `${Date.now() - this.snapshot.pendingSteer.since} ms old` : 'none'}); ` +
+            'closing it and asking the daemon what the turn is doing'
+        );
+        void this.recoverSilentStream(streamId);
+        return;
+      }
+      setTimeout(tick, STREAM_WATCHDOG_TICK_MS);
+    };
+    setTimeout(tick, STREAM_WATCHDOG_TICK_MS);
+  }
+
+  private async recoverSilentStream(streamId: number): Promise<void> {
+    const turnId = this.activeTurnId;
+    if (!turnId || this.activeStreamId !== streamId) return;
+    // Hand the stream id on first, so nothing the silent stream might still
+    // deliver writes over what the reconcile does; then close its socket.
+    this.activeStreamId = streamId + 1;
+    this.abortController?.abort();
+    this.abortController = null;
+    this.endReplayHold();
+    this.reconcilesInFlight += 1;
+    try {
+      if (await this.reconcileTurn(turnId)) return;
+    } finally {
+      this.reconcilesInFlight -= 1;
+    }
+    // The daemon names no turn: it ended while this window could not hear it.
+    // Nothing failed that the person can act on, so no error card — show what
+    // the store holds and end the turn here.
+    await this.reloadTranscriptFromDaemon();
+    this.ambiguousRetryTurnId = null;
+    await this.finishCurrentStream();
+  }
+
+  /**
+   * D9/D11: ask the daemon (`/agent/resume`, metadata only, never memoised)
+   * what `turnId` is doing, and act on the answer:
+   *
+   *  - it names the same turn → rejoin it, with backoff 1, 2, 4… s capped at
+   *    15 s, for as long as the daemon keeps naming it;
+   *  - it names another turn → attach to that one;
+   *  - it names none → `false`, and the caller ends the turn;
+   *  - it cannot be reached {@link MAX_UNREACHABLE_RECONCILES} times → `false`.
+   *
+   * `true` means the controller is taken care of — rejoined, handed to another
+   * turn, or taken over by something else (a submit, a Stop) meanwhile.
+   */
+  private async reconcileTurn(turnId: string): Promise<boolean> {
+    const generation = ++this.reconcileGeneration;
+    const superseded = () =>
+      generation !== this.reconcileGeneration || this.hasLiveTurn() || this.observing;
+    let unreachable = 0;
+    for (let attempt = 0; ; attempt++) {
+      let named: string | null | undefined;
+      try {
+        const response = await resumeAgent({
+          body: resumeRequestBody(this.sessionId, false),
+          headers: await userActionHeaders(),
+          throwOnError: true,
+        });
+        this.notePendingContinuation(response.data);
+        named = response.data?.active_turn?.turn_id ?? null;
+      } catch (error) {
+        console.warn(`Could not ask the daemon about turn ${turnId}:`, error);
+        named = undefined;
+      }
+      if (superseded()) return true;
+      if (named === null) return false;
+      if (named !== undefined && named !== turnId) {
+        if (this.retiredObservedTurnIds.has(named)) return false;
+        void this.attachToTurn(named);
+        return true;
+      }
+      if (named === undefined && ++unreachable >= MAX_UNREACHABLE_RECONCILES) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 15_000)));
+      if (superseded()) return true;
+      if (named === turnId) {
+        if (await this.attachToTurn(turnId)) return true;
+        if (superseded()) return true;
+        // A failed attach retires the pointer; this loop still speaks for it.
+        this.activeTurnId = turnId;
+      }
+    }
+  }
+
+  /** Best-effort: replace the transcript with what the store holds. */
+  private async reloadTranscriptFromDaemon(): Promise<boolean> {
+    try {
+      const response = await getSession({
+        path: { session_id: this.sessionId },
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
+      const conversation = response.data?.conversation;
+      if (!conversation) return false;
+      this.updateMessages(conversation);
+      return true;
+    } catch (error) {
+      console.warn('Could not re-read the conversation after a lost stream:', error);
+      return false;
     }
   }
 
@@ -2872,6 +3169,7 @@ class ChatStreamController {
         signal: socket.signal,
         sseMaxRetryAttempts: 1,
       });
+      this.armStreamWatchdog(nextStreamId);
       await this.streamFromResponse(
         stream as AsyncIterable<MessageEvent>,
         this.messagesRef,
@@ -3283,6 +3581,14 @@ class ChatStreamController {
     const continuationLease =
       this.continuationLeaseTurnId === turnId ? this.continuationLease : null;
     let streamTransportError = false;
+    this.attachesInFlight += 1;
+    let attachAnswered = false;
+    const answerAttach = () => {
+      if (!attachAnswered) {
+        attachAnswered = true;
+        this.attachesInFlight -= 1;
+      }
+    };
 
     try {
       const { stream } = await reply({
@@ -3308,6 +3614,7 @@ class ChatStreamController {
           streamTransportError = true;
         },
       });
+      answerAttach();
       if (this.activeStreamId !== streamId) {
         // Something real took the controller over while the POST was in flight
         // — a user submit, a Stop. It wins; this attach never happened.
@@ -3315,6 +3622,7 @@ class ChatStreamController {
         return false;
       }
       this.abortController = socket;
+      this.armStreamWatchdog(streamId);
       this.updateSnapshot((prev) => ({
         ...prev,
         // Only now: the turn is known to exist. `turnStartedAt` is invented
@@ -3345,6 +3653,7 @@ class ChatStreamController {
       if (this.activeStreamId === streamId) this.retireActiveTurn();
       return false;
     } finally {
+      answerAttach();
       if (this.activeStreamId === streamId && this.abortController?.signal.aborted) {
         this.abortController = null;
       }
@@ -3598,6 +3907,14 @@ class ChatStreamController {
       }
 
       let streamTransportError = false;
+      // D8: the status a refused `/reply` answered with. The generated SSE
+      // client throws "SSE failed: 409 Conflict" INSIDE its generator, catches
+      // it, and ends the stream empty — so a turn the daemon never admitted
+      // (another surface holds the chat, or a Stop-and-Send lease is pending)
+      // reached the dropped-connection path, re-attached three times to a turn
+      // id that never existed, and painted "connection closed" over the
+      // person's message.
+      let refusedStatus: number | null = null;
       const { stream } = await reply({
         // Issue #56 Task 58 / #47: `/reply` runs an agent turn, with tools, in
         // whatever session the body names, and `session_id` is a request
@@ -3620,10 +3937,13 @@ class ChatStreamController {
         throwOnError: true,
         signal: socket.signal,
         sseMaxRetryAttempts: 1,
-        onSseError: () => {
+        onSseError: (error: unknown) => {
           streamTransportError = true;
+          const status = /SSE failed: (\d{3})/.exec(errorMessage(error));
+          if (status) refusedStatus = Number(status[1]);
         },
       });
+      this.armStreamWatchdog(streamId);
 
       await this.streamFromResponse(
         stream as AsyncIterable<MessageEvent>,
@@ -3634,6 +3954,9 @@ class ChatStreamController {
           onFirstEvent: () => this.releaseContinuationLeaseLocally(continuationLease),
           queuedInitializingChildMessage,
           hadTransportError: () => streamTransportError,
+          refusedBeforeAdmission: () => refusedStatus === 409,
+          onRefusedBeforeAdmission: () =>
+            this.recoverRefusedSubmit(newMessage, updateMessageList, streamId, continuationLease),
         }
       );
     } catch (error) {
@@ -3656,6 +3979,60 @@ class ChatStreamController {
       }
       // D1: see `attachToTurn`'s `finally`.
       if (this.abortController !== socket) socket.abort();
+    }
+  };
+
+  /** D8: set when the last submit was refused before any turn was admitted. */
+  private submitRefused = false;
+
+  /**
+   * D8: `/reply` answered 409 before admitting a turn. Nothing ran, so:
+   * take the optimistic row back (the caller still owns the words —
+   * `handleSubmit` resolves `false`), never re-attach to a turn id the daemon
+   * never minted, and ask the daemon what IS running. A turn another surface
+   * started is attached, so the spinner is honest and the queue drains at that
+   * turn's end; a pending Stop-and-Send lease surfaces through
+   * `notePendingContinuation`, which drives the recovery UI.
+   */
+  private recoverRefusedSubmit = async (
+    newMessage: Message,
+    removeRow: boolean,
+    streamId: number,
+    continuationLease: string | null
+  ): Promise<void> => {
+    this.submitRefused = true;
+    if (removeRow) {
+      const kept = this.messagesRef.filter((message) => message !== newMessage);
+      if (kept.length !== this.messagesRef.length) this.updateMessages(kept);
+    }
+    this.retireActiveTurn();
+    this.seqTurnId = null;
+    if (this.activeStreamId === streamId) this.abortController = null;
+    await this.abandonContinuationIfOwned(continuationLease);
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      chatState: ChatState.Idle,
+      turnStartedAt: undefined,
+      lastMessageAt: undefined,
+      pendingSteer: undefined,
+    }));
+    this.flushNotify();
+    console.warn(
+      `The daemon refused to start a turn in session ${this.sessionId} (409); checking what is running`
+    );
+    try {
+      const response = await resumeAgent({
+        body: resumeRequestBody(this.sessionId, false),
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
+      this.notePendingContinuation(response.data);
+      const running = response.data?.active_turn?.turn_id;
+      if (running && !this.retiredObservedTurnIds.has(running) && !this.hasLiveTurn()) {
+        void this.attachToTurn(running);
+      }
+    } catch (error) {
+      console.warn('Could not ask the daemon what is running after a refused send:', error);
     }
   };
 
@@ -3770,7 +4147,14 @@ class ChatStreamController {
       const currentMessages = hasNewMessage
         ? [...this.messagesRef, newMessage]
         : [...this.messagesRef];
+      this.submitRefused = false;
       await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage);
+      if (this.submitRefused) {
+        // D8: refused before admission — nothing ran, the row was taken back,
+        // and the caller keeps the words.
+        this.submitRefused = false;
+        return false;
+      }
       return true;
     } finally {
       this.submitInFlight = false;
@@ -3957,46 +4341,122 @@ class ChatStreamController {
     // moment and the agent only consumes the steer at its next loop boundary —
     // which may be a whole tool call away — so waiting for either would leave
     // the user staring at a composer that just emptied itself for no visible
-    // reason. If the server refuses, the catch below retracts this.
-    this.steerAfterCount = this.messagesRef.length;
-    // Held so the catch can prove the chip it retracts is still ITS OWN. A
+    // reason. If the server refuses, the retraction below takes it back.
+    this.steerBaseline = steerBaseline(this.messagesRef);
+    // Held so a retraction can prove the chip it retracts is still ITS OWN. A
     // second steer issued while this POST is in flight replaces `pendingSteer`
     // wholesale; retracting unconditionally would then wipe the newer steer's
     // chip even though that steer is still genuinely pending — and it would
     // never come back, because nothing re-shows a chip for an in-flight steer.
-    const issued = { text: trimmed, since: Date.now() };
+    const issued: PendingSteer = { text: trimmed, since: Date.now() };
     this.updateSnapshot((prev) => ({
       ...prev,
       pendingSteer: issued,
     }));
-    try {
-      const interruptRequest = {
-        session_id: this.sessionId,
-        text: trimmed,
-        // The server uses this only while a delegated child is still queued;
-        // there it makes a lost-response retry idempotent. Once the live agent
-        // loop exists, the ordinary soft-interrupt path ignores the key.
-        turn_id: newTurnId(),
-      };
-      await interrupt({
-        body: interruptRequest,
-        headers: await userActionHeaders(),
-        throwOnError: true,
-      });
-      this.lastInteractionTime = Date.now();
-      return true;
-    } catch (error) {
-      // 409 = the turn ended between the click and the POST; the caller queues
-      // or sends it instead. Retract the optimistic chip in the same breath —
-      // leaving "Steering…" up while the text is actually taking the ordinary
-      // send path would be the UI telling the user something untrue.
+    const retract = () => {
       if (this.getSnapshot().pendingSteer === issued) {
         this.clearPendingSteer();
       }
-      console.warn('Soft interrupt rejected, falling back to a normal send:', error);
-      return false;
+    };
+
+    // D5: this controller OWNS the steer until the daemon answers it. One
+    // idempotency key for every attempt, so a retry after a lost answer is
+    // accepted once (the daemon remembers accepted keys per turn). The POST
+    // used to be one shot with no timeout and one `catch` for everything, so a
+    // network blip was treated as a refusal — the words went to the back of
+    // the queue and ran as a NEW turn after the one they were meant to steer —
+    // and a hung POST held the chip for ten minutes.
+    const key = newTurnId();
+    let backoffMs = ChatStreamController.STEER_RETRY_FIRST_MS;
+    for (;;) {
+      const outcome = await this.postSteerOnce(trimmed, key);
+      if (outcome.kind === 'accepted') {
+        this.lastInteractionTime = Date.now();
+        return true;
+      }
+      if (outcome.kind === 'refused') {
+        // A 409 (the turn ended, or is closing), a 400 or a 403: the caller
+        // queues or sends the text instead. Retract the optimistic chip in the
+        // same breath — leaving "Steering…" up while the text takes the
+        // ordinary send path would be the UI telling the user something untrue.
+        retract();
+        console.warn('Soft interrupt rejected, falling back to a normal send:', outcome.detail);
+        return false;
+      }
+      console.warn(
+        `Soft interrupt got no answer (${outcome.detail}); retrying with the same key in ${backoffMs} ms`
+      );
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      backoffMs = Math.min(backoffMs * 2, ChatStreamController.STEER_RETRY_MAX_MS);
+      if (!this.isRunning()) {
+        // The turn ended while the answer was lost. If its echo arrived, the
+        // daemon did take it; otherwise the caller keeps the words.
+        const landed = steerWasEchoed(issued, this.messagesRef, this.steerBaseline);
+        retract();
+        return landed;
+      }
     }
   };
+
+  /** D5: how long one steer POST may go unanswered before it is retried. */
+  private static readonly STEER_POST_TIMEOUT_MS = 8000;
+  private static readonly STEER_RETRY_FIRST_MS = 500;
+  private static readonly STEER_RETRY_MAX_MS = 8000;
+
+  /**
+   * One `POST /interrupt`, classified. `transient` is every outcome that says
+   * nothing about whether the daemon took the steer — a network failure, a 5xx,
+   * no answer within {@link STEER_POST_TIMEOUT_MS} — and only those are retried.
+   */
+  private async postSteerOnce(
+    text: string,
+    key: string
+  ): Promise<
+    | { kind: 'accepted' }
+    | { kind: 'refused'; detail: unknown }
+    | { kind: 'transient'; detail: string }
+  > {
+    const socket = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        socket.abort();
+        resolve('timeout');
+      }, ChatStreamController.STEER_POST_TIMEOUT_MS);
+    });
+    try {
+      const post = (async () =>
+        interrupt({
+          body: {
+            session_id: this.sessionId,
+            text,
+            turn_id: key,
+          },
+          headers: await userActionHeaders(),
+          // The fields form keeps the status, which decides retry-or-refuse.
+          throwOnError: false,
+          signal: socket.signal,
+        }))();
+      const result = await Promise.race([post, timedOut]);
+      if (result === 'timeout') {
+        return { kind: 'transient', detail: 'no answer within 8 s' };
+      }
+      const status = result?.response?.status;
+      if (result?.error === undefined) return { kind: 'accepted' };
+      if (status === undefined || status >= 500) {
+        return { kind: 'transient', detail: describeRequestFailure(result.error, status) };
+      }
+      return { kind: 'refused', detail: describeRequestFailure(result.error, status) };
+    } catch (error) {
+      const name = (error as { name?: string } | null)?.name;
+      if (isConnectionError(error) || name === 'AbortError' || name === 'TimeoutError') {
+        return { kind: 'transient', detail: describeRequestFailure(error, undefined) };
+      }
+      return { kind: 'refused', detail: error };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
 
   /**
    * Whether the Stop gate still speaks for the turn that is ending right now.
@@ -4134,6 +4594,13 @@ class ChatStreamController {
       console.warn(
         `Stop targeted retired turn ${turnId}; the active turn is ${mismatch.active_turn_id}`
       );
+      // D11: adopting the successor as Streaming is only honest with a socket
+      // on it. This used to stop here — no attach, so nothing could ever
+      // deliver that turn's terminal frame, the composer spun for the life of
+      // the controller, and the queue never drained.
+      if (this.activeTurnId && !this.observing) {
+        void this.adoptSuccessorTurn(this.activeTurnId);
+      }
       // Deliberately leaves `lastStopFailure` null: this arm has already
       // resolved the whole state (successor adopted, `chatState` chosen), and
       // an in-chat "could not stop" notice written over it would be untrue as
@@ -4146,6 +4613,23 @@ class ChatStreamController {
       `Failed to cancel running turn on stop (${this.stopLogContext(turnId)}): ${detail}`
     );
     return false;
+  }
+
+  /** D11: attach to a turn a Stop learned about; go Idle if it cannot be. */
+  private async adoptSuccessorTurn(turnId: string): Promise<void> {
+    const attached = await this.attachToTurn(turnId);
+    if (attached || this.hasLiveTurn() || this.observing) return;
+    if (this.activeTurnId !== null && this.activeTurnId !== turnId) return;
+    if (!this.isRunning()) return;
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      chatState: ChatState.Idle,
+      turnStartedAt: undefined,
+      lastMessageAt: undefined,
+      pendingSteer: undefined,
+    }));
+    this.flushNotify();
+    for (const listener of this.finishListeners) listener();
   }
 
   private trackStopOperation(

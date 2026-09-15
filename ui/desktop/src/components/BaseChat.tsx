@@ -2561,6 +2561,11 @@ function BaseChatContent({
                               turnStartedAt={turnStartedAt}
                               lastMessageAt={lastMessageAt}
                               pendingSteer={pendingSteer}
+                              onSendAgain={
+                                subagentTabReadOnly
+                                  ? undefined
+                                  : (text: string) => void handleSubmit(text)
+                              }
                               canStopTurn={!subagentTabReadOnly}
                               onRenderingComplete={handleRenderingComplete}
                               onMessageUpdate={onMessageUpdate}
