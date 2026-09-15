@@ -777,6 +777,16 @@ const MAX_IMAGE_DIMENSION: u64 = 8_192;
 const MAX_IMAGE_PIXELS: u64 = 32_000_000;
 
 fn artifact_mime(path: &Path) -> &'static str {
+    if matches!(
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "dockerfile" | "gnumakefile" | "justfile" | "makefile" | "snakefile"
+    ) {
+        return "text/plain";
+    }
     match path
         .extension()
         .and_then(OsStr::to_str)
@@ -785,9 +795,12 @@ fn artifact_mime(path: &Path) -> &'static str {
         .as_str()
     {
         "html" | "htm" => "text/html",
-        "md" | "txt" | "rs" | "ts" | "tsx" | "js" | "json" | "yaml" | "yml" | "csv" | "sql" => {
-            "text/plain"
-        }
+        "md" | "markdown" | "txt" | "rs" | "ts" | "tsx" | "js" | "json" | "yaml" | "yml"
+        | "csv" | "tsv" | "sql" | "py" | "r" | "css" | "xml" | "toml" | "ipynb" | "sh" | "bash"
+        | "zsh" | "bat" | "cc" | "cpp" | "c" | "h" | "hpp" | "cs" | "cfg" | "conf" | "ini"
+        | "cjs" | "mjs" | "cts" | "mts" | "jsx" | "cwl" | "env" | "jl" | "jsonc" | "jsonl"
+        | "kt" | "log" | "mk" | "nf" | "pl" | "pm" | "ps1" | "qmd" | "rmd" | "rb" | "smk"
+        | "tex" | "go" | "java" | "swift" => "text/plain",
         "apng" => "image/apng",
         "avif" => "image/avif",
         "bmp" => "image/bmp",
@@ -2427,6 +2440,54 @@ mod tests {
             .expect("a file inside a root must resolve");
         assert!(response.found);
         assert_eq!(response.file, "hello");
+    }
+
+    #[test]
+    fn served_source_artifacts_reach_the_text_preview() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let source = "LYCHEE5\tvalue\nLYCHEE5\t42\n";
+        for name in [
+            "fixture.tsv",
+            "fixture.py",
+            "fixture.R",
+            "fixture.css",
+            "fixture.xml",
+            "fixture.toml",
+            "fixture.ipynb",
+            "fixture.nf",
+            "fixture.log",
+            "fixture.qmd",
+            "fixture.cwl",
+            "fixture.jsx",
+            "fixture.sh",
+            "Snakefile",
+            "Dockerfile",
+        ] {
+            let path = tmp.path().join("home").join(name);
+            fs::write(&path, source).unwrap();
+            let value = read_artifact_within(&guard, path.to_str().unwrap()).unwrap();
+            assert_eq!(value["kind"], "text", "{name}");
+            assert_eq!(value["text"], source, "{name}");
+            assert!(value["revision"].is_string());
+        }
+    }
+
+    #[test]
+    fn served_text_allowlist_does_not_promote_unknown_or_invalid_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let unknown = tmp.path().join("home/archive.bin");
+        fs::write(&unknown, b"plain looking unknown bytes").unwrap();
+        let value = read_artifact_within(&guard, unknown.to_str().unwrap()).unwrap();
+        assert_eq!(value["kind"], "binary");
+        assert!(value.get("text").is_none());
+        let invalid = tmp.path().join("home/invalid.py");
+        fs::write(&invalid, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(matches!(
+            read_artifact_within(&guard, invalid.to_str().unwrap()),
+            Err(Refusal::Unusable)
+        ));
     }
 
     #[test]
