@@ -134,7 +134,11 @@ describe('reading the panel', () => {
     );
     const result = await runPanelCommand(read('s1'));
     expect(result.ok).toBe(false);
-    expect(result.detail).toContain('capture_panel');
+    // The call the model is actually offered. `capture_panel` is a retired name
+    // (workspace_extension.rs RETIRED_TOOL_NAMES), and prose that routes to one
+    // is how a model keeps calling it.
+    expect(result.detail).toContain('workspace_read_panel with capture: true');
+    expect(result.detail).not.toMatch(/(^|[^_])capture_panel/);
   });
 
   it('distinguishes a closed panel from a chat that is not on screen here', async () => {
@@ -488,6 +492,8 @@ describe('a chat open in a web browser', () => {
     );
     const result = await runPanelCommand(read('s1'));
     expect(result.ok).toBe(false);
+    // Neither the advertised call nor the retired name: both would route to a capture.
+    expect(result.detail).not.toContain('capture: true');
     expect(result.detail).not.toContain('capture_panel');
     expect(result.detail).toContain('web browser');
   });

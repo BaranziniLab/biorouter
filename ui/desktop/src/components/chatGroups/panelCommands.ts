@@ -139,9 +139,13 @@ export async function runPanelCommand(cmd: WorkspaceCommand): Promise<WorkspaceC
         // prose, and it comes from a closed vocabulary the panel owns.
         // ⚠ Not "capture it" in a browser, where no capture can succeed and the
         // capture refusal says to read instead: that pair is a loop.
+        // ⚠ And name the ADVERTISED call. This said "use capture_panel", which is
+        // no tool the model is offered: `workspace_capture_panel` was folded into
+        // `workspace_read_panel { capture: true }` and survives only as a
+        // dispatcher alias (RETIRED_TOOL_NAMES in workspace_extension.rs).
         detail: isBrowserSurface()
           ? `the panel is showing ${descriptor.kind ?? 'something'} with no readable text, and this chat is open in a web browser, which cannot capture it`
-          : `the panel is showing ${descriptor.kind ?? 'something'} with no readable text; use capture_panel to see it`,
+          : `the panel is showing ${descriptor.kind ?? 'something'} with no readable text; use workspace_read_panel with capture: true to see it`,
         data: { panel: boundedPanelDescriptor(descriptor) },
       };
     }
