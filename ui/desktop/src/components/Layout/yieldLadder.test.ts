@@ -577,3 +577,15 @@ describe('splitYieldAction (rung 4 — merge rather than render two useless sliv
     ).toBe('none');
   });
 });
+
+describe('preview orientation hysteresis', () => {
+  it('holds the stack through the 12px return buffer without violating the side floor', () => {
+    expect(previewPanelMode({ paneWidth: 799, previous: 'side' })).toBe('stack');
+    expect(previewPanelMode({ paneWidth: 800, previous: 'side' })).toBe('side');
+    for (let paneWidth = 800; paneWidth < 812; paneWidth++) {
+      expect(previewPanelMode({ paneWidth, previous: 'stack' })).toBe('stack');
+    }
+    expect(previewPanelMode({ paneWidth: 812, previous: 'stack' })).toBe('side');
+    expect(previewPanelMode({ paneWidth: 0, previous: 'stack' })).toBe('stack');
+  });
+});

@@ -4574,3 +4574,8 @@ code [class~='token'] {
 .biorouter-heatmap-months {
   font-size: var(--heat-month-font, 11px);
 }
+
+/* The grid settles immediately; only the existing content layer animates. */
+[data-preview-open='false'] {
+  opacity: 0;
+}

@@ -8,11 +8,11 @@ In a window split into two or three panes, opening an artifact used to cover the
 
 ## The rule
 
-The preview's shape is a pure function of the pane's width P, measured on the split box `[data-preview-split]` with a `ResizeObserver`. P is never the window's width and never a `vw` value. Neither shape resizes the box that is measured, so there is no hysteresis.
+The preview's shape is a pure function of the pane's width P, measured on the split box `[data-preview-split]` with a `ResizeObserver`. P is never the window's width and never a `vw` value. Neither shape resizes the box that is measured, with a 12px return buffer: side switches to stack below 800px; stack returns to side at 812px.
 
 | Pane | Shape | Size |
 |---|---|---|
-| P ≥ 800 (a 360px panel beside a 440px conversation) | **Side**: a full-height column on the right, with a 44px strip continuing the chat header's band | Default `clamp(round(0.48·P), 360, max(360, min(920, P − 640)))`: the panel yields to 360 before the conversation narrows from 640. A drag clamps to `[360, min(920, P − 440)]`, so the conversation is never under 440. |
+| P ≥ 800 on first open; ≥ 812 when returning from stack | **Side**: a full-height column on the right, with a 44px strip continuing the chat header's band | Default `clamp(round(0.48·P), 360, max(360, min(920, P − 640)))`: the panel yields to 360 before the conversation narrows from 640. A drag clamps to `[360, min(920, P − 440)]`, so the conversation is never under 440. |
 | P < 800 | **Stack**: a sheet directly under the chat header at the pane's full width. From the top: header, sheet, transcript, composer. The composer stays on the pane's bottom edge. | Not dragged: `clamp(min(round(0.5·H), content), min(200, content), H − F)`. Dragged: `clamp(ratio·H, 200, H − F)`. If `H − F` is under the sheet's floor, the sheet is `max(36, H − F)`. |
 
 - **H** is the split box's height below its header band (the chat header, plus a subagent's second header when there is one).
@@ -48,14 +48,14 @@ The conversation always wins a collision: the sheet gives way down to its strip,
 ## What the motion pass can rely on
 
 - **The panel stays mounted.** Each host renders one `<ArtifactViewer>` at a fixed position with no layout-dependent key. A side and stack crossing changes attributes, the custom properties and authored CSS only. Measured across 13 crossings and a fold: the aside, split box, header, transcript scroller, composer and figure frame are the same nodes; the frame fires 0 `load` events and keeps its `contentWindow`. The only DOM removals are the composer toolbar's rung 3b controls and Radix's auto-hiding scrollbar, both independent of the panel.
-- **Nothing in the split box transitions.** Open and close still use the existing `isOpen` and `ARTIFACT_PANEL_EXIT_MS` hooks. The panel's class list names `translate`, so the side column's entrance slide actually animates. A stacked sheet fades in place.
+- **The box settles immediately; its contents animate.** The existing preview body translates 32px and fades with the Web Animations API: entrance 300ms, orientation 250ms, exit 125ms. A window resize does not cancel entrance. Reduced motion disables animation and cancels an active animation when enabled. The grid and conversation do not animate.
 - **No per-frame JavaScript layout.** The shape comes from `ResizeObserver` callbacks that bail out on equal values. Content height is measured when content changes, never on the panel's own resize. The only `requestAnimationFrame` loop runs during a pointer drag.
 
 ## Where it is pinned
 
 | Test | Holds |
 |---|---|
-| `components/Layout/yieldLadder.test.ts` | Every threshold on both sides (799/800, 999/1000/1001, 117.9/118, `H − F` = 199/200), the floors, fit-to-content, the dragged share, the fold, and a 1px sweep with one crossing and no hysteresis. |
+| `components/Layout/yieldLadder.test.ts` | Every threshold on both sides (799/800, 999/1000/1001, 117.9/118, `H − F` = 199/200), the floors, fit-to-content, the dragged share, the fold, and a 1px sweep with one crossing and a 12px return buffer. |
 | `styles/measures.test.ts` | The CSS literals against the ladder's constants (`minmax(440px, 1fr)`, `calc(146px + 8px)`, `--dock-height`, `--chrome-height`), the stack rules declared after the side rules, the rules unlayered, no container or media condition, no transitions, one unkeyed `<ArtifactViewer>` per host, the anchor scoped to the live chat, and the text measure's declaration and exact call sites. |
 | `components/artifacts/useArtifactPanel.fold.test.tsx` | Folding by the chevron and by drag, unfolding by a tab and the bare strip, the drag clamps, the measuring phase, closing, and node identity across a crossing. |
 | `utils/previewSize.test.ts` | The reporter measures the body's content, not the viewport. |

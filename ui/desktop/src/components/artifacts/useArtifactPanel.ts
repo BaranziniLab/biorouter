@@ -61,7 +61,7 @@ const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
 const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
 // Matches the panel's close transition (--motion-fast); exit is a tier faster
 // than the --motion-base entrance so the panel unmounts as the slide completes.
-const ARTIFACT_PANEL_EXIT_MS = 120;
+const ARTIFACT_PANEL_EXIT_MS = 125;
 /**
  * How long a freshly opened sheet waits, invisible and taking no room, for its
  * content to say how tall it is. Text answers in the same frame it renders; a
@@ -190,6 +190,7 @@ export interface UseArtifactPanelOptions {
 export interface ArtifactViewerHostProps {
   artifact: ArtifactSource | null;
   isOpen: boolean;
+  motionReady: boolean;
   isResizing: boolean;
   onClose: () => void;
   onOpenArtifact: (artifact: ArtifactSource) => void;
@@ -265,7 +266,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   const pendingSizeRef = useRef<(() => void) | null>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
 
-  const previewMode = previewPanelMode({ paneWidth: geometry.paneWidth });
+  const [previewMode, setPreviewMode] = useState<PreviewPanelMode>('side');
   const mounted = Boolean(presentedArtifact && enabled);
   const stackedRef = useRef(false);
   stackedRef.current = mounted && previewMode === 'stack';
@@ -297,6 +298,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
     const split = splitPaneRef.current;
     if (!split) return;
     const next = measurePreviewPaneGeometry(split);
+    setPreviewMode((previous) => previewPanelMode({ paneWidth: next.paneWidth, previous }));
     setGeometry((previous) =>
       previous.paneWidth === next.paneWidth &&
       previous.bodyHeight === next.bodyHeight &&
@@ -365,6 +367,10 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   );
 
   const closePanel = useCallback(() => {
+    if (openFrameRef.current) {
+      window.cancelAnimationFrame(openFrameRef.current);
+      openFrameRef.current = null;
+    }
     resizeCleanupRef.current?.();
     setIsResizing(false);
     setIsOpen(false);
@@ -617,6 +623,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
     viewerProps: {
       artifact: presentedArtifact,
       isOpen,
+      motionReady: previewMode === 'side' || !measuring,
       isResizing,
       onClose: closePanel,
       onOpenArtifact: openArtifact,

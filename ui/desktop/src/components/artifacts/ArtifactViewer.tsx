@@ -1,3 +1,4 @@
+import { usePreviewMotion } from './usePreviewMotion';
 import { UIResourceRenderer } from '@mcp-ui/client';
 import {
   type CSSProperties,
@@ -145,6 +146,7 @@ const HEADER_ACTION_BUTTON_CLASS =
 interface ArtifactViewerProps {
   artifact: ArtifactSource | null;
   isOpen?: boolean;
+  motionReady?: boolean;
   isResizing?: boolean;
   onClose: () => void;
   onOpenArtifact: (artifact: ArtifactSource) => void;
@@ -420,6 +422,7 @@ function formatBytes(value?: number) {
 export default function ArtifactViewer({
   artifact,
   isOpen = true,
+  motionReady = true,
   isResizing = false,
   onClose,
   onOpenArtifact,
@@ -489,6 +492,7 @@ export default function ArtifactViewer({
   const annotationSnapshotRef = useRef(annotationSnapshot);
   annotationSnapshotRef.current = annotationSnapshot;
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
+  usePreviewMotion(previewBodyRef, { isOpen, layout, ready: motionReady });
   // The preview the tabs name in `aria-controls`. Per panel, never a literal:
   // the document resolves a shared id to its first holder, which is how every
   // composer's Send came to submit the left pane's form in a split. Only the
@@ -1266,24 +1270,9 @@ export default function ArtifactViewer({
         style={{
           ...style,
           contain: 'layout paint',
-          // Only transform + opacity are GPU-composited. width/flex-basis are layout
-          // props the compositor cannot promote — hinting them was ineffective and
-          // held speculative layer state permanently.
-          willChange: 'transform, opacity',
         }}
         className={cn(
           'no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted',
-          // Animate only transform + opacity — width tracks instantly (drag is
-          // transition-none; window-resize should snap, not lag the edge by 180ms).
-          // Exit is a tier faster than entrance: entrance names --motion-base, exit
-          // rides the app-wide default duration (--dur-fast), so it carries no
-          // annotation of its own. The curve is the default too (--ease-out).
-          // `translate` is listed because Tailwind v4's `translate-x-*` writes the
-          // standalone `translate` property, which `opacity, transform` never
-          // animated — the side panel's entrance slide was measured not moving.
-          isResizing ? 'transition-none' : 'transition-[opacity,translate,transform]',
-          !isResizing && isOpen && 'duration-[var(--motion-base)]',
-          isOpen ? 'translate-x-0 opacity-100' : 'translate-x-3 opacity-0',
           className
         )}
       >
@@ -1506,6 +1495,7 @@ export default function ArtifactViewer({
         <div
           id={previewContentId}
           data-testid="artifact-preview-content"
+          data-preview-open={isOpen ? 'true' : 'false'}
           ref={previewBodyRef}
           className="relative z-0 min-h-0 flex-1 overflow-hidden"
         >

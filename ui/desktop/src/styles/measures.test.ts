@@ -809,8 +809,9 @@ describe('rung 2 — the panel stays mounted across a crossing', () => {
     }
   });
 
-  it('lists `translate` in the panel’s transition, or its slide never animates', () => {
-    expect(VIEWER).toContain("'transition-[opacity,translate,transform]'");
+  it('animates the existing preview body rather than the grid box', () => {
+    expect(VIEWER).toContain('usePreviewMotion(previewBodyRef');
+    expect(VIEWER).not.toContain("'transition-[opacity,translate,transform]'");
   });
 });
 

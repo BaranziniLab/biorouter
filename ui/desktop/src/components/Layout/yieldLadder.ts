@@ -192,16 +192,16 @@ function measured(value: number | null | undefined): value is number {
  * in a split the pane is decoupled from the window. Measure the split box the
  * panel and the conversation share, never the window and never `vw`.
  *
- * NO MEMORY, AND IT CANNOT LOOP. A pure function of measured width — no
- * auto-close, nothing to fight a click with — and neither shape changes the box
- * it reads: a side column and a stacked sheet are both placed INSIDE the split
- * box by one CSS grid, so there is no hysteresis, and none is added on spec.
+ * A 12px return buffer prevents repeated flips during a window-edge drag.
+ * The side floor remains 800px; a stacked preview returns beside the chat at 812px.
  */
-export function previewPanelMode(opts: { paneWidth: number }): PreviewPanelMode {
-  // An unmeasured pane (0 before layout, NaN from a detached node) must not read
-  // as "infinitely narrow" and stack the panel on first paint.
-  if (!measured(opts.paneWidth)) return 'side';
-  return opts.paneWidth >= PREVIEW_SIDE_WIDTH ? 'side' : 'stack';
+export function previewPanelMode(opts: {
+  paneWidth: number;
+  previous?: PreviewPanelMode;
+}): PreviewPanelMode {
+  if (!measured(opts.paneWidth)) return opts.previous ?? 'side';
+  const threshold = PREVIEW_SIDE_WIDTH + (opts.previous === 'stack' ? 12 : 0);
+  return opts.paneWidth >= threshold ? 'side' : 'stack';
 }
 
 /**
