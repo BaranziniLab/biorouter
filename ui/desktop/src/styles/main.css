@@ -3601,6 +3601,267 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   box-shadow: var(--shadow-popover);
 }
 
+/* ============================================================================
+   RUNG 2: THE PREVIEW SPLIT (yieldLadder.previewPanelMode)
+
+   The artifact preview sits BESIDE the conversation in a pane at least 800px
+   wide (a 360px panel + a 440px conversation), and ABOVE it — in a sheet between
+   the chat header and the transcript — below that. It never covers the
+   conversation: it replaced an overlay that hid the transcript and the composer
+   of the chat it belonged to in every narrow split.
+
+   ONE GRID, AUTHORED HERE. `useArtifactPanel` stamps the split box with
+   `data-preview-split`, `data-preview-layout` and the lengths
+   `--preview-panel-width` / `--preview-stack-height` / `--preview-chat-floor`,
+   and these rules place the pieces by `data-preview-area`. The chat column and
+   its body are FLATTENED with `display: contents`, never re-parented, so a
+   crossing between the two layouts is a template change on the same DOM nodes:
+   the panel is not remounted and a figure's frame does not reload.
+
+   Every rule is plain and unlayered, keyed on data attributes, for two reasons
+   written down elsewhere: under BIOROUTER_NO_HMR a newly written Tailwind class
+   can silently fail to generate, and an unlayered rule beats a utility on the
+   same element (`h-full`, `border-l`, `translate-x-3`) whatever its specificity.
+   jsdom lays nothing out and never loads this file, so `measures.test.ts` pins
+   every literal here against the ladder's constants, and the ORDER of the side
+   and stack blocks (the stack block must come second).
+
+   Nothing here transitions. Motion is a later pass, and it must start from the
+   rects these rules produce rather than animate the tracks.
+   ============================================================================ */
+[data-preview-split][data-preview-layout] {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  /* The flattened body used to clip the header band's own overflow in a pane
+     narrower than the band's controls (under CHAT_MIN_WIDTH, a splitter drag's
+     reach). With the body flattened, the grid is the box that must. */
+  overflow: hidden;
+}
+
+[data-preview-split][data-preview-layout] > [data-preview-area='column'],
+[data-preview-split][data-preview-layout] > [data-preview-area='column'] > [data-preview-area='body'] {
+  display: contents;
+}
+
+[data-preview-split][data-preview-layout] [data-preview-area='header'] {
+  grid-area: header;
+}
+
+[data-preview-split][data-preview-layout] [data-preview-area='subheader'] {
+  grid-area: subheader;
+}
+
+[data-preview-split][data-preview-layout] [data-preview-area='transcript'] {
+  grid-area: transcript;
+  min-width: 0;
+}
+
+[data-preview-split][data-preview-layout] [data-preview-area='composer'] {
+  grid-area: composer;
+  min-width: 0;
+}
+
+[data-preview-split][data-preview-layout] > [data-testid='artifact-viewer'] {
+  grid-area: preview;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* THE RESIZE EDGE: a sibling of the panel, placed on the seam by this grid, so it
+   never lies over the preview's content or the conversation's. An 8px hit area,
+   drawn as a 1px `--border-strong` line on hover. */
+[data-preview-split][data-preview-layout] > .br-preview-resize-handle {
+  position: relative;
+  z-index: 30;
+  touch-action: none;
+}
+
+[data-preview-split][data-preview-layout] > .br-preview-resize-handle::after {
+  position: absolute;
+  background: transparent;
+  content: '';
+}
+
+[data-preview-split][data-preview-layout] > .br-preview-resize-handle:hover::after {
+  background: var(--border-strong);
+}
+
+/* SIDE: a full-height column on the right. The conversation column keeps 440px
+   whatever happens (`READABLE_CHAT_WIDTH`); the panel's width is the ladder's
+   (`previewSideWidth`), published as `--preview-panel-width`. The panel spans
+   every row, so its 44px strip continues the chat header's band. */
+[data-preview-split][data-preview-layout='side'] {
+  grid-template-columns: minmax(440px, 1fr) var(--preview-panel-width);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'header preview'
+    'subheader preview'
+    'transcript preview'
+    'composer preview';
+}
+
+/* Beside the conversation the edge is the panel's left 8px, over its border. */
+[data-preview-split][data-preview-layout='side'] > .br-preview-resize-handle {
+  grid-area: preview;
+  justify-self: start;
+  width: 8px;
+  cursor: col-resize;
+}
+
+[data-preview-split][data-preview-layout='side'] > .br-preview-resize-handle::after {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+}
+
+/* A replay's reading column is ONE item: its page header is part of the
+   document it scrolls beside, not a band. */
+[data-preview-split][data-preview-layout='side'] > [data-preview-area='conversation'] {
+  grid-column: 1;
+  grid-row: header-start / composer-end;
+  min-width: 0;
+}
+
+/* STACK: one column — header, sheet, transcript, composer. The composer stays on
+   the pane's bottom edge, so neighbouring panes stay aligned and the input does
+   not jump when a preview opens.
+
+   The header rows are `auto`, not `var(--chrome-height)`: the chat header IS
+   `h-chrome` (44px) and sizes its own row, a subagent's second header adds its
+   own, and a replay has no band at all — a fixed 44px row there would be an
+   empty strip above the sheet.
+
+   `minmax(var(--dock-height), var(--preview-stack-height))` is the sheet: the
+   height the ladder chose, and when something in the conversation grows AFTER
+   that choice (a queued message, a long draft) the grid takes the difference
+   from the SHEET, down to its strip — never from the transcript, whose row
+   keeps its 146px floor through the item's `min-height` below. */
+[data-preview-split][data-preview-layout='stack'] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(var(--dock-height), var(--preview-stack-height)) 1fr auto;
+  grid-template-areas:
+    'header'
+    'subheader'
+    'preview'
+    'transcript'
+    'composer';
+}
+
+/* `:not([data-preview-measuring])`: while a fresh sheet is still measuring it takes
+   no room, and neither does this — so the transcript moves ONCE, straight to its
+   final top, rather than 8px first and the sheet's height a frame later. */
+[data-preview-split][data-preview-layout='stack']:not([data-preview-measuring])
+  [data-preview-area='transcript'] {
+  /* The collapsed-sidebar `pt-11` reserves the window's top-left corner for the
+     titlebar controls; under a sheet that corner is nowhere near, and the
+     reserve was a dead 44px band. The 8px that replaces it is the sheet's resize
+     edge (PREVIEW_STACK_EDGE_HEIGHT), so neither side's rows meet the seam. */
+  padding-top: 8px;
+  /* PREVIEW_TRANSCRIPT_MIN_HEIGHT of transcript below that edge. With the
+     composer's `auto` row under it this is the conversation's floor, held by
+     the grid live rather than assumed. */
+  min-height: calc(146px + 8px);
+}
+
+[data-preview-split][data-preview-layout='stack'] > [data-preview-area='conversation'] {
+  grid-row: transcript-start / composer-end;
+  min-width: 0;
+}
+
+[data-preview-split][data-preview-layout='stack']:not([data-preview-measuring])
+  > [data-preview-area='conversation'] {
+  padding-top: 8px;
+  /* A replay has no composer row: its whole column holds the floor the ladder
+     measured (its page header, the edge, and 146px of transcript). */
+  min-height: var(--preview-chat-floor);
+}
+
+/* THE SHEET. Its strip takes the terminal dock's treatment — `--dock-height` on
+   the surface — because it sits UNDER the header band, and in the band's own
+   ground it read as a second row of the same tabs. Its bottom edge is a real
+   border, so the seam reads at a glance. */
+[data-preview-split][data-preview-layout='stack'] > [data-testid='artifact-viewer'] {
+  border-left-width: 0;
+  border-bottom: 1px solid var(--border-default);
+  /* A stacked sheet fades in place; the side column's sideways slide would read
+     as a column arriving, which is not where this one lives. */
+  translate: none;
+}
+
+[data-preview-split][data-preview-layout='stack'] > [data-testid='artifact-viewer'] > .br-tabstrip {
+  height: var(--dock-height);
+  background: var(--background-default);
+}
+
+/* Under a sheet the edge is the transcript's top 8px, directly below the sheet's
+   border, and its hover line lies over that border. */
+[data-preview-split][data-preview-layout='stack'] > .br-preview-resize-handle {
+  grid-area: transcript;
+  align-self: start;
+  height: 8px;
+  cursor: row-resize;
+}
+
+[data-preview-split][data-preview-layout='stack'] > .br-preview-resize-handle::after {
+  top: -1px;
+  right: 0;
+  left: 0;
+  height: 1px;
+}
+
+[data-preview-split][data-preview-layout='stack'] [data-testid='artifact-resize-shield'] {
+  cursor: row-resize;
+}
+
+/* Folded: the sheet is its strip, and its edge goes with its body — unfolding is
+   a click on the strip, a tab or the toggle. A sheet still measuring has no edge
+   to drag. */
+[data-preview-split][data-preview-layout='stack'][data-preview-folded] > .br-preview-resize-handle,
+[data-preview-split][data-preview-layout='stack'][data-preview-folded]
+  > [data-testid='artifact-viewer']
+  > [data-testid='artifact-preview-content'],
+[data-preview-split][data-preview-layout='stack'][data-preview-measuring] > .br-preview-resize-handle {
+  display: none;
+}
+
+[data-preview-split][data-preview-layout='side'] .br-preview-fold-toggle {
+  display: none;
+}
+
+/* A FRESH SHEET TAKES NO ROOM UNTIL IT KNOWS ITS HEIGHT. While its content is
+   reporting (`useArtifactPanel`'s measuring phase) the sheet's row is 0, so the
+   conversation does not move; the panel is laid out at the default height —
+   a figure's frame needs a real viewport to lay out in — invisible and inert,
+   and it takes its row, once, when the answer arrives. */
+[data-preview-split][data-preview-layout='stack'][data-preview-measuring] {
+  grid-template-rows: auto auto 0px 1fr auto;
+}
+
+[data-preview-split][data-preview-layout='stack'][data-preview-measuring]
+  > [data-testid='artifact-viewer'] {
+  align-self: start;
+  height: var(--preview-provisional-height);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* THE PREVIEW'S TEXT MEASURE. Text in the artifact panel — a markdown report, a
+   plain text file, code, a log — reads at the transcript's own 760px column
+   (`--measure-chat`), centred the way the transcript column is. Both text views
+   keep a 16px gutter inside the box (markdown's `px-4`, the code view's
+   `padding: 14px 16px`), so the box is the measure plus two gutters and the
+   column of glyphs is exactly 760; a long code line scrolls inside it.
+
+   Never on anything that needs width: a CSV/TSV table or its raw rows, a figure
+   or page (an iframe), an image, a directory tree, a notebook, a document.
+   `measures.test.ts` asserts the declaration and every call site. */
+.br-preview-measure {
+  max-width: calc(var(--measure-chat) + 2 * 16px);
+  margin-inline: auto;
+}
+
 body.biorouter-window-resizing .biorouter-sidebar-inset-depth,
 body.biorouter-window-resizing .biorouter-sidebar-shell,
 body.biorouter-window-resizing [data-slot='sidebar-gap'],

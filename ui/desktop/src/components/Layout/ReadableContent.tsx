@@ -4,6 +4,13 @@ type ReadableContentProps = {
   children: React.ReactNode;
   className?: string;
   size?: 'chat' | 'text' | 'wide' | 'graph';
+  /**
+   * Rung 2 of the yield ladder: marks this reading column as the CONVERSATION a
+   * split box's artifact preview sits beside or above. Only the two transcript
+   * replays set it; their whole column (page header and transcript) is one item
+   * in the grid, because the page header is part of the document, not a band.
+   */
+  previewConversation?: boolean;
 };
 
 /**
@@ -73,10 +80,16 @@ const WIDTH_BY_SIZE: Record<NonNullable<ReadableContentProps['size']>, string> =
   graph: 'max-w-measure-graph',
 };
 
-export function ReadableContent({ children, className = '', size = 'text' }: ReadableContentProps) {
+export function ReadableContent({
+  children,
+  className = '',
+  size = 'text',
+  previewConversation = false,
+}: ReadableContentProps) {
   return (
     <div
       data-size={size}
+      data-preview-area={previewConversation ? 'conversation' : undefined}
       className={`biorouter-readable-content mx-auto w-full ${WIDTH_BY_SIZE[size]} ${className}`.trim()}
     >
       {children}
