@@ -433,8 +433,8 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
 
     // No feedback loop: this observes the split box, which is sized by the layout
     // above it, and rung 2 only ever moves the panel INSIDE that box. Neither
-    // shape can change the observed box, so the callback cannot retrigger itself —
-    // no hysteresis needed, and none added on spec. The header bands are watched
+    // shape can change the observed box. The return buffer prevents repeated
+    // flips during a window-edge drag. The header bands are watched
     // because a subagent's second header loading in moves H without resizing the
     // box; the composer because its growth is the conversation's chrome.
     const resizeObserver = new ResizeObserver(measureGeometry);
