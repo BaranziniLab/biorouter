@@ -1846,7 +1846,7 @@
           "workspace"
         ],
         "summary": "Soft interrupt: queue a user message to be injected into the session's",
-        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".\n\n#69: the 409 is now decided by the *agent's own queue*, not by the turn-lock\ncheck above it. Checking the lock and then queueing are two steps against\nstate the reply loop changes underneath them: a steer could be accepted (202)\nafter the loop had already performed its final empty-queue check, and the text\nthen surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides\nacceptance and enqueues in one critical section, and reports back *which* turn\ntook the message — so a 202 names something real.",
+        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. The 409 carries an [`InterruptRefusal`]\nbody naming why (D12d): only `no_turn` means \"send it as a normal message\nnow\"; `turn_closing` means \"send it once this turn's terminal frame arrives\",\nbecause a `/reply` sent before then 409s on the single-turn lock.\n\n⚠ The 403 refusals are untouched, byte for byte (SD-11): the keyed\n`Unproven` stays EMPTY and the keyless one carries [`STEER_NO_KEY`], because\n`biorouter session`'s `key_verdict` reads only 403 shapes.\n\n#69: the 409 is now decided by the *agent's own queue*, not by the turn-lock\ncheck above it. Checking the lock and then queueing are two steps against\nstate the reply loop changes underneath them: a steer could be accepted (202)\nafter the loop had already performed its final empty-queue check, and the text\nthen surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides\nacceptance and enqueues in one critical section, and reports back *which* turn\ntook the message — so a 202 names something real.",
         "operationId": "interrupt",
         "requestBody": {
           "content": {
@@ -1876,7 +1876,14 @@
             "description": "The request was not proven to come from the user; on a daemon that holds no user-action key, steering is unavailable and the refusal says so (SD-11)"
           },
           "409": {
-            "description": "No turn is accepting interrupts for this session"
+            "description": "No turn is accepting interrupts for this session; the body says whether none is running, one has not opened its queue yet, or one is closing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterruptRefusal"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error"
@@ -8700,6 +8707,32 @@
           }
         }
       },
+      "InterruptRefusal": {
+        "type": "object",
+        "description": "The JSON body of a `POST /interrupt` 409.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "$ref": "#/components/schemas/InterruptRefusalReason"
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "The server's turn that holds the chat, when there is one.",
+            "nullable": true
+          }
+        }
+      },
+      "InterruptRefusalReason": {
+        "type": "string",
+        "description": "Why `POST /interrupt` answered 409 — the body of that refusal.\n\nIt used to be a bare 409, which every client read as \"no turn, send it as a\nnormal message\" — including when a turn was plainly running and only its\nqueue was not yet (or no longer) open, where the fallback 409s too.",
+        "enum": [
+          "no_turn",
+          "not_accepting_yet",
+          "turn_closing"
+        ]
+      },
       "InterruptRequest": {
         "type": "object",
         "description": "Request body for the soft-interrupt route.",
@@ -8716,7 +8749,7 @@
           },
           "turn_id": {
             "type": "string",
-            "description": "Client idempotency key for a steer submitted while a delegated child is\nstill waiting for its initial runtime. Ordinary active-turn interrupts\ndo not require it.",
+            "description": "Client idempotency key. For a delegated child still waiting for its\ninitial runtime it names the queued input; for a running turn it\nmakes a retry after a lost response safe — the same key is answered 202\nagain and the text is not queued twice.",
             "nullable": true
           }
         }
@@ -10045,6 +10078,51 @@
           },
           {
             "type": "object",
+            "description": "`ToolCallPending` skeletons that will never become tool requests —\nthe stream announcing them was dropped to apply a steer, and the\nreissued request mints new ids. Remove them; nothing else changes.",
+            "required": [
+              "ids",
+              "type"
+            ],
+            "properties": {
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "ToolCallsRetracted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A steer this turn accepted is waiting behind something the loop\ndoes not interrupt — a running tool (`reason: \"tool\"`, with its name when\nknown) or an approval card (`reason: \"approval\"`). Sent once per steer.\nAdvisory: it cancels nothing and answers no card.",
+            "required": [
+              "reason",
+              "type"
+            ],
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/SteerWaitReason"
+              },
+              "tool_name": {
+                "type": "string",
+                "nullable": true
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "SteerWaiting"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "conversation",
               "token_state",
@@ -10158,6 +10236,14 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/MessageProvenance"
+              }
+            ],
+            "nullable": true
+          },
+          "steerOutcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SteerOutcome"
               }
             ],
             "nullable": true
@@ -11641,6 +11727,37 @@
             "items": {
               "type": "string"
             }
+          },
+          "turn_phases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunningTurnPhase"
+            },
+            "description": "What each listed session's reply loop is waiting on, for the ones whose\nagent is live — so a turn that looks frozen can be named (a tool, a\ncard, the provider's first byte) instead of guessed at. Diagnostic, and\nfiltered exactly like `session_ids`."
+          }
+        }
+      },
+      "RunningTurnPhase": {
+        "type": "object",
+        "description": "One entry of [`RunningSessionsResponse::turn_phases`].",
+        "required": [
+          "session_id",
+          "phase",
+          "phase_age_ms"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "`prologue`, `auto_compaction`, `provider_open`, `streaming`, `gating`,\n`approval_wait`, `tool_batch`, `live_ack_wait`, `exit_gates`,\n`supervision_wait`, `settling` or `idle`."
+          },
+          "phase_age_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long ago the loop entered that phase.",
+            "minimum": 0
+          },
+          "session_id": {
+            "type": "string"
           }
         }
       },
@@ -12782,6 +12899,22 @@
             "type": "string"
           }
         }
+      },
+      "SteerOutcome": {
+        "type": "string",
+        "description": "See [`MessageMetadata::steer_outcome`].",
+        "enum": [
+          "unanswered"
+        ]
+      },
+      "SteerWaitReason": {
+        "type": "string",
+        "description": "What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].",
+        "enum": [
+          "tool",
+          "approval",
+          "delegation"
+        ]
       },
       "StopAgentRequest": {
         "type": "object",

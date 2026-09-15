@@ -2851,7 +2851,8 @@ class ChatStreamController {
     if (this.activeStreamId !== streamId) return false;
     this.reattachesThisTurn += 1;
 
-    this.abortController = new AbortController();
+    const socket = new AbortController();
+    this.abortController = socket;
     const nextStreamId = streamId + 1;
     this.activeStreamId = nextStreamId;
     const continuationLease =
@@ -2868,7 +2869,7 @@ class ChatStreamController {
           continuationLease ?? undefined
         ),
         throwOnError: true,
-        signal: this.abortController.signal,
+        signal: socket.signal,
         sseMaxRetryAttempts: 1,
       });
       await this.streamFromResponse(
@@ -2886,6 +2887,9 @@ class ChatStreamController {
       // error lands on the turn it was written for.
       if (this.activeStreamId === nextStreamId) this.activeStreamId = streamId;
       return false;
+    } finally {
+      // D1: see `attachToTurn`'s `finally`.
+      if (this.abortController !== socket) socket.abort();
     }
   }
 
@@ -2999,6 +3003,21 @@ class ChatStreamController {
           // Kept for the client-side throws that DO land here (a malformed URL).
           if (error instanceof Error && error.name === 'AbortError') return;
           // fall through to retry
+        } finally {
+          // ⚠ **Close THIS iteration's connection, by the local, every time.**
+          // A `Finish` frame makes `streamFromResponse` return while the daemon's
+          // observer stream is still open (the session outlives its turn), and
+          // `finishCurrentStream` sets `this.abortController = null` without
+          // aborting it. The generated SSE client's `finally` only releases its
+          // reader lock, so the next iteration's `this.abortController?.abort()`
+          // aborted `null` and the socket stayed open, heartbeating every 500 ms,
+          // for the life of the renderer. Two of those per finished subagent tab
+          // filled Chromium's six-connection pool, and a steer, a Stop and a
+          // `/reply` then sat 3–25 s in the browser's queue over an idle daemon.
+          // Nothing reads this stream once `streamFromResponse` has returned, so
+          // aborting it here is always correct — and the field is never
+          // consulted, because a newer owner may already hold it.
+          socket.abort();
         }
         // The stream has ENDED. Only now is it known whether it was a real
         // connection or a snapshot-and-close, so only now can the backoff floor
@@ -3329,6 +3348,10 @@ class ChatStreamController {
       if (this.activeStreamId === streamId && this.abortController?.signal.aborted) {
         this.abortController = null;
       }
+      // D1: once the drain is over, a socket the field no longer names is
+      // nobody's — a terminal frame nulled the field, or a re-attach replaced
+      // it. Close it rather than trust the daemon to hang up first.
+      if (this.abortController !== socket) socket.abort();
     }
   };
 
@@ -3517,7 +3540,8 @@ class ChatStreamController {
     // #22 — turn boundary: the user's own message and the working indicator
     // must paint immediately on submit, never an animation frame late.
     this.flushNotify();
-    this.abortController = new AbortController();
+    const socket = new AbortController();
+    this.abortController = socket;
     const streamId = this.activeStreamId + 1;
     this.activeStreamId = streamId;
     // BR-62b: one idempotency key per turn, sent in the body so an SSE
@@ -3594,7 +3618,7 @@ class ChatStreamController {
           ...(continuationLease ? { continuation_lease: continuationLease } : {}),
         } as ChatRequest,
         throwOnError: true,
-        signal: this.abortController.signal,
+        signal: socket.signal,
         sseMaxRetryAttempts: 1,
         onSseError: () => {
           streamTransportError = true;
@@ -3630,6 +3654,8 @@ class ChatStreamController {
       if (this.activeStreamId === streamId && this.abortController?.signal.aborted) {
         this.abortController = null;
       }
+      // D1: see `attachToTurn`'s `finally`.
+      if (this.abortController !== socket) socket.abort();
     }
   };
 

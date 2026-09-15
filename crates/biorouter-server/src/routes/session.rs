@@ -1838,6 +1838,24 @@ async fn session_extensions(
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RunningSessionsResponse {
     pub session_ids: Vec<String>,
+    /// What each listed session's reply loop is waiting on, for the ones whose
+    /// agent is live — so a turn that looks frozen can be named (a tool, a
+    /// card, the provider's first byte) instead of guessed at. Diagnostic, and
+    /// filtered exactly like `session_ids`.
+    #[serde(default)]
+    pub turn_phases: Vec<RunningTurnPhase>,
+}
+
+/// One entry of [`RunningSessionsResponse::turn_phases`].
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunningTurnPhase {
+    pub session_id: String,
+    /// `prologue`, `auto_compaction`, `provider_open`, `streaming`, `gating`,
+    /// `approval_wait`, `tool_batch`, `live_ack_wait`, `exit_gates`,
+    /// `supervision_wait`, `settling` or `idle`.
+    pub phase: String,
+    /// How long ago the loop entered that phase.
+    pub phase_age_ms: u64,
 }
 
 #[utoipa::path(
@@ -1890,7 +1908,21 @@ async fn running_sessions(
             session_ids.push(session_id);
         }
     }
-    Json(RunningSessionsResponse { session_ids })
+    let mut turn_phases = Vec::new();
+    for session_id in &session_ids {
+        if let Some(agent) = state.agent_manager.peek_agent(session_id).await {
+            let (phase, phase_age_ms) = agent.loop_phase_snapshot();
+            turn_phases.push(RunningTurnPhase {
+                session_id: session_id.clone(),
+                phase: phase.as_str().to_string(),
+                phase_age_ms,
+            });
+        }
+    }
+    Json(RunningSessionsResponse {
+        session_ids,
+        turn_phases,
+    })
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

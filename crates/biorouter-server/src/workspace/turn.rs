@@ -353,13 +353,14 @@ pub async fn run_turn(
     let turn_id = turn_guard.turn_id().to_string();
     let outcome = Arc::new(AtomicU8::new(TURN_OUTCOME_NONE));
     let stop_record = turn_guard.stop_record();
+    let frame_log = turn_guard.stream();
     let turn = run_turn_body(
         state,
         request,
         turn_id,
         cancel_token,
         Arc::clone(&outcome),
-        stop_record,
+        (stop_record, frame_log),
     );
     supervise_turn(session_id, turn_guard, outcome, turn).await;
 }
@@ -440,6 +441,8 @@ pub(crate) fn stamp_user_direct_if_subagent(
 /// provider for a single token. Produced by [`prepare_turn`].
 struct TurnSetup {
     agent: Arc<biorouter::agents::Agent>,
+    /// D20: the agent pinned out of the LRU for as long as the turn runs.
+    _pin: TurnPin,
     session_config: SessionConfig,
     /// The turn's accumulator, already seeded and already carrying
     /// `user_message` as its last entry.
@@ -578,9 +581,13 @@ async fn prepare_turn(
     // buys is only that we do not start BEFORE the load settles. A second
     // caller blocks on the holder's mutex rather than skipping, so concurrent
     // waiters both wait.
-    let _ = state.take_extension_loading_task(session_id).await;
-    state.remove_extension_loading_task(session_id).await;
-
+    //
+    // ⚠ D12a/D20: the agent is resolved, pinned and its steer queue OPENED
+    // before that wait, not after it. The wait is up to 30 s and it runs with
+    // the turn lock held: a composer showing a running turn refused every steer
+    // for all of it (`/interrupt` also sat in the same wait before answering
+    // 409). Resolving the agent first is safe — the background loader loads into
+    // this same `Arc` — and `/interrupt` finds the pinned agent without waiting.
     let agent = match state.get_agent(session_id.to_string()).await {
         Ok(agent) => agent,
         Err(e) => {
@@ -596,10 +603,20 @@ async fn prepare_turn(
             return None;
         }
     };
+    let pin = TurnPin::register(state, session_id, &agent).await;
+    // Continuable: this runner is the one that resumes a turn for a steer typed
+    // after a safety stop (`drive_turn_with_continuations`).
+    agent.prepare_continuable_soft_interrupt_turn();
+    agent.loop_phase_prologue();
+
+    let _ = state.take_extension_loading_task(session_id).await;
+    state.remove_extension_loading_task(session_id).await;
+
     let session = match state.session_manager().get_session(session_id, true).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("turn: failed to read session: {e}");
+            abandon_prepared_turn(session_id, &agent).await;
             publish_turn_error(
                 session_id,
                 format!("Failed to read session: {e}"),
@@ -617,6 +634,7 @@ async fn prepare_turn(
             session_id,
             "turn: failed to restore persisted provider: {e}"
         );
+        abandon_prepared_turn(session_id, &agent).await;
         publish_turn_error(
             session_id,
             format!("Failed to restore session provider: {e}"),
@@ -629,6 +647,7 @@ async fn prepare_turn(
     }
 
     if !restore_delegated_runtime_profile(state, session_id, &agent, &session).await {
+        abandon_prepared_turn(session_id, &agent).await;
         return None;
     }
 
@@ -667,11 +686,22 @@ async fn prepare_turn(
 
     Some(TurnSetup {
         agent,
+        _pin: pin,
         session_config,
         all_messages,
         user_message,
         turn_message_start,
     })
+}
+
+/// The setup failed after the steer queue was opened: store what the prologue
+/// accepted, marked unanswered, so a 202 never becomes nothing (D12a).
+async fn abandon_prepared_turn(session_id: &str, agent: &biorouter::agents::Agent) {
+    let mut sink = Conversation::new_unvalidated(Vec::new());
+    if let Err(error) = settle_accepted_interrupts(session_id, &mut sink, agent).await {
+        tracing::error!("turn: failed to settle accepted interrupts: {error}");
+    }
+    agent.mark_loop_idle();
 }
 
 /// Best-effort LLM session rename — always spawned, unlike a tail on the lazy
@@ -704,6 +734,8 @@ struct TurnFinish<'a> {
     turn_started: std::time::Instant,
     fallback_message_count: usize,
     outcome: &'a AtomicU8,
+    /// D17: the orphan reaper ended this turn.
+    reaped: bool,
 }
 
 async fn finish_turn(state: &Arc<AppState>, finish: TurnFinish<'_>) {
@@ -715,6 +747,7 @@ async fn finish_turn(state: &Arc<AppState>, finish: TurnFinish<'_>) {
         turn_started,
         fallback_message_count,
         outcome,
+        reaped,
     } = finish;
     let exit_type = if terminal_error {
         "error"
@@ -743,7 +776,10 @@ async fn finish_turn(state: &Arc<AppState>, finish: TurnFinish<'_>) {
         session_events::publish(
             session_id,
             SessionBusEvent::TurnFinished {
-                reason: if cancel_token.is_cancelled() {
+                // D17: a reap is not a Stop, and no surface may draw it as one.
+                reason: if cancel_token.is_cancelled() && reaped {
+                    "orphaned".into()
+                } else if cancel_token.is_cancelled() {
                     "cancelled".into()
                 } else {
                     "stop".into()
@@ -781,7 +817,10 @@ async fn run_turn_body(
     turn_id: String,
     cancel_token: CancellationToken,
     outcome: Arc<AtomicU8>,
-    stop_record: crate::state::TurnStopRecord,
+    (stop_record, frame_log): (
+        crate::state::TurnStopRecord,
+        Arc<crate::turn_stream::TurnStream>,
+    ),
 ) {
     let TurnRequest {
         session_id,
@@ -823,6 +862,7 @@ async fn run_turn_body(
     // `classify_abort` is the only thing in the process that produces it.
     let Some(TurnSetup {
         agent,
+        _pin,
         session_config,
         mut all_messages,
         user_message,
@@ -845,12 +885,29 @@ async fn run_turn_body(
         return;
     };
 
-    let mut stream = match agent
-        .reply(user_message, session_config, Some(cancel_token.clone()))
+    // D12a: the steer queue is already open (`prepare_turn`), so the reply's own
+    // prologue — hooks, the auto-compaction model call, context — accepts steers
+    // too. D20: `_pin` keeps this agent out of the LRU until the turn ends; an
+    // agent evicted mid-turn would make `/interrupt` resolve a FRESH one whose
+    // queue no loop drains.
+    let stream = match agent
+        .reply(
+            user_message,
+            session_config.clone(),
+            Some(cancel_token.clone()),
+        )
         .await
     {
         Ok(stream) => stream,
         Err(e) => {
+            // A steer accepted during the prologue is stored, marked unanswered,
+            // before the failure is reported.
+            if let Err(error) =
+                settle_accepted_interrupts(&session_id, &mut all_messages, &agent).await
+            {
+                tracing::error!("turn: failed to settle accepted interrupts: {error}");
+            }
+            agent.mark_loop_idle();
             let turn_messages = (&all_messages, turn_message_start);
             report_reply_start_failure(&session_id, &e, &cancel_token, turn_messages, &outcome);
             return;
@@ -858,15 +915,17 @@ async fn run_turn_body(
     };
 
     let mut stopped_rows = Vec::new();
-    let terminal_error = drive_stream(
+    let terminal_error = drive_turn_with_continuations(
         &session_id,
-        &mut stream,
+        stream,
+        &agent,
+        &session_config,
         &cancel_token,
         &mut all_messages,
-        Some(agent.as_ref()),
         &mut stopped_rows,
     )
     .await;
+    agent.mark_loop_idle();
     // Before `finish_turn`, and so before the guard retires: a cancel waiting on
     // that retirement reads this record the moment it wakes.
     stop_record.record(stopped_rows);
@@ -892,9 +951,140 @@ async fn run_turn_body(
             turn_started,
             fallback_message_count: all_messages.len(),
             outcome: &outcome,
+            reaped: frame_log.was_reaped(),
         },
     )
     .await;
+}
+
+/// Drive a turn's reply stream to its end — and, when the loop stopped at a
+/// safety limit and the person typed a steer after it, keep going with that
+/// steer under the SAME turn: the same `TurnGuard`, the same turn id, the same
+/// bus bracket, so the composer's spinner stays honest and exactly one
+/// `TurnFinished` is published (the open question in fix/steer-always-lands,
+/// decided: accept the steer). Bounded: every continuation needs a new human
+/// steer. Returns `true` when a terminal error was published.
+///
+/// Afterwards it settles the steer queue once more. Idempotent, and needed: a
+/// reply that returned early without entering the loop (a slash command, a
+/// privacy refusal, a failed compaction) leaves a queue this runner opened.
+async fn drive_turn_with_continuations<'a>(
+    session_id: &str,
+    first: futures::stream::BoxStream<'a, anyhow::Result<AgentEvent>>,
+    agent: &'a Arc<biorouter::agents::Agent>,
+    session_config: &biorouter::agents::SessionConfig,
+    cancel_token: &CancellationToken,
+    all_messages: &mut Conversation,
+    stopped_rows: &mut Vec<Message>,
+) -> bool {
+    let mut stream = first;
+    loop {
+        let terminal_error = drive_stream(
+            session_id,
+            &mut stream,
+            cancel_token,
+            all_messages,
+            Some(agent.as_ref()),
+            stopped_rows,
+        )
+        .await;
+        drop(stream);
+        if terminal_error || cancel_token.is_cancelled() {
+            return terminal_error;
+        }
+        let Some(steer) = agent.take_continuation_steer(session_id) else {
+            break;
+        };
+        // The steer is the person's next message: every surface draws it now,
+        // under the id the store will hold it by.
+        all_messages.push(steer.clone());
+        session_events::publish(
+            session_id,
+            SessionBusEvent::Agent(AgentEvent::Message(steer.clone())),
+        );
+        stream = match agent
+            .reply(steer, session_config.clone(), Some(cancel_token.clone()))
+            .await
+        {
+            Ok(next) => next,
+            Err(error) => {
+                if let Err(settle) =
+                    settle_accepted_interrupts(session_id, all_messages, agent).await
+                {
+                    tracing::error!("turn: failed to settle accepted interrupts: {settle}");
+                }
+                tracing::error!("turn: failed to continue the turn for a steer: {error:?}");
+                publish_turn_error(
+                    session_id,
+                    error.to_string(),
+                    "inference_start_failed",
+                    TurnErrorScope::Inference,
+                    false,
+                    None,
+                );
+                return true;
+            }
+        };
+    }
+    if let Err(error) = settle_accepted_interrupts(session_id, all_messages, agent).await {
+        tracing::error!("turn: failed to settle accepted interrupts: {error}");
+        publish_turn_error(
+            session_id,
+            error.to_string(),
+            "interrupt_settlement_failed",
+            TurnErrorScope::Session,
+            false,
+            None,
+        );
+        return true;
+    }
+    false
+}
+
+/// D20: the turn's agent, pinned out of the `AgentManager` LRU until the turn
+/// ends however it ends. Released on drop, on the runtime if there is one — the
+/// shape `subagent_handler::Deregister` and `apps::ConsultRegistration` use.
+struct TurnPin {
+    manager: Arc<biorouter::execution::manager::AgentManager>,
+    agent: Arc<biorouter::agents::Agent>,
+    session_id: String,
+}
+
+impl TurnPin {
+    async fn register(
+        state: &Arc<AppState>,
+        session_id: &str,
+        agent: &Arc<biorouter::agents::Agent>,
+    ) -> Self {
+        let manager = state.agent_manager.clone();
+        manager
+            .register_agent(session_id.to_string(), Arc::clone(agent))
+            .await;
+        Self {
+            manager,
+            agent: Arc::clone(agent),
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
+impl Drop for TurnPin {
+    fn drop(&mut self) {
+        let manager = self.manager.clone();
+        let agent = self.agent.clone();
+        let session_id = std::mem::take(&mut self.session_id);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    manager.deregister_agent_if_same(&session_id, &agent).await;
+                });
+            }
+            Err(_) => tracing::debug!(
+                "no tokio runtime while unpinning the turn agent for {session_id}; \
+                 the pin is left to the process exit"
+            ),
+        }
+    }
 }
 
 /// The reply stream never opened: publish the turn's one terminal and record the
@@ -1063,26 +1253,82 @@ async fn drain_delegated_work_after_forced_exit(
     Ok(())
 }
 
-async fn publish_stream_failure(
+/// Settle a reply stream the runner is abandoning — a Stop (`stopped`) or a
+/// failed stream — through the one helper that writes prose, then steers, then
+/// the Stop notice (D19). Returns `true` when it had to publish a terminal
+/// error of its own.
+async fn settle_interrupted(
     session_id: &str,
-    error: anyhow::Error,
+    in_flight: &Conversation,
     all_messages: &mut Conversation,
-    agent: Option<&biorouter::agents::Agent>,
-    cancel_token: &CancellationToken,
-) {
-    if let Some(agent) = agent {
-        if let Err(settlement_error) =
-            settle_accepted_interrupts(session_id, all_messages, agent).await
-        {
-            tracing::error!("turn: failed to settle accepted interrupts: {settlement_error}");
+    agent: &biorouter::agents::Agent,
+    stopped: bool,
+    stop_record: &mut Vec<Message>,
+) -> bool {
+    biorouter::agents::subagent_handle::begin_parent_closing(session_id);
+    match agent
+        .settle_interrupted_turn(session_id, in_flight.messages(), stopped)
+        .await
+    {
+        Ok(rows) => {
+            // The prose is deliberately NOT published: every observer already
+            // holds this reply chunk by chunk under the same id, and the SSE
+            // coalescer would join a second, whole copy onto an unflushed tail.
+            stop_record.extend(rows.prose);
+            for message in rows.steers {
+                all_messages.push(message.clone());
+                session_events::publish(
+                    session_id,
+                    SessionBusEvent::Agent(AgentEvent::Message(message.clone())),
+                );
+                stop_record.push(message);
+            }
+            // Published so a second window following the chat shows it too, but
+            // NOT pushed into `all_messages`: that is the turn's output, and a
+            // delegated child's result is read from it.
+            if let Some(notice) = rows.notice {
+                session_events::publish(
+                    session_id,
+                    SessionBusEvent::Agent(AgentEvent::Message(notice.clone())),
+                );
+                stop_record.push(notice);
+            }
+            false
+        }
+        Err(error) => {
+            tracing::error!("turn: failed to settle accepted interrupts: {error}");
             publish_turn_error(
                 session_id,
-                settlement_error.to_string(),
+                error.to_string(),
                 "interrupt_settlement_failed",
                 TurnErrorScope::Session,
                 false,
                 None,
             );
+            true
+        }
+    }
+}
+
+async fn publish_stream_failure(
+    session_id: &str,
+    error: anyhow::Error,
+    in_flight: &Conversation,
+    all_messages: &mut Conversation,
+    agent: Option<&biorouter::agents::Agent>,
+    cancel_token: &CancellationToken,
+) {
+    if let Some(agent) = agent {
+        if settle_interrupted(
+            session_id,
+            in_flight,
+            all_messages,
+            agent,
+            false,
+            &mut Vec::new(),
+        )
+        .await
+        {
             return;
         }
         if let Err(supervision_error) =
@@ -1136,6 +1382,9 @@ where
     // agent instead. Folded with `Conversation::push`, like `all_messages`: a
     // streamed reply arrives as many same-id chunks.
     let mut in_flight = Conversation::new_unvalidated(Vec::new());
+    // The cancel arm wrote the Stop notice itself; the tail below must not
+    // write a second one.
+    let mut stop_settled = false;
     loop {
         // The hard cancellation escape. Without it this loop can only end when
         // the agent yields, and `AppState::cancel_turn` deliberately does not
@@ -1157,30 +1406,11 @@ where
                 if let Some(agent) = agent {
                     // The prose first, so the store reads in the order things
                     // happened: the reply was streaming when a steer arrived, and
-                    // the steer was never answered. Deliberately NOT published:
-                    // every observer already holds this reply chunk by chunk under
-                    // the same id, and the SSE coalescer would join a second, whole
-                    // copy onto an unflushed tail of the first.
-                    stop_record.extend(
-                        agent
-                            .settle_stopped_reply(session_id, in_flight.messages())
-                            .await,
-                    );
-                    match settle_accepted_interrupts(session_id, all_messages, agent).await {
-                        Ok(settled) => stop_record.extend(settled),
-                        Err(error) => {
-                            tracing::error!("turn: failed to settle accepted interrupts: {error}");
-                            publish_turn_error(
-                                session_id,
-                                error.to_string(),
-                                "interrupt_settlement_failed",
-                                TurnErrorScope::Session,
-                                false,
-                                None,
-                            );
-                            return true;
-                        }
+                    // the steer was never answered. See `settle_interrupted`.
+                    if settle_interrupted(session_id, &in_flight, all_messages, agent, true, stop_record).await {
+                        return true;
                     }
+                    stop_settled = true;
                 }
                 break;
             }
@@ -1254,7 +1484,15 @@ where
                 // here would give one code two unrelated meanings, separable
                 // only by `scope`, and would silently re-bucket every log and
                 // dashboard keyed on `code` the moment Task 8 lands.
-                publish_stream_failure(session_id, e, all_messages, agent, cancel_token).await;
+                publish_stream_failure(
+                    session_id,
+                    e,
+                    &in_flight,
+                    all_messages,
+                    agent,
+                    cancel_token,
+                )
+                .await;
                 return true;
             }
         }
@@ -1268,7 +1506,7 @@ where
     // Published so a second window following the chat shows it too, but NOT
     // pushed into `all_messages`: that is the turn's output, and a delegated
     // child's result is read from it.
-    if cancel_token.is_cancelled() {
+    if cancel_token.is_cancelled() && !stop_settled {
         if let Some(notice) = match agent {
             Some(agent) => agent.record_turn_stopped(session_id).await,
             None => None,
@@ -1394,28 +1632,44 @@ mod tests {
     }
 
     /// D2, the turn half. Every interactive turn funnels through `setup`, and
-    /// it must await this session's pending extension load before it takes the
-    /// agent — otherwise a reply sent in the ~300 ms after `/agent/start`
-    /// returns runs on a partial toolset and the model reports it cannot
-    /// delegate, which is indistinguishable from the real refusal.
+    /// it must await this session's pending extension load before the agent
+    /// RUNS — otherwise a reply sent in the ~300 ms after `/agent/start` returns
+    /// runs on a partial toolset and the model reports it cannot delegate, which
+    /// is indistinguishable from the real refusal.
+    ///
+    /// ⚠ D12a changed WHAT the wait must precede. It used to precede resolving
+    /// the agent, and the steer queue opened only in the reply loop, so the whole
+    /// wait (up to 30 s, turn lock held) refused every steer. Resolving the
+    /// `Arc` first is harmless — the background loader loads into the same one —
+    /// so now: agent resolved, queue opened, THEN the wait, then `reply`.
     ///
     /// ⚠ A source scan, because the behaviour needs a live `AppState` with a
     /// provider bound and the ordering is what matters, not the return value.
-    /// It anchors on the CALL, not on the surrounding comment: a guard that
+    /// It anchors on the CALLS, not on the surrounding comment: a guard that
     /// matches its own explanatory prose passes when the code is gone, and this
     /// repo has produced that own-goal three times.
     #[test]
-    fn a_turn_waits_for_the_sessions_extensions_before_taking_the_agent() {
+    fn a_turn_waits_for_the_sessions_extensions_before_it_runs_and_accepts_steers_meanwhile() {
         let src = include_str!("turn.rs");
-        let wait = src
-            .find("state.take_extension_loading_task(session_id).await;")
-            .expect("run_turn's setup no longer waits for the session's extensions");
         let take = src
             .find("state.get_agent(session_id.to_string()).await")
             .expect("setup no longer takes the agent");
+        let open = src
+            .find("agent.prepare_continuable_soft_interrupt_turn();")
+            .expect("setup no longer opens the steer queue");
+        let wait = src
+            .find("state.take_extension_loading_task(session_id).await;")
+            .expect("run_turn's setup no longer waits for the session's extensions");
+        let reply = src
+            .find(".reply(user_message, session_config.clone(), Some(cancel_token.clone()))")
+            .expect("run_turn_body no longer calls reply");
         assert!(
-            wait < take,
-            "the extension wait must come BEFORE the agent is taken, not after"
+            take < open && open < wait,
+            "the steer queue must be open BEFORE the extension wait (D12a)"
+        );
+        assert!(
+            wait < reply,
+            "the extension wait must come BEFORE the agent runs, not after"
         );
     }
     use biorouter::conversation::message::Message;
@@ -2121,6 +2375,161 @@ mod tests {
             seen.push(ev);
         }
         seen
+    }
+
+    /// Answers every call and records what each one was shown.
+    #[derive(Default)]
+    struct RecordingProvider {
+        seen: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl biorouter::providers::base::Provider for RecordingProvider {
+        async fn complete(
+            &self,
+            _system_prompt: &str,
+            messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (Message, biorouter::providers::base::ProviderUsage),
+            biorouter::providers::errors::ProviderError,
+        > {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(messages.iter().map(|m| m.as_concat_text()).collect());
+            Ok((
+                Message::assistant().with_text("on it"),
+                biorouter::providers::base::ProviderUsage::new(
+                    "mock-model".into(),
+                    biorouter::providers::base::Usage::new(Some(1), Some(1), Some(2)),
+                ),
+            ))
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &biorouter::model::ModelConfig,
+            system_prompt: &str,
+            messages: &[Message],
+            tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (Message, biorouter::providers::base::ProviderUsage),
+            biorouter::providers::errors::ProviderError,
+        > {
+            self.complete(system_prompt, messages, tools).await
+        }
+
+        fn get_model_config(&self) -> biorouter::model::ModelConfig {
+            biorouter::model::ModelConfig::new("mock-model").unwrap()
+        }
+
+        fn metadata() -> biorouter::providers::base::ProviderMetadata {
+            biorouter::providers::base::ProviderMetadata {
+                name: "mock".into(),
+                display_name: "Mock".into(),
+                description: "records what it was shown".into(),
+                default_model: "mock-model".into(),
+                known_models: vec![],
+                model_doc_link: String::new(),
+                config_keys: vec![],
+                allows_unlisted_models: false,
+                tier: Default::default(),
+                runs_locally: false,
+                institutions: Vec::new(),
+            }
+        }
+
+        fn get_name(&self) -> &str {
+            "mock-recording"
+        }
+    }
+
+    /// D12a + D20. A turn that holds the lock but is still in its prologue —
+    /// here, waiting on the session's extensions, on a channel the test holds —
+    /// accepts a steer, and the model's first call carries it. And the turn's
+    /// agent survives an LRU sweep, so the steer lands on the agent whose loop
+    /// will read it rather than on a fresh one nobody drains.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_steer_in_the_turn_prologue_is_accepted_and_the_agent_stays_pinned() {
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+        let state = crate::state::AppState::new().await.unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "prologue steer".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let provider = Arc::new(RecordingProvider::default());
+        let agent = state.get_agent(session.id.clone()).await.unwrap();
+        agent
+            .update_provider(provider.clone(), &session.id)
+            .await
+            .unwrap();
+        let (release, loaded) = tokio::sync::oneshot::channel::<()>();
+        state
+            .set_extension_loading_task(
+                session.id.clone(),
+                tokio::spawn(async move {
+                    let _ = loaded.await;
+                    Vec::new()
+                }),
+            )
+            .await;
+        let mut rx = session_events::subscribe(&session.id);
+
+        let _started = start_turn(
+            state.clone(),
+            TurnRequest::new(session.id.clone(), Message::user().with_text("begin")),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(BOUND, async {
+            while agent.loop_phase_snapshot().0
+                != biorouter::agents::loop_phase::LoopPhase::Prologue
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the turn reaches its prologue");
+
+        // D20: an LRU sweep while the turn runs.
+        state.agent_manager.clear_sessions().await;
+        let live = state
+            .peek_agent(&session.id)
+            .await
+            .expect("the running turn's agent must stay resolvable");
+        assert!(Arc::ptr_eq(&live, &agent), "and it must be the same agent");
+
+        live.try_queue_soft_interrupt("use the 2024 cohort".into(), None)
+            .expect("D12a: a turn in its prologue accepts a steer");
+        release.send(()).unwrap();
+
+        tokio::time::timeout(BOUND, async {
+            loop {
+                match rx.recv().await {
+                    Ok(
+                        SessionBusEvent::TurnFinished { .. } | SessionBusEvent::TurnError { .. },
+                    ) => break,
+                    Ok(_) => continue,
+                    Err(_) => panic!("the bus closed before the turn ended"),
+                }
+            }
+        })
+        .await
+        .expect("the turn finishes");
+        let seen = provider.seen.lock().unwrap().clone();
+        assert!(
+            seen.first()
+                .is_some_and(|call| call.iter().any(|text| text.contains("use the 2024 cohort"))),
+            "the first model call must carry the prologue steer: {seen:?}"
+        );
     }
 
     /// The text of a row that is only an inline system notice.
@@ -3127,7 +3536,21 @@ mod tests {
 
         let mut rx = session_events::subscribe(&session.id);
         let mut all = Conversation::new_unvalidated(Vec::new());
-        let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
+        // D19: the reply had streamed prose (two chunks of one id) when the
+        // stream failed. It used to be dropped here — only a Stop kept it — so
+        // the store held a steer without the half-answer it reacted to.
+        let chunk = |text: &str| {
+            Ok(AgentEvent::Message(
+                Message::assistant()
+                    .with_id("streamed-reply")
+                    .with_text(text),
+            ))
+        };
+        let mut stream = futures::stream::iter(vec![
+            chunk("Half of the answer"),
+            chunk(", and a little more"),
+            Err(anyhow::anyhow!("provider hung up")),
+        ]);
         let terminal_error = drive_stream(
             &session.id,
             &mut stream,
@@ -3139,10 +3562,15 @@ mod tests {
         .await;
 
         assert!(terminal_error);
-        assert_eq!(all.len(), 2);
-        assert_eq!(all.messages()[0].as_concat_text(), "preserve before error");
-        assert_eq!(all.messages()[0].metadata.provenance, Some(provenance));
-        assert!(all.messages()[1]
+        assert_eq!(all.len(), 3);
+        assert_eq!(all.messages()[1].as_concat_text(), "preserve before error");
+        assert_eq!(all.messages()[1].metadata.provenance, Some(provenance));
+        assert_eq!(
+            all.messages()[1].metadata.steer_outcome,
+            Some(biorouter::conversation::message::SteerOutcome::Unanswered),
+            "D4: the model never read this steer"
+        );
+        assert!(all.messages()[2]
             .as_concat_text()
             .contains("terminal under stream-error supervision"));
         let seen = drain(&mut rx).await;
@@ -3150,6 +3578,8 @@ mod tests {
             matches!(
                 seen.as_slice(),
                 [
+                    SessionBusEvent::Agent(AgentEvent::Message(_)),
+                    SessionBusEvent::Agent(AgentEvent::Message(_)),
                     SessionBusEvent::Agent(AgentEvent::Message(interrupt)),
                     SessionBusEvent::Agent(AgentEvent::Message(delegated_result)),
                     SessionBusEvent::TurnError { code, .. }
@@ -3165,7 +3595,17 @@ mod tests {
             .unwrap()
             .conversation
             .unwrap();
-        assert_eq!(stored.messages().len(), 2);
+        let stored_texts: Vec<String> = stored
+            .messages()
+            .iter()
+            .map(|message| message.as_concat_text())
+            .collect();
+        assert_eq!(stored_texts.len(), 3, "{stored_texts:?}");
+        assert_eq!(
+            stored_texts[0], "Half of the answer, and a little more",
+            "D19: the streamed prose is kept, BEFORE the steer that reacted to it"
+        );
+        assert_eq!(stored_texts[1], "preserve before error");
         assert!(delegated.latest_generation_collected());
         assert!(matches!(
             agent.try_queue_soft_interrupt("too late".into(), None),

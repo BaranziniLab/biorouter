@@ -10,7 +10,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use biorouter::agents::{InterruptRefused, PersistedMessage, ReasoningEffort};
+use biorouter::agents::{InterruptRefused, PersistedMessage, ReasoningEffort, SteerWaitReason};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
 use biorouter::privacy::SessionClassification;
@@ -361,6 +361,21 @@ pub enum MessageEvent {
         name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         partial_args: Option<String>,
+    },
+    /// `ToolCallPending` skeletons that will never become tool requests —
+    /// the stream announcing them was dropped to apply a steer, and the
+    /// reissued request mints new ids. Remove them; nothing else changes.
+    ToolCallsRetracted {
+        ids: Vec<String>,
+    },
+    /// A steer this turn accepted is waiting behind something the loop
+    /// does not interrupt — a running tool (`reason: "tool"`, with its name when
+    /// known) or an approval card (`reason: "approval"`). Sent once per steer.
+    /// Advisory: it cancels nothing and answers no card.
+    SteerWaiting {
+        reason: SteerWaitReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
     },
     UpdateConversation {
         conversation: Conversation,
@@ -1740,11 +1755,55 @@ pub async fn reply(
 pub struct InterruptRequest {
     pub session_id: String,
     pub text: String,
-    /// Client idempotency key for a steer submitted while a delegated child is
-    /// still waiting for its initial runtime. Ordinary active-turn interrupts
-    /// do not require it.
+    /// Client idempotency key. For a delegated child still waiting for its
+    /// initial runtime it names the queued input; for a running turn it
+    /// makes a retry after a lost response safe — the same key is answered 202
+    /// again and the text is not queued twice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+}
+
+/// Why `POST /interrupt` answered 409 — the body of that refusal.
+///
+/// It used to be a bare 409, which every client read as "no turn, send it as a
+/// normal message" — including when a turn was plainly running and only its
+/// queue was not yet (or no longer) open, where the fallback 409s too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptRefusalReason {
+    /// No turn is running in this chat. Send the text as a new message.
+    NoTurn,
+    /// A turn holds this chat but its loop has not started accepting steers.
+    /// Retry shortly, or send the text when the turn ends.
+    NotAcceptingYet,
+    /// The turn has finished its work and is tearing down; nothing in it will
+    /// read another message. Send the text as a new message once the turn's
+    /// terminal frame arrives.
+    TurnClosing,
+}
+
+/// The JSON body of a `POST /interrupt` 409.
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct InterruptRefusal {
+    pub reason: InterruptRefusalReason,
+    /// The server's turn that holds the chat, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+fn interrupt_conflict(
+    state: &AppState,
+    session_id: &str,
+    reason: InterruptRefusalReason,
+) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(InterruptRefusal {
+            reason,
+            turn_id: state.active_turn_id(session_id),
+        }),
+    )
+        .into_response()
 }
 
 /// Response body for an accepted soft interrupt (#69).
@@ -1899,8 +1958,14 @@ fn steer_refusal(headers: &HeaderMap) -> Option<axum::response::Response> {
 ///
 /// BR-61: rejected with 409 when the session has no turn in flight — with no
 /// running loop to drain the queue the text would sit on the agent until some
-/// unrelated later turn injected it. Clients treat 409 as "just send it as a
-/// normal message".
+/// unrelated later turn injected it. The 409 carries an [`InterruptRefusal`]
+/// body naming why (D12d): only `no_turn` means "send it as a normal message
+/// now"; `turn_closing` means "send it once this turn's terminal frame arrives",
+/// because a `/reply` sent before then 409s on the single-turn lock.
+///
+/// ⚠ The 403 refusals are untouched, byte for byte (SD-11): the keyed
+/// `Unproven` stays EMPTY and the keyless one carries [`STEER_NO_KEY`], because
+/// `biorouter session`'s `key_verdict` reads only 403 shapes.
 ///
 /// #69: the 409 is now decided by the *agent's own queue*, not by the turn-lock
 /// check above it. Checking the lock and then queueing are two steps against
@@ -1921,7 +1986,9 @@ fn steer_refusal(headers: &HeaderMap) -> Option<axum::response::Response> {
         (status = 403, description = "The request was not proven to come from the user; on a daemon \
                                       that holds no user-action key, steering is unavailable and the \
                                       refusal says so (SD-11)"),
-        (status = 409, description = "No turn is accepting interrupts for this session"),
+        (status = 409, description = "No turn is accepting interrupts for this session; the body says \
+                                      whether none is running, one has not opened its queue yet, or \
+                                      one is closing", body = InterruptRefusal),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -1958,7 +2025,11 @@ pub async fn interrupt(
     // Cheap early-out only: it avoids constructing an agent for an idle session.
     // It is no longer the guard — see `try_queue_soft_interrupt` below.
     if !state.is_turn_active(&req.session_id) {
-        return Err(StatusCode::CONFLICT.into_response());
+        return Err(interrupt_conflict(
+            &state,
+            &req.session_id,
+            InterruptRefusalReason::NoTurn,
+        ));
     }
     // `steer_refusal` above is the authority for this attribution, and it
     // refuses everything but `Proven` — which is why the stamp is unconditional
@@ -1970,20 +2041,66 @@ pub async fn interrupt(
         from_session_id: None,
         from_session_name: None,
     });
-    let agent = state
-        .get_agent_for_route(req.session_id)
-        .await
-        .map_err(IntoResponse::into_response)?;
-    match agent.try_queue_soft_interrupt(req.text, provenance) {
-        Ok(turn_id) => Ok((
-            StatusCode::ACCEPTED,
-            Json(InterruptAccepted {
-                turn_id: turn_id.into(),
-            }),
-        )),
+    let session_id = req.session_id.clone();
+    // The running turn's agent is live (the runner pins it, D20), so take it as
+    // it is: `get_agent_for_route` first waits — up to 30 s — for the session's
+    // extensions, which a turn that already holds the lock has no need of, and a
+    // steer sat in that wait before it was even looked at. Only a turn with no
+    // live agent falls back to the route's ordinary resolution.
+    let agent = match state.peek_agent(&session_id).await {
+        Some(agent) => agent,
+        None => state
+            .get_agent_for_route(req.session_id)
+            .await
+            .map_err(IntoResponse::into_response)?,
+    };
+    let (phase, phase_age_ms) = agent.loop_phase_snapshot();
+    match agent.try_queue_soft_interrupt_keyed(req.text, provenance, req.turn_id) {
+        Ok(admission) => {
+            // Instrumentation for "a steer never landed": the phase it was
+            // accepted into is what it is waiting behind. Paired with the
+            // agent's `steer_consumed` line.
+            if let Some(stream) = state.active_turn_stream(&session_id) {
+                stream.note_user_activity();
+            }
+            tracing::info!(
+                session_id,
+                turn = admission.turn.as_str(),
+                phase = phase.as_str(),
+                phase_age_ms,
+                duplicate = admission.duplicate,
+                "steer_accepted"
+            );
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(InterruptAccepted {
+                    turn_id: admission.turn.into(),
+                }),
+            ))
+        }
         // #69: the turn the caller addressed has ended. Refusing is the honest
         // answer — queueing for whatever runs next is the bug this replaces.
-        Err(InterruptRefused::TurnEnded) => Err(StatusCode::CONFLICT.into_response()),
+        Err(InterruptRefused::TurnEnded) => {
+            let reason = if state.is_turn_active(&session_id) {
+                InterruptRefusalReason::NotAcceptingYet
+            } else {
+                InterruptRefusalReason::NoTurn
+            };
+            tracing::info!(session_id, phase = phase.as_str(), ?reason, "steer_refused");
+            Err(interrupt_conflict(&state, &session_id, reason))
+        }
+        Err(InterruptRefused::TurnClosing) => {
+            tracing::info!(
+                session_id,
+                phase = phase.as_str(),
+                "steer_refused turn_closing"
+            );
+            Err(interrupt_conflict(
+                &state,
+                &session_id,
+                InterruptRefusalReason::TurnClosing,
+            ))
+        }
     }
 }
 
@@ -4883,6 +5000,84 @@ mod tests {
                 !agent.has_soft_interrupts(),
                 "the refused steer must not be sitting on the agent for a later turn"
             );
+        }
+
+        /// D5: the renderer retries a steer whose answer it lost (a network
+        /// blip, its own timeout) with the SAME key. A running turn must answer
+        /// the retry 202 without putting the words in twice.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_retried_steer_with_the_same_key_is_accepted_once() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let _guard = begin_turn(&state, "idempotent-steer").expect("turn lock acquired");
+            let agent = state
+                .get_agent("idempotent-steer".to_string())
+                .await
+                .unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("agent-turn-idem"));
+
+            for attempt in 0..2 {
+                let response = routes(Arc::clone(&state))
+                    .oneshot(interrupt_request_with_turn(
+                        "idempotent-steer",
+                        "use the other dataset",
+                        Some("steer-key-1"),
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::ACCEPTED,
+                    "attempt {attempt} of the same steer must be accepted"
+                );
+            }
+            match agent.close_and_drain() {
+                biorouter::agents::Drained::Some(queued) => assert_eq!(
+                    queued.len(),
+                    1,
+                    "a retried steer must be queued exactly once"
+                ),
+                biorouter::agents::Drained::Empty => panic!("the steer must be queued"),
+            }
+        }
+
+        /// D12d: a 409 says WHY, so a client can tell "no turn — send it now"
+        /// from "the turn is closing — send it at its terminal frame". The 403
+        /// shapes are not touched (SD-11); only the 409 gained a body.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_interrupt_409_names_its_reason() {
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+
+            let idle = routes(Arc::clone(&state))
+                .oneshot(interrupt_request("reason-idle", "steer me"))
+                .await
+                .unwrap();
+            assert_eq!(idle.status(), StatusCode::CONFLICT);
+            assert_eq!(json_body(idle).await["reason"], "no_turn");
+
+            let _guard = begin_turn(&state, "reason-closing").expect("turn lock acquired");
+            let agent = state.get_agent("reason-closing".to_string()).await.unwrap();
+
+            // A turn holds the lock but its loop has not opened the queue.
+            let early = routes(Arc::clone(&state))
+                .oneshot(interrupt_request("reason-closing", "too early"))
+                .await
+                .unwrap();
+            assert_eq!(early.status(), StatusCode::CONFLICT);
+            assert_eq!(json_body(early).await["reason"], "not_accepting_yet");
+
+            agent.open_for_turn(biorouter::agents::TurnId::new("agent-turn-reason"));
+            assert!(matches!(
+                agent.close_and_drain(),
+                biorouter::agents::Drained::Empty
+            ));
+            let closing = routes(Arc::clone(&state))
+                .oneshot(interrupt_request("reason-closing", "too late"))
+                .await
+                .unwrap();
+            assert_eq!(closing.status(), StatusCode::CONFLICT);
+            assert_eq!(json_body(closing).await["reason"], "turn_closing");
         }
 
         #[tokio::test(flavor = "multi_thread")]

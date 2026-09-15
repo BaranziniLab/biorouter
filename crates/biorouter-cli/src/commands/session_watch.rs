@@ -1738,8 +1738,43 @@ async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Resu
                 .unwrap_or("?")
                 .to_string(),
         }),
-        (409, _) => Ok(SteerOutcome::Refused),
+        (409, body) => {
+            // D12d: a turn that is CLOSING has finished its work but still holds
+            // the session, so the ladder's next rung — a new turn — would 409 on
+            // the single-turn lock too, and three quick flips used to end in a
+            // false "[not sent] the turn state changed three times". Wait for
+            // that turn to let go first; then the ordinary refusal sends the
+            // text as a new turn.
+            if interrupt_refusal_reason(&body) == Some("turn_closing") {
+                wait_for_turn_to_end(session_id).await;
+            }
+            Ok(SteerOutcome::Refused)
+        }
         (code, body) => Err(steer_refusal(code, &body, auth)),
+    }
+}
+
+/// The `reason` a `POST /interrupt` 409 carries (`no_turn`, `not_accepting_yet`,
+/// `turn_closing`), or `None` for an older daemon's bare 409.
+fn interrupt_refusal_reason(body: &str) -> Option<&str> {
+    let start = body.find("\"reason\"")?;
+    let rest = &body[start + "\"reason\"".len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    rest.split('"').next()
+}
+
+/// Wait, bounded, until `session_id` no longer holds a turn. Best-effort: an
+/// unreachable daemon or the bound simply returns, and the ladder carries on.
+async fn wait_for_turn_to_end(session_id: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        match running_session_ids().await {
+            Ok(running) if running.contains(session_id) => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            _ => return,
+        }
     }
 }
 
@@ -4042,6 +4077,25 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// D12d: the 409 now says why. Only `turn_closing` makes the terminal wait
+    /// for the turn to let go before it tries a new turn.
+    #[test]
+    fn an_interrupt_refusal_reason_is_read_from_the_409_body() {
+        assert_eq!(
+            interrupt_refusal_reason(r#"{"reason":"turn_closing","turn_id":"turn-4"}"#),
+            Some("turn_closing")
+        );
+        assert_eq!(
+            interrupt_refusal_reason(r#"{ "reason" : "no_turn" }"#),
+            Some("no_turn")
+        );
+        assert_eq!(
+            interrupt_refusal_reason(""),
+            None,
+            "an older daemon's bare 409"
+        );
     }
 
     /// A route that errors stops the ladder there. Climbing on would turn one

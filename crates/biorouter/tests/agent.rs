@@ -643,6 +643,8 @@ mod tests {
                     }
                     Ok(AgentEvent::McpNotification(_)) => {}
                     Ok(AgentEvent::ToolCallPending(_)) => {}
+                    Ok(AgentEvent::ToolCallsRetracted { .. } | AgentEvent::SteerWaiting { .. }) => {
+                    }
                     Ok(AgentEvent::MessagesPersisted(_)) => {}
                     Ok(AgentEvent::ModelChange { .. }) => {}
                     Ok(AgentEvent::PrivacyProviderPinned { .. }) => {}
@@ -834,6 +836,8 @@ mod tests {
                     }
                     Ok(AgentEvent::McpNotification(_)) => {}
                     Ok(AgentEvent::ToolCallPending(_)) => {}
+                    Ok(AgentEvent::ToolCallsRetracted { .. } | AgentEvent::SteerWaiting { .. }) => {
+                    }
                     Ok(AgentEvent::MessagesPersisted(_)) => {}
                     Ok(AgentEvent::ModelChange { .. }) => {}
                     Ok(AgentEvent::PrivacyProviderPinned { .. }) => {}
@@ -977,6 +981,8 @@ mod tests {
                     }
                     AgentEvent::McpNotification(_)
                     | AgentEvent::ToolCallPending(_)
+                    | AgentEvent::ToolCallsRetracted { .. }
+                    | AgentEvent::SteerWaiting { .. }
                     | AgentEvent::MessagesPersisted(_)
                     | AgentEvent::ModelChange { .. }
                     | AgentEvent::PrivacyProviderPinned { .. }
