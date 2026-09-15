@@ -791,6 +791,13 @@ pub async fn work_reach(
 /// A named chat this daemon cannot read is `Unreadable`, and so is an id that
 /// names no schedule, both answered as a private schedule is.
 ///
+/// ⚠ **The three ways are ONE function, `scheduler::schedule_work`, and this
+/// gate does not re-spell them.** The `/schedule` and `/loop` slash verbs answer
+/// with the same function, for the chat they are typed into: until 2026-09-14
+/// they asked nothing, and a caller this gate refused `POST
+/// /schedule/<id>/pause` typed `/schedule pause <id>` into a public chat and
+/// paused it. Two definitions of private work are the drift that reopens it.
+///
 /// # What stays open, deliberately
 ///
 /// A schedule whose runs use a PUBLIC model and name no private chat is open to
@@ -857,28 +864,11 @@ pub async fn schedule_reach(
     } else {
         match schedule {
             None => TargetTier::Unreadable,
-            Some(job) => {
-                let mut chats = Vec::new();
-                for chat in [
-                    job.creator_session_id.as_deref(),
-                    job.current_session_id.as_deref(),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    chats.push(target_tier(manager, chat).await);
-                }
-                let run_model =
-                    match biorouter::scheduler::scheduled_run_provider_name(job, manager).await {
-                        Some(name) => {
-                            biorouter::workflow::privacy::declared_provider_tier(&name).await
-                        }
-                        // No provider anywhere: a run cannot bind a model at
-                        // all, and fails before it starts.
-                        None => ProviderTier::Public,
-                    };
-                schedule_target(chats, run_model)
-            }
+            // THE definition of a schedule's private work, shared with the
+            // `/schedule` and `/loop` slash verbs so the two doors cannot drift.
+            Some(job) => biorouter::scheduler::schedule_work(job, manager)
+                .await
+                .into(),
         }
     };
     refuse_unless_reachable(enforced, target, capability, proof)
@@ -901,25 +891,17 @@ pub struct ScheduleAdmission {
     pub private_reach: Option<bool>,
 }
 
-/// A schedule's work, reduced to the one bit the gate turns on — see
-/// [`schedule_reach`]. Pure, so every corner is asserted rather than argued.
-///
-/// `Unreadable` dominates `Private`, which dominates `Public`; the two refuse
-/// identically, and the order only keeps the answer honest about why.
-fn schedule_target(chats: Vec<TargetTier>, run_model: ProviderTier) -> TargetTier {
-    let mut target = if run_model.is_private() {
-        TargetTier::Private
-    } else {
-        TargetTier::Public
-    };
-    for chat in chats {
-        target = match (target, chat) {
-            (TargetTier::Unreadable, _) | (_, TargetTier::Unreadable) => TargetTier::Unreadable,
-            (TargetTier::Private, _) | (_, TargetTier::Private) => TargetTier::Private,
-            (TargetTier::Public, TargetTier::Public) => TargetTier::Public,
-        };
+impl From<biorouter::scheduler::ScheduleWork> for TargetTier {
+    /// A schedule's work as the target the reach decision refuses or admits —
+    /// the one bit [`schedule_reach`] turns on. The reduction itself is
+    /// `ScheduleWork::reduce`, asserted corner by corner where it lives.
+    fn from(work: biorouter::scheduler::ScheduleWork) -> Self {
+        match work {
+            biorouter::scheduler::ScheduleWork::Public => Self::Public,
+            biorouter::scheduler::ScheduleWork::Private => Self::Private,
+            biorouter::scheduler::ScheduleWork::Unreadable => Self::Unreadable,
+        }
     }
-    target
 }
 
 /// Who is asking, resolved ONCE per request and threaded through every decision
@@ -2567,9 +2549,25 @@ mod tests {
     /// that answered every schedule as private would pass every refusal test in
     /// the tree and refuse the whole Schedules surface of an install configured
     /// with a public model to every client that has never sent a header.
+    ///
+    /// The reduction is `biorouter::scheduler::ScheduleWork::reduce` — the ONE
+    /// definition the `/schedule` and `/loop` slash verbs share — so this drives
+    /// it through the mapping `schedule_reach` answers with.
     #[test]
     fn a_schedules_work_is_private_when_a_chat_it_names_or_the_model_it_runs_is() {
+        use biorouter::scheduler::ScheduleWork;
         use TargetTier::{Private, Public, Unreadable};
+        let schedule_target = |chats: Vec<TargetTier>, run_model: ProviderTier| -> TargetTier {
+            ScheduleWork::reduce(
+                run_model,
+                chats.into_iter().map(|chat| match chat {
+                    Public => ScheduleWork::Public,
+                    Private => ScheduleWork::Private,
+                    Unreadable => ScheduleWork::Unreadable,
+                }),
+            )
+            .into()
+        };
         let cases: [(&[TargetTier], ProviderTier, TargetTier); 10] = [
             (&[], ProviderTier::Public, Public),
             (&[], ProviderTier::Private, Private),

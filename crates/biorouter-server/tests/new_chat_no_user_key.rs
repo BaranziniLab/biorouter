@@ -559,3 +559,119 @@ async fn a_daemon_whose_launcher_promised_a_key_and_got_none_refuses_the_exempti
         .to_string();
     discard(&state, &id).await;
 }
+
+/// A user chat whose row names no provider: an old chat from before a model was
+/// recorded on every row, or an app session.
+async fn a_chat_that_records_no_model(state: &Arc<AppState>, dir: &std::path::Path) -> String {
+    let session = state
+        .session_manager()
+        .create_session(
+            dir.to_path_buf(),
+            "Keyless restore (fixture)".to_string(),
+            biorouter::session::SessionType::User,
+        )
+        .await
+        .unwrap();
+    state.clear_cached_agents().await;
+    assert!(session.provider_name.is_none());
+    session.id
+}
+
+/// Issue #56, DR-16 through a RESTORE — the keyless half. On a daemon that holds
+/// a key, restarting a chat that records no model onto a private default now
+/// needs the proof (`routes::agent::restore_default_bind_tests`). A `biorouter
+/// serve` daemon can check no proof, and SD-12 says the configured model is the
+/// operator's choice: opening such a chat there must keep working, exactly as a
+/// new chat does — on the model the daemon launched with, and nothing more.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_keyless_daemon_restores_a_chat_that_records_no_model_onto_its_configured_default() {
+    assert_the_daemon_is_keyless();
+    launched_with(versa_is_the_configured_default()).await;
+    let state = AppState::new().await.unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+
+    let restarted = a_chat_that_records_no_model(&state, home.path()).await;
+    let (status, body) = with_config_overrides(
+        versa_is_the_configured_default(),
+        post_json(
+            biorouter_server::routes::agent::routes(Arc::clone(&state)),
+            "/agent/restart",
+            json!({ "session_id": restarted }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a keyless daemon refused to open a chat on its own configured model: {body}"
+    );
+    let row = state
+        .session_manager()
+        .get_session(&restarted, false)
+        .await
+        .unwrap();
+    assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+    assert_eq!(row.privacy_tier, SessionClassification::Public);
+
+    let repointed = a_chat_that_records_no_model(&state, home.path()).await;
+    let (status, body) = with_config_overrides(
+        versa_is_the_configured_default(),
+        post_json(
+            biorouter_server::routes::agent::routes(Arc::clone(&state)),
+            "/agent/update_working_dir",
+            json!({ "session_id": repointed, "working_dir": elsewhere.path() }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = state
+        .session_manager()
+        .get_session(&repointed, false)
+        .await
+        .unwrap();
+    assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+
+    discard(&state, &restarted).await;
+    discard(&state, &repointed).await;
+}
+
+/// …and only on the model it launched with: a private provider written into the
+/// configuration afterwards takes no exemption through a restore either, for the
+/// reason `a_private_provider_written_after_launch_does_not_start_a_new_chat`
+/// gives. The chat is left exactly as it was.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_private_provider_written_after_launch_does_not_restore_a_chat_onto_it() {
+    assert_the_daemon_is_keyless();
+    launched_with(a_public_ollama_is_the_configured_default()).await;
+    let state = AppState::new().await.unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let id = a_chat_that_records_no_model(&state, home.path()).await;
+
+    let (status, body) = with_config_overrides(
+        versa_is_the_configured_default(),
+        post_json(
+            biorouter_server::routes::agent::routes(Arc::clone(&state)),
+            "/agent/restart",
+            json!({ "session_id": id }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a private provider written after launch was bound to a chat by a restart: {body}"
+    );
+    assert!(body.contains("BIOROUTER_PROVIDER"), "{body}");
+    assert!(body.to_lowercase().contains("restart"), "{body}");
+    let row = state
+        .session_manager()
+        .get_session(&id, false)
+        .await
+        .unwrap();
+    assert_eq!(row.provider_name, None, "the refused restart wrote the row");
+
+    discard(&state, &id).await;
+}

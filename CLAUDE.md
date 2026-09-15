@@ -323,6 +323,21 @@ what did not" section first**; the rest of that document is the design, not the 
     The trait's `_armed` defaults DROP the standing — only for test doubles.
     Renderer schedule writes go through `ui/desktop/src/schedule.ts` alone; a source guard in
     `schedule.userProof.test.ts` fails on any other importer of a generated schedule function.
+    ⚠ **The `/schedule` and `/loop` verbs are a second door** (a public chat takes `/reply` from any
+    secret holder, and `execute_command` runs before the model): they ask `slash_verb_reaches` on
+    ONE sampled `CallCapability` — a private chat manages anything, any other chat only work
+    `scheduler::schedule_work` calls public. That one function is also what `schedule_reach` asks;
+    never re-spell "private work" at a door. A refused tick is a `ScheduledRunRefused` and gives
+    its `max_runs` firing back; `/schedule run` asks `scheduled_run_preflight` before requesting
+    a background run and acknowledges the request without claiming execution has started.
+  - **A restore binds a chat's FIRST model** when its row names none: `restart`,
+    `update_working_dir` and a workspace turn into a cold chat go through
+    `Agent::restore_provider_from_session(session, DefaultBind)`, and the door computes the
+    standing with `routes::agent::RestoreStanding` (= `new_chat_bind_decision` on a private
+    default: proof on a keyed daemon, SD-12 on a keyless one) and asks `refuse_before_restoring`
+    before it changes anything. Ungated, a secret-only restart wrote `versa_azure` onto a public
+    chat and made the `(None, CreatorChat)` run-time cell trust a bind no person made (QA,
+    2026-09-14).
   - `GET /sessions/changes` shows a change only through `lists_session` — on the tier it was
     recorded with AND the chat's row as it is now (`visible_changes`) — observes only those rows,
     and a withheld change must never answer a poll early — a poll that returns when a private row

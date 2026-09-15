@@ -494,6 +494,132 @@ fn raise_baseline(current: ProviderTier, proof: UserActionProof) -> ProviderTier
     }
 }
 
+/// The standing a request has to let a chat that records NO model be restored
+/// onto the configured default — issue #56, DR-16, reached through a restore
+/// rather than through `/agent/start`.
+///
+/// Such a chat has no capability of its own, so a private default is a first
+/// bind and a raise from Public, and it follows [`new_chat_bind_decision`]
+/// exactly: the verdict below IS that function, asked of a private default. A
+/// daemon holding a key needs the user-action proof; a keyless one keeps SD-12's
+/// exemption, pinned to the configuration it was launched with, and nothing more.
+/// Independent QA, 2026-09-14, with only the daemon secret on a keyed desktop
+/// daemon: `POST /agent/restart` of a public chat whose row named no provider
+/// answered 200, wrote `versa_azure` onto the row, and the chat's `/loop` then
+/// started a private scheduled chat with nobody present.
+///
+/// Sampled ONCE per request, from its headers and the launch state, and
+/// threaded: the door asks [`Self::refuse_before_restoring`] before it changes
+/// anything, and hands [`Self::bind`] to `Agent::restore_provider_from_session`,
+/// the one place the default is actually bound, which asks the same predicate of
+/// the constructed instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RestoreStanding {
+    bind: biorouter::privacy::refusal::DefaultBind,
+    verdict: NewChatBind,
+}
+
+impl RestoreStanding {
+    /// The standing of an HTTP request — or, with empty headers, of a caller
+    /// that is not a person at all (a workspace turn a model injected), which a
+    /// daemon holding a key reads as unproven and a keyless one as SD-12's.
+    pub(crate) fn of(headers: &HeaderMap) -> Self {
+        let verdict = new_chat_bind_decision(
+            biorouter::privacy::privacy_tiers_enabled(),
+            ProviderTier::Private,
+            user_action_proof(headers),
+            biorouter_server::launch::expected_a_user_action_key(),
+            biorouter_server::launch::capability_config_moved_since_launch(),
+        );
+        let bind = if verdict == NewChatBind::Allowed {
+            biorouter::privacy::refusal::DefaultBind::MayRaise
+        } else {
+            biorouter::privacy::refusal::DefaultBind::PublicOnly
+        };
+        Self { bind, verdict }
+    }
+
+    /// What `Agent::restore_provider_from_session` is handed.
+    pub(crate) fn bind(&self) -> biorouter::privacy::refusal::DefaultBind {
+        self.bind
+    }
+
+    /// The sentence for a refused default bind of `requested`, in the words of
+    /// the reason this daemon refused it — the same three reasons
+    /// `bind_new_session_provider` gives, for a chat being restarted rather than
+    /// created.
+    pub(crate) fn refusal(&self, requested: &str) -> String {
+        match &self.verdict {
+            NewChatBind::ConfigMovedSinceLaunch(key) => format!(
+                "This Biorouter daemon starts a chat that records no model on the model it was \
+                 launched with, because nothing here can confirm a request came from you. '{key}' \
+                 has changed in the configuration since it started, so '{requested}' is not the \
+                 model it was launched on, and starting this chat on it would be a switch nobody \
+                 asked for. The chat is unchanged. Restart the daemon to pick up the new \
+                 configuration."
+            ),
+            NewChatBind::KeyWasExpected => format!(
+                "Biorouter cannot confirm that this request came from you: the application that \
+                 started this daemon was meant to hand it a user-action key and none arrived, so \
+                 this chat, which records no model, was not started on the private model \
+                 '{requested}' and is unchanged. Quit and reopen Biorouter. If it keeps \
+                 happening, the daemon log records 'no user-action key on stdin'."
+            ),
+            // `Allowed` never refuses; it is listed so a new verdict is a compile
+            // error here rather than a silent fall into the proof sentence.
+            NewChatBind::NeedsUserProof | NewChatBind::Allowed => {
+                PrivacyRefusal::DefaultBindNeedsUser {
+                    requested: requested.to_string(),
+                }
+                .to_string()
+            }
+        }
+    }
+
+    /// Refuse, BEFORE anything changes, a restore that would bind a private
+    /// default on this standing — asked of the default's DECLARED tier, so a
+    /// refused request evicts no agent, spawns no extension and writes no working
+    /// directory. The restore asks the same predicate again of the instance.
+    pub(crate) async fn refuse_before_restoring(
+        &self,
+        session: &Session,
+    ) -> Result<(), ErrorResponse> {
+        if session.provider_name.is_some()
+            || self.bind == biorouter::privacy::refusal::DefaultBind::MayRaise
+        {
+            return Ok(());
+        }
+        // No configured provider: the restore fails on its own, with its own
+        // words, and binds nothing.
+        let Ok(requested) = Config::global().get_biorouter_provider() else {
+            return Ok(());
+        };
+        let tier = biorouter::workflow::privacy::declared_provider_tier(&requested).await;
+        if biorouter::privacy::refusal::default_bind_refused(self.bind, false, tier) {
+            return Err(ErrorResponse {
+                message: self.refusal(&requested),
+                status: StatusCode::CONFLICT,
+            });
+        }
+        Ok(())
+    }
+
+    /// A failed restore, as the route answers it: the refused default bind as a
+    /// 409 in this standing's words, anything else as the 500 it always was.
+    pub(crate) fn restore_error(&self, error: &anyhow::Error) -> ErrorResponse {
+        match error.downcast_ref::<PrivacyRefusal>() {
+            Some(PrivacyRefusal::DefaultBindNeedsUser { requested }) => ErrorResponse {
+                message: self.refusal(requested),
+                status: StatusCode::CONFLICT,
+            },
+            _ => ErrorResponse {
+                message: error.to_string(),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            },
+        }
+    }
+}
+
 async fn bind_new_session_provider(
     state: &AppState,
     session: &Session,
@@ -2348,10 +2474,16 @@ async fn stop_agent(
     Ok(StatusCode::OK)
 }
 
+/// Evict the chat's agent and build it again from its row.
+///
+/// `standing` is the request's, already asked
+/// [`RestoreStanding::refuse_before_restoring`] by the caller before it changed
+/// anything; it is handed to the restore, which is where the default is bound.
 async fn restart_agent_internal(
     state: &Arc<AppState>,
     session_id: &str,
     session: &Session,
+    standing: &RestoreStanding,
 ) -> Result<Vec<ExtensionLoadResult>, ErrorResponse> {
     // Remove existing agent (ignore error if not found)
     let _ = state.agent_manager.remove_session(session_id).await;
@@ -2364,14 +2496,19 @@ async fn restart_agent_internal(
             status: code,
         })?;
 
-    let provider_future = agent.restore_provider_from_session(session);
+    let provider_future = agent.restore_provider_from_session(session, standing.bind());
     let extensions_future = agent.load_extensions_from_session(session);
 
     let (provider_result, extension_results) = tokio::join!(provider_future, extensions_future);
-    provider_result.map_err(|e| ErrorResponse {
-        message: e.to_string(),
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-    })?;
+    if let Err(error) = provider_result {
+        // A refused default bind reaching here means the declared tier and the
+        // instance disagreed. Nothing was bound; the half-built agent is dropped
+        // so the chat is left as it was found — with no agent holding a model.
+        if error.downcast_ref::<PrivacyRefusal>().is_some() {
+            let _ = state.agent_manager.remove_session(session_id).await;
+        }
+        return Err(standing.restore_error(&error));
+    }
 
     let context: HashMap<&str, Value> = HashMap::new();
     let desktop_prompt =
@@ -2421,6 +2558,11 @@ async fn restart_agent_internal(
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "The session is out of reach, or the target is a subagent and the request lacks user-action proof"),
         (status = 404, description = "Session not found"),
+        (status = 409, description = "The chat records no model, the configured default it would \
+                                      be restarted onto is private, and the request carried no \
+                                      user-action proof (on a daemon that holds no key: the \
+                                      default is not the one it was launched with). Plain text \
+                                      saying which; nothing was restarted"),
         (status = 424, description = "The delegated child is still initializing"),
         (status = 500, description = "Internal server error")
     )
@@ -2454,7 +2596,12 @@ async fn restart_agent(
             })?;
         Vec::new()
     } else {
-        restart_agent_internal(&state, &session_id, &session).await?
+        // Issue #56, DR-16: a chat that records no model is restarted onto the
+        // configured default, which is `/agent/start`'s first bind by another
+        // door. Decided before the agent is evicted.
+        let standing = RestoreStanding::of(&headers);
+        standing.refuse_before_restoring(&session).await?;
+        restart_agent_internal(&state, &session_id, &session, &standing).await?
     };
 
     Ok(Json(RestartAgentResponse { extension_results }))
@@ -2552,7 +2699,7 @@ pub(crate) async fn apply_working_dir_update(
         (status = 404, description = "Session not found"),
         (
             status = 409,
-            description = "Conflict - the working directory is fixed once a chat has messages, or a turn is in flight"
+            description = "Conflict - the working directory is fixed once a chat has messages, or a turn is in flight, or the chat records no model and restarting it would bind a private configured default without user-action proof (nothing is written)"
         ),
         (status = 500, description = "Internal server error")
     )
@@ -2628,11 +2775,17 @@ async fn update_working_dir(
             status: StatusCode::CONFLICT,
         })?;
 
+    // Issue #56, DR-16: the restart below binds the configured default to a chat
+    // that records no model. Refused BEFORE the directory is written, so a
+    // refusal changes nothing at all.
+    let standing = RestoreStanding::of(&headers);
+    standing.refuse_before_restoring(&target).await?;
+
     let session =
         apply_working_dir_update(state.session_manager(), &session_id, &payload.working_dir)
             .await?;
 
-    restart_agent_internal(&state, &session_id, &session).await?;
+    restart_agent_internal(&state, &session_id, &session, &standing).await?;
 
     Ok(StatusCode::OK)
 }
@@ -3631,6 +3784,257 @@ mod new_session_provider_binding_tests {
     }
 }
 
+/// Issue #56, DR-16 through a RESTORE, on a daemon that holds a user-action key.
+///
+/// Independent QA, 2026-09-14, on the dev GUI's keyed daemon with a private
+/// default and nothing but `X-Secret-Key`: `POST /agent/restart` of a public chat
+/// whose row named no provider answered 200 and wrote `versa_azure` onto the row,
+/// and that chat's `/loop` then ran private with nobody present. The keyless half
+/// — SD-12's exemption, which must survive — is in
+/// `tests/new_chat_no_user_key.rs`, a binary that installs no digest.
+#[cfg(test)]
+mod restore_default_bind_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::config::with_config_overrides;
+    use biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER;
+    use serial_test::serial;
+    use tower::ServiceExt;
+
+    /// Versa as the configured default. The key is a placeholder: constructing
+    /// the provider opens no connection, and nothing here runs a turn.
+    fn versa_is_the_configured_default() -> HashMap<String, String> {
+        use biorouter::providers::versa_azure as versa;
+        HashMap::from([
+            ("BIOROUTER_PROVIDER".into(), "versa_azure".into()),
+            (
+                "BIOROUTER_MODEL".into(),
+                versa::VERSA_AZURE_DEFAULT_MODEL.into(),
+            ),
+            (
+                "VERSA_AZURE_API_KEY".into(),
+                "placeholder-never-sent".into(),
+            ),
+            (
+                "VERSA_AZURE_ENDPOINT".into(),
+                versa::VERSA_AZURE_ENDPOINT.into(),
+            ),
+            (
+                "VERSA_AZURE_DEPLOYMENT_NAME".into(),
+                versa::deployment_for_model(versa::VERSA_AZURE_DEFAULT_MODEL)
+                    .expect("the default model has a deployment")
+                    .into(),
+            ),
+            (
+                "VERSA_AZURE_API_VERSION".into(),
+                versa::VERSA_AZURE_API_VERSION.into(),
+            ),
+        ])
+    }
+
+    async fn post(
+        state: &Arc<AppState>,
+        path: &str,
+        body: Value,
+        proof: bool,
+    ) -> (StatusCode, String) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json");
+        if proof {
+            request = request.header("X-User-Action", TEST_USER_ACTION_KEY);
+        }
+        let response = with_config_overrides(
+            versa_is_the_configured_default(),
+            routes(Arc::clone(state)).oneshot(request.body(Body::from(body.to_string())).unwrap()),
+        )
+        .await
+        .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// A user chat whose row names no provider — what the seed database holds
+    /// thousands of, and what an app session is created as.
+    async fn a_chat_that_records_no_model(state: &Arc<AppState>, dir: &std::path::Path) -> String {
+        let session = state
+            .session_manager()
+            .create_session(
+                dir.to_path_buf(),
+                "Restore default bind (fixture)".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        // Session ids are reissued; do not inherit an agent an earlier test left.
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        assert!(session.provider_name.is_none());
+        session.id
+    }
+
+    async fn row(state: &Arc<AppState>, id: &str) -> Session {
+        state
+            .session_manager()
+            .get_session(id, false)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_chat_that_records_no_model_is_not_restored_onto_a_private_default_without_proof() {
+        install_test_user_action_key();
+        assert!(biorouter::privacy::privacy_tiers_enabled());
+        let state = AppState::new().await.unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let restarted = a_chat_that_records_no_model(&state, home.path()).await;
+        let repointed = a_chat_that_records_no_model(&state, home.path()).await;
+
+        // ── Only the daemon secret. ──────────────────────────────────────────
+        let (status, body) = post(
+            &state,
+            "/agent/restart",
+            serde_json::json!({ "session_id": restarted }),
+            false,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "a secret-only restart bound the private default to a chat that records no model: \
+             {body}"
+        );
+        assert!(
+            body.contains(USER_ACTION_REFUSAL_MARKER) && body.contains("versa_azure"),
+            "refused, but not in the default bind's words: {body}"
+        );
+        let after = row(&state, &restarted).await;
+        assert_eq!(
+            after.provider_name, None,
+            "the refused restart wrote the row"
+        );
+        assert_eq!(after.privacy_tier, SessionClassification::Public);
+        assert!(
+            state.peek_agent(&restarted).await.is_none(),
+            "the refused restart built an agent anyway"
+        );
+
+        let (status, body) = post(
+            &state,
+            "/agent/update_working_dir",
+            serde_json::json!({ "session_id": repointed, "working_dir": elsewhere.path() }),
+            false,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "a secret-only working-directory change bound the private default: {body}"
+        );
+        assert!(body.contains(USER_ACTION_REFUSAL_MARKER), "{body}");
+        let after = row(&state, &repointed).await;
+        assert_eq!(after.provider_name, None);
+        assert_eq!(
+            after.working_dir,
+            home.path(),
+            "a refused change must change nothing, the directory included"
+        );
+
+        // ── The person at the keyboard. ──────────────────────────────────────
+        let (status, body) = post(
+            &state,
+            "/agent/restart",
+            serde_json::json!({ "session_id": restarted }),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            row(&state, &restarted).await.provider_name.as_deref(),
+            Some("versa_azure"),
+            "with the proof, opening the chat must still bind the configured default"
+        );
+
+        let (status, body) = post(
+            &state,
+            "/agent/update_working_dir",
+            serde_json::json!({ "session_id": repointed, "working_dir": elsewhere.path() }),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let after = row(&state, &repointed).await;
+        assert_eq!(after.provider_name.as_deref(), Some("versa_azure"));
+        assert_eq!(after.working_dir, elsewhere.path());
+
+        for id in [restarted, repointed] {
+            let _ = state.agent_manager.remove_session(&id).await;
+            let _ = state.session_manager().delete_session(&id).await;
+        }
+    }
+
+    /// A chat that records its own model is not a default bind, and a public
+    /// default raises nothing — neither is touched by the standing. Without this
+    /// the refusal above would pass on a build that refused every secret-only
+    /// restart.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn only_a_private_default_standing_in_for_a_missing_model_is_refused() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let recorded = a_chat_that_records_no_model(&state, home.path()).await;
+        state
+            .session_manager()
+            .update(&recorded)
+            .provider_name("versa_azure")
+            .model_config(
+                ModelConfig::new(biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL)
+                    .unwrap(),
+            )
+            .apply()
+            .await
+            .unwrap();
+        let (status, body) = post(
+            &state,
+            "/agent/restart",
+            serde_json::json!({ "session_id": recorded }),
+            false,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a chat's OWN recorded model is not the default bind this refuses: {body}"
+        );
+
+        let standing = RestoreStanding::of(&HeaderMap::new());
+        assert_eq!(
+            standing.bind(),
+            biorouter::privacy::refusal::DefaultBind::PublicOnly,
+            "an unproven request on a keyed daemon"
+        );
+        let mut proven = HeaderMap::new();
+        proven.insert("X-User-Action", TEST_USER_ACTION_KEY.parse().unwrap());
+        assert_eq!(
+            RestoreStanding::of(&proven).bind(),
+            biorouter::privacy::refusal::DefaultBind::MayRaise
+        );
+
+        let _ = state.agent_manager.remove_session(&recorded).await;
+        let _ = state.session_manager().delete_session(&recorded).await;
+    }
+}
+
 #[cfg(test)]
 mod resume_update_security_tests {
     use super::*;
@@ -4158,7 +4562,10 @@ mod resume_update_security_tests {
             "resume can no longer rebuild a cold agent from its persisted provider"
         );
         assert!(
-            !body.contains("restore_provider_from_session(session)"),
+            // Any spelling: the call now also carries the caller's default-bind
+            // standing, and a needle naming only the old argument list would
+            // pass against an unconditional rebind written the new way.
+            !body.contains("restore_provider_from_session("),
             "resume unconditionally rebinds a live Codex or Claude child and discards its provider-local session"
         );
     }

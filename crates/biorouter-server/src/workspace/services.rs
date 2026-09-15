@@ -237,11 +237,20 @@ impl WorkspaceServices for ServerWorkspaceServices {
                 ));
             }
         } else {
+            // Issue #56, DR-16. A turn a MODEL injected into a chat that records no
+            // model would otherwise bind the configured default to it, and a
+            // private default is a first bind no person made. No request carries a
+            // proof here, so the standing is an unproven caller's on a daemon that
+            // holds a key and SD-12's on one that holds none.
+            let standing = crate::routes::agent::RestoreStanding::of(&axum::http::HeaderMap::new());
+            if let Err(refusal) = standing.refuse_before_restoring(&session).await {
+                return Err(refusal.message);
+            }
             let (provider_result, _extension_results) = tokio::join!(
-                agent.restore_provider_from_session(&session),
+                agent.restore_provider_from_session(&session, standing.bind()),
                 self.hydrate_extensions(&agent, &session),
             );
-            provider_result.map_err(|e| e.to_string())?;
+            provider_result.map_err(|e| standing.restore_error(&e).message)?;
         }
 
         // A detached turn still owns a replay stream. The bus subscription is
@@ -971,6 +980,62 @@ mod tests {
         // And the failure happened before any turn was started, so nothing
         // acquired the session's turn slot and leaked it.
         assert!(!state.is_turn_active(&session.id));
+    }
+
+    /// Issue #56, DR-16 through a restore: a turn a MODEL injects into a cold chat
+    /// that records no model would take the configured default, and a private
+    /// default is a first bind no person made. No proof can ride a tool call, so it
+    /// is refused, before any turn starts, and the row is left unbound.
+    ///
+    /// Deterministic whatever else this binary did first: a daemon that holds a
+    /// key reads a headerless standing as unproven, and one that holds none finds
+    /// the default is not the one it launched with (or that no launch was
+    /// recorded) — both refuse, and both name the default.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_injected_into_a_chat_that_records_no_model_binds_no_private_default() {
+        use biorouter::providers::versa_azure as versa;
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "restore default bind, workspace turn".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        let versa_default = std::collections::HashMap::from([
+            ("BIOROUTER_PROVIDER".to_string(), "versa_azure".to_string()),
+            (
+                "BIOROUTER_MODEL".to_string(),
+                versa::VERSA_AZURE_DEFAULT_MODEL.to_string(),
+            ),
+            (
+                "VERSA_AZURE_API_KEY".to_string(),
+                "placeholder-never-sent".to_string(),
+            ),
+        ]);
+
+        let err = biorouter::config::with_config_overrides(
+            versa_default,
+            services.start_detached_turn(&session.id, Message::user().with_text("hello")),
+        )
+        .await
+        .expect_err("a model-injected turn bound the private default to a chat that records none");
+        assert!(err.contains("'versa_azure'"), "{err}");
+        assert!(!state.is_turn_active(&session.id));
+        let row = state
+            .session_manager()
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(row.provider_name, None, "the refused turn wrote the row");
+
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        let _ = state.session_manager().delete_session(&session.id).await;
     }
 
     #[tokio::test]

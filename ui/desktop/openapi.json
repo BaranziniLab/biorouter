@@ -600,6 +600,9 @@
           "404": {
             "description": "Session not found"
           },
+          "409": {
+            "description": "The chat records no model, the configured default it would be restarted onto is private, and the request carried no user-action proof (on a daemon that holds no key: the default is not the one it was launched with). Plain text saying which; nothing was restarted"
+          },
           "424": {
             "description": "The delegated child is still initializing"
           },
@@ -941,7 +944,7 @@
             "description": "Session not found"
           },
           "409": {
-            "description": "Conflict - the working directory is fixed once a chat has messages, or a turn is in flight"
+            "description": "Conflict - the working directory is fixed once a chat has messages, or a turn is in flight, or the chat records no model and restarting it would bind a private configured default without user-action proof (nothing is written)"
           },
           "500": {
             "description": "Internal server error"

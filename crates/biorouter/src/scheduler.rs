@@ -414,6 +414,27 @@ pub const SCHEDULED_RUN_CREATOR_GONE: &str =
      run it on this model, resume or re-save the schedule in the desktop app, or from a session \
      running a private model.";
 
+/// A run [`scheduled_run_refusal`] refused, as the error [`execute_job`] ends
+/// with. Its text is the refusal's, word for word, so `last_error` reads exactly
+/// as it did.
+///
+/// A TYPE rather than an `anyhow!` string for one reader: a timer tick that was
+/// refused did not run, and must not spend a `/loop`'s `max_runs` budget
+/// ([`RunCompletion::uncount`]). Independent QA, 2026-09-14: a `/loop` whose
+/// runs were refused climbed `run_count` 0 → 1 → 2, so a hundred refusals would
+/// have auto-stopped a loop that never ran once. A string compare would break
+/// the day the sentence is reworded; a downcast does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduledRunRefused(pub &'static str);
+
+impl std::fmt::Display for ScheduledRunRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ScheduledRunRefused {}
+
 /// Issue #56 — may a run of a schedule armed as `armed_with_private_reach`
 /// bind a model of `run_tier`, found as `source`? `None` when it may; the
 /// refusal otherwise.
@@ -841,6 +862,12 @@ async fn persist_auto_pause(storage_path: &Path, job_id: &str) -> Result<bool, S
 struct RunCompletion {
     finished_at: DateTime<Utc>,
     error: Option<String>,
+    /// Did the run end in a privacy refusal ([`ScheduledRunRefused`]) — refused
+    /// before it built anything?
+    refused: bool,
+    /// Take back the firing this run was counted as — see
+    /// [`Self::for_a_counted_run`].
+    uncount: bool,
 }
 
 impl RunCompletion {
@@ -848,13 +875,36 @@ impl RunCompletion {
         Self {
             finished_at,
             error: result.as_ref().err().map(|e| format!("{e:#}")),
+            refused: result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.downcast_ref::<ScheduledRunRefused>().is_some()),
+            uncount: false,
         }
+    }
+
+    /// The completion of a run that was COUNTED toward `max_runs` when it was
+    /// claimed — a timer tick, never "Run now" (`persist_run_start`'s
+    /// `counts_toward_cap`).
+    ///
+    /// A refused run did not run, so it gives its firing back. Independent QA,
+    /// 2026-09-14: `loop-81832e88` went 0 → 1 → 2 on refusals alone, so a `/loop`
+    /// refused a hundred times auto-stopped without ever having run. Only a
+    /// [`ScheduledRunRefused`] is given back: a run that failed after it started
+    /// — a provider that could not be built, a turn that errored — spent the
+    /// firing, as it always has.
+    fn for_a_counted_run(mut self, counted: bool) -> Self {
+        self.uncount = counted && self.refused;
+        self
     }
 
     fn apply(&self, job: &mut ScheduledJob) {
         job.currently_running = false;
         job.current_session_id = None;
         job.process_start_time = None;
+        if self.uncount {
+            job.run_count = job.run_count.saturating_sub(1);
+        }
         // Issue #56 (§9.3 C2). A failing tick leaves a job-level error the
         // schedules UI can show, instead of only a log line nobody reads — a
         // scheduled run mints a new session each time, so the failure has no
@@ -871,13 +921,18 @@ impl RunCompletion {
 ///
 /// Returns `false` when the file no longer has this job — it was deleted while
 /// the run was in flight — so the caller can drop it from this process too.
+///
+/// `counted` is whether the run was counted toward `max_runs` when it started
+/// (a timer tick); a refused counted run gives that firing back, in memory and in
+/// the file, by the same read-modify-write that counted it.
 async fn record_run_completion(
     storage_path: &Path,
     jobs: &Arc<Mutex<JobsMap>>,
     job_id: &str,
     result: &Result<String>,
+    counted: bool,
 ) -> bool {
-    let completion = RunCompletion::from_result(result, Utc::now());
+    let completion = RunCompletion::from_result(result, Utc::now()).for_a_counted_run(counted);
     {
         let mut jobs_guard = jobs.lock().await;
         if let Some((_, job)) = jobs_guard.get_mut(job_id) {
@@ -1133,11 +1188,14 @@ async fn run_cron_tick(
     // Completion BEFORE unregistering: the two together are what "this job is
     // running" means, and clearing the flag first is what keeps
     // `kill_running_job` from seeing a running job with no token to cancel.
+    // `true`: this firing was counted toward `max_runs` above, so a refused run
+    // gives it back.
     let still_on_disk = record_run_completion(
         &local_storage_path,
         &current_jobs_arc,
         &task_job_id,
         &result,
+        true,
     )
     .await;
     unregister_running_task(&running_tasks, &task_job_id);
@@ -1973,7 +2031,9 @@ impl Scheduler {
             let result = execute_job(job_to_run, jobs.clone(), job_id.clone(), cancel_token).await;
 
             // Completion BEFORE unregistering — see the cron path for why.
-            let still_on_disk = record_run_completion(&storage_path, &jobs, &job_id, &result).await;
+            // `false`: "Run now" was never counted, so there is nothing to give back.
+            let still_on_disk =
+                record_run_completion(&storage_path, &jobs, &job_id, &result, false).await;
             unregister_running_task(&running_tasks, &job_id);
             if !still_on_disk {
                 forget_job(&jobs, &cron_handle, &job_id).await;
@@ -2443,12 +2503,138 @@ pub async fn scheduled_run_provider_name(
     job: &ScheduledJob,
     session_manager: &SessionManager,
 ) -> Option<String> {
-    match creator_binding(job, session_manager).await {
+    scheduled_run_model(job, session_manager).await.0
+}
+
+/// [`scheduled_run_provider_name`] and the [`RunModelSource`] it came from, off
+/// ONE creator read — the pair [`scheduled_run_refusal`] needs, resolved the way
+/// [`resolve_scheduled_provider`] resolves it.
+async fn scheduled_run_model(
+    job: &ScheduledJob,
+    session_manager: &SessionManager,
+) -> (Option<String>, RunModelSource) {
+    let binding = creator_binding(job, session_manager).await;
+    let source = binding.source();
+    let name = match binding {
         CreatorBinding::Bound { provider_name, .. } => Some(provider_name),
         CreatorBinding::NoCreator
         | CreatorBinding::NoProvider(_)
         | CreatorBinding::Unreadable(..) => Config::global().get_biorouter_provider().ok(),
+    };
+    (name, source)
+}
+
+/// Would a run of `job` started NOW, on the standing `armed_with_private_reach`
+/// (the job's own record, or the one a run-now request carries), be refused
+/// before it starts? The refusal it would give, or `None`.
+///
+/// Asked by a surface that answers "started" to a person before the run exists
+/// — `/schedule run` — so that it does not say a run began that
+/// [`execute_job`] is about to refuse. The same resolution and the same pure
+/// decision [`execute_job`] asks first, on the DECLARED tier. It is not the gate:
+/// the run asks again, of the model it resolves when it starts.
+pub async fn scheduled_run_preflight(
+    job: &ScheduledJob,
+    session_manager: &SessionManager,
+    enforced: bool,
+    armed_with_private_reach: Option<bool>,
+) -> Option<&'static str> {
+    let (name, source) = scheduled_run_model(job, session_manager).await;
+    // No provider anywhere: the run fails on its own, and that is not a
+    // privacy refusal to predict.
+    let name = name?;
+    scheduled_run_refusal(
+        enforced,
+        armed_with_private_reach,
+        source,
+        crate::workflow::privacy::declared_provider_tier(&name).await,
+    )
+}
+
+/// A schedule's work, reduced to the one question every door that creates,
+/// runs, re-times, pauses, resumes or removes a schedule turns on: may a caller
+/// that can reach only public work touch it?
+///
+/// `Unreadable` is answered exactly as `Private` is; it is kept apart only so a
+/// door can be honest about why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleWork {
+    Public,
+    Private,
+    /// A chat the schedule names could not be read.
+    Unreadable,
+}
+
+impl ScheduleWork {
+    /// Anything but `Public` needs a caller that could reach private work.
+    pub const fn is_public(self) -> bool {
+        matches!(self, ScheduleWork::Public)
     }
+
+    /// The reduction, pure so every corner is asserted: the run's model, then
+    /// each chat the schedule names. `Unreadable` dominates `Private`, which
+    /// dominates `Public`.
+    pub fn reduce(
+        run_model: crate::privacy::ProviderTier,
+        chats: impl IntoIterator<Item = ScheduleWork>,
+    ) -> ScheduleWork {
+        let start = if run_model.is_private() {
+            ScheduleWork::Private
+        } else {
+            ScheduleWork::Public
+        };
+        chats
+            .into_iter()
+            .fold(start, |work, chat| match (work, chat) {
+                (ScheduleWork::Unreadable, _) | (_, ScheduleWork::Unreadable) => {
+                    ScheduleWork::Unreadable
+                }
+                (ScheduleWork::Private, _) | (_, ScheduleWork::Private) => ScheduleWork::Private,
+                (ScheduleWork::Public, ScheduleWork::Public) => ScheduleWork::Public,
+            })
+    }
+}
+
+/// Issue #56 — THE definition of a schedule's private work, asked by every door
+/// that changes one: the daemon's schedule routes
+/// (`routes::session_reach::schedule_reach`) and the `/schedule` and `/loop`
+/// slash verbs (`agents::recurring`). One function, so the two doors cannot
+/// drift into two answers.
+///
+/// Private in exactly three ways, each read off the job rather than asserted by
+/// a caller:
+///
+/// * the chat it was made from (`creator_session_id`) is private, or cannot be
+///   read — a run takes THAT chat's model;
+/// * the chat a run of it is in right now (`current_session_id`) is private, or
+///   cannot be read;
+/// * the model its runs bind is private — [`scheduled_run_provider_name`], the
+///   run's own resolution, and its DECLARED tier. No provider anywhere is
+///   Public: such a run fails before it binds anything.
+///
+/// Metadata only: a chat's tier is read without its messages.
+pub async fn schedule_work(job: &ScheduledJob, session_manager: &SessionManager) -> ScheduleWork {
+    let mut chats = Vec::with_capacity(2);
+    for chat in [
+        job.creator_session_id.as_deref(),
+        job.current_session_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        chats.push(match session_manager.get_session(chat, false).await {
+            Ok(row) if row.privacy_tier == crate::privacy::SessionClassification::Private => {
+                ScheduleWork::Private
+            }
+            Ok(_) => ScheduleWork::Public,
+            Err(_) => ScheduleWork::Unreadable,
+        });
+    }
+    let run_model = match scheduled_run_provider_name(job, session_manager).await {
+        Some(name) => crate::workflow::privacy::declared_provider_tier(&name).await,
+        None => crate::privacy::ProviderTier::Public,
+    };
+    ScheduleWork::reduce(run_model, chats)
 }
 
 fn scheduled_prompt(job: &ScheduledJob, workflow: &Workflow) -> String {
@@ -2519,7 +2705,7 @@ async fn execute_job(
         model_source,
         crate::workflow::privacy::declared_provider_tier(&provider_name).await,
     ) {
-        return Err(anyhow!(refusal));
+        return Err(ScheduledRunRefused(refusal).into());
     }
 
     // ⚠ DELIBERATE BEHAVIOUR CHANGE, and the one place this task makes a job
@@ -2549,7 +2735,7 @@ async fn execute_job(
         model_source,
         agent_provider.tier(),
     ) {
-        return Err(anyhow!(refusal));
+        return Err(ScheduledRunRefused(refusal).into());
     }
 
     let mut extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
@@ -5660,5 +5846,292 @@ mod armed_standing_tests {
             at("resolve_scheduled_provider(") < asks[0],
             "the standing is asked of the model the run resolved"
         );
+    }
+
+    /// A chat row in `sessions`: `provider` recorded on it, and classified
+    /// private when `private`.
+    async fn seeded_chat(
+        sessions: &SessionManager,
+        dir: &Path,
+        provider: Option<&str>,
+        private: bool,
+    ) -> String {
+        let session = sessions
+            .create_session(
+                dir.to_path_buf(),
+                "schedule work fixture".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let mut update = sessions.update(&session.id);
+        if let Some(provider) = provider {
+            // Both, as `Agent::update_provider` writes them: a run of a row with
+            // a provider and no model reaches for the configured model first.
+            update = update
+                .provider_name(provider)
+                .model_config(crate::model::ModelConfig::new("probe-model").unwrap());
+        }
+        if private {
+            update = update.raise_privacy(
+                crate::privacy::SessionClassification::Private,
+                "turn:versa_azure",
+            );
+        }
+        update.apply().await.unwrap();
+        session.id
+    }
+
+    /// Issue #56 — THE definition of a schedule's private work, at every corner
+    /// of the reduction, and then over real rows. The daemon's schedule routes
+    /// and the `/schedule` and `/loop` slash verbs both answer with it.
+    ///
+    /// ⚠ The public row is the one a stricter-looking implementation loses: a
+    /// definition that called every schedule private would pass every refusal
+    /// test and refuse a public install's whole Schedules surface.
+    #[tokio::test]
+    async fn a_schedules_work_is_private_when_a_chat_it_names_or_the_model_it_runs_is() {
+        use crate::privacy::ProviderTier::{Private as PrivateModel, Public as PublicModel};
+        use ScheduleWork::{Private, Public, Unreadable};
+        let corners: [(&[ScheduleWork], crate::privacy::ProviderTier, ScheduleWork); 10] = [
+            (&[], PublicModel, Public),
+            (&[], PrivateModel, Private),
+            (&[Public], PublicModel, Public),
+            (&[Public, Public], PublicModel, Public),
+            (&[Private], PublicModel, Private),
+            (&[Public, Private], PublicModel, Private),
+            (&[Public], PrivateModel, Private),
+            (&[Unreadable], PublicModel, Unreadable),
+            (&[Private, Unreadable], PrivateModel, Unreadable),
+            (&[Unreadable, Public], PublicModel, Unreadable),
+        ];
+        for (chats, model, want) in corners {
+            assert_eq!(
+                ScheduleWork::reduce(model, chats.iter().copied()),
+                want,
+                "{chats:?} on a {model:?} model"
+            );
+        }
+
+        let dir = tempdir().unwrap();
+        let sessions = SessionManager::new(dir.path().to_path_buf());
+        let workflow = create_test_workflow(dir.path(), "work");
+        // No configured default anywhere, so a run that names no model binds none.
+        let no_default =
+            std::collections::HashMap::from([("BIOROUTER_PROVIDER".to_string(), String::new())]);
+        let public_chat = seeded_chat(&sessions, dir.path(), Some("br-public-probe"), false).await;
+        let private_chat = seeded_chat(&sessions, dir.path(), Some("br-public-probe"), true).await;
+        // A PUBLIC chat bound to a PRIVATE model — what a secret-only restart left.
+        let bound_private = seeded_chat(&sessions, dir.path(), Some("versa_azure"), false).await;
+        let with = |creator: Option<&str>, current: Option<&str>| {
+            let mut job = dormant_job("work", &workflow);
+            job.creator_session_id = creator.map(str::to_owned);
+            job.current_session_id = current.map(str::to_owned);
+            job
+        };
+        let cases = [
+            ("public creator", with(Some(&public_chat), None), Public),
+            ("private creator", with(Some(&private_chat), None), Private),
+            (
+                "creator bound to a private model",
+                with(Some(&bound_private), None),
+                Private,
+            ),
+            (
+                "running in a private chat",
+                with(Some(&public_chat), Some(&private_chat)),
+                Private,
+            ),
+            (
+                "a creator that is gone",
+                with(Some("20000101_1"), None),
+                Unreadable,
+            ),
+        ];
+        for (label, job, want) in cases {
+            let got = crate::config::with_config_overrides(
+                no_default.clone(),
+                schedule_work(&job, &sessions),
+            )
+            .await;
+            assert_eq!(got, want, "{label}");
+        }
+        // No chat at all: the configured default decides.
+        let versa_default = std::collections::HashMap::from([(
+            "BIOROUTER_PROVIDER".to_string(),
+            "versa_azure".to_string(),
+        )]);
+        assert_eq!(
+            crate::config::with_config_overrides(
+                versa_default,
+                schedule_work(&with(None, None), &sessions)
+            )
+            .await,
+            Private,
+            "a schedule that names no chat runs on the private default"
+        );
+    }
+
+    /// `/schedule run` asks this before it says "Started": the run's own
+    /// resolution and decision, on the standing the run would carry.
+    #[tokio::test]
+    async fn a_run_preflight_answers_what_the_run_itself_would() {
+        let dir = tempdir().unwrap();
+        let sessions = SessionManager::new(dir.path().to_path_buf());
+        let workflow = create_test_workflow(dir.path(), "preflight");
+        let versa_default = std::collections::HashMap::from([(
+            "BIOROUTER_PROVIDER".to_string(),
+            "versa_azure".to_string(),
+        )]);
+        let modelless = seeded_chat(&sessions, dir.path(), None, false).await;
+        let bound_private = seeded_chat(&sessions, dir.path(), Some("versa_azure"), false).await;
+        let mut gone = dormant_job("preflight", &workflow);
+        gone.creator_session_id = Some(modelless);
+        let mut bound = dormant_job("preflight", &workflow);
+        bound.creator_session_id = Some(bound_private);
+
+        let ask = |job: ScheduledJob, armed: Option<bool>| {
+            let sessions = &sessions;
+            let overrides = versa_default.clone();
+            async move {
+                crate::config::with_config_overrides(
+                    overrides,
+                    scheduled_run_preflight(&job, sessions, true, armed),
+                )
+                .await
+            }
+        };
+        assert_eq!(
+            ask(gone.clone(), None).await,
+            Some(SCHEDULED_RUN_CREATOR_GONE)
+        );
+        assert_eq!(ask(gone, Some(true)).await, None);
+        assert_eq!(ask(bound.clone(), None).await, None);
+        assert_eq!(
+            ask(bound, Some(false)).await,
+            Some(SCHEDULED_RUN_NEEDS_PRIVATE_REACH)
+        );
+    }
+
+    /// Issue #56, independent QA 2026-09-14: a refused timer tick was counted as a
+    /// run — `loop-81832e88` went 0 → 1 → 2 on refusals alone — so a `/loop` whose
+    /// every run was refused used up its `max_runs` budget and auto-stopped without
+    /// ever running.
+    ///
+    /// Driven through the REAL cron path: a job firing every second, capped at one
+    /// run, armed by a public-only request, made from a chat bound to a private
+    /// model, so every tick is refused at the declared tier before anything is
+    /// built. On the tree before the fix, the first refusal left `run_count` at 1
+    /// and the next tick auto-paused the job at its cap.
+    ///
+    /// ⚠ The rows live in `SessionManager::instance()`, because `execute_job`
+    /// resolves its creator through `Agent::new()`, which reads that one.
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn a_refused_timer_tick_does_not_spend_a_run() {
+        let dir = tempdir().unwrap();
+        let storage_path = dir.path().join("schedule.json");
+        // A workflow that PARSES, so the run reaches its standing: one that does
+        // not fails first, and a failure after the claim has always spent a run.
+        let workflow = dir.path().join("refused_tick.yaml");
+        fs::write(
+            &workflow,
+            "version: 1.0.0\ntitle: Refused tick\ndescription: probe\nprompt: test\n",
+        )
+        .unwrap();
+        let sessions = Arc::new(SessionManager::instance());
+        let creator = seeded_chat(&sessions, dir.path(), Some("versa_azure"), false).await;
+        let scheduler = Scheduler::new(storage_path.clone(), Arc::clone(&sessions))
+            .await
+            .unwrap();
+        let mut job = dormant_job("refused-tick", &workflow);
+        job.cron = "* * * * * *".to_string();
+        job.creator_session_id = Some(creator.clone());
+        job.armed_with_private_reach = Some(false);
+        job.max_runs = Some(1);
+        scheduler.add_scheduled_job(job, false).await.unwrap();
+
+        let listed = || async { scheduler.list_scheduled_jobs().await.remove(0) };
+        let mut refused = false;
+        for _ in 0..60 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if listed().await.last_error.as_deref() == Some(SCHEDULED_RUN_NEEDS_PRIVATE_REACH) {
+                refused = true;
+                break;
+            }
+        }
+        assert!(
+            refused,
+            "precondition: the tick is refused for its standing; the job reads {:?}",
+            listed().await
+        );
+        // Several more refused ticks, each of which the old tree counted.
+        tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+
+        let mut settled = None;
+        for _ in 0..40 {
+            let on_disk = jobs_on_disk(&storage_path).remove(0);
+            if !on_disk.currently_running {
+                settled = Some(on_disk);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let on_disk = settled.expect("the job settled between ticks");
+        scheduler
+            .remove_scheduled_job("refused-tick", false)
+            .await
+            .unwrap();
+        let _ = sessions.delete_session(&creator).await;
+
+        assert_eq!(
+            on_disk.run_count, 0,
+            "a refused tick was counted as a run on disk"
+        );
+        assert!(
+            !on_disk.paused,
+            "refused ticks spent the run budget and auto-paused a job that never ran"
+        );
+        assert_eq!(
+            on_disk.last_error.as_deref(),
+            Some(SCHEDULED_RUN_NEEDS_PRIVATE_REACH),
+            "the refusal is still recorded, word for word"
+        );
+    }
+
+    /// The give-back is for a REFUSAL, on a counted run, and nothing else: a run
+    /// that failed after it started spent its firing, and "Run now" never had one.
+    #[test]
+    fn only_a_refused_counted_run_gives_its_firing_back() {
+        let dir = tempdir().unwrap();
+        let workflow = create_test_workflow(dir.path(), "give_back");
+        let apply = |result: Result<String>, counted: bool| {
+            let mut job = dormant_job("give-back", &workflow);
+            job.run_count = 3;
+            RunCompletion::from_result(&result, Utc::now())
+                .for_a_counted_run(counted)
+                .apply(&mut job);
+            job
+        };
+        let refused = || Err(ScheduledRunRefused(SCHEDULED_RUN_CREATOR_GONE).into());
+        let job = apply(refused(), true);
+        assert_eq!(job.run_count, 2);
+        assert_eq!(job.last_error.as_deref(), Some(SCHEDULED_RUN_CREATOR_GONE));
+        assert_eq!(
+            apply(refused(), false).run_count,
+            3,
+            "run now counted nothing"
+        );
+        assert_eq!(
+            apply(Err(anyhow!(SCHEDULED_RUN_CREATOR_GONE)), true).run_count,
+            3,
+            "only the typed refusal is given back, never a failure that reads like one"
+        );
+        assert_eq!(apply(Ok("session".into()), true).run_count, 3);
+        let mut never_counted = dormant_job("give-back", &workflow);
+        RunCompletion::from_result(&refused(), Utc::now())
+            .for_a_counted_run(true)
+            .apply(&mut never_counted);
+        assert_eq!(never_counted.run_count, 0, "saturates rather than wrapping");
     }
 }
