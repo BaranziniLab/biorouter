@@ -93,6 +93,7 @@ vi.mock('../../hooks/chatStreamStore', () => ({
   // but it has to be PRESENT: this file replaces the module wholesale, and a
   // missing export is a render-time throw, not an `undefined`.
   useLiveSessionTiers: () => ({}),
+  useLiveSessionTypes: () => ({}),
 }));
 vi.mock('../../utils/sessionNameSync', () => ({
   subscribeSessionNameChanges: () => () => undefined,

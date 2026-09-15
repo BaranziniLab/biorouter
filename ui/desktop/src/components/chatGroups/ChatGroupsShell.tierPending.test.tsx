@@ -40,11 +40,17 @@ vi.mock('../../utils/sessionListCache', () => ({
 
 vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => ({}),
+  useLiveSessionTypes: () => ({}),
 }));
 
 type PendingRead = {
   sessionId: string;
   resolve: (row: { id: string; name: string; privacy_tier?: string }) => void;
+  /**
+   * The daemon's refusal as the client hands it over: the read passes no
+   * `throwOnError`, so a 403 resolves with the status rather than throwing.
+   */
+  refuse: () => void;
   reject: (error: unknown) => void;
 };
 let reads: PendingRead[] = [];
@@ -55,6 +61,12 @@ vi.mock('../../api', async (importOriginal) => ({
       reads.push({
         sessionId: options.path.session_id,
         resolve: (row) => resolve({ data: row }),
+        refuse: () =>
+          resolve({
+            data: undefined,
+            error: 'That chat is private, or there is no chat with that id.',
+            response: { status: 403 },
+          }),
         reject,
       });
     }),
@@ -157,7 +169,7 @@ describe('ChatGroupsShell — a subagent tab whose tier is still being read', ()
   it('stays not-yet-known when the read is refused, rather than settling on public', async () => {
     render(<ChatGroupsShell onChatChange={() => {}} />);
     await flush();
-    reads[0].reject('That chat is private, or there is no chat with that id.');
+    reads[0].refuse();
     await flush();
     expect(glyphOf('t-alpha')).toHaveAttribute('data-privacy', 'unknown');
   });

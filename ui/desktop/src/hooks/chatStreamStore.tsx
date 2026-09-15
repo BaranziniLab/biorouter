@@ -14,6 +14,7 @@ import {
   resumeAgent,
   Session,
   SessionClassification,
+  SessionType,
   TokenState,
   updateFromSession,
   updateSessionUserWorkflowValues,
@@ -4527,6 +4528,8 @@ export class ChatStreamRegistry {
   private stopSessionMeta: (() => void) | null = null;
   private tierListeners = new Set<() => void>();
   private sessionTiers: Record<string, SessionClassification> = {};
+  private typeListeners = new Set<() => void>();
+  private sessionTypes: Record<string, SessionType> = {};
 
   /**
    * Follow session rows this renderer holds, for changes made by ANOTHER
@@ -4683,12 +4686,48 @@ export class ChatStreamRegistry {
 
   getSessionTiersSnapshot = (): Record<string, SessionClassification> => this.sessionTiers;
 
+  /**
+   * The session type of every chat this window holds a loaded store for — the
+   * `session_type` on the same row {@link subscribeSessionTiers} reads its tier
+   * from.
+   *
+   * # What this exists to fix
+   *
+   * A tab's KIND (a delegated subagent's Bot glyph) had one source that
+   * survives a reload: the tab's row, read by `ChatGroupsShell` once the
+   * session list has landed. The tab's TIER had this store as well, and the
+   * store answers first. Measured 2026-09-14 on PR #314 (b6fab4a1): after a
+   * reload the ACTIVE subagent tab read `data-chat-kind="chat"
+   * data-privacy="private"` — an undimmed plain chat, marked private — for
+   * about a second (desktop 649 → 1634 ms and 1000 → 2295 ms; `biorouter
+   * serve` 385 → 1371 ms), then the Bot. The store already held the row that
+   * says `sub_agent`; nothing published it.
+   *
+   * ⚠ **Written BEFORE the tier, from the same snapshot**
+   * (`handleControllerActivity`), so a tier listener that re-renders can never
+   * see a tier this map has not yet caught up with.
+   *
+   * ⚠ A store holding no row says nothing, and a type is never retracted: a
+   * session's type does not change. Emits only when an id's type actually
+   * moved, which in practice is once per chat, on its load.
+   */
+  subscribeSessionTypes = (listener: () => void): (() => void) => {
+    this.typeListeners.add(listener);
+    return () => {
+      this.typeListeners.delete(listener);
+    };
+  };
+
+  getSessionTypesSnapshot = (): Record<string, SessionType> => this.sessionTypes;
+
   resetForTests(): void {
     this.controllers.clear();
     this.running.clear();
     this.lastRunningSnapshot = [];
     this.sessionTiers = {};
     this.tierListeners.clear();
+    this.sessionTypes = {};
+    this.typeListeners.clear();
     this.stopSessionMeta?.();
     this.stopSessionMeta = null;
   }
@@ -4720,13 +4759,24 @@ export class ChatStreamRegistry {
     if (believed !== undefined && listed !== reported) announceSessionRowChanged(sessionId);
   }
 
+  /** See {@link subscribeSessionTypes}. O(1), like the tier. */
+  private noteControllerType(controller: ChatStreamController): void {
+    const sessionId = controller.sessionId;
+    const reported = controller.getSnapshot().session?.session_type ?? undefined;
+    if (reported === undefined || reported === this.sessionTypes[sessionId]) return;
+    this.sessionTypes = { ...this.sessionTypes, [sessionId]: reported };
+    for (const listener of this.typeListeners) listener();
+  }
+
   private handleControllerActivity = (controller: ChatStreamController): void => {
     // ⚠ FIRST, and outside every early return below. The running-list
     // bookkeeping that follows returns without emitting for an idle controller
     // with no live entry — which is exactly the shape of a session LOAD, and of
     // the `refreshSessionBinding` that runs after a turn has already ended.
     // Both carry a tier, and both would be dropped by a tier read placed after
-    // that guard.
+    // that guard. The type goes first: a tab must never draw a tier its kind
+    // has not caught up with (see `subscribeSessionTypes`).
+    this.noteControllerType(controller);
     this.noteControllerTier(controller);
     const current = this.running.get(controller.sessionId);
     if (controller.isRunning()) {
@@ -4823,5 +4873,21 @@ export function useLiveSessionTiers(): Record<string, SessionClassification> {
     registry.subscribeSessionTiers,
     registry.getSessionTiersSnapshot,
     registry.getSessionTiersSnapshot
+  );
+}
+
+/**
+ * The session type of every chat this window holds a loaded store for, live.
+ *
+ * See {@link ChatStreamRegistry.subscribeSessionTypes}. The companion of
+ * {@link useLiveSessionTiers}, from the same rows: a tab whose chat's store has
+ * loaded gets its kind no later than its tier.
+ */
+export function useLiveSessionTypes(): Record<string, SessionType> {
+  const registry = useChatStreamRegistry();
+  return useSyncExternalStore(
+    registry.subscribeSessionTypes,
+    registry.getSessionTypesSnapshot,
+    registry.getSessionTypesSnapshot
   );
 }

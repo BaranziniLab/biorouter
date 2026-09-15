@@ -32,11 +32,120 @@ import {
   preloadSessionList,
   subscribeSessionList,
 } from '../../utils/sessionListCache';
-import { useLiveSessionTiers } from '../../hooks/chatStreamStore';
+import { useLiveSessionTiers, useLiveSessionTypes } from '../../hooks/chatStreamStore';
 import { mergeSessionTiers, raiseTier } from '../privacy/sessionTier';
 import { useSessionListTiers } from '../privacy/useSessionListTiers';
-import { getSession, type Session, type SessionClassification } from '../../api';
+import { getSession, type Session, type SessionClassification, type SessionType } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
+import {
+  forgetSessionTypesExcept,
+  recallSessionTypes,
+  rememberSessionType,
+} from './sessionTypeMemory';
+
+/** Rule 6 of `useTabTitlesFromSessionList`: the first wait before asking again… */
+const ROW_READ_RETRY_BASE_MS = 1_500;
+/** …doubling up to this… */
+const ROW_READ_RETRY_MAX_MS = 10_000;
+/** …this many times per list. About 30 s in all. */
+const ROW_READ_MAX_RETRIES = 5;
+
+/**
+ * Did the daemon ANSWER a row read it returned no row for? Only a client error
+ * does: 403 (refused) and 404 (gone) are answers, and rule 6 never asks again
+ * after one. Everything else is a question nobody answered — no response at
+ * all, a 5xx, a 408 or 429 that says to try later, and a status of 0, which is
+ * no HTTP status at all (measured: the Electron renderer reports a CDP-fulfilled
+ * 503 as 0, so a probe that assumed only `>= 500` saw no retry).
+ */
+function isAnswer(status: number | undefined): boolean {
+  return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/** Every chat a tab in this window holds. */
+function heldSessionIds(
+  state: { groups: Record<string, { tabs: { sessionId: string }[] }> } | undefined
+) {
+  const held = new Set<string>();
+  for (const group of Object.values(state?.groups ?? {})) {
+    for (const tab of group.tabs) if (tab.sessionId) held.add(tab.sessionId);
+  }
+  return held;
+}
+
+/**
+ * `base`, with a type from the first of `sources` that has one for each held
+ * chat `base` has none for. The same object when nothing is filled, so the
+ * strip is not re-rendered by a merge that changed nothing.
+ */
+function fillSessionTypes(
+  base: Record<string, SessionType>,
+  held: ReadonlySet<string>,
+  sources: readonly Readonly<Record<string, SessionType>>[]
+): Record<string, SessionType> {
+  let next = base;
+  for (const sessionId of held) {
+    if (base[sessionId]) continue;
+    for (const source of sources) {
+      const sessionType = source[sessionId];
+      if (!sessionType) continue;
+      if (next === base) next = { ...base };
+      next[sessionId] = sessionType;
+      break;
+    }
+  }
+  return next;
+}
+
+function readCachedSessionTypes(): Record<string, SessionType> {
+  const types: Record<string, SessionType> = {};
+  for (const session of getCachedSessionList() ?? []) {
+    if (session.session_type) types[session.id] = session.session_type;
+  }
+  return types;
+}
+
+/**
+ * Session type per session id, as the shared session-list cache reports it —
+ * `useSessionListTiers` for the type, and seeded and followed exactly as that
+ * hook is, so a listed row's kind is on the same render as its tier.
+ *
+ * `useTabTitlesFromSessionList`'s reconcile also takes each listed tab's type,
+ * but from an EFFECT, which commits once before its update does. The list's
+ * tier does not wait for it, so a subagent's tab opened from History's subagent
+ * list committed `data-chat-kind="chat" data-privacy="private"` first
+ * (`ChatGroupsShell.subagentKind.test.tsx`, measured by a `Profiler` on the
+ * first commit).
+ */
+function useSessionListTypes(): Record<string, SessionType> {
+  const [types, setTypes] = useState<Record<string, SessionType>>(readCachedSessionTypes);
+  useEffect(() => {
+    const read = () => {
+      const next = readCachedSessionTypes();
+      setTypes((prev) => {
+        const ids = Object.keys(prev);
+        const differ =
+          ids.length !== Object.keys(next).length || ids.some((id) => prev[id] !== next[id]);
+        return differ ? next : prev;
+      });
+    };
+    read();
+    // The shell's other readers of the list warm it; this only follows it.
+    return subscribeSessionList(read);
+  }, []);
+  return types;
+}
+
+/** `map` without the chats no tab holds; the same object when there are none. */
+function onlyHeld<T>(map: Record<string, T>, held: ReadonlySet<string>): Record<string, T> {
+  let next = map;
+  for (const sessionId of Object.keys(map)) {
+    if (held.has(sessionId)) continue;
+    if (next === map) next = { ...map };
+    delete next[sessionId];
+  }
+  return next;
+}
 
 interface ChatGroupsShellProps {
   /** Mirrors the focused chat up to App's hubChat, so AppSidebar's recents
@@ -241,9 +350,12 @@ function useSessionPrivacyTiers(
  *
  * # The tabs the list leaves out
  *
- * The list is not every chat. It is `GET /sessions?include_subagents=false`, so
- * it never carries a delegated subagent's chat — deliberately, because those are
- * not sidebar chats and must not become sidebar chats to fix a tab. It also
+ * The list is not every chat. It is usually `GET /sessions?include_subagents=false`,
+ * so it usually carries no delegated subagent's chat — deliberately, because those
+ * are not sidebar chats and must not become sidebar chats to fix a tab. (Usually:
+ * the cache is module-global, and History's "Show subagent runs" refetches it WITH
+ * them, where it stays until something asks for the other flag. See the kind,
+ * below, for what that changes.) It also
  * omits a chat that has recorded no message yet (`GET /sessions` INNER JOINs
  * `messages`). Measured 2026-09-13: the daemon opened a private chat's subagent
  * in a background tab (`open_tab`, `focus: false`, no title), sqlite named it
@@ -257,9 +369,10 @@ function useSessionPrivacyTiers(
  * surface uses: it answers only through `session_reach`, and it carries the
  * user's proof — without which a private parent's subagent, which is private
  * too, answers 403 (measured) and the tab would keep the placeholder silently.
- * A refused or failed read changes nothing.
+ * A refused read changes nothing, and neither does an answer for a chat no tab
+ * holds any more.
  *
- * Three rules keep it from being a poll or a snap-back:
+ * Four rules keep it from being a poll or a snap-back:
  *
  *   3. **Once per list, per chat.** A tab is read again only when the list
  *      itself has changed since its last read — the moment an ordinary tab is
@@ -272,16 +385,112 @@ function useSessionPrivacyTiers(
  *      apply to the answer as they do to a list row.
  *   5. **Only the newest read of a chat lands.** An earlier read that answers
  *      late is dropped rather than written over a later one.
+ *   6. **A read nobody answered is asked again, a few times.** No response at
+ *      all (the daemon is away or restarting), a 5xx, or any other status that
+ *      is not a client error re-issues the read after 1.5 s, doubling to at most
+ *      10 s, up to five times per list (`isAnswer`). Rule 3 alone
+ *      never did: it marks a chat as read for a list when the read is ISSUED,
+ *      so a read that failed waited for the next list. Measured 2026-09-14 on
+ *      d7f02191: one failed read during a route change left both subagent tabs
+ *      `data-chat-kind="chat"` and `data-privacy="unknown"` for more than 20 s
+ *      after the daemon answered again. A refusal (403) or a missing chat (404)
+ *      IS an answer and is never asked again, and only the newest read of a
+ *      chat may ask again (rule 5). That needs the status, which is why the
+ *      read does not pass `throwOnError`: under it the client throws the body
+ *      and drops the response.
  *
  * The same row reports the chat's privacy tier, which the tab strip had no
  * source for either; it is returned for `useSessionPrivacyTiers` to fold in
  * with `max`. That is why a tab the user named is still READ — only its name is
  * off limits. Measured before this was so: a private subagent's tab the user
  * had renamed kept its name and drew `data-privacy="public"`.
+ *
+ * # And its session type, for the tab's kind
+ *
+ * A row also says `session_type: 'sub_agent'`, and that is returned too, for
+ * the strip to OR with the workspace annotation. The annotation was the strip's
+ * only source for "this is a sub-agent", and it lives in `ChatGroupsProvider`'s
+ * React state, which mounts inside the `/pair` route and is never persisted.
+ * Measured 2026-09-14 on 1.90.4: two delegated subagent tabs read
+ * `data-chat-kind="subagent"`, and after Settings → a sidebar chat, History →
+ * back, or a reload, both read `data-chat-kind="chat"` for good.
+ *
+ * ⚠ **From EITHER source — the list row as much as the row read on its own.**
+ * The first version of this took the type only from the singular read, on the
+ * premise that every subagent tab is out of the list. It is not: with History's
+ * "Show subagent runs" ticked the cached list holds the `sub_agent` rows, the
+ * reconcile finds each subagent tab IN the list, and no singular read is ever
+ * made. Measured 2026-09-14 by an independent tester, on the desktop and on
+ * `biorouter serve`: History with the box ticked → back, and both subagent tabs
+ * read `data-chat-kind="chat"` for 35 s; "Open in new tab" on a subagent row
+ * from that list opened a tab that never got the glyph.
+ *
+ * Like the tier, a type is kept from ANY answer, whatever rules 4 and 5 do to
+ * its name: it is a fact about the session, not about the title the read was
+ * asked about, and a tab's title can move while its read is out (the name
+ * channel, the tab's own load). Unlike the tier it is not raised: the latest row
+ * wins, from whichever source, because a session's type does not change. The
+ * answer for an id could change only if the id were reissued to a new chat, and
+ * `create_session`'s high-water mark (`SESSION_ID_HIGH_WATER_DDL` in
+ * `session_manager.rs`) makes ids single use. A store without that mark can
+ * still reissue one: an older build sharing the file, or a database restored
+ * from a backup. So an entry is forgotten once no tab holds its chat, which
+ * also keeps the map to the tabs this window has open. The tier map from the
+ * same reads is forgotten the same way, for the same two reasons.
+ *
+ * ⚠ **The type also outlives the shell.** Each type is written to
+ * `sessionTypeMemory` as well, a module-scope map with the same forgetting and a
+ * hard cap, and the state is seeded from it on mount. Without that, the state
+ * started empty on every return to `/pair`, and a subagent's tab drew the chat
+ * bubble until its row was read again. Measured 2026-09-14 on d7f02191: 641 ms
+ * after Settings → a sidebar chat, 207 ms after History → back, then the Bot.
+ * The tier is NOT remembered this way. A tier can go down (a declassification),
+ * and "not yet known" until the row answers is the tier's deliberate state
+ * (`ChatGroupsShell.tierPending.test.tsx`).
+ *
+ * ⚠ **A kind arrives no later than the tier it is drawn with, from every
+ * source.** This block used to say a reload leaves every subagent tab dimmed
+ * ("privacy not yet known") until its row answers, and then changes once. That
+ * held for a BACKGROUND tab and was false for the ACTIVE one: its BaseChat
+ * loads the chat into the live store, and the store published the row's tier
+ * (`useLiveSessionTiers`) long before the session list landed and the row read
+ * could begin. Measured 2026-09-14 on b6fab4a1 after a reload, the active
+ * subagent tab read `data-chat-kind="chat" data-privacy="private"` — an
+ * undimmed plain chat, marked private — then the Bot: 649 → 1634 ms and
+ * 1000 → 2295 ms on the desktop, 385 → 1371 ms on `biorouter serve`
+ * (reproduced: 570 → 1603 ms and 895 → 1929 ms). So a tier has three sources,
+ * and each now brings the type from the same row, on the same render:
+ *
+ *   - **the row read** (`outsideListTiers` and this state, set together from one
+ *     answer);
+ *   - **the live store** (`useLiveSessionTypes`, written by the registry before
+ *     the tier, from the same snapshot);
+ *   - **the cached list** (`useSessionListTypes`, seeded on the first render as
+ *     `useSessionListTiers` is — the reconcile below takes a listed tab's type
+ *     too, but from an effect, which commits one frame late).
+ *
+ * The last two are folded in DURING RENDER (`fillSessionTypes`), never from an
+ * effect: an effect commits the render before it, and that commit is the
+ * `chat|private` frame this exists to remove. A type already in this state wins
+ * over both — it is the latest row this shell was handed for a chat a tab holds,
+ * and the store keeps a chat's row for the life of the renderer, so for an id
+ * reissued to a new chat (above) the store is the stale one. The store's types
+ * are written to `sessionTypeMemory` too, with the same forgetting and cap.
+ *
+ * What is left is a tab no source has answered for, which has no tier either:
+ * a background subagent tab after a reload. It is dimmed "not yet known" and
+ * changes once, when its row lands with both. It is not given a pending KIND of
+ * its own: that could begin only once the list has landed, since before that
+ * nothing says which tabs the list leaves out, so a subagent's tab would change
+ * twice (bubble, pending, Bot) and a new chat's tab — also out of the list until
+ * it records a message — would gain a change it does not have today. Nor is the
+ * type persisted to survive a reload: that would store a fact about a session
+ * beside the tab, which nothing here does.
  */
-function useTabTitlesFromSessionList(
-  groups: ReturnType<typeof useChatGroups>
-): Record<string, SessionClassification> {
+function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): {
+  outsideListTiers: Record<string, SessionClassification>;
+  rowSessionTypes: Record<string, SessionType>;
+} {
   const dispatch = groups?.dispatch;
   // Read through a ref so the effect depends on the SIGNATURE below and not on
   // state identity — the shell re-renders on every streamed token, and this
@@ -292,6 +501,13 @@ function useTabTitlesFromSessionList(
   // The tier of each chat read on its own (see above). Raised, never lowered.
   const [outsideListTiers, setOutsideListTiers] = useState<Record<string, SessionClassification>>(
     {}
+  );
+  // The session type each tab's chat's row reported — the list's row or the one
+  // read on its own (see above) — for the tab's kind. Seeded from the memory, so
+  // a tab that was a sub-agent's before the shell last unmounted still is on the
+  // first paint of this mount.
+  const [rowSessionTypes, setRowSessionTypes] = useState<Record<string, SessionType>>(() =>
+    recallSessionTypes(heldSessionIds(groups?.state))
   );
   // Which list the reads below were issued against: bumped when the list array
   // itself is replaced, so rule 3 compares numbers rather than pinning old arrays.
@@ -304,12 +520,23 @@ function useTabTitlesFromSessionList(
   const readForGenerationRef = useRef(new Map<string, number>());
   const newestReadRef = useRef(new Map<string, number>());
   const readSeqRef = useRef(0);
+  // Rule 6, per chat: the list its unanswered reads were counted against, how
+  // many there have been, and the timer that will ask again.
+  const retryRef = useRef(
+    new Map<string, { generation: number; count: number; timer?: ReturnType<typeof setTimeout> }>()
+  );
+  // The latest reconcile, for a retry timer to call: the effect below re-creates
+  // it whenever the tabs change, and a timer outlives that.
+  const reconcileRef = useRef<(() => void) | null>(null);
   // An answer that lands after the shell is gone has nowhere to go.
   const mountedRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
+    const retries = retryRef.current;
     return () => {
       mountedRef.current = false;
+      for (const retry of retries.values()) clearTimeout(retry.timer);
+      retries.clear();
     };
   }, []);
 
@@ -361,40 +588,128 @@ function useTabTitlesFromSessionList(
       return undefined;
     };
 
+    /**
+     * Fold the types some rows reported into `rowSessionTypes`, in ONE update:
+     * the latest row wins, and — when `held` is given — an entry for a chat no
+     * tab holds any more is dropped. Same object back when nothing changed, so
+     * an identical answer (every list refresh, in the common case) costs no
+     * strip render. The memory gets the same writes and the same forgetting,
+     * outside the updater, which React may call twice.
+     */
+    const keepSessionTypes = (
+      types: ReadonlyMap<string, SessionType>,
+      held?: ReadonlySet<string>
+    ) => {
+      for (const [sessionId, sessionType] of types) rememberSessionType(sessionId, sessionType);
+      if (held) forgetSessionTypesExcept(held);
+      setRowSessionTypes((prev) => {
+        let next = held ? onlyHeld(prev, held) : prev;
+        for (const [sessionId, sessionType] of types) {
+          if (next[sessionId] !== sessionType) {
+            if (next === prev) next = { ...prev };
+            next[sessionId] = sessionType;
+          }
+        }
+        return next;
+      });
+    };
+
+    /** Stop asking about a chat again: it was answered, or no tab holds it. */
+    const dropRetry = (sessionId: string) => {
+      clearTimeout(retryRef.current.get(sessionId)?.timer);
+      retryRef.current.delete(sessionId);
+    };
+
+    /** Rule 6: ask again later, unless a newer read is out or the retries are spent. */
+    const scheduleRetry = (sessionId: string, seq: number, generation: number) => {
+      // A read of a chat no tab holds has no newest entry any more, so this
+      // also stops asking about a closed tab.
+      if (!mountedRef.current || newestReadRef.current.get(sessionId) !== seq) return;
+      const previous = retryRef.current.get(sessionId);
+      clearTimeout(previous?.timer);
+      // A new list starts the count again: the daemon answered for it.
+      const count = previous?.generation === generation ? previous.count + 1 : 1;
+      if (count > ROW_READ_MAX_RETRIES) {
+        retryRef.current.set(sessionId, { generation, count });
+        return;
+      }
+      const delay = Math.min(ROW_READ_RETRY_BASE_MS * 2 ** (count - 1), ROW_READ_RETRY_MAX_MS);
+      const timer = setTimeout(() => {
+        const entry = retryRef.current.get(sessionId);
+        if (entry) entry.timer = undefined;
+        if (!mountedRef.current) return;
+        // Un-mark rule 3 for this chat, unless something has read it since.
+        if (
+          newestReadRef.current.get(sessionId) === seq &&
+          readForGenerationRef.current.get(sessionId) === generation
+        ) {
+          readForGenerationRef.current.delete(sessionId);
+        }
+        // The reconcile re-reads it if a tab still holds it, under every rule.
+        reconcileRef.current?.();
+      }, delay);
+      retryRef.current.set(sessionId, { generation, count, timer });
+    };
+
     const readOutsideList = (sessionId: string, askedAbout: string, generation: number) => {
       readForGenerationRef.current.set(sessionId, generation);
       const seq = ++readSeqRef.current;
       newestReadRef.current.set(sessionId, seq);
       void (async () => {
+        let row: Session | undefined;
+        let status: number | undefined;
         try {
-          const response = await getSession({
+          const result = await getSession({
             path: { session_id: sessionId },
             // A name, a flag and a tier: nothing here needs the conversation.
             query: { metadata_only: true },
             // ⚠ Not optional. A subagent of a private chat is private, and
             // without the proof the reach gate refuses it (403, measured).
             headers: await userActionHeaders(),
-            throwOnError: true,
+            // No `throwOnError`: rule 6 turns on the status, which it drops.
           });
-          const row = response.data;
-          if (!mountedRef.current || !row || row.id !== sessionId) return;
-          // The tier is a fact whenever it was read — the ratchet only rises —
-          // so it is kept even when the name below is not.
-          const tier = row.privacy_tier ?? undefined;
-          if (tier) {
-            setOutsideListTiers((prev) => {
-              const raised = raiseTier(prev[sessionId], tier);
-              return raised && raised !== prev[sessionId] ? { ...prev, [sessionId]: raised } : prev;
-            });
-          }
-          // Rule 5, then rule 4.
-          if (newestReadRef.current.get(sessionId) !== seq) return;
-          if (titleOf(sessionId) !== askedAbout) return;
-          renameFromRow(sessionId, row);
+          row = result.data;
+          // Absent when the request never completed, whatever the type says.
+          status = (result.response as Response | undefined)?.status;
         } catch {
-          // Refused (a chat this caller may not reach), deleted, or the daemon
-          // is away: the tab keeps what it has.
+          // Nothing answered.
         }
+        // Whether to ask again is the newest read's call alone (rule 5).
+        const newest = newestReadRef.current.get(sessionId) === seq;
+        if (!row) {
+          if (!isAnswer(status)) {
+            // Rule 6: nobody answered, so there is nothing to keep yet.
+            scheduleRetry(sessionId, seq, generation);
+          } else if (newest) {
+            // Refused (a chat this caller may not reach) or deleted: an answer,
+            // and the tab keeps what it has.
+            dropRetry(sessionId);
+          }
+          return;
+        }
+        if (newest) dropRetry(sessionId);
+        // A chat no tab holds any more has no tab to draw it, and keeping its
+        // row would outlive the forgetting in `reconcile`.
+        if (row.id !== sessionId || titleOf(sessionId) === undefined) return;
+        // Remembered even when the shell has gone: the next mount seeds from it.
+        if (row.session_type) rememberSessionType(sessionId, row.session_type);
+        if (!mountedRef.current) return;
+        // The tier is a fact whenever it was read — the ratchet only rises —
+        // so it is kept even when the name below is not.
+        const tier = row.privacy_tier ?? undefined;
+        if (tier) {
+          setOutsideListTiers((prev) => {
+            const raised = raiseTier(prev[sessionId], tier);
+            return raised && raised !== prev[sessionId] ? { ...prev, [sessionId]: raised } : prev;
+          });
+        }
+        // So is the type, and for the same reason it is kept before rules 5
+        // and 4 can drop the name.
+        if (row.session_type) keepSessionTypes(new Map([[sessionId, row.session_type]]));
+        // Rule 5, then rule 4.
+        if (newestReadRef.current.get(sessionId) !== seq) return;
+        if (titleOf(sessionId) !== askedAbout) return;
+        renameFromRow(sessionId, row);
       })();
     };
 
@@ -408,12 +723,17 @@ function useTabTitlesFromSessionList(
       const { generation } = listRef.current;
       const rowById = new Map(rows.map((row) => [row.id, row]));
       const seen = new Set<string>();
+      const listedTypes = new Map<string, SessionType>();
       for (const group of Object.values(state.groups)) {
         for (const tab of group.tabs) {
           if (!tab.sessionId || seen.has(tab.sessionId)) continue;
           seen.add(tab.sessionId);
           const row = rowById.get(tab.sessionId);
           if (row) {
+            // A listed row's type counts as much as a row read on its own: with
+            // History's "Show subagent runs" ticked, a subagent tab IS listed,
+            // and is never read on its own (see "its session type", above).
+            if (row.session_type) listedTypes.set(tab.sessionId, row.session_type);
             // Rule 1 lives inside: a user-named tab is never renamed.
             renameFromRow(tab.sessionId, row);
           } else if (readForGenerationRef.current.get(tab.sessionId) !== generation) {
@@ -426,12 +746,21 @@ function useTabTitlesFromSessionList(
       }
       // Forget chats no tab holds any more, so the maps cannot grow.
       for (const sessionId of readForGenerationRef.current.keys()) {
-        if (titleOf(sessionId) === undefined) {
+        if (!seen.has(sessionId)) {
           readForGenerationRef.current.delete(sessionId);
           newestReadRef.current.delete(sessionId);
         }
       }
+      for (const sessionId of [...retryRef.current.keys()]) {
+        if (!seen.has(sessionId)) dropRetry(sessionId);
+      }
+      // The listed types, and the same forgetting for the type map and the
+      // tier map — which also keeps an id reissued by a store without the
+      // high-water mark from inheriting a closed tab's kind or tier.
+      keepSessionTypes(listedTypes, seen);
+      setOutsideListTiers((prev) => onlyHeld(prev, seen));
     };
+    reconcileRef.current = reconcile;
     reconcile();
     // Subscribe BEFORE asking for the fetch, for the reason `useSessionPrivacyTiers`
     // gives: a cache that resolved in between would emit to nobody.
@@ -440,13 +769,37 @@ function useTabTitlesFromSessionList(
     return unsubscribe;
   }, [dispatch, tabTitleSignature]);
 
-  return outsideListTiers;
+  // The two sources that publish a tier during render publish a type the same
+  // way, and are folded in during render (see "from every source", above).
+  const listSessionTypes = useSessionListTypes();
+  const liveSessionTypes = useLiveSessionTypes();
+  const sessionTypes = useMemo(
+    () =>
+      fillSessionTypes(rowSessionTypes, heldSessionIds(groups?.state), [
+        listSessionTypes,
+        liveSessionTypes,
+      ]),
+    [rowSessionTypes, groups?.state, listSessionTypes, liveSessionTypes]
+  );
+  // Remembered like a row's answer: the reconcile prunes the memory to the held
+  // chats, and its cap bounds it.
+  useEffect(() => {
+    for (const sessionId of heldSessionIds(stateRef.current)) {
+      const sessionType = liveSessionTypes[sessionId];
+      if (sessionType) rememberSessionType(sessionId, sessionType);
+    }
+  }, [liveSessionTypes, tabTitleSignature]);
+
+  return { outsideListTiers, rowSessionTypes: sessionTypes };
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
   const terminalDock = useTerminalDock();
-  const outsideListTiers = useTabTitlesFromSessionList(groups);
+  // Each map keeps its identity until one of its own sources changes — the tier
+  // map is state, the type map is memoised over state and two snapshots — and
+  // the wrapper object is new per render and is never passed on.
+  const { outsideListTiers, rowSessionTypes } = useTabTitlesFromSessionList(groups);
   const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
 
   const isMobile = useIsMobile();
@@ -929,6 +1282,10 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         runningSessionIds={groups.runningSessionIds}
         tabAnnotations={groups.tabAnnotations}
         privacyTiers={privacyTiers}
+        // What each tab's chat's row says it is — read on its own, listed, or
+        // loaded by the live store. The strip ORs a `sub_agent` here with
+        // `tabAnnotations`, which do not survive leaving `/pair` or a reload.
+        sessionTypes={rowSessionTypes}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives
         // no pointer events at all, so its own drag state is empty and the caret

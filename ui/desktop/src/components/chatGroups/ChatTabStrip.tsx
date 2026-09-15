@@ -14,7 +14,7 @@ import {
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import type { ChatKindSource } from '../chats/chatKind';
-import type { SessionClassification } from '../../api';
+import type { SessionClassification, SessionType } from '../../api';
 import { useTabDragReorder } from './useTabDragReorder';
 import { useTabBandWindowGesture } from './useTabBandWindowGesture';
 import { useChatTabDrag } from './ChatTabDragContext';
@@ -24,24 +24,44 @@ import type { TabAnnotation } from './workspaceCommandPlanner';
  * A tab is not a session row — it persists `{tabId, sessionId, title}` and
  * nothing about lineage — so the kind has to be assembled from what the strip
  * actually holds: the title (which still catches `app:` and legacy branch
- * names) plus the annotation the workspace planner recorded when a sub-agent
- * opened a tab.
+ * names), the annotation the workspace planner recorded when a sub-agent
+ * opened a tab, and the session type the tab's own row reported.
  *
- * ⚠ Deliberately NOT widened by fetching the session: the strip renders on
+ * ⚠ **Two sources for "sub-agent", ORed, because neither survives alone.** The
+ * annotation is there from the moment the daemon opens the tab, but it is React
+ * state in `ChatGroupsProvider`, which mounts inside the `/pair` route and is
+ * never persisted: leaving `/pair` (Settings, History) or reloading drops it,
+ * and every subagent tab then read as a plain chat (measured 2026-09-14 on
+ * 1.90.4). The row survives any of that, but arrives only once the shell has it
+ * — from the cached session list, from the live store that loaded the chat, or
+ * from its own read of a chat the list leaves out — and always no later than
+ * the tier the same row brings. So the annotation covers the first moments and
+ * the row covers every remount after them.
+ *
+ * ⚠ Deliberately NOT widened by fetching the session HERE: the strip renders on
  * every keystroke of a rename, and a per-tab fetch there is how a tab strip
- * becomes the slowest thing in the app.
+ * becomes the slowest thing in the app. The row is the one
+ * `ChatGroupsShell.useTabTitlesFromSessionList` already holds, once per list.
  */
 function tabKindSource(
   tab: { title: string },
-  annotation?: { badge?: string; parentSessionId?: string }
+  annotation?: { badge?: string; parentSessionId?: string },
+  rowSessionType?: SessionType
 ): ChatKindSource {
-  // ⚠ Only `badge === 'subagent'` marks a sub-agent here — deliberately NOT
-  // `parentSessionId`. `TabAnnotation.badge` is a free-form string and the
-  // planner may record a parent link for other reasons; the strip's own suite
-  // guards that an annotation carrying a parent but no badge marks nothing.
+  // ⚠ Only `badge === 'subagent'` or a row that says `sub_agent` marks a
+  // sub-agent here — deliberately NOT `parentSessionId`, from either source.
+  // `TabAnnotation.badge` is a free-form string and the planner may record a
+  // parent link for other reasons; the strip's own suite guards that an
+  // annotation carrying a parent but no badge marks nothing.
+  //
+  // And only `sub_agent` is taken from the row: it is the one kind the
+  // annotation carried and a route change lost. Taking the rest would redraw
+  // every scheduled or terminal chat's tab from a row that may not have
+  // answered yet — a change to tabs this fix has no measurement for.
+  const subagent = annotation?.badge === 'subagent' || rowSessionType === 'sub_agent';
   return {
     name: tab.title,
-    session_type: annotation?.badge === 'subagent' ? 'sub_agent' : null,
+    session_type: subagent ? 'sub_agent' : null,
   };
 }
 
@@ -118,6 +138,25 @@ export interface ChatTabStripProps {
    * private chat's subagent tabs said Public while their rows were being read.)
    */
   privacyTiers?: Record<string, SessionClassification>;
+  /**
+   * The session type each tab's chat's row reported, per SESSION id — the
+   * cached session list's row when the list holds the chat, the live store's
+   * row when this window has loaded the chat, else the `metadata_only` read
+   * `ChatGroupsShell` makes for it. A subagent's chat is usually NOT listed,
+   * and IS listed while History's "Show subagent runs" has left the cache
+   * holding subagents, so the shell takes the type from all three.
+   *
+   * Only `sub_agent` is consulted (see `tabKindSource`), ORed with
+   * `tabAnnotations`. It exists because the annotation does not outlive the
+   * `/pair` route: after Settings → back, History → back or a reload, it was
+   * the only thing that could still say a tab was a sub-agent's.
+   *
+   * Session-keyed and recomputed, like `privacyTiers`, and for the same reason
+   * never a field on `ChatTab`: nothing about a session is persisted with a tab.
+   * Optional with a `{}` default so the suites that mount this strip bare keep
+   * compiling untouched.
+   */
+  sessionTypes?: Record<string, SessionType>;
   onSelect: (tabId: ChatTabId) => void;
   onClose: (tabId: ChatTabId) => void;
   onReorder: (draggedTabId: ChatTabId, targetTabId: ChatTabId) => void;
@@ -154,6 +193,7 @@ export function ChatTabStrip({
   runningSessionIds,
   tabAnnotations = {},
   privacyTiers = {},
+  sessionTypes = {},
   onSelect,
   onClose,
   onReorder,
@@ -567,7 +607,11 @@ export function ChatTabStrip({
                     as a robot glyph in the same slot as every other kind,
                     instead of a word competing with the title for width. */}
                     <ChatKindIcon
-                      session={tabKindSource(tab, tabAnnotations[tab.sessionId])}
+                      session={tabKindSource(
+                        tab,
+                        tabAnnotations[tab.sessionId],
+                        sessionTypes[tab.sessionId]
+                      )}
                       tier={privacyTiers[tab.sessionId]}
                       className="h-4 w-4 br-tab__privacy-dot"
                     />
@@ -667,7 +711,11 @@ export function ChatTabStrip({
                 {/* The overflow menu draws the SAME glyph as the strip: a tab
                     that scrolls out of view must not change what it is. */}
                 <ChatKindIcon
-                  session={tabKindSource(tab, tabAnnotations[tab.sessionId])}
+                  session={tabKindSource(
+                    tab,
+                    tabAnnotations[tab.sessionId],
+                    sessionTypes[tab.sessionId]
+                  )}
                   tier={privacyTiers[tab.sessionId]}
                   className="h-4 w-4"
                 />

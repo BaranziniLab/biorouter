@@ -62,6 +62,7 @@ vi.mock('../../utils/sessionListCache', () => ({
 // `hooks/chatStreamStore.binding.test.tsx`.
 vi.mock('../../hooks/chatStreamStore', () => ({
   useLiveSessionTiers: () => liveTiers,
+  useLiveSessionTypes: () => ({}),
 }));
 
 // The THIRD source: a tab whose chat the list leaves out (a delegated
@@ -71,6 +72,11 @@ type PendingRead = {
   sessionId: string;
   headers: unknown;
   resolve: (row: { id: string; name: string; privacy_tier?: string }) => void;
+  /**
+   * The daemon's refusal as the client hands it over: the read passes no
+   * `throwOnError`, so a 403 resolves with the status rather than throwing.
+   */
+  refuse: () => void;
   reject: (error: unknown) => void;
 };
 let reads: PendingRead[] = [];
@@ -82,6 +88,12 @@ vi.mock('../../api', async (importOriginal) => ({
         sessionId: options.path.session_id,
         headers: options.headers,
         resolve: (row) => resolve({ data: row }),
+        refuse: () =>
+          resolve({
+            data: undefined,
+            error: 'That chat is private, or there is no chat with that id.',
+            response: { status: 403 },
+          }),
         reject,
       });
     }),
@@ -272,7 +284,7 @@ describe('ChatGroupsShell — a tab the list leaves out is marked from its own r
   it('marks nothing for it when that read is refused', async () => {
     render(<ChatGroupsShell onChatChange={() => {}} />);
     await flush();
-    reads[0].reject('That chat is private, or there is no chat with that id.');
+    reads[0].refuse();
     await flush();
 
     expect(lastStripProps.privacyTiers).toEqual({ 'someone-else': 'public' });

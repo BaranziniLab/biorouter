@@ -91,6 +91,48 @@ describe('ChatTabStrip — the subagent badge', () => {
     expect(badgeIn(container, 'tab-1')).toBeNull();
   });
 
+  describe('the row half, which outlives the annotation', () => {
+    // After Settings → back, History → back or a reload the provider holding
+    // `tabAnnotations` has been remounted empty, and the tab's own session row
+    // is the only thing left that can say it is a sub-agent's (1.90.4, measured).
+
+    it('marks a tab whose row says sub_agent, with no annotation at all', () => {
+      const { container } = renderStrip({ sessionTypes: { s1: 'sub_agent' } });
+      expect(badgeIn(container, 'tab-1')).not.toBeNull();
+    });
+
+    it('is keyed by SESSION id, not tab id', () => {
+      const { container } = renderStrip({ sessionTypes: { 'tab-1': 'sub_agent' } });
+      expect(badgeIn(container, 'tab-1')).toBeNull();
+    });
+
+    it('does not let a parent link on the annotation count, whatever the row says', () => {
+      // The rule above, kept: a parent without the badge marks nothing, and a
+      // row that is not `sub_agent` does not turn it into one.
+      const { container } = renderStrip({
+        tabAnnotations: { s1: { parentSessionId: 'p' } },
+        sessionTypes: { s1: 'user' },
+      });
+      expect(badgeIn(container, 'tab-1')).toBeNull();
+    });
+
+    it('takes only sub_agent from the row, not the other kinds', () => {
+      const { container } = renderStrip({
+        tabs: [tab(), tab({ tabId: 'tab-2', sessionId: 's2', title: 'Nightly' })],
+        sessionTypes: { s1: 'terminal', s2: 'scheduled' },
+      });
+      for (const id of ['tab-1', 'tab-2']) {
+        const glyph = container.querySelector(`[data-tab-id="${id}"] [data-chat-kind]`);
+        expect(glyph?.getAttribute('data-chat-kind')).toBe('chat');
+      }
+    });
+
+    it('still marks from the annotation when the row has not answered', () => {
+      const { container } = renderStrip({ tabAnnotations: { s1: subagent }, sessionTypes: {} });
+      expect(badgeIn(container, 'tab-1')).not.toBeNull();
+    });
+  });
+
   it('renders with no annotations prop at all', () => {
     // The optional-with-default contract, asserted rather than assumed: the
     // shell's own suites mock useChatGroups with stubs that have no
