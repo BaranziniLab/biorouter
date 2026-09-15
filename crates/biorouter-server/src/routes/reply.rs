@@ -2013,29 +2013,8 @@ pub async fn interrupt(
     {
         return Ok((StatusCode::ACCEPTED, Json(InterruptAccepted { turn_id })));
     }
-    if let Some(turn_id) = req
-        .turn_id
-        .clone()
-        .filter(|_| req.expected_turn_id.is_none())
-    {
-        let queued_message = crate::workspace::turn::stamp_user_direct_if_subagent(
-            Message::user()
-                .with_id(turn_id.clone())
-                .with_text(req.text.clone()),
-            biorouter::session::session_manager::SessionType::SubAgent,
-        );
-        match biorouter::agents::subagent_handle::queue_initializing_child_input(
-            &req.session_id,
-            Some(turn_id.clone()),
-            queued_message,
-        ) {
-            biorouter::agents::subagent_handle::InitialInputDisposition::Queued
-            | biorouter::agents::subagent_handle::InitialInputDisposition::Duplicate => {
-                state.record_steer_receipt(&req.session_id, &turn_id, &turn_id);
-                return Ok((StatusCode::ACCEPTED, Json(InterruptAccepted { turn_id })));
-            }
-            biorouter::agents::subagent_handle::InitialInputDisposition::NotInitializing => {}
-        }
+    if let Some(accepted) = queue_initializing_steer(&state, &req) {
+        return Ok((StatusCode::ACCEPTED, Json(accepted)));
     }
     // Cheap early-out only: it avoids constructing an agent for an idle session.
     // It is no longer the guard — see `try_queue_soft_interrupt` below.
@@ -2131,6 +2110,31 @@ pub async fn interrupt(
                 InterruptRefusalReason::TurnClosing,
             ))
         }
+    }
+}
+
+fn queue_initializing_steer(state: &AppState, req: &InterruptRequest) -> Option<InterruptAccepted> {
+    if req.expected_turn_id.is_some() {
+        return None;
+    }
+    let turn_id = req.turn_id.clone()?;
+    let queued_message = crate::workspace::turn::stamp_user_direct_if_subagent(
+        Message::user()
+            .with_id(turn_id.clone())
+            .with_text(req.text.clone()),
+        biorouter::session::session_manager::SessionType::SubAgent,
+    );
+    match biorouter::agents::subagent_handle::queue_initializing_child_input(
+        &req.session_id,
+        Some(turn_id.clone()),
+        queued_message,
+    ) {
+        biorouter::agents::subagent_handle::InitialInputDisposition::Queued
+        | biorouter::agents::subagent_handle::InitialInputDisposition::Duplicate => {
+            state.record_steer_receipt(&req.session_id, &turn_id, &turn_id);
+            Some(InterruptAccepted { turn_id })
+        }
+        biorouter::agents::subagent_handle::InitialInputDisposition::NotInitializing => None,
     }
 }
 
