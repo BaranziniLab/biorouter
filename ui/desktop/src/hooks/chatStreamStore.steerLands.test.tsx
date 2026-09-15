@@ -271,14 +271,16 @@ describe('D5 — the controller owns a steer until the daemon answers it', () =>
     await submit;
   });
 
-  it.each([false, true])(
-    'reconciles an evicted receipt without automatically resending (stored=%s)',
-    async (stored) => {
+  it.each(['missing', 'stored', 'unreadable'] as const)(
+    'reconciles an evicted receipt without automatically resending (lookup=%s)',
+    async (lookup) => {
+      const stored = lookup === 'stored';
       const { sid, controller, driving, submit } = await drivingTurn('steer-evicted');
       mocks.interrupt
         .mockRejectedValueOnce(new TypeError('Failed to fetch'))
         .mockResolvedValueOnce({ error: { reason: 'no_turn' }, response: { status: 409 } });
       mocks.getSession.mockImplementation(async () => {
+        if (lookup === 'unreadable') throw new TypeError('Failed to fetch');
         const key = (mocks.interrupt.mock.calls[0][0] as { body: { turn_id: string } }).body
           .turn_id;
         return {
