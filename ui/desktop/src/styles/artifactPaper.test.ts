@@ -91,10 +91,8 @@ describe('artifact panel paper', () => {
   });
 
   // A measure that is a class name in one place and a number in another drifts.
-  // PROVISIONAL: `.br-paper-measure` gives way to the geometry track's
-  // `.br-preview-measure` (placed INSIDE the scroller) when that lands.
   it('caps the paper column at the chat measure', () => {
-    expect(flat).toMatch(/\.br-paper-measure \{[^}]*max-width: var\(--measure-chat\);/);
+    expect(flat).toMatch(/\.br-preview-measure \{[^}]*max-width: var\(--measure-chat\);/);
     expect(flat).toContain(
       '--paper-inset: max(var(--paper-gutter), calc((100cqw - var(--measure-chat)) / 2));'
     );

@@ -56,7 +56,11 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
 
   return (
     <MainPanelLayout>
-      <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
+      <div
+        ref={splitPaneRef}
+        {...artifactPanel.splitPaneProps}
+        className="relative flex flex-1 min-h-0 min-w-0"
+      >
         {/* A real reading column, not a bare `px-8` box. This surface had no
             measure at all, so a shared transcript was drawn pane-wide while the
             same conversation opened locally sat in a column — the one view that
@@ -68,7 +72,11 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
             `SessionHistoryView`: the readable measure is a ceiling on prose,
             and a panel inside it would eat the column it is meant to sit
             beside. Rung 2 of the yield ladder measures the split box. */}
-        <ReadableContent size="chat" className="flex-1 flex flex-col min-h-0 px-6">
+        <ReadableContent
+          size="chat"
+          className="flex-1 flex flex-col min-h-0 px-6"
+          previewConversation
+        >
           <div className="biorouter-page-header -mx-6 mb-6 flex items-center px-6 py-4">
             <div className="flex items-center text-text-muted">
               <Share2 className="w-5 h-5 mr-2" />

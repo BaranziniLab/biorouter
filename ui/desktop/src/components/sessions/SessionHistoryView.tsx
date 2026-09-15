@@ -121,7 +121,9 @@ const SessionMessages: React.FC<{
   const filteredMessages = filterMessagesForDisplay(messages);
 
   return (
-    <ScrollArea className="h-full w-full">
+    // `data-preview-transcript`: the box rung 2 measures as this replay's
+    // transcript, so the page header above it counts as the conversation's chrome.
+    <ScrollArea className="h-full w-full" data-preview-transcript="">
       <div className="pb-24 pt-8">
         <div className="flex flex-col space-y-6">
           {isLoading ? (
@@ -393,14 +395,22 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             is a ceiling on PROSE, and a panel inside it would eat the column it
             is meant to sit beside. `splitPaneRef` goes here because rung 2
             measures this box — the one the transcript and the panel share. */}
-        <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
+        <div
+          ref={splitPaneRef}
+          {...artifactPanel.splitPaneProps}
+          className="relative flex flex-1 min-h-0 min-w-0"
+        >
           {/* ⚠ `size="chat"`, and it is the ONLY measure on this surface. The
               transcript used to sit in a second, narrower box inside this one
               (`max-w-4xl` — the 896px "replay fork"), so a saved conversation
               was drawn at a width the live chat never uses. §4.4 of the design
               of record retires it: one column, one number, and it is the same
               `--measure-chat` the composer reads. */}
-          <ReadableContent size="chat" className="flex-1 flex flex-col min-h-0 px-6">
+          <ReadableContent
+            size="chat"
+            className="flex-1 flex flex-col min-h-0 px-6"
+            previewConversation
+          >
             <SessionHeader
               onBack={onBack}
               title={session.name}

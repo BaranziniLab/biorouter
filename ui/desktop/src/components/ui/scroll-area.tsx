@@ -20,6 +20,22 @@ interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAr
   paddingX?: number;
   paddingY?: number;
   handleScroll?: (viewport: HTMLDivElement) => void;
+  /**
+   * Keep the transcript's BOTTOM edge in place when its viewport changes height,
+   * while this returns true (and on the one resize after it stops returning true).
+   *
+   * A chat reads bottom-up: the newest message sits against the composer. A
+   * stacked artifact preview (rung 2 of the yield ladder) opens ABOVE the
+   * transcript and takes its height from the top, and a plain viewport keeps
+   * `scrollTop` — so the newest lines slid under the composer the moment the
+   * preview opened. A function rather than a boolean because it is asked at the
+   * instant of the resize, which lands between React commits.
+   *
+   * Opt-in, and only the live chat's transcript opts in. Every other scroll area,
+   * and the live chat itself whenever no stacked sheet is on screen, keeps the
+   * behaviour it had.
+   */
+  anchorBottomOnResize?: () => boolean;
 }
 
 const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
@@ -32,6 +48,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       paddingX,
       paddingY,
       handleScroll: handleScrollProp,
+      anchorBottomOnResize,
       ...props
     },
     ref
@@ -101,12 +118,36 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
 
     // track last scroll position to detect user-initiated scrolling
     const lastScrollTopRef = React.useRef(0);
+    // The predicate, read at resize time, and the viewport height the anchor last
+    // saw. A scroll event that arrives while the height differs from this one is
+    // the LAYOUT moving, not the reader (see handleScroll).
+    const anchorPredicateRef = React.useRef(anchorBottomOnResize);
+    anchorPredicateRef.current = anchorBottomOnResize;
+    const anchorEngagedRef = React.useRef(false);
+    const anchoredHeightRef = React.useRef<number | null>(null);
 
     // Handle scroll events to update isFollowing state
     const handleScroll = React.useCallback(() => {
       if (!viewportRef.current) return;
 
       const viewport = viewportRef.current;
+
+      // ⚠ A scroll that arrives WITH a viewport resize is layout, not the reader.
+      // When a stacked preview opens, Chromium's scroll anchoring can adjust
+      // `scrollTop` during the reflow and dispatch this event BEFORE the resize
+      // observer below has run. Read as a reader's scroll, it turned following
+      // OFF and left the transcript hundreds of pixels above its newest line for
+      // as long as the preview stayed open (measured on a prototype). While the
+      // anchor is engaged the observer owns this change, so it is not a scroll.
+      if (
+        (anchorEngagedRef.current || anchorPredicateRef.current?.()) &&
+        anchoredHeightRef.current !== null &&
+        viewport.clientHeight !== anchoredHeightRef.current
+      ) {
+        lastScrollTopRef.current = viewport.scrollTop;
+        return;
+      }
+
       const { scrollTop } = viewport;
       const currentIsAtBottom = isAtBottom();
 
@@ -184,6 +225,60 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
 
       lastScrollHeightRef.current = currentScrollHeight;
     }, [children, autoScroll, isFollowing]);
+
+    // THE BOTTOM ANCHOR (`anchorBottomOnResize`). Remembers where the viewport's
+    // bottom edge sits in content coordinates, and when the viewport changes
+    // height writes `scrollTop = bottom − height`, so the line against the
+    // composer stays against the composer.
+    //
+    // ⚠ ABSOLUTE, NOT A DELTA. A prototype added `oldHeight − newHeight` to
+    // `scrollTop`, and closing the preview then scrolled the transcript to the TOP:
+    // a viewport that GROWS past its content has `scrollTop` clamped by the browser
+    // during layout, before this callback runs, so the delta was applied twice
+    // (measured: 480 → clamp 480 → minus 478 = 2). Writing the remembered bottom
+    // edge is idempotent under the clamp.
+    //
+    // It stays engaged for ONE resize after the predicate goes false, because the
+    // resize that ends a stacked sheet — closing it, or the pane widening it back
+    // into a side column — is the commit that also turns the predicate off.
+    const hasBottomAnchor = Boolean(anchorBottomOnResize);
+    React.useEffect(() => {
+      const viewport = viewportRef.current;
+      if (!autoScroll || !hasBottomAnchor || !viewport) return;
+      if (typeof ResizeObserver === 'undefined') return;
+      let lastHeight = viewport.clientHeight;
+      let bottom = viewport.scrollTop + lastHeight;
+      anchoredHeightRef.current = lastHeight;
+      const remember = () => {
+        // Mid-reflow the height is already new and the observer has not run: the
+        // bottom edge it would record is the one being moved, not the reader's.
+        if (viewport.clientHeight !== lastHeight) return;
+        bottom = viewport.scrollTop + viewport.clientHeight;
+      };
+      const observer = new ResizeObserver(() => {
+        const height = viewport.clientHeight;
+        if (height === lastHeight) return;
+        const engaged = anchorPredicateRef.current?.() ?? false;
+        const anchor = engaged || anchorEngagedRef.current;
+        anchorEngagedRef.current = engaged;
+        lastHeight = height;
+        anchoredHeightRef.current = height;
+        if (anchor) {
+          viewport.scrollTop = Math.max(0, bottom - height);
+          lastScrollTopRef.current = viewport.scrollTop;
+        }
+        bottom = viewport.scrollTop + height;
+      });
+      viewport.addEventListener('scroll', remember, { passive: true });
+      observer.observe(viewport);
+      return () => {
+        observer.disconnect();
+        viewport.removeEventListener('scroll', remember);
+        anchoredHeightRef.current = null;
+        anchorEngagedRef.current = false;
+      };
+      // `anchorBottomOnResize` is read through the ref; only its presence matters here.
+    }, [autoScroll, hasBottomAnchor]);
 
     // Add scroll event listener
     React.useEffect(() => {

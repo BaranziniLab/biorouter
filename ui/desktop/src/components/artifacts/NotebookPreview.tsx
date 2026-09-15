@@ -247,8 +247,7 @@ export default function NotebookPreview({
         )}
       </div>
       <div className="br-paper-scroll min-h-0 flex-1 overflow-auto">
-        {/* PROVISIONAL `br-paper-measure` — see MarkdownDocument.tsx. */}
-        <div className="br-paper-measure br-paper-nb">
+        <div className="br-preview-measure br-paper-nb">
           {notebook.cells.map((cell, index) => {
             const source = joined(cell.source);
             const executionLabel = cell.execution_count ?? ' ';

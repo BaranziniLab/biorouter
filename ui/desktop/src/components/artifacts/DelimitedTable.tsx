@@ -50,16 +50,16 @@ export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; ma
   }, [rows]);
 
   if (rows.length === 0) {
-    return <div className="br-paper-measure br-paper-empty">This file has no rows.</div>;
+    return <div className="br-preview-measure br-paper-empty">This file has no rows.</div>;
   }
 
   return (
     // Its own scroller, so the header can stick: a sticky cell sticks to its
     // nearest scrolling ancestor, and the frame's left padding puts the table on
     // the column edge while letting a wide table run past the column's right.
-    <div className="br-paper-table-scroll">
+    <div className="br-paper-table-scroll" data-preview-scroller="">
       <div ref={frameRef} className="br-paper-table-frame">
-        <table ref={tableRef} className="br-paper-table">
+        <table ref={tableRef} className="br-paper-table" data-preview-intrinsic="">
           <thead>
             <tr>
               <th className="br-paper-rownum" aria-hidden="true" />
