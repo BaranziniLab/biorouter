@@ -207,9 +207,16 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
     return window.electron.on('theme-changed', handleThemeChanged);
   }, []);
 
-  // Apply theme to document whenever resolvedTheme changes
+  // Apply theme to document whenever resolvedTheme changes — and to the native
+  // window behind it. That background is what shows wherever a late frame does
+  // not reach during a resize; left at Electron's default it was a white band
+  // across a dark app (utils/windowCanvas.ts). On mount too, not only on a
+  // change: the window was created with the theme the app last showed, which is
+  // not this one when the OS flipped while the app was closed. Optional-called,
+  // because a browser surface's bridge has no window to paint.
   useEffect(() => {
     applyThemeToDocument(resolvedTheme);
+    window.electron?.setWindowCanvas?.(resolvedTheme);
   }, [resolvedTheme]);
 
   // Apply the theme family (data-theme) whenever it changes. The pre-hydration

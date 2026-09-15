@@ -313,6 +313,12 @@ type ElectronAPI = {
     theme: string;
     themeFamily?: string;
   }) => void;
+  /**
+   * Tell the main process which theme this window is showing, so its native
+   * background — what shows wherever a late frame does not reach — is the app's
+   * own canvas (utils/windowCanvas.ts). Optional: a browser surface has no window.
+   */
+  setWindowCanvas?: (mode: 'light' | 'dark') => void;
   // Functions for image pasting
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string) => Promise<SaveDataUrlResponse>;
   deleteTempFile: (filePath: string) => void;
@@ -688,6 +694,9 @@ const electronAPI: ElectronAPI = {
     themeFamily?: string;
   }) => {
     ipcRenderer.send('broadcast-theme-change', themeData);
+  },
+  setWindowCanvas: (mode: 'light' | 'dark') => {
+    ipcRenderer.send('set-window-canvas', mode);
   },
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string): Promise<SaveDataUrlResponse> => {
     return ipcRenderer.invoke('save-data-url-to-temp', dataUrl, uniqueId);
