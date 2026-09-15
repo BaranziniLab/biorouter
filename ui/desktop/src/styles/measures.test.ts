@@ -643,6 +643,13 @@ describe('rung 2 — the preview split in main.css agrees with the ladder', () =
     expect(property(transcript.body, 'min-height')).toBe(
       `calc(${PREVIEW_TRANSCRIPT_MIN_HEIGHT}px + ${PREVIEW_STACK_EDGE_HEIGHT}px)`
     );
+    // Placed explicitly in BOTH layouts: auto-placed beside the resize edge, a
+    // replay's column was pushed into an implicit second column and its sheet
+    // collapsed to 0px wide.
+    for (const layout of [SIDE, STACK]) {
+      const placed = onlyRule(`${layout} > [data-preview-area='conversation']`);
+      expect(property(placed.body, 'grid-column'), layout).toBe('1');
+    }
     const replay = onlyRule(
       `${STACK}:not([data-preview-measuring]) > [data-preview-area='conversation']`
     );

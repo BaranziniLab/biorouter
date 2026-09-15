@@ -3771,6 +3771,10 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
 }
 
 [data-preview-split][data-preview-layout='stack'] > [data-preview-area='conversation'] {
+  /* The column is explicit, never auto: the resize edge sits in the transcript
+     row too, and an auto-placed item that would overlap it is pushed into an
+     implicit second column — measured, a replay's sheet collapsed to 0px wide. */
+  grid-column: 1;
   grid-row: transcript-start / composer-end;
   min-width: 0;
 }
