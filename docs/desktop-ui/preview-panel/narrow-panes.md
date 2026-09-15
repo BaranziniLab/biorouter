@@ -1,7 +1,7 @@
 # The preview panel in a narrow pane
 
-> **What this is.** The rule for where the artifact preview goes when a chat pane is too narrow to seat it beside the conversation, how that rule is built, and what it guarantees the later motion pass.
-> **Status:** Current; measured 2026-09-14 in the dev app on `fix/preview-panel-narrow-panes`.
+> **What this is.** The rule for where the artifact preview goes when a chat pane is too narrow to seat it beside the conversation, how that rule is built, and how its content animates without remounting.
+> **Status:** Implemented on `fix/preview-panel-narrow-panes`; fresh integrated Electron acceptance is tracked in PR #325.
 > **Audience:** contributors changing the artifact panel, the chat pane's layout or the split panes.
 
 In a window split into two or three panes, opening an artifact used to cover the pane it was opened in: below 720px the panel floated over the transcript and the composer of the very conversation it belonged to. A preview is now always beside the conversation or above it, and never over it. This page is the rule, the parts that implement it, and the invariants the tests hold.
@@ -43,9 +43,9 @@ The conversation always wins a collision: the sheet gives way down to its strip,
 
 **The transcript keeps its bottom edge.** `ScrollArea`'s `anchorBottomOnResize` writes `scrollTop` once per viewport resize so the line against the composer stays there when a sheet opens, folds, crosses to a column or closes. A scroll event that arrives together with a viewport resize is treated as layout, not the reader, so opening a sheet does not turn following off. Only the live chat's transcript opts in, and only while a stacked sheet is on screen, plus the one resize that ends it.
 
-**Text reads at the chat measure.** `.br-preview-measure` holds markdown, plain text, code and logs to `calc(var(--measure-chat) + 2 * 16px)`, centred like the transcript: a 760px column of glyphs. It is never applied to a CSV or TSV, a frame, an image, a directory tree, a notebook or a document.
+**Text reads at the chat measure.** `.br-preview-measure` holds Markdown and notebook prose to `--measure-chat` (760px of content), with responsive paper gutters outside that measure. Code and logs share that left edge through the paper inset, while long lines and wide CSV tables remain horizontally scrollable. The preview status strip aligns with the reading column without shrinking its full-width hairline.
 
-## What the motion pass can rely on
+## Motion and mounting guarantees
 
 - **The panel stays mounted.** Each host renders one `<ArtifactViewer>` at a fixed position with no layout-dependent key. A side and stack crossing changes attributes, the custom properties and authored CSS only. Measured across 13 crossings and a fold: the aside, split box, header, transcript scroller, composer and figure frame are the same nodes; the frame fires 0 `load` events and keeps its `contentWindow`. The only DOM removals are the composer toolbar's rung 3b controls and Radix's auto-hiding scrollbar, both independent of the panel.
 - **The box settles immediately; its contents animate.** The existing preview body translates 32px and fades with the Web Animations API: entrance 300ms, orientation 250ms, exit 125ms. A window resize does not cancel entrance. Reduced motion disables animation and cancels an active animation when enabled. The grid and conversation do not animate.
