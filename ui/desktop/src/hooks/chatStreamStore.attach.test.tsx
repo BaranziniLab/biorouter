@@ -122,15 +122,19 @@ function live(seq: number, event: MessageEvent): WireFrame {
   return envelope(event, seq, TURN);
 }
 
-function messageFrame(id: string, text: string): MessageEvent {
+function messageFrame(id: string, text: string): Extract<MessageEvent, { type: 'Message' }> {
   return {
     type: 'Message',
     message: assistantMessage(id, text),
     token_state: tokenState,
-  } as MessageEvent;
+  };
 }
 
-const finishFrame = { type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent;
+const finishFrame = {
+  type: 'Finish',
+  reason: 'stop',
+  token_state: tokenState,
+} satisfies MessageEvent;
 
 function persistedFrame(id: string): MessageEvent {
   return {
@@ -201,6 +205,111 @@ afterEach(() => {
 });
 
 describe('attaching to a turn this client did not start', () => {
+  it.each([
+    ['LYCH', 'E', 'E', '5'],
+    ['E', 'E', '5'],
+    ['ha', 'ha', 'ha'],
+  ])('preserves every live delta including repeated boundaries: %j', async (...chunks) => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse());
+    servingFrames(
+      ...chunks.map((text, seq) => live(seq, messageFrame('a1', text))),
+      live(chunks.length, finishFrame)
+    );
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await controller.attachToTurn(TURN);
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual([chunks.join('')]);
+  });
+
+  it('drops replayed sequences while preserving a new repeated delta', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse());
+    servingFrames(
+      live(0, messageFrame('a1', 'LYCH')),
+      live(1, messageFrame('a1', 'E')),
+      replayed(1, messageFrame('a1', 'E')),
+      live(2, messageFrame('a1', 'E')),
+      replayed(2, messageFrame('a1', 'E')),
+      live(3, messageFrame('a1', '5')),
+      live(4, finishFrame)
+    );
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await controller.attachToTurn(TURN);
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual(['LYCHEE5']);
+  });
+
+  it('reconciles an unsequenced replay with a stored row before appending repeated live text', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse([assistantMessage('a1', 'LYCHE')]));
+    servingFrames(
+      { ...messageFrame('a1', 'LYCH'), replay: true },
+      { ...messageFrame('a1', 'E'), replay: true },
+      messageFrame('a1', 'E'),
+      messageFrame('a1', '5'),
+      finishFrame
+    );
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await controller.attachToTurn(TURN);
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual(['LYCHEE5']);
+  });
+
+  it('replaces text only for an explicit conversation snapshot', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse());
+    servingFrames(
+      live(0, messageFrame('a1', 'ha')),
+      {
+        type: 'UpdateConversation',
+        conversation: [assistantMessage('a1', 'hahaha')],
+        token_state: tokenState,
+      },
+      live(1, messageFrame('a1', '!')),
+      live(2, finishFrame)
+    );
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await controller.attachToTurn(TURN);
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual(['hahaha!']);
+  });
+
+  it('finishes a driving turn after its tab closes and reopens the complete idle transcript', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse());
+    let continueTurn!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      continueTurn = resolve;
+    });
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield live(0, messageFrame('a1', 'The stethoscope'));
+        await paused;
+        yield live(1, messageFrame('a1', ' was invented in 1816.'));
+        yield live(2, finishFrame);
+      })(),
+    } as never);
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    const detachView = controller.subscribe(() => {});
+    const turn = controller.attachToTurn(TURN);
+    await vi.waitFor(() =>
+      expect(transcriptText(controller.getSnapshot().messages)).toEqual(['The stethoscope'])
+    );
+    detachView();
+    controller.releaseOwnership();
+    continueTurn();
+    await turn;
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+    expect(registry.isSessionRunning(SID)).toBe(false);
+    await registry.getController(SID).loadSession();
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual([
+      'The stethoscope was invented in 1816.',
+    ]);
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+  });
+
   it('renders the whole turn, exactly once and in order', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({

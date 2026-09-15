@@ -412,11 +412,9 @@ function pushMessage(currentMessages: Message[], incomingMsg: Message): Message[
       incomingMsg.content.length === 1
     ) {
       const updatedLastContent = { ...lastContent };
-      if (newContent.text.startsWith(updatedLastContent.text)) {
-        updatedLastContent.text = newContent.text;
-      } else if (!updatedLastContent.text.endsWith(newContent.text)) {
-        updatedLastContent.text += newContent.text;
-      }
+      // These are deltas. Sequence and replay gates above this merge remove
+      // duplicates; matching text is not evidence that a delta was replayed.
+      updatedLastContent.text += newContent.text;
       updatedLastMsg.content[updatedLastMsg.content.length - 1] = updatedLastContent;
     } else {
       const existingContent = new Set(
@@ -842,6 +840,7 @@ class ChatStreamController {
   private continuationRecoveryInFlight: Promise<void> | null = null;
   /** A closed tab must abandon a lease that arrives after its close raced the cancel response. */
   private ownershipReleased = false;
+  private releasedObserver = false;
   /**
    * The last exact generation whose cancellation barrier settled. A Stop-and-Send
    * arriving just after an ordinary Stop can still mark that retained generation
@@ -1964,14 +1963,14 @@ class ChatStreamController {
     return this.ensureAgentLoaded();
   }
 
-  private reobserveReleasedSubagent(
+  private reobserveReleasedSession(
     session: Session | undefined,
     ownershipGeneration: number
   ): void {
     if (
       this.ownershipReleased &&
       this.ownershipGeneration === ownershipGeneration &&
-      session?.session_type === 'sub_agent'
+      (this.releasedObserver || session?.session_type === 'sub_agent')
     ) {
       void this.observeSession();
     }
@@ -1982,7 +1981,7 @@ class ChatStreamController {
     const ownershipGeneration = this.ownershipGeneration;
 
     if (this.snapshot.session) {
-      this.reobserveReleasedSubagent(this.snapshot.session, ownershipGeneration);
+      this.reobserveReleasedSession(this.snapshot.session, ownershipGeneration);
       // Session already painted, but the agent may still be missing entirely on
       // the controller-reuse path. Idempotent — and it is the resume inside it
       // that reports any live turn, so nothing here needs to guess at one.
@@ -2011,7 +2010,7 @@ class ChatStreamController {
         },
         chatState: this.isRunning() ? prev.chatState : ChatState.Idle,
       }));
-      this.reobserveReleasedSubagent(cached.session, ownershipGeneration);
+      this.reobserveReleasedSession(cached.session, ownershipGeneration);
       // The cache is a process-lifetime LRU with no TTL, so this path could
       // previously reach a submit having NEVER loaded the agent for this
       // session — the transcript looked live while the backend had no
@@ -2084,7 +2083,7 @@ class ChatStreamController {
             turnError: undefined,
           }));
 
-          this.reobserveReleasedSubagent(loadedSession, ownershipGeneration);
+          this.reobserveReleasedSession(loadedSession, ownershipGeneration);
 
           // PHASE 2 — model + extensions, off the paint path. Deliberately not
           // awaited: `loadSession` resolves as soon as the transcript is up.
@@ -3238,6 +3237,7 @@ class ChatStreamController {
     // would clear the new loop's flag and a third attach would then run two
     // loops against one controller.
     const generation = ++this.observerGeneration;
+    this.releasedObserver = false;
     this.observing = true;
     this.observerInitializationNextRefreshAt = 0;
     // `/agent/resume` may have named the child turn just before the workspace
@@ -3491,13 +3491,11 @@ class ChatStreamController {
   releaseOwnership = (): void => {
     this.ownershipGeneration += 1;
     this.ownershipReleased = true;
+    this.releasedObserver ||= this.observing;
     this.stopObserving();
-    // Closing a tab releases its renderer socket regardless of who opened the
-    // turn. `/reply` is daemon-owned after admission, so aborting this reader is
-    // a detach, not cancellation; the child/turn keeps running for its parent.
-    this.activeStreamId += 1;
-    this.abortController?.abort();
-    this.abortController = null;
+    // The registry outlives the tab. Keep its driving stream until Finish so
+    // Recents learns the turn ended and reopening shows every remaining delta.
+    // Observer feeds are detached above; they are rejoined when reopened.
     void this.abandonContinuation();
   };
 

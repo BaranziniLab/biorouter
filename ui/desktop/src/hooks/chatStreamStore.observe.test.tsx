@@ -629,62 +629,71 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
     }
   });
 
-  it('reopens a closed child tab on a fresh observer and clears stale running state', async () => {
-    vi.useFakeTimers();
-    try {
-      const registry = new ChatStreamRegistry();
-      const first = createControlledStream();
-      const reopened = createControlledStream();
-      const child = {
-        ...session('child-tab-reopen'),
-        session_type: 'sub_agent' as const,
-        parent_session_id: 'parent',
-      };
-      mocks.observeSessionEvents
-        .mockResolvedValueOnce({ stream: first.stream })
-        .mockResolvedValueOnce({ stream: reopened.stream });
-      mocks.resumeAgent.mockResolvedValue({ data: { session: child } });
+  it.each(['sub_agent', 'user'] as const)(
+    'reopens a closed %s tab on a fresh observer and clears stale running state',
+    async (sessionType) => {
+      vi.useFakeTimers();
+      try {
+        const registry = new ChatStreamRegistry();
+        const first = createControlledStream();
+        const reopened = createControlledStream();
+        const child = {
+          ...session(`observer-tab-reopen-${sessionType}`),
+          session_type: sessionType,
+          parent_session_id: 'parent',
+        };
+        mocks.observeSessionEvents
+          .mockResolvedValueOnce({ stream: first.stream })
+          .mockResolvedValueOnce({ stream: reopened.stream });
+        mocks.resumeAgent.mockResolvedValue({ data: { session: child } });
 
-      const controller = registry.getController(child.id);
-      void controller.observeSession();
-      await vi.advanceTimersByTimeAsync(0);
-      await controller.loadSession();
-      await vi.advanceTimersByTimeAsync(0);
-      first.push({
-        type: 'TurnState',
-        active_turn_id: 'turn-finished-while-closed',
-      } as unknown as MessageEvent);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+        const controller = registry.getController(child.id);
+        void controller.observeSession();
+        await vi.advanceTimersByTimeAsync(0);
+        await controller.loadSession();
+        await vi.advanceTimersByTimeAsync(0);
+        first.push({
+          type: 'TurnState',
+          active_turn_id: 'turn-finished-while-closed',
+        } as unknown as MessageEvent);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
 
-      const firstSignal = mocks.observeSessionEvents.mock.calls[0][0].signal as AbortSignal;
-      controller.releaseOwnership();
-      expect(firstSignal.aborted).toBe(true);
+        const firstSignal = mocks.observeSessionEvents.mock.calls[0][0].signal as AbortSignal;
+        controller.releaseOwnership();
+        expect(firstSignal.aborted).toBe(true);
 
-      // The real reopen path remounts BaseChat, which calls loadSession against
-      // this retained, already-painted controller. It must reattach the observer
-      // even though both the transcript and agent load are cached.
-      await controller.loadSession();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
-      reopened.push({
-        type: 'TurnState',
-        active_turn_id: null,
-      } as unknown as MessageEvent);
-      await vi.advanceTimersByTimeAsync(0);
+        // The real reopen path remounts BaseChat, which calls loadSession against
+        // this retained, already-painted controller. It must reattach the observer
+        // even though both the transcript and agent load are cached.
+        await controller.loadSession();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+        reopened.push({
+          type: 'UpdateConversation',
+          conversation: [assistantMessage('completed', 'The complete answer')],
+          token_state: tokenState,
+        });
+        reopened.push({
+          type: 'TurnState',
+          active_turn_id: null,
+        } as unknown as MessageEvent);
+        await vi.advanceTimersByTimeAsync(0);
 
-      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
-      expect(registry.isSessionRunning(child.id)).toBe(false);
-      expect(mocks.cancelTurn).not.toHaveBeenCalled();
+        expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+        expect(registry.isSessionRunning(child.id)).toBe(false);
+        expect(mocks.cancelTurn).not.toHaveBeenCalled();
+        expect(JSON.stringify(controller.getSnapshot().messages)).toContain('The complete answer');
 
-      controller.releaseOwnership();
-      first.close();
-      reopened.close();
-      await vi.advanceTimersByTimeAsync(0);
-    } finally {
-      vi.useRealTimers();
+        controller.releaseOwnership();
+        first.close();
+        reopened.close();
+        await vi.advanceTimersByTimeAsync(0);
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
+  );
 
   it('does not reopen an invisible observer when the initial resume resolves after close', async () => {
     const registry = new ChatStreamRegistry();
@@ -1266,17 +1275,19 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
     }
   });
 
-  it('closing an ordinary running tab aborts only its reply reader', async () => {
+  it('closing an ordinary running tab retains its reply reader until completion', async () => {
     vi.useFakeTimers();
     try {
       const { controller, driving, submit, signal } = await drivingController('driver-tab-release');
 
       controller.releaseOwnership();
-      expect(signal.aborted).toBe(true);
+      expect(signal.aborted).toBe(false);
       expect(mocks.cancelTurn).not.toHaveBeenCalled();
 
+      driving.push({ type: 'Finish', reason: 'done', token_state: tokenState });
       driving.close();
       await submit;
+      expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
     } finally {
       vi.useRealTimers();
     }
