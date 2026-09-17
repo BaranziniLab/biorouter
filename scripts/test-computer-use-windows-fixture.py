@@ -87,11 +87,17 @@ public class BioRouterFixtureForm : Form {
             long packed = message.LParam.ToInt64();
             int x = (short)(packed & 0xffff), y = (short)((packed >> 16) & 0xffff);
             Rectangle expected = ScrollTarget.Parent.RectangleToScreen(ScrollTarget.Bounds);
-            string data = String.Format("{{\"message\":{0},\"x\":{1},\"y\":{2},\"expected_x\":{3},\"expected_y\":{4}}}",
-                message.Msg, x, y, expected.Left + expected.Width / 2, expected.Top + expected.Height / 2);
+            int delta = (short)((message.WParam.ToInt64() >> 16) & 0xffff);
+            string data = String.Format("{{\"message\":{0},\"x\":{1},\"y\":{2},\"expected_x\":{3},\"expected_y\":{4},\"delta\":{5}}}",
+                message.Msg, x, y, expected.Left + expected.Width / 2, expected.Top + expected.Height / 2, delta);
             File.WriteAllText(Path.Combine(DiagnosticsDirectory, "wheel.json"), data);
         }
         base.WndProc(ref message);
+        // Mouse-wheel scrolling does not reliably raise WinForms' Scroll event.
+        if ((message.Msg == 0x020A || message.Msg == 0x020E) && DiagnosticsDirectory != null) {
+            File.WriteAllText(Path.Combine(DiagnosticsDirectory, "scroll-x.txt"), Math.Abs(AutoScrollPosition.X).ToString());
+            File.WriteAllText(Path.Combine(DiagnosticsDirectory, "scroll-y.txt"), Math.Abs(AutoScrollPosition.Y).ToString());
+        }
     }
 }
 '@
@@ -211,7 +217,10 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
                     if receipt.exists() and float(receipt.read_text() or "0") > 0:
                         return float(receipt.read_text())
                     time.sleep(0.1)
-                raise AssertionError(f"Independent WinForms {axis} scroll offset did not change")
+                wheel_path = work / "wheel.json"
+                wheel_receipt = wheel_path.read_text() if wheel_path.exists() else "No wheel message received"
+                report.with_name(f"{report.stem}-{axis}-wheel-failure.txt").write_text(wheel_receipt, encoding="utf-8")
+                raise AssertionError(f"Independent WinForms {axis} scroll offset did not change; wheel: {wheel_receipt}")
             vertical_offset = wait_scroll("y")
             wheel = json.loads((work / "wheel.json").read_text())
             report.with_name(report.stem + "-wheel-coordinates.json").write_text(json.dumps(wheel, indent=2))
