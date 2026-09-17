@@ -56,6 +56,11 @@ foreach ($window in $windows) {
 
 
 def main(directory, report):
+    native_doctor = subprocess.run([str(directory / "ocu.exe"), "doctor", "--json"],
+                                   capture_output=True, text=True, timeout=20, check=True)
+    json.loads(native_doctor.stdout)
+    report.with_name(report.stem + "-native-doctor.json").write_text(native_doctor.stdout, encoding="utf-8")
+    print("Native helper passive doctor: " + native_doctor.stdout, flush=True)
     session = ctypes.c_ulong()
     if not ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)):
         raise OSError("Cannot identify Windows session")
@@ -69,22 +74,53 @@ def main(directory, report):
         env = dict(os.environ, BIOROUTER_FIXTURE_DIR=str(work))
         script = r'''
 Add-Type -AssemblyName System.Windows.Forms
-$form = New-Object System.Windows.Forms.Form
+Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.IO;
+using System.Windows.Forms;
+public class BioRouterFixtureForm : Form {
+    public Control ScrollTarget;
+    public string DiagnosticsDirectory;
+    protected override void WndProc(ref Message message) {
+        if ((message.Msg == 0x020A || message.Msg == 0x020E) && ScrollTarget != null) {
+            long packed = message.LParam.ToInt64();
+            int x = (short)(packed & 0xffff), y = (short)((packed >> 16) & 0xffff);
+            Rectangle expected = ScrollTarget.Parent.RectangleToScreen(ScrollTarget.Bounds);
+            string data = String.Format("{{\"message\":{0},\"x\":{1},\"y\":{2},\"expected_x\":{3},\"expected_y\":{4}}}",
+                message.Msg, x, y, expected.Left + expected.Width / 2, expected.Top + expected.Height / 2);
+            File.WriteAllText(Path.Combine(DiagnosticsDirectory, "wheel.json"), data);
+        }
+        base.WndProc(ref message);
+    }
+}
+'@
+$form = New-Object BioRouterFixtureForm
+$form.DiagnosticsDirectory = $env:BIOROUTER_FIXTURE_DIR
 $form.Text = 'BioRouter Computer Use Fixture'
 $form.Width = 480; $form.Height = 240
+$form.StartPosition = 'Manual'; $form.Location = New-Object System.Drawing.Point(140, 100)
 $form.AutoScroll = $true
-$form.AutoScrollMinSize = New-Object System.Drawing.Size(450, 1200)
-$form.Add_Scroll({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll.txt'), [string][Math]::Abs($form.AutoScrollPosition.Y)) })
+$form.AutoScrollMinSize = New-Object System.Drawing.Size(1200, 1200)
+$form.Add_Scroll({
+  [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-x.txt'), [string][Math]::Abs($form.AutoScrollPosition.X))
+  [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-y.txt'), [string][Math]::Abs($form.AutoScrollPosition.Y))
+})
 $form.KeyPreview = $true
 $form.Add_KeyDown({ if ($_.KeyCode -eq 'F6') { [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'key.txt'), 'F6') } })
 $text = New-Object System.Windows.Forms.TextBox
 $text.AccessibleName = 'FixtureInput'; $text.Name = 'FixtureInput'
 $text.Left = 20; $text.Top = 30; $text.Width = 400
+$form.ScrollTarget = $text
 $button = New-Object System.Windows.Forms.Button
 $button.Text = 'Apply fixture'; $button.AccessibleName = 'Apply fixture'
 $button.Left = 20; $button.Top = 90; $button.Width = 160
 $button.Add_Click({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'result.txt'), $text.Text) })
-$form.Controls.Add($text); $form.Controls.Add($button)
+$reset = New-Object System.Windows.Forms.Button
+$reset.Text = 'Reset scroll'; $reset.AccessibleName = 'Reset scroll'
+$reset.Left = 200; $reset.Top = 90; $reset.Width = 160
+$reset.Add_Click({ $form.AutoScrollPosition = New-Object System.Drawing.Point(0, 0) })
+$form.Controls.Add($text); $form.Controls.Add($button); $form.Controls.Add($reset)
 $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'ready'), 'ready') })
 [System.Windows.Forms.Application]::Run($form)
 '''
@@ -120,6 +156,12 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
                 raise TimeoutError(method)
             def call(name, arguments):
                 result = request("tools/call", {"name": name, "arguments": arguments})
+                receipt = {
+                    "tool": name, "arguments": arguments, "isError": result.get("isError", False),
+                    "text": [item.get("text", "") for item in result.get("content", []) if item.get("type") == "text"],
+                    "image_count": sum(item.get("type") == "image" for item in result.get("content", [])),
+                }
+                report.with_name(f"{report.stem}-{request_id:02d}-{name}.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
                 if result.get("isError"):
                     raise RuntimeError(f"{name}: {result}")
                 return result
@@ -136,34 +178,58 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
                 if not match:
                     raise AssertionError(f"No accessibility element for {label}: {snapshot}")
                 return match.group(1)
-            call("set_value", {"app": app, "element_index": element("FixtureInput", text), "value": "BioRouter native fixture verified"})
-            call("type_text", {"app": app, "text": " by typing"})
-            call("press_key", {"app": app, "key": "F6"})
+            def apply_and_expect(expected, phase):
+                (work / "result.txt").unlink(missing_ok=True)
+                snapshot = call("get_app_state", {"app": app})
+                text = "\n".join(c.get("text", "") for c in snapshot["content"])
+                call("click", {"app": app, "element_index": element("Apply fixture", text), "click_method": "accessibility"})
+                deadline = time.monotonic() + 10
+                while not (work / "result.txt").exists() and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                actual = (work / "result.txt").read_text()
+                report.with_name(f"{report.stem}-{phase}-independent-value.json").write_text(
+                    json.dumps({"expected": expected, "actual": actual}, indent=2), encoding="utf-8")
+                if actual != expected:
+                    raise AssertionError(f"Independent {phase} value mismatch: expected {expected!r}, received {actual!r}")
+            call("set_value", {"app": app, "element_index": element("FixtureInput", text), "value": "BioRouter value fixture verified"})
+            apply_and_expect("BioRouter value fixture verified", "set_value")
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
-            call("click", {"app": app, "element_index": element("Apply fixture", text), "click_method": "accessibility"})
-            deadline = time.monotonic() + 10
-            while not (work / "result.txt").exists() and time.monotonic() < deadline:
-                time.sleep(0.1)
-            if (work / "result.txt").read_text() != "BioRouter native fixture verified by typing":
-                raise AssertionError("Independent fixture result did not match typed value")
+            call("set_value", {"app": app, "element_index": element("FixtureInput", text), "value": ""})
+            call("type_text", {"app": app, "text": "BioRouter typing fixture verified"})
+            apply_and_expect("BioRouter typing fixture verified", "type_text")
+            call("press_key", {"app": app, "key": "F6"})
             if (work / "key.txt").read_text() != "F6":
                 raise AssertionError("Independent fixture did not receive the key")
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
             call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "down", "pages": 2})
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                if (work / "scroll.txt").exists() and float((work / "scroll.txt").read_text() or "0") > 0:
-                    break
-                time.sleep(0.1)
-            else:
-                raise AssertionError("Independent WinForms scroll offset did not change")
+            def wait_scroll(axis):
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    receipt = work / f"scroll-{axis}.txt"
+                    if receipt.exists() and float(receipt.read_text() or "0") > 0:
+                        return float(receipt.read_text())
+                    time.sleep(0.1)
+                raise AssertionError(f"Independent WinForms {axis} scroll offset did not change")
+            vertical_offset = wait_scroll("y")
+            wheel = json.loads((work / "wheel.json").read_text())
+            report.with_name(report.stem + "-wheel-coordinates.json").write_text(json.dumps(wheel, indent=2))
+            if wheel["message"] != 0x020A or abs(wheel["x"] - wheel["expected_x"]) > 1 or abs(wheel["y"] - wheel["expected_y"]) > 1:
+                raise AssertionError(f"Mouse wheel did not carry the target's screen coordinates: {wheel}")
+            state = call("get_app_state", {"app": app})
+            text = "\n".join(c.get("text", "") for c in state["content"])
+            call("click", {"app": app, "element_index": element("Reset scroll", text), "click_method": "accessibility"})
+            state = call("get_app_state", {"app": app})
+            text = "\n".join(c.get("text", "") for c in state["content"])
+            call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "right", "pages": 2})
+            horizontal_offset = wait_scroll("x")
             capture = call("screen_capture", {})
             if not any(c.get("type") == "image" and base64.b64decode(c.get("data", "")).startswith(b"\x89PNG") for c in capture["content"]):
                 raise AssertionError("Native capture returned no PNG")
             result = {"status": "passed", "validated": True, "session": session.value,
-                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "scroll offset changed", "screen_capture"],
+                      "scroll_offsets": {"down_y": vertical_offset, "right_x": horizontal_offset},
+                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "vertical and horizontal scroll offsets changed", "wheel screen coordinates", "screen_capture"],
                       "not_validated": ["drag", "mixed DPI", "multiple monitors", "occluded windows", "secure desktop"]}
             report.write_text(json.dumps(result, indent=2))
             print(json.dumps(result))

@@ -997,7 +997,7 @@ index c70def2..04c38bc 100644
 +	t.Fatal("screen_capture missing")
 +}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..618925f 100644
+index 720e9d5..edf2bd8 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1068,7 +1068,33 @@ index 720e9d5..618925f 100644
  $WM_SETTEXT = 0x000C
  $WM_MOUSEMOVE = 0x0200
  $WM_LBUTTONDOWN = 0x0201
-@@ -562,23 +609,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
+@@ -186,20 +233,18 @@ function Send-Drag([IntPtr]$hwnd, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY
+ }
+ 
+ function Send-Scroll([IntPtr]$hwnd, [int]$screenX, [int]$screenY, [string]$direction, [double]$pages) {
+-    $point = New-Object OCUWin32+POINT
+-    $point.X = $screenX
+-    $point.Y = $screenY
+-    [void][OCUWin32]::ScreenToClient($hwnd, [ref]$point)
+-    $lParam = ConvertTo-LParam $point.X $point.Y
++    $lParam = ConvertTo-LParam $screenX $screenY
+     $delta = [int][math]::Round(120 * $pages)
+     $message = $WM_MOUSEWHEEL
+-    if ($direction -eq "down" -or $direction -eq "right") {
++    if ($direction -eq "down" -or $direction -eq "left") {
+         $delta = -1 * $delta
+     }
+     if ($direction -eq "left" -or $direction -eq "right") {
+         $message = $WM_MOUSEHWHEEL
+     }
+-    [void][OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)
++    if (-not [OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)) {
++        throw "Windows rejected scroll input; inspect the target desktop before retrying"
++    }
+ }
+ 
+ function Send-Text([IntPtr]$hwnd, [string]$text) {
+@@ -562,23 +607,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
      }
  }
  
@@ -1153,7 +1179,7 @@ index 720e9d5..618925f 100644
      }
  }
  
-@@ -899,7 +1002,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+@@ -899,7 +1000,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
@@ -1196,10 +1222,10 @@ index ac464ef..407911f 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..06bc6c6
+index 0000000..fb6b327
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,15 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1213,6 +1239,8 @@ index 0000000..06bc6c6
 +Follow-up real Linux ARM64 GTK/X11 fixture exposed no-op scroll despite tool success. The bridge incorrectly supplied keysyms to hardware-key synthesis and ignored the requested scroll element. It now focuses that element, uses symbolic key synthesis, resolves modifier hardware codes from the actual keymap, rejects failed delivery, and releases held modifiers on failure. The unchanged independent GTK adjustment assertion now passes, alongside text/click state and nonblank native PNG capture; explicit Wayland capture rejection still passes. This is container X11 evidence, not native GNOME/KDE Wayland validation.
 +
 +Windows CI exposed a real WinForms fixture only as generic HWND panes, with AccessibleName and control patterns missing. Microsoft UIA ProxyManager.LoadDefaultProxies sets its one-shot load flag before walking managed stack frames and dereferences MethodBase.ReflectedType. A PowerShell dynamic frame can leave provider initialization incomplete. The bridge now initializes the framework provider table through a compiled, non-inlined caller and runs on MTA. This diagnosis requires a passing real Windows fixture before acceptance; the fixture assertions remain unchanged. Primary source: https://github.com/dotnet/wpf/blob/main/src/Microsoft.DotNet.Wpf/src/UIAutomation/UIAutomationClient/MS/Internal/Automation/ProxyManager.cs (LoadDefaultProxies and RegisterWindowHandlers).
++
++Windows scroll follow-up: WM_MOUSEWHEEL and WM_MOUSEHWHEEL carry screen coordinates, while the upstream fallback converted them to client coordinates. Horizontal wheel delta must be positive for right and negative for left. The bridge now preserves the target's screen point, corrects the horizontal sign, and rejects failed PostMessage delivery. The independent Windows fixture uses a nonzero window origin, measures incoming wheel coordinates before default processing, and checks both scroll offsets. A passing interactive run is still required. Primary documentation: https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mousewheel and https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mousehwheel.
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..79575e5 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
