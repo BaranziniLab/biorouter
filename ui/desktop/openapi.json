@@ -1404,6 +1404,94 @@
         }
       }
     },
+    "/config/extensions/{name}/credentials": {
+      "get": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "operationId": "get_extension_credentials",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved credential names and sharing safeguards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExtensionCredential"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "User action required"
+          },
+          "409": {
+            "description": "Credential references could not be verified"
+          }
+        }
+      }
+    },
+    "/config/extensions/{name}/credentials/purge": {
+      "post": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "operationId": "purge_extension_credentials",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurgeExtensionCredentialsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Selected unshared saved credentials deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExtensionCredential"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "User action required"
+          },
+          "409": {
+            "description": "Credential references changed or deletion failed"
+          }
+        }
+      }
+    },
     "/config/init": {
       "post": {
         "tags": [
@@ -8083,6 +8171,28 @@
           "propertyName": "type"
         }
       },
+      "ExtensionCredential": {
+        "type": "object",
+        "required": [
+          "key",
+          "stored",
+          "used_by"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "stored": {
+            "type": "boolean"
+          },
+          "used_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ExtensionData": {
         "type": "object",
         "description": "Extension data containing all extension states\nKeys are in format \"extension_name.version\" (e.g., \"todo.v0\")",
@@ -11058,6 +11168,20 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProviderDetails"
+            }
+          }
+        }
+      },
+      "PurgeExtensionCredentialsRequest": {
+        "type": "object",
+        "required": [
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }

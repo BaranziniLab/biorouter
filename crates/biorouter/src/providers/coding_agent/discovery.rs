@@ -320,6 +320,7 @@ pub async fn probe_all() -> Vec<AgentAvailability> {
 async fn run_probe(exe: &Path, args: &[&str]) -> Option<std::process::Output> {
     let mut cmd = tokio::process::Command::new(exe);
     cmd.args(args)
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -365,93 +366,100 @@ async fn probe_claude_auth(exe: &Path) -> AuthState {
             detail: "could not run `claude auth status`".into(),
         };
     };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(stdout.trim()) else {
+    parse_claude_auth(&out.stdout, out.status.code())
+}
+
+fn parse_claude_auth(stdout: &[u8], exit_code: Option<i32>) -> AuthState {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(stdout) else {
         return AuthState::Indeterminate {
-            detail: format!(
-                "`claude auth status` did not return JSON: {}",
-                stdout.trim().chars().take(160).collect::<String>()
-            ),
+            detail: "Claude Code returned an unreadable sign-in status. Check that the command path points to a current Claude Code installation, then check again.".into(),
         };
     };
-
-    if v.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
-        return AuthState::SignedOut;
-    }
-    // "claude.ai" is the subscription OAuth method. Anything else that is still
-    // `loggedIn` is a metered credential (a Console key, or a cloud provider),
-    // which works but is not what this provider is for — and which our own
-    // credential scrub would strip anyway, so saying so is the honest answer.
-    match v.get("authMethod").and_then(serde_json::Value::as_str) {
-        Some("claude.ai") => AuthState::SignedInSubscription {
-            plan: v
-                .get("subscriptionType")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
-            account: v
-                .get("email")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
+    match value.get("loggedIn").and_then(serde_json::Value::as_bool) {
+        Some(false) if matches!(exit_code, Some(0 | 1)) => AuthState::SignedOut,
+        Some(true) if exit_code == Some(0) => {
+            match value.get("authMethod").and_then(serde_json::Value::as_str) {
+                Some("claude.ai") => AuthState::SignedInSubscription {
+                    plan: value.get("subscriptionType").and_then(serde_json::Value::as_str).map(str::to_string),
+                    account: value.get("email").and_then(serde_json::Value::as_str).map(str::to_string),
+                },
+                Some("api_key" | "apiKey" | "console" | "bedrock" | "vertex" | "foundry") => AuthState::SignedInWithApiKey,
+                _ => AuthState::Indeterminate {
+                    detail: "Claude Code did not identify its sign-in method. Check its authentication status in a terminal, then check again.".into(),
+                },
+            }
+        }
+        _ => AuthState::Indeterminate {
+            detail: "Claude Code could not confirm its sign-in status. Check its authentication status in a terminal, then check again.".into(),
         },
-        _ => AuthState::SignedInWithApiKey,
     }
 }
 
-/// Codex's structured credential state lives in `$CODEX_HOME/auth.json`
-/// (`~/.codex/auth.json` by default), whose `auth_mode` is `"chatgpt"` or
-/// `"apikey"`. `codex login status` prints prose, so the file is the reliable
-/// source and the command is only a liveness cross-check.
-///
-/// We read **only** `auth_mode` and never the tokens. BioRouter has no reason to
-/// touch the credential itself, and not touching it is what keeps the
-/// "credentials never pass through BioRouter" property true rather than merely
-/// intended.
+/// Ask the CLI first: authentication can live in a keyring, and an old auth file
+/// is not evidence that the current CLI can use it. Never forward probe output:
+/// API-key status and wrapper failures can contain credentials.
 async fn probe_codex_auth(exe: &Path) -> AuthState {
-    let home = codex_home();
-    let auth_json = home.join("auth.json");
+    probe_codex_auth_in_home(exe, &codex_home()).await
+}
 
-    let mode = match tokio::fs::read_to_string(&auth_json).await {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AuthState::SignedOut,
-        Err(e) => {
-            return AuthState::Indeterminate {
-                detail: format!("could not read {}: {e}", auth_json.display()),
-            }
-        }
-        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-            .ok()
-            .and_then(|v| {
-                v.get("auth_mode")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            }),
+async fn probe_codex_auth_in_home(exe: &Path, home: &Path) -> AuthState {
+    let Some(out) = run_probe(exe, &["login", "status"]).await else {
+        return AuthState::Indeterminate {
+            detail: "Codex did not finish checking its sign-in status. Check the command path and try again.".into(),
+        };
     };
+    let auth = parse_codex_auth(&out.stdout, &out.stderr, out.status.code());
+    if !auth.is_subscription() {
+        return auth;
+    }
 
-    match mode.as_deref() {
-        Some("chatgpt") => {
-            // Cross-check liveness: an expired refresh token still leaves a
-            // well-formed file behind, and a non-zero exit here is the only
-            // cheap signal that the stored grant no longer works.
-            let live = run_probe(exe, &["login", "status"])
-                .await
-                .map(|o| o.status.success());
-            match live {
-                Some(false) => AuthState::Indeterminate {
-                    detail: "`codex login status` reported a problem; try `codex login` again"
-                        .into(),
-                },
-                _ => AuthState::SignedInSubscription {
-                    plan: None,
-                    account: None,
-                },
-            }
+    // A turn uses an isolated CODEX_HOME with only the linked auth file. A
+    // keyring-only login cannot be advertised as ready for that execution path.
+    #[derive(Deserialize)]
+    struct StoredAuthMode {
+        auth_mode: Option<String>,
+    }
+    let mode = tokio::fs::read(home.join("auth.json"))
+        .await
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<StoredAuthMode>(&raw).ok())
+        .and_then(|stored| stored.auth_mode);
+    if mode.as_deref() == Some("chatgpt") {
+        auth
+    } else {
+        AuthState::Indeterminate {
+            detail: "Codex is signed in, but Biorouter cannot use its saved sign-in in an isolated session. Check Codex credential storage in the official authentication instructions; Biorouter currently requires file-based ChatGPT sign-in.".into(),
         }
-        Some("apikey") => AuthState::SignedInWithApiKey,
-        Some(other) => AuthState::Indeterminate {
-            detail: format!("unrecognised codex auth_mode {other:?}"),
-        },
-        None => AuthState::Indeterminate {
-            detail: format!("{} has no auth_mode field", auth_json.display()),
-        },
+    }
+}
+
+fn parse_codex_auth(stdout: &[u8], stderr: &[u8], exit_code: Option<i32>) -> AuthState {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    let lines: Vec<_> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .collect();
+    if exit_code == Some(1) && lines.contains(&"Not logged in") {
+        return AuthState::SignedOut;
+    }
+    if exit_code == Some(0) {
+        if lines.contains(&"Logged in using ChatGPT") {
+            return AuthState::SignedInSubscription {
+                plan: None,
+                account: None,
+            };
+        }
+        if lines
+            .iter()
+            .any(|line| line.starts_with("Logged in using an API key"))
+        {
+            return AuthState::SignedInWithApiKey;
+        }
+    }
+    AuthState::Indeterminate {
+        detail: "Codex could not confirm its sign-in status. Run codex login status in a terminal to check the CLI, then check again.".into(),
     }
 }
 
@@ -468,6 +476,93 @@ pub fn codex_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_status_requires_explicit_authentication_evidence() {
+        assert_eq!(
+            parse_claude_auth(br#"{"loggedIn":false}"#, Some(1)),
+            AuthState::SignedOut
+        );
+        assert!(
+            parse_claude_auth(br#"{"loggedIn":true,"authMethod":"claude.ai"}"#, Some(0))
+                .is_subscription()
+        );
+        assert_eq!(
+            parse_claude_auth(br#"{"loggedIn":true,"authMethod":"api_key"}"#, Some(0)),
+            AuthState::SignedInWithApiKey
+        );
+        for (output, exit) in [
+            ("{}", Some(0)),
+            ("private-token-do-not-display", Some(1)),
+            (r#"{"loggedIn":true,"authMethod":"claude.ai"}"#, Some(1)),
+            (r#"{"loggedIn":true,"authMethod":"unknown"}"#, Some(0)),
+            (r#"{"loggedIn":false}"#, None),
+        ] {
+            let auth = parse_claude_auth(output.as_bytes(), exit);
+            assert!(matches!(auth, AuthState::Indeterminate { .. }), "{auth:?}");
+            assert!(!serde_json::to_string(&auth)
+                .unwrap()
+                .contains("private-token"));
+        }
+    }
+
+    #[test]
+    fn codex_status_requires_a_successful_recognized_login() {
+        assert!(parse_codex_auth(b"", b"Logged in using ChatGPT\n", Some(0)).is_subscription());
+        assert_eq!(
+            parse_codex_auth(b"Not logged in\n", b"", Some(1)),
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            parse_codex_auth(b"", b"Logged in using an API key - private-token", Some(0)),
+            AuthState::SignedInWithApiKey
+        );
+        for (output, exit) in [
+            ("Logged in using ChatGPT", Some(1)),
+            ("Not logged in", Some(0)),
+            ("private-token-do-not-display", Some(1)),
+            ("Logged in using ChatGPT", None),
+            ("", Some(0)),
+        ] {
+            let auth = parse_codex_auth(b"", output.as_bytes(), exit);
+            assert!(matches!(auth, AuthState::Indeterminate { .. }), "{auth:?}");
+            assert!(!serde_json::to_string(&auth)
+                .unwrap()
+                .contains("private-token"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_probe_does_not_trust_stale_or_inaccessible_saved_auth() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let exe = home.path().join("fake-codex");
+        let write_cli = |body: &str| {
+            std::fs::write(&exe, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        std::fs::write(home.path().join("auth.json"), r#"{"auth_mode":"chatgpt"}"#).unwrap();
+        write_cli("echo 'Not logged in' >&2; exit 1");
+        assert_eq!(
+            probe_codex_auth_in_home(&exe, home.path()).await,
+            AuthState::SignedOut
+        );
+        write_cli("echo 'Logged in using ChatGPT' >&2");
+        assert!(probe_codex_auth_in_home(&exe, home.path())
+            .await
+            .is_subscription());
+        std::fs::remove_file(home.path().join("auth.json")).unwrap();
+        assert!(matches!(
+            probe_codex_auth_in_home(&exe, home.path()).await,
+            AuthState::Indeterminate { .. }
+        ));
+        std::fs::remove_file(&exe).unwrap();
+        assert!(matches!(
+            probe_codex_auth_in_home(&exe, home.path()).await,
+            AuthState::Indeterminate { .. }
+        ));
+    }
 
     /// The ids are the pricing keys. Spelled out as a literal assertion because
     /// a rename here re-opens the fabricated-pricing bug that

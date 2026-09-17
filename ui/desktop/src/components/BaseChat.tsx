@@ -56,6 +56,11 @@ import { DiagnosticsModal } from './ui/Diagnostics';
 import { toastSuccess } from '../toasts';
 import { Workflow } from '../workflow';
 import { createSession } from '../sessions';
+import {
+  adoptDraftReasoningEffort,
+  draftReasoningScope,
+  getReasoningEffort,
+} from '../store/reasoningEffort';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { useTerminalDock } from '../contexts/TerminalDockContext';
@@ -1234,6 +1239,8 @@ function BaseChatContent({
   // same id. With no tab there is nothing that could release a draft, so none
   // is kept.
   const composerDraftKey = terminalKey ? composerDraftKeyForTab(terminalKey) : undefined;
+  const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
+  const reasoningDraftKey = composerDraftKey ?? anonymousReasoningDraftKey;
   // F3 — the model this chat is about to be created on is the one on screen.
   const confirmNewChatModel = useConfirmNewChatModel();
   // #39 — the working directory chosen in the composer BEFORE a session
@@ -1681,6 +1688,8 @@ function BaseChatContent({
     // If no session exists, create one and navigate with the initial message
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
+      const effortScope = draftReasoningScope(reasoningDraftKey);
+      const submittedEffort = getReasoningEffort(effortScope);
       // F3. `/agent/start` binds whatever the app-wide selection is NOW, and the
       // composer's chip is this window's copy of it. A refusal here has already
       // put the fresh model on screen; resolving `false` hands the text back.
@@ -1695,6 +1704,7 @@ function BaseChatContent({
             allExtensions: extensionsList,
           }
         );
+        adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
         navigateWithViewTransition(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
@@ -2259,6 +2269,7 @@ function BaseChatContent({
           // An existing chat's needs no draft: its composer is not the one a
           // failed start, a tab switch or a trip to Settings takes the text from.
           draftKey={!sessionId ? composerDraftKey : undefined}
+          reasoningDraftKey={reasoningDraftKey}
           setView={setView}
           totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
           accumulatedInputTokens={

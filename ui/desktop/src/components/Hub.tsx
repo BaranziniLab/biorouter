@@ -27,6 +27,11 @@ import {
 } from '../store/extensionOverrides';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { createSession } from '../sessions';
+import {
+  adoptDraftReasoningEffort,
+  draftReasoningScope,
+  getReasoningEffort,
+} from '../store/reasoningEffort';
 import LoadingBioRouter from './LoadingBioRouter';
 import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import type { UserAttachment } from '../types/message';
@@ -61,6 +66,8 @@ export default function Hub({
     const hasAttachments = attachments.length > 0;
 
     if ((combinedTextFromInput.trim() || hasAttachments) && !isCreatingSession) {
+      const effortScope = draftReasoningScope(HOME_COMPOSER_DRAFT_KEY);
+      const submittedEffort = getReasoningEffort(effortScope);
       // F3. Before anything is consumed — the extension overrides below are
       // cleared as they are read — so a refused send leaves nothing behind but
       // the text, which `ChatInput` puts back when this resolves `false`.
@@ -77,6 +84,7 @@ export default function Hub({
           allExtensions: extensionConfigs.length > 0 ? undefined : extensionsList,
         });
 
+        adoptDraftReasoningEffort(effortScope, session.id, submittedEffort);
         setView('pair', {
           resumeSessionId: session.id,
           initialMessage: combinedTextFromInput,

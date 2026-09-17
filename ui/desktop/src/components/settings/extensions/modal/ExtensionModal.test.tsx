@@ -136,7 +136,7 @@ describe('ExtensionModal', () => {
     const descriptionId = dialog.getAttribute('aria-describedby');
     expect(descriptionId).toBeTruthy();
     expect(document.getElementById(descriptionId!)).toHaveTextContent(
-      'This will permanently remove this extension and all of its settings.'
+      'This will remove the extension configuration. Saved credentials are retained and may be reused automatically if you reinstall.'
     );
   });
 
@@ -186,4 +186,36 @@ describe('ExtensionModal', () => {
     expect(await screen.findByText(/only private models/i)).toBeInTheDocument();
     expect(screen.queryByText(/always Public/i)).toBeNull();
   });
+});
+
+it('discloses retained credentials and offers separate review before extension removal', async () => {
+  const onDelete = vi.fn();
+  render(
+    <ExtensionModal
+      title="Edit extension"
+      initialData={{
+        name: 'synthetic',
+        description: '',
+        type: 'stdio',
+        cmd: 'unused',
+        enabled: false,
+        timeout: 300,
+        envVars: [],
+        headers: [],
+      }}
+      onClose={vi.fn()}
+      onSubmit={vi.fn()}
+      onDelete={onDelete}
+      submitLabel="Save"
+      modalType="edit"
+    />
+  );
+  await userEvent.click(screen.getByRole('button', { name: 'Remove extension' }));
+  expect(
+    screen.getByText(/Saved credentials are retained and may be reused automatically/)
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Review saved credentials' })).toBeInTheDocument();
+  expect(onDelete).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm removal' }));
+  expect(onDelete).toHaveBeenCalledWith('synthetic');
 });
