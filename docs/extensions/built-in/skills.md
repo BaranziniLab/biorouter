@@ -10,6 +10,38 @@ Skills are read from `.agents/skills/` in your project directory and `~/.config/
 
 > **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
+## Built-in office contexts
+
+Settings → Chat → Contexts includes Word documents (`office-word`), PowerPoint
+(`office-powerpoint`), Excel spreadsheets (`office-excel`), and PDF documents
+(`office-pdf`). They ship in the binary and are restored at startup. They do not
+require installing a vendor skill package or the BiorOffice extension.
+
+The session prompt contains a short format-to-context routing hint, not the four
+instruction bodies. For a relevant request the agent calls `skills__loadSkill`
+for the matching context. This is model-directed selection, not a deterministic
+keyword classifier. Unrelated tasks should not load any office context. Settings
+switches remove routing hints; existing explicit-load semantics remain unchanged.
+Per-session skill revocation still refuses loads.
+
+Workflows can explicitly load just the methods they need:
+
+```yaml
+skills:
+  - office-word
+  - office-pdf
+```
+
+Contexts provide methods, not executables. Authoring needs the Developer capability
+and a Python environment with the task's libraries: `python-docx`, `python-pptx`,
+`openpyxl`, or `pypdf`/`reportlab`/`pdfplumber`. Isolated dependency setup is described
+in each context. LibreOffice provides Office rendering and spreadsheet recalculation;
+Poppler provides PDF page images. Missing tools are reported rather than silently
+counted as verified. Native Office features require verification in the intended app.
+
+See [office context compatibility](../../design/office-context-compatibility.md) for
+scope, portability decisions, and verification commands.
+
 ## Configuration
 
 1. Run the `configure` command:

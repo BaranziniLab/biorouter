@@ -45,15 +45,35 @@ export interface ContextMeta {
 }
 
 /**
- * ⚠ Five rows, over nine shipped skills. Every id must exist on the Rust side
+ * ⚠ Context rows may cover individual skills or bundles. Every id must exist on the Rust side
  * before it is listed here: `BUILTIN_SKILLS` (`skills_extension.rs`) carries
- * four skill names, and `KNOWLEDGE_BUNDLE` carries one *bundle* directory whose
+ * the individual skill names, and `KNOWLEDGE_BUNDLE` carries one *bundle* directory whose
  * five members are the four `KNOWLEDGE_SKILLS` plus `update-soul` (a Rust
  * string in `soul.rs` rather than an `include_str!`). A Context whose `SKILL.md`
  * — or whose bundle directory — does not ship renders and toggles while
  * pointing at nothing, so add it on the Rust side first.
  */
 export const CONTEXTS: readonly ContextMeta[] = [
+  {
+    id: 'office-word',
+    label: 'Word documents',
+    description: 'Read, create and edit Word documents. Loaded only for relevant document tasks.',
+  },
+  {
+    id: 'office-powerpoint',
+    label: 'PowerPoint',
+    description: 'Create and edit slide decks. Loaded only for presentation tasks.',
+  },
+  {
+    id: 'office-excel',
+    label: 'Excel spreadsheets',
+    description: 'Work with spreadsheets, formulas and charts. Loaded only for spreadsheet tasks.',
+  },
+  {
+    id: 'office-pdf',
+    label: 'PDF documents',
+    description: 'Read, create and process PDFs and forms. Loaded only for PDF tasks.',
+  },
   {
     id: 'about-biorouter',
     label: 'About Biorouter',

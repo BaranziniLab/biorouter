@@ -28,7 +28,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, knowledge, workflows, reset, advanced"
+    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, knowledge, workflows, reset, office, advanced"
   
   - key: test_depth
     input_type: string
@@ -65,6 +65,12 @@ parameters:
     requirement: optional
     default: "biorouter-self-test-preview"
     description: "Unused app id for preview tests, distinct from sdk_app_id; existing apps are preserved"
+
+  - key: office_python
+    input_type: string
+    requirement: optional
+    default: "python3"
+    description: "Python interpreter for the office phase; may point to a prepared virtual environment"
 
 instructions: |
   You are testing yourself - a running BioRouter instance validating its own capabilities through meta-testing.
@@ -169,6 +175,11 @@ instructions: |
   - Each test logs: setup → execute → validate → result → cleanup
 
 extensions:
+  - type: platform
+    name: skills
+    bundled: true
+    description: Discover and load the built-in contexts under test
+
   - type: builtin
     name: developer
     display_name: Developer
@@ -210,6 +221,39 @@ prompt: |
   - [ ] Set up logging infrastructure
   - [ ] Begin Phase 1 testing
   
+  {% if test_phases == "all" or "office" in test_phases %}
+  ## Office Contexts
+
+  For an office-only run, execute this section after initialization and then report
+  its results. Treat this workspace as a new run; do not reuse results from sibling
+  directories or start unrelated test phases.
+
+  Test the built-in office contexts through your actual tools. Do not install vendor
+  skill packages. Confirm the catalog contains office-word, office-powerpoint,
+  office-excel and office-pdf and marks them built-in. Load each only when starting
+  the corresponding task; do not preload all bodies. Read each full returned body.
+  Use the Skills capability searchSkills/loadSkill tools (or their Code Execution
+  module equivalents), not the App SDK platform catalog. Record the actual load calls.
+
+  Use {{ office_python }} for office Python operations when it has the required
+  libraries. Probe imports first and follow the loaded context if dependencies are
+  missing. Keep every script, temporary file and log under the test workspace.
+
+  In the test workspace, create a one-page Word summary with a heading and table,
+  a two-slide PowerPoint briefing with speaker notes, an Excel budget with quantities
+  3 and 2, unit costs 12.5 and 40, formula line totals and a SUM total of 117.5,
+  and a one-page PDF summary. Reopen each saved file and independently check its
+  content, counts, and structure. Recalculate the workbook with a real spreadsheet
+  engine; verify cached totals, then change quantity 3 to 4 in a disposable copy
+  and confirm the total becomes 130. Keep the deliverable's original inputs.
+
+  Render the Office files to PDFs and all pages/slides to images; inspect every image
+  with an image tool. Check wrapping, clipping and readable tables. Record any
+  unavailable dependencies, calculation engine, image tools, or native application
+  checks as explicit limitations, never as passes. Report final absolute file paths
+  and distinguish structural, calculation, visual, and native-application evidence.
+  {% endif %}
+
   {% if test_phases == "all" or "basic" in test_phases %}
   ## 📝 PHASE 1: Basic Tool Validation
   
