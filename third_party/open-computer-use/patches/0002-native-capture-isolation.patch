@@ -465,10 +465,86 @@ index 73ef1db..e09fd30 100644
 +	t.Fatal("screen_capture missing")
 +}
 diff --git a/apps/OpenComputerUseLinux/runtime.py b/apps/OpenComputerUseLinux/runtime.py
-index 6c0f248..1723bfd 100644
+index 6c0f248..1e8280d 100644
 --- a/apps/OpenComputerUseLinux/runtime.py
 +++ b/apps/OpenComputerUseLinux/runtime.py
-@@ -770,8 +770,104 @@ def scroll_element(direction, pages):
+@@ -665,29 +665,44 @@ def keyval(name):
+     raise RuntimeError("Unsupported key: " + name)
+ 
+ 
++def modifier_keycode(name):
++    if Gdk is None or Gdk.Display.get_default() is None:
++        raise RuntimeError("Modifier key synthesis requires a GDK desktop keymap")
++    keymap = Gdk.Keymap.get_for_display(Gdk.Display.get_default())
++    found, entries = keymap.get_entries_for_keyval(keyval(name))
++    if not found or not entries:
++        raise RuntimeError("Modifier is not present in the desktop keymap: " + name)
++    entry = next((entry for entry in entries if entry.group == 0 and entry.level == 0), entries[0])
++    return int(entry.keycode)
++
++
++def emit_key(value, kind):
++    if not Atspi.generate_keyboard_event(value, None, kind):
++        raise RuntimeError("AT-SPI rejected keyboard input; inspect the app before retrying")
++
++
+ def send_key(key):
+     parts = [part for part in str(key).split("+") if part]
+     if not parts:
+         raise RuntimeError("Unsupported key: " + str(key))
+-    main = parts[-1]
+-    modifiers = parts[:-1]
+-    pressed = []
+-    for modifier in modifiers:
++    normalized = KEY_ALIASES.get(parts[-1].lower(), parts[-1])
++    value = keyval(normalized)
++    modifiers = []
++    for modifier in parts[:-1]:
+         name = MODIFIER_KEYS.get(modifier.lower())
+         if name is None:
+-            continue
+-        value = keyval(name)
+-        Atspi.generate_keyboard_event(value, None, Atspi.KeySynthType.PRESS)
+-        pressed.append(value)
+-    normalized = KEY_ALIASES.get(main.lower(), main)
+-    if len(normalized) == 1:
+-        Atspi.generate_keyboard_event(0, normalized, Atspi.KeySynthType.STRING)
+-    else:
+-        Atspi.generate_keyboard_event(
+-            keyval(normalized), None, Atspi.KeySynthType.PRESSRELEASE
+-        )
+-    for value in reversed(pressed):
+-        Atspi.generate_keyboard_event(value, None, Atspi.KeySynthType.RELEASE)
++            raise RuntimeError("Unsupported key modifier: " + modifier)
++        modifiers.append(modifier_keycode(name))
++    pressed = []
++    try:
++        for code in modifiers:
++            emit_key(code, Atspi.KeySynthType.PRESS)
++            pressed.append(code)
++        # SYM accepts a keysym; PRESSRELEASE instead requires a hardware keycode.
++        emit_key(value, Atspi.KeySynthType.SYM)
++    finally:
++        for code in reversed(pressed):
++            Atspi.generate_keyboard_event(code, None, Atspi.KeySynthType.RELEASE)
+ 
+ 
+ def send_text(text):
+@@ -756,7 +771,12 @@ def invoke_secondary_action(node, action):
+     raise RuntimeError("{} is not a valid secondary action for element".format(action))
+ 
+ 
+-def scroll_element(direction, pages):
++def scroll_element(node, direction, pages):
++    if node is None:
++        raise RuntimeError("unknown element_index")
++    component = safe(node.get_component_iface)
++    if component is None or not Atspi.Component.grab_focus(component):
++        raise RuntimeError("Target element cannot receive scroll keys; select a focusable element inside the scroll area")
+     key = "Page_Down"
+     if direction == "up":
+         key = "Page_Up"
+@@ -770,8 +790,104 @@ def scroll_element(direction, pages):
          time.sleep(0.04)
  
  
@@ -573,7 +649,16 @@ index 6c0f248..1723bfd 100644
      if tool == "list_apps":
          return {"ok": True, "text": list_apps_text()}
      if tool == "get_app_state":
-@@ -867,10 +963,13 @@ def perform_operation(operation):
+@@ -840,7 +956,7 @@ def perform_operation(operation):
+     elif tool == "perform_secondary_action":
+         invoke_secondary_action(element, operation.get("action", ""))
+     elif tool == "scroll":
+-        scroll_element(operation.get("direction", "down"), operation.get("pages", 1))
++        scroll_element(element, operation.get("direction", "down"), operation.get("pages", 1))
+     elif tool == "drag":
+         from_x, from_y = screen_point(
+             bounds, None, operation.get("from_x"), operation.get("from_y")
+@@ -867,10 +983,13 @@ def perform_operation(operation):
  def main():
      if len(sys.argv) != 2:
          raise RuntimeError("runtime.py requires an operation JSON path")
@@ -590,14 +675,13 @@ index 6c0f248..1723bfd 100644
          response = perform_operation(operation)
      except Exception as exc:
 diff --git a/apps/OpenComputerUseLinux/runtime_test.py b/apps/OpenComputerUseLinux/runtime_test.py
-index c42f41e..e25f86d 100644
+index c42f41e..6ef053c 100644
 --- a/apps/OpenComputerUseLinux/runtime_test.py
 +++ b/apps/OpenComputerUseLinux/runtime_test.py
-@@ -88,3 +88,73 @@ class RuntimeInterfaceDetectionTests(unittest.TestCase):
+@@ -85,6 +85,118 @@ class RuntimeInterfaceDetectionTests(unittest.TestCase):
  
- if __name__ == "__main__":
-     unittest.main()
-+
+         self.assertTrue(self.runtime.set_element_value(node, "hello"))
+ 
 +class ScreenCaptureTests(unittest.TestCase):
 +    def test_missing_gdk_is_explicit(self):
 +        runtime = load_runtime()
@@ -667,6 +751,52 @@ index c42f41e..e25f86d 100644
 +            import json
 +            result = runtime.native_diagnostics()
 +            self.assertEqual(json.loads(result["text"])["state"], "os_permission_required")
++
++class KeyboardScrollDeliveryTests(unittest.TestCase):
++    def setUp(self):
++        self.runtime = load_runtime()
++        self.events = []
++        self.runtime.Atspi.KeySynthType = types.SimpleNamespace(PRESS=0, RELEASE=1, SYM=3)
++        self.runtime.Atspi.generate_keyboard_event = lambda value, text, kind: (self.events.append((value, kind)) or True)
++        self.runtime.Gdk = types.SimpleNamespace(keyval_from_name=lambda name: {"Page_Down": 65366, "Control_L": 65507}.get(name, ord(name) if len(name) == 1 else 0))
++
++    def test_named_key_uses_symbolic_event(self):
++        self.runtime.send_key("Page_Down")
++        self.assertEqual(self.events, [(65366, 3)])
++
++    def test_modifier_uses_hardware_code_and_is_released_on_failure(self):
++        with mock.patch.object(self.runtime, "modifier_keycode", return_value=37):
++            self.runtime.send_key("ctrl+a")
++        self.assertEqual(self.events, [(37, 0), (97, 3), (37, 1)])
++        self.events.clear()
++        def reject_main(value, text, kind):
++            self.events.append((value, kind))
++            return kind != 3
++        self.runtime.Atspi.generate_keyboard_event = reject_main
++        with mock.patch.object(self.runtime, "modifier_keycode", return_value=37), self.assertRaisesRegex(RuntimeError, "rejected"):
++            self.runtime.send_key("ctrl+a")
++        self.assertEqual(self.events, [(37, 0), (97, 3), (37, 1)])
++
++    def test_scroll_targets_element_before_delivery(self):
++        component = object()
++        node = types.SimpleNamespace(get_component_iface=lambda: component)
++        focus = mock.Mock(return_value=True)
++        self.runtime.Atspi.Component = types.SimpleNamespace(grab_focus=focus)
++        with mock.patch.object(self.runtime.time, "sleep"):
++            self.runtime.scroll_element(node, "down", 2)
++        focus.assert_called_once_with(component)
++        self.assertEqual(self.events, [(65366, 3), (65366, 3)])
++
++    def test_scroll_rejects_unfocusable_target_without_keys(self):
++        node = types.SimpleNamespace(get_component_iface=lambda: object())
++        self.runtime.Atspi.Component = types.SimpleNamespace(grab_focus=lambda _: False)
++        with self.assertRaisesRegex(RuntimeError, "cannot receive scroll"):
++            self.runtime.scroll_element(node, "down", 1)
++        self.assertEqual(self.events, [])
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
 diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
 index c70ed60..0e5ad95 100644
 --- a/apps/OpenComputerUseWindows/main.go
@@ -1011,10 +1141,10 @@ index 720e9d5..d9e3022 100644
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
 diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
-index ac464ef..cc20d09 100644
+index ac464ef..4f5d8ae 100644
 --- a/docs/ARCHITECTURE.md
 +++ b/docs/ARCHITECTURE.md
-@@ -1,5 +1,15 @@
+@@ -1,5 +1,17 @@
  # 架构总览
  
 +## BioRouter downstream runtime contract
@@ -1022,6 +1152,8 @@ index ac464ef..cc20d09 100644
 +The BioRouter patch adds `screen_capture` as the tenth tool to all three runtimes. It accepts optional `display` (zero-based topology index), `window_title` (one case-insensitive substring match), and `list_only` (default false). Display and window selection are mutually exclusive. Omitted selection captures the primary display. Listing returns JSON topology text; capture adds a PNG image content block. macOS uses ScreenCaptureKit; Windows uses DPI-aware Win32 screen pixels; Linux uses distro Python GI/GDK on X11. Windows and Linux window captures include occluding content. Wayland lists topology but rejects pixel capture until a consented portal backend is implemented.
 +
 +The macOS app agent requires an installation/version socket namespace, verifies the exact peer bundle and executable, and never terminates a foreign agent. Each socket connection owns its MCP server and snapshots. Every operation, including empty environment overrides, holds the shared environment lock; omitted OCU environment keys are cleared within that scope. Overlay cleanup is synchronous under that same owner lock; ambient distributed turn-ended listeners are removed. Disconnected owners cancel input between chunks/gesture steps and cancel screenshot waits. AX calls have a bounded messaging timeout; ambiguous completion errors stop alternate-path replay. A delivered OS action cannot be undone. New connections require `get_app_state` before actions. BioRouter must terminate the proxy on Stop, discard late results, manage process trees and temporary operation files on Windows/Linux, and replace connections on desktop ownership handoff.
++
++Linux scroll focuses the requested accessibility component and then emits symbolic page keys. Key symbols use `ATSPI_KEY_SYM`; modifier down/up events use hardware keycodes resolved from the desktop keymap and release in a finally block. Failed target focus or rejected input is an explicit tool error. The former `PRESSRELEASE` keysym path silently delivered no scroll on GTK and is removed.
 +
 +`doctor --json` provides passive JSON readiness without screenshots, app enumeration, or onboarding. It reports `state`, `desktop_available`, `accessibility`, `screen_recording`, `capture_available`, and `message`. Bare `doctor` retains upstream interactive onboarding behavior; hosts must not use it for polling. Cache passive results to avoid repeatedly launching platform bridges.
 +
@@ -1032,10 +1164,10 @@ index ac464ef..cc20d09 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..4506792
+index 0000000..9e6a95b
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,11 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1044,7 +1176,9 @@ index 0000000..4506792
 +
 +Validation: Python bridge tests cover topology, image bytes, missing GDK, missing selection and Wayland rejection. Swift contract tests cover malformed capture arguments, connection-local initial state, cancellation scope and screenshot-wait cancellation. Go tests cover the ten-tool roster and capture schema/argument rejection. Interactive macOS/Windows/X11 capture and signed artifact checks remain separate release gates; Wayland pixel capture is not implemented.
 +
-+Verified locally: Swift native app builds with one worker; 5 new contract tests and 163 existing unit regressions pass. Linux and Windows Go unit suites pass on macOS, with one worker. Eight Python bridge tests pass. The built Swift binary completes MCP initialization and advertises exactly ten tools. Passive doctor JSON parsing and explicit no-state errors pass. These checks do not establish interactive Windows/Linux behavior or signed-helper TCC identity.
++Verified locally: Swift native app builds with one worker; 5 new contract tests and 163 existing unit regressions pass. Linux and Windows Go unit suites pass on macOS, with one worker. Twelve Python bridge tests pass. The built Swift binary completes MCP initialization and advertises exactly ten tools. Passive doctor JSON parsing and explicit no-state errors pass. These checks do not establish interactive Windows/Linux behavior or signed-helper TCC identity.
++
++Follow-up real Linux ARM64 GTK/X11 fixture exposed no-op scroll despite tool success. The bridge incorrectly supplied keysyms to hardware-key synthesis and ignored the requested scroll element. It now focuses that element, uses symbolic key synthesis, resolves modifier hardware codes from the actual keymap, rejects failed delivery, and releases held modifiers on failure. The unchanged independent GTK adjustment assertion now passes, alongside text/click state and nonblank native PNG capture; explicit Wayland capture rejection still passes. This is container X11 evidence, not native GNOME/KDE Wayland validation.
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..79575e5 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
