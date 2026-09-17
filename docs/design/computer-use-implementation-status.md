@@ -1,31 +1,31 @@
 # Computer Use implementation status
 
-Updated 2026-09-17. This ledger tracks the full user-requested result. Source changes, passing unit tests, packaging, actual GUI behavior, and a pushed pull request are separate gates. An unchecked row remains required; unavailable platform evidence is not a pass.
+Updated 2026-09-17 against pushed source `31a9f116`. This ledger tracks the full user-requested result. Source changes, passing unit tests, packaging, actual GUI behavior, and a pushed pull request are separate gates. An unchecked row remains required; unavailable platform evidence is not a pass.
 
 | Requirement | Status and evidence to collect |
 | --- | --- |
-| Clean replacement: exactly ten native tools; no old scripting/control, Developer capture, hidden replay routes, or aliases | In progress. `computercontroller/`, Developer router, builtin registry, active fixtures and repository-wide legacy-reference audit. |
-| Native `screen_capture` in the same helper as the nine upstream tools | Native implementation and prior-revision Swift contract/regression tests, both Go suites, and ten-tool macOS protocol handshake passed (receipts below). Final patch freeze awaits the Windows fixture fix. Actual display/window/list-only behavior and OS permissions still require GUI validation. No xcap extraction or fallback. |
-| Independent Web & Documents capability with five utilities | In progress. `webdocuments/`, builtin registry, cache/resources and direct/nested utility tests. |
-| One approved grant per user request/chat/model/target; no per-action prompts | In progress. Consent dispatch tests and actual Auto/Approve/SmartApprove UI/CLI receipts. Chat mode still executes no tools; completion/drop revokes the grant. |
+| Clean replacement: exactly ten native tools; no old scripting/control, Developer capture, hidden replay routes, or aliases | Implemented and audited in `computercontroller/`, Developer router, builtin registry and active fixtures; four tool-census regressions passed. No callable compatibility routes remain. |
+| Native `screen_capture` in the same helper as the nine upstream tools | Final patch frozen at `12214baff26bcc4a3eb4b085a08004f74ba16e8b6a2d010c633be682fb38ab67`; all five native targets and aggregate gate passed hosted CI. Windows/Linux real fixtures passed. macOS real capture/input and OS permissions remain unvalidated. No xcap extraction or fallback. |
+| Independent Web & Documents capability with five utilities | Implemented in `webdocuments/` with a separate five-tool registry and updated cache/resources, discovery and direct/nested utility contracts. Consolidated source CI at `31a9f116` remains pending. |
+| One approved grant per user request/chat/model/target; no per-action prompts | Implemented; 24 Computer Use tests passed. Actual Auto/Approve/SmartApprove interaction with native capture/input remains open. Chat mode still executes no tools; completion/drop revokes the grant. |
 | Distinct private/public disclosure; unknown destination treated as public | Prompt/UI disclosure and provider hooks implemented. OpenAI-compatible, Anthropic, Ollama and Versa report actual HTTP(S) origins; Lead/Worker reports both. Exact resolved routes are hashed into consent identity, never displayed. Four focused destination regressions passed within the 24-test Computer Use suite. Private does not imply on-device. |
-| Private/public chat isolation and handoff acknowledgement before capture | In progress. Prove no shared screenshots, trees, elements, errors, pending results, or grants; desktop remains physically shared. |
-| Persistent chat runtime and non-pooling; single controller across backend processes | In progress. Runtime/ownership tests, two-chat and two-process evidence, and stale-state rejection after handoff/restart. |
-| Stop/revoke/cancellation, exact process cleanup, bounded timeout, no mutation replay | In progress. Descendant cleanup and late-result rejection tests plus actual UI Stop behavior. |
-| Credentials stripped from descendants; observations not logged or shared through resource registries | In progress. Environment, logging, resource, and privacy regression evidence. |
+| Private/public chat isolation and handoff acknowledgement before capture | Isolation and handoff controls implemented with consent/runtime regressions; live two-chat observation and handoff acceptance remains open. Desktop remains physically shared. |
+| Persistent chat runtime and non-pooling; single controller across backend processes | Runtime ownership and stale-state protections implemented and tested; live integrated two-chat/two-process acceptance remains open. |
+| Stop/revoke/cancellation, exact process cleanup, bounded timeout, no mutation replay | Cleanup/cancellation protections implemented; focused late-result regression passed. Actual UI Stop during native activity remains open. |
+| Credentials stripped from descendants; observations not logged or shared through resource registries | Environment, logging and resource protections implemented; 72 sensitive-operation regressions passed. Final source review remains required. |
 | Same sole native path in direct calls, coding-agent bridge, nested JavaScript, and delegated work | Bridge roster updated in `agents/agent.rs`; four census regressions and 24 Computer Use tests passed. Final integrated-path validation remains required. Delegation never silently inherits another chat's consent or observations. |
-| All prompts, builtin contexts, active docs, workflows and fixtures reflect the new tools | Updated system/desktop/subagent guidance and snapshots, about-biorouter context, current docs and landing references, workflow fixture, bridge/module rosters, provider and Agent Drafter harnesses, and web tool discovery fixtures. Static legacy-reference scan clean in those active surfaces; final full audit and runtime tests pending. |
-| CLI/Electron/serve defaults preserve explicit disablement and restrictions | In progress. Backend config tests, obsolete restriction diagnostics, fresh/upgrade profile tests; no renderer default migration may undo an opt-out. |
+| All prompts, builtin contexts, active docs, workflows and fixtures reflect the new tools | Updated system/desktop/subagent guidance and snapshots, about-biorouter context, current docs and landing references, workflow fixture, bridge/module rosters, provider and Agent Drafter harnesses, and web tool discovery fixtures. Static legacy-reference scan clean in those active surfaces; 28 prompt-manager tests passed. Latest-source hosted CI remains pending. |
+| CLI/Electron/serve defaults preserve explicit disablement and restrictions | Default/restriction handling implemented; Luna verified both new capabilities enabled and no old desktop capability. UI regressions passed; live upgrade/opt-out acceptance remains open. |
 | Setup/status/consent/revoke interfaces, target host, active indicator, doctor diagnostics | Source implemented: CLI/TUI poll host consent, render shared task disclosure, and revoke on Stop; doctor calls no-capture diagnostics. Serve uses interactive `--computer-use-approval` with a separate digest/header and bounded failed-key attempts. Tests added in CLI session and server auth/startup. Test-inclusive core/server/CLI check passed. Generated schema/client, TypeScript, scoped lint and 59 UI tests passed; Luna verified setup and per-task controls. Live approval and Stop behavior with real capture/input remain required. |
-| Native helper pin, patch provenance, deterministic locator, no npm/runtime download | Implemented. Five target payloads built locally; all file/target hashes verified; 11 packaging regression tests passed. macOS ARM64/Intel and Linux ARM64 native protocol checks passed. Final installed BioRouter and clean-PATH receipts remain separate from helper-only checks. |
-| Every supported release artifact contains matching helper, notices and dependencies | Build/staging/provenance integrated for all nine released archives: macOS ARM64/Intel DMG+updater ZIP, Windows x64 ZIP, Linux GUI/CLI DEB/RPM. Docker supports matching Linux x64/ARM64 helpers and dependencies. Final BioRouter package extraction/signing/install evidence remains required; helper builds alone do not pass that gate. |
-| macOS signing/notarization/TCC identity and upgrade continuity | Pending final signed artifact evidence, including Intel execution evidence and minimum-OS behavior. |
-| Windows interactive desktop, UIA, DPI/multiple displays and capture/focus behavior | Hosted interactive fixture verified text, F6 and vertical scrolling, but exposed wheel delivery at coordinates (0, 0); fix and rerun are in progress. DPI/multiple displays and installed package evidence remain open. A startup/version smoke alone does not pass. |
-| Linux AT-SPI dependencies, X11 and Wayland honest capabilities | Real Linux ARM64 GTK/AT-SPI fixture passed against the tested packaged helper revision: discovery/tree, editable text, accessibility click, independent text, scroll adjustment, nonblank window PNG, explicit unsupported Wayland doctor and capture refusal. Source DEB/RPM dependencies declared for GUI+CLI. Actual installed BioRouter packages and native Wayland coverage remain incomplete. |
+| Native helper pin, patch provenance, deterministic locator, no npm/runtime download | Implemented. Five target payloads built locally; all file/target hashes verified; 11 packaging regression tests passed. macOS ARM64/Intel and Linux ARM64 native protocol checks passed. Final local macOS app and isolated CLI installer/doctor receipts passed (below); release-installed platform coverage remains separate from helper-only checks. |
+| Every supported release artifact contains matching helper, notices and dependencies | Build/staging/provenance integrated for all nine released archives: macOS ARM64/Intel DMG+updater ZIP, Windows x64 ZIP, Linux GUI/CLI DEB/RPM. Docker supports matching Linux x64/ARM64 helpers and dependencies. The final local macOS ARM64 app ZIP was fully extracted and passed ad hoc signature, dependency and backend-hash checks (receipt below). Release signing/notarization and other installed release artifacts remain unvalidated. |
+| macOS signing/notarization/TCC identity and upgrade continuity | Local ARM64 app ad hoc signing and strict deep verification after ZIP extraction passed. Developer ID signing, notarization, TCC upgrade continuity, Intel app installation and minimum-OS behavior remain open. |
+| Windows interactive desktop, UIA, DPI/multiple displays and capture/focus behavior | The wheel-coordinate defect is fixed; hosted real fixture passed vertical/horizontal scroll, text, key and capture checks. DPI/multiple displays and installed package evidence remain open. |
+| Linux AT-SPI dependencies, X11 and Wayland honest capabilities | Real Linux x64 and ARM64 GTK/AT-SPI fixtures passed with the final patch: discovery/tree, editable text, accessibility click, independent text, scroll adjustment, nonblank window PNG, explicit unsupported Wayland doctor and capture refusal. Source DEB/RPM dependencies declared for GUI+CLI. Actual installed BioRouter packages and native Wayland coverage remain incomplete. |
 | Real BioRouter driven by Luna: scrolling, web tasks, local application tasks | Partially observed. Luna verified the rebuilt isolated GUI, default capabilities, setup denial and per-task controls (receipts below). The OS permission question is unanswered; no real Computer Use input/capture, scrolling, web task or local-app task has passed yet. Direct helper or external-driver success alone is insufficient. |
 | Fixture-scoped self-test on rebuilt runtime | Required. `biorouter run --workflow biorouter-self-test.yaml`; record selected phases and actual outcomes. No-desktop/unobservable cases remain explicit gaps. |
-| Formatting, build, targeted tests, clippy, generated schema and full project gates | Selected checks and exact CLI/daemon/Forge builds passed (receipts below). Hosted Rust discovery regression was corrected and awaits rerun. Final-tree `./scripts/clippy-lint.sh`, `just check-everything`, consolidated suites and all required hosted gates remain required. |
-| Source reviewed and pull request pushed | Draft [PR #330](https://github.com/BaranziniLab/biorouter/pull/330) is pushed and reviewable. Final source commit, review and all required hosted CI remain open; a draft PR does not complete the other gates. |
+| Formatting, build, targeted tests, clippy, generated schema and full project gates | Full `just check-everything` passed, including clippy and generated-schema gates. Final production CLI/daemon build, nine serve lifecycle tests and one parser test passed. All native hosted gates passed at `fd0736d1`; full hosted CI for pushed source `31a9f116` remains pending. |
+| Source reviewed and pull request pushed | Draft [PR #330](https://github.com/BaranziniLab/biorouter/pull/330) is pushed and reviewable. Source `31a9f116` is pushed; final review and its hosted CI remain open; a draft PR does not complete the other gates. |
 
 Implementation owners should replace “In progress” or “Pending” with exact command/log/artifact evidence as it becomes available. Keep any unsupported environment/action explicit and resolve it before claiming the promised platform is supported. Final completion requires the user's full scope, including the pushed PR and Luna-driven real-app checks.
 
@@ -33,7 +33,11 @@ Implementation owners should replace “In progress” or “Pending” with exa
 
 These are observed intermediate results, not completion of the full request.
 
-- Draft [PR #330](https://github.com/BaranziniLab/biorouter/pull/330) is pushed.
+- Draft [PR #330](https://github.com/BaranziniLab/biorouter/pull/330) contains pushed source `31a9f116`; its hosted CI remains pending.
+- Full `just check-everything` passed: `/tmp/biorouter-computer-use-check-everything.log`.
+- Final production CLI/daemon build passed: `/tmp/biorouter-computer-use-production-final.log`.
+- Serve lifecycle suite: **9 passed**, `/tmp/biorouter-computer-use-serve-lifecycle.log`; serve options/parser regression: **1 passed**, `/tmp/biorouter-computer-use-serve-options-test.log`.
+- [Native CI run 35273394648](https://github.com/BaranziniLab/biorouter/actions/runs/35273394648), source `fd0736d1`: **all five target jobs and aggregate gate green**. This includes real Windows text/key/vertical and horizontal scroll/capture and Linux x64/ARM64 GTK fixtures; macOS protocol/contract checks do not imply user-approved live capture/input.
 - The core/server/CLI test-inclusive check exited 0. Focused suites passed:
   **24 Computer Use**, **1 late-result**, **72 sensitive-operation**, and
   **4 tool-census** tests. The four provider destination regressions are included
@@ -53,11 +57,11 @@ These are observed intermediate results, not completion of the full request.
   exposed. The OS permission question remains unanswered. No real Computer Use
   input or capture has occurred in this Luna run, so scrolling, web and local-app
   tasks and the resulting fix/rerun loop remain open.
-- Initial hosted Rust suites recorded **4093 Ubuntu passes** and **4008 Windows
+- Historical initial hosted Rust suites recorded **4093 Ubuntu passes** and **4008 Windows
   passes**, each with the same sole stale web-discovery test failure. The corrected
   test preserves relevance ranking and excludes unrelated tools for focused queries;
   the broad `web` query now correctly permits the `webdocuments` namespace match.
-  Hosted reruns remain pending; neither initial suite is recorded as green.
+  These initial failures are historical, not the latest CI snapshot. Final pushed-source CI at `31a9f116` remains pending.
 
 ## Prompt, documentation and harness validation receipts
 
@@ -68,15 +72,17 @@ These are observed intermediate results, not completion of the full request.
 - Active prompt, builtin context, current user-guide, landing and harness scans contain no instructions to call the removed script/control or Developer capture tools. Historical records and negative-removal/configuration tests retain names only as provenance or refusal evidence.
 - First `CARGO_BUILD_JOBS=4 cargo test -p biorouter --lib agents::prompt_manager::tests --no-fail-fast` stopped at stale extracted DOCX/PDF module references. Those references were corrected by the native-tools lane. The resumed build was briefly paused for high host load, then completed successfully at reduced priority: **28 selected prompt-manager tests passed**, 0 failed, 0 ignored, 4065 filtered, including all three snapshots. Other source edits landed during compilation, so final consolidated verification must rebuild the latest tree.
 
-Pending focused checks include final-tree prompt verification, actual builtin bridge roster parity, code-execution discovery, the nested HTTP failure regression, and module import invariants. Full project, package and real-app gates above remain separate requirements.
+Earlier focused receipts above retain their original scope. Full local project gates have now passed; latest-source hosted CI, installed release artifacts and real-app gates remain separate requirements.
 
 ## Observed native patch receipts
 
 The native lane tested the `biorouter-1` patch against upstream OCU `0.3.5`, commit
 `547b4ffb8ed731a8f16486e6d8a3b215484267d3`. The repository records the source pin and
 prerequisites in `third_party/open-computer-use/pin.json`; the local test checkout was
-`/tmp/ocu-biorouter-native-patch`. Final patch freeze and hash confirmation remain
-pending the Windows fixture correction and rebuilt payload validation.
+`/tmp/ocu-biorouter-native-patch`. The final patch hash is
+`12214baff26bcc4a3eb4b085a08004f74ba16e8b6a2d010c633be682fb38ab67`.
+The local receipts below predate the final hosted run and are historical component
+evidence; the green final-patch native CI run above supersedes the pending fixture status.
 
 | Check | Observed receipt | Scope and remaining limit |
 | --- | --- | --- |
@@ -90,15 +96,17 @@ pending the Windows fixture correction and rebuilt payload validation.
 Windows/Linux window capture reads visible screen pixels and can include occluding windows.
 Linux Wayland pixel capture currently returns an unsupported-environment error. These limits
 are documented in the user-facing Computer Use guide and must not be described as complete
-platform parity. Installed artifacts, native GUI fixtures, and Luna-driven BioRouter tasks
-remain required above.
+platform parity. Installed release artifacts, remaining platform edge cases, and Luna-driven BioRouter
+tasks remain required above; Windows/Linux fixture passes are recorded separately.
 
 ## Native payload packaging and runtime receipts
 
 A previously tested revision of `0002-native-capture-isolation.patch` had SHA-256
 `20e89fcc73cd6ae81d226da87ac097e164230a816472e2f7631676771630ac96`.
-This is historical receipt identity, not the final shipping hash. The latest helper
-hash and payload rebuild receipts remain pending the final Windows fix and freeze.
+This is historical receipt identity, not the final shipping hash. The final patch
+hash is `12214baff26bcc4a3eb4b085a08004f74ba16e8b6a2d010c633be682fb38ab67`;
+all five target jobs and the aggregate gate passed native CI run 35273394648.
+The local build receipts below describe their recorded revision unless stated otherwise.
 The original GTK fixture caught a real scroll failure: the helper ignored its
 element target and used a keysym as a hardware keycode. Targeted focus and proper
 AT-SPI key synthesis fixed it; the independent scroll assertion was retained.
@@ -134,9 +142,9 @@ AT-SPI key synthesis fixed it; the independent scroll assertion was retained.
   Native jobs have a 30-minute bound, fixtures five minutes, and the aggregate
   gate five minutes. Windows session 0 exits 77 and fails the required fixture
   gate instead of reporting desktop validation. Latest macOS and Linux hosted
-  native jobs passed. The Windows interactive fixture passed text, F6 and vertical
-  scrolling, then identified wheel delivery at coordinates (0, 0); correction and
-  rerun remain required before declaring the Windows native gate passed.
+  native jobs passed. A historical Windows fixture caught wheel delivery at
+  coordinates (0, 0). The fix is included in the final patch; the final hosted
+  Windows fixture passed text, key, vertical/horizontal scroll and capture checks.
 
 Runtime artifacts remain under ignored `target/computer-use/`; the tested ARM64
 Mac payload is also staged at `ui/desktop/src/computer-use`. No release version
@@ -151,3 +159,28 @@ checks still passed (exit 0). Receipt:
 PNG/log. This demonstrates offline, toolchain-free native-helper operation, but
 is distinguished from the native x64 hosted runner and final BioRouter package
 installation tests.
+
+## Final local macOS app archive
+
+The corrected self-contained ARM64 app was packaged into a **301 MiB ZIP**, fully
+extracted, and checked against the final production CLI/daemon hashes. Strict deep
+ad hoc signature verification passed after extraction, and its dependencies are
+self-contained. Receipt: `target/computer-use/evidence/packaged-macos-final-archive.json`;
+archive SHA-256 `486d61ed8559d88cac03e7ab18de8d865dd9ee204dfb2b62a6880edfa28f8eac`.
+The packaged doctor passed helper integrity checks without a helper-path override
+and correctly reported TCC denied: `packaged-macos-doctor-final.json` in the same
+evidence directory. The actual CLI setup-path installer passed with an isolated
+temporary symlink target: `installed-macos-cli-doctor.json`. Dependency evidence
+records 442 module entries (`packaged-dependency-self-contained.json`), 32 contained
+links (`packaged-macos-filesystem-links.json`), and all 73 original npm bin links
+preserved (`npm-bin-links-before-package.json`). Four packaging regressions passed
+after fixing the earlier dependency-link defect. This proves local packaging and passive
+diagnostics, not live Computer Use permission or control. Developer ID release
+signing, notarization, installed-platform coverage and TCC upgrade continuity
+remain open. No release artifact has been published.
+
+Remaining platform edges are explicit: Windows drag, mixed DPI, multiple monitors,
+occluded windows and secure-desktop behavior remain unvalidated; Linux mixed DPI,
+multiple displays and drag remain unvalidated, and Wayland pixel capture remains
+unsupported. These gaps do not negate the observed fixture passes or imply full
+platform coverage.
