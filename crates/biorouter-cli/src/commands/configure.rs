@@ -998,8 +998,13 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         ),
         (
             "computercontroller",
-            "Computer Controller",
-            "Control desktop apps, scrape web pages, and work with local files.",
+            "Computer Use",
+            "View and control the backend desktop after you approve each task.",
+        ),
+        (
+            "webdocuments",
+            "Web & Documents",
+            "Read web pages and process PDF, Word, and spreadsheet documents.",
         ),
         (
             "developer",

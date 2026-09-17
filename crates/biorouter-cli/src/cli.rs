@@ -1657,6 +1657,13 @@ enum Command {
         )]
         web_dir: Option<std::path::PathBuf>,
 
+        /// Configure a separate approval key for computer-use tasks in the browser
+        #[arg(
+            long,
+            help = "Interactively set a computer-use approval key; requires a terminal"
+        )]
+        computer_use_approval: bool,
+
         /// Open a browser once it is ready
         #[arg(long, help = "Open a browser once the server is ready")]
         open: bool,
@@ -1849,6 +1856,7 @@ async fn handle_mcp_command(server: McpCommand) -> Result<()> {
     match server {
         McpCommand::AutoVisualiser => serve(AutoVisualiserRouter::new()).await?,
         McpCommand::ComputerController => serve(ComputerControllerServer::new()).await?,
+        McpCommand::WebDocuments => serve(biorouter_mcp::WebDocumentsServer::new()).await?,
         McpCommand::Memory => serve(MemoryServer::new()).await?,
         McpCommand::Developer => serve(DeveloperServer::new()).await?,
     }
@@ -2817,8 +2825,18 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             no_token,
             web_dir,
             open,
+            computer_use_approval,
         }) => {
-            crate::commands::serve::handle_serve(host, port, token, no_token, web_dir, open).await
+            crate::commands::serve::handle_serve(
+                host,
+                port,
+                token,
+                no_token,
+                web_dir,
+                open,
+                computer_use_approval,
+            )
+            .await
         }
         Some(Command::Web {
             port,

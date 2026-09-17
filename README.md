@@ -38,7 +38,7 @@ Biorouter runs as a desktop app, a full-screen terminal CLI, or a headless REST/
 
 - **Model Context Protocol (MCP)** — connect Biorouter to biomedical databases, web tools, file systems, and APIs through pluggable extensions, and install third-party agents.
 - **Biomedical agents via the BAAM marketplace** ([biorouter.ucsf.edu/baam](https://biorouter.ucsf.edu/baam)) — including **SPOKEAgent** (the SPOKE biomedical knowledge graph), the **UCSF OMOP Agent** and **CDWAgent** (clinical/EHR/OMOP data and cohort building), plus a growing library of bioinformatics and clinical skills (ATAC-seq, ChIP-seq, alternative splicing, causal genomics, chemoinformatics, clinical biostatistics, and more).
-- **Built-in extensions** — on by default: Developer (shell, files, code execution), Computer Controller (web/computer automation), Auto Visualiser, Memory, Agent Drafter, and Knowledge.
+- **Built-in extensions** — on by default: Developer (shell, files, code execution), Computer Use (native desktop control), Web & Documents (URL and document utilities), Auto Visualiser, Memory, Agent Drafter, and Knowledge.
 
 ### Personal, LLM-maintained knowledge bases
 
@@ -62,7 +62,7 @@ Ask for a tool and the agent builds a small **Biorouter app**: a TypeScript fron
 
 Two gates: the full surface is an **opt-in extension** (Extensions → **Workspace Control**, or `biorouter configure` → Toggle Extensions → `workspace`), and delegation is offered only in the **Completely Autonomous** permission mode. See [Workspace control](docs/agent-loop/workspace-control.md).
 
-### Computer Controller & vision
+### Computer Use & vision
 
 - Drive the web and your computer for research automation, with **multi-monitor screen capture** (enumerate displays and re-capture any screen by index) and **vision input** so the model can read screenshots and figures.
 

@@ -211,6 +211,17 @@ impl Provider for AnthropicProvider {
         &self.name
     }
 
+    fn computer_use_destination(&self) -> Option<String> {
+        self.api_client.computer_use_destination("v1/messages")
+    }
+
+    fn computer_use_destination_identity(&self) -> Option<String> {
+        Some(
+            self.api_client
+                .computer_use_destination_identity("v1/messages"),
+        )
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }

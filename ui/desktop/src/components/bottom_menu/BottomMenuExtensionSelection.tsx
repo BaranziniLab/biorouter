@@ -318,7 +318,7 @@ export const BottomMenuExtensionSelection = ({
    * Two independent decisions, and they are easy to conflate:
    *
    * 1. *What is counted* — user-installed extensions only. Shipped capabilities
-   *    (Developer, Computer Controller, Auto Visualiser, Memory, Knowledge,
+   *    (Developer, Computer Use, Auto Visualiser, Memory, Knowledge,
    *    Agent Drafter, Todo, Chat Recall, Extension Manager, Code Execution,
    *    Skills) are excluded; see the note inside. A chat whose only extensions
    *    are capabilities therefore reads `0`, and that is the number meaning

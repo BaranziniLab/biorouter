@@ -86,63 +86,9 @@
 //! work — writing scratch files, editing the workspace, deleting build output —
 //! keeps running with no prompt.
 //!
-//! And one criterion that is **not** a file operation at all:
-//!
-//!   5. a call to a tool that **captures the screen or drives the computer**
-//!      ([`SCREEN_AND_CONTROL_TOOLS`]) made by a model whose provider is
-//!      [`ProviderTier::Public`].
-//!
-//! # Criterion 6: ambient capture by a public model
-//!
-//! `claude_code` and `codex` run inference on the user's own consumer
-//! subscription, which carries **no Business Associate Agreement and no
-//! zero-data-retention agreement** — which is exactly why they are declared
-//! `ProviderTier::Public`. They hold the full Developer and Computer Controller
-//! rosters, and two of those tools are unlike every other one in this module:
-//!
-//!   * `screen_capture` sends a picture of the screen to the model.
-//!   * `computer_control` drives the machine (AppleScript / PowerShell / desktop
-//!     automation).
-//!
-//! **A file read is bounded; a screenshot is ambient.** `.biorouterignore`, the
-//! `SecretGuard` and the working directory bound what a *file* operation can
-//! reach, and all three work because the agent named the file. A screenshot
-//! names nothing — it captures whatever happens to be on screen at that instant,
-//! an EHR window or a patient chart included, none of which is a file anything
-//! chose to read. PHI that never touched disk can leave the machine in a PNG,
-//! and no path-based control in this module can see it coming.
-//!
-//! The existing `ensure_screen_capture_permitted` is a different control
-//! answering a different question: it is the macOS TCC screen-recording grant to
-//! **Biorouter as an application** — "may this app screenshot at all" — taken
-//! once, and it knows nothing about which model receives the image.
-//!
-//! So this is an **ask, and only an ask**. The user can approve it and proceed,
-//! including standing in front of a public model and deciding a screenshot is
-//! fine. It is not a block, and it never becomes one.
-//!
-//! Three decisions worth stating, because each of them is a place a future
-//! change could quietly gut the criterion:
-//!
-//!   * **`automation_script` is deliberately NOT in the set.** It runs a
-//!     shell/Ruby/PowerShell/Batch script the model wrote — it is `developer/shell`'s
-//!     twin, not a screen or computer driver. Escalating it would escalate
-//!     ordinary scripting on every public model, which is the same over-broad
-//!     rule that makes escalating `developer/shell` itself unacceptable: a grant
-//!     that prompts on everything is a grant nobody keeps enabled. The honest
-//!     gap this leaves — a shell (or an `automation_script`) that runs
-//!     `screencapture` or `osascript` by hand — is *identical* to the one
-//!     `developer/shell` already has, and closing it belongs to a command-level
-//!     rule over the command text, not to a rule over tool names.
-//!   * **`list_windows` is in the set even though it is no longer advertised.**
-//!     It was folded into `screen_capture { list_only: true }`, but the retired
-//!     name still dispatches, and window titles are ambient in exactly the way a
-//!     screenshot is ("Epic — DOE, JANE"). A criterion a model can dodge by
-//!     naming a retired tool is not a criterion.
-//!   * **The tier is read off the [`CallCapability`] threaded into the call, and
-//!     the master privacy switch does not turn this off.** See
-//!     [`SensitiveOpsInspector::caller_tier`] for both, and for what an absent
-//!     capability means.
+//! Desktop observation and interaction use the separate host-owned Computer Use
+//! task consent gate at dispatch, including nested code execution. They do not
+//! receive a second, per-action approval from this filesystem inspector.
 //!
 //! # Boundary (documented for security review)
 //!
@@ -219,7 +165,7 @@ use uuid::Uuid;
 use crate::agents::types::SharedProvider;
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
-use crate::privacy::{CallCapability, ProviderTier};
+use crate::privacy::CallCapability;
 use crate::security::command_text_from;
 use crate::security::policy::command::{redirect_targets, ParsedCommand, Segment};
 use crate::security::policy::target::{
@@ -268,37 +214,6 @@ const MUTATING_NAME_HINTS: &[&str] = &[
 /// Tool-name substrings that mark a tool as read-only, vetoing a mutating-hint
 /// match (belt-and-suspenders: the hint sets do not overlap).
 const READONLY_NAME_HINTS: &[&str] = &["view", "read", "list", "search", "preview", "get_"];
-
-/// Criterion 6's set: the tools that capture the screen or drive the machine,
-/// each paired with the clause that describes it to the user.
-///
-/// Keyed by the **unprefixed** tool name, because that is the only spelling that
-/// is stable across the three shapes one of these calls arrives in: the
-/// server-prefixed `developer__screen_capture` a model emits, the bare
-/// `screen_capture` a bridged or renamed roster can carry, and the
-/// `screen_capture({…})` callee inside an `execute_code` body (where the import
-/// is destructured, so the module prefix is gone by the time the call is
-/// written). See [`unprefixed_tool_name`].
-///
-/// ⚠ This set is about **ambient** reach, not about danger in general. A tool
-/// belongs here when its blast radius is "whatever is in front of the user right
-/// now" rather than "the argument the model passed". That is the line that keeps
-/// `developer__shell` and `computercontroller__automation_script` out of it —
-/// see the module docs, where the reasoning and its residual gap are stated.
-const SCREEN_AND_CONTROL_TOOLS: &[(&str, &str)] = &[
-    (
-        "screen_capture",
-        "sends a picture of whatever is on your screen right now to the model",
-    ),
-    (
-        "list_windows",
-        "reads the titles of every window open on your screen right now",
-    ),
-    (
-        "computer_control",
-        "drives your computer directly, through AppleScript, PowerShell or desktop automation",
-    ),
-];
 
 /// Credential / persistence directories under `$HOME`. Stored lowercased and
 /// `/`-separated (relative to home); a mutation at or beneath any of these is
@@ -480,74 +395,6 @@ const SHELL_MUTATING_BINARIES: &[&str] = &[
 /// the real (inner) tool calls and must be scanned for embedded sensitive writes.
 fn is_execute_code(tool_name: &str) -> bool {
     tool_name.to_ascii_lowercase().contains("execute_code")
-}
-
-/// A tool name with its `server__` prefix stripped, lowercased.
-///
-/// `developer__screen_capture` and a bare `screen_capture` are the same tool,
-/// and criterion 6 must not be dodgeable by the spelling a roster happens to
-/// use. `rsplit_once` rather than `split_once` so a hypothetical
-/// `a__b__capture` still yields its final segment.
-fn unprefixed_tool_name(tool_name: &str) -> String {
-    let name = tool_name.trim();
-    name.rsplit_once("__")
-        .map_or(name, |(_, tool)| tool)
-        .to_ascii_lowercase()
-}
-
-/// Criterion 6's classifier for one *named* call: `Some((tool, what it does))`
-/// when the name is in [`SCREEN_AND_CONTROL_TOOLS`].
-fn screen_or_control_tool(tool_name: &str) -> Option<(&'static str, &'static str)> {
-    let base = unprefixed_tool_name(tool_name);
-    SCREEN_AND_CONTROL_TOOLS
-        .iter()
-        .find(|(name, _)| *name == base)
-        .copied()
-}
-
-/// Criterion 6's classifier for one tool call, **including one made from inside
-/// an `execute_code` body**.
-///
-/// The code-execution path is not a nicety. Its inner calls are handed straight
-/// to the extension manager and never reach an agent-layer inspector (the same
-/// reason §3 of the boundary docs exists), and the live app has been observed
-/// routing `developer__shell` through `code_execution` — so a rule the model can
-/// dodge by wrapping the call in a script is not a rule. A callee inside the
-/// script is matched by the same [`screen_or_control_tool`] the outer name is,
-/// so the two can never drift.
-///
-/// Unlike the write scan, this one asks nothing about arguments: `screen_capture`
-/// with no arguments at all still captures the screen. That also makes it
-/// deliberately conservative inside a script — [`extract_inner_calls`] reports
-/// every `ident(` outside a string literal, so a local helper (or a commented-out
-/// line) that happens to be spelled `screen_capture(` matches. Erring that way is
-/// correct for a criterion whose only outcome is an ask the user can approve.
-///
-/// ⚠ `args` is OPTIONAL, and that is load-bearing rather than convenience. A
-/// `screen_capture` with **no arguments object at all** is not a degenerate
-/// call — it is the DEFAULT one, capturing the primary display. Several
-/// producers really do send it that way: `routes/tool_bridge.rs` maps a missing
-/// or null MCP `arguments` to `None`, and Google's parser yields `None` when a
-/// `functionCall` omits `args`. Taking `&Map` here forced the caller behind the
-/// `let Some(args) = … else { continue }` guard that criteria 1–5 need for a
-/// path, which skipped this criterion entirely for exactly those calls.
-pub fn screen_or_control_call(
-    tool_name: &str,
-    args: Option<&Map<String, Value>>,
-) -> Option<(&'static str, &'static str)> {
-    if let Some(hit) = screen_or_control_tool(tool_name) {
-        return Some(hit);
-    }
-    if is_execute_code(tool_name) {
-        if let Some(code) = args.and_then(|a| a.get("code")).and_then(Value::as_str) {
-            for call in extract_inner_calls(code) {
-                if let Some(hit) = screen_or_control_tool(&call.callee) {
-                    return Some(hit);
-                }
-            }
-        }
-    }
-    None
 }
 
 /// A sensitive **write** in a shell command line: any redirect target (`>` /
@@ -1799,79 +1646,17 @@ pub const SENSITIVE_OPS_INSPECTOR_NAME: &str = "sensitive_ops";
 
 /// Inspector that, **in Auto mode only**, escalates the sensitive-operation set
 /// to the standard approval flow. See the module docs for the policy.
-pub struct SensitiveOpsInspector {
-    /// The provider to sample when a caller hands this inspector no admitted
-    /// [`CallCapability`] — the ordinary agent-loop path, which inspects
-    /// *before* the dispatch that would admit one.
-    ///
-    /// `None` is "there is nothing to fall back on", and it resolves to
-    /// [`ProviderTier::Public`]. See [`Self::caller_tier`].
-    provider: Option<SharedProvider>,
-}
+pub struct SensitiveOpsInspector;
 
 impl SensitiveOpsInspector {
-    /// The production constructor: fall back to sampling `provider` for callers
-    /// that supply no capability of their own.
     #[must_use]
-    pub fn new(provider: SharedProvider) -> Self {
-        Self {
-            provider: Some(provider),
-        }
+    pub fn new(_provider: SharedProvider) -> Self {
+        Self
     }
 
-    /// For a stack whose every caller pins a capability at the seam — the
-    /// coding-agent bridge and the workflow tool turn both do — so there is no
-    /// provider here to sample and no pretence that there is.
-    ///
-    /// Reaching this constructor from a path that does *not* pin a capability is
-    /// safe rather than silent: criterion 5 then reads the caller as Public and
-    /// asks. It is the wrong constructor, not a hole.
     #[must_use]
     pub fn unbound() -> Self {
-        Self { provider: None }
-    }
-
-    /// The tier of the model this batch was admitted on — criterion 5's second
-    /// condition.
-    ///
-    /// ⚠ **The threaded capability is asked, never re-derived.** A
-    /// [`CallCapability`] is sampled ONCE per call and carried precisely because
-    /// `Agent::update_provider` can reassign the provider mutex with no turn
-    /// lock; a gate that re-read the provider here would be the second read that
-    /// type exists to collapse. So `Some(_)` short-circuits before the provider
-    /// field is even looked at.
-    ///
-    /// ⚠ **`None` fails CLOSED.** The trait's default `inspect_with_capability`
-    /// forwards without one, so an absent capability is the *normal* state on
-    /// some paths rather than an error, and a gate that quietly did nothing
-    /// there would be a gate that no-ops on exactly the entries nobody
-    /// classified. With a provider in hand the honest answer is a fresh sample —
-    /// the ordinary agent loop's real tier, which is what keeps a *private*
-    /// model from being prompted for a screenshot that never leaves the
-    /// institution. With no provider either, the answer is `Public`: the most
-    /// restrictive reading this type can express, and the one that asks.
-    ///
-    /// ⚠ **`enforced()` is deliberately NOT consulted, so the privacy master
-    /// switch does not turn criterion 5 off.** That switch governs privacy
-    /// *refusals* (DR-15: with tiers off nothing is refused). This refuses
-    /// nothing — it is an Auto-mode approval in the sensitive-ops gate, whose
-    /// other four criteria are not switchable either, and whose outcome the user
-    /// can always grant. Gating it on the switch would delete an ambient-capture
-    /// prompt for a class of provider that has no BAA, silently, from a control
-    /// that was never part of the privacy-tier feature.
-    ///
-    /// Sampled at most once per batch, and only after a name check has
-    /// established that the batch contains such a call at all: an ordinary turn
-    /// must not pay a provider-mutex read for a criterion that cannot apply to
-    /// it.
-    async fn caller_tier(&self, capability: Option<CallCapability>) -> ProviderTier {
-        if let Some(capability) = capability {
-            return capability.tier();
-        }
-        match &self.provider {
-            Some(provider) => CallCapability::sample(provider).await.tier(),
-            None => ProviderTier::Public,
-        }
+        Self
     }
 
     /// The whole gate, over one batch. Both trait entry points funnel here, so
@@ -1882,7 +1667,7 @@ impl SensitiveOpsInspector {
         messages: &[Message],
         biorouter_mode: BioRouterMode,
         session: &crate::session::Session,
-        capability: Option<CallCapability>,
+        _capability: Option<CallCapability>,
     ) -> Result<Vec<InspectionResult>> {
         // Inert outside Auto — every other mode already gates these operations,
         // so this keeps non-Auto behaviour provably unchanged (one early return).
@@ -1904,24 +1689,12 @@ impl SensitiveOpsInspector {
         );
 
         let mut results = Vec::new();
-        // Criterion 5's candidates, gathered before any provider is sampled.
-        let mut ambient: Vec<(&ToolRequest, &'static str, &'static str)> = Vec::new();
-
         for request in tool_requests {
             let Ok(tool_call) = &request.tool_call else {
                 continue;
             };
-            // BEFORE the `args` guard below, deliberately. That guard exists
-            // for criteria 1-5, which all need a PATH out of the arguments; this
-            // criterion needs only the tool name, and a `screen_capture` with no
-            // arguments object is the default call rather than a malformed one.
-            // Leaving it below the guard let the whole criterion be skipped by
-            // omitting `arguments` — reachable today through the coding-agent
-            // bridge and through Google's function-call parser.
-            if let Some((tool, what)) =
-                screen_or_control_call(&tool_call.name, tool_call.arguments.as_ref())
-            {
-                ambient.push((request, tool, what));
+            if crate::security::computer_use::is_computer_use_tool(&tool_call.name) {
+                continue;
             }
             let Some(args) = tool_call.arguments.as_ref() else {
                 continue;
@@ -1958,41 +1731,6 @@ impl SensitiveOpsInspector {
             }
         }
 
-        if ambient.is_empty() {
-            return Ok(results);
-        }
-        if self.caller_tier(capability).await.is_private() {
-            // A model covered by the user's own institution: the capture never
-            // leaves it, so criterion 5 has nothing to ask about.
-            return Ok(results);
-        }
-
-        for (request, tool, what) in ambient {
-            tracing::warn!(
-                counter.biorouter.sensitive_op_escalated = 1,
-                tool_name = %tool,
-                tool_request_id = %request.id,
-                "Screen/computer-control call by a public-tier model escalated to approval in Auto mode"
-            );
-            results.push(InspectionResult {
-                tool_request_id: request.id.clone(),
-                action: InspectionAction::RequireApproval(Some(format!(
-                    "🔒 Screen and computer access by a public model, in Fully-Automatic mode.\n\
-                     This tool call runs `{tool}`, which {what}. The model answering this \
-                     chat runs on a public provider — a consumer plan with no Business \
-                     Associate Agreement and no zero-data-retention agreement — so whatever \
-                     is visible goes to it.\n\
-                     Approve it if that is fine for what is on your screen right now, or deny \
-                     it. Biorouter asks every time because a capture takes whatever happens \
-                     to be in front of you, not a file anything chose to open."
-                ))),
-                reason: format!("Public-tier model calling {tool} ({what})"),
-                confidence: 1.0,
-                inspector_name: self.name().to_string(),
-                finding_id: Some(format!("SENS-{}", Uuid::new_v4().simple())),
-            });
-        }
-
         Ok(results)
     }
 }
@@ -2018,9 +1756,6 @@ impl ToolInspector for SensitiveOpsInspector {
             .await
     }
 
-    /// Criterion 5 needs the caller's tier, and the tier a call was admitted on
-    /// arrives here — sampled once at the seam and threaded — rather than being
-    /// re-read.
     async fn inspect_with_capability(
         &self,
         tool_requests: &[ToolRequest],
@@ -2761,362 +2496,6 @@ record_result("ok");"#;
                 && matches!(r.action, InspectionAction::RequireApproval(_))),
             "execute_code hiding a sensitive write must be routed to approval, got {results:?}"
         );
-    }
-
-    // --- criterion 5: ambient capture by a public-tier model ---------------
-
-    /// The marker that a result came from criterion 5 rather than from one of the
-    /// four path-based ones. Asserting on `RequireApproval` alone would let a
-    /// spurious *filesystem* finding stand in for the tier finding these tests are
-    /// about, which is the way this whole block could go green while measuring
-    /// nothing.
-    fn ambient_findings(results: &[InspectionResult]) -> Vec<&InspectionResult> {
-        results
-            .iter()
-            .filter(|r| r.reason.starts_with("Public-tier model calling"))
-            .collect()
-    }
-
-    fn call_request(id: &str, name: &str, arguments: Value) -> ToolRequest {
-        ToolRequest {
-            id: id.to_string(),
-            tool_call: Ok(CallToolRequestParams {
-                task: None,
-                name: name.to_string().into(),
-                arguments: Some(args(arguments)),
-                meta: None,
-            }),
-            metadata: None,
-            tool_meta: None,
-        }
-    }
-
-    /// One call, through the capability-carrying entry point, on the `unbound()`
-    /// inspector — so what a test measures is the capability it passed, never a
-    /// provider it did not set up.
-    async fn inspect_call(
-        name: &str,
-        arguments: Value,
-        mode: BioRouterMode,
-        capability: Option<CallCapability>,
-    ) -> Vec<InspectionResult> {
-        SensitiveOpsInspector::unbound()
-            .inspect_with_capability(
-                &[call_request("req_ambient", name, arguments)],
-                &[],
-                mode,
-                &crate::session::Session::default(),
-                capability,
-            )
-            .await
-            .unwrap()
-    }
-
-    fn public() -> Option<CallCapability> {
-        Some(CallCapability::for_test(ProviderTier::Public, true))
-    }
-
-    fn private() -> Option<CallCapability> {
-        Some(CallCapability::for_test(ProviderTier::Private, true))
-    }
-
-    /// The criterion, both ways round, for both named tools: a public model asks,
-    /// a private one does not. This is the whole product decision in one test —
-    /// a screenshot bound for a consumer plan with no BAA is offered to the user,
-    /// and one bound for the user's own institution is not.
-    #[tokio::test]
-    async fn a_public_model_asks_before_capturing_the_screen_and_a_private_one_does_not() {
-        for (tool, arguments) in [
-            ("developer__screen_capture", json!({})),
-            (
-                "computercontroller__computer_control",
-                json!({"script": "tell application \"Safari\" to activate"}),
-            ),
-        ] {
-            let asked = inspect_call(tool, arguments.clone(), BioRouterMode::Auto, public()).await;
-            let findings = ambient_findings(&asked);
-            assert_eq!(
-                findings.len(),
-                1,
-                "a public model calling {tool} must ask, got {asked:?}"
-            );
-            assert!(matches!(
-                findings[0].action,
-                InspectionAction::RequireApproval(_)
-            ));
-            assert_eq!(findings[0].inspector_name, "sensitive_ops");
-            assert_eq!(findings[0].tool_request_id, "req_ambient");
-
-            let quiet = inspect_call(tool, arguments, BioRouterMode::Auto, private()).await;
-            assert!(
-                ambient_findings(&quiet).is_empty(),
-                "a private model calling {tool} must NOT ask, got {quiet:?}"
-            );
-        }
-    }
-
-    /// The retired `list_windows` name still dispatches, and window titles are
-    /// ambient in exactly the way a frame buffer is. A criterion a model can dodge
-    /// by naming a folded-away tool is not a criterion.
-    #[tokio::test]
-    async fn the_retired_window_inventory_tool_is_in_the_set() {
-        let results = inspect_call(
-            "developer__list_windows",
-            json!({}),
-            BioRouterMode::Auto,
-            public(),
-        )
-        .await;
-        assert_eq!(ambient_findings(&results).len(), 1, "{results:?}");
-    }
-
-    /// Reached through `execute_code`, which is the shape that matters: a script's
-    /// inner calls are handed straight to the extension manager and never reach an
-    /// agent-layer inspector, and the live app has been observed routing
-    /// `developer__shell` through `code_execution`. A rule the model can dodge by
-    /// wrapping the call in a script is not a rule.
-    #[tokio::test]
-    async fn a_capture_hidden_inside_execute_code_still_asks() {
-        let results = inspect_call(
-            "code_execution__execute_code",
-            json!({
-                "code": "import { screen_capture } from \"developer\";\n\
-                         const shot = screen_capture({ display: 0 });\n\
-                         record_result(shot);"
-            }),
-            BioRouterMode::Auto,
-            public(),
-        )
-        .await;
-        assert_eq!(
-            ambient_findings(&results).len(),
-            1,
-            "a screen capture inside execute_code must ask, got {results:?}"
-        );
-
-        // And the same body under a private model stays silent, so the escalation
-        // is the TIER's doing and not merely the script's shape.
-        let quiet = inspect_call(
-            "code_execution__execute_code",
-            json!({
-                "code": "import { computer_control } from \"computercontroller\";\n\
-                         computer_control({ script: \"tell application \\\"Finder\\\" to activate\" });"
-            }),
-            BioRouterMode::Auto,
-            private(),
-        )
-        .await;
-        assert!(ambient_findings(&quiet).is_empty(), "{quiet:?}");
-    }
-
-    /// An absent capability is the trait default's normal state, not an error, and
-    /// on an `unbound()` inspector there is nothing to sample. It must read as
-    /// Public and ask — a gate that silently no-ops when the capability is missing
-    /// is the failure this fallback exists to prevent.
-    /// A call carrying **no `arguments` object at all** must still be graded.
-    ///
-    /// ⚠ This is the shape the criterion was silently blind to. The
-    /// `let Some(args) = … else { continue }` guard that criteria 1-5 need for a
-    /// path sat ABOVE the criterion's candidate collection, so omitting
-    /// `arguments` skipped the whole rule — and `screen_capture` with no
-    /// arguments is not a malformed call, it is the DEFAULT one (it captures the
-    /// primary display). Two production producers really do send it that way:
-    /// `routes/tool_bridge.rs` maps a missing/null MCP `arguments` to `None`,
-    /// and Google's function-call parser yields `None` when `args` is omitted.
-    ///
-    /// Every other test in this module builds requests with
-    /// `arguments: Some(…)`, which is precisely why the hole survived them.
-    #[tokio::test]
-    async fn a_call_with_no_arguments_object_is_still_graded() {
-        let bare = ToolRequest {
-            id: "req-bare".to_string(),
-            tool_call: Ok(CallToolRequestParams {
-                task: None,
-                name: "developer__screen_capture".to_string().into(),
-                arguments: None,
-                meta: None,
-            }),
-            metadata: None,
-            tool_meta: None,
-        };
-        let results = SensitiveOpsInspector::unbound()
-            .inspect_with_capability(
-                std::slice::from_ref(&bare),
-                &[],
-                BioRouterMode::Auto,
-                &crate::session::Session::default(),
-                public(),
-            )
-            .await
-            .expect("inspection runs");
-        assert!(
-            results
-                .iter()
-                .any(|r| r.reason.starts_with("Public-tier model calling")),
-            "a screen capture with no arguments object is the DEFAULT call, not a \
-             malformed one, and must still ask; got {:?}",
-            results.iter().map(|r| &r.reason).collect::<Vec<_>>()
-        );
-    }
-
-    #[tokio::test]
-    async fn an_absent_capability_fails_closed_and_asks() {
-        let results = inspect_call(
-            "developer__screen_capture",
-            json!({}),
-            BioRouterMode::Auto,
-            None,
-        )
-        .await;
-        assert_eq!(
-            ambient_findings(&results).len(),
-            1,
-            "no capability must be read as public, got {results:?}"
-        );
-
-        // The plain `inspect` entry point forwards without a capability, so it must
-        // reach the identical verdict: the two entry points cannot diverge.
-        let plain = SensitiveOpsInspector::unbound()
-            .inspect(
-                &[call_request(
-                    "req_ambient",
-                    "developer__screen_capture",
-                    json!({}),
-                )],
-                &[],
-                BioRouterMode::Auto,
-                &crate::session::Session::default(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(ambient_findings(&plain).len(), 1, "{plain:?}");
-    }
-
-    /// Criterion 6 is inert outside Auto, exactly as the other five are: those
-    /// modes already gate every tool call, and the module's one early return is
-    /// what keeps that provable.
-    #[tokio::test]
-    async fn criterion_six_is_inert_outside_auto_mode() {
-        for mode in [
-            BioRouterMode::Approve,
-            BioRouterMode::SmartApprove,
-            BioRouterMode::Chat,
-        ] {
-            for tool in [
-                "developer__screen_capture",
-                "computercontroller__computer_control",
-            ] {
-                let results = inspect_call(tool, json!({"script": "x"}), mode, public()).await;
-                assert!(
-                    results.is_empty(),
-                    "{mode:?} must be inert for {tool}, got {results:?}"
-                );
-            }
-        }
-    }
-
-    /// The load-bearing negative. A public model was granted the Developer roster
-    /// so it could do work; if criterion 5 escalated ordinary Developer tools the
-    /// grant would prompt on everything and be switched off, which is worse than
-    /// not having it. `automation_script` is here for the same reason and is the
-    /// decision recorded in the module docs: it runs a script the model wrote, so
-    /// it is `shell`'s twin rather than a screen or computer driver.
-    #[tokio::test]
-    async fn ordinary_tools_are_not_escalated_by_criterion_five_on_a_public_model() {
-        for (tool, arguments) in [
-            ("developer__shell", json!({"command": "ls -la /tmp"})),
-            (
-                "developer__text_editor",
-                json!({"command": "write", "path": "/tmp/out.txt", "file_text": "hi"}),
-            ),
-            (
-                "computercontroller__automation_script",
-                json!({"language": "shell", "script": "sort file.txt | uniq"}),
-            ),
-            (
-                "computercontroller__web_scrape",
-                json!({"url": "https://example.org"}),
-            ),
-            ("developer__analyze", json!({"path": "/tmp/x.rs"})),
-        ] {
-            let results = inspect_call(tool, arguments, BioRouterMode::Auto, public()).await;
-            assert!(
-                ambient_findings(&results).is_empty(),
-                "{tool} must NOT be escalated by criterion 5, got {results:?}"
-            );
-        }
-    }
-
-    /// The approval copy is what the user acts on, so pin its shape: it names the
-    /// tool, states why it is being asked, and is an ASK — never a block.
-    #[tokio::test]
-    async fn the_approval_message_names_the_tool_and_never_says_blocked() {
-        let results = inspect_call(
-            "developer__screen_capture",
-            json!({}),
-            BioRouterMode::Auto,
-            public(),
-        )
-        .await;
-        let finding = ambient_findings(&results)[0];
-        let InspectionAction::RequireApproval(Some(message)) = &finding.action else {
-            panic!("criterion 5 must ask, not deny: {:?}", finding.action);
-        };
-        assert!(message.contains("screen_capture"), "{message}");
-        assert!(
-            message.contains("Business Associate Agreement"),
-            "{message}"
-        );
-        assert!(message.contains("Approve it"), "{message}");
-        let lowered = message.to_ascii_lowercase();
-        assert!(
-            !lowered.contains("blocked") && !lowered.contains("not allowed"),
-            "the user can approve this; the copy must not read as a block: {message}"
-        );
-    }
-
-    // --- criterion 5's name matching (pure) --------------------------------
-
-    #[test]
-    fn a_tool_is_matched_prefixed_or_bare() {
-        for name in [
-            "developer__screen_capture",
-            "screen_capture",
-            "SCREEN_CAPTURE",
-            "computercontroller__computer_control",
-            "computer_control",
-        ] {
-            assert!(
-                screen_or_control_tool(name).is_some(),
-                "{name} must be in the screen/control set"
-            );
-        }
-        for name in [
-            "developer__shell",
-            "shell",
-            "computercontroller__automation_script",
-            "automation_script",
-            "developer__text_editor",
-            // Substring-matching would have taken this one; the comparison is on
-            // the whole unprefixed name.
-            "knowledge__kb_screen_capture_notes",
-        ] {
-            assert!(
-                screen_or_control_tool(name).is_none(),
-                "{name} must NOT be in the screen/control set"
-            );
-        }
-    }
-
-    #[test]
-    fn an_execute_code_body_without_a_capture_is_not_a_candidate() {
-        assert!(screen_or_control_call(
-            "code_execution__execute_code",
-            Some(&args(json!({
-                "code": "import { shell } from \"developer\";\nshell({ command: \"ls\" });"
-            }))),
-        )
-        .is_none());
     }
 
     /// Gate (c): every non-Auto mode is inert — even a sensitive write yields no

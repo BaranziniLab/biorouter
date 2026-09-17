@@ -718,6 +718,7 @@ impl ExtensionConfig {
                 hs.hash(&mut h);
                 format!("http:{}", uri)
             }
+            Self::Builtin { name, .. } if name == "computercontroller" => return None,
             Self::Builtin { name, .. } => format!("builtin:{}", name),
             Self::InlinePython {
                 name,

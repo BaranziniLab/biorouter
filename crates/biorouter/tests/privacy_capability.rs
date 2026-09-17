@@ -181,32 +181,6 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::sample(",
-        file: "crates/biorouter/src/security/sensitive_ops.rs",
-        count: 1,
-        what: "`SensitiveOpsInspector::caller_tier`, criterion 5 of the Auto-mode \
-               sensitive-operation gate: a PUBLIC-tier model calling a tool that \
-               captures the screen or drives the computer raises an approval the \
-               user can grant. It is a decider for the same reason \
-               `WorkspaceCrossingInspector` is a SECOND one rather than a \
-               duplicate — an inspector runs BEFORE the dispatch that would admit \
-               a capability, so on the ordinary agent loop there is none in scope \
-               to inherit, and the alternative to sampling is deciding on \
-               `Config::global()`, which is the bug this type exists to prevent. \
-               It differs from that sibling in what it does with an absent \
-               capability: it FAILS CLOSED to Public rather than sampling \
-               unconditionally, because a screenshot is ambient — it captures \
-               whatever is on screen, not a file anything chose to open — and a \
-               gate that quietly no-ops without a capability would no-op on \
-               exactly the entries nobody classified. Sampled at most once per \
-               batch and only after a name check has found such a call, so an \
-               ordinary turn pays no provider-mutex read. ⚠ The threaded \
-               capability short-circuits this sample: a bridged coding agent \
-               (`claude_code`, `codex` — the Public providers this criterion \
-               exists for) arrives with `Some(_)` pinned at grant time and never \
-               reaches the provider field",
-    },
-    Site {
-        needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/knowledge_tool.rs",
         count: 1,
         what: "`handle_ingest_conversation`, the conversation-ingest branch of \

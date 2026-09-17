@@ -539,6 +539,8 @@ async fn drive_response(
         .checked_sub(frame)
         .unwrap_or_else(std::time::Instant::now);
 
+    let mut computer_use_challenge = None;
+    let mut computer_use_poll = tokio::time::interval(Duration::from_millis(500));
     loop {
         let now = std::time::Instant::now();
         if app.stream_start.is_none() || now.duration_since(last_draw) >= frame {
@@ -551,7 +553,10 @@ async fn drive_response(
                 match ev {
                     Some(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                         match on_key_streaming(app, k) {
-                            StreamAction::Cancel => cancel.cancel(),
+                            StreamAction::Cancel => {
+                                session.agent.extension_manager.computer_use.revoke();
+                                cancel.cancel();
+                            }
                             // Park it to run after the current turn. We do NOT
                             // push to the scrollback here: the live stream preview
                             // re-renders by truncating back to its start, which
@@ -564,6 +569,21 @@ async fn drive_response(
                     Some(Event::Paste(s)) => app.paste(&s),
                     Some(Event::Mouse(m)) => on_mouse(app, m),
                     _ => {}
+                }
+            }
+            _ = computer_use_poll.tick() => {
+                if let Ok(status) = session.agent.extension_manager.computer_use_status(session.session_id()).await {
+                    if super::computer_use_needs_prompt(&status, computer_use_challenge.as_deref()) {
+                        computer_use_challenge = Some(status.challenge_id.clone());
+                        let permission = run_permission_modal(app, tui, rx, Some(format!("Computer Use task approval\n{}", status.disclosure))).await?;
+                        if permission == Permission::AllowOnce {
+                            session.agent.extension_manager.approve_computer_use(session.session_id(), &status.challenge_id).await?;
+                            app.push_note("Computer Use allowed for this task. Press Esc or Ctrl-C to stop.");
+                        } else {
+                            session.agent.extension_manager.computer_use.revoke();
+                            if permission == Permission::Cancel { cancel.cancel(); }
+                        }
+                    }
                 }
             }
             res = stream.next() => {
@@ -709,7 +729,16 @@ async fn run_permission_modal(
     rx: &mut Events,
     prompt: Option<String>,
 ) -> Result<Permission> {
-    let options: Vec<(&'static str, &'static str)> = if prompt.is_some() {
+    let options: Vec<(&'static str, &'static str)> = if prompt
+        .as_deref()
+        .is_some_and(|text| text.starts_with("Computer Use task approval\n"))
+    {
+        vec![
+            ("Allow task", "view and control desktop for this task"),
+            ("Deny", "keep desktop control off"),
+            ("Cancel", "cancel response"),
+        ]
+    } else if prompt.is_some() {
         vec![
             ("Allow", "allow once"),
             ("Deny", "deny"),
@@ -724,10 +753,16 @@ async fn run_permission_modal(
         ]
     };
     let len = options.len();
+    let selected = usize::from(
+        options
+            .first()
+            .is_some_and(|(label, _)| *label == "Allow task"),
+    );
     app.modal = Some(PermissionModal {
         prompt,
         options,
-        selected: 0,
+        selected,
+        scroll: 0,
     });
 
     let result = loop {
@@ -742,6 +777,8 @@ async fn run_permission_modal(
         }
         let modal = app.modal.as_mut().unwrap();
         match k.code {
+            KeyCode::PageDown => modal.scroll = modal.scroll.saturating_add(5),
+            KeyCode::PageUp => modal.scroll = modal.scroll.saturating_sub(5),
             KeyCode::Up => modal.selected = (modal.selected + len - 1) % len,
             KeyCode::Down => modal.selected = (modal.selected + 1) % len,
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -758,7 +795,7 @@ async fn run_permission_modal(
 
 fn label_to_permission(label: &str) -> Permission {
     match label {
-        "Allow" => Permission::AllowOnce,
+        "Allow" | "Allow task" => Permission::AllowOnce,
         "Always allow" => Permission::AlwaysAllow,
         "Deny" => Permission::DenyOnce,
         _ => Permission::Cancel,
@@ -1399,11 +1436,15 @@ fn input_rows(input: &str, text_w: u16) -> u16 {
 fn draw_modal(f: &mut Frame, app: &App) {
     let Some(modal) = &app.modal else { return };
     let area = f.area();
-    let w = 64u16.min(area.width.saturating_sub(4));
-    let h = (modal.options.len() as u16) + 4;
+    let w = 80u16.min(area.width.saturating_sub(4));
+    let h = if modal.prompt.is_some() {
+        area.height.saturating_sub(4).min(26)
+    } else {
+        (modal.options.len() as u16 + 4).min(area.height)
+    };
     let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height.saturating_sub(h) / 2,
         width: w,
         height: h,
     };
@@ -1412,20 +1453,27 @@ fn draw_modal(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::new().fg(ACCENT))
         .title(Span::styled(
-            " Tool approval ",
+            " Tool approval · PgUp/PgDn to read ",
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
-    let inner = block.inner(rect);
+    let inner = block.inner(rect).inner(Margin::new(1, 0));
     f.render_widget(block, rect);
-
-    let mut lines = vec![Line::from(Span::styled(
-        modal
-            .prompt
-            .clone()
-            .unwrap_or_else(|| "Biorouter would like to call the above tool.".to_string()),
-        Style::default(),
-    ))];
-    lines.push(Line::default());
+    let regions = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(modal.options.len() as u16 + 1),
+    ])
+    .split(inner);
+    let prompt = modal
+        .prompt
+        .as_deref()
+        .unwrap_or("Biorouter would like to call the above tool.");
+    f.render_widget(
+        Paragraph::new(prompt)
+            .wrap(Wrap { trim: false })
+            .scroll((modal.scroll, 0)),
+        regions[0],
+    );
+    let mut lines = vec![Line::default()];
     for (i, (label, desc)) in modal.options.iter().enumerate() {
         let selected = i == modal.selected;
         let marker = if selected { "❯ " } else { "  " };
@@ -1443,10 +1491,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
             ),
         ]));
     }
-    f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner.inner(Margin::new(1, 0)),
-    );
+    f.render_widget(Paragraph::new(lines), regions[1]);
 }
 
 fn line_width(spans: &[Span]) -> usize {
@@ -1997,10 +2042,32 @@ mod tests {
             prompt: None,
             options: vec![("Allow", "allow once"), ("Deny", "deny")],
             selected: 0,
+            scroll: 0,
         });
         let text = buffer_text(&mut app, 80, 24);
         assert!(text.contains("Tool approval"));
         assert!(text.contains("Allow"));
+    }
+
+    #[test]
+    fn long_task_disclosure_scrolls_while_choices_remain_visible() {
+        let mut app = App::new(StatusInfo::default());
+        app.modal = Some(PermissionModal {
+            prompt: Some(format!(
+                "{}End of sensitive information disclosure",
+                "Computer Use on backend host\n".repeat(24)
+            )),
+            options: vec![("Allow task", "approve task"), ("Deny", "keep control off")],
+            selected: 1,
+            scroll: 0,
+        });
+        let first = buffer_text(&mut app, 80, 24);
+        assert!(first.contains("Computer Use on backend host"));
+        assert!(first.contains("Allow task"));
+        app.modal.as_mut().unwrap().scroll = 24;
+        let last = buffer_text(&mut app, 80, 24);
+        assert!(last.contains("End of sensitive information disclosure"));
+        assert!(last.contains("Deny"));
     }
 
     #[test]

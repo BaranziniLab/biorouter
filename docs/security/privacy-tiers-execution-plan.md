@@ -1,5 +1,8 @@
 # Privacy tiers — implementation plan
 
+> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+
+
 > **What this is.** The task-by-task execution plan for the privacy-tier capability system
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
 > fifty tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a

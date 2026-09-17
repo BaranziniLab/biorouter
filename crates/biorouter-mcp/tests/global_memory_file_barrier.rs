@@ -6,7 +6,7 @@
 //! closed and the window was open: `text_editor view
 //! ~/.config/biorouter/memory/clinical.txt` reads exactly what
 //! `retrieve_memories(category="clinical", is_global=true)` would have put to
-//! the user, and `computercontroller cache --delete` removes it. In Auto mode
+//! the user, and `webdocuments cache --delete` removes it. In Auto mode
 //! the developer server also relaxes its containment jail, so an absolute path
 //! anywhere resolves.
 //!
@@ -22,9 +22,9 @@
 //! *literal* references are denied one layer up, by the agent's global-memory
 //! inspector.
 
-use biorouter_mcp::computercontroller::{CacheCommand, CacheParams};
 use biorouter_mcp::developer::rmcp_developer::TextEditorParams;
-use biorouter_mcp::{global_memory_dir, ComputerControllerServer, DeveloperServer};
+use biorouter_mcp::webdocuments::{CacheCommand, CacheParams};
+use biorouter_mcp::{global_memory_dir, DeveloperServer, WebDocumentsServer};
 use rmcp::handler::server::wrapper::Parameters;
 
 const SECRET: &str = "PATIENT-SECRET-8811";
@@ -195,7 +195,7 @@ async fn ordinary_files_are_untouched_by_the_barrier() {
     );
 }
 
-/// `computercontroller`'s cache tool takes any path the model supplies and
+/// `webdocuments`'s cache tool takes any path the model supplies and
 /// reads or deletes it. It is a second generic file tool with the same reach
 /// and the same blind spot.
 #[tokio::test(flavor = "current_thread")]
@@ -204,7 +204,7 @@ async fn the_cache_tool_cannot_read_or_delete_the_global_memory_store() {
     let root = tempfile::tempdir().unwrap();
     let (_env, _store, file) = planted_store(root.path());
 
-    let server = ComputerControllerServer::new();
+    let server = WebDocumentsServer::new();
 
     let viewed = server
         .cache(Parameters(CacheParams {

@@ -192,6 +192,18 @@ impl Provider for OllamaProvider {
         crate::providers::self_hosted_affiliation(&self.resolved_base_url)
     }
 
+    fn computer_use_destination(&self) -> Option<String> {
+        self.api_client
+            .computer_use_destination("v1/chat/completions")
+    }
+
+    fn computer_use_destination_identity(&self) -> Option<String> {
+        Some(
+            self.api_client
+                .computer_use_destination_identity("v1/chat/completions"),
+        )
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }

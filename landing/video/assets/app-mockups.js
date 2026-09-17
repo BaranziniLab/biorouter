@@ -329,7 +329,7 @@
       '<div class="bw-sectionrule"></div>' +
       '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Built-in extensions (6)</div>' +
       erow('Developer', 'General development tools useful for software engineering.', true) +
-      erow('Computer Controller', 'General computer control tools that don’t require you to be a developer or engineer.', true) +
+      erow('Computer Use', 'Native desktop observation and control after task approval.', true) +
       erow('Auto Visualiser', 'Data visualization and UI generation tools.', false) +
       erow('Memory', 'Teach Biorouter your preferences as you go.', true) +
       erow('Knowledge', 'Personal, LLM-maintained knowledge bases backed by markdown folders and git history.', true) +

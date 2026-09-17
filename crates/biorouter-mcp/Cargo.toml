@@ -37,7 +37,6 @@ ammonia = "4.1"
 schemars = "1.0"
 shellexpand = "3.1.0"
 indoc = "2.0.5"
-xcap = "=0.4.0"
 reqwest = { version = "0.11", features = [
     "json",
     "rustls-tls-native-roots",
@@ -115,3 +114,6 @@ env-lock = { workspace = true }
 
 [features]
 utoipa = ["dep:utoipa"]
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

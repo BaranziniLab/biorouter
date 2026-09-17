@@ -436,6 +436,16 @@ impl Provider for VersaBedrockProvider {
         &self.name
     }
 
+    fn computer_use_destination(&self) -> Option<String> {
+        super::base::computer_use_destination_origin(&self.resolved_endpoint)
+    }
+
+    fn computer_use_destination_identity(&self) -> Option<String> {
+        Some(super::base::computer_use_destination_digest(
+            &self.resolved_endpoint,
+        ))
+    }
+
     fn restore_binding(&self) -> ProviderRestoreBinding {
         ProviderRestoreBinding::VersaBedrock {
             model: model_without_restore_marker(self.model.clone()),

@@ -277,6 +277,7 @@ pub(crate) fn survives_code_execution_filter(
     frontend_tool_names: &HashSet<String>,
 ) -> bool {
     tool_name.starts_with(code_exec_prefix)
+        || crate::security::computer_use::is_computer_use_tool(tool_name)
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
         // BR-40's separate poll tool used to need its own clause here, so a
@@ -1324,6 +1325,28 @@ mod tests {
             "todo__some_other_tool",
             &prefix,
             &no_frontend
+        ));
+    }
+
+    #[test]
+    fn computer_use_actions_stay_directly_callable_without_a_javascript_approval_wrapper() {
+        let frontend = HashSet::new();
+        for tool in crate::security::computer_use::TOOLS {
+            assert!(survives_code_execution_filter(
+                &format!("computercontroller__{tool}"),
+                "code_execution__",
+                &frontend
+            ));
+        }
+        assert!(!survives_code_execution_filter(
+            "developer__shell",
+            "code_execution__",
+            &frontend
+        ));
+        assert!(!survives_code_execution_filter(
+            "agentdrafter__list_apps",
+            "code_execution__",
+            &frontend
         ));
     }
 

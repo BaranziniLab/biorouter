@@ -1704,9 +1704,9 @@ mod tests {
             .is_some());
     }
 
-    /// `computercontroller__automation_script` carries its body under `script`.
+    /// External scripting tools can carry executable bodies under `script`.
     #[test]
-    fn h1_an_automation_script_is_scanned_like_a_command() {
+    fn h1_external_script_arguments_are_scanned_like_a_command() {
         let fake = FakeHome::new();
         let (g, env) = (fake.guard(), fake.env());
         let args = json!({ "language": "shell", "script": "cd ~/.aws\nhead -5 credentials\n" });

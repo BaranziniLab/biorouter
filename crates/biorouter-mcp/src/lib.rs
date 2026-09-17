@@ -13,6 +13,7 @@ pub mod active_work;
 pub mod agent_drafter;
 pub mod autovisualiser;
 pub mod compute_server;
+pub mod computer_use;
 pub mod computercontroller;
 pub mod datasql;
 pub mod developer;
@@ -23,6 +24,7 @@ mod memory;
 pub mod paths;
 pub mod privacy_toggle;
 pub mod secret_guard;
+pub mod webdocuments;
 
 /// Sandbox-helper entry point (BR-69). Call this as the **first line of
 /// `main()`** in every binary that may wrap a shell command (`biorouter`,
@@ -44,6 +46,7 @@ pub use computercontroller::ComputerControllerServer;
 pub use developer::rmcp_developer::DeveloperServer;
 pub use knowledge::KnowledgeServer;
 pub use memory::MemoryServer;
+pub use webdocuments::WebDocumentsServer;
 // The user-facing half of the memory feature (issue #63): what the Settings
 // surface lists, and the two deletions it offers.
 pub use memory::{
@@ -145,6 +148,7 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
         ),
         builtin!(autovisualiser, AutoVisualiserRouter),
         builtin!(computercontroller, ComputerControllerServer),
+        builtin!(webdocuments, WebDocumentsServer),
         (
             "memory",
             BuiltinDef {

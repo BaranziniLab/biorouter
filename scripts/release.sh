@@ -210,7 +210,13 @@ assert_release_source() {
 }
 
 record_release_asset() {
-  local v="$1" file="$2" manifest rel digest size tmp
+  local v="$1" file="$2" manifest rel digest size tmp runtime_target="${3:-}" runtime_evidence=""
+  if [ -n "$runtime_target" ]; then
+    case "$runtime_target" in
+      darwin-*) runtime_evidence="$(python3 "$ROOT/scripts/verify-computer-use-artifact.py" "$file" "$runtime_target" --require-signed)" ;;
+      *) runtime_evidence="$(python3 "$ROOT/scripts/verify-computer-use-artifact.py" "$file" "$runtime_target")" ;;
+    esac
+  fi
   assert_release_source "$v"
   [ -f "$file" ] || die "release artifact missing: $file"
   case "$file" in
@@ -221,8 +227,11 @@ record_release_asset() {
   digest="$(release_file_sha256 "$file")"
   size="$(release_file_size "$file")"
   tmp="$(mktemp "${manifest}.XXXXXX")"
-  awk -F '\t' -v rel="$rel" '!( $1 == "asset" && $2 == rel )' "$manifest" >"$tmp"
+  awk -F '\t' -v rel="$rel" '!( ($1 == "asset" || $1 == "computer_use") && $2 == rel )' "$manifest" >"$tmp"
   printf 'asset\t%s\t%s\t%s\n' "$rel" "$digest" "$size" >>"$tmp"
+  if [ -n "$runtime_evidence" ]; then
+    printf 'computer_use\t%s\t%s\n' "$rel" "$runtime_evidence" >>"$tmp"
+  fi
   mv "$tmp" "$manifest"
   log "recorded release provenance: $(basename "$file")"
 }
@@ -236,6 +245,13 @@ verify_release_provenance() {
     rel="${file#"$ROOT"/}"
     count="$(awk -F '\t' -v rel="$rel" '$1 == "asset" && $2 == rel { count++ } END { print count+0 }' "$manifest")"
     [ "$count" -eq 1 ] || die "release provenance must contain exactly one entry for $rel"
+    case "$file" in
+      *.yml) ;;
+      *)
+        count="$(awk -F '\t' -v rel="$rel" '$1 == "computer_use" && $2 == rel { count++ } END { print count+0 }' "$manifest")"
+        [ "$count" -eq 1 ] || die "release provenance must attest helper bytes exactly once for $rel"
+        ;;
+    esac
     entry="$(awk -F '\t' -v rel="$rel" '$1 == "asset" && $2 == rel { print $3 "\t" $4 }' "$manifest")"
     IFS=$'\t' read -r digest size <<<"$entry"
     [ -f "$file" ] || die "release artifact missing: $file"
@@ -248,6 +264,9 @@ verify_release_provenance() {
   [ "$actual_count" -eq "$expected_count" ] \
     || die "release provenance contains $actual_count assets; expected exactly $expected_count"
   [ "$expected_count" -eq 10 ] || die "internal release asset list changed; expected exactly 10 assets"
+  local helper_count
+  helper_count="$(awk -F '\t' '$1 == "computer_use" { count++ } END { print count+0 }' "$manifest")"
+  [ "$helper_count" -eq 9 ] || die "release provenance must attest the helper bytes in all 9 install/update archives"
   log "release provenance verified for 10 assets at $(release_provenance_value "$manifest" source_sha)"
 }
 
@@ -376,6 +395,9 @@ cmd_backends() {
      $WIN_DLL_STAGE"
 
   cmd_linux-backend "$v"
+  for helper_target in darwin-arm64 darwin-x64 win32-x64 linux-x64; do
+    python3 "$ROOT/scripts/computer-use-runtime.py" build "$helper_target" --signing-identity "$SIGN_IDENTITY"
+  done
   assert_release_source "$v"
   log "all 4 backends compiled"
 }
@@ -389,6 +411,7 @@ stage_bin() { # <src-dir> <ext>
 cmd_mac-arm64() {
   local v="$1"; assert_release_source "$v"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
   ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
+  python3 "$ROOT/scripts/computer-use-runtime.py" verify darwin-arm64 --require-signed
   stage_bin "$ROOT/target/release"
   log "building + notarizing macOS arm64 dmg"
   ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:default )
@@ -399,22 +422,23 @@ cmd_mac-arm64() {
   local dmg="$DESK/out/make/Biorouter-$v-arm64.dmg"
   local updater_zip="$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip"
   [ -f "$dmg" ] || die "mac-arm64 reported success but produced no dmg at $dmg"
-  record_release_asset "$v" "$dmg"
-  record_release_asset "$v" "$updater_zip"
+  record_release_asset "$v" "$dmg" "darwin-arm64"
+  record_release_asset "$v" "$updater_zip" "darwin-arm64"
   log "arm64 dmg: $dmg"
 }
 
 cmd_mac-intel() {
   local v="$1"; assert_release_source "$v"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
   ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
+  python3 "$ROOT/scripts/computer-use-runtime.py" verify darwin-x64 --require-signed
   stage_bin "$ROOT/target/x86_64-apple-darwin/release"
   log "building + notarizing macOS Intel dmg"
   ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:intel )
   local dmg="$DESK/out/make/Biorouter-$v-x64.dmg"
   local updater_zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
   [ -f "$dmg" ] || die "mac-intel reported success but produced no dmg at $dmg"
-  record_release_asset "$v" "$dmg"
-  record_release_asset "$v" "$updater_zip"
+  record_release_asset "$v" "$dmg" "darwin-x64"
+  record_release_asset "$v" "$updater_zip" "darwin-x64"
   log "x64 dmg: $dmg"
 }
 
@@ -429,7 +453,7 @@ cmd_windows() {
   ( cd "$DESK" && npm run bundle:windows )
   local zip="$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
   [ -f "$zip" ] || die "windows reported success but produced no zip at $zip"
-  record_release_asset "$v" "$zip"
+  record_release_asset "$v" "$zip" "win32-x64"
   log "windows zip: $zip"
 }
 
@@ -452,8 +476,8 @@ cmd_linux() {
   local rpm="$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
   [ -f "$deb" ] || die "linux phase reported success but produced no deb at $deb"
   [ -f "$rpm" ] || die "linux phase reported success but produced no rpm at $rpm"
-  record_release_asset "$v" "$deb"
-  record_release_asset "$v" "$rpm"
+  record_release_asset "$v" "$deb" "linux-x64"
+  record_release_asset "$v" "$rpm" "linux-x64"
   log "deb: $deb"
   log "rpm: $rpm"
   # `npm ci`, NOT `npm install`: install rewrites package-lock.json, and the
@@ -475,8 +499,8 @@ cmd_cli-linux() {
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" ] || die "linux backend missing — run: scripts/release.sh backends $v"
   log "building CLI-only Linux packages (deb + rpm)"
   bash "$ROOT/scripts/build-cli-linux-packages.sh" "$v"
-  record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
-  record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
+  record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" "linux-x64"
+  record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm" "linux-x64"
   log "cli deb: $ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   log "cli rpm: $ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
 }

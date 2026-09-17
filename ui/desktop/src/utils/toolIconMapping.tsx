@@ -15,7 +15,6 @@ import {
   Globe,
   Monitor,
   Search,
-  Settings,
   Terminal,
   Wrench,
 } from '../components/icons/app-icons';
@@ -43,10 +42,16 @@ export const getToolIcon = (toolName: string): React.ComponentType<ToolIconProps
     case 'retrieve_memories':
       return BookMarked;
 
-    // Computer Controller Extension Tools
-    case 'automation_script':
-      return Settings;
-    case 'computer_control':
+    // Computer Use Extension Tools
+    case 'list_apps':
+    case 'get_app_state':
+    case 'click':
+    case 'perform_secondary_action':
+    case 'scroll':
+    case 'drag':
+    case 'type_text':
+    case 'press_key':
+    case 'set_value':
       return Monitor;
     case 'web_scrape':
       return Globe;
@@ -100,6 +105,8 @@ export const getExtensionIcon = (extensionName: string): React.ComponentType<Too
       return Bookmark;
     case 'computercontroller':
       return Monitor;
+    case 'webdocuments':
+      return Globe;
     default:
       return Wrench;
   }

@@ -2442,6 +2442,9 @@ async fn stop_agent(
     let session_id = payload.session_id;
     let session = authorize_agent_control(&state, &session_id, &headers).await?;
     let stop_guard = state.begin_agent_stop(&session_id);
+    if let Some(agent) = state.peek_agent(&session_id).await {
+        agent.extension_manager.computer_use.revoke();
+    }
     let is_subagent = session.session_type == SessionType::SubAgent;
     if is_subagent {
         state.abandon_pending_continuations_for_session(&session_id);

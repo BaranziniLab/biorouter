@@ -1,5 +1,8 @@
 # Computer Controller — executed test results
 
+> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+
+
 > **What this is.** The executed outcomes of the 2026-06-20 Computer Controller hardening pass: the code changes made, the automated tests added, the live Xiaomi MiMo run results, and the finding that MiMo vision is endpoint-specific.
 > **Status:** Historical record — the pass completed on 2026-06-20, and every change listed here (honest `osascript` errors, primary-display default, substring window match, MiMo `with_vision()`) shipped in that commit.
 > **Audience:** maintainers working on the Computer Controller extension.

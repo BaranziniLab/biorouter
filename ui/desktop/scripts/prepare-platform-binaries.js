@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fetchLlamaServer } = require('./fetch-llama-server');
+const { stageComputerUse } = require('./computer-use-resources');
 
 // Paths
 const appRoot = path.join(__dirname, '..');
@@ -198,11 +199,13 @@ function assertNoForeignBinaries(targetPlatform) {
 
   if (offenders.length > 0) {
     const label = targetPlatform === 'darwin' ? 'macOS' : 'Linux';
-    console.error(`\n❌ PACKAGING ERROR: ${offenders.length} foreign executable(s) in the ${label} bundle:`);
+    console.error(
+      `\n❌ PACKAGING ERROR: ${offenders.length} foreign executable(s) in the ${label} bundle:`
+    );
     for (const o of offenders.slice(0, 40)) console.error(`   - ${o}`);
     if (offenders.length > 40) console.error(`   ... and ${offenders.length - 40} more`);
     console.error('\nThese belong to another platform and must not ship. If they are');
-    console.error('under llamacpp/, the wrong platform\'s sidecar was fetched.');
+    console.error("under llamacpp/, the wrong platform's sidecar was fetched.");
     process.exit(1);
   }
 }
@@ -273,6 +276,8 @@ function preparePlatformBinaries() {
   const targetArch = process.env.ELECTRON_ARCH || process.arch;
 
   console.log(`Preparing binaries for platform: ${targetPlatform} (${targetArch})`);
+
+  stageComputerUse(targetPlatform, targetArch);
 
   // First copy platform-specific files if needed
   copyPlatformFiles(targetPlatform);

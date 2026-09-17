@@ -459,7 +459,7 @@ Agent Drafter tools (`create_app` → `build_app` → `launch_app`) via
 | App | Extensions | What it does |
 |-----|-----------|--------------|
 | spoke-network-explorer | (chart-block) | Natural language → SPOKE graph relationships + **AI-generated inline charts** |
-| web-research-assistant | computercontroller | Query → web search → sourced markdown answer |
+| web-research-assistant | webdocuments | Query → web search → sourced markdown answer |
 | pathway-explainer | — | Pathway: overview / steps / genes / regulation |
 | gene-function-explorer | — | Gene → function, pathways, expression, disease |
 | variant-interpreter | — | Variant → functional impact + ACMG-style evidence |

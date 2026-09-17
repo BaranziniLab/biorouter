@@ -1,7 +1,3 @@
-import {
-  initializeBundledExtensions,
-  syncBundledExtensions,
-} from '../components/settings/extensions';
 import type { ExtensionConfig, FixedExtensionEntry } from '../components/ConfigContext';
 import { Workflow, updateAgentProvider, updateFromSession } from '../api';
 import { userActionHeaders } from './userAction';
@@ -23,7 +19,7 @@ export const initializeSystem = async (
   sessionId: string,
   provider: string,
   model: string,
-  options?: {
+  _options?: {
     getExtensions?: (b: boolean) => Promise<FixedExtensionEntry[]>;
     addExtension?: (name: string, config: ExtensionConfig, enabled: boolean) => Promise<void>;
     workflowParameters?: Record<string, string> | null;
@@ -65,20 +61,6 @@ export const initializeSystem = async (
       headers: await userActionHeaders(),
       throwOnError: true,
     });
-
-    if (!options?.getExtensions || !options?.addExtension) {
-      console.warn('Extension helpers not provided in alpha mode');
-      return;
-    }
-
-    // Initialize or sync built-in extensions into config.yaml
-    let refreshedExtensions = await options.getExtensions(false);
-
-    if (refreshedExtensions.length === 0) {
-      await initializeBundledExtensions(options.addExtension);
-    } else {
-      await syncBundledExtensions(refreshedExtensions, options.addExtension);
-    }
   } catch (error) {
     console.error('Failed to initialize agent:', error);
     throw error;

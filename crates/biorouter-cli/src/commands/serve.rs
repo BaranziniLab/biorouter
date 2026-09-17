@@ -15,16 +15,12 @@
 //! matches what the desktop application already does, so the product has one
 //! supervision model rather than two.
 //!
-//! # Why the child's standard input is closed
+//! # Scoped computer-use approvals
 //!
-//! It is where the daemon would read a proof-of-user digest (issue #56, DR-16),
-//! and browser-served Biorouter deliberately installs none: a browser session
-//! cannot change its model or provider, so the tier implied by the operator's
-//! choice holds for every session in that daemon. Decision SD-1 in
-//! `docs/deployment/serve-decisions.md` has the reasoning. This is a deliberate
-//! configuration, not a missing feature — but it does mean the daemon a `serve`
-//! session talks to is less capable than the one the desktop application
-//! starts, and anything assuming otherwise is wrong.
+//! By default the daemon receives no human proof. The explicit interactive
+//! `--computer-use-approval` setup sends a scoped digest on stdin. The passphrase
+//! remains with the operator, who enters it in the browser when approving a
+//! task. This grants no authority over providers, privacy tiers, or extensions.
 //!
 //! # Why the daemon cannot outlive this command
 //!
@@ -96,7 +92,9 @@ pub async fn handle_serve(
     no_token: bool,
     web_dir: Option<PathBuf>,
     open_browser: bool,
+    computer_use_approval: bool,
 ) -> Result<()> {
+    let computer_use_digest = configure_computer_use_approval(computer_use_approval)?;
     let bind_is_loopback = host_is_loopback(&host);
 
     // A credential that is optional on an exposed port is not a credential; it
@@ -165,8 +163,11 @@ pub async fn handle_serve(
         // value makes "a serve daemon never admits a `file:` page" a property of
         // the spawn rather than of whoever's shell this ran in.
         .env_remove("BIOROUTER_RENDERER_ORIGIN")
-        // See the module documentation: no proof-of-user digest, on purpose.
-        .stdin(Stdio::null())
+        .stdin(if computer_use_digest.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         // SD-12: and this daemon says so. The desktop launcher sets
         // `BIOROUTER_USER_ACTION_EXPECTED` to declare that it *does* send a
         // digest, which makes a daemon that receives none refuse rather than
@@ -184,6 +185,12 @@ pub async fn handle_serve(
         .with_context(|| format!("could not start {}", daemon.display()))?;
 
     let outcome: Result<()> = async {
+        if let Some(digest) = computer_use_digest {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin = child.stdin.take().context("daemon approval pipe is unavailable")?;
+            stdin.write_all(format!("computer-use:{digest}\n").as_bytes()).await?;
+            stdin.shutdown().await?;
+        }
         tokio::select! {
             ready = wait_until_ready(&host, port, &mut child) => ready?,
             _ = stop.recv() => {
@@ -194,6 +201,10 @@ pub async fn handle_serve(
 
         let url = browser_url(&host, port, browser_token.value());
         print_banner(&url, &host, port, &browser_token, bind_is_loopback);
+        if computer_use_approval {
+            eprintln!("  Computer Use approval is configured. Enter your approval key in the browser when approving a task.");
+            eprintln!("  Computer Use controls this backend host's desktop, not a remote browser's device.");
+        }
         if open_browser {
             let _ = webbrowser::open(&url);
         }
@@ -244,6 +255,35 @@ fn print_banner(
     println!("  {}\n", browser_token.provenance());
     println!("  The model is whichever `biorouter configure` chose; a browser cannot change it.");
     println!("  Press Ctrl-C to stop.\n");
+}
+
+fn configure_computer_use_approval(enabled: bool) -> Result<Option<String>> {
+    if !enabled {
+        return Ok(None);
+    }
+    super::needs_terminal::require(
+        super::needs_terminal::prompt_can_run(),
+        "Computer Use approval setup requires an interactive terminal; no flag, environment variable, or piped input can supply the approval key.",
+    )?;
+    eprintln!("Choose a separate Computer Use approval key (at least 16 characters). Keep it outside chats and enter it only in the browser approval field. It is never saved.");
+    let key = zeroize::Zeroizing::new(
+        cliclack::password("Computer Use approval key")
+            .mask('▪')
+            .interact()?,
+    );
+    if key.chars().count() < 16 {
+        bail!("Computer Use approval key must contain at least 16 characters.");
+    }
+    let repeated = zeroize::Zeroizing::new(
+        cliclack::password("Confirm approval key")
+            .mask('▪')
+            .interact()?,
+    );
+    if key.as_str() != repeated.as_str() {
+        bail!("Computer Use approval keys do not match.");
+    }
+    use sha2::{Digest, Sha256};
+    Ok(Some(format!("{:x}", Sha256::digest(key.as_bytes()))))
 }
 
 /// The requests to stop that `serve` honours: SIGINT and SIGTERM on Unix,

@@ -1,0 +1,1630 @@
+diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/MCPAppRuntime.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/MCPAppRuntime.swift
+index cc6d657..4d35f73 100644
+--- a/apps/OpenComputerUse/Sources/OpenComputerUse/MCPAppRuntime.swift
++++ b/apps/OpenComputerUse/Sources/OpenComputerUse/MCPAppRuntime.swift
+@@ -5,7 +5,6 @@ import OpenComputerUseKit
+ final class MCPAppRuntime: NSObject, NSApplicationDelegate {
+     private let server: StdioMCPServer
+     private var runtimeError: Error?
+-    private var turnEndedObserver: NSObjectProtocol?
+ 
+     private init(server: StdioMCPServer) {
+         self.server = server
+@@ -26,22 +25,10 @@ final class MCPAppRuntime: NSObject, NSApplicationDelegate {
+     }
+ 
+     func applicationDidFinishLaunching(_ notification: Notification) {
+-        turnEndedObserver = DistributedNotificationCenter.default().addObserver(
+-            forName: openComputerUseTurnEndedNotificationName,
+-            object: nil,
+-            queue: .main
+-        ) { _ in
+-            Task { @MainActor in
+-                resetOpenComputerUseVisualCursor()
+-            }
+-        }
+         Thread.detachNewThreadSelector(#selector(processStandardIO), toTarget: self, with: nil)
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+-        if let turnEndedObserver {
+-            DistributedNotificationCenter.default().removeObserver(turnEndedObserver)
+-        }
+     }
+ 
+     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
+index bceef58..7ed6f6a 100644
+--- a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
++++ b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
+@@ -32,7 +32,11 @@ enum MacOSAppAgentProxy {
+ 
+     @MainActor
+     static func runProxy(command: OpenComputerUseCLICommand, arguments: [String]) throws -> Int32 {
+-        let socketPath = defaultSocketPath()
++        guard let namespace = ProcessInfo.processInfo.environment[openComputerUseAppAgentSocketNamespaceEnvironmentKey],
++              !namespace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            throw OpenComputerUseCLIError(message: "BioRouter native helper requires an installation/version socket namespace")
++        }
++        let socketPath = try defaultSocketPath()
+         let client = try connectOrLaunchAgent(socketPath: socketPath)
+ 
+         switch command {
+@@ -65,15 +69,22 @@ enum MacOSAppAgentProxy {
+         isRunningFromOpenComputerUseAppBundle && getppid() == 1
+     }
+ 
+-    private static func defaultSocketPath() -> String {
+-        FileManager.default.temporaryDirectory
++    private static func defaultSocketPath() throws -> String {
++        // TMPDIR may be chat-scoped for bridge files; the permission agent needs
++        // the OS-owned per-user directory so connections share one signed app.
++        let size = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
++        guard size > 0 else { throw OpenComputerUseCLIError(message: "Unable to resolve the user runtime directory") }
++        var buffer = [CChar](repeating: 0, count: size)
++        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, size) > 0 else {
++            throw OpenComputerUseCLIError(message: "Unable to resolve the user runtime directory")
++        }
++        return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
+             .appendingPathComponent(
+                 openComputerUseAppAgentSocketFileName(
+                     namespace: ProcessInfo.processInfo.environment[openComputerUseAppAgentSocketNamespaceEnvironmentKey]
+                 )
+             )
+-            .standardizedFileURL
+-            .path
++            .standardizedFileURL.path
+     }
+ 
+     @MainActor
+@@ -87,8 +98,7 @@ enum MacOSAppAgentProxy {
+                 return client
+             }
+ 
+-            _ = try? client.request(["kind": "terminate"])
+-            unlink(socketPath)
++            throw OpenComputerUseCLIError(message: "Native helper identity mismatch at the installation socket; restart the matching BioRouter helper before retrying.")
+         } else {
+             unlink(socketPath)
+         }
+@@ -102,7 +112,8 @@ enum MacOSAppAgentProxy {
+ 
+         let deadline = Date().addingTimeInterval(10)
+         while Date() < deadline {
+-            if let client = AppAgentSocketClient.connect(path: socketPath) {
++            if let client = AppAgentSocketClient.connect(path: socketPath),
++               (try? client.isCurrentAgent(for: appURL)) == true {
+                 return client
+             }
+             Thread.sleep(forTimeInterval: 0.05)
+@@ -160,7 +171,6 @@ private struct CLIProxyResponse {
+ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
+     private let socketPath: String
+     private var listener: AppAgentSocketListener?
+-    private var turnEndedObserver: NSObjectProtocol?
+ 
+     private init(socketPath: String) {
+         self.socketPath = socketPath
+@@ -176,15 +186,7 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
+     }
+ 
+     func applicationDidFinishLaunching(_ notification: Notification) {
+-        turnEndedObserver = DistributedNotificationCenter.default().addObserver(
+-            forName: openComputerUseTurnEndedNotificationName,
+-            object: nil,
+-            queue: .main
+-        ) { _ in
+-            Task { @MainActor in
+-                resetOpenComputerUseVisualCursor()
+-            }
+-        }
++
+ 
+         do {
+             let listener = try AppAgentSocketListener(path: socketPath)
+@@ -197,9 +199,6 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+-        if let turnEndedObserver {
+-            DistributedNotificationCenter.default().removeObserver(turnEndedObserver)
+-        }
+         listener?.stop()
+     }
+ 
+@@ -253,6 +252,11 @@ private final class AppAgentSocketListener: @unchecked Sendable {
+             throw POSIXError(.init(rawValue: errno) ?? .EIO)
+         }
+ 
++        guard chmod(path, S_IRUSR | S_IWUSR) == 0 else {
++            close(socketFD)
++            unlink(path)
++            throw POSIXError(.init(rawValue: errno) ?? .EIO)
++        }
+         guard listen(socketFD, 16) == 0 else {
+             close(socketFD)
+             throw POSIXError(.init(rawValue: errno) ?? .EIO)
+@@ -287,6 +291,8 @@ private final class AppAgentSocketListener: @unchecked Sendable {
+                 continue
+             }
+ 
++            var noSignal: Int32 = 1
++            _ = setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+             Thread.detachNewThread {
+                 AppAgentConnection(fileDescriptor: clientFD).run()
+             }
+@@ -315,6 +321,12 @@ private final class AppAgentConnection: @unchecked Sendable {
+         }
+     }
+ 
++    private var ownerDisconnected: Bool {
++        var byte: UInt8 = 0
++        let count = recv(fileDescriptor, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
++        return count == 0 || (count < 0 && errno != EAGAIN && errno != EINTR)
++    }
++
+     private func handle(requestLine: String) -> [String: Any] {
+         do {
+             guard let request = try JSONSerialization.jsonObject(with: Data(requestLine.utf8)) as? [String: Any],
+@@ -331,16 +343,17 @@ private final class AppAgentConnection: @unchecked Sendable {
+                     "executableURL": Bundle.main.executableURL?.standardizedFileURL.path ?? "",
+                     "processStartTime": appAgentProcessStartDate.timeIntervalSince1970,
+                 ]
+-            case "terminate":
+-                Task { @MainActor in
+-                    NSApp.terminate(nil)
+-                }
+-                return ["ok": true]
+             case "mcp":
+                 let line = request["line"] as? String ?? ""
+                 let environment = request["environment"] as? [String: String] ?? [:]
+                 let response = AppAgentEnvironment.withOverrides(environment) {
+-                    server.handle(line: line)
++                    ComputerUseCancellation.withProbe({ self.ownerDisconnected }) {
++                        defer {
++                            // All overlay mutation and cleanup stays under the same owner lock.
++                            DispatchQueue.main.sync { resetOpenComputerUseVisualCursor() }
++                        }
++                        return server.handle(line: line)
++                    }
+                 }
+                 if let response {
+                     return ["response": response]
+@@ -350,7 +363,10 @@ private final class AppAgentConnection: @unchecked Sendable {
+                 let arguments = request["arguments"] as? [String] ?? []
+                 let environment = request["environment"] as? [String: String] ?? [:]
+                 let response = AppAgentEnvironment.withOverrides(environment) {
+-                    runCLI(arguments: arguments)
++                    ComputerUseCancellation.withProbe({ self.ownerDisconnected }) {
++                        defer { DispatchQueue.main.sync { resetOpenComputerUseVisualCursor() } }
++                        return runCLI(arguments: arguments)
++                    }
+                 }
+                 return [
+                     "stdout": response.stdout,
+@@ -380,6 +396,8 @@ private final class AppAgentConnection: @unchecked Sendable {
+                 }
+                 return CLIProxyResponse(stdout: "", stderr: "", exitCode: EXIT_SUCCESS)
+ 
++            case .diagnostics:
++                return CLIProxyResponse(stdout: try nativeRuntimeDiagnosticsJSON() + "\n", stderr: "", exitCode: EXIT_SUCCESS)
+             case .doctor:
+                 let permissions = PermissionDiagnostics.current()
+                 if !permissions.missingPermissions.isEmpty {
+@@ -420,20 +438,19 @@ private enum AppAgentEnvironment {
+     private static let lock = NSLock()
+ 
+     static func withOverrides<T>(_ overrides: [String: String], _ body: () throws -> T) rethrows -> T {
+-        guard !overrides.isEmpty else {
+-            return try body()
+-        }
+-
+         lock.lock()
+         defer { lock.unlock() }
+ 
++        let overrides = overrides.filter { $0.key.hasPrefix("OPEN_COMPUTER_USE_") }
++        let keys = Set(overrides.keys).union(ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("OPEN_COMPUTER_USE_") })
+         let previousValues = Dictionary(
+-            uniqueKeysWithValues: overrides.keys.map { key in
++            uniqueKeysWithValues: keys.map { key in
+                 (key, ProcessInfo.processInfo.environment[key])
+             }
+         )
+-        for (key, value) in overrides {
+-            setenv(key, value, 1)
++        for key in keys {
++            if let value = overrides[key] { setenv(key, value, 1) }
++            else { unsetenv(key) }
+         }
+ 
+         defer {
+@@ -538,9 +555,12 @@ private final class AppAgentSocketClient: @unchecked Sendable {
+         guard let executableURL = executableURL(for: expectedBundleURL),
+               let modifiedAt = try? executableURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+         else {
+-            return true
++            return false
+         }
+ 
++        guard response["executableURL"] as? String == executableURL.path,
++              let expectedIdentifier = Bundle(url: appURL)?.bundleIdentifier,
++              response["bundleIdentifier"] as? String == expectedIdentifier else { return false }
+         return processStartTime + 0.5 >= modifiedAt.timeIntervalSince1970
+     }
+ 
+diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift
+index a323e02..8daea47 100644
+--- a/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift
++++ b/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift
+@@ -48,6 +48,8 @@ enum OpenComputerUseMain {
+             } else {
+                 try server.run()
+             }
++        case .diagnostics:
++            print(try nativeRuntimeDiagnosticsJSON())
+         case .doctor:
+             let permissions = PermissionDiagnostics.current()
+             print(permissions.summary)
+diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
+index 7a5c555..3bece52 100644
+--- a/apps/OpenComputerUseLinux/main.go
++++ b/apps/OpenComputerUseLinux/main.go
+@@ -27,7 +27,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
+ //go:embed runtime.py
+ var linuxRuntimeScript string
+ 
+-const serverInstructions = "Computer Use tools let you interact with Linux desktop apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, and set_value.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Linux actions use AT-SPI2 semantic actions and editable text APIs first. Coordinate mouse and key synthesis are best-effort fallbacks and are not a universal Wayland background input model."
++const serverInstructions = "Computer Use tools let you interact with Linux desktop apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Linux actions use AT-SPI2 semantic actions and editable text APIs first. Coordinate mouse and key synthesis are best-effort fallbacks and are not a universal Wayland background input model."
+ 
+ type toolDefinition struct {
+ 	Name        string         `json:"name"`
+@@ -135,6 +135,9 @@ func (s *appSnapshot) result() toolCallResult {
+ }
+ 
+ type linuxRequest struct {
++	Display      *int           `json:"display,omitempty"`
++	WindowTitle  string         `json:"window_title,omitempty"`
++	ListOnly     bool           `json:"list_only,omitempty"`
+ 	Tool         string         `json:"tool"`
+ 	App          string         `json:"app,omitempty"`
+ 	Element      *elementRecord `json:"element,omitempty"`
+@@ -172,10 +175,11 @@ func (limit textLimit) runtimeValue() any {
+ }
+ 
+ type linuxResponse struct {
+-	OK       bool         `json:"ok"`
+-	Text     string       `json:"text,omitempty"`
+-	Error    string       `json:"error,omitempty"`
+-	Snapshot *appSnapshot `json:"snapshot,omitempty"`
++	CapturePNG string       `json:"capturePngBase64,omitempty"`
++	OK         bool         `json:"ok"`
++	Text       string       `json:"text,omitempty"`
++	Error      string       `json:"error,omitempty"`
++	Snapshot   *appSnapshot `json:"snapshot,omitempty"`
+ }
+ 
+ type service struct {
+@@ -188,6 +192,8 @@ func newService() *service {
+ 
+ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 	switch name {
++	case "screen_capture":
++		return s.screenCapture(args)
+ 	case "list_apps":
+ 		return s.listApps()
+ 	case "get_app_state":
+@@ -250,6 +256,55 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 	}
+ }
+ 
++func (s *service) screenCapture(args map[string]any) toolCallResult {
++	request := linuxRequest{Tool: "screen_capture"}
++	for key := range args {
++		if key != "display" && key != "window_title" && key != "list_only" {
++			return textResult("Unknown screen_capture argument: "+key, true)
++		}
++	}
++	if raw, exists := args["display"]; exists {
++		value := optionalFloat(args, "display")
++		if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0 || *value > 2147483647 || math.Trunc(*value) != *value {
++			return textResult(fmt.Sprintf("display must be a nonnegative integer; received %v", raw), true)
++		}
++		index := int(*value)
++		request.Display = &index
++	}
++	if raw, exists := args["window_title"]; exists {
++		title, ok := raw.(string)
++		if !ok || strings.TrimSpace(title) == "" {
++			return textResult("window_title must be a nonempty string", true)
++		}
++		request.WindowTitle = title
++	}
++	if raw, exists := args["list_only"]; exists {
++		value, ok := raw.(bool)
++		if !ok {
++			return textResult("list_only must be a boolean", true)
++		}
++		request.ListOnly = value
++	}
++	if request.Display != nil && request.WindowTitle != "" {
++		return textResult("display and window_title are mutually exclusive", true)
++	}
++	response, err := runPython(request)
++	if err != nil {
++		return textResult(err.Error(), true)
++	}
++	if !response.OK {
++		return textResult(response.Error, true)
++	}
++	result := textResult(response.Text, false)
++	if !request.ListOnly {
++		if response.CapturePNG == "" {
++			return textResult("Native capture returned no image", true)
++		}
++		result.Content = append(result.Content, contentItem{Type: "image", Data: response.CapturePNG, MimeType: "image/png"})
++	}
++	return result
++}
++
+ func (s *service) listApps() toolCallResult {
+ 	response, err := runPython(linuxRequest{Tool: "list_apps"})
+ 	if err != nil {
+@@ -519,7 +574,7 @@ func runPython(request linuxRequest) (*linuxResponse, error) {
+ 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+ 	defer cancel()
+ 
+-	cmd := exec.CommandContext(ctx, "python3", scriptPath, operationPath)
++	cmd := exec.CommandContext(ctx, "/usr/bin/python3", scriptPath, operationPath)
+ 	cmd.Env = linuxRuntimeEnvironment(os.Environ())
+ 	var stderr bytes.Buffer
+ 	cmd.Stderr = &stderr
+@@ -1138,6 +1193,16 @@ func globalPointerFallbacksEnabled() bool {
+ 
+ func toolDefinitions() []toolDefinition {
+ 	return []toolDefinition{
++		{
++			Name:        "screen_capture",
++			Description: "Capture a display or a uniquely matching window title. Omit target for the primary display. list_only returns display/window topology without pixels. Window capture on Windows/Linux returns visible screen pixels and may include occluding windows.",
++			Annotations: readOnlyAnnotations(),
++			InputSchema: objectSchema(map[string]any{
++				"display":      map[string]any{"type": "integer", "minimum": 0, "description": "Zero-based display index from list_only"},
++				"window_title": map[string]any{"type": "string", "minLength": 1, "description": "Case-insensitive window title substring; must match exactly one window"},
++				"list_only":    map[string]any{"type": "boolean", "default": false},
++			}, nil),
++		},
+ 		{
+ 			Name:        "click",
+ 			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
+@@ -1312,6 +1377,23 @@ func runCLI(args []string, stdout io.Writer) error {
+ 	case "mcp":
+ 		return runMCP(os.Stdin, stdout)
+ 	case "doctor":
++		if len(args) == 2 && args[1] == "--json" {
++			response, err := runPython(linuxRequest{Tool: "diagnostics"})
++			if err == nil && response.OK {
++				fmt.Fprintln(stdout, response.Text)
++				return nil
++			}
++			message := "Native bridge dependencies are unavailable"
++			if err != nil {
++				message = err.Error()
++			} else if response != nil {
++				message = response.Error
++			}
++			return json.NewEncoder(stdout).Encode(map[string]any{
++				"state": "missing_dependency", "desktop_available": false,
++				"accessibility": false, "screen_recording": false, "capture_available": false, "message": message,
++			})
++		}
+ 		fmt.Fprintln(stdout, "Linux runtime: AT-SPI2 and GDK run against the signed-in desktop user's accessibility session. When Codex starts without XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS, or display variables, open-computer-use tries to discover the same user's session from /run/user/<uid> and desktop processes.")
+ 		return nil
+ 	case "list-apps":
+diff --git a/apps/OpenComputerUseLinux/main_test.go b/apps/OpenComputerUseLinux/main_test.go
+index 73ef1db..e09fd30 100644
+--- a/apps/OpenComputerUseLinux/main_test.go
++++ b/apps/OpenComputerUseLinux/main_test.go
+@@ -11,8 +11,8 @@ import (
+ )
+ 
+ func TestToolDefinitionCount(t *testing.T) {
+-	if got := len(toolDefinitions()); got != 9 {
+-		t.Fatalf("toolDefinitions() count = %d, want 9", got)
++	if got := len(toolDefinitions()); got != 10 {
++		t.Fatalf("toolDefinitions() count = %d, want 10", got)
+ 	}
+ }
+ 
+@@ -383,3 +383,29 @@ func shortTempDir(t *testing.T) string {
+ 	})
+ 	return path
+ }
++
++func TestScreenCaptureRejectsMalformedArguments(t *testing.T) {
++	for _, args := range []map[string]any{
++		{"display": -1.0}, {"display": 1.5}, {"display": true},
++		{"window_title": ""}, {"window_title": 1}, {"list_only": "true"},
++		{"display": 0.0, "window_title": "example"}, {"unexpected": true},
++	} {
++		result := newService().callTool("screen_capture", args)
++		if !result.IsError {
++			t.Fatalf("accepted malformed capture args: %#v", args)
++		}
++	}
++}
++
++func TestScreenCaptureSchema(t *testing.T) {
++	for _, tool := range toolDefinitions() {
++		if tool.Name == "screen_capture" {
++			properties := tool.InputSchema["properties"].(map[string]any)
++			if len(properties) != 3 {
++				t.Fatalf("capture properties: %#v", properties)
++			}
++			return
++		}
++	}
++	t.Fatal("screen_capture missing")
++}
+diff --git a/apps/OpenComputerUseLinux/runtime.py b/apps/OpenComputerUseLinux/runtime.py
+index 6c0f248..1723bfd 100644
+--- a/apps/OpenComputerUseLinux/runtime.py
++++ b/apps/OpenComputerUseLinux/runtime.py
+@@ -770,8 +770,104 @@ def scroll_element(direction, pages):
+         time.sleep(0.04)
+ 
+ 
++def screen_capture(operation):
++    if Gdk is None:
++        raise RuntimeError("missing_dependency: GDK 3 is required for native capture")
++    display = Gdk.Display.get_default()
++    if display is None:
++        raise RuntimeError("desktop_unavailable: no GDK display")
++    displays = []
++    primary = display.get_primary_monitor()
++    for index in range(display.get_n_monitors()):
++        monitor = display.get_monitor(index)
++        geometry = monitor.get_geometry()
++        displays.append({"index": index, "name": monitor.get_model(),
++                         "primary": monitor == primary,
++                         "scale": monitor.get_scale_factor(),
++                         "bounds": frame(geometry.x, geometry.y, geometry.width, geometry.height)})
++    windows = []
++    for app in iter_apps():
++        for _, window in app_windows(app):
++            bounds = extents(window)
++            if bounds and bounds["width"] > 0 and bounds["height"] > 0:
++                windows.append({"title": node_name(window), "app": node_name(app),
++                                "pid": node_pid(app), "bounds": bounds,
++                                "visible": state_contains(window, Atspi.StateType.SHOWING)})
++    windows.sort(key=lambda item: (item["pid"], item["title"]))
++    wayland = (os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
++               or "wayland" in type(display).__name__.lower())
++    metadata = {"displays": displays, "windows": windows,
++                "coordinate_space": "desktop logical coordinates",
++                "capture_available": not wayland,
++                "window_capture": "visible screen pixels; occluding windows are included"}
++    if operation.get("list_only", False):
++        return {"ok": True, "text": json.dumps(metadata)}
++    if wayland:
++        raise RuntimeError("unsupported_environment: Wayland screenshot requires a consented desktop portal; this native helper currently supports X11 capture only")
++    title = operation.get("window_title")
++    if title:
++        matches = [item for item in windows if title.casefold() in item["title"].casefold()]
++        if len(matches) != 1:
++            raise RuntimeError("window_title must match exactly one window; found " + str(len(matches)))
++        target = matches[0]
++        if not target["visible"]:
++            raise RuntimeError("capture_unavailable: target window is minimized or not visible")
++    else:
++        index = operation.get("display")
++        if index is None:
++            index = next((item["index"] for item in displays if item["primary"]), 0)
++        if index < 0 or index >= len(displays):
++            raise RuntimeError("display index out of range; use list_only")
++        target = displays[index]
++    bounds = target["bounds"]
++    root = Gdk.Screen.get_default().get_root_window()
++    if root is None:
++        raise RuntimeError("capture_unavailable: GDK root window is unavailable")
++    pixbuf = Gdk.pixbuf_get_from_window(root, int(bounds["x"]), int(bounds["y"]),
++                                      int(bounds["width"]), int(bounds["height"]))
++    if pixbuf is None:
++        raise RuntimeError("capture_unavailable: GDK returned no pixels")
++    ok, data = pixbuf.save_to_bufferv("png", [], [])
++    if not ok:
++        raise RuntimeError("capture_unavailable: PNG encoding failed")
++    metadata["target"] = target
++    metadata["pixel_width"] = pixbuf.get_width()
++    metadata["pixel_height"] = pixbuf.get_height()
++    return {"ok": True, "text": json.dumps(metadata),
++            "capturePngBase64": base64.b64encode(bytes(data)).decode("ascii")}
++
++
++def native_diagnostics():
++    display = Gdk.Display.get_default() if Gdk is not None else None
++    has_session = bool(os.environ.get("XDG_RUNTIME_DIR") and os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
++    desktop_available = display is not None and has_session
++    wayland = os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" or (display is not None and "wayland" in type(display).__name__.lower())
++    accessibility = False
++    if desktop_available:
++        try:
++            Atspi.init()
++            accessibility = Atspi.get_desktop(0) is not None
++        except Exception:
++            accessibility = False
++    if Gdk is None:
++        state, message = "missing_dependency", "Install distro Python GI, GDK 3 and AT-SPI packages."
++    elif not desktop_available:
++        state, message = "desktop_unavailable", "Run BioRouter in a signed-in desktop session with its user D-Bus."
++    elif not accessibility:
++        state, message = "os_permission_required", "AT-SPI accessibility bus is unavailable; enable desktop accessibility."
++    elif wayland:
++        state, message = "unsupported_environment", "Wayland capture requires a consented desktop portal; X11 capture is supported."
++    else:
++        state, message = "ready", "Native X11 capture and AT-SPI dependencies are available."
++    return {"ok": True, "text": json.dumps({"state": state, "desktop_available": desktop_available,
++            "accessibility": accessibility, "screen_recording": desktop_available and not wayland,
++            "capture_available": desktop_available and not wayland, "message": message})}
++
++
+ def perform_operation(operation):
+     tool = operation.get("tool")
++    if tool == "screen_capture":
++        return screen_capture(operation)
+     if tool == "list_apps":
+         return {"ok": True, "text": list_apps_text()}
+     if tool == "get_app_state":
+@@ -867,10 +963,13 @@ def perform_operation(operation):
+ def main():
+     if len(sys.argv) != 2:
+         raise RuntimeError("runtime.py requires an operation JSON path")
+-    require_desktop_session()
+-    Atspi.init()
+     with open(sys.argv[1], "r", encoding="utf-8") as file:
+         operation = json.load(file)
++    if operation.get("tool") == "diagnostics":
++        print(json.dumps(native_diagnostics()))
++        return
++    require_desktop_session()
++    Atspi.init()
+     try:
+         response = perform_operation(operation)
+     except Exception as exc:
+diff --git a/apps/OpenComputerUseLinux/runtime_test.py b/apps/OpenComputerUseLinux/runtime_test.py
+index c42f41e..e25f86d 100644
+--- a/apps/OpenComputerUseLinux/runtime_test.py
++++ b/apps/OpenComputerUseLinux/runtime_test.py
+@@ -88,3 +88,73 @@ class RuntimeInterfaceDetectionTests(unittest.TestCase):
+ 
+ if __name__ == "__main__":
+     unittest.main()
++
++class ScreenCaptureTests(unittest.TestCase):
++    def test_missing_gdk_is_explicit(self):
++        runtime = load_runtime()
++        runtime.Gdk = None
++        with self.assertRaisesRegex(RuntimeError, "missing_dependency"):
++            runtime.screen_capture({"list_only": True})
++
++    def test_wayland_lists_topology_but_rejects_pixels(self):
++        runtime = load_runtime()
++        monitor = types.SimpleNamespace(
++            get_geometry=lambda: types.SimpleNamespace(x=-100, y=0, width=100, height=80),
++            get_model=lambda: "fixture", get_scale_factor=lambda: 2,
++        )
++        display = types.SimpleNamespace(get_primary_monitor=lambda: monitor,
++                                        get_n_monitors=lambda: 1,
++                                        get_monitor=lambda _: monitor)
++        runtime.Gdk = types.SimpleNamespace(Display=types.SimpleNamespace(get_default=lambda: display))
++        with mock.patch.object(runtime, "iter_apps", return_value=[]), mock.patch.dict("os.environ", {"XDG_SESSION_TYPE": "wayland"}):
++            import json
++            result = runtime.screen_capture({"list_only": True})
++            metadata = json.loads(result["text"])
++            self.assertEqual(metadata["displays"][0]["bounds"]["x"], -100)
++            self.assertFalse(metadata["capture_available"])
++            self.assertNotIn("capturePngBase64", result)
++            with self.assertRaisesRegex(RuntimeError, "unsupported_environment"):
++                runtime.screen_capture({})
++
++    def test_x11_capture_keeps_image_and_ambiguous_window_errors(self):
++        runtime = load_runtime()
++        monitor = types.SimpleNamespace(
++            get_geometry=lambda: types.SimpleNamespace(x=0, y=0, width=100, height=80),
++            get_model=lambda: "fixture", get_scale_factor=lambda: 1,
++        )
++        display = types.SimpleNamespace(get_primary_monitor=lambda: monitor,
++                                        get_n_monitors=lambda: 1, get_monitor=lambda _: monitor)
++        pixbuf = types.SimpleNamespace(save_to_bufferv=lambda *_: (True, b"png bytes"),
++                                      get_width=lambda: 100, get_height=lambda: 80)
++        runtime.Gdk = types.SimpleNamespace(
++            Display=types.SimpleNamespace(get_default=lambda: display),
++            Screen=types.SimpleNamespace(get_default=lambda: types.SimpleNamespace(get_root_window=lambda: object())),
++            pixbuf_get_from_window=lambda *_: pixbuf,
++        )
++        with mock.patch.object(runtime, "iter_apps", return_value=[]), mock.patch.dict("os.environ", {"XDG_SESSION_TYPE": "x11"}):
++            import base64
++            result = runtime.screen_capture({})
++            self.assertEqual(base64.b64decode(result["capturePngBase64"]), b"png bytes")
++            with self.assertRaisesRegex(RuntimeError, "exactly one window"):
++                runtime.screen_capture({"window_title": "missing"})
++            with self.assertRaisesRegex(RuntimeError, "display index out of range"):
++                runtime.screen_capture({"display": 1})
++
++class PassiveDiagnosticsTests(unittest.TestCase):
++    def test_ready_probe_does_not_capture_or_enumerate_apps(self):
++        runtime = load_runtime()
++        runtime.Gdk = types.SimpleNamespace(Display=types.SimpleNamespace(get_default=lambda: object()))
++        runtime.Atspi = types.SimpleNamespace(init=lambda: None, get_desktop=lambda _: object())
++        with mock.patch.dict("os.environ", {"XDG_RUNTIME_DIR": "/run/user/test", "DBUS_SESSION_BUS_ADDRESS": "unix:fixture", "XDG_SESSION_TYPE": "x11"}), mock.patch.object(runtime, "iter_apps", side_effect=AssertionError("must not read apps")), mock.patch.object(runtime, "capture_window_png", side_effect=AssertionError("must not capture")):
++            import json
++            result = runtime.native_diagnostics()
++            self.assertEqual(json.loads(result["text"])["state"], "ready")
++
++    def test_missing_accessibility_bus_is_not_ready(self):
++        runtime = load_runtime()
++        runtime.Gdk = types.SimpleNamespace(Display=types.SimpleNamespace(get_default=lambda: object()))
++        runtime.Atspi = types.SimpleNamespace(init=lambda: None, get_desktop=lambda _: None)
++        with mock.patch.dict("os.environ", {"XDG_RUNTIME_DIR": "/run/user/test", "DBUS_SESSION_BUS_ADDRESS": "unix:fixture", "XDG_SESSION_TYPE": "x11"}):
++            import json
++            result = runtime.native_diagnostics()
++            self.assertEqual(json.loads(result["text"])["state"], "os_permission_required")
+diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
+index c70ed60..0e5ad95 100644
+--- a/apps/OpenComputerUseWindows/main.go
++++ b/apps/OpenComputerUseWindows/main.go
+@@ -24,7 +24,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
+ //go:embed runtime.ps1
+ var windowsRuntimeScript string
+ 
+-const serverInstructions = "Computer Use tools let you interact with Windows apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, and set_value.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Windows actions use UI Automation patterns first and fall back to window messages when an app does not expose the needed pattern. The Windows runtime does not auto-launch apps, perform SetFocus, or use UIA text fallback by default, so background-capable actions do not intentionally steal the user's foreground focus."
++const serverInstructions = "Computer Use tools let you interact with Windows apps by performing UI actions.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture.\n\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Windows actions use UI Automation patterns first and fall back to window messages when an app does not expose the needed pattern. The Windows runtime does not auto-launch apps, perform SetFocus, or use UIA text fallback by default, so background-capable actions do not intentionally steal the user's foreground focus."
+ 
+ type toolDefinition struct {
+ 	Name        string         `json:"name"`
+@@ -132,6 +132,9 @@ func (s *appSnapshot) result() toolCallResult {
+ }
+ 
+ type psRequest struct {
++	Display      *int           `json:"display,omitempty"`
++	WindowTitle  string         `json:"window_title,omitempty"`
++	ListOnly     bool           `json:"list_only,omitempty"`
+ 	Tool         string         `json:"tool"`
+ 	App          string         `json:"app,omitempty"`
+ 	Element      *elementRecord `json:"element,omitempty"`
+@@ -169,10 +172,11 @@ func (limit textLimit) runtimeValue() any {
+ }
+ 
+ type psResponse struct {
+-	OK       bool         `json:"ok"`
+-	Text     string       `json:"text,omitempty"`
+-	Error    string       `json:"error,omitempty"`
+-	Snapshot *appSnapshot `json:"snapshot,omitempty"`
++	CapturePNG string       `json:"capturePngBase64,omitempty"`
++	OK         bool         `json:"ok"`
++	Text       string       `json:"text,omitempty"`
++	Error      string       `json:"error,omitempty"`
++	Snapshot   *appSnapshot `json:"snapshot,omitempty"`
+ }
+ 
+ type service struct {
+@@ -185,6 +189,8 @@ func newService() *service {
+ 
+ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 	switch name {
++	case "screen_capture":
++		return s.screenCapture(args)
+ 	case "list_apps":
+ 		return s.listApps()
+ 	case "get_app_state":
+@@ -247,6 +253,55 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 	}
+ }
+ 
++func (s *service) screenCapture(args map[string]any) toolCallResult {
++	request := psRequest{Tool: "screen_capture"}
++	for key := range args {
++		if key != "display" && key != "window_title" && key != "list_only" {
++			return textResult("Unknown screen_capture argument: "+key, true)
++		}
++	}
++	if raw, exists := args["display"]; exists {
++		value := optionalFloat(args, "display")
++		if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0 || *value > 2147483647 || math.Trunc(*value) != *value {
++			return textResult(fmt.Sprintf("display must be a nonnegative integer; received %v", raw), true)
++		}
++		index := int(*value)
++		request.Display = &index
++	}
++	if raw, exists := args["window_title"]; exists {
++		title, ok := raw.(string)
++		if !ok || strings.TrimSpace(title) == "" {
++			return textResult("window_title must be a nonempty string", true)
++		}
++		request.WindowTitle = title
++	}
++	if raw, exists := args["list_only"]; exists {
++		value, ok := raw.(bool)
++		if !ok {
++			return textResult("list_only must be a boolean", true)
++		}
++		request.ListOnly = value
++	}
++	if request.Display != nil && request.WindowTitle != "" {
++		return textResult("display and window_title are mutually exclusive", true)
++	}
++	response, err := runPowerShell(request)
++	if err != nil {
++		return textResult(err.Error(), true)
++	}
++	if !response.OK {
++		return textResult(response.Error, true)
++	}
++	result := textResult(response.Text, false)
++	if !request.ListOnly {
++		if response.CapturePNG == "" {
++			return textResult("Native capture returned no image", true)
++		}
++		result.Content = append(result.Content, contentItem{Type: "image", Data: response.CapturePNG, MimeType: "image/png"})
++	}
++	return result
++}
++
+ func (s *service) listApps() toolCallResult {
+ 	response, err := runPowerShell(psRequest{Tool: "list_apps"})
+ 	if err != nil {
+@@ -709,6 +764,16 @@ func parseClickMethod(value string) (string, error) {
+ 
+ func toolDefinitions() []toolDefinition {
+ 	return []toolDefinition{
++		{
++			Name:        "screen_capture",
++			Description: "Capture a display or a uniquely matching window title. Omit target for the primary display. list_only returns display/window topology without pixels. Window capture on Windows/Linux returns visible screen pixels and may include occluding windows.",
++			Annotations: readOnlyAnnotations(),
++			InputSchema: objectSchema(map[string]any{
++				"display":      map[string]any{"type": "integer", "minimum": 0, "description": "Zero-based display index from list_only"},
++				"window_title": map[string]any{"type": "string", "minLength": 1, "description": "Case-insensitive window title substring; must match exactly one window"},
++				"list_only":    map[string]any{"type": "boolean", "default": false},
++			}, nil),
++		},
+ 		{
+ 			Name:        "click",
+ 			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
+@@ -883,6 +948,23 @@ func runCLI(args []string, stdout io.Writer) error {
+ 	case "mcp":
+ 		return runMCP(os.Stdin, stdout)
+ 	case "doctor":
++		if len(args) == 2 && args[1] == "--json" {
++			response, err := runPowerShell(psRequest{Tool: "diagnostics"})
++			if err == nil && response.OK {
++				fmt.Fprintln(stdout, response.Text)
++				return nil
++			}
++			message := "Native bridge dependencies are unavailable"
++			if err != nil {
++				message = err.Error()
++			} else if response != nil {
++				message = response.Error
++			}
++			return json.NewEncoder(stdout).Encode(map[string]any{
++				"state": "missing_dependency", "desktop_available": false,
++				"accessibility": false, "screen_recording": false, "capture_available": false, "message": message,
++			})
++		}
+ 		fmt.Fprintln(stdout, "Windows runtime: UI Automation and Win32 window-message bridge are available when this process runs in the signed-in desktop session.")
+ 		return nil
+ 	case "list-apps":
+diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
+index c70def2..04c38bc 100644
+--- a/apps/OpenComputerUseWindows/main_test.go
++++ b/apps/OpenComputerUseWindows/main_test.go
+@@ -8,8 +8,8 @@ import (
+ )
+ 
+ func TestToolDefinitionCount(t *testing.T) {
+-	if got := len(toolDefinitions()); got != 9 {
+-		t.Fatalf("toolDefinitions() count = %d, want 9", got)
++	if got := len(toolDefinitions()); got != 10 {
++		t.Fatalf("toolDefinitions() count = %d, want 10", got)
+ 	}
+ }
+ 
+@@ -307,3 +307,29 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+ 	t.Fatalf("missing tool definition %q", name)
+ 	return toolDefinition{}
+ }
++
++func TestScreenCaptureRejectsMalformedArguments(t *testing.T) {
++	for _, args := range []map[string]any{
++		{"display": -1.0}, {"display": 1.5}, {"display": true},
++		{"window_title": ""}, {"window_title": 1}, {"list_only": "true"},
++		{"display": 0.0, "window_title": "example"}, {"unexpected": true},
++	} {
++		result := newService().callTool("screen_capture", args)
++		if !result.IsError {
++			t.Fatalf("accepted malformed capture args: %#v", args)
++		}
++	}
++}
++
++func TestScreenCaptureSchema(t *testing.T) {
++	for _, tool := range toolDefinitions() {
++		if tool.Name == "screen_capture" {
++			properties := tool.InputSchema["properties"].(map[string]any)
++			if len(properties) != 3 {
++				t.Fatalf("capture properties: %#v", properties)
++			}
++			return
++		}
++	}
++	t.Fatal("screen_capture missing")
++}
+diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
+index 720e9d5..d9e3022 100644
+--- a/apps/OpenComputerUseWindows/runtime.ps1
++++ b/apps/OpenComputerUseWindows/runtime.ps1
+@@ -15,12 +15,37 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
+ Add-Type -AssemblyName UIAutomationClient
+ Add-Type -AssemblyName UIAutomationTypes
+ Add-Type -AssemblyName System.Drawing
++Add-Type -AssemblyName System.Windows.Forms
+ 
+ Add-Type -TypeDefinition @"
+ using System;
+ using System.Runtime.InteropServices;
+ 
+ public static class OCUWin32 {
++    [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
++    [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr desktop);
++    public static bool CanAccessInputDesktop() {
++        IntPtr desktop = OpenInputDesktop(0, false, 1);
++        if (desktop == IntPtr.Zero) return false;
++        CloseDesktop(desktop);
++        return true;
++    }
++    public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr param);
++    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr param);
++    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
++    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
++    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder title, int count);
++    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
++    public static IntPtr[] VisibleWindows() {
++        var result = new System.Collections.Generic.List<IntPtr>();
++        EnumWindows((hwnd, param) => { if (IsWindowVisible(hwnd)) result.Add(hwnd); return true; }, IntPtr.Zero);
++        return result.ToArray();
++    }
++    public static string WindowTitle(IntPtr hwnd) {
++        var title = new System.Text.StringBuilder(32768);
++        GetWindowText(hwnd, title, title.Capacity);
++        return title.ToString();
++    }
+     [StructLayout(LayoutKind.Sequential)]
+     public struct RECT {
+         public int Left;
+@@ -52,6 +77,8 @@ public static class OCUWin32 {
+ }
+ "@
+ 
++[void][OCUWin32]::SetProcessDpiAwarenessContext([IntPtr](-4))
++
+ $WM_SETTEXT = 0x000C
+ $WM_MOUSEMOVE = 0x0200
+ $WM_LBUTTONDOWN = 0x0201
+@@ -562,23 +589,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
+     }
+ }
+ 
++function Get-ScreenCapture($operation) {
++    if (-not [Environment]::UserInteractive -or -not [OCUWin32]::CanAccessInputDesktop()) {
++        throw "desktop_unavailable: capture requires an interactive user desktop"
++    }
++    $displays = @()
++    foreach ($screen in [System.Windows.Forms.Screen]::AllScreens) {
++        $displays += [pscustomobject]@{
++            index = $displays.Count; name = $screen.DeviceName; primary = $screen.Primary
++            bounds = (New-Frame $screen.Bounds.X $screen.Bounds.Y $screen.Bounds.Width $screen.Bounds.Height)
++        }
++    }
++    $windows = @()
++    foreach ($hwnd in [OCUWin32]::VisibleWindows()) {
++        $bounds = Get-WindowRectFrame $hwnd
++        $title = [OCUWin32]::WindowTitle($hwnd)
++        if ($null -ne $bounds -and $bounds.width -gt 0 -and $bounds.height -gt 0 -and $title.Length -gt 0) {
++            $windows += [pscustomobject]@{
++                id = $hwnd.ToInt64(); title = $title; bounds = $bounds
++                minimized = [OCUWin32]::IsIconic($hwnd)
++            }
++        }
++    }
++    $metadata = [ordered]@{
++        displays = @($displays); windows = @($windows)
++        coordinate_space = "desktop physical pixels"
++        window_capture = "visible screen pixels; occluding windows are included"
++    }
++    if ($operation.list_only) {
++        return [pscustomobject]@{ ok = $true; text = ($metadata | ConvertTo-Json -Depth 10 -Compress) }
++    }
++    if ($operation.window_title) {
++        $needle = ([string]$operation.window_title).ToLowerInvariant()
++        $matches = @($windows | Where-Object { $_.title.ToLowerInvariant().Contains($needle) })
++        if ($matches.Count -ne 1) { throw "window_title must match exactly one window; found $($matches.Count)" }
++        $target = $matches[0]
++        if ($target.minimized) { throw "capture_unavailable: target window is minimized" }
++    } else {
++        $index = $operation.display
++        if ($null -eq $index) {
++            $primary = @($displays | Where-Object { $_.primary })
++            $index = if ($primary.Count -gt 0) { $primary[0].index } else { 0 }
++        }
++        if ($index -lt 0 -or $index -ge $displays.Count) { throw "display index out of range; use list_only" }
++        $target = $displays[$index]
++    }
++    $png = Capture-WindowPngBase64 $target.bounds
++    if ([string]::IsNullOrEmpty($png)) { throw "capture_unavailable: screen pixel capture failed (desktop may be locked or secure)" }
++    $metadata['target'] = $target
++    $metadata['pixel_width'] = [int][math]::Round($target.bounds.width)
++    $metadata['pixel_height'] = [int][math]::Round($target.bounds.height)
++    return [pscustomobject]@{ ok = $true; text = ($metadata | ConvertTo-Json -Depth 10 -Compress); capturePngBase64 = $png }
++}
++
+ function Capture-WindowPngBase64($bounds) {
+     if ($null -eq $bounds -or $bounds.width -le 0 -or $bounds.height -le 0) {
+         return $null
+     }
++    $bitmap = $null
++    $graphics = $null
++    $stream = $null
+     try {
+         $bitmap = New-Object System.Drawing.Bitmap ([int][math]::Round($bounds.width)), ([int][math]::Round($bounds.height))
+         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+         $graphics.CopyFromScreen([int][math]::Round($bounds.x), [int][math]::Round($bounds.y), 0, 0, $bitmap.Size)
+         $stream = New-Object System.IO.MemoryStream
+         $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+-        $graphics.Dispose()
+-        $bitmap.Dispose()
+-        $bytes = $stream.ToArray()
+-        $stream.Dispose()
+-        return [Convert]::ToBase64String($bytes)
++        return [Convert]::ToBase64String($stream.ToArray())
+     } catch {
+         return $null
++    } finally {
++        if ($null -ne $graphics) { $graphics.Dispose() }
++        if ($null -ne $bitmap) { $bitmap.Dispose() }
++        if ($null -ne $stream) { $stream.Dispose() }
+     }
+ }
+ 
+@@ -899,7 +982,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+ $operation = $operationJson | ConvertFrom-Json
+ 
+ try {
+-    if ($operation.tool -eq "list_apps") {
++    if ($operation.tool -eq "diagnostics") {
++        $desktop = [Environment]::UserInteractive -and [OCUWin32]::CanAccessInputDesktop() -and ([System.Windows.Forms.Screen]::AllScreens.Count -gt 0)
++        $status = if ($desktop) { "ready" } else { "desktop_unavailable" }
++        $message = if ($desktop) { "Native UI Automation and screen capture dependencies are available; locked and secure desktops cannot be controlled." } else { "Run BioRouter in the signed-in user's interactive desktop session." }
++        $details = @{ state = $status; desktop_available = $desktop; accessibility = $desktop; screen_recording = $desktop; capture_available = $desktop; message = $message }
++        $response = [pscustomobject]@{ ok = $true; text = ($details | ConvertTo-Json -Compress) }
++    } elseif ($operation.tool -eq "screen_capture") {
++        $response = Get-ScreenCapture $operation
++    } elseif ($operation.tool -eq "list_apps") {
+         $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
+     } elseif ($operation.tool -eq "get_app_state") {
+         $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index ac464ef..cc20d09 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -1,5 +1,15 @@
+ # 架构总览
+ 
++## BioRouter downstream runtime contract
++
++The BioRouter patch adds `screen_capture` as the tenth tool to all three runtimes. It accepts optional `display` (zero-based topology index), `window_title` (one case-insensitive substring match), and `list_only` (default false). Display and window selection are mutually exclusive. Omitted selection captures the primary display. Listing returns JSON topology text; capture adds a PNG image content block. macOS uses ScreenCaptureKit; Windows uses DPI-aware Win32 screen pixels; Linux uses distro Python GI/GDK on X11. Windows and Linux window captures include occluding content. Wayland lists topology but rejects pixel capture until a consented portal backend is implemented.
++
++The macOS app agent requires an installation/version socket namespace, verifies the exact peer bundle and executable, and never terminates a foreign agent. Each socket connection owns its MCP server and snapshots. Every operation, including empty environment overrides, holds the shared environment lock; omitted OCU environment keys are cleared within that scope. Overlay cleanup is synchronous under that same owner lock; ambient distributed turn-ended listeners are removed. Disconnected owners cancel input between chunks/gesture steps and cancel screenshot waits. AX calls have a bounded messaging timeout; ambiguous completion errors stop alternate-path replay. A delivered OS action cannot be undone. New connections require `get_app_state` before actions. BioRouter must terminate the proxy on Stop, discard late results, manage process trees and temporary operation files on Windows/Linux, and replace connections on desktop ownership handoff.
++
++`doctor --json` provides passive JSON readiness without screenshots, app enumeration, or onboarding. It reports `state`, `desktop_available`, `accessibility`, `screen_recording`, `capture_available`, and `message`. Bare `doctor` retains upstream interactive onboarding behavior; hosts must not use it for polling. Cache passive results to avoid repeatedly launching platform bridges.
++
++The remaining sections describe the pinned upstream baseline; BioRouter-specific behavior above takes precedence.
++
+ 这个仓库当前已经从模板收敛成一个本地 `computer-use` 项目。主线仍是 Swift 实现的 macOS automation MCP server，同时新增了实验性的 Windows 和 Linux runtime，用独立 Go 二进制暴露同一组 9 个 Computer Use tools。
+ 
+ ## 当前目录结构
+diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
+new file mode 100644
+index 0000000..4506792
+--- /dev/null
++++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
+@@ -0,0 +1,9 @@
++# BioRouter native capture and connection isolation
++
++Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
++
++Changes: added a tenth screen_capture tool, native platform capture/topology bridges, strict target argument validation, image-block preservation, macOS disconnect cancellation and bounded AX calls, serialized owner-scoped environment/overlay lifetime, strict app-agent identity checking, and explicit state-before-action enforcement. Linux invokes distro /usr/bin/python3 for packaged GI dependencies. SkyLight input is explicitly unsupported in the BioRouter build.
++
++Validation: Python bridge tests cover topology, image bytes, missing GDK, missing selection and Wayland rejection. Swift contract tests cover malformed capture arguments, connection-local initial state, cancellation scope and screenshot-wait cancellation. Go tests cover the ten-tool roster and capture schema/argument rejection. Interactive macOS/Windows/X11 capture and signed artifact checks remain separate release gates; Wayland pixel capture is not implemented.
++
++Verified locally: Swift native app builds with one worker; 5 new contract tests and 163 existing unit regressions pass. Linux and Windows Go unit suites pass on macOS, with one worker. Eight Python bridge tests pass. The built Swift binary completes MCP initialization and advertises exactly ten tools. Passive doctor JSON parsing and explicit no-state errors pass. These checks do not establish interactive Windows/Linux behavior or signed-helper TCC identity.
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
+index e0a56c0..79575e5 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
+@@ -163,9 +163,12 @@ enum SnapshotBuilder {
+             throw ComputerUseError.permissionDenied("Accessibility permission is required. Run `open-computer-use doctor` and grant access to Open Computer Use.")
+         }
+ 
++        try ComputerUseCancellation.check()
+         let appElement = AXUIElementCreateApplication(app.pid)
++        AXUIElementSetMessagingTimeout(appElement, 2)
+         enableBestEffortAccessibilityModes(appElement)
+         let systemWide = AXUIElementCreateSystemWide()
++        AXUIElementSetMessagingTimeout(systemWide, 2)
+         var focusedApplication = copyElement(systemWide, attribute: kAXFocusedApplicationAttribute)
+         var focusedWindow = preferredFocusedWindow(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide)
+         if focusedWindow == nil,
+@@ -629,6 +632,7 @@ enum BlockingAsyncBridge {
+ 
+         guard waitForSignal(semaphore, timeout: timeout) else {
+             task.cancel()
++            try ComputerUseCancellation.check()
+             throw ComputerUseError.message("ScreenCaptureKit screenshot task timed out after \(timeout ?? 0) seconds.")
+         }
+ 
+@@ -642,6 +646,7 @@ enum BlockingAsyncBridge {
+ 
+         if Thread.isMainThread {
+             while semaphore.wait(timeout: .now()) == .timedOut {
++                if ComputerUseCancellation.isCancelled { return false }
+                 if let deadline, Date() >= deadline {
+                     return false
+                 }
+@@ -651,11 +656,10 @@ enum BlockingAsyncBridge {
+             return true
+         }
+ 
+-        if let timeout {
+-            return semaphore.wait(timeout: .now() + timeout) == .success
++        while semaphore.wait(timeout: .now() + 0.05) == .timedOut {
++            if ComputerUseCancellation.isCancelled { return false }
++            if let deadline, Date() >= deadline { return false }
+         }
+-
+-        semaphore.wait()
+         return true
+     }
+ }
+@@ -680,6 +684,7 @@ private struct TreeRenderer {
+     }
+ 
+     mutating func render(_ root: AXUIElement, depth: Int = 0, ancestors: [AXUIElement] = []) {
++        guard !ComputerUseCancellation.isCancelled else { return }
+         guard shouldContinueRendering(nextIndex: nextIndex, depth: depth, limits: context.treeLimits) else {
+             return
+         }
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseCancellation.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseCancellation.swift
+new file mode 100644
+index 0000000..319b77a
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseCancellation.swift
+@@ -0,0 +1,31 @@
++import Foundation
++
++/// The app agent sets this on the serial operation thread; no other connection can
++/// cancel its owner. Cancellation never replays an input already sent to the OS.
++public enum ComputerUseCancellation {
++    private static let key = "org.biorouter.computer-use.cancellation"
++    private final class Probe {
++        let cancelled: () -> Bool
++        init(_ cancelled: @escaping () -> Bool) { self.cancelled = cancelled }
++    }
++
++    public static func withProbe<T>(_ cancelled: @escaping () -> Bool, _ body: () throws -> T) rethrows -> T {
++        let previous = Thread.current.threadDictionary[key]
++        Thread.current.threadDictionary[key] = Probe(cancelled)
++        defer {
++            if let previous { Thread.current.threadDictionary[key] = previous }
++            else { Thread.current.threadDictionary.removeObject(forKey: key) }
++        }
++        return try body()
++    }
++
++    public static var isCancelled: Bool {
++        (Thread.current.threadDictionary[key] as? Probe)?.cancelled() ?? false
++    }
++
++    public static func check() throws {
++        if isCancelled {
++            throw ComputerUseError.message("computer_use_cancelled: owner disconnected; already delivered input has an uncertain outcome. Inspect before retrying.")
++        }
++    }
++}
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
+index ffee113..1bca3e5 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
+@@ -674,6 +674,7 @@ public final class ComputerUseService {
+             throw ComputerUseError.stateUnavailable("element \(elementIndex) has no backing accessibility object")
+         }
+ 
++        try ComputerUseCancellation.check()
+         let result = AXUIElementPerformAction(element, rawAction as CFString)
+         guard result == .success else {
+             throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
+@@ -708,7 +709,11 @@ public final class ComputerUseService {
+            let rawAction = record.rawActions.first(where: { $0.caseInsensitiveCompare("AXScroll\(normalized.capitalized)ByPage") == .orderedSame }),
+            let element = record.element {
+             for _ in 0..<repeatCount {
+-                _ = AXUIElementPerformAction(element, rawAction as CFString)
++                try ComputerUseCancellation.check()
++                let result = AXUIElementPerformAction(element, rawAction as CFString)
++                guard result == .success else {
++                    throw ComputerUseError.message("Scroll action failed (\(result.rawValue)); outcome may be uncertain. Inspect before retrying.")
++                }
+                 Thread.sleep(forTimeInterval: 0.05)
+             }
+         } else if let point = try globalPoint(for: record, snapshot: snapshot) {
+@@ -810,6 +815,7 @@ public final class ComputerUseService {
+         moveVisualCursor(to: cursorTarget)
+ 
+         do {
++            try ComputerUseCancellation.check()
+             let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
+             guard result == .success else {
+                 throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
+@@ -826,11 +832,12 @@ public final class ComputerUseService {
+     }
+ 
+     private func currentSnapshot(for query: String) throws -> AppSnapshot {
++        try ComputerUseCancellation.check()
+         if let snapshot = snapshotsByApp[query.lowercased()] {
+             return snapshot
+         }
+ 
+-        return try refreshSnapshot(for: query)
++        throw ComputerUseError.stateUnavailable("No app state is available for \(query). Run get_app_state before action tools.")
+     }
+ 
+     @discardableResult
+@@ -840,6 +847,7 @@ public final class ComputerUseService {
+         treeLimits: AccessibilityTreeLimits = .defaults,
+         recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation
+     ) throws -> AppSnapshot {
++        try ComputerUseCancellation.check()
+         let app = try AppDiscovery.resolve(query)
+         let snapshot = try SnapshotBuilder.build(
+             for: app,
+@@ -848,6 +856,7 @@ public final class ComputerUseService {
+             recoveryPolicy: recoveryPolicy
+         )
+ 
++        try ComputerUseCancellation.check()
+         let keys = Set([
+             query.lowercased(),
+             app.name.lowercased(),
+@@ -951,6 +960,7 @@ public final class ComputerUseService {
+             return false
+         }
+ 
++        try ComputerUseCancellation.check()
+         let result = AXUIElementSetAttributeValue(
+             target.list,
+             kAXSelectedChildrenAttribute as CFString,
+@@ -961,7 +971,9 @@ public final class ComputerUseService {
+         case .success:
+             Thread.sleep(forTimeInterval: 0.15)
+             return true
+-        case .failure, .attributeUnsupported, .actionUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
++        case .cannotComplete:
++            throw ComputerUseError.message("Accessibility operation could not complete; outcome is uncertain. Inspect before retrying.")
++        case .failure, .attributeUnsupported, .actionUnsupported, .noValue, .invalidUIElement, .illegalArgument:
+             return false
+         default:
+             throw ComputerUseError.message("AXUIElementSetAttributeValue(\(kAXSelectedChildrenAttribute)) failed with \(result.rawValue)")
+@@ -1083,6 +1095,7 @@ public final class ComputerUseService {
+ 
+         let attempts = max(repeatCount, 1)
+         for index in 0..<attempts {
++            try ComputerUseCancellation.check()
+             let result = AXUIElementPerformAction(element, action as CFString)
+             switch result {
+             case .success:
+@@ -1091,7 +1104,9 @@ public final class ComputerUseService {
+                 }
+             case .attributeUnsupported where action.caseInsensitiveCompare("AXOpen") == .orderedSame:
+                 return true
+-            case .failure, .actionUnsupported, .attributeUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
++            case .cannotComplete:
++                throw ComputerUseError.message("Accessibility operation could not complete; outcome is uncertain. Inspect before retrying.")
++            case .failure, .actionUnsupported, .attributeUnsupported, .noValue, .invalidUIElement, .illegalArgument:
+                 return false
+             default:
+                 throw ComputerUseError.message("AXUIElementPerformAction(\(action)) failed with \(result.rawValue)")
+@@ -1120,11 +1135,14 @@ public final class ComputerUseService {
+     }
+ 
+     private func setBoolAttribute(named attribute: String, on element: AXUIElement) throws -> Bool {
++        try ComputerUseCancellation.check()
+         let result = AXUIElementSetAttributeValue(element, attribute as CFString, kCFBooleanTrue)
+         switch result {
+         case .success:
+             return true
+-        case .failure, .attributeUnsupported, .actionUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
++        case .cannotComplete:
++            throw ComputerUseError.message("Accessibility operation could not complete; outcome is uncertain. Inspect before retrying.")
++        case .failure, .attributeUnsupported, .actionUnsupported, .noValue, .invalidUIElement, .illegalArgument:
+             return false
+         default:
+             throw ComputerUseError.message("AXUIElementSetAttributeValue(\(attribute)) failed with \(result.rawValue)")
+@@ -1409,11 +1427,14 @@ public final class ComputerUseService {
+         }
+ 
+         let baseValue = editableBaseValue(for: element)
++        try ComputerUseCancellation.check()
+         let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, (baseValue + text) as CFString)
+         switch result {
+         case .success:
+             return true
+-        case .failure, .attributeUnsupported, .actionUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
++        case .cannotComplete:
++            throw ComputerUseError.message("Accessibility operation could not complete; outcome is uncertain. Inspect before retrying.")
++        case .failure, .attributeUnsupported, .actionUnsupported, .noValue, .invalidUIElement, .illegalArgument:
+             return false
+         default:
+             throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
+index c7e5770..279a1a0 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
+@@ -44,7 +44,10 @@ public final class ComputerUseToolDispatcher {
+     }
+ 
+     public func callTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
++        try ComputerUseCancellation.check()
+         switch name {
++        case "screen_capture":
++            return try NativeScreenCapture.capture(arguments: arguments)
+         case "list_apps":
+             return service.listApps()
+         case "get_app_state":
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
+index 5a06785..a668056 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
+@@ -61,6 +61,7 @@ enum InputSimulation {
+         }
+ 
+         for _ in 0..<max(clickCount, 1) {
++            try ComputerUseCancellation.check()
+             try postMouseEvent(type: .mouseMoved, source: source, point: point, button: button.cgButton, clickState: clickCount)
+             try postMouseEvent(type: button.downEvent, source: source, point: point, button: button.cgButton, clickState: clickCount)
+             try postMouseEvent(type: button.upEvent, source: source, point: point, button: button.cgButton, clickState: clickCount)
+@@ -73,6 +74,7 @@ enum InputSimulation {
+         }
+ 
+         for _ in 0..<max(clickCount, 1) {
++            try ComputerUseCancellation.check()
+             try postMouseEventToPid(type: .mouseMoved, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
+             try postMouseEventToPid(type: button.downEvent, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
+             try postMouseEventToPid(type: button.upEvent, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
+@@ -87,16 +89,7 @@ enum InputSimulation {
+         clickCount: Int,
+         pid: pid_t
+     ) throws {
+-        try SkyClickDispatcher.click(
+-            target: SkyClickTarget(
+-                screenPoint: screenPoint,
+-                windowPoint: windowPoint,
+-                windowBounds: windowBounds,
+-                windowID: windowID,
+-                pid: pid
+-            ),
+-            clickCount: clickCount
+-        )
++        throw ComputerUseError.message("unsupported_method: sky_click is not enabled in BioRouter; use accessibility or app_post")
+     }
+ 
+     static func scrollTargeted(at point: CGPoint, direction: String, pages: Double, pid: pid_t) throws {
+@@ -127,7 +120,9 @@ enum InputSimulation {
+         try postMouseEventToPid(type: .mouseMoved, source: source, point: start, button: .left, clickState: 1, pid: pid)
+         try postMouseEventToPid(type: .leftMouseDown, source: source, point: start, button: .left, clickState: 1, pid: pid)
+ 
++        defer { try? postMouseEventToPid(type: .leftMouseUp, source: source, point: end, button: .left, clickState: 1, pid: pid) }
+         for step in 1...10 {
++            try ComputerUseCancellation.check()
+             let progress = CGFloat(step) / 10
+             let point = CGPoint(
+                 x: start.x + ((end.x - start.x) * progress),
+@@ -136,7 +131,6 @@ enum InputSimulation {
+             try postMouseEventToPid(type: .leftMouseDragged, source: source, point: point, button: .left, clickState: 1, pid: pid)
+         }
+ 
+-        try postMouseEventToPid(type: .leftMouseUp, source: source, point: end, button: .left, clickState: 1, pid: pid)
+     }
+ 
+     static func dragGlobally(from start: CGPoint, to end: CGPoint) throws {
+@@ -151,7 +145,9 @@ enum InputSimulation {
+ 
+         var previous = start
+         let steps = dragStepCount(from: start, to: end)
++        defer { try? postMouseEvent(type: .leftMouseUp, source: nil, point: previous, button: .left, clickState: 1, eventNumber: gesture) }
+         for step in 1...steps {
++            try ComputerUseCancellation.check()
+             let progress = CGFloat(step) / CGFloat(steps)
+             let point = CGPoint(
+                 x: start.x + ((end.x - start.x) * progress),
+@@ -162,11 +158,11 @@ enum InputSimulation {
+             previous = point
+         }
+ 
+-        try postMouseEvent(type: .leftMouseUp, source: nil, point: end, button: .left, clickState: 1, eventNumber: gesture)
+     }
+ 
+     static func typeText(_ text: String, pid: pid_t) throws {
+         for chunk in keyboardUnicodeChunks(for: text) {
++            try ComputerUseCancellation.check()
+             var mutableChunk = chunk
+             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+index 575bc71..93491ca 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+@@ -7,7 +7,7 @@ Some apps might have a separate dedicated plugin or skill. You may want to use t
+ 
+ Begin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.
+ 
+-The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, and set_value. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.
++The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.
+ 
+ Computer Use tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!
+ 
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift
+index 183b067..695a6ef 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift
+@@ -4,6 +4,7 @@ public enum OpenComputerUseCLICommand: Equatable {
+     case launchOnboarding
+     case mcp
+     case doctor
++    case diagnostics
+     case listApps
+     case snapshot(app: String, textLimit: SnapshotTextLimit = .defaults, treeLimits: AccessibilityTreeLimits = .defaults)
+     case call(OpenComputerUseCallInvocation)
+@@ -32,7 +33,7 @@ public func shouldUseMacOSAppAgentProxy(
+     switch command {
+     case .launchOnboarding:
+         return !runningFromLaunchServicesAppInstance
+-    case .mcp, .doctor, .listApps, .snapshot, .call:
++    case .mcp, .doctor, .diagnostics, .listApps, .snapshot, .call:
+         return true
+     case .turnEnded, .help, .version:
+         return false
+@@ -77,6 +78,7 @@ public func parseOpenComputerUseCLI(arguments: [String]) throws -> OpenComputerU
+     case "mcp":
+         return try parseSimpleCommand(name: "mcp", arguments: Array(arguments.dropFirst()), result: .mcp)
+     case "doctor":
++        if Array(arguments.dropFirst()) == ["--json"] { return .diagnostics }
+         return try parseSimpleCommand(name: "doctor", arguments: Array(arguments.dropFirst()), result: .doctor)
+     case "list-apps":
+         return try parseSimpleCommand(name: "list-apps", arguments: Array(arguments.dropFirst()), result: .listApps)
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift
+new file mode 100644
+index 0000000..5380b85
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift
+@@ -0,0 +1,128 @@
++import AppKit
++import ApplicationServices
++import CoreGraphics
++import Foundation
++import ScreenCaptureKit
++
++struct ScreenCaptureRequest: Sendable {
++    let display: Int?
++    let windowTitle: String?
++    let listOnly: Bool
++
++    init(arguments: [String: Any]) throws {
++        for key in arguments.keys where !["display", "window_title", "list_only"].contains(key) {
++            throw ComputerUseError.invalidArguments("Unknown screen_capture argument: \(key)")
++        }
++        if let raw = arguments["display"] {
++            guard let number = raw as? NSNumber,
++                  CFGetTypeID(number) != CFBooleanGetTypeID(),
++                  number.doubleValue.isFinite, number.doubleValue >= 0,
++                  number.doubleValue <= Double(Int32.max),
++                  number.doubleValue.rounded(.towardZero) == number.doubleValue else {
++                throw ComputerUseError.invalidArguments("display must be a nonnegative integer")
++            }
++            display = number.intValue
++        } else { display = nil }
++        if let raw = arguments["window_title"] {
++            guard let title = raw as? String, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++                throw ComputerUseError.invalidArguments("window_title must be a nonempty string")
++            }
++            windowTitle = title
++        } else { windowTitle = nil }
++        if let raw = arguments["list_only"] {
++            guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
++                throw ComputerUseError.invalidArguments("list_only must be a boolean")
++            }
++            listOnly = number.boolValue
++        } else { listOnly = false }
++        guard display == nil || windowTitle == nil else {
++            throw ComputerUseError.invalidArguments("display and window_title are mutually exclusive")
++        }
++    }
++}
++
++enum NativeScreenCapture {
++    static func capture(arguments: [String: Any]) throws -> ToolCallResult {
++        let request = try ScreenCaptureRequest(arguments: arguments)
++        try ComputerUseCancellation.check()
++        guard CGPreflightScreenCaptureAccess() else {
++            throw ComputerUseError.permissionDenied("screen_recording_permission_required: enable Screen Recording for BioRouter Computer Use in System Settings, then retry")
++        }
++        return try BlockingAsyncBridge.run(timeout: 15) {
++            try Task.checkCancellation()
++            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
++            let displays = content.displays.sorted { $0.displayID < $1.displayID }
++            let windows = content.windows.filter { $0.windowLayer == 0 && !$0.frame.isEmpty }
++                .sorted { $0.windowID < $1.windowID }
++            func bounds(_ rect: CGRect) -> [String: Double] {
++                ["x": rect.origin.x, "y": rect.origin.y, "width": rect.width, "height": rect.height]
++            }
++            let displayMetadata: [[String: Any]] = displays.enumerated().map { index, display in
++                ["index": index, "id": display.displayID, "primary": display.displayID == CGMainDisplayID(),
++                 "bounds": bounds(display.frame), "pixel_width": CGDisplayPixelsWide(display.displayID),
++                 "pixel_height": CGDisplayPixelsHigh(display.displayID)]
++            }
++            let windowMetadata: [[String: Any]] = windows.map { window in
++                ["id": window.windowID, "title": window.title ?? "", "bounds": bounds(window.frame),
++                 "app": window.owningApplication?.applicationName ?? "", "pid": window.owningApplication?.processID ?? 0]
++            }
++            var metadata: [String: Any] = ["displays": displayMetadata, "windows": windowMetadata,
++                                          "coordinate_space": "desktop logical points"]
++            func text(_ metadata: [String: Any]) throws -> String {
++                String(decoding: try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]), as: UTF8.self)
++            }
++            if request.listOnly { return .text(try text(metadata)) }
++            let filter: SCContentFilter
++            let configuration = SCStreamConfiguration()
++            configuration.showsCursor = false
++            configuration.ignoreShadowsSingleWindow = true
++            configuration.scalesToFit = false
++            if let title = request.windowTitle {
++                let matches = windows.enumerated().filter { ($0.element.title ?? "").localizedCaseInsensitiveContains(title) }
++                guard matches.count == 1, let match = matches.first else {
++                    throw ComputerUseError.message("window_title must match exactly one window; found \(matches.count)")
++                }
++                filter = SCContentFilter(desktopIndependentWindow: match.element)
++                metadata["target"] = windowMetadata[match.offset]
++                configuration.width = max(1, Int(ceil(filter.contentRect.width * CGFloat(filter.pointPixelScale))))
++                configuration.height = max(1, Int(ceil(filter.contentRect.height * CGFloat(filter.pointPixelScale))))
++            } else {
++                let index = request.display ?? displays.firstIndex(where: { $0.displayID == CGMainDisplayID() }) ?? 0
++                guard displays.indices.contains(index) else {
++                    throw ComputerUseError.message("display index out of range; use list_only")
++                }
++                let display = displays[index]
++                filter = SCContentFilter(display: display, excludingWindows: [])
++                metadata["target"] = displayMetadata[index]
++                configuration.width = max(1, CGDisplayPixelsWide(display.displayID))
++                configuration.height = max(1, CGDisplayPixelsHigh(display.displayID))
++            }
++            try Task.checkCancellation()
++            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
++            try Task.checkCancellation()
++            guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
++                throw ComputerUseError.message("Native capture PNG encoding failed")
++            }
++            metadata["pixel_width"] = image.width
++            metadata["pixel_height"] = image.height
++            return ToolCallResult(content: [.text(try text(metadata)), .pngImage(png)])
++        }
++    }
++}
++
++public func nativeRuntimeDiagnosticsJSON() throws -> String {
++    var displayCount: UInt32 = 0
++    let hasDisplays = CGGetActiveDisplayList(0, nil, &displayCount) == .success && displayCount > 0
++    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
++    let desktop = hasDisplays && (session?[kCGSessionOnConsoleKey as String] as? Bool == true)
++    let accessibility = AXIsProcessTrusted()
++    let screenRecording = CGPreflightScreenCaptureAccess()
++    let state = !desktop ? "desktop_unavailable" : (!accessibility || !screenRecording ? "os_permission_required" : "ready")
++    let message = !desktop ? "Run BioRouter in the signed-in user's desktop session." :
++        (!accessibility || !screenRecording ? "Enable Accessibility and Screen Recording for BioRouter Computer Use in System Settings." : "Native desktop access is ready.")
++    let data = try JSONSerialization.data(withJSONObject: [
++        "state": state, "desktop_available": desktop, "accessibility": accessibility,
++        "screen_recording": screenRecording, "capture_available": desktop && screenRecording, "message": message,
++    ], options: [.sortedKeys])
++    return String(decoding: data, as: UTF8.self)
++}
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+index 35dff4b..a11f54e 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+@@ -30,6 +30,16 @@ public struct ToolDefinition: @unchecked Sendable {
+ 
+ public enum ToolDefinitions {
+     public static let all: [ToolDefinition] = [
++        ToolDefinition(
++            name: "screen_capture",
++            description: "Capture a display or a uniquely matching window title. Omit target for the primary display. list_only returns display/window topology without pixels.",
++            annotations: readOnlyAnnotations(),
++            inputSchema: objectSchema(properties: [
++                "display": ["type": "integer", "minimum": 0, "description": "Zero-based display index from list_only"],
++                "window_title": ["type": "string", "minLength": 1, "description": "Case-insensitive window title substring; must match exactly one window"],
++                "list_only": ["type": "boolean", "default": false],
++            ], required: [])
++        ),
+         ToolDefinition(
+             name: "click",
+             description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
+index 250f5f2..0b8d619 100644
+--- a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
+@@ -253,7 +253,7 @@ final class OpenComputerUseKitTests: XCTestCase {
+     }
+ 
+     func testToolDefinitionCount() {
+-        XCTAssertEqual(ToolDefinitions.all.count, 9)
++        XCTAssertEqual(ToolDefinitions.all.count, 10)
+     }
+ 
+     func testReadToolArgumentsAcceptsJSONObject() throws {
+@@ -2435,3 +2435,52 @@ final class OpenComputerUseKitTests: XCTestCase {
+         return (width, height)
+     }
+ }
++
++final class BioRouterCaptureContractTests: XCTestCase {
++    func testPassiveDoctorCommandIsDistinctFromOnboarding() throws {
++        XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["doctor", "--json"]), .diagnostics)
++        XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["doctor"]), .doctor)
++    }
++
++    func testMalformedCaptureArguments() {
++        let cases: [[String: Any]] = [
++            ["display": -1], ["display": 0.5], ["display": true],
++            ["window_title": ""], ["window_title": 1], ["list_only": 1],
++            ["display": 0, "window_title": "example"], ["unknown": true],
++        ]
++        for arguments in cases {
++            XCTAssertThrowsError(try ScreenCaptureRequest(arguments: arguments))
++        }
++        XCTAssertNoThrow(try ScreenCaptureRequest(arguments: ["display": 0, "list_only": true]))
++    }
++
++    func testNewConnectionsRequireTheirOwnAppState() {
++        for server in [StdioMCPServer(), StdioMCPServer()] {
++            let line = #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"type_text","arguments":{"app":"missing-fixture","text":"must not type"}}}"#
++            let response = server.handle(line: line) ?? ""
++            XCTAssertTrue(response.contains("Run get_app_state before action tools"))
++            XCTAssertTrue(response.contains("\"isError\":true"))
++        }
++    }
++
++    func testCancellationIsOwnerScopedAndRestored() throws {
++        XCTAssertFalse(ComputerUseCancellation.isCancelled)
++        try ComputerUseCancellation.withProbe({ true }) {
++            XCTAssertThrowsError(try ComputerUseCancellation.check())
++            try ComputerUseCancellation.withProbe({ false }) {
++                XCTAssertNoThrow(try ComputerUseCancellation.check())
++            }
++            XCTAssertTrue(ComputerUseCancellation.isCancelled)
++        }
++        XCTAssertFalse(ComputerUseCancellation.isCancelled)
++    }
++
++    func testCaptureWaitCancelsOnOwnerDisconnect() throws {
++        try ComputerUseCancellation.withProbe({ true }) {
++            XCTAssertThrowsError(try BlockingAsyncBridge.run(timeout: 5) {
++                try await Task.sleep(nanoseconds: 5_000_000_000)
++                return true
++            })
++        }
++    }
++}

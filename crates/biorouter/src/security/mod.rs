@@ -1,3 +1,4 @@
+pub mod computer_use;
 pub mod global_memory;
 pub mod knowledge_delete;
 pub mod patterns;

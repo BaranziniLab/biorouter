@@ -363,6 +363,21 @@ impl PermissionInspector {
             return verdict;
         }
 
+        if crate::security::computer_use::is_computer_use_tool(tool_name) {
+            if self.permission_manager.get_user_permission(tool_name)
+                == Some(PermissionLevel::NeverAllow)
+            {
+                return Verdict::Decided(
+                    InspectionAction::Deny,
+                    "User permission denies this tool".into(),
+                );
+            }
+            return Verdict::Decided(
+                InspectionAction::Allow,
+                "Computer Use requires its separate host-verified task consent at dispatch".into(),
+            );
+        }
+
         match mode {
             // Chat never reaches here (filtered in `inspect`); Auto allows all.
             BioRouterMode::Chat | BioRouterMode::Auto => Verdict::Decided(

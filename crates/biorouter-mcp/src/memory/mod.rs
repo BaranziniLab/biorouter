@@ -391,7 +391,7 @@ fn replace_category_file(path: &Path, body: &str) -> io::Result<()> {
 /// The store is a directory of text files, so every generic file tool in the
 /// product can address it: `text_editor view <store>/clinical.txt` is the same
 /// disclosure `retrieve_memories(category="clinical", is_global=true)` puts to
-/// the user, and `computercontroller cache --delete` is a deletion with no card
+/// the user, and `webdocuments cache --delete` is a deletion with no card
 /// at all. Issue #63's consent gate matches *tool names*, so it saw none of
 /// them, and the #63 review's verdict is that name-matching cannot protect a
 /// file store while generic file access exists. This is the check that closes it

@@ -137,6 +137,7 @@ fn elicitation_session_scope(meta: &Meta, active: &ActiveCallSessions) -> Option
 #[derive(Clone, Debug)]
 pub struct McpMeta {
     pub session_id: String,
+    pub computer_use_generation: Option<String>,
     /// Per-dispatch MCP progress token. When set, it is written into the call's
     /// `_meta.progressToken` so the server echoes it on progress notifications,
     /// letting a pooled (shared) client route those notifications to exactly this
@@ -186,6 +187,7 @@ impl McpMeta {
     pub fn new(session_id: impl Into<String>, capability: CallCapability) -> Self {
         Self {
             session_id: session_id.into(),
+            computer_use_generation: None,
             progress_token: None,
             capability,
             capability_private: None,
@@ -228,6 +230,14 @@ impl McpMeta {
 
     pub(crate) fn inject_into_extensions(&self, extensions: Extensions) -> Extensions {
         let mut extensions = inject_session_id_into_extensions(extensions, &self.session_id);
+        if let Some(generation) = &self.computer_use_generation {
+            let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
+            meta.0.insert(
+                "computer_use_generation".into(),
+                serde_json::Value::String(generation.clone()),
+            );
+            extensions.insert(meta);
+        }
         if let Some(private) = self.capability_private {
             // Issue #56. The SAME `_meta` object the session id rides in, for
             // the same wire-collision reason the progress token below gives.

@@ -87,14 +87,8 @@ describe('successful artifact invalidation hints', () => {
   });
   it.each([
     ['code_execution__execute_code', { code: 'if (false) write_file("/tmp/never.txt")' }],
-    [
-      'computercontroller__automation_script',
-      { language: 'shell', script: 'if false; then printf unused > /tmp/never.txt; fi' },
-    ],
-    [
-      'automation_script',
-      { language: 'ruby', script: 'File.write("/tmp/never.txt", "unused") if false' },
-    ],
+    ['computercontroller__press_key', { app: 'TextEdit', key: 'cmd+s' }],
+    ['computercontroller__click', { app: 'TextEdit', element_index: 4 }],
   ])(
     'treats successful opaque %s as an active-file check, not invented path evidence',
     (name, args) => {
@@ -105,14 +99,14 @@ describe('successful artifact invalidation hints', () => {
     }
   );
   it.each([{ isError: true }, { is_error: true }])(
-    'does not refresh after a failed automation script: %j',
+    'does not refresh after a failed native action: %j',
     (error) => {
       expect(
         artifactRefreshEvents(
           exchange(
             'failed-script',
-            'computercontroller__automation_script',
-            { language: 'shell', script: 'exit 1' },
+            'computercontroller__click',
+            { app: 'TextEdit', element_index: 4 },
             { content: [], ...error }
           ),
           'a'
@@ -120,10 +114,10 @@ describe('successful artifact invalidation hints', () => {
       ).toEqual([]);
     }
   );
-  it('keeps direct automation completion hints local, deduplicated and completion-only', () => {
-    const completed = exchange('script', 'computercontroller__automation_script', {
-      language: 'shell',
-      script: 'printf updated > /tmp/result.txt',
+  it('keeps native action completion hints local, deduplicated and completion-only', () => {
+    const completed = exchange('native', 'computercontroller__press_key', {
+      app: 'TextEdit',
+      key: 'cmd+s',
     });
     const pending = structuredClone(completed);
     pending[0].content.pop();
@@ -140,8 +134,20 @@ describe('successful artifact invalidation hints', () => {
     >;
     expect(artifactRefreshEvents(foreign, 'a')).toEqual([]);
     expect(artifactRefreshEvents([...completed, ...completed], 'a')).toEqual([
-      { id: 'script', paths: [], checkActiveFile: true },
+      { id: 'native', paths: [], checkActiveFile: true },
     ]);
+  });
+  it('does not refresh files for desktop observations or unrelated tools with action-like names', () => {
+    for (const tool of [
+      'computercontroller__list_apps',
+      'computercontroller__get_app_state',
+      'computercontroller__screen_capture',
+      'unrelated__click',
+    ]) {
+      expect(artifactRefreshEvents(exchange('observe', tool, { app: 'TextEdit' }), 'a')).toEqual(
+        []
+      );
+    }
   });
   it('refreshes the matching built app, not unrelated apps or unbundled source edits', () => {
     const [build] = artifactRefreshEvents(

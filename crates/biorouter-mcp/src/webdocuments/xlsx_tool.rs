@@ -264,7 +264,7 @@ mod tests {
     fn get_test_file() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src")
-            .join("computercontroller")
+            .join("webdocuments")
             .join("tests")
             .join("data")
             .join("FinancialSample.xlsx")

@@ -14,6 +14,7 @@ SESSIONS = ROOT / ".br-testdrive/runtime/data/sessions/sessions.db"
 BUILTIN_EXTENSIONS = {
     "developer",
     "computercontroller",
+    "webdocuments",
     "autovisualiser",
     "memory",
     "agent_drafter",

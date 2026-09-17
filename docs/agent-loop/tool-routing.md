@@ -92,12 +92,17 @@ edit files at all.
   **local tool catalog** only and answers no questions. For a factual or web-research
   question, use a web tool or answer directly.
 
-### `computercontroller/automation_script`, `web_scrape`, `computer_control`
-- **Use for:** GUI/system automation (`computer_control`); a fetch of a known URL
-  (`web_scrape`); a small saved script where a one-off `shell` command won't do
-  (`automation_script`).
-- **Don't:** use `automation_script` for what a single `developer/shell` command does;
-  don't fetch a URL three different ways (shell `curl`, `web_scrape`, and a script).
+### Native Computer Use and Web & Documents
+- Use `computercontroller/list_apps` then `get_app_state` before native element actions.
+  `screen_capture` is the sole built-in display/window capture tool. Follow the current schemas.
+- Obtain the host's per-chat task grant once, continue authorized work, and stop on denial or
+  revocation. Never use shell or another automation route to bypass a computer-use block.
+- Keep desktop calls sequential and refresh observations after handoff, stale references, or
+  uncertain completion. Never replay a timed-out mutation blindly.
+- Use `webdocuments/web_scrape` for a known URL and `webdocuments` document/cache tools for
+  those formats. They do not require the desktop helper. Ordinary files/code use Developer.
+- Private and public chats retain separate observations and grants. A shared physical desktop
+  can expose content left visible; acknowledge a private-to-public handoff before capture.
 
 ### `files_server` / `compute_server` (Agent Drafter app sandboxes)
 - **Use for:** file and shell/Python work **scoped to a built app's sandbox**.
@@ -176,17 +181,17 @@ The same guidance is mirrored in the extension's own `INSTRUCTIONS` block
 
 Rows are capabilities; cells mark tools that can do it. **Bold** = the tool to prefer.
 
-| Capability | developer | code_execution | computercontroller | files/compute_server |
+| Capability | developer | code_execution | webdocuments | files/compute_server |
 |------------|-----------|----------------|--------------------|----------------------|
-| List a directory | **shell `ls`** | execute_code | automation_script | list_dir (sandbox) |
+| List a directory | **shell `ls`** | execute_code | — | list_dir (sandbox) |
 | Read a file | **text_editor view** | execute_code | — | read_text_file (sandbox) |
 | Write a file | **text_editor write** | execute_code | — | write_text_file (sandbox) |
-| Copy/move/delete | **shell** | execute_code | automation_script | — |
+| Copy/move/delete | **shell** | execute_code | — | — |
 | Find files/text | **shell `rg`** | execute_code | — | — |
-| Run one command | **shell** | execute_code | automation_script | compute_server/shell (sandbox) |
+| Run one command | **shell** | execute_code | — | compute_server/shell (sandbox) |
 | Chain N dependent calls + logic | (serial calls) | **execute_code** | — | — |
 | Fetch a URL | shell `curl` | execute_code fetch | **web_scrape** | — |
-| Run Python | shell `python3` | execute_code | automation_script | **compute_server/python** (sandbox) |
+| Run Python | shell `python3` | execute_code | — | **compute_server/python** (sandbox) |
 
 The rule the matrix encodes: **the leftmost bold cell wins for a simple task**;
 `execute_code` wins only in the "chain N dependent calls + logic" row.
@@ -210,43 +215,12 @@ The rule the matrix encodes: **the leftmost bold cell wins for a simple task**;
 
 ---
 
-## Deprecation proposal — awaiting approval, nothing removed yet
+## Native desktop replacement
 
-The following are **candidates** to reduce tool overlap. **None has been removed,
-disabled, or changed** by this work — this is a proposal only. Do not act on it
-without explicit approval; each carries a migration note.
-
-1. **`computercontroller/automation_script` (shell mode).**
-   - *Rationale:* overlaps `developer/shell` almost entirely; its own description
-     already says "Consider using shell script (bash) for most simple tasks first."
-     The shell/script split confuses routing.
-   - *Migration:* keep the Ruby/PowerShell path if anything depends on it; route
-     plain shell scripts to `developer/shell`. Or narrow its description to
-     "non-shell scripting only."
-
-2. **`computercontroller/web_scrape` vs. shell `curl` vs. execute_code fetch.**
-   - *Rationale:* three surfaces fetch a URL. `web_scrape` is the nicest (caching,
-     text/JSON extraction) but the redundancy invites inconsistent choices.
-   - *Migration:* designate `web_scrape` the single canonical URL-fetch tool in
-     docs/prompts (done, in the routing text); consider dropping the "fetch web
-     content" line from the shell description if `web_scrape` is always present.
-
-3. **`files_server` / `compute_server` naming.**
-   - *Rationale:* `list_dir` / `read_text_file` / `write_text_file` / `shell` /
-     `python` read as generic file/shell tools but are **sandbox-scoped** to Agent
-     Drafter apps; the descriptions don't state that boundary.
-   - *Migration:* not a removal — **rename/redescribe** to make the sandbox scope
-     explicit (e.g. "…inside the app sandbox") so the model never picks them for the
-     user's own workspace. (No code change proposed here beyond the doc note.)
-
-4. **`code_execution` few-shot examples that modeled file-copy.**
-   - *Status:* **already fixed** in this change — the "copy a file" and bare "ls a
-     directory" examples were replaced with genuine dependent-chaining examples, and
-     explicit negative guidance was added. Listed here for the record, not as a
-     pending action.
-
-No tool is deprecated by merging this document. Approval is required before any of
-candidates 1–3 are implemented.
+The previous script-driven desktop tools and Developer capture implementation are removed.
+There are no compatibility aliases. Current model guidance, nested imports and bridge policy
+must use the native Computer Use roster and independent Web & Documents identity. Existing
+script workflows need an explicit rewrite; they do not authorize the new desktop capability.
 
 ## Tool-result logging (observability of every tool call)
 

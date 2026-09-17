@@ -1274,10 +1274,31 @@ impl CliSession {
 
         let mut progress_bars = output::McpSpinners::new();
         let cancel_token_clone = cancel_token.clone();
+        let mut computer_use_challenge = None;
+        let mut computer_use_poll = tokio::time::interval(std::time::Duration::from_millis(500));
 
         use futures::StreamExt;
         loop {
             tokio::select! {
+                _ = computer_use_poll.tick() => {
+                    if let Ok(status) = self.agent.extension_manager.computer_use_status(&self.session_id).await {
+                        if computer_use_needs_prompt(&status, computer_use_challenge.as_deref()) {
+                            computer_use_challenge = Some(status.challenge_id.clone());
+                            if interactive && crate::commands::needs_terminal::prompt_can_run() {
+                                eprintln!("\n{}", status.disclosure);
+                                if cliclack::confirm("Allow Computer Use for this task?").initial_value(false).interact()? {
+                                    self.agent.extension_manager.approve_computer_use(&self.session_id, &status.challenge_id).await?;
+                                    eprintln!("Computer Use allowed for this task. Press Ctrl-C to stop desktop control.");
+                                } else {
+                                    self.agent.extension_manager.computer_use.revoke();
+                                }
+                            } else {
+                                eprintln!("Computer Use requires interactive task approval; this non-interactive run cannot grant it.");
+                                self.agent.extension_manager.computer_use.revoke();
+                            }
+                        }
+                    }
+                }
                 result = stream.next() => {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
@@ -1634,6 +1655,7 @@ impl CliSession {
                     }
                 }
                 _ = cancel_token_clone.cancelled() => {
+                    self.agent.extension_manager.computer_use.revoke();
                     drop(stream);
                     if let Err(e) = self.handle_interrupted_messages(true).await {
                         eprintln!("Error handling interruption: {}", e);
@@ -2091,6 +2113,15 @@ fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permissi
     }
 }
 
+fn computer_use_needs_prompt(
+    status: &biorouter::security::computer_use::ComputerUseStatus,
+    last_challenge: Option<&str>,
+) -> bool {
+    status.requested
+        && status.state == "approval_required"
+        && last_challenge != Some(status.challenge_id.as_str())
+}
+
 /// Extract tool confirmation request from a message
 fn find_tool_confirmation(message: &Message) -> Option<(String, Option<String>)> {
     message.content.iter().find_map(|content| {
@@ -2511,6 +2542,36 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn computer_use_prompt_requires_host_request_and_new_challenge() {
+        let mut status = biorouter::security::computer_use::ComputerUseStatus {
+            runtime: serde_json::json!({}),
+            enabled: true,
+            session_id: "chat".into(),
+            provider: "provider".into(),
+            model: "model".into(),
+            destination: "destination".into(),
+            target: "host".into(),
+            disclosure: "disclosure".into(),
+            state: "approval_required".into(),
+            challenge_id: "challenge".into(),
+            public_model: true,
+            handoff_required: true,
+            requested: false,
+        };
+        assert!(!super::computer_use_needs_prompt(&status, None));
+        status.requested = true;
+        assert!(super::computer_use_needs_prompt(&status, None));
+        assert!(!super::computer_use_needs_prompt(
+            &status,
+            Some("challenge")
+        ));
+        for state in ["active", "stopped"] {
+            status.state = state.into();
+            assert!(!super::computer_use_needs_prompt(&status, None));
+        }
+    }
     use super::*;
     use std::time::Duration;
 

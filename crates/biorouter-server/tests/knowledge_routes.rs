@@ -1055,17 +1055,15 @@ async fn add_raw_source_accepts_supported_file_formats() {
             slug: "docx",
             filename: "sample.docx",
             mime: Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-            bytes: include_bytes!(
-                "../../biorouter-mcp/src/computercontroller/tests/data/sample.docx"
-            )
-            .to_vec(),
+            bytes: include_bytes!("../../biorouter-mcp/src/webdocuments/tests/data/sample.docx")
+                .to_vec(),
             expected: None,
         },
         Case {
             slug: "pdf",
             filename: "sample.pdf",
             mime: Some("application/pdf"),
-            bytes: include_bytes!("../../biorouter-mcp/src/computercontroller/tests/data/test.pdf")
+            bytes: include_bytes!("../../biorouter-mcp/src/webdocuments/tests/data/test.pdf")
                 .to_vec(),
             expected: None,
         },

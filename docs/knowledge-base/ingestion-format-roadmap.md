@@ -90,7 +90,7 @@ unrecoverable downstream.
    `ui/desktop/src/components/knowledge/IngestPanel/fileValidation.ts`, `guess_mime()`
    falling through to `text/plain`, and `convert()` bailing with `unsupported mime`.
 4. **`umya-spreadsheet` 2.2.3 is already a workspace dependency** (used by
-   `computercontroller/xlsx_tool.rs`) — XLSX support has zero-new-dependency options.
+   `webdocuments/xlsx_tool.rs`) — XLSX support has zero-new-dependency options.
 
 Lint (`macros/lint.rs`: deterministic scan plus optional sub-agent autofix), query
 (`macros/query.rs`: BM25 `kb_search` plus page reads, optional file-as-page), and the CLI

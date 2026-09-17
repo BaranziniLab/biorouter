@@ -10,6 +10,13 @@ use console::{style, Color};
 /// Brand warm tan-brown accent (xterm-256 137 ≈ #af875f).
 const ACCENT: Color = Color::Color256(137);
 
+async fn computer_use_diagnostics() -> serde_json::Value {
+    let mut status = biorouter_mcp::computer_use::probe_readiness(true).await;
+    status["cli_approval"] = "interactive_terminal_required".into();
+    status["serve_setup"] = "biorouter serve --computer-use-approval".into();
+    status
+}
+
 fn section(title: &str) {
     println!("  {} {}", style("▌").fg(ACCENT), style(title).bold());
 }
@@ -17,6 +24,7 @@ fn section(title: &str) {
 pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     let deps = system::check_all();
     let cli_path = system::biorouter_on_path();
+    let computer_use = computer_use_diagnostics().await;
     // Snapshot the local-model sidecar. `status()` health-probes the configured
     // port, so this also detects a llama-server started by the desktop app or a
     // standalone `biorouterd` — useful for "the local model works in the app but
@@ -41,6 +49,7 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
                     "model_cache_dir": model_cache_dir,
                 },
                 "shell_sandbox": sandbox_json(),
+                "computer_use": computer_use,
                 "update": update,
             })
         );
@@ -82,6 +91,31 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     println!();
     section("Shell sandbox");
     print_sandbox_status();
+
+    println!();
+    section("Computer Use");
+    println!(
+        "    Backend desktop: {}",
+        computer_use["host"].as_str().unwrap_or("this host")
+    );
+    println!(
+        "    Runtime: {}",
+        computer_use["status"].as_str().unwrap_or("unknown")
+    );
+    if let Some(error) = computer_use["error"].as_str() {
+        println!("    {error}");
+    }
+    if let Some(executable) = computer_use["executable"].as_str() {
+        println!("    Helper: {executable}");
+    }
+    println!("    OS permissions: {}", computer_use["permissions"]);
+    if let Some(message) = computer_use["message"].as_str() {
+        println!("    {message}");
+    }
+    println!("    Doctor checks readiness without capturing or controlling the desktop.");
+    println!("    CLI: approve the task at the interactive terminal when requested. Non-interactive runs cannot grant approval.");
+    println!("    Browser: start with `biorouter serve --computer-use-approval`, then enter your key in the Computer Use approval field.");
+    println!("    A remote browser controls the backend host's desktop. A headless host has no desktop to control.");
 
     // Actionable next steps for anything missing.
     let missing_required: Vec<&DependencyStatus> =

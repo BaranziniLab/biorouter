@@ -296,14 +296,14 @@ fn write_supported_fixtures(dir: &Path) -> Vec<PathBuf> {
     let pdf = dir.join("sample.pdf");
     std::fs::write(
         &pdf,
-        include_bytes!("../src/computercontroller/tests/data/test.pdf"),
+        include_bytes!("../src/webdocuments/tests/data/test.pdf"),
     )
     .unwrap();
 
     let docx = dir.join("sample.docx");
     std::fs::write(
         &docx,
-        include_bytes!("../src/computercontroller/tests/data/sample.docx"),
+        include_bytes!("../src/webdocuments/tests/data/sample.docx"),
     )
     .unwrap();
 

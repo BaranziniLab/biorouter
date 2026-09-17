@@ -16,6 +16,7 @@ jobs:
   windows-runtime:
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Download Windows artifact from draft release
         shell: pwsh
         env:
@@ -66,6 +67,13 @@ jobs:
           $git = Join-Path $app "resources/bin/git/cmd/git.exe"
           $minGitMarker = Join-Path $app "resources/bin/git/mingit-version.txt"
 
+          $helper = Join-Path $app "resources/computer-use"
+          python scripts/computer-use-runtime.py verify win32-x64 --directory $helper
+          if ($LASTEXITCODE -ne 0) { throw "Packaged native helper integrity check failed" }
+          python scripts/test-computer-use-protocol.py $helper
+          if ($LASTEXITCODE -ne 0) { throw "Packaged native helper protocol check failed" }
+          python scripts/test-computer-use-windows-fixture.py $helper --report artifact/windows-fixture.json
+          if ($LASTEXITCODE -ne 0) { throw "Packaged native helper fixture check failed" }
           $cliVersion = & $cli --version
           if ($LASTEXITCODE -ne 0 -or $cliVersion -notmatch [regex]::Escape($env:VERSION)) {
             throw "Packaged CLI did not report $env:VERSION"

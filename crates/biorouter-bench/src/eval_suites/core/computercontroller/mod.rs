@@ -1,3 +1,2 @@
-// computer controller extension evals
-mod script;
-mod web_scrape;
+mod capture;
+mod list_apps;

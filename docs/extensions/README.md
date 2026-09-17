@@ -16,14 +16,14 @@ Come here when you want to install an extension, understand a shipped capability
 
 ## Built-in capability reference
 
-The [`built-in/`](built-in/README.md) subdirectory holds one user-facing reference page per built-in capability: Developer, Computer Controller, Memory, Auto Visualiser, Chat Recall, Code Execution, Extension Manager, Skills, Todo and Workspace Control.
+The [`built-in/`](built-in/README.md) subdirectory holds one user-facing reference page per built-in capability: Developer, Computer Use, Web & Documents, Memory, Auto Visualiser, Chat Recall, Code Execution, Extension Manager, Skills, Todo and Workspace Control.
 
-Two pages are worth knowing about before you go. [Developer](built-in/developer.md) carries the most substantive security guidance, and [Computer Controller](built-in/computer-controller.md) documents the highest-blast-radius capability because it acts on your real desktop.
+Two pages are worth knowing about before you go. [Developer](built-in/developer.md) carries the most substantive security guidance, and [Computer Use](built-in/computer-controller.md) documents the highest-blast-radius capability because it acts on your real desktop.
 
 ## Related documentation
 
 - [Installation](../getting-started/installation.md) — the default-enabled capability list a new install starts from, before you add extensions
-- [Permission modes](../security/permission-modes.md) — how to decide whether BioRouter asks before `shell`, `text_editor` or `computer_control` acts on your machine
+- [Permission modes](../security/permission-modes.md) — how to decide whether BioRouter asks before `shell`, `text_editor` or native desktop actions acts on your machine
 - [Agent Drafter](../agent-drafter/README.md) — the built-in capability that builds interactive apps, documented separately because of its size
 - [Integrations with other tools](../integrations/README.md) — the opposite direction: adapters that let another host application, such as JupyterLab's Jupyter AI chat, run a Biorouter agent with everything documented here already attached
 - [Workflows](../workflows/README.md) — the scripted alternative to a skill when you want deterministic steps rather than agent judgement

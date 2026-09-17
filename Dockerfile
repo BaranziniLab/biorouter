@@ -2,6 +2,17 @@
 # BioRouter CLI and Server Docker Image
 # Multi-stage build for minimal final image size
 
+# Native helper is part of the CLI image even when no desktop is attached.
+FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm AS computer-use-builder
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends python3 git ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/computer-use-runtime.py scripts/computer-use-runtime.py
+COPY third_party/open-computer-use third_party/open-computer-use
+RUN case "$TARGETARCH" in amd64) HELPER_TARGET=linux-x64 ;; arm64) HELPER_TARGET=linux-arm64 ;; *) echo "Unsupported native helper architecture: $TARGETARCH" >&2; exit 1 ;; esac && \
+    python3 scripts/computer-use-runtime.py build "$HELPER_TARGET" && \
+    cp -a "target/computer-use/$HELPER_TARGET" /computer-use
+
 # Build stage
 FROM rust:1.92-bookworm AS builder
 
@@ -41,6 +52,11 @@ RUN apt-get update && \
     libssl3 \
     libdbus-1-3 \
     libxcb1 \
+    python3 \
+    python3-gi \
+    gir1.2-atspi-2.0 \
+    gir1.2-gtk-3.0 \
+    at-spi2-core \
     curl \
     git \
     && apt-get clean \
@@ -48,6 +64,7 @@ RUN apt-get update && \
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/biorouter /usr/local/bin/biorouter
+COPY --from=computer-use-builder /computer-use /usr/libexec/biorouter/computer-use
 
 # Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash biorouter && \

@@ -539,6 +539,30 @@ impl Provider for LeadWorkerProvider {
         self.lead_provider.get_name()
     }
 
+    fn computer_use_destination(&self) -> Option<String> {
+        let lead = self.lead_provider.computer_use_destination();
+        let worker = self.worker_provider.computer_use_destination();
+        if lead.is_none() && worker.is_none() {
+            return None;
+        }
+        Some(format!(
+            "lead: {}; worker: {}",
+            lead.as_deref().unwrap_or("destination not reported"),
+            worker.as_deref().unwrap_or("destination not reported")
+        ))
+    }
+
+    fn computer_use_destination_identity(&self) -> Option<String> {
+        let lead = self.lead_provider.computer_use_destination_identity();
+        let worker = self.worker_provider.computer_use_destination_identity();
+        if lead.is_none() && worker.is_none() {
+            return None;
+        }
+        Some(super::base::computer_use_destination_digest(&format!(
+            "{lead:?}\0{worker:?}"
+        )))
+    }
+
     /// The composite override. `get_name()` above answers for the lead alone, so
     /// anything keyed on it would badge a private-lead/public-worker pair
     /// Private — while the worker sees the whole transcript.
@@ -1530,5 +1554,48 @@ mod tests {
             "and symmetrically for a non-streaming lead"
         );
         assert!(worker_only.supports_live_steering());
+    }
+    #[test]
+    fn computer_use_composite_discloses_both_destinations_and_binds_both_routes() {
+        use crate::providers::api_client::{ApiClient, AuthMethod};
+        use crate::providers::openai::OpenAiProvider;
+        let endpoint = |url: &str| -> Arc<dyn Provider> {
+            Arc::new(OpenAiProvider::new(
+                ApiClient::new(url.into(), AuthMethod::BearerToken("test".into())).unwrap(),
+                ModelConfig::new_or_fail("model"),
+            ))
+        };
+        let lead = endpoint("http://localhost:11434");
+        let first = LeadWorkerProvider::new(
+            lead.clone(),
+            endpoint("https://remote.example/private-a"),
+            None,
+        );
+        let second = LeadWorkerProvider::new(
+            lead.clone(),
+            endpoint("https://remote.example/private-b"),
+            None,
+        );
+        assert_eq!(
+            first.computer_use_destination().as_deref(),
+            Some("lead: http://localhost:11434; worker: https://remote.example")
+        );
+        assert_eq!(
+            first.computer_use_destination(),
+            second.computer_use_destination()
+        );
+        assert_ne!(
+            first.computer_use_destination_identity(),
+            second.computer_use_destination_identity()
+        );
+        let unknown = Arc::new(MockProvider {
+            name: "unknown".into(),
+            model_config: ModelConfig::new_or_fail("model"),
+        });
+        let partial = LeadWorkerProvider::new(lead, unknown, None);
+        assert_eq!(
+            partial.computer_use_destination().as_deref(),
+            Some("lead: http://localhost:11434; worker: destination not reported")
+        );
     }
 }

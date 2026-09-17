@@ -26,6 +26,9 @@ description: |
   `biorouterd` so a headless host can be driven from a browser.
 
 contents:
+  - src: ./target/computer-use/linux-x64
+    dst: /usr/libexec/biorouter/computer-use
+    type: tree
   - src: ./target/x86_64-unknown-linux-gnu/release/biorouter
     dst: /usr/bin/biorouter
     file_info:
@@ -59,11 +62,20 @@ overrides:
     depends:
       - libxcb1
       - zlib1g
+      - python3
+      - python3-gi
+      - gir1.2-atspi-2.0
+      - gir1.2-gtk-3.0
+      - at-spi2-core
     recommends:
       - git
   rpm:
     depends:
       - libxcb
       - zlib
+      - python3
+      - python3-gobject
+      - at-spi2-core
+      - gtk3
     recommends:
       - git

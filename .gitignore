@@ -98,3 +98,6 @@ scripts/worktrees.manifest
 # The dev launcher symlinks ui/desktop/src/bin into a worktree; the trailing-slash pattern
 # elsewhere matches only a real directory, so the symlink itself must be named too.
 ui/desktop/src/bin
+
+# Generated pinned native computer-use resources
+ui/desktop/src/computer-use/

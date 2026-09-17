@@ -947,7 +947,7 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
 /// `bundle::run_esbuild` — so neither can drift and a third one has an obvious
 /// thing to call. The rule itself is the *shared* one,
 /// [`strip_daemon_private_env_std`], the same function the developer shell,
-/// stdio extensions, `computer_controller` and `computer_control` call.
+/// and stdio extensions call.
 ///
 /// A second, stricter mechanism here (an allow-list of, say, `PATH` + `HOME`)
 /// was considered and rejected: it would be a parallel copy of one security
@@ -1341,6 +1341,7 @@ pub fn export_scaffold(
 pub(crate) const BUILTIN_EXTENSION_NAMES: &[&str] = &[
     "developer",
     "computercontroller",
+    "webdocuments",
     "autovisualiser",
     "memory",
     "agent_drafter",
@@ -4928,7 +4929,7 @@ br.run("hello", "#missing");
     /// holder a fully authenticated client of `biorouterd`'s REST API (issue
     /// #57).
     ///
-    /// Same probe shape as `developer::shell` and `computercontroller`: the
+    /// Same probe shape as `developer::shell`: the
     /// leak lives in the *inherited* environment, so exercising it means
     /// controlling this process's environment, and `set_var` is unsound in a
     /// threaded test binary. The parent re-invokes this test binary with the

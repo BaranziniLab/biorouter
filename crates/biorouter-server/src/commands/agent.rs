@@ -180,7 +180,12 @@ impl NoUserActionKey {
 /// Split out from the I/O so the mapping is testable: the whole point of the
 /// four arms is that they are told apart, and a classification that lives inside
 /// an `async fn` reading real stdin is one nothing can check.
+#[cfg(test)]
 fn classify_digest_line(line: Option<String>) -> Result<[u8; 32], NoUserActionKey> {
+    classify_launch_digest_line(line).map(|(_, digest)| digest)
+}
+
+fn classify_launch_digest_line(line: Option<String>) -> Result<(bool, [u8; 32]), NoUserActionKey> {
     let Some(line) = line else {
         return Err(NoUserActionKey::TimedOut);
     };
@@ -188,8 +193,13 @@ fn classify_digest_line(line: Option<String>) -> Result<[u8; 32], NoUserActionKe
     if line.is_empty() {
         return Err(NoUserActionKey::NoneOffered);
     }
+    let (computer_use_only, line) = match line.strip_prefix("computer-use:") {
+        Some(digest) => (true, digest),
+        None => (false, line),
+    };
     let bytes = hex::decode(line).map_err(|_| NoUserActionKey::Malformed)?;
-    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| NoUserActionKey::Malformed)
+    let digest = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| NoUserActionKey::Malformed)?;
+    Ok((computer_use_only, digest))
 }
 
 /// Read the launcher's SHA-256 user-action digest off stdin, as one hex line
@@ -204,7 +214,7 @@ fn classify_digest_line(line: Option<String>) -> Result<[u8; 32], NoUserActionKe
 /// ⚠ The 2 s bound is unchanged. It is not raised here because nothing measured
 /// says the desktop launcher misses it; what changed is that missing it is now
 /// *reported* rather than folded into the three expected ways of holding no key.
-async fn read_user_action_digest() -> Result<[u8; 32], NoUserActionKey> {
+async fn read_user_action_digest() -> Result<(bool, [u8; 32]), NoUserActionKey> {
     use std::io::IsTerminal;
     // (1) A terminal is a human at a prompt, not a launcher with a key. Reading
     //     it would hang `just run-server` forever waiting for a line.
@@ -239,7 +249,7 @@ async fn read_user_action_digest() -> Result<[u8; 32], NoUserActionKey> {
         .ok()
         .and_then(Result::ok)
         .flatten();
-    classify_digest_line(line)
+    classify_launch_digest_line(line)
 }
 
 /// Read the launcher's proof-of-user digest, say what holding none costs, and
@@ -261,7 +271,11 @@ async fn install_user_action_proof() -> Option<[u8; 32]> {
     let launcher_declared_a_key =
         biorouter_server::launch::launcher_declared_a_user_action_key_in_env();
     let digest = match read_user_action_digest().await {
-        Ok(digest) => Some(digest),
+        Ok((true, digest)) => {
+            biorouter_server::auth::install_computer_use_action_digest(Some(digest));
+            None
+        }
+        Ok((false, digest)) => Some(digest),
         Err(reason) => {
             // ⚠ One line, and it names every consequence. `reason.warning()`
             // carries SD-11's — before SD-11 a keyless desktop daemon announced
@@ -544,6 +558,23 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
 #[cfg(test)]
 mod keyless_report_tests {
     use super::{classify_digest_line, NoUserActionKey};
+
+    #[test]
+    fn computer_use_launch_digest_remains_scoped() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            super::classify_launch_digest_line(Some(format!("computer-use:{digest}\n"))),
+            Ok((true, [0xaa; 32]))
+        );
+        assert_eq!(
+            super::classify_launch_digest_line(Some(digest)),
+            Ok((false, [0xaa; 32]))
+        );
+        assert_eq!(
+            super::classify_launch_digest_line(Some("computer-use:bad".into())),
+            Err(NoUserActionKey::Malformed)
+        );
+    }
 
     /// The four causes are told apart. They were one `None` until SD-11 made a
     /// keyless daemon behave differently rather than merely refuse more, at

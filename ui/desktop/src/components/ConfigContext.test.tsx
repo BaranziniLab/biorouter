@@ -507,3 +507,32 @@ describe('ConfigContext announces writes of the app-wide model selection (F3)', 
     expect(nudges).toBe(0);
   });
 });
+
+describe('backend-owned capability defaults', () => {
+  it('preserves explicit disables and restrictions in a fresh browser profile', async () => {
+    const extensions = [
+      {
+        type: 'builtin',
+        name: 'computercontroller',
+        enabled: false,
+        available_tools: ['get_app_state'],
+      },
+    ];
+    mocks.getExtensions.mockResolvedValue({ data: { extensions, warnings: [] } });
+    function Probe() {
+      const { extensionsList } = useConfig();
+      return <output data-testid="extensions">{JSON.stringify(extensionsList)}</output>;
+    }
+    render(
+      <ConfigProvider>
+        <Probe />
+      </ConfigProvider>
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('extensions')).toHaveTextContent('get_app_state')
+    );
+    expect(screen.getByTestId('extensions')).toHaveTextContent('"enabled":false');
+    expect(mocks.addExtension).not.toHaveBeenCalled();
+    expect(mocks.syncBundledExtensions).not.toHaveBeenCalled();
+  });
+});

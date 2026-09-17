@@ -2,6 +2,7 @@ const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-natives');
 const { resolve } = require('path');
+const { verifyComputerUse } = require('./scripts/computer-use-resources');
 
 // `node-pty` is the only runtime dependency that cannot be bundled by Vite: it
 // is a native module, so `vite.main.config.mts` externalises it and the built
@@ -40,9 +41,7 @@ function keepInPackage(file) {
   if (!isUnder(file, '/node_modules/node-pty')) return false;
   if (file.endsWith('.pdb')) return false;
   if (isUnder(file, '/node_modules/node-pty/prebuilds')) {
-    return (
-      file === '/node_modules/node-pty/prebuilds' || isUnder(file, nodePtyPrebuildDir)
-    );
+    return file === '/node_modules/node-pty/prebuilds' || isUnder(file, nodePtyPrebuildDir);
   }
   return (
     file === '/node_modules/node-pty' ||
@@ -75,7 +74,7 @@ let cfg = {
   // It must also stay a SIBLING of `src/bin`, never a child: `stage_bin` in
   // scripts/release.sh does `rm -rf ui/desktop/src/bin`, which would take the
   // bundle with it.
-  extraResource: ['src/bin', 'src/images', 'src/web'],
+  extraResource: ['src/bin', 'src/images', 'src/web', 'src/computer-use'],
   icon: 'src/images/icon',
   // macOS code signing and notarization
   // Activate by setting APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD in the build environment.
@@ -83,8 +82,11 @@ let cfg = {
   ...(process.env.APPLE_ID
     ? {
         osxSign: {
-          identity: 'Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)',
+          identity:
+            'Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)',
           hardenedRuntime: true,
+          // The helper is signed before its byte manifest is generated.
+          ignore: (file) => file.includes('/computer-use/BioRouter Computer Use.app'),
           entitlements: 'entitlements.plist',
           'entitlements-inherit': 'entitlements.plist',
           'signature-flags': 'library',
@@ -152,6 +154,23 @@ let cfg = {
 
 module.exports = {
   packagerConfig: cfg,
+  hooks: {
+    prePackage: async (_config, platform, arch) => {
+      verifyComputerUse(resolve(__dirname, 'src/computer-use'), `${platform}-${arch}`);
+    },
+    postPackage: async (_config, options) => {
+      for (const output of options.outputPaths) {
+        const resources =
+          options.platform === 'darwin'
+            ? resolve(output, 'Biorouter.app/Contents/Resources')
+            : resolve(output, 'resources');
+        verifyComputerUse(
+          resolve(resources, 'computer-use'),
+          `${options.platform}-${options.arch}`
+        );
+      }
+    },
+  },
   rebuildConfig: {},
   publishers: [
     {
@@ -214,7 +233,17 @@ module.exports = {
           // zlib1g provides libz.so.1, linked through git2/libgit2.
           // scripts/check-linux-runtime-deps.sh asserts it stays in step with
           // what the binaries actually link.
-          depends: ['libssl3', 'libgomp1', 'libxcb1', 'zlib1g'],
+          depends: [
+            'libssl3',
+            'libgomp1',
+            'libxcb1',
+            'zlib1g',
+            'python3',
+            'python3-gi',
+            'gir1.2-atspi-2.0',
+            'gir1.2-gtk-3.0',
+            'at-spi2-core',
+          ],
         },
       },
     },
@@ -235,7 +264,16 @@ module.exports = {
           // libxcb is the RPM spelling of the deb's libxcb1 — see the maker-deb
           // comment above for why the bundled binaries need it.
           // zlib provides libz.so.1 on RPM-based distributions.
-          requires: ['openssl-libs', 'libgomp', 'libxcb', 'zlib'],
+          requires: [
+            'openssl-libs',
+            'libgomp',
+            'libxcb',
+            'zlib',
+            'python3',
+            'python3-gobject',
+            'at-spi2-core',
+            'gtk3',
+          ],
           fpm: ['--rpm-rpmbuild-define', '_build_id_links none'],
         },
       },
@@ -259,9 +297,9 @@ module.exports = {
                 'mkdir -p /app/lib',
                 // Point to the actual library in the 25.08 runtime
                 // We use a wildcard to handle multi-arch paths (x86_64-linux-gnu, etc)
-                'ln -s $(find /usr/lib -name "libbz2.so.1" | head -n 1) /app/lib/libbz2.so.1.0'
-              ]
-            }
+                'ln -s $(find /usr/lib -name "libbz2.so.1" | head -n 1) /app/lib/libbz2.so.1.0',
+              ],
+            },
           ],
           finishArgs: [
             '--share=ipc',
@@ -274,7 +312,7 @@ module.exports = {
             '--socket=session-bus',
             '--socket=system-bus',
             // This ensures the app looks in our shim folder first
-            '--env=LD_LIBRARY_PATH=/app/lib'
+            '--env=LD_LIBRARY_PATH=/app/lib',
           ],
         },
       },

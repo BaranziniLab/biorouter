@@ -10,6 +10,7 @@ activities:
   - Validate shell command execution and error handling
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
+  - Validate native Computer Use, per-chat consent, isolation, and fixture-scoped desktop interaction
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
   - Verify session-anchored file links and live updates without losing preview edits
   - Exercise paper previews, syntax highlighting, and responsive panel motion
@@ -28,7 +29,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, knowledge, workflows, reset, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, apps, previews, subagents, knowledge, workflows, reset, advanced"
   
   - key: test_depth
     input_type: string
@@ -65,6 +66,12 @@ parameters:
     requirement: optional
     default: "biorouter-self-test-preview"
     description: "Unused app id for preview tests, distinct from sdk_app_id; existing apps are preserved"
+
+  - key: computer_use_fixture
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Exact disposable app/window title approved for native desktop testing; empty means report GUI checks unavailable"
 
 instructions: |
   You are testing yourself - a running BioRouter instance validating its own capabilities through meta-testing.
@@ -120,6 +127,11 @@ instructions: |
   - Delete only the preview app created by this run during cleanup
   {% endif %}
   
+  ### Phase 2D: Native Computer Use
+  Validate the ten-tool native roster, per-request approval, private/public isolation and
+  sequential control against the explicitly supplied disposable app/window fixture. A missing
+  fixture or desktop leaves GUI evidence unavailable; never claim a skipped action passed.
+
   ### Phase 3: Subagent Testing (Meta-Recursion)
   Create subagents to test yourself recursively:
   - Basic subagent creation and execution
@@ -175,6 +187,20 @@ extensions:
     timeout: 600
     bundled: true
     description: Core tool for file operations, shell commands, and code analysis
+
+  - type: builtin
+    name: computercontroller
+    display_name: Computer Use
+    timeout: 300
+    bundled: true
+    description: Native application observation and control after per-chat task approval
+
+  - type: builtin
+    name: webdocuments
+    display_name: Web & Documents
+    timeout: 300
+    bundled: true
+    description: URL fetching and document utilities independent of desktop availability
 
   - type: builtin
     name: agent_drafter
@@ -286,12 +312,45 @@ prompt: |
   Log results to: {{ workspace_dir }}/phase2_extensions.md
   {% endif %}
 
+  {% if test_phases == "all" or "computer_use" in test_phases %}
+  ## PHASE 2D: Native Computer Use
+
+  1. Inspect the effective roster. Computer Use must expose exactly list_apps, get_app_state,
+     click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and
+     screen_capture. Web & Documents must expose web_scrape, xlsx_tool, docx_tool, pdf_tool,
+     and cache independently. Developer must expose no desktop capture/control tool.
+  2. Exercise contract, consent, non-pooling, ownership, cancellation and bridge/nested-call
+     regression tests. Require removed tool names to fail rather than forward. A disabled
+     capability or restricted roster must remain restricted after reload.
+  3. Native GUI fixture: use only the exact disposable app/window {{ computer_use_fixture }}.
+     If none is supplied, record GUI checks NOT OBSERVABLE and leave the acceptance gate open.
+     Before any desktop observation, obtain the host's per-chat task grant for this model and
+     target. The test workflow cannot self-approve. Denied permissions, missing runtime,
+     unsupported environment, no desktop or busy ownership are explicit blocked outcomes;
+     never loop on approval or bypass with scripts or another desktop tool.
+  4. After approval, discover the fixture, inspect fresh app state, then type synthetic text,
+     click a fixture control, scroll, drag, press a key and set a value using actual returned
+     targets. Verify each outcome from refreshed state and native screen_capture. Never send
+     a message, use a real user's document, or operate an unrelated app. Do not claim success
+     from an empty application list or an unexecuted action. Do not replay timed-out mutations.
+  5. Verify the same grant covers subsequent authorized actions without repeated prompts.
+     Verify Stop/revoke blocks further actions and helper restart invalidates element state.
+     Private and public chats must retain separate snapshots, trees, elements, results and
+     grants. Verify a private-to-public handoff pauses before capture; do not transfer real
+     private observations into the test report or a public model.
+  6. Repeat through native direct calls, code execution and a coding-agent provider where
+     available. Test Computer Use with Developer and Web & Documents disabled in an isolated
+     profile. Missing GUI/provider evidence is NOT OBSERVABLE, never PASS. Record target host,
+     helper version, exact fixture, tool results and remaining gaps in
+     {{ workspace_dir }}/phase2d_computer_use.md.
+  {% endif %}
+
   {% if test_phases == "all" or "apps" in test_phases %}
   ## 🧩 PHASE 2B: Apps SDK v2 Validation
 
   Use only the exact app id `{{ sdk_app_id }}`; never modify or delete any other app.
 
-  1. Call `list_apps`. If that exact app id already exists or matches the preview id `{{ preview_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
+  1. Call `agent_drafter__list_apps`. If that exact app id already exists or matches the preview id `{{ preview_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
   2. Call `create_app` with that id, kind `agentic`, archetype `dashboard`, a concise title and description, and a system prompt that updates dashboard metrics through the declared action.
   3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, `refresh_requested` signal, and nonblank `surface.state_initial` metric labels. Missing measurements must be explicitly unavailable, not invented zero values. Keep declared initial state as the source of first-load values; do not add duplicate imperative initialization to work around the smoke harness.
   4. Call `build_app`; require a successful bundle.
@@ -308,7 +367,7 @@ prompt: |
 
   Use only the exact app id `{{ preview_app_id }}`; never modify or delete any other app.
 
-  First call `list_apps`. If that exact app id already exists or matches the dashboard id `{{ sdk_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
+  First call `agent_drafter__list_apps`. If that exact app id already exists or matches the dashboard id `{{ sdk_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
 
   1. In one `execute_code` script, import an Auto Visualiser chart tool, render a small bar chart, and record its textual result. The outer call must also emit a user-facing HTML resource block for the client.
   2. In one `execute_code` script, import Agent Drafter's `create_app` and `launch_app`, create a static app with id `{{ preview_app_id }}`, launch it, and record the launch result.

@@ -25,6 +25,7 @@ pub struct PermissionModal {
     pub prompt: Option<String>,
     pub options: Vec<(&'static str, &'static str)>,
     pub selected: usize,
+    pub scroll: u16,
 }
 
 /// What category a completion entry is (drives its colored tag in the popup).

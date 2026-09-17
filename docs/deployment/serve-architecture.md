@@ -23,7 +23,7 @@ records](serve-decisions.md); this page assumes them and describes the result. R
 ```text
   biorouter serve
         │
-        │  spawns, with a closed stdin (SD-1, SD-7)
+        │  spawns; stdin closed by default (SD-1, SD-7)
         ▼
    biorouterd  ── serves ──▶  the interface bundle at  /
         │                     the interface's own endpoints at  /headless/*
@@ -299,3 +299,26 @@ for the Linux packages — and when it finds none, the error names every path it
 - [Browser access](browser-access.md) — using the command.
 - [Privacy tiers](../security/privacy-tiers.md) — the classification the serving path must not weaken.
 - [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SERVE_UI` and neighbours.
+
+## Computer Use approval in a browser
+
+Start `biorouter serve --computer-use-approval` from an interactive terminal to set a
+separate approval passphrase (at least 16 characters). Enter it again in the browser's
+Computer Use approval field when a task requests desktop access. Review the named model,
+data destination, and backend host before allowing the task. Public-model acknowledgement
+also covers visible sensitive information leaving the computer. Each new user request
+requires approval; internal tool calls continue under that request's grant. Stop revokes it.
+
+The launcher reads the passphrase without echoing it, sends only its SHA-256 digest on
+stdin with a `computer-use:` scope, and clears the raw passphrase from its own buffer.
+The browser sends `X-Computer-Use-Key` only for Computer Use consent; it does not save the
+key. This proof is accepted only by the computer-use consent route. Browser cookies and
+the ordinary API secret do not establish human consent, and the scoped key cannot change
+providers, privacy tiers, or extension permissions. Ten unsuccessful approval attempts
+in one minute temporarily block further key checks; wait a minute before trying again.
+
+The controlled desktop belongs to the backend host, not the browser user's device.
+A server without an interactive desktop cannot provide Computer Use. Run
+`biorouter doctor --no-update` for runtime and host diagnostics without capturing or
+controlling the desktop. Unattended launches cannot configure the approval key through
+argv, environment variables, a file, or piped input.

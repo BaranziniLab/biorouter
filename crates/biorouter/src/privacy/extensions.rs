@@ -395,6 +395,7 @@ mod tests {
             "knowledge",
             "autovisualiser",
             "computercontroller",
+            "webdocuments",
             "agent_drafter",
             "todo",
             "chatrecall",

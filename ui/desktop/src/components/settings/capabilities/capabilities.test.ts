@@ -1,16 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import bundledExtensions from '../extensions/bundled-extensions.json';
-import {
-  CAPABILITIES,
-  isCapabilityDefaultEnabled,
-  isCapabilityExtension,
-  shouldDefaultEnableAgentDrafter,
-  shouldDefaultEnablePromotedCapability,
-} from './capabilities';
+import { CAPABILITIES, isCapabilityDefaultEnabled, isCapabilityExtension } from './capabilities';
 
 const expectedDefaults = {
   developer: true,
   computercontroller: true,
+  webdocuments: true,
   autovisualiser: true,
   code_execution: true,
   extensionmanager: true,
@@ -47,22 +42,5 @@ describe('capabilities', () => {
     const description = CAPABILITIES.find((c) => c.key === 'extensionmanager')?.description ?? '';
     expect(description).toMatch(/install/i);
     expect(description).toMatch(/delet/i);
-  });
-
-  it('only upgrade-enables newly promoted default-on capabilities', () => {
-    for (const name of ['autovisualiser', 'code_execution', 'computercontroller']) {
-      expect(shouldDefaultEnablePromotedCapability({ name, enabled: false }), name).toBe(true);
-      expect(shouldDefaultEnablePromotedCapability({ name, enabled: true }), name).toBe(false);
-    }
-
-    for (const name of ['chatrecall', 'memory', 'developer']) {
-      expect(shouldDefaultEnablePromotedCapability({ name, enabled: false }), name).toBe(false);
-    }
-  });
-
-  it('upgrade-enables Agent Drafter when adopting its new default', () => {
-    expect(shouldDefaultEnableAgentDrafter({ name: 'agent_drafter', enabled: false })).toBe(true);
-    expect(shouldDefaultEnableAgentDrafter({ name: 'agent_drafter', enabled: true })).toBe(false);
-    expect(shouldDefaultEnableAgentDrafter({ name: 'developer', enabled: false })).toBe(false);
   });
 });
