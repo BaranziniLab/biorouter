@@ -591,6 +591,56 @@ async fn call_computer_use(
     }
 }
 
+async fn call_admitted_tool(
+    client: &McpClientBox,
+    tool_name: &str,
+    arguments: Option<rmcp::model::JsonObject>,
+    meta: McpMeta,
+    cancellation_token: CancellationToken,
+    computer_permit: Option<crate::security::computer_use::ComputerUsePermit>,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    if let Some(permit) = computer_permit {
+        call_computer_use(
+            client,
+            tool_name,
+            arguments,
+            meta,
+            cancellation_token,
+            permit,
+        )
+        .await
+    } else {
+        call_tool_withholding_secrets(client, tool_name, arguments, meta, cancellation_token).await
+    }
+}
+
+fn configured_tool_name(
+    prefixed_name: &str,
+    supplied_name: &str,
+    client_name: &str,
+    config: &ExtensionConfig,
+) -> Result<String> {
+    let tool_name = prefixed_name
+        .strip_prefix(client_name)
+        .and_then(|name| name.strip_prefix("__"))
+        .ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                format!("Invalid tool name format: '{supplied_name}'"),
+                None,
+            )
+        })?;
+    if !config.is_tool_available(tool_name) {
+        return Err(ErrorData::new(
+            ErrorCode::RESOURCE_NOT_FOUND,
+            format!("Tool '{tool_name}' is not available for extension '{client_name}'"),
+            None,
+        )
+        .into());
+    }
+    Ok(tool_name.to_owned())
+}
+
 /// Sanitizes a string by replacing invalid characters with underscores.
 /// Valid characters match [a-zA-Z0-9_-]
 pub fn normalize(input: &str) -> String {
@@ -3109,32 +3159,15 @@ impl ExtensionManager {
             .await
             .ok_or_else(|| unroutable_tool_error(&prefixed_name, tool_call.name.as_ref()))?;
 
-        let tool_name = prefixed_name
-            .strip_prefix(client_name.as_str())
-            .and_then(|s| s.strip_prefix("__"))
-            .ok_or_else(|| {
-                ErrorData::new(
-                    ErrorCode::RESOURCE_NOT_FOUND,
-                    format!("Invalid tool name format: '{}'", tool_call.name),
-                    None,
-                )
-            })?
-            .to_string();
-
         // Unconditional: the config was resolved with the client, so there is no
         // "the extension has gone" branch that could skip the check rather than
         // fail it.
-        if !client_config.is_tool_available(&tool_name) {
-            return Err(ErrorData::new(
-                ErrorCode::RESOURCE_NOT_FOUND,
-                format!(
-                    "Tool '{}' is not available for extension '{}'",
-                    tool_name, client_name
-                ),
-                None,
-            )
-            .into());
-        }
+        let tool_name = configured_tool_name(
+            &prefixed_name,
+            tool_call.name.as_ref(),
+            &client_name,
+            &client_config,
+        )?;
 
         let computer_use = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
         let computer_permit = self
@@ -3264,26 +3297,15 @@ impl ExtensionManager {
             let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
             // H1: credential material is withheld from what comes back, here,
             // where every path to a model converges.
-            if let Some(permit) = computer_permit {
-                call_computer_use(
-                    &client,
-                    &tool_name,
-                    arguments,
-                    meta,
-                    cancellation_token,
-                    permit,
-                )
-                .await
-            } else {
-                call_tool_withholding_secrets(
-                    &client,
-                    &tool_name,
-                    arguments,
-                    meta,
-                    cancellation_token,
-                )
-                .await
-            }
+            call_admitted_tool(
+                &client,
+                &tool_name,
+                arguments,
+                meta,
+                cancellation_token,
+                computer_permit,
+            )
+            .await
         };
 
         Ok(ToolCallResult {

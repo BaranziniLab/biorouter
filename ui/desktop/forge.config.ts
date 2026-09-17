@@ -2,6 +2,7 @@ const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-natives');
 const { resolve } = require('path');
+const { verifyPackagedDependencies } = require('./scripts/verify-packaged-dependencies');
 const { verifyComputerUse } = require('./scripts/computer-use-resources');
 
 // `node-pty` is the only runtime dependency that cannot be bundled by Vite: it
@@ -51,6 +52,9 @@ function keepInPackage(file) {
 }
 
 let cfg = {
+  // Forge's API does not inherit Packager CLI's default; copied dependency links
+  // otherwise let rebuild mutate the source tree and escape the final archive.
+  derefSymlinks: true,
   // A native module cannot be `dlopen`'d from inside an asar archive, and
   // node-pty's macOS `spawn-helper` cannot be `posix_spawn`'d from one either.
   // node-pty handles this itself — `unixTerminal.js` rewrites `app.asar` to
@@ -164,6 +168,7 @@ module.exports = {
           options.platform === 'darwin'
             ? resolve(output, 'Biorouter.app/Contents/Resources')
             : resolve(output, 'resources');
+        verifyPackagedDependencies(resources, options.platform, options.arch);
         verifyComputerUse(
           resolve(resources, 'computer-use'),
           `${options.platform}-${options.arch}`
