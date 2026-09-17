@@ -127,8 +127,15 @@ $reset.Text = 'Reset scroll'; $reset.AccessibleName = 'Reset scroll'
 $reset.Left = 200; $reset.Top = 90; $reset.Width = 160
 $reset.Add_Click({ $form.AutoScrollPosition = New-Object System.Drawing.Point(0, 0) })
 $form.Controls.Add($text); $form.Controls.Add($button); $form.Controls.Add($reset)
-$form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'ready'), 'ready') })
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 100
+$timer.Add_Tick({
+  [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-x.txt'), [string][Math]::Abs($form.AutoScrollPosition.X))
+  [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-y.txt'), [string][Math]::Abs($form.AutoScrollPosition.Y))
+})
+$form.Add_Shown({ $timer.Start(); [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'ready'), 'ready') })
 [System.Windows.Forms.Application]::Run($form)
+$timer.Dispose()
 '''
         fixture = subprocess.Popen(["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand",
                                     base64.b64encode(script.encode("utf-16-le")).decode()], env=env)
@@ -233,11 +240,12 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
             call("click", {"app": app, "element_index": element("Reset scroll", text), "click_method": "accessibility"})
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
+            (work / "wheel.json").unlink(missing_ok=True)
             call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "right", "pages": 2})
             horizontal_offset = wait_scroll("x")
-            horizontal_wheel = json.loads((work / "wheel.json").read_text())
+            horizontal_wheel = json.loads((work / "wheel.json").read_text()) if (work / "wheel.json").exists() else None
             report.with_name(report.stem + "-horizontal-wheel-coordinates.json").write_text(json.dumps(horizontal_wheel, indent=2))
-            if horizontal_wheel["message"] != 0x020E or abs(horizontal_wheel["x"] - horizontal_wheel["expected_x"]) > 1 or abs(horizontal_wheel["y"] - horizontal_wheel["expected_y"]) > 1:
+            if horizontal_wheel is not None and (horizontal_wheel["message"] != 0x020E or abs(horizontal_wheel["x"] - horizontal_wheel["expected_x"]) > 1 or abs(horizontal_wheel["y"] - horizontal_wheel["expected_y"]) > 1):
                 scroll_failures.append(f"Horizontal mouse wheel did not carry the target's screen coordinates: {horizontal_wheel}")
             report.with_name(report.stem + "-independent-scroll.json").write_text(json.dumps({
                 "down_y": vertical_offset, "right_x": horizontal_offset, "failures": scroll_failures}, indent=2))

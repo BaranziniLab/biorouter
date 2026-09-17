@@ -3,7 +3,7 @@ use biorouter_mcp::{
     ComputerControllerServer, DeveloperServer, WebDocumentsServer,
 };
 use rmcp::{
-    model::{CallToolRequestParams, Meta},
+    model::{CallToolRequest, CallToolRequestParams, ClientRequest, Meta},
     ServiceExt,
 };
 use serde_json::json;
@@ -157,19 +157,44 @@ async fn capabilities_are_disjoint_and_listing_never_launches_a_helper() {
     assert!(missing.to_string().contains("approval_required"));
     let invalid = client
         .call_tool(CallToolRequestParams {
-            meta: Some(Meta(
-                json!({"biorouter-session-id":"chat", "computer_use_generation":"grant"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            )),
+            meta: None,
             name: "click".into(),
             arguments: Some(json!({"app":42}).as_object().unwrap().clone()),
             task: None,
         })
         .await
         .unwrap_err();
-    assert!(invalid.to_string().contains("schema"));
+    assert!(invalid.to_string().contains("schema"), "{invalid:?}");
+    for (session, expected) in [
+        ("contract-chat", "computer_use_stale_state"),
+        ("different-chat", "computer_use_session_mismatch"),
+    ] {
+        let mut extensions = rmcp::model::Extensions::default();
+        extensions.insert(Meta(
+            json!({"biorouter-session-id":session, "computer_use_generation":"grant", "progressToken":"contract-progress"})
+                .as_object().unwrap().clone(),
+        ));
+        let request = CallToolRequest {
+            method: Default::default(),
+            params: CallToolRequestParams {
+                meta: None,
+                name: "click".into(),
+                arguments: Some(
+                    json!({"app":"fixture", "element_index":"0"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                task: None,
+            },
+            extensions,
+        };
+        let error = client
+            .send_request(ClientRequest::CallToolRequest(request))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:?}");
+    }
     client.cancel().await.unwrap();
     server.await.unwrap().unwrap();
 

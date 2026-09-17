@@ -980,10 +980,19 @@ index c70ed60..617d23c 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
-index c70def2..32fa6a2 100644
+index c70def2..6a4edfd 100644
 --- a/apps/OpenComputerUseWindows/main_test.go
 +++ b/apps/OpenComputerUseWindows/main_test.go
-@@ -8,8 +8,8 @@ import (
+@@ -3,13 +3,17 @@ package main
+ import (
+ 	"bytes"
+ 	"encoding/json"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"testing"
  )
  
  func TestToolDefinitionCount(t *testing.T) {
@@ -994,7 +1003,7 @@ index c70def2..32fa6a2 100644
  	}
  }
  
-@@ -307,3 +307,69 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+@@ -307,3 +311,144 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
  	t.Fatalf("missing tool definition %q", name)
  	return toolDefinition{}
  }
@@ -1064,8 +1073,83 @@ index c70def2..32fa6a2 100644
 +		}
 +	}
 +}
++
++func TestWindowsHorizontalScrollSelectsAncestorBeforeMutation(t *testing.T) {
++	if runtime.GOOS != "windows" {
++		t.Skip("PowerShell provider contract runs on Windows")
++	}
++	script := `$ErrorActionPreference = "Stop"
++Add-Type -TypeDefinition @'
++namespace Windows.Automation {
++    public class ScrollPattern { public static object Pattern = new object(); }
++    public enum ScrollAmount { NoAmount, LargeDecrement, LargeIncrement }
++    public class TreeWalker { public static object ControlViewWalker; }
++}
++'@
++$walker = [pscustomobject]@{}
++$walker | Add-Member ScriptMethod GetParent { param($node) return $node.Parent }
++[Windows.Automation.TreeWalker]::ControlViewWalker = $walker
++function New-Pattern([bool]$enabled, [bool]$fail = $false) {
++    $pattern = [pscustomobject]@{ Current = [pscustomobject]@{ HorizontallyScrollable = $enabled }; Calls = 0; Fail = $fail }
++    $pattern | Add-Member ScriptMethod Scroll { param($horizontal, $vertical)
++        $this.Calls++
++        if ($horizontal -ne [Windows.Automation.ScrollAmount]::LargeIncrement -or $vertical -ne [Windows.Automation.ScrollAmount]::NoAmount) { throw "wrong direction" }
++        if ($this.Fail) { throw "ambiguous provider failure" }
++    }
++    return $pattern
++}
++function New-Node($pattern, $parent, [int]$processId = 42, [int]$hwnd = 0) {
++    $node = [pscustomobject]@{ Pattern = $pattern; Parent = $parent; Current = [pscustomobject]@{ ProcessId = $processId; NativeWindowHandle = $hwnd } }
++    $node | Add-Member ScriptMethod GetCurrentPattern { param($id) return $this.Pattern }
++    return $node
++}
++`
++	for _, name := range []string{"Get-CurrentPatternOrNull", "Get-HorizontalScrollPattern", "Invoke-Scroll"} {
++		marker := "function " + name + "("
++		start := strings.Index(windowsRuntimeScript, marker)
++		if start < 0 {
++			t.Fatalf("missing %s", name)
++		}
++		source := windowsRuntimeScript[start:]
++		if end := strings.Index(source[1:], "\nfunction "); end >= 0 {
++			source = source[:end+1]
++		}
++		script += source + "\n"
++	}
++	script += `
++$process = [pscustomobject]@{ Id = 42; MainWindowHandle = 100 }
++$outerPattern = New-Pattern $true
++$root = New-Node $outerPattern $null 42 100
++$innerPattern = New-Pattern $true
++$inner = New-Node $innerPattern $root
++$leaf = New-Node $null $inner
++if (-not (Invoke-Scroll $leaf "right" 2 $process)) { throw "ancestor was not selected" }
++if ($innerPattern.Calls -ne 2 -or $outerPattern.Calls -ne 0) { throw "did not select nearest ancestor" }
++if (Invoke-Scroll $leaf "down" 1 $process) { throw "vertical fallback changed" }
++$innerPattern.Fail = $true
++$threw = $false
++try { Invoke-Scroll $leaf "right" 2 $process | Out-Null } catch { $threw = $true }
++if (-not $threw -or $innerPattern.Calls -ne 3 -or $outerPattern.Calls -ne 0) { throw "ambiguous mutation was replayed" }
++$foreign = New-Node $outerPattern $null 99 900
++$leaf = New-Node $null $foreign
++if ($null -ne (Get-HorizontalScrollPattern $leaf $process)) { throw "crossed process boundary" }
++$root = New-Node $null (New-Node $outerPattern $null 42 200) 42 100
++if ($null -ne (Get-HorizontalScrollPattern $root $process)) { throw "crossed selected window boundary" }
++$leaf = New-Node (New-Pattern $false) $null
++if (Invoke-Scroll $leaf "right" 1 $process) { throw "selected non-scrollable pattern" }
++Write-Output "horizontal ancestor contract passed"
++`
++	path := filepath.Join(t.TempDir(), "scroll-contract.ps1")
++	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
++		t.Fatal(err)
++	}
++	output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-MTA", "-ExecutionPolicy", "Bypass", "-File", path).CombinedOutput()
++	if err != nil {
++		t.Fatalf("scroll provider contract: %v\n%s", err, output)
++	}
++}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..c059431 100644
+index 720e9d5..7630bd2 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1256,7 +1340,38 @@ index 720e9d5..c059431 100644
      }
  }
  
-@@ -899,7 +1000,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+@@ -764,8 +865,28 @@ function Invoke-SecondaryAction($element, [string]$action) {
+     throw "$action is not a valid secondary action for $($operation.element.index)"
+ }
+ 
+-function Invoke-Scroll($element, [string]$direction, [double]$pages) {
+-    $scroll = Get-CurrentPatternOrNull $element ([Windows.Automation.ScrollPattern]::Pattern)
++function Get-HorizontalScrollPattern($element, $process) {
++    $candidate = $element
++    for ($depth = 0; $depth -lt 64 -and $null -ne $candidate; $depth++) {
++        if ($candidate.Current.ProcessId -ne $process.Id) { return $null }
++        $pattern = Get-CurrentPatternOrNull $candidate ([Windows.Automation.ScrollPattern]::Pattern)
++        if ($null -ne $pattern -and $pattern.Current.HorizontallyScrollable) {
++            return $pattern
++        }
++        if ([IntPtr]$candidate.Current.NativeWindowHandle -eq [IntPtr]$process.MainWindowHandle) {
++            return $null
++        }
++        $candidate = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($candidate)
++    }
++    return $null
++}
++
++function Invoke-Scroll($element, [string]$direction, [double]$pages, $process) {
++    $scroll = if ($direction -eq "left" -or $direction -eq "right") {
++        Get-HorizontalScrollPattern $element $process
++    } else {
++        Get-CurrentPatternOrNull $element ([Windows.Automation.ScrollPattern]::Pattern)
++    }
+     if ($null -eq $scroll) {
+         return $false
+     }
+@@ -899,7 +1020,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
@@ -1273,6 +1388,15 @@ index 720e9d5..c059431 100644
          $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
+@@ -963,7 +1092,7 @@ try {
+             "scroll" {
+                 $handled = $false
+                 if ($null -ne $element) {
+-                    $handled = Invoke-Scroll $element $operation.direction ([double]$operation.pages)
++                    $handled = Invoke-Scroll $element $operation.direction ([double]$operation.pages) $process
+                 }
+                 if (-not $handled) {
+                     $point = Get-ScreenPoint $operation.element.frame $windowBounds
 diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
 index ac464ef..407911f 100644
 --- a/docs/ARCHITECTURE.md
@@ -1299,10 +1423,10 @@ index ac464ef..407911f 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..e96bcce
+index 0000000..98b42af
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,19 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1320,6 +1444,8 @@ index 0000000..e96bcce
 +Windows scroll follow-up: WM_MOUSEWHEEL and WM_MOUSEHWHEEL carry screen coordinates, while the upstream fallback converted them to client coordinates. Horizontal wheel delta must be positive for right and negative for left. The bridge now preserves the target's screen point, corrects the horizontal sign, and rejects failed PostMessage delivery. The independent Windows fixture uses a nonzero window origin, measures incoming wheel coordinates before default processing, and checks both scroll offsets. A passing interactive run is still required. Primary documentation: https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mousewheel and https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mousehwheel.
 +
 +The next Windows fixture independently confirmed vertical scrolling but caught a second coordinate defect: the Go scroll request omitted WindowBounds, so Get-ScreenPoint returned null and PowerShell coerced both integer coordinates to zero. Scroll now forwards the observed window bounds like click and drag; missing geometry raises an actionable error instead of targeting screen origin. A request-level regression exercises serialized positive and negative desktop origins through the real service scroll path.
++
++Windows candidate5 confirmed correct wheel delivery and screen coordinates, but standard WinForms ignored horizontal wheel messages. Before dispatching horizontal input, the runtime now selects the nearest horizontally scrollable UIA ancestor within the selected process/window. Vertical behavior remains unchanged. Selection occurs before mutation; provider exceptions propagate without retrying another ancestor or sending wheel input. Windows-only provider contract tests cover nearest ancestor selection, process/window boundaries, unchanged vertical fallback, and no replay after an ambiguous exception. The interactive fixture continues to require an independently measured positive horizontal offset. API documentation: https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.scrollpattern.scroll and https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.treewalker.getparent.
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..79575e5 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
