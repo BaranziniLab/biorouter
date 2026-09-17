@@ -210,6 +210,7 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
             call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "down", "pages": 2})
+            scroll_failures = []
             def wait_scroll(axis):
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
@@ -220,12 +221,13 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
                 wheel_path = work / "wheel.json"
                 wheel_receipt = wheel_path.read_text() if wheel_path.exists() else "No wheel message received"
                 report.with_name(f"{report.stem}-{axis}-wheel-failure.txt").write_text(wheel_receipt, encoding="utf-8")
-                raise AssertionError(f"Independent WinForms {axis} scroll offset did not change; wheel: {wheel_receipt}")
+                scroll_failures.append(f"Independent WinForms {axis} scroll offset did not change; wheel: {wheel_receipt}")
+                return 0.0
             vertical_offset = wait_scroll("y")
             wheel = json.loads((work / "wheel.json").read_text())
             report.with_name(report.stem + "-wheel-coordinates.json").write_text(json.dumps(wheel, indent=2))
             if wheel["message"] != 0x020A or abs(wheel["x"] - wheel["expected_x"]) > 1 or abs(wheel["y"] - wheel["expected_y"]) > 1:
-                raise AssertionError(f"Mouse wheel did not carry the target's screen coordinates: {wheel}")
+                scroll_failures.append(f"Mouse wheel did not carry the target's screen coordinates: {wheel}")
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
             call("click", {"app": app, "element_index": element("Reset scroll", text), "click_method": "accessibility"})
@@ -233,9 +235,17 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
             text = "\n".join(c.get("text", "") for c in state["content"])
             call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "right", "pages": 2})
             horizontal_offset = wait_scroll("x")
+            horizontal_wheel = json.loads((work / "wheel.json").read_text())
+            report.with_name(report.stem + "-horizontal-wheel-coordinates.json").write_text(json.dumps(horizontal_wheel, indent=2))
+            if horizontal_wheel["message"] != 0x020E or abs(horizontal_wheel["x"] - horizontal_wheel["expected_x"]) > 1 or abs(horizontal_wheel["y"] - horizontal_wheel["expected_y"]) > 1:
+                scroll_failures.append(f"Horizontal mouse wheel did not carry the target's screen coordinates: {horizontal_wheel}")
+            report.with_name(report.stem + "-independent-scroll.json").write_text(json.dumps({
+                "down_y": vertical_offset, "right_x": horizontal_offset, "failures": scroll_failures}, indent=2))
             capture = call("screen_capture", {})
             if not any(c.get("type") == "image" and base64.b64decode(c.get("data", "")).startswith(b"\x89PNG") for c in capture["content"]):
                 raise AssertionError("Native capture returned no PNG")
+            if scroll_failures:
+                raise AssertionError("; ".join(scroll_failures))
             result = {"status": "passed", "validated": True, "session": session.value,
                       "scroll_offsets": {"down_y": vertical_offset, "right_x": horizontal_offset},
                       "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "vertical and horizontal scroll offsets changed", "wheel screen coordinates", "screen_capture"],

@@ -798,7 +798,7 @@ index c42f41e..6ef053c 100644
  if __name__ == "__main__":
      unittest.main()
 diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
-index c70ed60..3389be7 100644
+index c70ed60..617d23c 100644
 --- a/apps/OpenComputerUseWindows/main.go
 +++ b/apps/OpenComputerUseWindows/main.go
 @@ -24,7 +24,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
@@ -820,7 +820,7 @@ index c70ed60..3389be7 100644
  	Tool         string         `json:"tool"`
  	App          string         `json:"app,omitempty"`
  	Element      *elementRecord `json:"element,omitempty"`
-@@ -169,10 +172,11 @@ func (limit textLimit) runtimeValue() any {
+@@ -169,22 +172,26 @@ func (limit textLimit) runtimeValue() any {
  }
  
  type psResponse struct {
@@ -836,7 +836,14 @@ index c70ed60..3389be7 100644
  }
  
  type service struct {
-@@ -185,6 +189,8 @@ func newService() *service {
+ 	snapshots map[string]*appSnapshot
++	runNative func(psRequest) (*psResponse, error)
+ }
+ 
+ func newService() *service {
+-	return &service{snapshots: map[string]*appSnapshot{}}
++	return &service{snapshots: map[string]*appSnapshot{}, runNative: runPowerShell}
+ }
  
  func (s *service) callTool(name string, args map[string]any) toolCallResult {
  	switch name {
@@ -845,7 +852,7 @@ index c70ed60..3389be7 100644
  	case "list_apps":
  		return s.listApps()
  	case "get_app_state":
-@@ -247,6 +253,55 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+@@ -247,8 +254,57 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
  	}
  }
  
@@ -881,7 +888,7 @@ index c70ed60..3389be7 100644
 +	if request.Display != nil && request.WindowTitle != "" {
 +		return textResult("display and window_title are mutually exclusive", true)
 +	}
-+	response, err := runPowerShell(request)
++	response, err := s.runNative(request)
 +	if err != nil {
 +		return textResult(err.Error(), true)
 +	}
@@ -899,9 +906,30 @@ index c70ed60..3389be7 100644
 +}
 +
  func (s *service) listApps() toolCallResult {
- 	response, err := runPowerShell(psRequest{Tool: "list_apps"})
+-	response, err := runPowerShell(psRequest{Tool: "list_apps"})
++	response, err := s.runNative(psRequest{Tool: "list_apps"})
  	if err != nil {
-@@ -513,7 +568,7 @@ func runPowerShell(request psRequest) (*psResponse, error) {
+ 		return textResult(err.Error(), true)
+ 	}
+@@ -365,7 +421,7 @@ func (s *service) scroll(app, direction, elementIndex string, pages float64) too
+ 	if err != nil {
+ 		return textResult(err.Error(), true)
+ 	}
+-	return s.actionResult(app, psRequest{Tool: "scroll", App: app, Element: record, Direction: normalized, Pages: pages})
++	return s.actionResult(app, psRequest{Tool: "scroll", App: app, Element: record, Direction: normalized, Pages: pages, WindowBounds: snapshot.WindowBounds})
+ }
+ 
+ func (s *service) drag(app string, fromX, fromY, toX, toY *float64) toolCallResult {
+@@ -448,7 +504,7 @@ func (s *service) currentSnapshot(app string) *appSnapshot {
+ }
+ 
+ func (s *service) refreshSnapshot(app string, request psRequest) (*appSnapshot, toolCallResult) {
+-	response, err := runPowerShell(request)
++	response, err := s.runNative(request)
+ 	if err != nil {
+ 		return nil, textResult(err.Error(), true)
+ 	}
+@@ -513,7 +569,7 @@ func runPowerShell(request psRequest) (*psResponse, error) {
  	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
  	defer cancel()
  
@@ -910,7 +938,7 @@ index c70ed60..3389be7 100644
  	output, err := cmd.CombinedOutput()
  	if ctx.Err() == context.DeadlineExceeded {
  		return nil, errors.New("Windows runtime timed out after 30s")
-@@ -709,6 +764,16 @@ func parseClickMethod(value string) (string, error) {
+@@ -709,6 +765,16 @@ func parseClickMethod(value string) (string, error) {
  
  func toolDefinitions() []toolDefinition {
  	return []toolDefinition{
@@ -927,7 +955,7 @@ index c70ed60..3389be7 100644
  		{
  			Name:        "click",
  			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
-@@ -883,6 +948,23 @@ func runCLI(args []string, stdout io.Writer) error {
+@@ -883,6 +949,23 @@ func runCLI(args []string, stdout io.Writer) error {
  	case "mcp":
  		return runMCP(os.Stdin, stdout)
  	case "doctor":
@@ -952,7 +980,7 @@ index c70ed60..3389be7 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
-index c70def2..04c38bc 100644
+index c70def2..32fa6a2 100644
 --- a/apps/OpenComputerUseWindows/main_test.go
 +++ b/apps/OpenComputerUseWindows/main_test.go
 @@ -8,8 +8,8 @@ import (
@@ -966,7 +994,7 @@ index c70def2..04c38bc 100644
  	}
  }
  
-@@ -307,3 +307,29 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+@@ -307,3 +307,69 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
  	t.Fatalf("missing tool definition %q", name)
  	return toolDefinition{}
  }
@@ -996,8 +1024,48 @@ index c70def2..04c38bc 100644
 +	}
 +	t.Fatal("screen_capture missing")
 +}
++
++func TestScrollCarriesObservedWindowOriginToNativeBridge(t *testing.T) {
++	for _, origin := range []frame{{X: 140, Y: 100, Width: 480, Height: 240}, {X: -1920, Y: -200, Width: 480, Height: 240}} {
++		s := newService()
++		snapshot := &appSnapshot{
++			App:          appDescriptor{Name: "fixture", PID: 42},
++			WindowBounds: &origin,
++			Elements:     []elementRecord{{Index: 1, Name: "FixtureInput", Frame: &frame{X: 28, Y: 61, Width: 400, Height: 20}}},
++		}
++		s.rememberSnapshot("fixture", snapshot)
++		called := false
++		s.runNative = func(request psRequest) (*psResponse, error) {
++			called = true
++			payload, err := json.Marshal(request)
++			if err != nil {
++				t.Fatal(err)
++			}
++			var wire psRequest
++			if err := json.Unmarshal(payload, &wire); err != nil {
++				t.Fatal(err)
++			}
++			if wire.Tool != "scroll" || wire.WindowBounds == nil || *wire.WindowBounds != origin {
++				t.Fatalf("scroll lost observed window origin on native wire: %s", payload)
++			}
++			if wire.Element == nil || wire.Element.Frame == nil {
++				t.Fatalf("scroll lost target frame on native wire: %s", payload)
++			}
++			pointX := wire.WindowBounds.X + wire.Element.Frame.X + wire.Element.Frame.Width/2
++			pointY := wire.WindowBounds.Y + wire.Element.Frame.Y + wire.Element.Frame.Height/2
++			if pointX != origin.X+228 || pointY != origin.Y+71 {
++				t.Fatalf("wrong target center: (%v, %v)", pointX, pointY)
++			}
++			return &psResponse{OK: true, Snapshot: snapshot}, nil
++		}
++		result := s.scroll("fixture", "down", "1", 2)
++		if result.IsError || !called {
++			t.Fatalf("scroll failed: %#v", result)
++		}
++	}
++}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..edf2bd8 100644
+index 720e9d5..c059431 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1068,6 +1136,15 @@ index 720e9d5..edf2bd8 100644
  $WM_SETTEXT = 0x000C
  $WM_MOUSEMOVE = 0x0200
  $WM_LBUTTONDOWN = 0x0201
+@@ -124,7 +171,7 @@ function Get-ElementFrame($element, $windowBounds) {
+ 
+ function Get-ScreenPoint($localFrame, $windowBounds) {
+     if ($null -eq $localFrame -or $null -eq $windowBounds) {
+-        return $null
++        throw "Target geometry is unavailable; run get_app_state again before coordinate input"
+     }
+     [pscustomobject]@{
+         x = [int][math]::Round($windowBounds.x + $localFrame.x + ($localFrame.width / 2))
 @@ -186,20 +233,18 @@ function Send-Drag([IntPtr]$hwnd, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY
  }
  
@@ -1222,10 +1299,10 @@ index ac464ef..407911f 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..fb6b327
+index 0000000..e96bcce
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,17 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1241,6 +1318,8 @@ index 0000000..fb6b327
 +Windows CI exposed a real WinForms fixture only as generic HWND panes, with AccessibleName and control patterns missing. Microsoft UIA ProxyManager.LoadDefaultProxies sets its one-shot load flag before walking managed stack frames and dereferences MethodBase.ReflectedType. A PowerShell dynamic frame can leave provider initialization incomplete. The bridge now initializes the framework provider table through a compiled, non-inlined caller and runs on MTA. This diagnosis requires a passing real Windows fixture before acceptance; the fixture assertions remain unchanged. Primary source: https://github.com/dotnet/wpf/blob/main/src/Microsoft.DotNet.Wpf/src/UIAutomation/UIAutomationClient/MS/Internal/Automation/ProxyManager.cs (LoadDefaultProxies and RegisterWindowHandlers).
 +
 +Windows scroll follow-up: WM_MOUSEWHEEL and WM_MOUSEHWHEEL carry screen coordinates, while the upstream fallback converted them to client coordinates. Horizontal wheel delta must be positive for right and negative for left. The bridge now preserves the target's screen point, corrects the horizontal sign, and rejects failed PostMessage delivery. The independent Windows fixture uses a nonzero window origin, measures incoming wheel coordinates before default processing, and checks both scroll offsets. A passing interactive run is still required. Primary documentation: https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mousewheel and https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mousehwheel.
++
++The next Windows fixture independently confirmed vertical scrolling but caught a second coordinate defect: the Go scroll request omitted WindowBounds, so Get-ScreenPoint returned null and PowerShell coerced both integer coordinates to zero. Scroll now forwards the observed window bounds like click and drag; missing geometry raises an actionable error instead of targeting screen origin. A request-level regression exercises serialized positive and negative desktop origins through the real service scroll path.
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..79575e5 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
