@@ -7,6 +7,7 @@ import {
   collectArtifactsFromMessages,
   decideArtifactAutoOpen,
   mentionedArtifactPaths,
+  shouldPreserveOfficePreview,
   shouldAutoRepairArtifact,
   useSessionArtifacts,
 } from './BaseChat';
@@ -1030,6 +1031,25 @@ describe('decideArtifactAutoOpen', () => {
     expect(decision.knownKeys.has('file:/w/c.png')).toBe(true);
   });
 
+  it('banks auxiliary receipts but opens a new office deliverable ahead of a later log', () => {
+    const office = 'file:/work/report.xlsx';
+    const log = 'file:/work/debug.log';
+    const decision = decideArtifactAutoOpen({
+      scanDone: true,
+      knownKeys: new Set(['file:/work/old.docx']),
+      reportedMessageCount: 2,
+      loadedMessageCount: 4,
+      artifactKeys: [office, log],
+      gatePending: false,
+      suppressedKeys: new Set([log]),
+    });
+    expect(decision).toEqual({
+      action: 'open',
+      openIndex: 0,
+      knownKeys: new Set(['file:/work/old.docx', office, log]),
+    });
+  });
+
   it('does not re-open artifacts already seen (tab switch / re-render)', () => {
     expect(
       decideArtifactAutoOpen({
@@ -1041,6 +1061,31 @@ describe('decideArtifactAutoOpen', () => {
         gatePending: false,
       })
     ).toEqual({ action: 'none' });
+  });
+});
+
+describe('shouldPreserveOfficePreview', () => {
+  const office = (path: string): ArtifactSource => ({ kind: 'file', path, title: path });
+  it.each(['.docx', '.xlsx', '.pptx', '.pdf'])(
+    'preserves an active %s preview for source/log receipts',
+    (ext) => {
+      expect(
+        shouldPreserveOfficePreview(office(`/work/report${ext}`), office('/work/builder.py'))
+      ).toBe(true);
+      expect(
+        shouldPreserveOfficePreview(office(`/work/report${ext}`), office('/work/debug.log'))
+      ).toBe(true);
+    }
+  );
+  it('allows a newly-created office deliverable to surface', () => {
+    expect(
+      shouldPreserveOfficePreview(office('/work/report.docx'), office('/work/revised.xlsx'))
+    ).toBe(false);
+  });
+  it('does not suppress ambiguous text files', () => {
+    expect(shouldPreserveOfficePreview(office('/work/report.pdf'), office('/work/notes.txt'))).toBe(
+      false
+    );
   });
 });
 

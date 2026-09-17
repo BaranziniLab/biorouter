@@ -72,3 +72,26 @@ Library round trips and LibreOffice rendering do not prove native Office fidelit
 - Fresh-session positive requests should load only the relevant context. An unrelated
   request should load none. Model-directed behavior needs live checks in addition
   to deterministic tests.
+
+## Desktop preview and visual tool transport
+
+Office file links open in the preview panel. Successful DOCX/XLSX mutations and
+shell/code-execution completions invalidate the relevant open preview. Model-created
+source files and logs should not displace an office document the user is reviewing;
+explicit file-link selections still open those files.
+
+The XLSX grid is a read-only view of stored values and cell styling. It does not
+calculate formulas or render native charts. For chart-inclusive review, the Excel
+context instructs the model to provide and update a PDF companion, while retaining
+the editable workbook. The PPTX preview also approximates some chart layouts; the
+PowerPoint context calls for a final rendered PDF companion when its native
+preview differs. DOCX/PPTX previews do not establish native Office feature fidelity.
+
+Code Execution preserves nested image-tool results as image content, including their
+original audience annotations, instead of dropping their pixels during text
+serialization. Existing artifact count/byte bounds apply. This enables actual model
+visual inspection of rendered pages and slides; text extraction alone is insufficient.
+
+Final-file validation must follow the last mutation. In particular, an openpyxl save
+after LibreOffice recalculation clears formula caches. The context requires another
+recalculation after any subsequent formatting repair and a final read-only check.

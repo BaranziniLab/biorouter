@@ -127,3 +127,29 @@ Report the saved workbook path, the changes, calculation engine and representati
 results, and whether visual/native-application checks ran. Preserve formulas and
 source data. Do not call an exported ZIP or an unchanged PASS cell proof of correct
 calculation. Deliver only requested outputs.
+
+## BioRouter preview and final review
+
+Return clickable paths to the final files so they open in BioRouter's preview
+panel. When revising an output in place, keep its path stable and finish the tool
+call so an open preview can refresh. The preview is read-only; edit the source
+file with the available tools, then reopen and verify the final bytes.
+
+Visual review requires receiving actual page/slide images from the image tool.
+A success message, extracted text, image dimensions, or an image path alone is not
+visual inspection. Inspect the rendered images after the last edit and repair
+clipping, overlapping text, crowded labels, and broken pagination before delivery.
+If images are unavailable, state the limitation instead of claiming visual QA.
+
+The spreadsheet preview shows cached cell values and styling, but does not render
+native charts or calculate formulas. For a requested visual preview with charts,
+provide a PDF companion, regenerate it after edits, and link both outputs. Keep
+the editable workbook as the source. Do not describe the grid as full Excel parity.
+
+Recalculate AFTER every final formatting or content save. Saving with openpyxl
+after recalculation clears formula caches even if no formula changed. Deliver the
+recalculated workbook, verify it read-only with both data_only settings, and do
+not save it again afterward. If any subsequent repair is needed, recalculate again.
+Use explicit widths for data columns rather than measuring merged title text;
+wrap long notes and allocate enough row height. Chart axis titles must match the
+actual axes, and data labels should not repeat redundant series/category text.

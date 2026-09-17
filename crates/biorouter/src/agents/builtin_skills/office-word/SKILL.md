@@ -108,3 +108,16 @@ features. Visually inspect pagination, headers/footers, table wrapping, pictures
 and glyphs. Fix clipping and excessive blank space before delivery. Return a
 clickable path to the DOCX, with a short account of checks and any limitations.
 Deliver intermediate PDFs/PNGs only if requested.
+
+## BioRouter preview and final review
+
+Return clickable paths to the final files so they open in BioRouter's preview
+panel. When revising an output in place, keep its path stable and finish the tool
+call so an open preview can refresh. The preview is read-only; edit the source
+file with the available tools, then reopen and verify the final bytes.
+
+Visual review requires receiving actual page/slide images from the image tool.
+A success message, extracted text, image dimensions, or an image path alone is not
+visual inspection. Inspect the rendered images after the last edit and repair
+clipping, overlapping text, crowded labels, and broken pagination before delivery.
+If images are unavailable, state the limitation instead of claiming visual QA.

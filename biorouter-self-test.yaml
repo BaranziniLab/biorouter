@@ -248,7 +248,10 @@ prompt: |
   and confirm the total becomes 130. Keep the deliverable's original inputs.
 
   Render the Office files to PDFs and all pages/slides to images; inspect every image
-  with an image tool. Check wrapping, clipping and readable tables. Record any
+  with an image tool. Require actual image content in the tool response, including
+  when the image tool is called through Code Execution; a text success message is
+  not visual evidence. Check wrapping, clipping and readable tables. After any
+  final workbook save, recalculate again and verify caches read-only. Record any
   unavailable dependencies, calculation engine, image tools, or native application
   checks as explicit limitations, never as passes. Report final absolute file paths
   and distinguish structural, calculation, visual, and native-application evidence.

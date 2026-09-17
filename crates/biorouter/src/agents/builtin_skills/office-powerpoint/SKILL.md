@@ -96,3 +96,27 @@ and edited objects. Inspect every rendered slide for cropped text, overlaps,
 misaligned elements, missing pictures, and unreadable charts. Conversion proves
 neither animation playback nor native PowerPoint behavior; disclose untested
 features. Return the PPTX path and a concise verification summary.
+
+## BioRouter preview and final review
+
+Return clickable paths to the final files so they open in BioRouter's preview
+panel. When revising an output in place, keep its path stable and finish the tool
+call so an open preview can refresh. The preview is read-only; edit the source
+file with the available tools, then reopen and verify the final bytes.
+
+The native PPTX preview approximates some chart layouts and advanced features.
+For faithful visual review, also provide a PDF rendered from the final deck when
+the native preview differs. Update that companion after later edits, retain the
+editable PPTX, and explain which preview was visually verified.
+
+Visual review requires receiving actual page/slide images from the image tool.
+A success message, extracted text, image dimensions, or an image path alone is not
+visual inspection. Inspect the rendered images after the last edit and repair
+clipping, overlapping text, crowded labels, and broken pagination before delivery.
+If images are unavailable, state the limitation instead of claiming visual QA.
+
+Allocate text boxes for their final edited text, not just the original wording.
+Keep titles and subtitles in separate non-overlapping regions; shorten labels
+before shrinking them into unreadable text. Inspect chart-center labels, legends,
+timeline milestones, and decision callouts in the final render. Prefer an installed
+font and verify font substitution rather than relying on authoring-library metrics.
