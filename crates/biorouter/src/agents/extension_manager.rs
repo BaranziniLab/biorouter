@@ -558,10 +558,14 @@ async fn call_computer_use(
     cancellation_token: CancellationToken,
     permit: crate::security::computer_use::ComputerUsePermit,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
-    let _desktop = permit
-        .lock()
-        .await
-        .map_err(|e| ErrorData::new(ErrorCode::INVALID_REQUEST, e.to_string(), None))?;
+    let _desktop = tokio::select! {
+        biased;
+        _ = cancellation_token.cancelled() => {
+            permit.cancel.cancel();
+            return Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use cancelled before acquiring desktop control", None));
+        },
+        guard = permit.lock() => guard.map_err(|e| ErrorData::new(ErrorCode::INVALID_REQUEST, e.to_string(), None))?,
+    };
     let call_cancel = cancellation_token.child_token();
     let call =
         call_tool_withholding_secrets(client, tool_name, arguments, meta, call_cancel.clone());

@@ -17,11 +17,11 @@ Updated 2026-09-17. This ledger tracks the full user-requested result. Source ch
 | All prompts, builtin contexts, active docs, workflows and fixtures reflect the new tools | Updated system/desktop/subagent guidance and snapshots, about-biorouter context, current docs and landing references, workflow fixture, bridge/module rosters, provider and Agent Drafter harnesses, and web tool discovery fixtures. Static legacy-reference scan clean in those active surfaces; final full audit and runtime tests pending. |
 | CLI/Electron/serve defaults preserve explicit disablement and restrictions | In progress. Backend config tests, obsolete restriction diagnostics, fresh/upgrade profile tests; no renderer default migration may undo an opt-out. |
 | Setup/status/consent/revoke interfaces, target host, active indicator, doctor diagnostics | Source implemented: CLI/TUI poll host consent, render shared task disclosure, and revoke on Stop; doctor calls no-capture diagnostics. Serve uses interactive `--computer-use-approval` with a separate digest/header and bounded failed-key attempts. Tests added in CLI session and server auth/startup. Execution, generated API/client checks, and UI verification remain required. |
-| Native helper pin, patch provenance, deterministic locator, no npm/runtime download | In progress. Manifest/handshake/hash tests and clean-PATH installed execution required. |
-| Every supported release artifact contains matching helper, notices and dependencies | In progress. macOS ARM64/Intel DMG+updater ZIP, Windows x64 ZIP, Linux desktop and CLI DEB/RPM; containers and source installation behavior audited separately. |
+| Native helper pin, patch provenance, deterministic locator, no npm/runtime download | Implemented. Five target payloads built locally; all file/target hashes verified; 11 packaging regression tests passed. macOS ARM64/Intel and Linux ARM64 native protocol checks passed. Final installed BioRouter and clean-PATH receipts remain separate from helper-only checks. |
+| Every supported release artifact contains matching helper, notices and dependencies | Build/staging/provenance integrated for all nine released archives: macOS ARM64/Intel DMG+updater ZIP, Windows x64 ZIP, Linux GUI/CLI DEB/RPM. Docker supports matching Linux x64/ARM64 helpers and dependencies. Final BioRouter package extraction/signing/install evidence remains required; helper builds alone do not pass that gate. |
 | macOS signing/notarization/TCC identity and upgrade continuity | Pending final signed artifact evidence, including Intel execution evidence and minimum-OS behavior. |
 | Windows interactive desktop, UIA, DPI/multiple displays and capture/focus behavior | Pending interactive Windows fixture and packaged artifact evidence. A startup/version smoke alone does not pass. |
-| Linux AT-SPI dependencies, X11 and Wayland honest capabilities | Python/Go contract tests pass; actual desktop fixtures and packaged dependency evidence pending. X11 requires GI, AT-SPI and GDK 3. Wayland pixel capture is explicitly unsupported, so full Wayland coverage is not complete. Xvfb startup alone is insufficient. |
+| Linux AT-SPI dependencies, X11 and Wayland honest capabilities | Real Linux ARM64 GTK/AT-SPI fixture passed against the final packaged helper: discovery/tree, editable text, accessibility click, independent text, scroll adjustment, nonblank window PNG, explicit unsupported Wayland doctor and capture refusal. Source DEB/RPM dependencies declared for GUI+CLI. Actual installed BioRouter packages and native Wayland coverage remain incomplete. |
 | Real BioRouter driven by Luna: scrolling, web tasks, local application tasks | Required. Run against rebuilt BioRouter using its new Computer Use capability, record concrete task outcomes and screenshots/state, and fix every discovered integration bug before rerunning. Direct helper or external-driver success alone is insufficient. |
 | Fixture-scoped self-test on rebuilt runtime | Required. `biorouter run --workflow biorouter-self-test.yaml`; record selected phases and actual outcomes. No-desktop/unobservable cases remain explicit gaps. |
 | Formatting, build, targeted tests, clippy, generated schema and full project gates | Required. `cargo fmt`, build, affected Rust/UI suites, `./scripts/clippy-lint.sh`, `just check-everything`, cross-target/hosted CI. Record exact commands, selected test counts and exits. |
@@ -61,3 +61,58 @@ Linux Wayland pixel capture currently returns an unsupported-environment error. 
 are documented in the user-facing Computer Use guide and must not be described as complete
 platform parity. Installed artifacts, native GUI fixtures, and Luna-driven BioRouter tasks
 remain required above.
+
+## Native payload packaging and runtime receipts
+
+The final native patch `0002-native-capture-isolation.patch` has SHA-256
+`20e89fcc73cd6ae81d226da87ac097e164230a816472e2f7631676771630ac96`.
+The original GTK fixture caught a real scroll failure: the helper ignored its
+element target and used a keysym as a hardware keycode. Targeted focus and proper
+AT-SPI key synthesis fixed it; the independent scroll assertion was retained.
+
+- All five `scripts/computer-use-runtime.py build <target>` builds completed:
+  `darwin-arm64`, `darwin-x64`, `win32-x64`, `linux-x64`, and container target
+  `linux-arm64`. Builds used one worker at reduced priority.
+- `scripts/computer-use-runtime.py verify <target>` passed for every final payload.
+  `target/computer-use/evidence/local-payload-builds-final.json` records actual
+  executable/manifest digests, architecture output, source pin, and patch hashes.
+- Both Mac payloads passed `scripts/test-computer-use-protocol.py`: version 0.3.5,
+  protocol 2025-03-26, exactly ten tools. Intel execution was through local Rosetta;
+  CI separately runs on the native `macos-26-intel` runner. No capture/input was
+  performed by these protocol checks.
+- The Mac bundles are ad hoc signed locally. A raw proxy-disabled passive doctor
+  inherited parent permissions and reported ready; this is **not** the app-agent
+  permission result. The actual launched BioRouter helper app-agent reported
+  `os_permission_required`, Accessibility false, Screen Recording false, desktop
+  available true. No permission was enabled automatically. Developer ID signing,
+  notarization, TCC upgrade continuity, and user-approved GUI checks remain open.
+- `scripts/test-computer-use-packaging.py`: 11 tests passed, including missing and
+  mutated bytes, wrong target/architecture, extra foreign files, symlink rejection,
+  stale pin, Node/Python verifier agreement, final ZIP tampering, and GUI+CLI
+  dependency declarations. Bash, Python and Node syntax checks passed.
+- The final official `target/computer-use/linux-arm64` payload passed
+  `scripts/test-computer-use-linux-fixture.py` inside a Debian ARM64 container
+  capped at one CPU and 2 GiB, with Xvfb, Openbox, GTK3 and a real user D-Bus/AT-SPI
+  bus. Receipts: `target/computer-use/evidence/linux-arm64-fixture-final.json`,
+  its sibling PNG, and `/tmp/biorouter-cu-linux-arm64-fixture-final.log`. This
+  fixture independently observes actual application state; it is not merely
+  Xvfb startup or a protocol handshake. The container never uses the host desktop.
+- `computer-use-native.yml` requires all four release targets plus container ARM64.
+  Native jobs have a 30-minute bound, fixtures five minutes, and the aggregate
+  gate five minutes. Windows session 0 exits 77 and fails the required fixture
+  gate instead of reporting desktop validation. Native Windows UIA, real scroll,
+  text, key and screenshot results still await hosted execution.
+
+Runtime artifacts remain under ignored `target/computer-use/`; the final ARM64
+Mac payload is also staged at `ui/desktop/src/computer-use`. No release version
+was changed and no release artifact was published by the packaging lane.
+
+The Linux x64 native executable also passed the same real GTK fixture under Docker
+CPU emulation on the ARM64 host. Before this run, the container was disconnected
+from its network and PATH was restricted to `/usr/bin:/bin`; the test explicitly
+asserted that Node, npm, Go, Swift, and git were absent. Protocol and full fixture
+checks still passed (exit 0). Receipt:
+`target/computer-use/evidence/linux-x64-emulated-offline-fixture.json` and sibling
+PNG/log. This demonstrates offline, toolchain-free native-helper operation, but
+is distinguished from the native x64 hosted runner and final BioRouter package
+installation tests.

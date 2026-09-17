@@ -30,17 +30,17 @@ if (pptxSource) {
 
 const fixtures = [
   [
-    path.join(repoDir, 'crates/biorouter-mcp/src/computercontroller/tests/data/test_image.pdf'),
+    path.join(repoDir, 'crates/biorouter-mcp/src/webdocuments/tests/data/test_image.pdf'),
     'test.pdf',
   ],
   [
-    path.join(repoDir, 'crates/biorouter-mcp/src/computercontroller/tests/data/sample.docx'),
+    path.join(repoDir, 'crates/biorouter-mcp/src/webdocuments/tests/data/sample.docx'),
     'sample.docx',
   ],
   [
     path.join(
       repoDir,
-      'crates/biorouter-mcp/src/computercontroller/tests/data/FinancialSample.xlsx'
+      'crates/biorouter-mcp/src/webdocuments/tests/data/FinancialSample.xlsx'
     ),
     'FinancialSample.xlsx',
   ],

@@ -14,6 +14,47 @@ import threading
 import time
 
 
+def diagnostics(fixture_pid, report, snapshot):
+    report.with_name(report.stem + "-native-snapshot.txt").write_text(
+        "\n".join(item.get("text", "") for item in snapshot.get("content", [])), encoding="utf-8")
+    script = r'''
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$process = Get-Process -Id ([int]$env:BIOROUTER_FIXTURE_PID)
+$condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$env:BIOROUTER_FIXTURE_PID)
+$windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
+$rows = @()
+foreach ($window in $windows) {
+  $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Subtree, [System.Windows.Automation.Condition]::TrueCondition)
+  foreach ($element in ($elements | Select-Object -First 100)) {
+    try {
+      $provider = 'Not exposed by this managed UIA assembly'
+      try { $provider = [string]$element.GetCurrentPropertyValue([System.Windows.Automation.AutomationElement]::ProviderDescriptionProperty) } catch {}
+      $rows += [pscustomobject]@{
+        name = $element.Current.Name; automationId = $element.Current.AutomationId
+        framework = $element.Current.FrameworkId; className = $element.Current.ClassName
+        controlType = $element.Current.ControlType.ProgrammaticName
+        hwnd = $element.Current.NativeWindowHandle; offscreen = $element.Current.IsOffscreen
+        providerDescription = $provider
+        patterns = @($element.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
+      }
+    } catch { $rows += [pscustomobject]@{ error = $_.Exception.Message } }
+  }
+}
+[pscustomobject]@{ processId = $process.Id; processMainWindowHandle = $process.MainWindowHandle.ToInt64(); processMainWindowTitle = $process.MainWindowTitle; apartment = [Threading.Thread]::CurrentThread.ApartmentState.ToString(); windows = $windows.Count; elements = $rows } | ConvertTo-Json -Depth 8
+'''
+    try:
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-MTA", "-EncodedCommand",
+                                 base64.b64encode(script.encode("utf-16-le")).decode()],
+                                env=dict(os.environ, BIOROUTER_FIXTURE_PID=str(fixture_pid)),
+                                capture_output=True, text=True, timeout=20)
+        report.with_name(report.stem + "-independent-uia.json").write_text(result.stdout, encoding="utf-8")
+        report.with_name(report.stem + "-independent-uia-stderr.txt").write_text(result.stderr, encoding="utf-8")
+        print("Independent MTA UIA diagnostics: " + result.stdout, flush=True)
+    except Exception as error:
+        report.with_name(report.stem + "-diagnostics-error.txt").write_text(str(error), encoding="utf-8")
+
+
 def main(directory, report):
     session = ctypes.c_ulong()
     if not ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)):
@@ -88,6 +129,7 @@ $form.Add_Shown({ [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTU
                 raise AssertionError("Fixture absent from native app discovery")
             app = str(fixture.pid)
             state = call("get_app_state", {"app": app})
+            diagnostics(fixture.pid, report, state)
             text = "\n".join(c.get("text", "") for c in state["content"])
             def element(label, snapshot):
                 match = re.search(r"^\s*(\d+)\s+.*" + re.escape(label), snapshot, re.MULTILINE)

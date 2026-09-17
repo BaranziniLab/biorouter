@@ -194,7 +194,7 @@ function writeFixtures(baseDir: string): string {
     fs.readFileSync(
       path.join(
         __dirname,
-        '../../../../crates/biorouter-mcp/src/computercontroller/tests/data/test.pdf'
+        '../../../../crates/biorouter-mcp/src/webdocuments/tests/data/test.pdf'
       )
     )
   );
@@ -203,7 +203,7 @@ function writeFixtures(baseDir: string): string {
     fs.readFileSync(
       path.join(
         __dirname,
-        '../../../../crates/biorouter-mcp/src/computercontroller/tests/data/sample.docx'
+        '../../../../crates/biorouter-mcp/src/webdocuments/tests/data/sample.docx'
       )
     )
   );

@@ -798,7 +798,7 @@ index c42f41e..6ef053c 100644
  if __name__ == "__main__":
      unittest.main()
 diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
-index c70ed60..0e5ad95 100644
+index c70ed60..3389be7 100644
 --- a/apps/OpenComputerUseWindows/main.go
 +++ b/apps/OpenComputerUseWindows/main.go
 @@ -24,7 +24,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
@@ -901,6 +901,15 @@ index c70ed60..0e5ad95 100644
  func (s *service) listApps() toolCallResult {
  	response, err := runPowerShell(psRequest{Tool: "list_apps"})
  	if err != nil {
+@@ -513,7 +568,7 @@ func runPowerShell(request psRequest) (*psResponse, error) {
+ 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+ 	defer cancel()
+ 
+-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, operationPath)
++	cmd := exec.CommandContext(ctx, "powershell.exe", "-MTA", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, operationPath)
+ 	output, err := cmd.CombinedOutput()
+ 	if ctx.Err() == context.DeadlineExceeded {
+ 		return nil, errors.New("Windows runtime timed out after 30s")
 @@ -709,6 +764,16 @@ func parseClickMethod(value string) (string, error) {
  
  func toolDefinitions() []toolDefinition {
@@ -988,12 +997,33 @@ index c70def2..04c38bc 100644
 +	t.Fatal("screen_capture missing")
 +}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..d9e3022 100644
+index 720e9d5..618925f 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
-@@ -15,12 +15,37 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
+@@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
+ 
  Add-Type -AssemblyName UIAutomationClient
  Add-Type -AssemblyName UIAutomationTypes
++
++# Framework UIA discovers proxy assemblies by walking managed stack frames.
++# A non-inlined compiled caller avoids PowerShell dynamic frames with no ReflectedType.
++Add-Type -ReferencedAssemblies @(
++    [Windows.Automation.AutomationElement].Assembly.Location,
++    [Windows.Automation.AutomationProperty].Assembly.Location
++) -TypeDefinition @"
++public static class OCUAutomationBootstrap {
++    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
++    public static void InitializeProviders() {
++        System.Windows.Automation.ClientSettings.RegisterClientSideProviders(
++            new System.Windows.Automation.ClientSideProviderDescription[0]);
++    }
++}
++"@
++[OCUAutomationBootstrap]::InitializeProviders()
++$uiaProviderAssembly = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq "UIAutomationClientsideProviders" } | Select-Object -First 1
++if ($null -eq $uiaProviderAssembly) {
++    throw "UI Automation framework client-side providers failed to load"
++}
  Add-Type -AssemblyName System.Drawing
 +Add-Type -AssemblyName System.Windows.Forms
  
@@ -1029,7 +1059,7 @@ index 720e9d5..d9e3022 100644
      [StructLayout(LayoutKind.Sequential)]
      public struct RECT {
          public int Left;
-@@ -52,6 +77,8 @@ public static class OCUWin32 {
+@@ -52,6 +97,8 @@ public static class OCUWin32 {
  }
  "@
  
@@ -1038,7 +1068,7 @@ index 720e9d5..d9e3022 100644
  $WM_SETTEXT = 0x000C
  $WM_MOUSEMOVE = 0x0200
  $WM_LBUTTONDOWN = 0x0201
-@@ -562,23 +589,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
+@@ -562,23 +609,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
      }
  }
  
@@ -1123,7 +1153,7 @@ index 720e9d5..d9e3022 100644
      }
  }
  
-@@ -899,7 +982,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+@@ -899,7 +1002,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
@@ -1132,7 +1162,7 @@ index 720e9d5..d9e3022 100644
 +        $desktop = [Environment]::UserInteractive -and [OCUWin32]::CanAccessInputDesktop() -and ([System.Windows.Forms.Screen]::AllScreens.Count -gt 0)
 +        $status = if ($desktop) { "ready" } else { "desktop_unavailable" }
 +        $message = if ($desktop) { "Native UI Automation and screen capture dependencies are available; locked and secure desktops cannot be controlled." } else { "Run BioRouter in the signed-in user's interactive desktop session." }
-+        $details = @{ state = $status; desktop_available = $desktop; accessibility = $desktop; screen_recording = $desktop; capture_available = $desktop; message = $message }
++        $details = @{ state = $status; desktop_available = $desktop; accessibility = $desktop; screen_recording = $desktop; capture_available = $desktop; message = $message; uia_provider_assembly = $uiaProviderAssembly.FullName; uia_apartment = [string][Threading.Thread]::CurrentThread.GetApartmentState() }
 +        $response = [pscustomobject]@{ ok = $true; text = ($details | ConvertTo-Json -Compress) }
 +    } elseif ($operation.tool -eq "screen_capture") {
 +        $response = Get-ScreenCapture $operation
@@ -1141,10 +1171,10 @@ index 720e9d5..d9e3022 100644
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
 diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
-index ac464ef..4f5d8ae 100644
+index ac464ef..407911f 100644
 --- a/docs/ARCHITECTURE.md
 +++ b/docs/ARCHITECTURE.md
-@@ -1,5 +1,17 @@
+@@ -1,5 +1,19 @@
  # 架构总览
  
 +## BioRouter downstream runtime contract
@@ -1152,6 +1182,8 @@ index ac464ef..4f5d8ae 100644
 +The BioRouter patch adds `screen_capture` as the tenth tool to all three runtimes. It accepts optional `display` (zero-based topology index), `window_title` (one case-insensitive substring match), and `list_only` (default false). Display and window selection are mutually exclusive. Omitted selection captures the primary display. Listing returns JSON topology text; capture adds a PNG image content block. macOS uses ScreenCaptureKit; Windows uses DPI-aware Win32 screen pixels; Linux uses distro Python GI/GDK on X11. Windows and Linux window captures include occluding content. Wayland lists topology but rejects pixel capture until a consented portal backend is implemented.
 +
 +The macOS app agent requires an installation/version socket namespace, verifies the exact peer bundle and executable, and never terminates a foreign agent. Each socket connection owns its MCP server and snapshots. Every operation, including empty environment overrides, holds the shared environment lock; omitted OCU environment keys are cleared within that scope. Overlay cleanup is synchronous under that same owner lock; ambient distributed turn-ended listeners are removed. Disconnected owners cancel input between chunks/gesture steps and cancel screenshot waits. AX calls have a bounded messaging timeout; ambiguous completion errors stop alternate-path replay. A delivered OS action cannot be undone. New connections require `get_app_state` before actions. BioRouter must terminate the proxy on Stop, discard late results, manage process trees and temporary operation files on Windows/Linux, and replace connections on desktop ownership handoff.
++
++Windows initializes framework UIA client-side providers from a compiled, non-inlined C# caller before any PowerShell UIA request. This avoids the default provider loader walking a PowerShell dynamic frame with a null reflected type. The UIA bridge runs in an MTA; its per-operation process does not own application windows. Provider loading failures remain errors, rather than silently presenting generic HWND panes as full accessibility.
 +
 +Linux scroll focuses the requested accessibility component and then emits symbolic page keys. Key symbols use `ATSPI_KEY_SYM`; modifier down/up events use hardware keycodes resolved from the desktop keymap and release in a finally block. Failed target focus or rejected input is an explicit tool error. The former `PRESSRELEASE` keysym path silently delivered no scroll on GTK and is removed.
 +
@@ -1164,10 +1196,10 @@ index ac464ef..4f5d8ae 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..9e6a95b
+index 0000000..06bc6c6
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,13 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1179,6 +1211,8 @@ index 0000000..9e6a95b
 +Verified locally: Swift native app builds with one worker; 5 new contract tests and 163 existing unit regressions pass. Linux and Windows Go unit suites pass on macOS, with one worker. Twelve Python bridge tests pass. The built Swift binary completes MCP initialization and advertises exactly ten tools. Passive doctor JSON parsing and explicit no-state errors pass. These checks do not establish interactive Windows/Linux behavior or signed-helper TCC identity.
 +
 +Follow-up real Linux ARM64 GTK/X11 fixture exposed no-op scroll despite tool success. The bridge incorrectly supplied keysyms to hardware-key synthesis and ignored the requested scroll element. It now focuses that element, uses symbolic key synthesis, resolves modifier hardware codes from the actual keymap, rejects failed delivery, and releases held modifiers on failure. The unchanged independent GTK adjustment assertion now passes, alongside text/click state and nonblank native PNG capture; explicit Wayland capture rejection still passes. This is container X11 evidence, not native GNOME/KDE Wayland validation.
++
++Windows CI exposed a real WinForms fixture only as generic HWND panes, with AccessibleName and control patterns missing. Microsoft UIA ProxyManager.LoadDefaultProxies sets its one-shot load flag before walking managed stack frames and dereferences MethodBase.ReflectedType. A PowerShell dynamic frame can leave provider initialization incomplete. The bridge now initializes the framework provider table through a compiled, non-inlined caller and runs on MTA. This diagnosis requires a passing real Windows fixture before acceptance; the fixture assertions remain unchanged. Primary source: https://github.com/dotnet/wpf/blob/main/src/Microsoft.DotNet.Wpf/src/UIAutomation/UIAutomationClient/MS/Internal/Automation/ProxyManager.cs (LoadDefaultProxies and RegisterWindowHandlers).
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..79575e5 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift

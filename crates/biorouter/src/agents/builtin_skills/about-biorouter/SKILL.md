@@ -69,7 +69,7 @@ still require this chat's same task grant.
 
 Before the first observation or action, let the host obtain computer-use approval for the current
 user request. Once granted, continue all tool turns of that request without asking again for each
-call. Completion or cancellation ends the grant; a new user request is a new task. A declined,
+call. The grant ends when the request finishes or stops; a new user request is a new task. A declined,
 revoked, or blocked grant is a stop condition: never retry approval in a loop, self-approve, or
 route the same desktop action through shell scripts, external automation, or another capability.
 Report unavailable desktop, runtime, or OS permissions clearly and wait for the blocking state

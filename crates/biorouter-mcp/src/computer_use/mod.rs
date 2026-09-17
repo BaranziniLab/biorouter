@@ -23,9 +23,11 @@ struct RuntimeRegistration {
     cancellation: CancellationToken,
 }
 
-static SESSION_RUNTIMES: once_cell::sync::Lazy<
-    std::sync::Mutex<std::collections::HashMap<String, Vec<RuntimeRegistration>>>,
-> = once_cell::sync::Lazy::new(Default::default);
+type RuntimeRegistry =
+    std::sync::Mutex<std::collections::HashMap<String, Vec<RuntimeRegistration>>>;
+// Weak lifecycle handles let the host revoke an idle connection without sharing its observations.
+static SESSION_RUNTIMES: once_cell::sync::Lazy<RuntimeRegistry> =
+    once_cell::sync::Lazy::new(Default::default);
 
 pub(crate) fn register_session(
     session: &str,
@@ -161,7 +163,12 @@ impl SessionRuntime {
                 runtime.shutdown().await;
                 self.runtime.take();
                 self.inspected_app.take();
-                Err(tool_error(error.to_string()))
+                let message = if observes {
+                    error.to_string()
+                } else {
+                    format!("{error}. The action's outcome may be uncertain; do not replay it. Call get_app_state before continuing.")
+                };
+                Err(tool_error(message))
             }
         }
     }
