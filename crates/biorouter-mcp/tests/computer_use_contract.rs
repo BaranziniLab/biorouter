@@ -82,6 +82,65 @@ fn packaged_payload_resolves_from_each_layout_and_relocation() {
 }
 
 #[test]
+fn copied_cli_follows_install_origin_and_keeps_local_payload_precedence() {
+    let temp = tempfile::tempdir().unwrap();
+    let resources = temp.path().join("Application α/resources");
+    let source_bin = resources.join("bin");
+    std::fs::create_dir_all(&source_bin).unwrap();
+    let payload = resources.join("computer-use");
+    fixture(&payload);
+    let install = temp.path().join("Local/Biorouter/bin");
+    std::fs::create_dir_all(&install).unwrap();
+    let exe = install.join("biorouter.exe");
+    std::fs::write(&exe, b"copied CLI").unwrap();
+    std::fs::write(
+        install.join(".biorouter-origin"),
+        format!("\u{feff} {} \nignored second line", source_bin.display()),
+    )
+    .unwrap();
+    let resolved = manifest::locate_for_executable(&exe).unwrap();
+    assert_eq!(resolved.root, payload.canonicalize().unwrap());
+    assert!(!resolved.development_override);
+    std::fs::write(payload.join("ocu"), b"corrupt origin payload").unwrap();
+    assert!(manifest::locate_for_executable(&exe)
+        .unwrap_err()
+        .to_string()
+        .contains("checksum"));
+    let local = install.join("computer-use");
+    fixture(&local);
+    assert_eq!(
+        manifest::locate_for_executable(&exe).unwrap().root,
+        local.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn copied_cli_ignores_missing_invalid_and_stale_install_origins() {
+    let temp = tempfile::tempdir().unwrap();
+    let exe = temp.path().join("biorouter.exe");
+    std::fs::write(&exe, b"copied CLI").unwrap();
+    assert!(manifest::locate_for_executable(&exe).is_err());
+    for raw in [
+        Vec::new(),
+        b"  \n".to_vec(),
+        b"relative/resources/bin".to_vec(),
+        b"../resources/bin".to_vec(),
+        vec![0xff, 0xfe],
+        temp.path()
+            .join("deleted/resources/bin")
+            .to_string_lossy()
+            .as_bytes()
+            .to_vec(),
+    ] {
+        std::fs::write(temp.path().join(".biorouter-origin"), &raw).unwrap();
+        assert!(
+            manifest::locate_for_executable(&exe).is_err(),
+            "unexpected origin: {raw:?}"
+        );
+    }
+}
+
+#[test]
 fn payload_rejects_corruption_wrong_pin_and_escaping_paths() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path());

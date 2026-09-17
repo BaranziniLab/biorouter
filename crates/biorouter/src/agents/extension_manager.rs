@@ -1127,7 +1127,7 @@ impl ExtensionManager {
             "This legacy Computer Controller tool was removed. Use the Computer Use tools or Web & Documents capability.");
         let status = self.computer_use_status(session_id).await?;
         anyhow::ensure!(
-            status.public_model == !cap.tier().is_private(),
+            status.public_model != cap.tier().is_private(),
             "Computer Use caller differs from the approved model destination"
         );
         Ok(Some(

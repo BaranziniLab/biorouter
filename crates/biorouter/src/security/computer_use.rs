@@ -495,10 +495,10 @@ fn desktop_lock_path() -> Result<std::path::PathBuf> {
     #[cfg(test)]
     {
         static TEST_ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
-        return Ok(TEST_ROOT
+        Ok(TEST_ROOT
             .get_or_init(|| tempfile::tempdir().unwrap())
             .path()
-            .join("computer-use.desktop.lock"));
+            .join("computer-use.desktop.lock"))
     }
     #[cfg(not(test))]
     Ok(dirs::data_local_dir()
@@ -592,8 +592,7 @@ mod tests {
             consent.bind_task(session, provider).await.unwrap();
         }
         let cancel = CancellationToken::new();
-        let pending = consent.permit(session, provider, &cancel);
-        tokio::pin!(pending);
+        let mut pending = Box::pin(consent.permit(session, provider, &cancel));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(5), &mut pending)
                 .await

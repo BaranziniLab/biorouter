@@ -127,13 +127,9 @@ fn locate_executable(executable: &Path, verify_hashes: bool) -> Result<RuntimePa
     let parent = exe
         .parent()
         .context("computer_use_missing_runtime: executable has no parent")?;
-    let mut candidates = vec![
-        parent.join("computer-use"),
-        parent.join("resources/computer-use"),
-    ];
-    if let Some(contents) = parent.parent() {
-        candidates.push(contents.join("Resources/computer-use"));
-        candidates.push(contents.join("computer-use"));
+    let mut candidates = payload_candidates(parent);
+    if let Some(origin) = install_origin(parent) {
+        candidates.extend(payload_candidates(&origin));
     }
     #[cfg(target_os = "linux")]
     candidates.push(PathBuf::from("/usr/libexec/biorouter/computer-use"));
@@ -143,4 +139,22 @@ fn locate_executable(executable: &Path, verify_hashes: bool) -> Result<RuntimePa
         }
     }
     bail!("computer_use_missing_runtime: install BioRouter's matching bundled Computer Use payload; source builds may explicitly set BIOROUTER_COMPUTER_USE_DIR")
+}
+
+fn payload_candidates(bin: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![bin.join("computer-use"), bin.join("resources/computer-use")];
+    if let Some(parent) = bin.parent() {
+        candidates.push(parent.join("Resources/computer-use"));
+        candidates.push(parent.join("computer-use"));
+    }
+    candidates
+}
+
+fn install_origin(bin: &Path) -> Option<PathBuf> {
+    // Keep the installer breadcrumb format aligned with biorouter::system::install_origin.
+    // MCP cannot import the host crate because the host already depends on MCP.
+    let raw = std::fs::read_to_string(bin.join(".biorouter-origin")).ok()?;
+    let line = raw.trim_start_matches('\u{feff}').lines().next()?.trim();
+    let path = Path::new(line);
+    path.is_absolute().then(|| path.to_path_buf())
 }
