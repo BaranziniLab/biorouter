@@ -101,7 +101,10 @@ impl Runtime {
         #[cfg(unix)]
         command.process_group(0);
         #[cfg(windows)]
-        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        command.creation_flags(
+            windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+                | windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+        );
         let mut child = command
             .spawn()
             .context("computer_use_missing_runtime: helper could not start")?;

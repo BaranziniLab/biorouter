@@ -335,6 +335,129 @@
         }
       }
     },
+    "/agent/computer_use/consent": {
+      "post": {
+        "tags": [
+          "super::routes::computer_use"
+        ],
+        "operationId": "computer_use_consent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputerUseConsentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Human proof required"
+          },
+          "409": {
+            "description": "Scope changed or desktop busy"
+          }
+        }
+      }
+    },
+    "/agent/computer_use/revoke": {
+      "post": {
+        "tags": [
+          "super::routes::computer_use"
+        ],
+        "operationId": "computer_use_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputerUseSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session out of reach"
+          }
+        }
+      }
+    },
+    "/agent/computer_use/setup": {
+      "get": {
+        "tags": [
+          "super::routes::computer_use"
+        ],
+        "operationId": "computer_use_setup",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/computer_use/status": {
+      "get": {
+        "tags": [
+          "super::routes::computer_use"
+        ],
+        "operationId": "computer_use_status",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session out of reach"
+          },
+          "424": {
+            "description": "Chat not loaded"
+          }
+        }
+      }
+    },
     "/agent/continuation/abandon": {
       "post": {
         "tags": [
@@ -6945,6 +7068,89 @@
         ],
         "properties": {
           "commit_sha": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputerUseConsentRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "challenge_id"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputerUseSessionRequest": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputerUseStatus": {
+        "type": "object",
+        "required": [
+          "runtime",
+          "enabled",
+          "session_id",
+          "provider",
+          "model",
+          "destination",
+          "target",
+          "disclosure",
+          "state",
+          "challenge_id",
+          "public_model",
+          "handoff_required",
+          "requested"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "disclosure": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "handoff_required": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "public_model": {
+            "type": "boolean"
+          },
+          "requested": {
+            "type": "boolean"
+          },
+          "runtime": {},
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           }
         }

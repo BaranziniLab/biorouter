@@ -1,30 +1,65 @@
-import { client } from '../../api/client.gen';
+import { z } from 'zod';
+import {
+  computerUseConsent as approveComputerUse,
+  computerUseRevoke as revokeComputerUse,
+  computerUseSetup as readComputerUseSetup,
+  computerUseStatus as readComputerUseStatus,
+} from '../../api/sdk.gen';
+import type { ComputerUseStatus as ApiComputerUseStatus } from '../../api/types.gen';
 import { userActionHeaders } from '../../utils/userAction';
 
-export interface ComputerUseStatus {
-  session_id: string;
-  provider: string;
-  model: string;
-  destination: string;
-  target: string;
-  disclosure: string;
-  state: 'approval_required' | 'active' | 'stopped' | 'busy';
-  challenge_id: string;
-  public_model: boolean;
-  handoff_required: boolean;
-  requested?: boolean;
-  enabled?: boolean;
+const optionalText = z
+  .string()
+  .nullish()
+  .transform((value) => value ?? undefined);
+const optionalBoolean = z
+  .boolean()
+  .nullish()
+  .transform((value) => value ?? undefined);
+const runtimeSchema = z.object({
+  status: z.string(),
+  runtime_version: optionalText,
+  target: optionalText,
+  executable: optionalText,
+  development_override: optionalBoolean,
+  permissions: z.union([
+    z.string(),
+    z.object({ accessibility: z.boolean().nullish(), screen_recording: z.boolean().nullish() }),
+  ]),
+  desktop_available: optionalBoolean,
+  capture_available: optionalBoolean,
+  message: optionalText,
+  host: optionalText,
+  error: optionalText,
+});
+
+export type ComputerUseRuntime = z.infer<typeof runtimeSchema>;
+export type ComputerUseStatus = Omit<ApiComputerUseStatus, 'runtime'> & {
   runtime?: ComputerUseRuntime;
+};
+
+function parseRuntime(value: unknown): ComputerUseRuntime {
+  const parsed = runtimeSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  return {
+    status: 'probe_failed',
+    permissions: 'unknown',
+    message:
+      'The backend returned an invalid readiness response. Update or repair Biorouter and check again.',
+  };
+}
+
+function statusForDisplay(status: ApiComputerUseStatus): ComputerUseStatus {
+  return { ...status, runtime: parseRuntime(status.runtime) };
 }
 
 export async function computerUseStatus(sessionId: string): Promise<ComputerUseStatus> {
-  const response = await client.get<{ 200: ComputerUseStatus }, unknown, true>({
-    url: '/agent/computer_use/status',
+  const response = await readComputerUseStatus({
     query: { session_id: sessionId },
     headers: await userActionHeaders(),
     throwOnError: true,
   });
-  return response.data;
+  return statusForDisplay(response.data);
 }
 
 export async function computerUseDecision(
@@ -33,41 +68,25 @@ export async function computerUseDecision(
   approvalKey: string
 ): Promise<ComputerUseStatus> {
   const headers = await userActionHeaders();
-  const response = await client.post<{ 200: ComputerUseStatus }, unknown, true>({
-    url: `/agent/computer_use/${action}`,
-    headers: {
-      'Content-Type': 'application/json',
-      ...headers,
-      ...(action === 'consent' && approvalKey ? { 'X-Computer-Use-Key': approvalKey } : {}),
-    },
-    body: {
-      session_id: status.session_id,
-      ...(action === 'consent' ? { challenge_id: status.challenge_id } : {}),
-    },
-    throwOnError: true,
-  });
-  return response.data;
-}
-
-export interface ComputerUseRuntime {
-  status: string;
-  runtime_version?: string;
-  target?: string;
-  executable?: string;
-  development_override?: boolean;
-  permissions: string | { accessibility?: boolean | null; screen_recording?: boolean | null };
-  desktop_available?: boolean;
-  capture_available?: boolean;
-  message?: string;
-  host?: string;
-  error?: string;
+  const response =
+    action === 'consent'
+      ? await approveComputerUse({
+          headers: { ...headers, ...(approvalKey ? { 'X-Computer-Use-Key': approvalKey } : {}) },
+          body: { session_id: status.session_id, challenge_id: status.challenge_id },
+          throwOnError: true,
+        })
+      : await revokeComputerUse({
+          headers,
+          body: { session_id: status.session_id },
+          throwOnError: true,
+        });
+  return statusForDisplay(response.data);
 }
 
 export async function computerUseSetup(): Promise<ComputerUseRuntime> {
-  const response = await client.get<{ 200: ComputerUseRuntime }, unknown, true>({
-    url: '/agent/computer_use/setup',
+  const response = await readComputerUseSetup({
     headers: await userActionHeaders(),
     throwOnError: true,
   });
-  return response.data;
+  return parseRuntime(response.data);
 }

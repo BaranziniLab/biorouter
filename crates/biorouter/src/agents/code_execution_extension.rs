@@ -4485,11 +4485,35 @@ mod tests {
         assert!(
             text.contains("module_webdocuments[\"web_scrape\"]({save_as?: string, url: string})")
         );
-        assert!(!text.contains("xlsx_tool"));
+        let web_fetch = text.find("webdocuments/web_scrape").unwrap();
+        let clinical_search = text.find("cdwagent/CDW-search_notes").unwrap();
+        let namespace_only = text.find("webdocuments/xlsx_tool").unwrap();
         assert!(
-            text.find("webdocuments/web_scrape").unwrap()
-                < text.find("cdwagent/CDW-search_notes").unwrap()
+            web_fetch < clinical_search && clinical_search < namespace_only,
+            "{text}"
         );
+
+        // "web" also matches the module name; a content-specific search must not
+        // inherit unrelated document tools merely because they share that module.
+        let focused = CodeExecutionClient::handle_search(
+            &tools,
+            &[
+                "news".to_string(),
+                "search".to_string(),
+                "browser".to_string(),
+            ],
+            false,
+        )
+        .unwrap();
+        let focused_text = match &focused[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            focused_text.contains("webdocuments/web_scrape"),
+            "{focused_text}"
+        );
+        assert!(!focused_text.contains("xlsx_tool"), "{focused_text}");
     }
 
     #[test]

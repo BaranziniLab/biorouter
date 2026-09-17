@@ -518,6 +518,9 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::skills::remove_skill_package,
     ),
     components(schemas(
+        biorouter::security::computer_use::ComputerUseStatus,
+        super::routes::computer_use::ComputerUseSessionRequest,
+        super::routes::computer_use::ComputerUseConsentRequest,
         super::routes::config_management::UpsertConfigQuery,
         super::routes::config_management::ConfigKeyQuery,
         super::routes::config_management::DetectProviderRequest,
