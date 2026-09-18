@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PREVIEW_SIZE_INSTALL,
   PREVIEW_SIZE_MESSAGE_TYPE,
@@ -38,8 +38,46 @@ describe('withPreviewSizeReporting', () => {
 
 describe('PREVIEW_SIZE_INSTALL', () => {
   const originalParent = Object.getOwnPropertyDescriptor(window, 'parent');
+  type WindowListener = Parameters<typeof window.addEventListener>[1];
+  type WindowListenerOptions = Parameters<typeof window.addEventListener>[2];
+  type PreviewMutationObserver = InstanceType<typeof window.MutationObserver>;
+  type PreviewMutationCallback = ConstructorParameters<typeof window.MutationObserver>[0];
+  const installedObservers: PreviewMutationObserver[] = [];
+  const installedListeners: Array<{
+    type: string;
+    listener: WindowListener;
+    options?: WindowListenerOptions;
+  }> = [];
+  const originalAddEventListener = window.addEventListener;
+  const originalRemoveEventListener = window.removeEventListener;
+  const originalMutationObserver = window.MutationObserver;
+
+  beforeEach(() => {
+    window.addEventListener = ((
+      type: string,
+      listener: WindowListener,
+      options?: WindowListenerOptions
+    ) => {
+      installedListeners.push({ type, listener, options });
+      return originalAddEventListener.call(window, type, listener, options);
+    }) as typeof window.addEventListener;
+    window.MutationObserver = class extends originalMutationObserver {
+      constructor(callback: PreviewMutationCallback) {
+        super(callback);
+        installedObservers.push(this);
+      }
+    };
+  });
 
   afterEach(() => {
+    for (const observer of installedObservers.splice(0)) observer.disconnect();
+    for (const { type, listener, options } of installedListeners.splice(0)) {
+      originalRemoveEventListener.call(window, type, listener, options);
+    }
+    vi.clearAllTimers();
+    window.addEventListener = originalAddEventListener;
+    window.removeEventListener = originalRemoveEventListener;
+    window.MutationObserver = originalMutationObserver;
     if (originalParent) Object.defineProperty(window, 'parent', originalParent);
     delete (window as unknown as Record<symbol, unknown>)[Symbol.for('biorouter.preview.size.v1')];
     document.body.innerHTML = '';
