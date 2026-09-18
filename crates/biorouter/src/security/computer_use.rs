@@ -541,7 +541,7 @@ fn collect_endpoints(value: &serde_json::Value, endpoints: &mut Vec<String>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::privacy::ProviderTier;
     use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
@@ -607,7 +607,7 @@ mod tests {
         approved
     }
 
-    fn test_serial() -> &'static tokio::sync::Mutex<()> {
+    pub(crate) fn test_serial() -> &'static tokio::sync::Mutex<()> {
         static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         &SERIAL
     }

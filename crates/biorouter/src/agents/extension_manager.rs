@@ -3854,6 +3854,7 @@ fn extension_listing_lines(
 
 #[cfg(test)]
 mod tests {
+    include!("computer_use_nested_tests.rs");
     use super::*;
     use rmcp::model::CallToolResult;
     use rmcp::model::{InitializeResult, JsonObject};
@@ -8482,6 +8483,9 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_native_result_is_withheld_even_when_the_client_ignores_cancellation() {
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
         let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
         manager
             .add_mock_extension(
