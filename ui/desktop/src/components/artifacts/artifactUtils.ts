@@ -691,6 +691,16 @@ const FILE_WRITING_TOOLS = new Set([
   'write_file',
 ]);
 
+// Computer-controller office tools name the workbook/document in `path`, but
+// multiplex reads and writes behind an operation. Only completed operations
+// that can change bytes should invalidate an already-open preview.
+const OFFICE_WRITING_OPERATIONS: Record<string, Set<string>> = {
+  docx_tool: new Set(['update_doc']),
+  // `update_cell` persists immediately; `save` is also exposed for callers
+  // that only need to rewrite an already-loaded workbook.
+  xlsx_tool: new Set(['update_cell', 'save']),
+};
+
 // `text_editor`-style commands that leave a file changed on disk. `view` and
 // `undo_edit` do not produce something new to look at.
 const MUTATING_EDITOR_COMMANDS = new Set(['create', 'diff', 'insert', 'str_replace', 'write']);
@@ -743,7 +753,12 @@ export function resolveArtifactPath(rawPath: string, workingDir?: string): strin
 
 function isPreviewableArtifactPath(path: string): boolean {
   const ext = extensionFromPath(path);
-  return TEXT_EXTENSIONS.has(ext) || IMAGE_EXTENSIONS.has(ext) || HTML_EXTENSIONS.has(ext);
+  return (
+    TEXT_EXTENSIONS.has(ext) ||
+    IMAGE_EXTENSIONS.has(ext) ||
+    HTML_EXTENSIONS.has(ext) ||
+    DOCUMENT_EXTENSIONS.has(ext)
+  );
 }
 
 /** The directory portion of a path, without a trailing separator (`''` if none).
@@ -797,6 +812,19 @@ export function fileArtifactPathsFromToolCall(
   const argRecord = asRecord(args);
   if (!argRecord) return [];
   const name = baseToolName(toolName);
+
+  const officeOperations = OFFICE_WRITING_OPERATIONS[name];
+  if (officeOperations) {
+    const operation = argRecord.operation;
+    if (typeof operation !== 'string' || !officeOperations.has(operation)) return [];
+    for (const key of PATH_ARGUMENT_KEYS) {
+      const value = argRecord[key];
+      if (typeof value !== 'string' || !value.trim()) continue;
+      const resolved = resolveArtifactPath(value, workingDir);
+      return resolved ? [resolved] : [];
+    }
+    return [];
+  }
 
   // Unwrap the code-execution wrapper (default config) before anything else —
   // the real tool calls live inside its `code` string, not in `argRecord`.

@@ -792,6 +792,31 @@ describe('fileArtifactPathsFromToolCall — other writing tools', () => {
   });
 });
 
+describe('fileArtifactPathsFromToolCall — office tools', () => {
+  it.each([
+    ['computercontroller__docx_tool', 'update_doc', '/tmp/report.docx'],
+    ['computercontroller__xlsx_tool', 'save', '/tmp/budget.xlsx'],
+  ])('recognizes a completed %s mutation', (name, operation, path) => {
+    expect(fileArtifactPathsFromToolCall(name, { operation, path })).toEqual([path]);
+  });
+
+  it.each([
+    ['computercontroller__docx_tool', 'extract_text', '/tmp/report.docx'],
+    ['computercontroller__xlsx_tool', 'get_range', '/tmp/budget.xlsx'],
+  ])('does not invalidate for read-only %s operations', (name, operation, path) => {
+    expect(fileArtifactPathsFromToolCall(name, { operation, path })).toEqual([]);
+  });
+
+  it('recognizes xlsx update_cell because the tool persists it immediately', () => {
+    expect(
+      fileArtifactPathsFromToolCall('computercontroller__xlsx_tool', {
+        operation: 'update_cell',
+        path: '/tmp/budget.xlsx',
+      })
+    ).toEqual(['/tmp/budget.xlsx']);
+  });
+});
+
 describe('fileArtifactPathsFromToolCall — shell', () => {
   const shell = (command: string) =>
     fileArtifactPathsFromToolCall('developer__shell', { command }, WORKING_DIR);
@@ -809,6 +834,9 @@ describe('fileArtifactPathsFromToolCall — shell', () => {
   it('catches conventional output flags', () => {
     expect(shell('Rscript plot.R -o figure.png')).toEqual(['/home/ada/project/figure.png']);
     expect(shell('pandoc a.md --output report.html')).toEqual(['/home/ada/project/report.html']);
+    expect(shell('python build.py --output report.docx')).toEqual([
+      '/home/ada/project/report.docx',
+    ]);
   });
 
   it('handles quoted output paths with spaces', () => {
