@@ -1,23 +1,10 @@
-/**
- * BR-63: the composer's reasoning-effort control.
- *
- * The chat request carries the effort per turn, so the value has to be readable
- * from `chatStreamStore` (a plain class, not a React component) at submit time.
- * That is why this is a tiny module store rather than React context: the toggle
- * writes it, the submit path reads it, and subscribers re-render.
- *
- * `normal` is the default and is **never sent** — an omitted `reasoning_effort`
- * leaves the session's `/effort` setting (and the model's own default depth)
- * alone, so a user who never touches the control gets exactly the old behaviour.
- */
 import type { ReasoningEffort } from '../api/types.gen';
 
 export type { ReasoningEffort };
 
-const STORAGE_KEY = 'biorouter.reasoningEffort';
+const STORAGE_PREFIX = 'biorouter.reasoningEffort.v2:';
 
 export const REASONING_EFFORTS: ReasoningEffort[] = ['quick', 'normal', 'deep'];
-
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'normal';
 
 export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
@@ -28,65 +15,103 @@ export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
 
 export const REASONING_EFFORT_DESCRIPTIONS: Record<ReasoningEffort, string> = {
   quick: 'Fast answers with minimal exploration.',
-  normal: "The model's default depth.",
+  normal: "Use this chat's /effort setting, or the model's default depth.",
   deep: 'More thinking and exploration.',
 };
+
+export function sessionReasoningScope(sessionId: string): string {
+  return `session:${sessionId}`;
+}
+
+export function draftReasoningScope(draftKey: string): string {
+  return `draft:${draftKey}`;
+}
 
 function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return typeof value === 'string' && (REASONING_EFFORTS as string[]).includes(value);
 }
 
-let current: ReasoningEffort = DEFAULT_REASONING_EFFORT;
-let loaded = false;
-const listeners = new Set<() => void>();
+const current = new Map<string, ReasoningEffort>();
+const listeners = new Map<string, Set<() => void>>();
 
-/** The effort the composer is set to. Reads through to localStorage once. */
-export function getReasoningEffort(): ReasoningEffort {
-  if (!loaded) {
-    loaded = true;
+function storageForScope(scope: string): Storage {
+  // Home and unsent tabs belong to their window; established chats travel with
+  // their session id when resumed or opened in another window.
+  return scope.startsWith('session:') ? localStorage : sessionStorage;
+}
+
+export function getReasoningEffort(scope: string): ReasoningEffort {
+  if (!current.has(scope)) {
+    let effort = DEFAULT_REASONING_EFFORT;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (isReasoningEffort(stored)) {
-        current = stored;
-      }
+      const stored = storageForScope(scope).getItem(STORAGE_PREFIX + scope);
+      if (isReasoningEffort(stored)) effort = stored;
     } catch {
-      // Storage unavailable (private mode, tests) — stay on the default.
+      // The in-memory choice still works when storage is unavailable.
     }
+    current.set(scope, effort);
   }
-  return current;
+  return current.get(scope)!;
 }
 
-export function setReasoningEffort(effort: ReasoningEffort): void {
-  loaded = true;
-  if (current === effort) return;
-  current = effort;
+export function setReasoningEffort(scope: string, effort: ReasoningEffort): void {
+  if (getReasoningEffort(scope) === effort) return;
+  current.set(scope, effort);
   try {
-    localStorage.setItem(STORAGE_KEY, effort);
+    storageForScope(scope).setItem(STORAGE_PREFIX + scope, effort);
   } catch {
-    // Non-fatal: the choice still applies to this session.
+    // The in-memory choice still works when storage is unavailable.
   }
-  listeners.forEach((listener) => listener());
+  listeners.get(scope)?.forEach((listener) => listener());
 }
 
-export function subscribeToReasoningEffort(listener: () => void): () => void {
-  listeners.add(listener);
+export function subscribeToReasoningEffort(scope: string, listener: () => void): () => void {
+  let scopedListeners = listeners.get(scope);
+  if (!scopedListeners) listeners.set(scope, (scopedListeners = new Set()));
+  scopedListeners.add(listener);
   return () => {
-    listeners.delete(listener);
+    scopedListeners.delete(listener);
+    if (scopedListeners.size === 0) listeners.delete(scope);
   };
 }
 
-/**
- * What to put on the chat request. `normal` is omitted so it can't stomp a
- * session-level `/effort` the user set from the composer.
- */
-export function reasoningEffortForRequest(): ReasoningEffort | undefined {
-  const effort = getReasoningEffort();
+window.addEventListener('storage', (event) => {
+  if (event.key !== null && !event.key.startsWith(STORAGE_PREFIX)) return;
+  const scopes = event.key ? [event.key.slice(STORAGE_PREFIX.length)] : [...current.keys()];
+  for (const scope of scopes) {
+    try {
+      if (event.storageArea && event.storageArea !== storageForScope(scope)) continue;
+    } catch {
+      continue;
+    }
+    const previous = current.get(scope);
+    current.delete(scope);
+    if (getReasoningEffort(scope) !== previous) {
+      listeners.get(scope)?.forEach((listener) => listener());
+    }
+  }
+});
+
+/** Normal yields to the session's /effort setting, as it did before scoping. */
+export function reasoningEffortForRequest(effort: ReasoningEffort): ReasoningEffort | undefined {
   return effort === DEFAULT_REASONING_EFFORT ? undefined : effort;
 }
 
-/** Test-only: drop the cached value so a fresh localStorage read happens. */
+/** Transfer before navigation so the new controller's first reply sees the choice. */
+export function adoptDraftReasoningEffort(
+  draftScope: string,
+  sessionId: string,
+  submittedEffort: ReasoningEffort
+): void {
+  setReasoningEffort(sessionReasoningScope(sessionId), submittedEffort);
+  // A newer draft choice made while session creation awaited belongs to the
+  // next message; do not clear it along with the submitted draft.
+  if (getReasoningEffort(draftScope) === submittedEffort) {
+    setReasoningEffort(draftScope, DEFAULT_REASONING_EFFORT);
+  }
+}
+
 export function resetReasoningEffortForTests(): void {
-  current = DEFAULT_REASONING_EFFORT;
-  loaded = false;
+  current.clear();
   listeners.clear();
 }

@@ -498,9 +498,15 @@ describe('ProviderCatalog — AI agents', () => {
     };
     mocks.checkProvider.mockResolvedValue({ data: {} });
     mocks.upsert.mockResolvedValue(undefined);
+    const readyStatus = {
+      agents: [
+        agent('codex', { state: 'signed_in_subscription' }, { path: '/opt/homebrew/bin/codex' }),
+      ],
+    };
     mocks.fetchCodingAgentStatus
       .mockResolvedValueOnce({ agents: [agent('codex', { state: 'not_installed' })] })
-      .mockResolvedValueOnce({ agents: [agent('codex', { state: 'signed_in_subscription' })] });
+      .mockResolvedValueOnce(readyStatus)
+      .mockResolvedValueOnce(readyStatus);
 
     function CatalogWithLiveList() {
       const [rows, setRows] = useState([
@@ -527,6 +533,8 @@ describe('ProviderCatalog — AI agents', () => {
     await within(row).findByText('Ready · signed in on your subscription');
     expect(within(row).getByText('Configured')).toBeInTheDocument();
     expect(mocks.upsert).toHaveBeenCalledWith('CODEX_COMMAND', 'codex', false);
+    expect(screen.getByTestId('switch-model-modal')).toBeInTheDocument();
+    expect(mocks.fetchCodingAgentStatus).toHaveBeenCalledTimes(3);
   });
 
   // "Use Codex" saves the command key, which is what makes the daemon report it

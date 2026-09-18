@@ -382,6 +382,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::config_management::read_config,
         super::routes::config_management::add_extension,
         super::routes::config_management::remove_extension,
+        super::routes::config_management::get_extension_credentials,
+        super::routes::config_management::purge_extension_credentials,
         super::routes::config_management::get_extensions,
         super::routes::config_management::read_all_config,
         super::routes::config_management::providers,
@@ -516,6 +518,8 @@ impl utoipa::Modify for ApiKeySecurity {
     components(schemas(
         super::routes::config_management::UpsertConfigQuery,
         super::routes::config_management::ConfigKeyQuery,
+        super::routes::config_management::PurgeExtensionCredentialsRequest,
+        biorouter::config::extension_credentials::ExtensionCredential,
         super::routes::config_management::DetectProviderRequest,
         super::routes::config_management::DetectProviderResponse,
         super::routes::config_management::DetectableProvider,

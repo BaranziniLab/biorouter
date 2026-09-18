@@ -1,5 +1,4 @@
-import { useSyncExternalStore } from 'react';
-import { useState } from 'react';
+import { useCallback, useState, useSyncExternalStore } from 'react';
 import { Check } from '../icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Button } from '../ui/button';
@@ -71,13 +70,18 @@ function EffortBars({ effort, className }: { effort: ReasoningEffort; className?
  * loop's exploration caps. `/effort quick|normal|deep` in the chat box does the
  * same thing for the whole session.
  */
-export function BottomMenuReasoningEffort() {
+export function BottomMenuReasoningEffort({ scope }: { scope: string }) {
   const [open, setOpen] = useState(false);
-  const effort = useSyncExternalStore(subscribeToReasoningEffort, getReasoningEffort);
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeToReasoningEffort(scope, listener),
+    [scope]
+  );
+  const snapshot = useCallback(() => getReasoningEffort(scope), [scope]);
+  const effort = useSyncExternalStore(subscribe, snapshot);
   const isDefault = effort === DEFAULT_REASONING_EFFORT;
 
   const select = (next: ReasoningEffort) => {
-    setReasoningEffort(next);
+    setReasoningEffort(scope, next);
     setOpen(false);
   };
 
@@ -113,7 +117,7 @@ export function BottomMenuReasoningEffort() {
         <div className="border-b border-border-subtle px-3 py-2.5">
           <div className="text-label text-text-default">Reasoning effort</div>
           <div className="mt-0.5 text-supporting text-text-muted">
-            How hard to think on the next message. Also settable with /effort.
+            Applies to this chat. Normal uses its /effort setting when set.
           </div>
         </div>
         <div className="p-1.5" role="menu" aria-label="Reasoning effort">

@@ -13,6 +13,10 @@ interface DeleteExtensionProps {
 export async function deleteExtension({ name, removeFromConfig }: DeleteExtensionProps) {
   try {
     await removeFromConfig(name);
+    toastService.success({
+      title: name,
+      msg: 'Extension removed. Saved credentials were retained and may be reused on reinstall.',
+    });
   } catch (error) {
     console.error('Failed to remove extension from config:', error);
     throw error;

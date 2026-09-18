@@ -57,9 +57,6 @@ vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
 vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
   BottomMenuKnowledgeSelection: () => null,
 }));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
 vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
 vi.mock('./MentionPopover', () => {
@@ -74,6 +71,13 @@ vi.mock('../api', () => ({
 }));
 
 import Hub from './Hub';
+import ChatInput from './ChatInput';
+import { ChatState } from '../types/chatState';
+import {
+  getReasoningEffort,
+  sessionReasoningScope,
+  resetReasoningEffortForTests,
+} from '../store/reasoningEffort';
 import { resetComposerDraftsForTests } from '../utils/composerDrafts';
 
 /** What `POST /agent/start` answered on the QA run's `biorouter serve` daemon. */
@@ -86,6 +90,9 @@ const SERVE_DAEMON_REFUSAL = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
+  resetReasoningEffortForTests();
   resetComposerDraftsForTests();
   Object.assign(window, {
     appConfig: {
@@ -182,4 +189,50 @@ describe('Hub: leaving Home does not lose the message (D4)', () => {
       (screen.getByPlaceholderText('Ask Biorouter anything…') as HTMLTextAreaElement).value
     ).toBe('half a thought');
   });
+});
+
+it('keeps a failed Home selection, transfers it before navigation, and resets the next Home draft', async () => {
+  mockCreateSession.mockRejectedValueOnce(new Error('offline'));
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const setView = vi.fn((_view, options) => {
+    expect(getReasoningEffort(sessionReasoningScope(options.resumeSessionId))).toBe('deep');
+  });
+  const home = render(<Hub setView={setView} />);
+  fireEvent.click(screen.getByLabelText('Reasoning effort: Normal'));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: /Deep/ }));
+  const composer = screen.getByPlaceholderText('Ask Biorouter anything…');
+  fireEvent.change(composer, { target: { value: 'hello' } });
+  fireEvent.keyDown(composer, { key: 'Enter' });
+  await waitFor(() => expect(mockToastError).toHaveBeenCalledOnce());
+  expect(screen.getByLabelText('Reasoning effort: Deep')).toBeInTheDocument();
+
+  mockCreateSession.mockResolvedValueOnce({ id: 'home-deep-chat' });
+  fireEvent.keyDown(composer, { key: 'Enter' });
+  await waitFor(() => expect(setView).toHaveBeenCalledOnce());
+  home.unmount();
+  render(<Hub setView={vi.fn()} />);
+  expect(screen.getByLabelText('Reasoning effort: Normal')).toBeInTheDocument();
+  expect(getReasoningEffort(sessionReasoningScope('home-deep-chat'))).toBe('deep');
+  consoleError.mockRestore();
+});
+
+it('isolates two new-tab composers and restores their choices when returning to a tab', () => {
+  const props = {
+    sessionId: null,
+    handleSubmit: vi.fn(),
+    setView: vi.fn(),
+    chatState: ChatState.Idle,
+    toolCount: 0,
+  };
+  const first = render(<ChatInput {...props} draftKey="tab:a" />);
+  fireEvent.click(screen.getByLabelText('Reasoning effort: Normal'));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: /Quick/ }));
+  first.unmount();
+  const second = render(<ChatInput {...props} draftKey="tab:b" />);
+  expect(screen.getByLabelText('Reasoning effort: Normal')).toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText('Reasoning effort: Normal'));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: /Deep/ }));
+  second.unmount();
+  render(<ChatInput {...props} draftKey="tab:a" />);
+  expect(screen.getByLabelText('Reasoning effort: Quick')).toBeInTheDocument();
 });

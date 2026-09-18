@@ -14,6 +14,7 @@ interface ProviderSetupActionsProps {
   providerName?: string;
   requiredParameters?: ConfigKey[];
   isActiveProvider?: boolean;
+  isSubmitting?: boolean;
 }
 
 export default function ProviderSetupActions({
@@ -27,6 +28,7 @@ export default function ProviderSetupActions({
   providerName,
   requiredParameters,
   isActiveProvider = false,
+  isSubmitting = false,
 }: ProviderSetupActionsProps) {
   if (showDeleteConfirmation) {
     if (isActiveProvider) {
@@ -85,8 +87,12 @@ export default function ProviderSetupActions({
         <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" size="sm" onClick={onSubmit}>
-          {requiredParameters && requiredParameters.length > 0 ? 'Save' : 'Enable'}
+        <Button type="submit" size="sm" onClick={onSubmit} disabled={isSubmitting}>
+          {isSubmitting
+            ? 'Checking…'
+            : requiredParameters && requiredParameters.length > 0
+              ? 'Save'
+              : 'Enable'}
         </Button>
       </div>
     </div>

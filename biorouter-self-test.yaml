@@ -20,6 +20,7 @@ activities:
   - Generate and execute test workflows
   - Test error boundaries and security controls
   - Validate the Settings reset contract and its active-work safety gate
+  - Verify provider error handling, conversation-scoped reasoning, and saved-credential deletion safeguards
   - Measure performance and resource usage
   - Generate comprehensive test report
 
@@ -28,7 +29,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, knowledge, workflows, reset, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
   
   - key: test_depth
     input_type: string
@@ -160,6 +161,13 @@ instructions: |
   - Verify the API rejects resets while a conversation or scheduled run is active
   - Run the targeted reset storage and factory-default tests from the repository
   - Never submit a destructive reset against the live self-test profile
+
+  ### Phase 4C: Provider and Conversation Boundaries
+  - Validate content-filter error frames without exposing raw provider payloads
+  - Verify Quick, Normal, and Deep produce model-compatible requests
+  - Keep each conversation and unsent draft's reasoning choice independent
+  - Verify saved-credential deletion refuses shared and protected credentials
+  - Use synthetic credentials and isolated profiles for all destructive checks
   
   ### Phase 5: Report Generation
   Compile comprehensive test results:
@@ -505,7 +513,47 @@ prompt: |
   
   Log results to: {{ workspace_dir }}/phase4_advanced.md
   {% endif %}
-  
+
+  {% if test_phases == "all" or "providers" in test_phases %}
+  ## PHASE 4C: Provider, Reasoning, and Credential Boundaries
+
+  Use the repository's focused regression tests and record their actual exit codes and test counts.
+  Run commands sequentially; a missing test, zero-test result, or skipped assertion is not a pass.
+  Do not change source files to make a test pass.
+
+  From the repository root, activate `bin/activate-hermit` and set `CARGO_BUILD_JOBS=8`.
+  Use these exact focused commands; do not run broad `cargo test ... -- --list` discovery,
+  which can execute harnessless integration binaries even when a filter selects no tests:
+  - `cargo test -p biorouter --test openai_stream_boundaries`
+  - `cargo test -p biorouter --lib providers::versa_azure`
+  - `cargo test -p biorouter --lib model_capability_tests`
+  - `cargo test -p biorouter --test extension_credential_lifecycle`
+  - `cargo test -p biorouter-server --bin biorouterd extension_credential_tests`
+  - `cargo test -p biorouter --lib providers::coding_agent::discovery::tests`
+  - From `ui/desktop`, `npm run test:run -- --maxWorkers=1 src/store/reasoningEffort.test.ts src/components/bottom_menu/BottomMenuReasoningEffort.test.tsx src/hooks/chatStreamStore.reasoningEffort.test.tsx src/components/Hub.startFailure.test.tsx src/components/settings/extensions/modal/ExtensionCredentialsDialog.test.tsx src/components/settings/extensions/modal/ExtensionModal.test.tsx src/components/settings/providers/modal/ProviderConfigurationModal.setup.test.tsx src/components/onboarding/CodingAgentInlineCard.test.tsx src/components/settings/providers/ProviderCatalog.test.tsx`
+
+  1. Exercise the OpenAI-compatible stream boundary tests, including content-filter errors with
+     no delta during text and tool-call streams, valid Azure annotations, and malformed chunks.
+     Require a useful provider error without echoing the raw response payload.
+  2. Exercise the Versa request tests for Quick, Normal, and Deep on GPT-5.5. Assert the actual
+     request body, including supported reasoning parameters and absence of unsupported temperature.
+  3. Exercise the reasoning menu and chat request regressions for two existing conversations,
+     independent unsent drafts, draft-to-session transfer, reload, and same-session synchronization.
+     Changing another chat must not change the submitted chat's reasoning selection.
+  4. Exercise saved-credential review and deletion with synthetic secrets. Require explicit user
+     authorization, refusal for shared/provider/protected keys and changed references, and successful
+     deletion only for selected unshared stored credentials. Never delete a real saved credential.
+  5. Exercise coding-agent setup tests for Codex and Claude Code: missing executable, signed out,
+     authenticated, and inconclusive or failed status checks. Confirm that failure guidance names
+     the next setup step and that retry refreshes readiness without claiming success prematurely.
+  6. Report live desktop assertions separately: native-font setup guidance, credential confirmation
+     text, independent reasoning controls, private-model preservation, and live Versa Quick/Deep
+     completion. Mark them NOT OBSERVABLE when this workflow has no desktop driver; unit tests do
+     not establish those outcomes. Do not initiate a real login or alter the user's CLI installation.
+
+  Log results to: {{ workspace_dir }}/phase4c_provider_boundaries.md
+  {% endif %}
+
   ## 📊 PHASE 5: Final Report Generation
   
   Create TWO reports:

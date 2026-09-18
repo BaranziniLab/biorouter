@@ -57,7 +57,12 @@ import {
 } from '../types/message';
 import { describeRequestFailure, errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
-import { reasoningEffortForRequest } from '../store/reasoningEffort';
+import {
+  getReasoningEffort,
+  reasoningEffortForRequest,
+  sessionReasoningScope,
+  type ReasoningEffort,
+} from '../store/reasoningEffort';
 import { userActionHeaders } from '../utils/userAction';
 import {
   abandonContinuationLease as abandonContinuationLeaseRequest,
@@ -3801,7 +3806,8 @@ class ChatStreamController {
   private submitPreparedMessage = async (
     newMessage: Message,
     currentMessages: Message[],
-    updateMessageList: boolean
+    updateMessageList: boolean,
+    reasoningEffort: ReasoningEffort = getReasoningEffort(sessionReasoningScope(this.sessionId))
   ): Promise<void> => {
     this.ownershipReleased = false;
     // BR-71 — a user-driven turn converts an observer tab into a driver.
@@ -3932,7 +3938,7 @@ class ChatStreamController {
           turn_id: turnId,
           // BR-63: the composer's per-turn reasoning effort. Omitted on the
           // default ('normal'), so a session-level `/effort` still applies.
-          reasoning_effort: reasoningEffortForRequest(),
+          reasoning_effort: reasoningEffortForRequest(reasoningEffort),
           ...(continuationLease ? { continuation_lease: continuationLease } : {}),
         } as ChatRequest,
         throwOnError: true,
@@ -4102,6 +4108,7 @@ class ChatStreamController {
       return false;
     }
     this.submitInFlight = true;
+    const reasoningEffort = getReasoningEffort(sessionReasoningScope(this.sessionId));
     try {
       await this.loadSession();
 
@@ -4149,7 +4156,7 @@ class ChatStreamController {
         ? [...this.messagesRef, newMessage]
         : [...this.messagesRef];
       this.submitRefused = false;
-      await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage);
+      await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage, reasoningEffort);
       if (this.submitRefused) {
         // D8: refused before admission — nothing ran, the row was taken back,
         // and the caller keeps the words.
