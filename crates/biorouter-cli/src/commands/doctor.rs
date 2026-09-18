@@ -117,13 +117,30 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     println!("    Browser: start with `biorouter serve --computer-use-approval`, then enter your key in the Computer Use approval field.");
     println!("    A remote browser controls the backend host's desktop. A headless host has no desktop to control.");
 
-    // Actionable next steps for anything missing.
-    let missing_required: Vec<&DependencyStatus> =
-        deps.iter().filter(|d| d.required && !d.installed).collect();
+    // Actionable next steps for anything missing. A probe that TIMED OUT did
+    // not establish absence, so it is not offered for install -- telling someone
+    // to install what they already have is worse than saying nothing.
+    let missing_required: Vec<&DependencyStatus> = deps
+        .iter()
+        .filter(|d| d.required && !d.installed && !d.timed_out)
+        .collect();
     let missing_optional: Vec<&DependencyStatus> = deps
         .iter()
-        .filter(|d| !d.required && !d.installed)
+        .filter(|d| !d.required && !d.installed && !d.timed_out)
         .collect();
+    let unknown: Vec<&DependencyStatus> = deps.iter().filter(|d| d.timed_out).collect();
+
+    if !unknown.is_empty() {
+        println!();
+        section("Could not check");
+        for d in &unknown {
+            println!(
+                "    {} {}",
+                style(&d.display_name).bold(),
+                style("check timed out — this does not mean it is missing").dim()
+            );
+        }
+    }
 
     if !missing_required.is_empty() || !missing_optional.is_empty() {
         println!();
@@ -306,6 +323,13 @@ fn print_dep(d: &DependencyStatus, width: usize) {
         (
             style("●").green().to_string(),
             d.version.clone().unwrap_or_default(),
+        )
+    } else if d.timed_out {
+        // Neither present nor proven absent. Saying "missing" here would assert
+        // something the probe never established.
+        (
+            style("?").yellow().to_string(),
+            "check timed out".to_string(),
         )
     } else if d.required {
         (style("✗").red().to_string(), "missing".to_string())

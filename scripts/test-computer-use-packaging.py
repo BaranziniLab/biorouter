@@ -17,6 +17,80 @@ protocol_spec = importlib.util.spec_from_file_location("protocol", Path(__file__
 protocol = importlib.util.module_from_spec(protocol_spec)
 protocol_spec.loader.exec_module(protocol)
 
+acceptance_spec = importlib.util.spec_from_file_location("acceptance", Path(__file__).with_name("computer-use-package-acceptance.py"))
+acceptance = importlib.util.module_from_spec(acceptance_spec)
+acceptance_spec.loader.exec_module(acceptance)
+
+
+def stage_helper(root, *relative):
+    """Create <root>/<relative>/computer-use/manifest.json and return its resources dir."""
+    helper = Path(root).joinpath(*relative) / "computer-use"
+    helper.mkdir(parents=True)
+    (helper / "manifest.json").write_text("{}")
+    return helper.parent
+
+
+class PackagedResourceLocationTests(unittest.TestCase):
+    """The Linux GUI packages install under usr/lib/<name>, never /opt.
+
+    electron-installer-debian lowercases <name> and electron-installer-redhat
+    preserves its case, and `prefix: '/opt'` in forge.config.ts is inert, so the
+    tree is located by its unique helper manifest instead of by install prefix.
+    """
+
+    def test_locates_the_real_deb_and_rpm_layouts(self):
+        for name in ["biorouter", "Biorouter"]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                expected = stage_helper(temp, "usr/lib", name, "resources")
+                self.assertEqual(acceptance.packaged_desktop_resources(Path(temp)), expected)
+
+    def test_uniqueness_and_provenance_still_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "exactly one helper"):
+                acceptance.packaged_desktop_resources(Path(temp))
+        with tempfile.TemporaryDirectory() as temp:
+            stage_helper(temp, "usr/lib/biorouter/resources")
+            stage_helper(temp, "opt/Biorouter/resources")
+            with self.assertRaisesRegex(ValueError, "exactly one helper"):
+                acceptance.packaged_desktop_resources(Path(temp))
+        with tempfile.TemporaryDirectory() as temp:
+            stage_helper(temp, "usr/lib/biorouter/elsewhere")
+            with self.assertRaisesRegex(ValueError, "not inside a desktop resources directory"):
+                acceptance.packaged_desktop_resources(Path(temp))
+
+    def test_installed_lookup_finds_gui_and_cli_installs_and_rejects_both_at_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            lib = root / "usr/lib"
+            stage_helper(lib, "biorouter/resources")
+            found = acceptance.installed_linux_helper_roots(opt=root / "opt", lib=lib,
+                                                            libexec=root / "usr/libexec")
+            self.assertEqual(found, [lib / "biorouter/resources/computer-use/manifest.json"])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            libexec = root / "usr/libexec"
+            stage_helper(libexec, "biorouter")
+            found = acceptance.installed_linux_helper_roots(opt=root / "opt", lib=root / "usr/lib",
+                                                            libexec=libexec)
+            self.assertEqual(found, [libexec / "biorouter/computer-use/manifest.json"])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            lib, libexec = root / "usr/lib", root / "usr/libexec"
+            stage_helper(lib, "biorouter/resources")
+            stage_helper(libexec, "biorouter")
+            self.assertEqual(len(acceptance.installed_linux_helper_roots(
+                opt=root / "opt", lib=lib, libexec=libexec)), 2)
+
+    def test_no_maker_declares_an_inert_install_prefix(self):
+        # Comments are stripped first: the explanatory note deliberately quotes the
+        # option it is warning about, and matching that would be a check that can
+        # never pass rather than one that can never fail.
+        desktop = (runtime.ROOT / "ui/desktop/forge.config.ts").read_text()
+        code = "\n".join(line for line in desktop.splitlines() if not line.strip().startswith("//"))
+        self.assertNotIn("prefix:", code,
+                         "electron-installer-{debian,redhat} have no prefix option; "
+                         "declaring one re-seeds the /opt belief this test exists to kill")
+
 
 class NativeContractTests(unittest.TestCase):
     def test_reviewed_schema_accepts_only_documentation_differences(self):

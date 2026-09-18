@@ -26,6 +26,12 @@ export interface DependencyInfo {
   displayName: string;
   version: string | null;
   installed: boolean;
+  /**
+   * The check could not be completed in time, so this tool's presence is
+   * UNKNOWN rather than disproved. `installed` is false either way; anything
+   * that would offer an install must consult this first.
+   */
+  timedOut?: boolean;
   installCmd: string;
   requiresSudo: boolean;
   downloadUrl: string;
@@ -52,8 +58,16 @@ export interface DependencyEvent {
 
 // Every probe below runs off the main thread (see `runProbe`), so these bound how
 // long a *stale* answer takes to arrive, not how long the UI is frozen.
-export const PROBE_TIMEOUT_MS = 8_000;
-export const DOCTOR_TIMEOUT_MS = 15_000;
+// Both budgets must clear the cold first-execution cost of a freshly installed
+// binary, which is an operating-system scan rather than compute: a cold
+// `llama-server --version` measured 8.33s real at 0.04s CPU, against 0.05s warm.
+// 8_000 sat BELOW that, so the probe that motivated the bound was the one it cut
+// off. The CLI bounds one prerequisite at 12s and runs them concurrently
+// (crates/biorouter/src/system.rs PROBE_TIMEOUT), so the doctor budget must
+// exceed 12s or the CLI is killed before it can answer and the desktop silently
+// falls back to its own duplicated probes.
+export const PROBE_TIMEOUT_MS = 12_000;
+export const DOCTOR_TIMEOUT_MS = 20_000;
 // A dependency set does not change while the app is open often enough to justify
 // re-spawning `biorouter doctor` on every caller. Startup, the modal mount and the
 // post-install re-check used to each pay the full probe cost.
@@ -523,6 +537,7 @@ async function checkViaBundledCli(): Promise<DependencyInfo[] | null> {
         display_name?: string;
         version?: string | null;
         installed?: boolean;
+        timed_out?: boolean;
         install_command?: string | null;
         requires_sudo?: boolean;
         download_url?: string | null;
@@ -536,6 +551,9 @@ async function checkViaBundledCli(): Promise<DependencyInfo[] | null> {
       displayName: String(d.display_name ?? d.name),
       version: d.version ?? null,
       installed: !!d.installed,
+      // A probe that timed out did not disprove the tool. Dropping this made the
+      // desktop offer to install software the machine may already have.
+      timedOut: !!d.timed_out,
       installCmd: d.install_command ?? '',
       requiresSudo: !!d.requires_sudo,
       downloadUrl: d.download_url ?? '',
@@ -803,7 +821,8 @@ export function setupDependencyChecker(delayMs = 4000): void {
     void (async () => {
       try {
         const deps = await checkAllDependencies();
-        const missing = deps.filter((d) => !d.installed);
+        // A timed-out probe did not disprove the tool, so it is not "missing".
+        const missing = deps.filter((d) => !d.installed && !d.timedOut);
         if (missing.length === 0) {
           log.info('[DependencyChecker] All dependencies present.');
           return;

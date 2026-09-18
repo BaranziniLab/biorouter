@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComputerUseSetup } from './ComputerUseSetup';
 
@@ -109,9 +109,53 @@ describe('ComputerUseSetup', () => {
     render(<ComputerUseSetup />);
     fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
     await screen.findByText('OS permission required');
-    fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
     await screen.findByText('Runtime ready');
     expect(screen.getByText(/Accessibility: allowed · Screen Recording: allowed/)).toBeVisible();
     expect(mocks.setup).toHaveBeenCalledTimes(2);
+  });
+  it('can hide the checks again and re-show them without asking the backend', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'ready',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    render(<ComputerUseSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
+    await screen.findByText('Runtime ready');
+    // Hiding is the control the user could not find at all before this.
+    fireEvent.click(screen.getByRole('button', { name: /Hide Computer Use setup/ }));
+    expect(screen.queryByText('Runtime ready')).toBeNull();
+    // Re-showing a result already fetched must not re-ask the backend; that is
+    // what "Check again" inside the panel is for.
+    fireEvent.click(screen.getByRole('button', { name: /Show Computer Use setup/ }));
+    expect(await screen.findByText('Runtime ready')).toBeVisible();
+    expect(mocks.setup).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the outcome of a re-check that changes nothing on screen', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'ready',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    render(<ComputerUseSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
+    expect(await screen.findByText('All OS permissions are allowed.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await waitFor(() => expect(mocks.setup).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('All OS permissions are allowed.')).toBeVisible();
+  });
+  it('shows the checks after a failed first attempt without a third click', async () => {
+    mocks.setup.mockRejectedValueOnce(new Error('backend down')).mockResolvedValueOnce({
+      status: 'ready',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    render(<ComputerUseSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
+    await screen.findByRole('alert');
+    // Second press: the check succeeds, so its results must be VISIBLE. Flipping
+    // `open` in the click handler left the toggle a click out of phase here, so
+    // the panel stayed hidden and the button just silently changed its label.
+    fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
+    expect(await screen.findByText('Runtime ready')).toBeVisible();
   });
 });

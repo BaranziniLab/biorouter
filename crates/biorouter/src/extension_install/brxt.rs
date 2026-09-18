@@ -272,9 +272,14 @@ fn skill_frontmatter(body: &str) -> Option<(String, String)> {
 }
 
 /// Whether `uv` — which every `.brxt` needs to build its environment — is here.
+///
+/// A probe that TIMED OUT counts as available: it did not disprove `uv`, and
+/// refusing the install would assert an absence nobody established. The install
+/// itself will fail loudly and accurately if `uv` really is missing, which is a
+/// better error than a confident refusal built on an unanswered probe.
 pub fn uv_available() -> bool {
     crate::system::status_of("uv")
-        .map(|d| d.installed)
+        .map(|d| d.installed || d.timed_out)
         .unwrap_or(false)
 }
 

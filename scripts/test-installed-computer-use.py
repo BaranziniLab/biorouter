@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -110,6 +111,74 @@ class MacCandidateSigningTests(unittest.TestCase):
             packages.sign_macos_candidate(app)
             runtime_after = {p.relative_to(helper): p.read_bytes() for p in helper.rglob('*') if p.is_file()}
             self.assertEqual(runtime_after, runtime_before)
+
+
+@unittest.skipIf(os.name == 'nt', 'Uses a POSIX shell to stage the descendant')
+class InstalledDoctorInvocationTests(unittest.TestCase):
+    """The doctor call must observe PROCESS EXIT, not pipe EOF.
+
+    `subprocess.run(capture_output=True)` returns only when every writer closes
+    the pipe. On Windows a helper spawned by the CLI inherits that handle, so a
+    doctor run that finished correctly is indistinguishable from one that hung.
+    """
+
+    def fake_cli(self, body):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        cli = Path(directory.name) / 'biorouter'
+        cli.write_text('#!/bin/sh\n' + body)
+        cli.chmod(0o755)
+        return cli, Path(directory.name)
+
+    def test_a_descendant_holding_stdout_does_not_look_like_a_hang(self):
+        # Writes its complete answer, leaves a descendant holding the inherited
+        # stdout well past the deadline, then exits successfully.
+        cli, scratch = self.fake_cli(
+            'echo \'{"ok": true}\'\n'
+            'sleep 90 &\n'
+            'exit 0\n')
+        started = time.monotonic()
+        document, timings = installed.run_doctor(cli, dict(os.environ), scratch)
+        elapsed = time.monotonic() - started
+        self.assertEqual(document, {'ok': True})
+        self.assertEqual([t['attempt'] for t in timings], ['cold', 'warm'])
+        self.assertLess(elapsed, installed.DOCTOR_TIMEOUT,
+                        'a descendant holding the pipe must not be read as a hang')
+
+    def test_a_doctor_that_never_finishes_fails_with_what_it_had_written(self):
+        cli, scratch = self.fake_cli('sleep 90\n')
+        with patch.object(installed, 'DOCTOR_TIMEOUT', 1):
+            with self.assertRaises(ValueError) as caught:
+                installed.run_doctor(cli, dict(os.environ), scratch)
+        message = str(caught.exception)
+        self.assertIn('exceeded', message)
+        self.assertIn('no output, so the work had not finished', message)
+
+    def test_a_truncated_document_is_not_reported_as_a_finished_run(self):
+        # Rust's stdout is line-buffered, so a doctor that hangs partway through
+        # has already flushed kilobytes. Judging completeness by byte count
+        # reported a truncated document as a finished run.
+        self.assertIn('TRUNCATED', installed.describe_output(b'{"computer_use": {"sta'))
+        self.assertIn('COMPLETE', installed.describe_output(b'{"computer_use": {}}'))
+        self.assertIn('no output', installed.describe_output(b''))
+
+    def test_a_descendant_surviving_the_doctor_is_recorded_not_ignored(self):
+        # Observing exit independently of the pipes stops a leaked descendant
+        # failing the job, so it has to be RECORDED or the fix would simply make
+        # a real leak invisible instead of loud.
+        cli, scratch = self.fake_cli(
+            'echo \'{"ok": true}\'\n'
+            'sleep 30 &\n'
+            'exit 0\n')
+        _, timings = installed.run_doctor(cli, dict(os.environ), scratch)
+        self.assertTrue(
+            any(t['processes_left_behind'] for t in timings),
+            'a process that outlived the CLI must appear in the receipt')
+
+    def test_a_nonzero_doctor_is_reported_with_its_stderr(self):
+        cli, scratch = self.fake_cli('echo boom >&2\nexit 4\n')
+        with self.assertRaisesRegex(ValueError, 'exited 4'):
+            installed.run_doctor(cli, dict(os.environ), scratch)
 
 
 class OwnedCleanupTests(unittest.TestCase):

@@ -137,6 +137,126 @@ def builtin_tools(cli, env):
             child.stdout.close()
 
 
+# One deadline for BOTH attempts, not one each: the callers bound this whole
+# verifier, and a per-attempt budget made the worst case exceed that outer cap,
+# so the diagnostic this function exists to produce was SIGKILLed before it
+# could be written. scripts/computer-use-package-acceptance.py derives its own
+# timeout from this number rather than stating one independently.
+DOCTOR_TIMEOUT = 60
+
+
+# What a timeout report is looking for. A whole-machine snapshot buries the two
+# processes that matter in several hundred system daemons.
+RELEVANT = ('biorouter', 'ocu', 'OpenComputerUse', 'llama-server', 'powershell', 'node')
+
+
+def process_tree():
+    """Live processes that could plausibly be holding the doctor's stdout."""
+    command = (['powershell', '-NoProfile', '-Command',
+                'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name)" }']
+               if os.name == 'nt' else ['/bin/ps', '-axo', 'pid=,ppid=,comm='])
+    try:
+        lines = subprocess.run(command, capture_output=True, text=True, timeout=20).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError) as error:
+        return f'process snapshot unavailable: {error}'
+    named = [line for line in lines if any(token in line for token in RELEVANT)]
+    return '\n'.join(named[:40] or ['(no Biorouter-related process alive)']) + \
+        f'\n  [{len(named)} relevant of {len(lines)} total processes]'
+
+
+def describe_output(written):
+    """Say what the CLI had actually produced, judged by PARSEABILITY.
+
+    Not by byte count: Rust's stdout is line-buffered over a 1 KiB writer, so a
+    doctor that hangs partway through has already flushed kilobytes. Calling any
+    non-zero length "complete" reported a truncated document as a finished run,
+    which points a future debugger at a phantom.
+    """
+    if not written:
+        return 'no output, so the work had not finished'
+    try:
+        json.loads(written)
+    except ValueError:
+        return f'{len(written)} bytes of a TRUNCATED document, so the work had not finished'
+    return (f'{len(written)} bytes forming a COMPLETE document, so the work finished and '
+            'something else was holding its stdout')
+
+
+def live_processes():
+    """pid -> command, for every process this user can see. Empty on failure."""
+    command = (['powershell', '-NoProfile', '-Command',
+                'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.Name)" }']
+               if os.name == 'nt' else ['/bin/ps', '-axo', 'pid=,comm='])
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    seen = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(maxsplit=1)
+        if len(fields) == 2 and fields[0].isdigit():
+            seen[fields[0]] = fields[1].strip()
+    return seen
+
+
+def survivors(before, after):
+    """Processes that appeared during the run and are STILL alive afterwards.
+
+    Deliberately not a parent-pid lookup: once the CLI exits, anything it left
+    behind is re-parented to init, so the link that would identify it is gone at
+    exactly the moment we want to check. A before/after difference survives that.
+    """
+    return sorted(f'{pid} {name}' for pid, name in after.items() if pid not in before)
+
+
+def run_doctor(cli, env, scratch):
+    """Run the installed `doctor` twice, observing process exit independently of its pipes.
+
+    Output goes to real files rather than pipes, and exit is observed with
+    wait(), because `capture_output=True` blocks until EVERY writer closes the
+    pipe -- including a grandchild that inherited the handle. That makes "the
+    command is still working" and "the command finished but a descendant holds
+    its stdout" the same observation, and they are different defects.
+
+    The call is made twice on purpose: first execution of a freshly extracted
+    binary is an operating-system scan cost at near-zero CPU, so a cold/warm
+    pair is the cleanest evidence of whether latency is first-run or structural.
+    """
+    timings = []
+    document = None
+    deadline = time.monotonic() + DOCTOR_TIMEOUT
+    for attempt in ('cold', 'warm'):
+        out, err = scratch / f'doctor-{attempt}.json', scratch / f'doctor-{attempt}.err'
+        started = time.monotonic()
+        budget = max(1.0, deadline - started)
+        before = live_processes()
+        with out.open('wb') as stdout, err.open('wb') as stderr:
+            child = subprocess.Popen([str(cli), 'doctor', '--format', 'json', '--no-update'],
+                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=env)
+            try:
+                code = child.wait(timeout=budget)
+            except subprocess.TimeoutExpired:
+                written = out.read_bytes()
+                child.kill()
+                child.wait(timeout=30)
+                raise ValueError(
+                    f'Installed doctor ({attempt}) exceeded its {budget:.0f}s share of the '
+                    f'{DOCTOR_TIMEOUT}s budget. Its stdout held {describe_output(written)}. '
+                    f'Live processes:\n{process_tree()}') from None
+        elapsed = time.monotonic() - started
+        # A descendant that outlives the CLI is the OTHER mechanism that can make
+        # a doctor call look hung. Observing exit independently of the pipes stops
+        # it failing the job -- so it has to be RECORDED, or the fix would simply
+        # make a real leak invisible instead of loud.
+        left_behind = survivors(before, live_processes())
+        timings.append({'attempt': attempt, 'seconds': round(elapsed, 2), 'exit_code': code,
+                        'processes_left_behind': left_behind})
+        if code != 0:
+            raise ValueError(f'Installed doctor ({attempt}) exited {code}: {err.read_text()[:2000]}')
+        document = json.loads(out.read_text())
+    return document, timings
+
+
 def check(cli, helper, target, expected_status, expected_backends, report_path):
     helper = helper.resolve()
     suffix = '.exe' if target.startswith('win32') else ''
@@ -153,9 +273,7 @@ def check(cli, helper, target, expected_status, expected_backends, report_path):
         env = dict(os.environ, BIOROUTER_PATH_ROOT=isolated, BIOROUTER_DISABLE_KEYRING='true')
         for key in ['BIOROUTER_COMPUTER_USE_DIR', 'OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY']:
             env.pop(key, None)
-        result = subprocess.run([str(cli), 'doctor', '--format', 'json', '--no-update'],
-                                capture_output=True, text=True, env=env, timeout=60, check=True)
-        document = json.loads(result.stdout)
+        document, doctor_timings = run_doctor(cli, env, Path(isolated))
         report = validate_doctor(document, helper, target, expected_status)
         tools = builtin_tools(cli, env)
         names = [tool['name'] for tool in tools]
@@ -164,6 +282,7 @@ def check(cli, helper, target, expected_status, expected_backends, report_path):
         if set(names) != required or len(names) != 10:
             raise ValueError(f'Installed builtin tool census mismatch: {names}')
     receipt = {'cli': str(cli), 'target': target, 'doctor': report, 'tools': sorted(names),
+               'doctor_timings': doctor_timings,
                'backend_hashes': expected['backends'], 'source_commit': expected['source_commit'],
                'helper_manifest_sha256': digest(helper / 'manifest.json'),
                'desktop_actions_performed': False}

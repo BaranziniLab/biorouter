@@ -1990,7 +1990,12 @@ async fn print_startup_notices() {
         println!(
             "{} {} {}",
             style("⚠").yellow(),
-            style(format!("{} not found.", d.display_name)).yellow(),
+            style(if d.timed_out {
+                format!("{} did not answer in time.", d.display_name)
+            } else {
+                format!("{} not found.", d.display_name)
+            })
+            .yellow(),
             style("Run `biorouter doctor` to set up prerequisites").dim()
         );
     }

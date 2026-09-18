@@ -2610,9 +2610,11 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
     let chosen = if dep.is_empty() {
         // Bare `--fix`: the first missing required prerequisite, then any missing
         // optional one. Nothing missing is a success, not an error.
+        // A probe that timed out did not disprove the tool: offering to install
+        // something the machine may already have is worse than saying nothing.
         deps.iter()
-            .find(|d| d.required && !d.installed)
-            .or_else(|| deps.iter().find(|d| !d.installed))
+            .find(|d| d.required && !d.installed && !d.timed_out)
+            .or_else(|| deps.iter().find(|d| !d.installed && !d.timed_out))
             .cloned()
     } else {
         match biorouter::system::status_of(&dep) {
@@ -2633,6 +2635,7 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
                     name: dep.clone(),
                     display_name: dep.clone(),
                     installed: false,
+                    timed_out: false,
                     version: None,
                     required: false,
                     purpose: "Required by a Biorouter setup or build script".to_string(),

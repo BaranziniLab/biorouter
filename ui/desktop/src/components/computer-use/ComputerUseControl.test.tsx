@@ -53,7 +53,7 @@ describe('ComputerUseControl', () => {
     expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
     mocks.decision.mockResolvedValueOnce({ ...status, state: 'stopped', requested: false });
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
-    await screen.findByRole('button', { name: 'Set up' });
+    await screen.findByRole('button', { name: 'Show Computer Use details' });
     expect(mocks.decision.mock.calls[1][1]).toBe('revoke');
   });
 
@@ -167,7 +167,7 @@ describe('ComputerUseControl', () => {
   it('does not interrupt a fresh chat with unsolicited consent', async () => {
     mocks.status.mockResolvedValue({ ...status, requested: false });
     render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
     expect(screen.getByText(/Ask Biorouter to use the computer/)).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
     expect(mocks.decision).not.toHaveBeenCalled();
@@ -185,7 +185,7 @@ describe('ComputerUseControl', () => {
       message: 'Grant Accessibility permission.',
     });
     render(<ComputerUseControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
     fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
     await screen.findByText('OS permission required');
     expect(screen.getByText('Grant Accessibility permission.')).toBeVisible();
@@ -200,5 +200,101 @@ describe('ComputerUseControl', () => {
     await waitFor(() => expect(mocks.status).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
     expect(mocks.decision).not.toHaveBeenCalled();
+  });
+  it('collapses again from the chevron and keeps the panel on its own surface', async () => {
+    mocks.status.mockResolvedValue({ ...status, requested: false });
+    render(<ComputerUseControl sessionId="task-a" />);
+    const open = await screen.findByRole('button', { name: 'Show Computer Use details' });
+    expect(open).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(open);
+    expect(screen.getByText(/Ask Biorouter to use the computer/)).toBeVisible();
+    const close = screen.getByRole('button', { name: 'Hide Computer Use details' });
+    expect(close).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(close);
+    // The container stays mounted and is hidden, so aria-controls always
+    // resolves to a real element. Assert VISIBILITY, not presence.
+    expect(screen.getByText(/Ask Biorouter to use the computer/)).not.toBeVisible();
+    // jsdom applies no Tailwind and computes no layout, so this asserts the
+    // TOKEN CHOICE that separates the panel from the chat canvas, not the
+    // painted pixel. The tokens themselves are audited by check-contrast.mjs.
+    const panel = screen.getByRole('region', { name: 'Computer Use' });
+    expect(panel.className).toContain('bg-background-muted');
+    expect(panel.className).toContain('border-border-subtle');
+    expect(panel.className).toContain('rounded-container');
+  });
+
+  it('withholds the collapse control while an approval is pending', async () => {
+    render(<ComputerUseControl sessionId="task-a" />);
+    await screen.findByRole('button', { name: 'Allow control and sharing' });
+    // The Allow button lives inside the details block; a chevron that could hide
+    // it would be a control that hides the decision it is waiting for.
+    expect(screen.queryByRole('button', { name: /Computer Use details/ })).toBeNull();
+  });
+
+  it('confirms a permission check that returns exactly what was already shown', async () => {
+    mocks.status.mockResolvedValue({ ...status, requested: false });
+    mocks.setup.mockResolvedValue({
+      status: 'ready',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    render(<ComputerUseControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
+    // The runtime detail is unchanged by the check, so the explicit result line
+    // is the ONLY evidence the click did anything. That is the defect this pins.
+    expect(await screen.findByText('All OS permissions are allowed.')).toBeVisible();
+  });
+
+  it('does not tell a fully granted machine to review its permissions', async () => {
+    mocks.status.mockResolvedValue({ ...status, requested: false });
+    mocks.setup.mockResolvedValue({
+      status: 'ready',
+      target: 'darwin-arm64',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    render(<ComputerUseControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
+    await screen.findByText('All OS permissions are allowed.');
+    expect(
+      screen.queryByText(/Review Accessibility and Screen Recording in System Settings/)
+    ).toBeNull();
+    expect(screen.getByText(/Nothing further to set up/)).toBeVisible();
+  });
+  it('keeps Stop working while a permission check is in flight', async () => {
+    mocks.status.mockResolvedValue({ ...status, requested: false, state: 'active' });
+    // A probe that never settles: the decision must not wait on it.
+    mocks.setup.mockImplementation(() => new Promise(() => {}));
+    render(<ComputerUseControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    // Stop is the safety control of a desktop-control feature. Sharing the probe
+    // and the decision flag made this click a silent no-op.
+    await waitFor(() => expect(mocks.decision).toHaveBeenCalledTimes(1));
+  });
+
+  it('never shows a permission verdict that contradicts the detail beside it', async () => {
+    mocks.status.mockResolvedValue({ ...status, requested: false });
+    mocks.setup.mockResolvedValue({
+      status: 'ready',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    render(<ComputerUseControl sessionId="task-a" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Computer Use details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check OS permissions' }));
+    expect(await screen.findByText('All OS permissions are allowed.')).toBeVisible();
+    // Someone revokes Accessibility; the 2s poll brings back a worse runtime.
+    mocks.status.mockResolvedValue({
+      ...status,
+      requested: false,
+      runtime: {
+        status: 'os_permission_required',
+        permissions: { accessibility: false, screen_recording: true },
+      },
+    });
+    await waitFor(() => expect(screen.queryByText('All OS permissions are allowed.')).toBeNull(), {
+      timeout: 4000,
+    });
   });
 });

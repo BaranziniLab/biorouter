@@ -1777,7 +1777,11 @@ async fn push_startup_notices(app: &mut App) {
             app.push_line(Line::from(vec![
                 Span::styled("⚠ ", Style::new().fg(Color::Yellow)),
                 Span::styled(
-                    format!("{} not found.", d.display_name),
+                    if d.timed_out {
+                        format!("{} did not answer in time.", d.display_name)
+                    } else {
+                        format!("{} not found.", d.display_name)
+                    },
                     Style::new().fg(Color::Yellow),
                 ),
                 Span::styled(

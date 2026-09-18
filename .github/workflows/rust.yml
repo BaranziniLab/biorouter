@@ -77,6 +77,11 @@ jobs:
         run: ./scripts/check-no-cross-drift.sh
       - name: Version consistency (CLI = daemon = GUI)
         run: ./scripts/check-version-consistency.sh
+      # The capability is "Computer Use" wherever a person reads it -- never the
+      # removed "Computer Controller", never vendor-qualified. The internal
+      # `computercontroller` identifier is deliberately exempt; see the script.
+      - name: Computer Use naming consistency
+        run: ./scripts/check-computer-use-naming.sh
 
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is

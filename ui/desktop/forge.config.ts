@@ -228,8 +228,13 @@ module.exports = {
         mimeType: ['application/x-biorouter-brxt'],
         desktopTemplate: './forge.deb.desktop',
         options: {
+          // NOTE: electron-installer-debian and electron-installer-redhat expose no
+          // `prefix` option -- a `prefix: '/opt'` here was silently ignored for the
+          // whole life of this config. Both makers install to usr/lib/<name>
+          // (lowercased by the deb maker, case-preserved by the rpm one). Anything
+          // that needs to find the packaged tree must locate it by content, not by
+          // an install prefix; scripts/computer-use-package-acceptance.py does.
           icon: 'src/images/icon.png',
-          prefix: '/opt',
           // Runtime deps of the bundled llama-server (Llama Server provider):
           // OpenSSL 3 and OpenMP. Implies Debian 12+ / Ubuntu 22.04+.
           //
@@ -270,8 +275,13 @@ module.exports = {
         mimeType: ['application/x-biorouter-brxt'],
         desktopTemplate: './forge.rpm.desktop',
         options: {
+          // NOTE: electron-installer-debian and electron-installer-redhat expose no
+          // `prefix` option -- a `prefix: '/opt'` here was silently ignored for the
+          // whole life of this config. Both makers install to usr/lib/<name>
+          // (lowercased by the deb maker, case-preserved by the rpm one). Anything
+          // that needs to find the packaged tree must locate it by content, not by
+          // an install prefix; scripts/computer-use-package-acceptance.py does.
           icon: 'src/images/icon.png',
-          prefix: '/opt',
           // openssl-libs ships libssl.so.3 on EL9+/Fedora; libgomp for llama-server.
           // libxcb is the RPM spelling of the deb's libxcb1 — see the maker-deb
           // comment above for why the bundled binaries need it.

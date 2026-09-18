@@ -39,10 +39,17 @@ def npm(args, env):
     run(['node', executable, *args], cwd=DESKTOP, env=env)
 
 
+# The verifier's own doctor budget, plus room for the MCP tool census and the
+# receipt. Derived, not restated: an outer cap smaller than what the inner step
+# is allowed to spend kills the diagnostic before it can be written, which is
+# exactly the opaque failure this harness exists to replace.
+INSTALLED_CHECK_TIMEOUT = 60 + 90
+
+
 def installed(cli, helper, target, status, label):
     run([PYTHON, ROOT / 'scripts/verify-installed-computer-use.py', '--cli', cli,
          '--helper', helper, '--target', target, '--expect-status', status,
-         '--backends', OUTPUT / 'backends.json', '--report', OUTPUT / f'{label}-installed.json'], timeout=90)
+         '--backends', OUTPUT / 'backends.json', '--report', OUTPUT / f'{label}-installed.json'], timeout=INSTALLED_CHECK_TIMEOUT)
 
 
 def dependencies(resources, target):
@@ -52,6 +59,45 @@ def dependencies(resources, target):
     platform, arch = target.split('-')
     run(['node', '-e', 'require("./ui/desktop/scripts/verify-packaged-dependencies.js").'
          'verifyPackagedDependencies(process.argv[1],process.argv[2],process.argv[3])', resources, platform, arch])
+
+
+# Linux GUI packages are located by their helper, never by an install prefix.
+# electron-installer-debian and electron-installer-redhat expose no prefix
+# option at all -- `prefix: '/opt'` in forge.config.ts is inert -- and each
+# derives its own base directory (electron-installer-common yields 'usr';
+# electron-installer-redhat overrides it to 'BUILD/usr' for staging). Both land
+# the tree at usr/lib/<name>/resources, and <name> is lowercased by the deb
+# installer but case-preserved by the rpm one, so no single literal path serves
+# both. Anchoring on the unique helper manifest avoids encoding either.
+HELPER_MANIFEST = 'computer-use/manifest.json'
+
+
+def packaged_desktop_resources(directory):
+    """Return the one packaged desktop resources tree inside an extracted package."""
+    manifests = list(Path(directory).rglob(HELPER_MANIFEST))
+    if len(manifests) != 1:
+        raise ValueError(f'Extracted package must contain exactly one helper, found {manifests}')
+    resources = manifests[0].parent.parent
+    if resources.name != 'resources':
+        raise ValueError(f'Packaged helper is not inside a desktop resources directory: {resources}')
+    return resources
+
+
+def installed_linux_helper_roots(opt=Path('/opt'), lib=Path('/usr/lib'), libexec=Path('/usr/libexec')):
+    """Every installed helper on a Linux host, GUI (usr/lib/<name>) or CLI (usr/libexec).
+
+    Kept separate from linux_paths() so the directory layout stays unit-testable;
+    linux_paths() only adds the container-absolute defaults. /opt is still probed
+    because a relocated or hand-staged install may legitimately live there, but it
+    is no longer the only place looked at, which is what broke the GUI packages.
+    """
+    roots = []
+    for base in (lib, opt):
+        roots += sorted(base.glob(f'*/resources/{HELPER_MANIFEST}'))
+    fhs = libexec / 'biorouter' / HELPER_MANIFEST
+    if fhs.exists():
+        roots.append(fhs)
+    return roots
 
 
 def sign_macos_candidate(app):
@@ -182,14 +228,12 @@ def owned_container(arguments):
 
 
 def linux_paths():
-    manifests = list(Path('/opt').glob('*/resources/computer-use/manifest.json'))
-    fhs = Path('/usr/libexec/biorouter/computer-use/manifest.json')
-    if fhs.exists():
-        manifests.append(fhs)
+    manifests = installed_linux_helper_roots()
     if len(manifests) != 1:
         raise ValueError(f'Expected one installed helper: {manifests}')
     helper = manifests[0].parent
-    cli = Path('/usr/bin/biorouter') if fhs.exists() else helper.parent / 'bin/biorouter'
+    fhs = helper.parent.name == 'biorouter' and helper.parent.parent.name == 'libexec'
+    cli = Path('/usr/bin/biorouter') if fhs else helper.parent / 'bin/biorouter'
     return cli, helper
 
 
@@ -202,7 +246,7 @@ def container_check(fixture, label):
         run(['/usr/bin/python3', ROOT / 'scripts/computer-use-runtime.py', 'verify', 'linux-x64', '--directory', helper])
         run(['/usr/bin/python3', ROOT / 'scripts/verify-installed-computer-use.py', '--cli', cli,
              '--helper', helper, '--target', 'linux-x64', '--expect-status', 'desktop_unavailable',
-             '--backends', '/evidence/backends.json', '--report', f'/evidence/linux-{label}-installed.json'], timeout=90)
+             '--backends', '/evidence/backends.json', '--report', f'/evidence/linux-{label}-installed.json'], timeout=INSTALLED_CHECK_TIMEOUT)
 
 
 def verify(target):
@@ -227,11 +271,8 @@ def verify(target):
                     run(['dpkg-deb', '-x', archive, directory])
                 else:
                     run(['bsdtar', '-xf', archive, '-C', directory])
-                resources = list(directory.glob('opt/*/resources'))
                 if 'cli' not in archive.name:
-                    if len(resources) != 1:
-                        raise ValueError('Expected exactly one packaged desktop resources directory')
-                    dependencies(resources[0], target)
+                    dependencies(packaged_desktop_resources(directory), target)
             linux_install(archive, index)
         else:
             with tempfile.TemporaryDirectory(prefix='BioRouter installed ü ') as temp:
