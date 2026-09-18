@@ -437,6 +437,7 @@ async fn run_taskkill(pid: u32, force: bool) -> Result<(), String> {
         .args(["/T", "/PID", &pid.to_string()])
         .kill_on_drop(true);
     crate::developer::shell::strip_daemon_private_env(&mut command);
+    crate::developer::shell::no_console_window(&mut command);
     let output = tokio::time::timeout(
         std::time::Duration::from_millis(CONTROL_COMMAND_MS),
         command.output(),
@@ -686,6 +687,7 @@ fn pid_alive(pid: u32) -> bool {
         let mut command = std::process::Command::new("tasklist");
         command.args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"]);
         crate::developer::shell::strip_daemon_private_env_std(&mut command);
+        crate::developer::shell::no_console_window_std(&mut command);
         command
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
@@ -808,6 +810,7 @@ fn process_facts(pid: u32) -> Option<ProcessFacts> {
         let mut command = std::process::Command::new(shell);
         command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
         crate::developer::shell::strip_daemon_private_env_std(&mut command);
+        crate::developer::shell::no_console_window_std(&mut command);
         let Ok(out) = command.output() else {
             continue; // shell not installed — try the other one
         };
@@ -853,6 +856,7 @@ fn kill_orphan_group(pid: u32) {
         let mut command = std::process::Command::new("taskkill");
         command.args(["/F", "/T", "/PID", &pid.to_string()]);
         crate::developer::shell::strip_daemon_private_env_std(&mut command);
+        crate::developer::shell::no_console_window_std(&mut command);
         let _ = command.output();
     }
 }

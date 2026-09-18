@@ -391,6 +391,7 @@ fn extract_archive_with_command(
     }
 
     crate::developer::shell::strip_daemon_private_env_std(&mut cmd);
+    crate::developer::shell::no_console_window_std(&mut cmd);
     let output = cmd.output().with_context(|| format!("spawn {command}"))?;
     if output.status.success() {
         Ok(())

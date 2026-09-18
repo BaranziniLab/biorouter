@@ -69,6 +69,7 @@ async fn get_unix_path_async(shell: &str) -> Result<String> {
     let mut command = Command::new(shell);
     command.args(["-l", "-i", "-c", "echo $PATH"]);
     crate::developer::shell::strip_daemon_private_env(&mut command);
+    crate::developer::shell::no_console_window(&mut command);
     let output = command
         .output()
         .await
@@ -102,12 +103,14 @@ async fn get_windows_path_async(shell: &str) -> Result<String> {
             let mut command = Command::new(shell);
             command.args(["-NoLogo", "-Command", "$env:PATH"]);
             crate::developer::shell::strip_daemon_private_env(&mut command);
+            crate::developer::shell::no_console_window(&mut command);
             command.output().await
         }
         _ => {
             let mut command = Command::new(shell);
             command.args(["/c", "echo %PATH%"]);
             crate::developer::shell::strip_daemon_private_env(&mut command);
+            crate::developer::shell::no_console_window(&mut command);
             command.output().await
         }
     };

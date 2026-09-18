@@ -128,6 +128,7 @@ impl SandboxClient for DockerSandbox {
 
         let run_args = self.build_run_args(argv);
         let mut cmd = tokio::process::Command::new("docker");
+        crate::console::no_console_window(&mut cmd);
         cmd.args(&run_args)
             .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
@@ -203,5 +204,6 @@ async fn which_docker() -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     crate::environment::strip_daemon_private_env(&mut command);
+    crate::console::no_console_window(&mut command);
     command.status().await.map(|s| s.success()).unwrap_or(false)
 }

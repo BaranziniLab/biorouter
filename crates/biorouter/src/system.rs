@@ -282,6 +282,7 @@ fn probe(cmd: &str, args: &[&str]) -> Option<String> {
     let mut command = Command::new(cmd);
     command.args(args);
     biorouter_mcp::developer::shell::strip_daemon_private_env_std(&mut command);
+    biorouter_mcp::developer::shell::no_console_window_std(&mut command);
     let output = command.output().ok()?;
     if !output.status.success() {
         return None;

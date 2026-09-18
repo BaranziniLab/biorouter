@@ -1,5 +1,6 @@
 use std::{env, ffi::OsString, path::Path, process::Stdio, sync::Once};
 
+pub use biorouter_sandbox::console::{no_console_window, no_console_window_std};
 pub use biorouter_sandbox::environment::{
     is_daemon_private_env_key, strip_daemon_private_env, strip_daemon_private_env_std,
 };
@@ -426,6 +427,7 @@ pub fn configure_shell_command(
 
     // Last, so nothing set above can re-admit a daemon credential (issue #57).
     strip_daemon_private_env(&mut command_builder);
+    no_console_window(&mut command_builder);
 
     // On Unix systems, create a new process group so we can kill child processes
     #[cfg(unix)]
@@ -461,6 +463,7 @@ pub(crate) fn kill_process_group_now(pid: u32) {
         let mut command = std::process::Command::new("taskkill");
         command.args(["/F", "/T", "/PID", &pid.to_string()]);
         strip_daemon_private_env_std(&mut command);
+        no_console_window_std(&mut command);
         // Fire and forget: `Drop` must not block.
         let _ = command.spawn();
     }
@@ -657,6 +660,7 @@ pub async fn kill_process_group(
             let mut command = tokio::process::Command::new("taskkill");
             command.args(["/F", "/T", "/PID", &pid.to_string()]);
             strip_daemon_private_env(&mut command);
+            no_console_window(&mut command);
             let _kill_result = command.output().await;
         }
 

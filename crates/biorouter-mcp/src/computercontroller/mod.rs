@@ -67,6 +67,7 @@ fn automation_script_command(
     };
     cmd.env("BIOROUTER_TERMINAL", "1");
     crate::developer::shell::strip_daemon_private_env(&mut cmd);
+    crate::developer::shell::no_console_window(&mut cmd);
     cmd
 }
 
