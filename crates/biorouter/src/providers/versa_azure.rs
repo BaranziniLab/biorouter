@@ -1448,6 +1448,104 @@ mod routing_tests {
         }
     }
 
+    #[tokio::test]
+    async fn reasoning_effort_requests_keep_the_selected_model_and_supported_parameters() {
+        use crate::agents::effort::ReasoningEffort;
+        use futures::TryStreamExt;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|request: &Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                if body["stream"] == true {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string("data: {\"choices\":[{\"delta\":{\"content\":\"ready\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "model":body["model"],
+                        "choices":[{"message":{"role":"assistant","content":"ready"}}],
+                        "usage":{"total_tokens":2}
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let tools = vec![Tool::new(
+            "test_tool",
+            "A test tool",
+            serde_json::json!({"type":"object","properties":{}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )];
+        for model in [
+            "gpt-5.5-2026-04-24",
+            "gpt-5.4-mini-2026-03-17",
+            "gpt-4.1-2025-04-14",
+        ] {
+            for (effort, expected) in [
+                (ReasoningEffort::Quick, "low"),
+                (ReasoningEffort::Normal, "medium"),
+                (ReasoningEffort::Deep, "high"),
+            ] {
+                let mut provider = aimed_at(bound(model, config("", "")).await, &server);
+                provider.model = effort.apply_to_model(provider.model);
+                provider
+                    .complete("system", &prompt(), &tools)
+                    .await
+                    .unwrap();
+                provider
+                    .stream("system", &prompt(), &tools)
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap();
+                let requests = server.received_requests().await.unwrap();
+                for request in requests.iter().rev().take(2) {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap();
+                    assert_eq!(request.url.path(), path_of(model));
+                    assert_eq!(body["model"], model);
+                    assert_eq!(body["tools"][0]["function"]["name"], "test_tool");
+                    if model.starts_with("gpt-5") {
+                        assert_eq!(body["reasoning_effort"], expected);
+                        assert!(body.get("temperature").is_none());
+                        assert_eq!(body["messages"][0]["role"], "developer");
+                    } else {
+                        assert!(body.get("reasoning_effort").is_none());
+                        if effort == ReasoningEffort::Quick {
+                            assert_eq!(body["temperature"], 0.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_content_filter_failure_is_a_provider_error_not_a_decode_error() {
+        use futures::StreamExt;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string("data: {\"choices\":[{\"content_filter_result\":{\"error\":{\"code\":\"content_filter_error\",\"message\":\"SECRET_PROVIDER_PAYLOAD\"}}}]}\n\n"))
+            .mount(&server)
+            .await;
+        let provider = aimed_at(bound("gpt-5.5-2026-04-24", config("", "")).await, &server);
+        let mut stream = provider.stream("system", &prompt(), &[]).await.unwrap();
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), ProviderErrorKind::Server);
+        assert!(crate::agents::mistakes::is_recoverable(&error));
+        let text = error.to_string();
+        assert!(text.contains("Provider content filter failed"), "{text}");
+        assert!(!text.contains("Stream decode error"));
+        assert!(!text.contains("SECRET_PROVIDER_PAYLOAD"));
+        assert!(stream.next().await.is_none());
+    }
+
     /// The QA probe itself. Refused readably, and NOTHING reaches the gateway —
     /// where it used to complete normally on gpt-5.5.
     #[tokio::test]

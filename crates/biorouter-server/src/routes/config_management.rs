@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 use biorouter::config::declarative_providers::LoadedProvider;
+use biorouter::config::extension_credentials::ExtensionCredential;
 use biorouter::config::paths::Paths;
 use biorouter::config::ExtensionEntry;
 use biorouter::config::{Config, ConfigError, ConfigWriteFailure};
@@ -820,7 +821,81 @@ pub async fn add_extension(
 pub async fn remove_extension(Path(name): Path<String>) -> Result<Json<String>, StatusCode> {
     let key = biorouter::config::extensions::name_to_key(&name);
     biorouter::config::remove_extension(&key);
-    Ok(Json(format!("Removed extension {}", name)))
+    Ok(Json(format!(
+        "Removed extension {}. Saved credentials were retained and may be reused on reinstall.",
+        name
+    )))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct PurgeExtensionCredentialsRequest {
+    pub keys: Vec<String>,
+}
+
+fn require_credential_user(headers: &http::HeaderMap) -> Result<(), (StatusCode, String)> {
+    if headers.contains_key("X-Caller-Provider") || !is_user_action(headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Managing saved credentials requires a user action in Settings".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+async fn extension_provider_credential_references(
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut references = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (provider, _) in get_providers().await {
+        for key in provider.config_keys {
+            references
+                .entry(key.name.to_uppercase())
+                .or_default()
+                .push(format!("Provider: {}", provider.name));
+        }
+    }
+    references
+}
+
+#[utoipa::path(
+    get,
+    path = "/config/extensions/{name}/credentials",
+    responses(
+        (status = 200, description = "Saved credential names and sharing safeguards", body = Vec<ExtensionCredential>),
+        (status = 403, description = "User action required"),
+        (status = 409, description = "Credential references could not be verified")
+    )
+)]
+pub async fn get_extension_credentials(
+    headers: http::HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<ExtensionCredential>>, (StatusCode, String)> {
+    require_credential_user(&headers)?;
+    let references = extension_provider_credential_references().await;
+    Config::global().extension_credentials(&name, &references, None)
+        .map(Json).map_err(|_| (StatusCode::CONFLICT,
+            "Cannot verify saved credentials; reload Settings and check extension configuration".to_string()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/extensions/{name}/credentials/purge",
+    request_body = PurgeExtensionCredentialsRequest,
+    responses(
+        (status = 200, description = "Selected unshared saved credentials deleted", body = Vec<ExtensionCredential>),
+        (status = 403, description = "User action required"),
+        (status = 409, description = "Credential references changed or deletion failed")
+    )
+)]
+pub async fn purge_extension_credentials(
+    headers: http::HeaderMap,
+    Path(name): Path<String>,
+    Json(request): Json<PurgeExtensionCredentialsRequest>,
+) -> Result<Json<Vec<ExtensionCredential>>, (StatusCode, String)> {
+    require_credential_user(&headers)?;
+    let references = extension_provider_credential_references().await;
+    Config::global().extension_credentials(&name, &references, Some(&request.keys))
+        .map(Json).map_err(|_| (StatusCode::CONFLICT,
+            "Credentials could not be deleted: references changed, a key is shared or protected, or storage is unavailable. Review saved credentials again.".to_string()))
 }
 
 #[utoipa::path(
@@ -1838,6 +1913,14 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/extensions", get(get_extensions))
         .route("/config/extensions", post(add_extension))
         .route("/config/extensions/{name}", delete(remove_extension))
+        .route(
+            "/config/extensions/{name}/credentials",
+            get(get_extension_credentials),
+        )
+        .route(
+            "/config/extensions/{name}/credentials/purge",
+            post(purge_extension_credentials),
+        )
         .route("/config/providers", get(providers))
         .route("/config/providers/{name}/models", get(get_provider_models))
         .route("/config/detect-provider", post(detect_provider))
@@ -2667,5 +2750,50 @@ mod readiness_wire_tests {
         let json = serde_json::to_value(row).unwrap();
         assert!(json.as_object().unwrap().contains_key("unavailable_reason"));
         assert!(json["unavailable_reason"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod extension_credential_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+
+    #[tokio::test]
+    async fn credential_routes_reject_unproven_and_model_callers_before_accessing_secrets() {
+        install_test_user_action_key();
+        for proof in [None, Some("spoofed-proof"), Some(TEST_USER_ACTION_KEY)] {
+            let mut headers = http::HeaderMap::new();
+            if let Some(proof) = proof {
+                headers.insert("X-User-Action", proof.parse().unwrap());
+            }
+            if proof == Some(TEST_USER_ACTION_KEY) {
+                headers.insert("X-Caller-Provider", "openai".parse().unwrap());
+            }
+            assert_eq!(
+                get_extension_credentials(headers.clone(), Path("unused".into()))
+                    .await
+                    .unwrap_err()
+                    .0,
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                purge_extension_credentials(
+                    headers,
+                    Path("unused".into()),
+                    Json(PurgeExtensionCredentialsRequest {
+                        keys: vec!["ARBITRARY_KEY".into()]
+                    })
+                )
+                .await
+                .unwrap_err()
+                .0,
+                StatusCode::FORBIDDEN
+            );
+        }
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-User-Action", TEST_USER_ACTION_KEY.parse().unwrap());
+        assert!(require_credential_user(&headers).is_ok());
     }
 }

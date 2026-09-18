@@ -149,6 +149,8 @@ export interface CodingAgentControls {
  * would fork processes in the background for as long as the surface is on screen.
  * Both consumers mount this hook exactly once, which is what keeps that true:
  * `ProviderCatalog` mounts it at the tab panel, not per row.
+ * A recovery dialog can supply the status just read by Save as `initialAgents`
+ * to avoid spawning the same probes again on mount.
  *
  * `onRechecked` runs after an explicit re-check settles (never after the mount
  * probe). The catalog passes its provider-list refresh: the row's "Configured"
@@ -160,11 +162,13 @@ export interface CodingAgentControls {
  */
 export function useCodingAgents(
   onSuccess: (providerId: string) => void,
-  onRechecked?: () => void
+  onRechecked?: () => void,
+  initialAgents?: CodingAgentAvailability[]
 ): CodingAgentControls {
   const { upsert } = useConfig();
-  const [agents, setAgents] = useState<CodingAgentAvailability[] | null>(null);
-  const [isChecking, setIsChecking] = useState(true);
+  const [agents, setAgents] = useState<CodingAgentAvailability[] | null>(initialAgents ?? null);
+  const [isChecking, setIsChecking] = useState(initialAgents === undefined);
+  const needsInitialProbe = useRef(initialAgents === undefined);
   const [isRechecking, setIsRechecking] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [connectingProviderId, setConnectingProviderId] = useState<string | null>(null);
@@ -218,7 +222,7 @@ export function useCodingAgents(
   }, []);
 
   useEffect(() => {
-    void refresh(true);
+    if (needsInitialProbe.current) void refresh(true);
   }, [refresh]);
 
   const connect = useCallback(
@@ -370,9 +374,13 @@ function RecheckButton({
 export function CodingAgentBody({
   agent,
   controls,
+  onRetryConfiguration,
+  isRetrying = false,
 }: {
   agent: CodingAgentAvailability;
   controls: CodingAgentControls;
+  onRetryConfiguration?: () => void;
+  isRetrying?: boolean;
 }) {
   switch (agent.auth.state) {
     // 1. Nothing installed. The install command is SHOWN, never run: installing
@@ -383,9 +391,8 @@ export function CodingAgentBody({
       return (
         <div className="space-y-2">
           <p className="text-xs text-text-muted leading-relaxed">
-            Install it yourself, then check again. Biorouter shows the command rather than running
-            it — this installs another vendor&apos;s toolchain on your machine, so it stays your
-            call.
+            Install {agent.displayName} on the computer running Biorouter, then choose Check again.
+            Copy this command into a terminal to install it.
           </p>
           <CommandBlock command={agent.installHint} />
           <p className="text-[11px] text-text-muted">
@@ -409,7 +416,8 @@ export function CodingAgentBody({
       return (
         <div className="space-y-2">
           <p className="text-xs text-text-muted leading-relaxed">
-            Run this yourself, in a terminal:
+            {agent.displayName} is installed. Sign in with your subscription in a terminal, then
+            return here and choose I&apos;ve signed in.
           </p>
           <CommandBlock command={agent.loginCommand} />
           <p className="text-[11px] text-text-muted leading-relaxed">
@@ -473,14 +481,22 @@ export function CodingAgentBody({
               type="button"
               size="lg"
               shape="pill"
-              onClick={() => void controls.connect(agent)}
-              disabled={controls.connectingProviderId !== null}
+              onClick={() =>
+                onRetryConfiguration ? onRetryConfiguration() : void controls.connect(agent)
+              }
+              disabled={
+                isRetrying || controls.connectingProviderId !== null || controls.isRechecking
+              }
               className="w-full px-4 sm:w-auto"
               data-testid={`coding-agent-connect-${agent.providerId}`}
             >
-              {controls.connectingProviderId === agent.providerId
-                ? 'Connecting…'
-                : `Use ${agent.displayName}`}
+              {isRetrying
+                ? 'Checking configuration…'
+                : onRetryConfiguration
+                  ? 'Retry configuration'
+                  : controls.connectingProviderId === agent.providerId
+                    ? 'Connecting…'
+                    : `Use ${agent.displayName}`}
             </Button>
             <RecheckButton agent={agent} controls={controls} />
           </div>
@@ -498,7 +514,7 @@ export function CodingAgentBody({
             Biorouter could not tell whether this CLI is usable, so it is not guessing at the fix.
           </p>
           <p
-            className="break-words rounded-md border border-border-subtle bg-background-muted p-2 font-mono text-[11px] text-text-default"
+            className="break-words text-sm leading-relaxed text-text-default"
             data-testid={`coding-agent-detail-${agent.providerId}`}
           >
             {agent.auth.detail}

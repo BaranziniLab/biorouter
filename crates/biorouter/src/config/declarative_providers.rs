@@ -62,6 +62,10 @@ pub struct LoadedProvider {
 }
 
 static ID_GENERATION_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+// Acquired before Config's writer mutex in both provider mutations and extension
+// credential purging, so a new provider cannot acquire a key between its sharing
+// check and deletion. Raw edits by other processes remain outside these locks.
+pub(super) static PROVIDER_CREDENTIAL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 pub fn generate_id(display_name: &str) -> String {
     let _guard = ID_GENERATION_LOCK.lock().unwrap();
@@ -94,6 +98,7 @@ pub fn create_custom_provider(
     supports_streaming: Option<bool>,
     headers: Option<HashMap<String, String>>,
 ) -> Result<DeclarativeProviderConfig> {
+    let _credential_guard = PROVIDER_CREDENTIAL_LOCK.lock().unwrap();
     let id = generate_id(&display_name);
     let api_key_name = generate_api_key_name(&id);
 
@@ -142,6 +147,7 @@ pub fn update_custom_provider(
     models: Vec<String>,
     supports_streaming: Option<bool>,
 ) -> Result<()> {
+    let _credential_guard = PROVIDER_CREDENTIAL_LOCK.lock().unwrap();
     let loaded_provider = load_provider(id)?;
     let existing_config = loaded_provider.config;
     let editable = loaded_provider.is_editable;
@@ -183,6 +189,7 @@ pub fn update_custom_provider(
 }
 
 pub fn remove_custom_provider(id: &str) -> Result<()> {
+    let _credential_guard = PROVIDER_CREDENTIAL_LOCK.lock().unwrap();
     let config = Config::global();
     let api_key_name = generate_api_key_name(id);
     let _ = config.delete_secret(&api_key_name);
@@ -263,6 +270,30 @@ fn load_fixed_providers() -> Result<Vec<DeclarativeProviderConfig>> {
     }
 
     Ok(res)
+}
+
+/// Read every declarative credential reference without relying on the cached
+/// registry, which may predate a provider configuration edit.
+pub(super) fn credential_references() -> Result<Vec<(String, String)>> {
+    let mut providers: Vec<DeclarativeProviderConfig> = Vec::new();
+    let directory = custom_providers_dir();
+    match std::fs::read_dir(directory) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = entry?.path();
+                if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                    providers.push(serde_json::from_str(&std::fs::read_to_string(path)?)?);
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    providers.extend(load_fixed_providers()?);
+    Ok(providers
+        .into_iter()
+        .map(|provider| (provider.api_key_env, provider.name))
+        .collect())
 }
 
 pub fn register_declarative_providers(

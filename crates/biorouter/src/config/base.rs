@@ -2069,6 +2069,59 @@ impl Config {
         self.persist_secrets(&values)
     }
 
+    /// Review or delete only an installed extension's unshared saved credentials.
+    /// Rechecking under the config writer mutex prevents an in-process config
+    /// update between reference validation and the secret-store write.
+    pub fn extension_credentials(
+        &self,
+        name: &str,
+        provider_keys: &std::collections::BTreeMap<String, Vec<String>>,
+        delete_keys: Option<&[String]>,
+    ) -> anyhow::Result<Vec<super::extension_credentials::ExtensionCredential>> {
+        let _provider_guard = super::declarative_providers::PROVIDER_CREDENTIAL_LOCK
+            .lock()
+            .unwrap();
+        let _guard = self.guard.lock().unwrap();
+        // Purge must read the actual file, not a last-good cached configuration
+        // that may omit references introduced by an unreadable edit.
+        let config: HashMap<String, Value> =
+            serde_yaml::from_str(&std::fs::read_to_string(&self.config_path)?)?;
+        let mut provider_keys = provider_keys.clone();
+        for (key, provider) in super::declarative_providers::credential_references()? {
+            provider_keys
+                .entry(key.to_uppercase())
+                .or_default()
+                .push(format!("Provider: {}", provider));
+        }
+        // Another process may have saved credentials since this daemon loaded
+        // its cache. Preserve those values in the read-modify-write operation.
+        self.invalidate_secrets_cache();
+        let mut secrets = self.all_secrets()?;
+        let review = super::extension_credentials::review(name, &config, &secrets, &provider_keys)?;
+        if let Some(keys) = delete_keys {
+            for key in keys {
+                let credential =
+                    review
+                        .iter()
+                        .find(|entry| &entry.key == key)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Credential references changed; review them again")
+                        })?;
+                if !credential.used_by.is_empty() {
+                    anyhow::bail!("A selected credential is shared or protected; review it again");
+                }
+            }
+            let mut changed = false;
+            for key in keys {
+                changed |= secrets.remove(key).is_some();
+            }
+            if changed {
+                self.persist_secrets(&secrets)?;
+            }
+        }
+        super::extension_credentials::review(name, &config, &secrets, &provider_keys)
+    }
+
     /// Write the full secrets map to the active backend and keep the
     /// in-memory cache in sync. On success the cache holds the new values;
     /// on any failure (including keyring → file fallback) the cache is

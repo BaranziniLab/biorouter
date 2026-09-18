@@ -16,7 +16,7 @@ describe('BottomMenuReasoningEffort (BR-63)', () => {
   });
 
   it('starts on the default and shows no level chip', () => {
-    render(<BottomMenuReasoningEffort />);
+    render(<BottomMenuReasoningEffort scope="session:test" />);
 
     const trigger = screen.getByLabelText('Reasoning effort: Normal');
     expect(trigger).toBeInTheDocument();
@@ -37,8 +37,8 @@ describe('BottomMenuReasoningEffort (BR-63)', () => {
     ['normal', 2],
     ['deep', 3],
   ] as const)('fills %s to %i of three bars', (level, expected) => {
-    setReasoningEffort(level);
-    render(<BottomMenuReasoningEffort />);
+    setReasoningEffort('session:test', level);
+    render(<BottomMenuReasoningEffort scope="session:test" />);
 
     const bars = Array.from(
       screen
@@ -50,7 +50,7 @@ describe('BottomMenuReasoningEffort (BR-63)', () => {
   });
 
   it('keeps every option aligned while showing only the selected tick', () => {
-    render(<BottomMenuReasoningEffort />);
+    render(<BottomMenuReasoningEffort scope="session:test" />);
 
     fireEvent.click(screen.getByLabelText('Reasoning effort: Normal'));
     const options = screen.getAllByRole('menuitemradio');
@@ -63,26 +63,26 @@ describe('BottomMenuReasoningEffort (BR-63)', () => {
   });
 
   it('picking deep updates the store, so the next chat request carries it', () => {
-    render(<BottomMenuReasoningEffort />);
+    render(<BottomMenuReasoningEffort scope="session:test" />);
 
     fireEvent.click(screen.getByLabelText('Reasoning effort: Normal'));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /Deep/ }));
 
-    expect(getReasoningEffort()).toBe('deep');
-    expect(reasoningEffortForRequest()).toBe('deep');
+    expect(getReasoningEffort('session:test')).toBe('deep');
+    expect(reasoningEffortForRequest(getReasoningEffort('session:test'))).toBe('deep');
     // The trigger now advertises the non-default level.
     expect(screen.getByLabelText('Reasoning effort: Deep')).toBeInTheDocument();
   });
 
   it('going back to normal drops the level from the request', () => {
-    render(<BottomMenuReasoningEffort />);
+    render(<BottomMenuReasoningEffort scope="session:test" />);
 
     fireEvent.click(screen.getByLabelText('Reasoning effort: Normal'));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /Quick/ }));
-    expect(reasoningEffortForRequest()).toBe('quick');
+    expect(reasoningEffortForRequest(getReasoningEffort('session:test'))).toBe('quick');
 
     fireEvent.click(screen.getByLabelText('Reasoning effort: Quick'));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /Normal/ }));
-    expect(reasoningEffortForRequest()).toBeUndefined();
+    expect(reasoningEffortForRequest(getReasoningEffort('session:test'))).toBeUndefined();
   });
 });

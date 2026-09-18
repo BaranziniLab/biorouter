@@ -20,6 +20,7 @@ import { userActionHeaders } from '../../../../utils/userAction';
 import { ConfirmationModal } from '../../../ui/ConfirmationModal';
 import { PrivacyBadge } from '../../../ui/PrivacyBadge';
 import { classifyExtension } from '../extensionPrivacy';
+import ExtensionCredentialsDialog from './ExtensionCredentialsDialog';
 
 interface ExtensionModalProps {
   title: string;
@@ -42,6 +43,7 @@ export default function ExtensionModal({
 }: ExtensionModalProps) {
   const [formData, setFormData] = useState<ExtensionFormData>(initialData);
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+  const [showCredentials, setShowCredentials] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [showCloseConfirmation, setShowCloseConfirmation] = useState(false);
   const [hasPendingEnvVars, setHasPendingEnvVars] = useState(false);
@@ -359,7 +361,8 @@ export default function ExtensionModal({
             </DialogTitle>
             {showDeleteConfirmation && (
               <DialogDescription>
-                This will permanently remove this extension and all of its settings.
+                This will remove the extension configuration. Saved credentials are retained and may
+                be reused automatically if you reinstall.
               </DialogDescription>
             )}
           </DialogHeader>
@@ -367,11 +370,26 @@ export default function ExtensionModal({
           {showDeleteConfirmation ? (
             <div className="py-4">
               <p className="text-text-default">
-                This will permanently remove this extension and all of its settings.
+                To delete saved credentials first, choose Review saved credentials. Credentials
+                shared with other extensions or providers are protected.
               </p>
+              <Button variant="outline" className="mt-4" onClick={() => setShowCredentials(true)}>
+                Review saved credentials
+              </Button>
             </div>
           ) : (
             <div className="py-4 space-y-6">
+              {modalType === 'edit' && !isBuiltin && (
+                <div className="space-y-2">
+                  <p className="text-sm text-text-muted">
+                    Removing this extension retains saved credentials for reuse. You can review and
+                    delete unshared saved credentials separately.
+                  </p>
+                  <Button variant="outline" onClick={() => setShowCredentials(true)}>
+                    Review saved credentials
+                  </Button>
+                </div>
+              )}
               {formData.installation_notes && (
                 <div className="biorouter-modal-panel rounded-container p-4">
                   <div className="flex items-start gap-2">
@@ -533,6 +551,23 @@ export default function ExtensionModal({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {showCredentials && (
+        <ExtensionCredentialsDialog
+          name={initialData.name}
+          onClose={() => setShowCredentials(false)}
+          onDeleted={(keys) => {
+            setFormData((current) => ({
+              ...current,
+              envVars: current.envVars.map((envVar) =>
+                keys.includes(envVar.key) && !envVar.isEdited
+                  ? { ...envVar, value: '', isEdited: false }
+                  : envVar
+              ),
+            }));
+          }}
+        />
+      )}
 
       {/* Close Confirmation Modal */}
       {showCloseConfirmation && (

@@ -51,6 +51,14 @@ describe('successful artifact invalidation hints', () => {
       artifactRefreshTarget({ kind: 'file', path: '/tmp/result.txt', title: 'Result', line: 42 })
     ).toBe('file:/tmp/result.txt');
   });
+  it.each([
+    ['computercontroller__docx_tool', 'update_doc', '/tmp/report.docx'],
+    ['computercontroller__xlsx_tool', 'save', '/tmp/budget.xlsx'],
+  ])('refreshes a matching office file after %s', (name, operation, path) => {
+    const [event] = artifactRefreshEvents(exchange('office', name, { operation, path }), 'a');
+    expect(event?.paths).toEqual([path]);
+    expect(refreshEventMatches(event, `file:${path}`)).toBe(true);
+  });
   it.each([{ isError: true }, { is_error: true }])('ignores unsuccessful results %j', (error) => {
     expect(artifactRefreshEvents(exchange('w', undefined, undefined, error), 'a')).toEqual([]);
   });

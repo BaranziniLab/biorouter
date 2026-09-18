@@ -1171,6 +1171,12 @@ export type ExtensionConfig = {
     type: 'inline_python';
 };
 
+export type ExtensionCredential = {
+    key: string;
+    stored: boolean;
+    used_by: Array<string>;
+};
+
 /**
  * Extension data containing all extension states
  * Keys are in format "extension_name.version" (e.g., "todo.v0")
@@ -2821,6 +2827,10 @@ export type ProviderType = 'Preferred' | 'Builtin' | 'Declarative' | 'Custom';
 
 export type ProvidersResponse = {
     providers: Array<ProviderDetails>;
+};
+
+export type PurgeExtensionCredentialsRequest = {
+    keys: Array<string>;
 };
 
 /**
@@ -5565,6 +5575,64 @@ export type RemoveExtensionResponses = {
 };
 
 export type RemoveExtensionResponse = RemoveExtensionResponses[keyof RemoveExtensionResponses];
+
+export type GetExtensionCredentialsData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: never;
+    url: '/config/extensions/{name}/credentials';
+};
+
+export type GetExtensionCredentialsErrors = {
+    /**
+     * User action required
+     */
+    403: unknown;
+    /**
+     * Credential references could not be verified
+     */
+    409: unknown;
+};
+
+export type GetExtensionCredentialsResponses = {
+    /**
+     * Saved credential names and sharing safeguards
+     */
+    200: Array<ExtensionCredential>;
+};
+
+export type GetExtensionCredentialsResponse = GetExtensionCredentialsResponses[keyof GetExtensionCredentialsResponses];
+
+export type PurgeExtensionCredentialsData = {
+    body: PurgeExtensionCredentialsRequest;
+    path: {
+        name: string;
+    };
+    query?: never;
+    url: '/config/extensions/{name}/credentials/purge';
+};
+
+export type PurgeExtensionCredentialsErrors = {
+    /**
+     * User action required
+     */
+    403: unknown;
+    /**
+     * Credential references changed or deletion failed
+     */
+    409: unknown;
+};
+
+export type PurgeExtensionCredentialsResponses = {
+    /**
+     * Selected unshared saved credentials deleted
+     */
+    200: Array<ExtensionCredential>;
+};
+
+export type PurgeExtensionCredentialsResponse = PurgeExtensionCredentialsResponses[keyof PurgeExtensionCredentialsResponses];
 
 export type InitConfigData = {
     body?: never;

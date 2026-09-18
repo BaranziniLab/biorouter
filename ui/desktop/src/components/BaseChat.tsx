@@ -57,6 +57,11 @@ import { DiagnosticsModal } from './ui/Diagnostics';
 import { toastSuccess } from '../toasts';
 import { Workflow } from '../workflow';
 import { createSession } from '../sessions';
+import {
+  adoptDraftReasoningEffort,
+  draftReasoningScope,
+  getReasoningEffort,
+} from '../store/reasoningEffort';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { useTerminalDock } from '../contexts/TerminalDockContext';
@@ -191,6 +196,7 @@ export type ArtifactAutoOpenDecision =
   | { action: 'wait' }
   | { action: 'snapshot'; knownKeys: Set<string> }
   | { action: 'none' }
+  | { action: 'bank'; knownKeys: Set<string> }
   | { action: 'open'; openIndex: number; knownKeys: Set<string> };
 
 export function decideArtifactAutoOpen(params: {
@@ -207,6 +213,7 @@ export function decideArtifactAutoOpen(params: {
    * the exact failure the snapshot exists to prevent.
    */
   gatePending: boolean;
+  suppressedKeys?: ReadonlySet<string>;
 }): ArtifactAutoOpenDecision {
   const {
     scanDone,
@@ -215,6 +222,7 @@ export function decideArtifactAutoOpen(params: {
     loadedMessageCount,
     artifactKeys,
     gatePending,
+    suppressedKeys,
   } = params;
 
   if (!scanDone) {
@@ -233,10 +241,15 @@ export function decideArtifactAutoOpen(params: {
   artifactKeys.forEach((key, index) => {
     if (nextKnown.has(key)) return;
     nextKnown.add(key);
+    if (suppressedKeys?.has(key)) return;
     openIndex = index; // the newest unseen artifact wins
   });
 
-  if (openIndex < 0) return { action: 'none' };
+  if (openIndex < 0) {
+    return nextKnown.size === knownKeys.size
+      ? { action: 'none' }
+      : { action: 'bank', knownKeys: nextKnown };
+  }
   return { action: 'open', openIndex, knownKeys: nextKnown };
 }
 
@@ -249,6 +262,47 @@ export function keepCurrentLiveAppPreview(
     candidate.kind === 'html' &&
     target?.startsWith('app:') === true &&
     candidate.sourceUri === `ui://agent-drafter/${target.slice(4)}`
+  );
+}
+
+const OFFICE_PREVIEW_EXTENSIONS = new Set(['.pdf', '.docx', '.xlsx', '.pptx']);
+const AUXILIARY_PREVIEW_EXTENSIONS = new Set([
+  '.c',
+  '.cpp',
+  '.go',
+  '.h',
+  '.hpp',
+  '.java',
+  '.js',
+  '.jsx',
+  '.log',
+  '.py',
+  '.r',
+  '.rs',
+  '.sql',
+  '.ts',
+  '.tsx',
+]);
+
+function pathExtension(path: string): string {
+  return (
+    path
+      .toLowerCase()
+      .split(/[?#]/, 1)[0]
+      .match(/\.[^./\\]+$/)?.[0] ?? ''
+  );
+}
+
+/** Keep an active office document selected while a turn emits source or log receipts. */
+export function shouldPreserveOfficePreview(
+  current: ArtifactSource | null,
+  candidate: ArtifactSource
+): boolean {
+  return (
+    current?.kind === 'file' &&
+    OFFICE_PREVIEW_EXTENSIONS.has(pathExtension(current.path)) &&
+    candidate.kind === 'file' &&
+    AUXILIARY_PREVIEW_EXTENSIONS.has(pathExtension(candidate.path))
   );
 }
 
@@ -1235,6 +1289,8 @@ function BaseChatContent({
   // same id. With no tab there is nothing that could release a draft, so none
   // is kept.
   const composerDraftKey = terminalKey ? composerDraftKeyForTab(terminalKey) : undefined;
+  const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
+  const reasoningDraftKey = composerDraftKey ?? anonymousReasoningDraftKey;
   // F3 — the model this chat is about to be created on is the one on screen.
   const confirmNewChatModel = useConfirmNewChatModel();
   // #39 — the working directory chosen in the composer BEFORE a session
@@ -1682,6 +1738,8 @@ function BaseChatContent({
     // If no session exists, create one and navigate with the initial message
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
+      const effortScope = draftReasoningScope(reasoningDraftKey);
+      const submittedEffort = getReasoningEffort(effortScope);
       // F3. `/agent/start` binds whatever the app-wide selection is NOW, and the
       // composer's chip is this window's copy of it. A refusal here has already
       // put the fresh model on screen; resolving `false` hands the text back.
@@ -1696,6 +1754,7 @@ function BaseChatContent({
             allExtensions: extensionsList,
           }
         );
+        adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
         navigateWithViewTransition(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
@@ -1824,6 +1883,15 @@ function BaseChatContent({
 
   useEffect(() => {
     if (!session) return;
+    const suppressedKeys = new Set(
+      sessionArtifacts
+        .filter(
+          (artifact) =>
+            keepCurrentLiveAppPreview(presentedArtifact, artifact) ||
+            shouldPreserveOfficePreview(presentedArtifact, artifact)
+        )
+        .map(artifactKey)
+    );
     const decision = decideArtifactAutoOpen({
       scanDone: artifactInitialScanDoneRef.current,
       knownKeys: knownArtifactKeysRef.current,
@@ -1831,6 +1899,7 @@ function BaseChatContent({
       loadedMessageCount: messages.length,
       artifactKeys: sessionArtifacts.map(artifactKey),
       gatePending,
+      suppressedKeys,
     });
     switch (decision.action) {
       case 'wait':
@@ -1841,12 +1910,11 @@ function BaseChatContent({
         return;
       case 'none':
         return;
+      case 'bank':
+        knownArtifactKeysRef.current = decision.knownKeys;
+        return;
       case 'open':
         knownArtifactKeysRef.current = decision.knownKeys;
-        // A rebuild's static receipt must not displace the same app's live preview.
-        if (keepCurrentLiveAppPreview(presentedArtifact, sessionArtifacts[decision.openIndex])) {
-          return;
-        }
         handleOpenArtifact(sessionArtifacts[decision.openIndex]);
         return;
     }
@@ -2261,6 +2329,7 @@ function BaseChatContent({
           // An existing chat's needs no draft: its composer is not the one a
           // failed start, a tab switch or a trip to Settings takes the text from.
           draftKey={!sessionId ? composerDraftKey : undefined}
+          reasoningDraftKey={reasoningDraftKey}
           setView={setView}
           totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
           accumulatedInputTokens={

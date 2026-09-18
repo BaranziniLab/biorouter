@@ -322,9 +322,6 @@ export default function ExtensionsSection({
         removeFromConfig: removeExtension,
         extensionConfig: config,
       });
-      if (isBrxtInstalled) {
-        toastService.success({ title: name, msg: 'Extension and its skills removed' });
-      }
     } catch (error) {
       console.error('Failed to delete extension:', error);
     } finally {

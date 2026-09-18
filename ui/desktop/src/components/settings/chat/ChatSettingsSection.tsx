@@ -67,7 +67,8 @@ export default function ChatSettingsSection() {
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Contexts</h2>
           <p className="text-supporting text-text-muted">
-            Skills that ship with Biorouter. They load into every chat unless you turn one off.
+            Skills that ship with Biorouter. Enabled contexts are available to chats; office
+            instructions load only for relevant tasks.
           </p>
         </div>
         <div className="biorouter-settings-list">

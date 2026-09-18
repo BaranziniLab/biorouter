@@ -17,23 +17,27 @@ describe('contexts', () => {
    * against the Rust source of truth — `BUILTIN_SKILLS` and `KNOWLEDGE_BUNDLE`
    * in `skills_extension.rs`.
    *
-   * ⚠ **Four skill names and one BUNDLE directory.** `knowledge-bases` is not a
+   * ⚠ **Individual skill names and one BUNDLE directory.** `knowledge-bases` is not a
    * skill: it is the directory holding the four `KNOWLEDGE_SKILLS` plus
    * `update-soul`, which used to be a Context of its own labelled "Updates".
-   * Five rows over nine shipped skills.
+   * Each standalone skill is one row; knowledge skills share a bundle row.
    *
    * ⚠ Sorted, so `develop-biorouter` sits before its two longer namesakes.
    * The three are distinct skills, not one with variants: this one is about
    * changing Biorouter's own source, the others about authoring a skill and
    * packaging an extension.
    */
-  it('names exactly the five rows that actually ship', () => {
+  it('names exactly the context rows that actually ship', () => {
     expect([...CONTEXT_IDS].sort()).toEqual([
       'about-biorouter',
       'develop-biorouter',
       'develop-biorouter-extension',
       'develop-biorouter-skill',
       'knowledge-bases',
+      'office-excel',
+      'office-pdf',
+      'office-powerpoint',
+      'office-word',
     ]);
   });
 

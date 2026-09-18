@@ -179,3 +179,209 @@ async fn done_after_pending_call_does_not_wait_for_connection_close() -> anyhow:
     assert!(calls[0].tool_call.is_err());
     Ok(())
 }
+
+fn filter_frame(result: Value) -> String {
+    format!(
+        "data: {}",
+        json!({"model":"","id":"","created":0,"choices":[{"index":0,"content_filter_results":result,"finish_reason":null}]})
+    )
+}
+
+#[tokio::test]
+async fn filter_service_errors_are_readable_and_never_echo_provider_data() {
+    for key in ["content_filter_result", "content_filter_results"] {
+        for delta in [None, Some(json!({}))] {
+            let mut choice = json!({"index":0});
+            choice[key] = json!({"error":{"code":"content_filter_error","message":"SECRET_PROVIDER_PAYLOAD"}});
+            if let Some(delta) = delta {
+                choice["delta"] = delta;
+            }
+            let error = decode(vec![format!("data: {}", json!({"choices":[choice]}))])
+                .await
+                .unwrap_err();
+            assert!(error
+                .downcast_ref::<biorouter::providers::errors::ProviderError>()
+                .is_some());
+            let text = error.to_string();
+            assert!(text.contains("Provider content filter failed"), "{text}");
+            assert!(!text.contains("SECRET_PROVIDER_PAYLOAD"));
+            assert!(!text.contains("missing field"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn filter_errors_abort_pending_tools_without_dispatching_them() {
+    let frames = vec![
+        start("{}", None),
+        filter_frame(
+            json!({"error":{"code":"content_filter_error","message":"SECRET_PROVIDER_PAYLOAD"}}),
+        ),
+        chunk(json!({}), Some("tool_calls")),
+    ];
+    let stream = response_to_streaming_message(tokio_stream::iter(frames.into_iter().map(Ok)));
+    pin_mut!(stream);
+    let pending = stream.next().await.unwrap().unwrap();
+    assert!(pending.2.is_some());
+    let error = stream.next().await.unwrap().unwrap_err();
+    assert!(error.to_string().contains("Provider content filter failed"));
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn azure_filter_annotations_preserve_text_and_usage() -> anyhow::Result<()> {
+    let items = decode(vec![
+        filter_frame(json!({"hate":{"filtered":false,"severity":"safe"}})),
+        chunk(json!({"content":"ready"}), None),
+        filter_frame(json!({"protected_material_text":{"detected":false,"filtered":false}})),
+        chunk(json!({}), Some("stop")),
+        format!(
+            "data: {}",
+            json!({"model":"synthetic-gpt","choices":[],"usage":{"total_tokens":14}})
+        ),
+    ])
+    .await?;
+    let text: String = items
+        .iter()
+        .filter_map(|(message, _, _)| message.as_ref())
+        .flat_map(|message| &message.content)
+        .filter_map(|content| match content {
+            MessageContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "ready");
+    let usage = items
+        .iter()
+        .filter_map(|(_, usage, _)| usage.as_ref())
+        .next_back()
+        .unwrap();
+    assert_eq!(usage.usage.total_tokens, Some(14));
+    assert_eq!(usage.finish_reason.as_deref(), Some("stop"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn azure_filter_annotations_do_not_complete_pending_tools() -> anyhow::Result<()> {
+    let items = decode(vec![
+        start(r#"{"path":""#, None),
+        filter_frame(json!({"hate":{"filtered":false,"severity":"safe"}})),
+        format!(
+            "data: {}",
+            json!({"choices":[],"usage":{"total_tokens":14}})
+        ),
+        chunk(
+            json!({"tool_calls":[{"index":0,"function":{"arguments":"/tmp/fixture\"}"}}]}),
+            None,
+        ),
+        chunk(json!({}), Some("tool_calls")),
+    ])
+    .await?;
+    let calls = requests(&items);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0]
+            .tool_call
+            .as_ref()
+            .unwrap()
+            .arguments
+            .as_ref()
+            .unwrap()["path"],
+        "/tmp/fixture"
+    );
+    let usage = items
+        .iter()
+        .find_map(|(_, usage, _)| usage.as_ref())
+        .unwrap();
+    assert_eq!(usage.model, "synthetic-gpt");
+    assert_eq!(usage.usage.total_tokens, Some(14));
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocked_filter_frames_are_errors_even_without_delta_or_finish_reason() {
+    for frame in [
+        filter_frame(json!({"violence":{"filtered":true,"severity":"high"}})),
+        format!(
+            "data: {}",
+            json!({"choices":[{"index":0,"finish_reason":"content_filter"}]})
+        ),
+    ] {
+        let error = decode(vec![frame]).await.unwrap_err();
+        assert!(error.to_string().contains("safety filter blocked"));
+        let provider_error = error
+            .downcast_ref::<biorouter::providers::errors::ProviderError>()
+            .unwrap();
+        assert_eq!(
+            provider_error.kind(),
+            biorouter::providers::errors::ProviderErrorKind::Policy
+        );
+        assert!(!biorouter::agents::mistakes::is_recoverable(provider_error));
+    }
+}
+
+#[tokio::test]
+async fn unrecognized_or_malformed_choices_still_fail_without_payload_disclosure() {
+    for choice in [
+        json!({"index":0}),
+        json!({"index":0,"delta":null}),
+        json!({"index":0,"delta":"SECRET_PROVIDER_PAYLOAD"}),
+        json!({"index":0,"delta":"SECRET_PROVIDER_PAYLOAD","content_filter_results":{"hate":{"filtered":false}}}),
+        json!({"index":0,"content_filter_results":{}}),
+        json!({"index":0,"content_filter_results":{"error":null}}),
+        json!({"index":0,"content_filter_results":{"unexpected":"SECRET_PROVIDER_PAYLOAD"}}),
+        json!({"index":0,"delta":{"content":"SECRET_PROVIDER_PAYLOAD","tool_calls":"SECRET_PROVIDER_PAYLOAD"}}),
+    ] {
+        for prefix in [vec![], vec![start("{}", None)]] {
+            let mut frames = prefix;
+            frames.push(format!("data: {}", json!({"choices":[choice]})));
+            let error = decode(frames).await.unwrap_err().to_string();
+            assert!(error.contains("invalid chunk shape"), "{error}");
+            assert!(!error.contains("SECRET_PROVIDER_PAYLOAD"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_json_and_top_level_errors_never_echo_provider_payloads() {
+    for frame in [
+        "data: {\"SECRET_PROVIDER_PAYLOAD\": nope}".to_string(),
+        format!(
+            "data: {}",
+            json!({"error":{"message":"SECRET_PROVIDER_PAYLOAD"}})
+        ),
+    ] {
+        for prefix in [vec![], vec![start("{}", None)]] {
+            let mut frames = prefix;
+            frames.push(frame.clone());
+            let error = decode(frames).await.unwrap_err().to_string();
+            assert!(!error.contains("SECRET_PROVIDER_PAYLOAD"));
+            assert!(!error.contains("Retry"));
+            assert!(
+                error.contains("invalid JSON") || error.contains("Provider reported an error"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn unknown_filter_errors_do_not_promise_retry_or_disclose_details() {
+    let error = decode(vec![filter_frame(
+        json!({"error":{"code":"SECRET_PROVIDER_PAYLOAD","message":"SECRET_PROVIDER_PAYLOAD"}}),
+    )])
+    .await
+    .unwrap_err();
+    let provider_error = error
+        .downcast_ref::<biorouter::providers::errors::ProviderError>()
+        .unwrap();
+    assert_eq!(
+        provider_error.kind(),
+        biorouter::providers::errors::ProviderErrorKind::Other
+    );
+    assert!(!biorouter::agents::mistakes::is_recoverable(provider_error));
+    let text = error.to_string();
+    assert!(text.contains("Provider content filter reported an error"));
+    assert!(!text.contains("Retry"));
+    assert!(!text.contains("SECRET_PROVIDER_PAYLOAD"));
+}

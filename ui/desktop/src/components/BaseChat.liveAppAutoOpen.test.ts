@@ -98,6 +98,7 @@ function harness(candidate: ArtifactSource, current: ArtifactSource | null = liv
       decideArtifactAutoOpen: BaseChat.decideArtifactAutoOpen,
       // Baseline has no helper; after the fix this is the real exported predicate.
       keepCurrentLiveAppPreview: Reflect.get(BaseChat, 'keepCurrentLiveAppPreview'),
+      shouldPreserveOfficePreview: Reflect.get(BaseChat, 'shouldPreserveOfficePreview'),
     });
   return { state, run };
 }
@@ -146,6 +147,27 @@ describe('live app auto-open preservation (actual-effect static harness)', () =>
     run();
     expect(state.handleOpenArtifact).not.toHaveBeenCalled();
   });
+
+  it.each(['docx', 'xlsx', 'pptx', 'pdf'])(
+    'banks a later debug log while an active %s preview remains selected',
+    (extension) => {
+      const office: ArtifactSource = {
+        kind: 'file',
+        title: `report.${extension}`,
+        path: `/work/report.${extension}`,
+      };
+      const log: ArtifactSource = { kind: 'file', title: 'debug.log', path: '/work/debug.log' };
+      const { state, run } = harness(log, office);
+
+      run();
+      expect(state.knownArtifactKeysRef.current.has(artifactKey(log))).toBe(true);
+      expect(state.handleOpenArtifact).not.toHaveBeenCalled();
+
+      state.presentedArtifact = null;
+      run();
+      expect(state.handleOpenArtifact).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([
     ['another app', card('ui://agent-drafter/other')],

@@ -1,6 +1,7 @@
 use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
+use crate::providers::errors::ProviderError;
 use crate::providers::formats::audience;
 use crate::providers::utils::{
     convert_image, detect_image_path, is_valid_function_name, load_image_file, safely_parse_json,
@@ -84,6 +85,74 @@ struct StreamingChunk {
     id: Option<String>,
     usage: Option<Value>,
     model: Option<String>,
+}
+
+fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
+    let mut value: Value = serde_json::from_str(line).map_err(|error| {
+        anyhow!(
+            "Failed to parse streaming chunk: invalid JSON at line {} column {}",
+            error.line(),
+            error.column()
+        )
+    })?;
+    if value.get("error").is_some_and(|error| !error.is_null()) {
+        return Err(ProviderError::RequestFailed(
+            "Provider reported an error while streaming. Contact your provider administrator."
+                .into(),
+        )
+        .into());
+    }
+    if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
+        for choice in choices {
+            let mut annotation = false;
+            for key in ["content_filter_result", "content_filter_results"] {
+                if let Some(results) = choice.get(key).and_then(Value::as_object) {
+                    if let Some(error) = results.get("error").filter(|error| !error.is_null()) {
+                        if error.get("code").and_then(Value::as_str) == Some("content_filter_error")
+                        {
+                            return Err(ProviderError::ServerError(
+                                "Provider content filter failed (content_filter_error). Retry the request or contact your provider administrator.".into(),
+                            ).into());
+                        }
+                        return Err(ProviderError::RequestFailed(
+                            "Provider content filter reported an error. Contact your provider administrator.".into(),
+                        ).into());
+                    }
+                    let checks: Vec<_> = results
+                        .iter()
+                        .filter(|(name, _)| *name != "error")
+                        .collect();
+                    if checks
+                        .iter()
+                        .any(|(_, check)| check.get("filtered") == Some(&Value::Bool(true)))
+                    {
+                        return Err(ProviderError::RequestFailed(
+                            "Provider safety filter blocked the response (content_filter). Revise the request or contact your provider administrator.".into(),
+                        ).into());
+                    }
+                    annotation |= !checks.is_empty()
+                        && checks.iter().all(|(_, check)| {
+                            check.get("filtered").and_then(Value::as_bool).is_some()
+                                || check.get("detected").and_then(Value::as_bool).is_some()
+                        });
+                }
+            }
+            if choice.get("finish_reason").and_then(Value::as_str) == Some("content_filter") {
+                return Err(ProviderError::RequestFailed(
+                    "Provider safety filter blocked the response (content_filter). Revise the request or contact your provider administrator.".into(),
+                ).into());
+            }
+            // Azure asynchronous filter annotations omit delta. Only recognized
+            // filter results justify an empty delta; malformed choices still fail.
+            if annotation && choice.get("delta").is_none_or(Value::is_null) {
+                choice["delta"] = json!({});
+            }
+        }
+    }
+    // Serde's type errors can echo provider-controlled strings, including prompt
+    // data. Do not include the raw payload or deserializer message in UI errors.
+    serde_json::from_value(value)
+        .map_err(|_| anyhow!("Failed to parse streaming chunk: invalid chunk shape (expected choices with delta objects)"))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -667,9 +736,8 @@ where
                 continue
             }
 
-            let chunk: StreamingChunk = serde_json::from_str(line
-                .ok_or_else(|| anyhow!("unexpected stream format"))?)
-                .map_err(|e| anyhow!("Failed to parse streaming chunk: {}: {:?}", e, &line))?;
+            let chunk = parse_streaming_chunk(line
+                .ok_or_else(|| anyhow!("unexpected stream format"))?)?;
 
             if !chunk.choices.is_empty() {
                 if let Some(details) = &chunk.choices[0].delta.reasoning_details {
@@ -745,10 +813,9 @@ where
                                 if line.is_empty() {
                                     continue;
                                 }
-                                let tool_chunk: StreamingChunk = serde_json::from_str(line)
-                                    .map_err(|e| anyhow!("Failed to parse streaming chunk: {}: {:?}", e, &line))?;
+                                let tool_chunk = parse_streaming_chunk(line)?;
 
-                                if let Some(model) = &tool_chunk.model {
+                                if let Some(model) = tool_chunk.model.as_ref().filter(|model| !model.is_empty()) {
                                     tool_model = Some(model.clone());
                                 }
                                 if !tool_chunk.choices.is_empty() {
@@ -1021,12 +1088,9 @@ pub fn create_request(
         ));
     }
 
-    // Responses-routed models do not belong in this Chat Completions builder.
-    // Treating them as ordinary reasoning-chat models would recreate the
-    // incompatible tools + reasoning_effort payload reported for o4-mini.
-    let uses_responses_api = model_uses_responses_api(&model_config.model_name);
-    let is_ox_model =
-        !uses_responses_api && model_supports_reasoning_effort(&model_config.model_name);
+    // Endpoint routing belongs to the provider: Versa uses Chat Completions for
+    // GPT-5 models that the public OpenAI provider routes through Responses.
+    let is_ox_model = model_supports_reasoning_effort(&model_config.model_name);
 
     // Extract reasoning effort only for reasoning-capable Chat Completions models.
     let (model_name, mut reasoning_effort) = if is_ox_model {
@@ -1096,7 +1160,7 @@ pub fn create_request(
 
     // Reasoning/GPT-5 chat-completions models use max_completion_tokens instead of max_tokens.
     if let Some(tokens) = model_config.max_tokens {
-        let key = if is_ox_model || uses_responses_api {
+        let key = if is_ox_model {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -2192,18 +2256,18 @@ data: [DONE]
             "model": "gpt-5.5-2026-04-24",
             "messages": [
                 {
-                    "role": "system",
+                    "role": "developer",
                     "content": "system"
                 }
             ],
-            "max_completion_tokens": 1024
+            "max_completion_tokens": 1024,
+            "reasoning_effort": "medium"
         });
 
         for (key, value) in expected.as_object().unwrap() {
             assert_eq!(obj.get(key).unwrap(), value);
         }
         assert!(obj.get("max_tokens").is_none());
-        assert!(obj.get("reasoning_effort").is_none());
 
         Ok(())
     }

@@ -16,6 +16,7 @@ import ModelsBottomBar from './settings/models/bottom_bar/ModelsBottomBar';
 import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionSelection';
 import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection';
 import { BottomMenuKnowledgeSelection } from './bottom_menu/BottomMenuKnowledgeSelection';
+import { draftReasoningScope, sessionReasoningScope } from '../store/reasoningEffort';
 import { BottomMenuReasoningEffort } from './bottom_menu/BottomMenuReasoningEffort';
 import { AlertType, useAlerts } from './alerts';
 import { toolCountWarning } from './alerts/toolCountWarning';
@@ -388,6 +389,8 @@ interface ChatInputProps {
    * under it. See that module for the lifetime and why it is bounded.
    */
   draftKey?: string;
+  /** Shared with the session creator so the first reply inherits this draft’s choice. */
+  reasoningDraftKey?: string;
   droppedFiles?: DroppedFile[];
   onFilesProcessed?: () => void;
   setView: (view: View) => void;
@@ -460,6 +463,7 @@ export default function ChatInput({
   commandHistory = [],
   initialValue = '',
   draftKey,
+  reasoningDraftKey,
   droppedFiles = [],
   onFilesProcessed,
   setView,
@@ -480,6 +484,7 @@ export default function ChatInput({
   supportedInputMimeTypesOverride,
   autoFocus = true,
 }: ChatInputProps) {
+  const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
   // first render, and used to seed state rather than applied by an effect: an
   // effect would run after a first render showing an empty box, and after the
@@ -2768,7 +2773,15 @@ export default function ChatInput({
       <BottomMenuKnowledgeSelection />
     </>
   );
-  const reasoning = <BottomMenuReasoningEffort />;
+  const reasoning = (
+    <BottomMenuReasoningEffort
+      scope={
+        sessionId
+          ? sessionReasoningScope(sessionId)
+          : draftReasoningScope(reasoningDraftKey ?? draftKey ?? anonymousReasoningDraftKey)
+      }
+    />
+  );
   const model = (
     <div className="min-w-0">
       <ModelsBottomBar

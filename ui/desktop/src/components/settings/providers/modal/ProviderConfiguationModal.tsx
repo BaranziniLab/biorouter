@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -19,6 +19,13 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { AlertTriangle } from '../../../icons/app-icons';
 import { ProviderDetails, removeCustomProvider } from '../../../../api';
 import { Button } from '../../../../components/ui/button';
+import CodingAgentSetupRecovery from './CodingAgentSetupRecovery';
+import {
+  CODING_AGENT_ORDER,
+  fetchCodingAgentStatus,
+  type CodingAgentAvailability,
+  type CodingAgentKind,
+} from '../../../onboarding/codingAgentStatus';
 
 interface ProviderConfigurationModalProps {
   provider: ProviderDetails;
@@ -38,6 +45,20 @@ export default function ProviderConfigurationModal({
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [isActiveProvider, setIsActiveProvider] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const [checkAttempt, setCheckAttempt] = useState(0);
+  const [checkedAgents, setCheckedAgents] = useState<CodingAgentAvailability[] | undefined>();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const codingAgentKind = CODING_AGENT_ORDER.includes(provider.name as CodingAgentKind)
+    ? (provider.name as CodingAgentKind)
+    : null;
 
   const requiredParameters = provider.metadata.config_keys.filter(
     (param) => param.required === true
@@ -57,10 +78,13 @@ export default function ProviderConfigurationModal({
     ? isActiveProvider
       ? `This provider is in use. Switch to a different model first.`
       : 'This will permanently delete the current provider configuration.'
-    : `Add your API key(s) for this provider to integrate into Biorouter`;
+    : codingAgentKind
+      ? `Use your installed ${provider.metadata.display_name} command-line app and subscription sign-in. No API key is needed here.`
+      : `Add your API key(s) for this provider to integrate into Biorouter`;
 
-  const handleSubmitForm = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmitForm = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
+    if (submittingRef.current) return;
 
     setValidationErrors({});
 
@@ -84,19 +108,47 @@ export default function ProviderConfigurationModal({
 
     const toSubmit = Object.fromEntries(
       Object.entries(configValues)
-        .filter(([_k, entry]) => !!entry.value)
-        .map(([k, entry]) => [k, entry.value || ''])
+        .map(([key, entry]) => {
+          const parameter = parameters.find((item) => item.name === key);
+          const value =
+            entry.value ||
+            (!parameter?.secret && typeof entry.serverValue === 'string' ? entry.serverValue : '');
+          return [key, value];
+        })
+        .filter(([, value]) => !!value)
     );
 
+    submittingRef.current = true;
+    setIsSubmitting(true);
     try {
       await providerConfigSubmitHandler(upsert, provider, toSubmit);
+      if (!mountedRef.current) return;
+      // The provider check can succeed by listing static models without ever
+      // authenticating the CLI. Model selection requires a separate live probe.
+      if (codingAgentKind) {
+        const status = await fetchCodingAgentStatus();
+        if (!mountedRef.current) return;
+        const agent = status.agents.find((item) => item.kind === codingAgentKind);
+        if (!agent?.path || agent.auth.state !== 'signed_in_subscription') {
+          setCheckedAgents(status.agents);
+          setError('Complete CLI setup before choosing a model.');
+          setCheckAttempt((attempt) => attempt + 1);
+          return;
+        }
+      }
       if (onConfigured) {
         onConfigured(provider);
       } else {
         onClose();
       }
     } catch (error) {
+      if (!mountedRef.current) return;
+      setCheckedAgents(undefined);
       setError(`${error}`);
+      setCheckAttempt((attempt) => attempt + 1);
+    } finally {
+      submittingRef.current = false;
+      if (mountedRef.current) setIsSubmitting(false);
     }
   };
 
@@ -157,15 +209,35 @@ export default function ProviderConfigurationModal({
     <>
       <Dialog open={!!error} onOpenChange={(open) => !open && setError(null)}>
         <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-          <DialogTitle className="flex items-center gap-2">Error</DialogTitle>
-          <DialogDescription className="text-inherit text-base">
-            There was an error checking this provider configuration.
+          <DialogTitle className="flex items-center gap-2">
+            {codingAgentKind
+              ? `Set up ${provider.metadata.display_name}`
+              : 'Configuration needs attention'}
+          </DialogTitle>
+          <DialogDescription className="text-sm text-text-muted">
+            {codingAgentKind
+              ? 'The configuration check did not complete. Follow the setup steps below, then retry.'
+              : 'There was an error checking this provider configuration.'}
           </DialogDescription>
-          <pre className="ml-2">{error}</pre>
-          <div>Check your configuration again to use this provider.</div>
+          {codingAgentKind && error ? (
+            <CodingAgentSetupRecovery
+              key={checkAttempt}
+              kind={codingAgentKind}
+              onRetry={() => void handleSubmitForm()}
+              isRetrying={isSubmitting}
+              initialAgents={checkedAgents}
+            />
+          ) : (
+            <>
+              <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{error}</p>
+              <p className="text-sm text-text-muted">
+                Check your configuration again to use this provider.
+              </p>
+            </>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setError(null)}>
-              Go Back
+              {codingAgentKind ? 'Edit command path' : 'Go Back'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -188,9 +260,9 @@ export default function ProviderConfigurationModal({
                 provider={provider}
                 validationErrors={validationErrors}
               />
-              {requiredParameters.length > 0 &&
-                provider.metadata.config_keys &&
-                provider.metadata.config_keys.length > 0 && <SecureStorageNotice />}
+              {provider.metadata.config_keys.some((parameter) => parameter.secret) && (
+                <SecureStorageNotice />
+              )}
             </div>
           )}
 
@@ -209,6 +281,7 @@ export default function ProviderConfigurationModal({
               canDelete={hasSavedSetup && !isActiveProvider}
               providerName={provider.metadata.display_name}
               isActiveProvider={isActiveProvider}
+              isSubmitting={isSubmitting}
             />
           </DialogFooter>
         </DialogContent>

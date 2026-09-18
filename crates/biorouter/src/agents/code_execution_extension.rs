@@ -2209,13 +2209,13 @@ impl CodeExecutionClient {
         collected_artifacts: &Mutex<CollectedArtifacts>,
     ) -> (Result<String, String>, &'static str, Option<String>) {
         let is_error = result.is_error.unwrap_or(false);
-        // Renderable resources are passed out-of-band because a JS string
-        // cannot preserve an MCP UI artifact. Plain text/file resources stay
-        // in the script result and are not duplicated.
-        let resources = result
-            .content
-            .iter()
-            .filter(|content| is_artifact_content(content));
+        // Images and renderable resources must remain MCP content: converting
+        // them to a JS string loses the pixels the model needs for visual QA.
+        // Keep their original audience annotations, just as direct calls do.
+        // Plain text/file resources stay in the script result without duplication.
+        let resources = result.content.iter().filter(|content| {
+            matches!(&content.raw, RawContent::Image(_)) || is_artifact_content(content)
+        });
         let has_resources = resources.clone().next().is_some();
         let mut collected_any = false;
         {
@@ -3386,6 +3386,54 @@ mod tests {
         assert!(!is_artifact_content(&local_file_link));
         assert!(!is_artifact_content(&credential_link));
         assert!(!is_artifact_content(&oversized_link));
+    }
+
+    #[tokio::test]
+    async fn nested_image_tools_preserve_pixels_and_audience_for_visual_review() {
+        let images = vec![
+            Content::image("cGl4ZWxz", "image/png"),
+            Content::image("YXNzaXN0YW50", "image/png").with_audience(vec![Role::Assistant]),
+            Content::image("dXNlcg==", "image/png").with_audience(vec![Role::User]),
+        ];
+        let result = CallToolResult::success(images.clone());
+        let collected = Mutex::new(CollectedArtifacts::default());
+        let (value, _, _) = CodeExecutionClient::completed_sub_call_outcome(
+            "developer__image_processor",
+            &result,
+            &collected,
+        )
+        .await;
+        assert!(value.unwrap().contains("artifact available"));
+        let collected = collected.lock().await;
+        assert_eq!(
+            serde_json::to_value(&collected.content).unwrap(),
+            serde_json::to_value(&images).unwrap()
+        );
+        assert!(collected.encoded_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn nested_image_collection_remains_bounded() {
+        let result = CallToolResult::success(vec![
+            Content::image("cGl4ZWxz", "image/png");
+            MAX_COLLECTED_ARTIFACTS + 1
+        ]);
+        let collected = Mutex::new(CollectedArtifacts::default());
+        let (value, _, _) = CodeExecutionClient::completed_sub_call_outcome(
+            "developer__image_processor",
+            &result,
+            &collected,
+        )
+        .await;
+        assert!(value.is_ok());
+        let collected = collected.lock().await;
+        assert_eq!(collected.content.len(), MAX_COLLECTED_ARTIFACTS);
+        let mut oversized = CollectedArtifacts::default();
+        assert!(!oversized.push_artifact(&Content::image(
+            "x".repeat(MAX_COLLECTED_ARTIFACT_BYTES + 1),
+            "image/png",
+        )));
+        assert!(oversized.content.is_empty());
     }
 
     #[test]
