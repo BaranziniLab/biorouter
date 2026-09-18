@@ -370,7 +370,10 @@ prompt: |
   1. Use only the ten native Computer Use tools loaded for this run. The only approved
      targets are {{ computer_use_fixture }}. Do not inspect or interact with unrelated apps.
   2. Wait for host task approval before observing the desktop. The workflow cannot approve itself.
-     After approval, obtain fresh state for the exact fixture and perform synthetic typing,
+     After approval, use list_apps to resolve the fixture to its exact running app name or bundle ID.
+     Do not invent generic app aliases such as "Browser". If read-only discovery returns appNotFound,
+     use list_apps and the explicit fixture identity to correct the target before proceeding.
+     Obtain fresh state for the exact fixture and perform synthetic typing,
      a click, scrolling, dragging, a key press, and setting a value where the fixture supports them.
      Verify outcomes using refreshed state and a fixture-window screen capture.
   3. The same grant should cover subsequent actions in this request. Do not replay failed or

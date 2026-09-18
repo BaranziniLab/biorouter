@@ -55,6 +55,11 @@ foreach ($window in $windows) {
         report.with_name(report.stem + "-diagnostics-error.txt").write_text(str(error), encoding="utf-8")
 
 
+def validate_drag(result):
+    if not result.get("released") or result.get("down") or result.get("moves", 0) < 2 or abs(result.get("end_x", 0) - result.get("start_x", 0) - 120) > 3:
+        raise AssertionError(f"Independent child drag did not complete the requested 120px gesture: {result}")
+
+
 def main(directory, report):
     native_doctor = subprocess.run([str(directory / "ocu.exe"), "doctor", "--json"],
                                    capture_output=True, text=True, timeout=20, check=True)
@@ -79,6 +84,33 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
+public class BioRouterDragSurface : Control {
+    public string DiagnosticsDirectory;
+    private bool down, released;
+    private int moves, startX, endX;
+    protected override void OnPaint(PaintEventArgs e) {
+        base.OnPaint(e); e.Graphics.FillRectangle(Brushes.Blue, moves > 0 ? endX : 30, 5, 20, 30);
+    }
+    private void Record() {
+        Invalidate();
+        File.WriteAllText(Path.Combine(DiagnosticsDirectory, "drag-result.json"),
+            String.Format("{{\"down\":{0},\"released\":{1},\"moves\":{2},\"start_x\":{3},\"end_x\":{4}}}",
+                down.ToString().ToLowerInvariant(), released.ToString().ToLowerInvariant(), moves, startX, endX));
+    }
+    protected override void OnMouseDown(MouseEventArgs e) {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left) return;
+        down = true; released = false; moves = 0; startX = endX = e.X; Capture = true; Record();
+    }
+    protected override void OnMouseMove(MouseEventArgs e) {
+        base.OnMouseMove(e);
+        if (down && (e.Button & MouseButtons.Left) != 0) { moves++; endX = e.X; Record(); }
+    }
+    protected override void OnMouseUp(MouseEventArgs e) {
+        base.OnMouseUp(e);
+        if (down && e.Button == MouseButtons.Left) { down = false; released = true; endX = e.X; Capture = false; Record(); }
+    }
+}
 public class BioRouterFixtureForm : Form {
     public Control ScrollTarget;
     public string DiagnosticsDirectory;
@@ -126,6 +158,12 @@ $reset = New-Object System.Windows.Forms.Button
 $reset.Text = 'Reset scroll'; $reset.AccessibleName = 'Reset scroll'
 $reset.Left = 200; $reset.Top = 90; $reset.Width = 160
 $reset.Add_Click({ $form.AutoScrollPosition = New-Object System.Drawing.Point(0, 0) })
+$drag = New-Object BioRouterDragSurface
+$drag.DiagnosticsDirectory = $env:BIOROUTER_FIXTURE_DIR
+$drag.AccessibleName = 'FixtureDrag'; $drag.Name = 'FixtureDrag'
+$drag.Left = 20; $drag.Top = 130; $drag.Width = 320; $drag.Height = 40
+$drag.BackColor = [System.Drawing.Color]::LightBlue
+$form.Controls.Add($drag)
 $form.Controls.Add($text); $form.Controls.Add($button); $form.Controls.Add($reset)
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
@@ -133,7 +171,10 @@ $timer.Add_Tick({
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-x.txt'), [string][Math]::Abs($form.AutoScrollPosition.X))
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-y.txt'), [string][Math]::Abs($form.AutoScrollPosition.Y))
 })
-$form.Add_Shown({ $timer.Start(); [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'ready'), 'ready') })
+$form.Add_Shown({
+  $origin = $drag.PointToScreen((New-Object System.Drawing.Point(30, 20)))
+  @{from_x = $origin.X - $form.Bounds.X; from_y = $origin.Y - $form.Bounds.Y; to_x = $origin.X - $form.Bounds.X + 120; to_y = $origin.Y - $form.Bounds.Y} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:BIOROUTER_FIXTURE_DIR 'drag-geometry.json')
+  $timer.Start(); [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'ready'), 'ready') })
 [System.Windows.Forms.Application]::Run($form)
 $timer.Dispose()
 '''
@@ -214,6 +255,21 @@ $timer.Dispose()
             call("press_key", {"app": app, "key": "F6"})
             if (work / "key.txt").read_text() != "F6":
                 raise AssertionError("Independent fixture did not receive the key")
+            call("get_app_state", {"app": app})
+            coordinates = json.loads((work / "drag-geometry.json").read_text(encoding="utf-8-sig"))
+            call("drag", {"app": app, **coordinates})
+            deadline = time.monotonic() + 10
+            drag_result = {}
+            while time.monotonic() < deadline:
+                try:
+                    drag_result = json.loads((work / "drag-result.json").read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pass
+                if drag_result.get("released"):
+                    break
+                time.sleep(0.1)
+            report.with_name(report.stem + "-independent-drag.json").write_text(json.dumps(drag_result, indent=2))
+            validate_drag(drag_result)
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
             call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "down", "pages": 2})
@@ -256,8 +312,8 @@ $timer.Dispose()
                 raise AssertionError("; ".join(scroll_failures))
             result = {"status": "passed", "validated": True, "session": session.value,
                       "scroll_offsets": {"down_y": vertical_offset, "right_x": horizontal_offset},
-                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "vertical and horizontal scroll offsets changed", "wheel screen coordinates", "screen_capture"],
-                      "not_validated": ["drag", "mixed DPI", "multiple monitors", "occluded windows", "secure desktop"]}
+                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "independent child drag gesture", "vertical and horizontal scroll offsets changed", "wheel screen coordinates", "screen_capture"],
+                      "not_validated": ["mixed DPI", "multiple monitors", "occluded windows", "secure desktop"]}
             report.write_text(json.dumps(result, indent=2))
             print(json.dumps(result))
         finally:

@@ -4,12 +4,12 @@
 # glibc base that every target distro already has, or is named as a dependency
 # by the packages we actually ship.
 #
-# Why this needs a guard at all. The two binaries are not static. Beyond glibc
-# they currently carry two DT_NEEDED entries: libxcb.so.1, pulled in by `arboard`
-# (clipboard, biorouter-cli) and `xcap` (screen capture, biorouter-mcp), and
-# libz.so.1, pulled in by the vendored libgit2 through `libz-sys`. NEEDED is not
-# a soft dependency: the loader resolves it before `main` runs, so a box without
-# either library gets `error while loading shared libraries` and exit 127 on
+# Why this needs a guard at all. The two binaries are not static. Their ELF
+# DT_NEEDED entries determine the requirements of each build. Known non-glibc
+# libraries include libxcb.so.1 from `arboard` (clipboard, biorouter-cli) and
+# libz.so.1 from vendored libgit2 through `libz-sys`. NEEDED is not a soft
+# dependency: the loader resolves each entry before `main` runs, so a box missing
+# a required library gets `error while loading shared libraries` and exit 127 on
 # `--version`. There is no lazy path and no degraded mode to fall back to.
 #
 # That is fine, and invisible to users, precisely BECAUSE the packages declare
@@ -138,6 +138,7 @@ err() { printf '::error::%s\n' "$1" >&2; fail=1; }
 
 deb_declared=$(nfpm_depends deb)
 rpm_declared=$(nfpm_depends rpm)
+forge_config=$(tr '\n' ' ' < ui/desktop/forge.config.ts)
 
 for p in $deb_pkgs; do
   printf '%s\n' "$deb_declared" | grep -qx "$p" \
@@ -148,14 +149,14 @@ for p in $deb_pkgs; do
   # the requirement ours rather than a side effect of a dependency we do not
   # control — the arrays are merged with the Electron defaults (lodash union in
   # electron-installer-common), so naming it again is additive and safe.
-  grep -qE "depends: \[[^]]*'$p'" ui/desktop/forge.config.ts \
+  printf '%s\n' "$forge_config" | grep -qE "depends: \[[^]]*'$p'" \
     || err "ui/desktop/forge.config.ts maker-deb depends is missing '$p'"
 done
 
 for p in $rpm_pkgs; do
   printf '%s\n' "$rpm_declared" | grep -qx "$p" \
     || err "packaging/cli/nfpm.yaml overrides.rpm.depends is missing '$p' — the CLI .rpm would install onto a clean Rocky/RHEL and then fail to start"
-  grep -qE "requires: \[[^]]*'$p'" ui/desktop/forge.config.ts \
+  printf '%s\n' "$forge_config" | grep -qE "requires: \[[^]]*'$p'" \
     || err "ui/desktop/forge.config.ts maker-rpm requires is missing '$p'"
 done
 

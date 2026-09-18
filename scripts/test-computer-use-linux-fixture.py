@@ -17,7 +17,7 @@ import time
 def fixture(work):
     import gi
     gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk, GLib
+    from gi.repository import Gtk, GLib, Gdk, Atk
     GLib.set_prgname("biorouter-computer-use-fixture")
     window = Gtk.Window(title="BioRouter Computer Use Fixture")
     window.set_default_size(640, 480)
@@ -30,6 +30,30 @@ def fixture(work):
     button = Gtk.Button(label="Apply fixture")
     button.connect("clicked", lambda _: (work / "result.txt").write_text(entry.get_text()))
     box.pack_start(button, False, False, 0)
+    drag = Gtk.EventBox()
+    drag_layout = Gtk.Fixed()
+    drag_marker = Gtk.Label(label="Drag me")
+    drag_layout.put(drag_marker, 30, 10)
+    drag.add(drag_layout)
+    drag.set_size_request(320, 60)
+    drag.get_accessible().set_name("FixtureDrag")
+    drag.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
+    gesture = {"down": False, "moves": 0, "released": False, "start_x": 0, "end_x": 0}
+    def drag_event(widget, event):
+        if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 1:
+            gesture.update(down=True, moves=0, released=False, start_x=event.x, end_x=event.x)
+        elif event.type == Gdk.EventType.MOTION_NOTIFY and gesture["down"] and event.state & Gdk.ModifierType.BUTTON1_MASK:
+            gesture["moves"] += 1
+            gesture["end_x"] = event.x
+        elif event.type == Gdk.EventType.BUTTON_RELEASE and event.button == 1 and gesture["down"]:
+            gesture.update(down=False, released=True, end_x=event.x)
+        drag_layout.move(drag_marker, int(gesture["end_x"]), 10)
+        (work / "drag-result.json").write_text(json.dumps(gesture))
+        return True
+    drag.connect("button-press-event", drag_event)
+    drag.connect("motion-notify-event", drag_event)
+    drag.connect("button-release-event", drag_event)
+    box.pack_start(drag, False, False, 0)
     scroller = Gtk.ScrolledWindow()
     view = Gtk.TextView()
     view.set_editable(False)
@@ -42,7 +66,15 @@ def fixture(work):
     (work / "scroll.txt").write_text("0")
     window.show_all()
     window.present()
-    GLib.timeout_add(500, lambda: ((work / "ready").write_text("ready"), False)[1])
+    def ready():
+        surface = drag.get_accessible().get_extents(Atk.CoordType.SCREEN)
+        frame = window.get_accessible().get_extents(Atk.CoordType.SCREEN)
+        (work / "drag-geometry.json").write_text(json.dumps({"from_x": surface.x - frame.x + 30,
+            "from_y": surface.y - frame.y + surface.height / 2,
+            "to_x": surface.x - frame.x + 150, "to_y": surface.y - frame.y + surface.height / 2}))
+        (work / "ready").write_text("ready")
+        return False
+    GLib.timeout_add(500, ready)
     Gtk.main()
 
 
@@ -92,6 +124,11 @@ def eventually(predicate, timeout=20):
     raise TimeoutError("Fixture state did not change before its deadline")
 
 
+def validate_drag(result):
+    if not result.get("released") or result.get("down") or result.get("moves", 0) < 2 or abs(result.get("end_x", 0) - result.get("start_x", 0) - 120) > 3:
+        raise AssertionError(f"Independent child drag did not complete the requested 120px gesture: {result}")
+
+
 def main(directory, report):
     if not os.environ.get("DISPLAY") or not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         raise RuntimeError("Run with xvfb-run -a dbus-run-session -- /usr/bin/python3 ...")
@@ -134,6 +171,24 @@ def main(directory, report):
             client.call("scroll", {"app": app, "element_index": element("FixtureScroll", tree), "direction": "down", "pages": 2})
             eventually(lambda: float((work / "scroll.txt").read_text() or "0") > 0)
             print("PASS: GTK scroll adjustment independently changed", flush=True)
+            state()
+            drag_coordinates = json.loads((work / "drag-geometry.json").read_text())
+            client.call("drag", {"app": app, **drag_coordinates})
+            def drag_finished():
+                path = work / "drag-result.json"
+                try:
+                    return json.loads(path.read_text()).get("released", False)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    return False
+            try:
+                eventually(drag_finished, timeout=10)
+            finally:
+                path = work / "drag-result.json"
+                report.with_name(report.stem + "-independent-drag.json").write_text(
+                    path.read_text() if path.exists() else json.dumps({"error": "No pointer event reached FixtureDrag"}))
+            drag_result = json.loads((work / "drag-result.json").read_text())
+            validate_drag(drag_result)
+            print("PASS: GTK child received pressed drag motion and release at displaced endpoint", flush=True)
             capture = client.call("screen_capture", {"window_title": "BioRouter Computer Use Fixture"})
             images = [base64.b64decode(c["data"]) for c in capture["content"] if c.get("type") == "image"]
             if len(images) != 1 or not images[0].startswith(b"\x89PNG"):
@@ -159,8 +214,8 @@ def main(directory, report):
             if not denied.get("isError") or "unsupported" not in json.dumps(denied).lower() or any(c.get("type") == "image" for c in denied["content"]):
                 raise AssertionError("Unsupported Wayland capture did not fail explicitly without pixels")
             evidence = {"status": "passed", "validated": True, "target": json.loads((directory / "manifest.json").read_text())["target"],
-                        "checks": ["AT-SPI discovery and tree", "set_value", "accessibility click", "independent GTK text", "scroll adjustment changed", "nonblank window PNG", "explicit Wayland unsupported + doctor"],
-                        "not_validated": ["native GNOME/KDE Wayland", "mixed DPI", "multiple displays", "drag"]}
+                        "checks": ["AT-SPI discovery and tree", "set_value", "accessibility click", "independent GTK text", "scroll adjustment changed", "independent child drag gesture", "nonblank window PNG", "explicit Wayland unsupported + doctor"],
+                        "not_validated": ["native GNOME/KDE Wayland", "mixed DPI", "multiple displays"]}
             report.write_text(json.dumps(evidence, indent=2)); print(json.dumps(evidence))
         finally:
             for connection in (wayland, client):

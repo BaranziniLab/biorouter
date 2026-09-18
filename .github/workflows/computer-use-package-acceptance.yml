@@ -33,6 +33,12 @@ jobs:
           key: cross-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
           restore-keys: cross-${{ matrix.target }}-
       - run: bash scripts/build-computer-use-package-cross.sh ${{ matrix.target }}
+      - name: Restore runner ownership of Docker build caches
+        if: always()
+        run: |
+          if [ -d .cross-cache ]; then
+            sudo chown -R "$(id -u):$(id -g)" .cross-cache
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: package-backends-${{ matrix.target }}
