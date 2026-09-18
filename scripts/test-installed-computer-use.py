@@ -5,8 +5,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -68,6 +70,46 @@ class InstalledDoctorTests(unittest.TestCase):
         self.report['computer_use']['permissions']['screen_recording'] = False
         with self.assertRaises(ValueError):
             self.validate(self.report)
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'Requires native macOS code signing')
+class MacCandidateSigningTests(unittest.TestCase):
+    def test_unsigned_nested_framework_is_signed_without_changing_runtime(self):
+        with tempfile.TemporaryDirectory(prefix='package signing ü ') as directory:
+            app = Path(directory) / 'Candidate.app'
+            framework = app / 'Contents/Frameworks/Fixture.framework'
+            framework_version = framework / 'Versions/A'
+            helper = app / 'Contents/Resources/computer-use'
+            runtime_app = helper / 'BioRouter Computer Use.app'
+            def executable_bundle(bundle, name):
+                contents = bundle / 'Contents'
+                (contents / 'MacOS').mkdir(parents=True)
+                (contents / 'Info.plist').write_bytes(plistlib.dumps({
+                    'CFBundleExecutable': name, 'CFBundleIdentifier': 'org.biorouter.fixture.' + name,
+                    'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1'}))
+                subprocess.run(['cc', '-x', 'c', '-', '-o', contents / 'MacOS' / name],
+                    input='int main(void) { return 0; }', text=True, check=True, capture_output=True)
+            executable_bundle(app, 'candidate')
+            executable_bundle(runtime_app, 'ocu')
+            subprocess.run(['codesign', '--force', '--sign', '-', runtime_app], check=True, capture_output=True)
+            (helper / 'manifest.json').write_text('{"fixture": "preserve runtime bytes"}')
+            runtime_before = {p.relative_to(helper): p.read_bytes() for p in helper.rglob('*') if p.is_file()}
+            (framework_version / 'Resources').mkdir(parents=True)
+            (framework_version / 'Resources/Info.plist').write_bytes(plistlib.dumps({
+                'CFBundleExecutable': 'Fixture', 'CFBundleIdentifier': 'org.biorouter.fixture.framework',
+                'CFBundlePackageType': 'FMWK', 'CFBundleVersion': '1'}))
+            subprocess.run(['cc', '-dynamiclib', '-x', 'c', '-', '-o', framework_version / 'Fixture'],
+                input='int fixture(void) { return 1; }', text=True, check=True, capture_output=True)
+            (framework / 'Versions/Current').symlink_to('A')
+            (framework / 'Fixture').symlink_to('Versions/Current/Fixture')
+            (framework / 'Resources').symlink_to('Versions/Current/Resources')
+            subprocess.run(['codesign', '--remove-signature', framework], check=True, capture_output=True)
+            old_sign = subprocess.run(['codesign', '--force', '--sign', '-', app], capture_output=True, text=True)
+            self.assertNotEqual(old_sign.returncode, 0)
+            self.assertIn('code object is not signed at all', old_sign.stderr)
+            packages.sign_macos_candidate(app)
+            runtime_after = {p.relative_to(helper): p.read_bytes() for p in helper.rglob('*') if p.is_file()}
+            self.assertEqual(runtime_after, runtime_before)
 
 
 class OwnedCleanupTests(unittest.TestCase):

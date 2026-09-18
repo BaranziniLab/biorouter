@@ -149,6 +149,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: package-release-${{ matrix.target }}
+          cache-on-failure: true
       - name: Test installed readiness assertions
         run: python scripts/test-installed-computer-use.py
       - name: Build genuine candidate packages

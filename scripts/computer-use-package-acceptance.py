@@ -54,6 +54,21 @@ def dependencies(resources, target):
          'verifyPackagedDependencies(process.argv[1],process.argv[2],process.argv[3])', resources, platform, arch])
 
 
+def sign_macos_candidate(app):
+    manifest = app / 'Contents/Resources/computer-use/manifest.json'
+    manifest_before = digest(manifest)
+    frameworks = app / 'Contents/Frameworks'
+    # Electron x64 ships unsigned nested framework code; keep deep signing away
+    # from the separately sealed Computer Use runtime under Resources.
+    for bundle in sorted(frameworks.glob('*.framework')):
+        run(['codesign', '--force', '--deep', '--sign', '-', bundle])
+    for bundle in sorted(frameworks.glob('*.app')):
+        run(['codesign', '--force', '--sign', '-', bundle])
+    run(['codesign', '--force', '--sign', '-', app])
+    run(['codesign', '--verify', '--deep', '--strict', app])
+    assert digest(manifest) == manifest_before
+
+
 def stage(target):
     platform, arch = target.split('-')
     env = dict(os.environ, ELECTRON_PLATFORM=platform, ELECTRON_ARCH=arch, BIOROUTER_BUILD_JOBS='2')
@@ -100,12 +115,7 @@ def stage(target):
     resources = app / ('Contents/Resources' if platform == 'darwin' else 'resources')
     dependencies(resources, target)
     if platform == 'darwin':
-        manifest_before = digest(resources / 'computer-use/manifest.json')
-        for bundle in sorted((app / 'Contents/Frameworks').glob('*.app')):
-            run(['codesign', '--force', '--sign', '-', bundle])
-        run(['codesign', '--force', '--sign', '-', app])
-        run(['codesign', '--verify', '--deep', '--strict', app])
-        assert digest(resources / 'computer-use/manifest.json') == manifest_before
+        sign_macos_candidate(app)
         makers = '@electron-forge/maker-dmg,@electron-forge/maker-zip'
     elif platform == 'win32':
         makers = '@electron-forge/maker-zip'
