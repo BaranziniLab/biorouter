@@ -1549,7 +1549,7 @@ index c70ed60..691435d 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
-index c70def2..835355a 100644
+index c70def2..6c002f7 100644
 --- a/apps/OpenComputerUseWindows/main_test.go
 +++ b/apps/OpenComputerUseWindows/main_test.go
 @@ -3,13 +3,18 @@ package main
@@ -1573,7 +1573,7 @@ index c70def2..835355a 100644
  	}
  }
  
-@@ -307,3 +312,373 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+@@ -307,3 +312,382 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
  	t.Fatalf("missing tool definition %q", name)
  	return toolDefinition{}
  }
@@ -1735,6 +1735,15 @@ index c70def2..835355a 100644
 +if ($null -ne (Get-ScrollPattern (New-Node $null $foreign) $process $true)) {throw 'Crossed process boundary'}
 +$root=New-Node $null (New-Node $outer $null 42 200) 42 100
 +if ($null -ne (Get-ScrollPattern $root $process $true)) {throw 'Crossed root window boundary'}
++$nativePattern=New-Pattern
++$nativeOwner=New-Node $nativePattern $null 42 100
++$nativeChild=New-Node $null $nativeOwner
++Invoke-Scroll $nativeChild 'down' 0.5 $process | Out-Null
++if ([OCUWin32]::Position -ne 100 -or [OCUWin32]::Posts -ne 1 -or $nativePattern.Calls -ne 0) {throw 'Native owner was not measured before UIA mutation'}
++[OCUWin32]::Noop=$true
++$failed=$false;try {Invoke-Scroll $nativeChild 'down' 0.5 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or [OCUWin32]::Posts -ne 2 -or $nativePattern.Calls -ne 0) {throw 'Failed native owner scroll replayed through UIA'}
++[OCUWin32]::Noop=$false;[OCUWin32]::Position=0;[OCUWin32]::Posts=0
 +$nativeRoot=New-Node $null $null 42 100
 +$nativeLeaf=New-Node $null $nativeRoot
 +Invoke-NativeScroll $nativeLeaf 'down' 0.5 $process | Out-Null
@@ -1948,7 +1957,7 @@ index c70def2..835355a 100644
 +	}
 +}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..aaaab7e 100644
+index 720e9d5..99bd330 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -2306,7 +2315,7 @@ index 720e9d5..aaaab7e 100644
      }
  }
  
-@@ -764,23 +973,129 @@ function Invoke-SecondaryAction($element, [string]$action) {
+@@ -764,23 +973,136 @@ function Invoke-SecondaryAction($element, [string]$action) {
      throw "$action is not a valid secondary action for $($operation.element.index)"
  }
  
@@ -2347,14 +2356,17 @@ index 720e9d5..aaaab7e 100644
 +    return $false
 +}
 +
-+function Get-ScrollPattern($element, $process, [bool]$horizontal) {
++function Get-ScrollPattern($element, $process, [bool]$horizontal, $owner = $null) {
 +    if (-not (Test-ScrollWindow $element $process)) { return $null }
 +    $candidate = $element
 +    for ($depth = 0; $depth -lt 64 -and $null -ne $candidate; $depth++) {
 +        if ($candidate.Current.ProcessId -ne $process.Id) { return $null }
 +        $pattern = Get-CurrentPatternOrNull $candidate ([Windows.Automation.ScrollPattern]::Pattern)
 +        if ($null -ne $pattern -and (($horizontal -and $pattern.Current.HorizontallyScrollable) -or
-+            (-not $horizontal -and $pattern.Current.VerticallyScrollable))) { return $pattern }
++            (-not $horizontal -and $pattern.Current.VerticallyScrollable))) {
++            if ($null -ne $owner) { $owner.Value = $candidate }
++            return $pattern
++        }
 +        if ([IntPtr]$candidate.Current.NativeWindowHandle -eq [IntPtr]$process.MainWindowHandle) { return $null }
 +        $candidate = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($candidate)
 +    }
@@ -2364,8 +2376,11 @@ index 720e9d5..aaaab7e 100644
 +function Invoke-Scroll($element, [string]$direction, [double]$pages, $process) {
 +    Assert-ScrollPages $pages
 +    $horizontal = $direction -eq "left" -or $direction -eq "right"
-+    $scroll = Get-ScrollPattern $element $process $horizontal
++    $owner = $null
++    $scroll = Get-ScrollPattern $element $process $horizontal ([ref]$owner)
 +    if ($null -eq $scroll) { return $null }
++    $native = Invoke-NativeScroll $owner $direction $pages $process $true
++    if ($null -ne $native) { return $native }
 +    $before = if ($horizontal) { $scroll.Current.HorizontalScrollPercent } else { $scroll.Current.VerticalScrollPercent }
 +    $view = if ($horizontal) { $scroll.Current.HorizontalViewSize } else { $scroll.Current.VerticalViewSize }
 +    if ([double]::IsNaN($before) -or [double]::IsInfinity($before) -or $before -lt 0 -or $before -gt 100 -or
@@ -2397,7 +2412,7 @@ index 720e9d5..aaaab7e 100644
 +    return "Scroll: requested $pages viewport pages $direction; observed $([math]::Round($moved, 4)) pages; boundary=$edge (UIA ScrollPattern)."
 +}
 +
-+function Invoke-NativeScroll($element, [string]$direction, [double]$pages, $process) {
++function Invoke-NativeScroll($element, [string]$direction, [double]$pages, $process, [bool]$exactOwner = $false) {
 +    Assert-ScrollPages $pages
 +    if (-not (Test-ScrollWindow $element $process)) { throw "Scroll target is outside the selected application window" }
 +    $axis = if ($direction -eq "left" -or $direction -eq "right") { 0 } else { 1 }
@@ -2414,9 +2429,10 @@ index 720e9d5..aaaab7e 100644
 +                $target = $handle; $info = $observed; break
 +            }
 +        }
-+        if ($handle -eq [IntPtr]$process.MainWindowHandle) { break }
++        if ($exactOwner -or $handle -eq [IntPtr]$process.MainWindowHandle) { break }
 +        $candidate = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($candidate)
 +    }
++    if ($target -eq [IntPtr]::Zero -and $exactOwner) { return $null }
 +    if ($target -eq [IntPtr]::Zero) { throw "No measurable UIA or native scrollbar viewport; precise page scrolling is unsupported" }
 +    $sign = if ($direction -eq "up" -or $direction -eq "left") { -1 } else { 1 }
 +    $maximum = [double]$info.nMax - $info.nPage + 1
@@ -2451,7 +2467,7 @@ index 720e9d5..aaaab7e 100644
  }
  
  function Find-TextEntryElement($process) {
-@@ -899,7 +1214,21 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+@@ -899,7 +1221,21 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
@@ -2474,7 +2490,7 @@ index 720e9d5..aaaab7e 100644
          $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
-@@ -961,17 +1290,13 @@ try {
+@@ -961,17 +1297,13 @@ try {
                  Invoke-SecondaryAction $element $operation.action
              }
              "scroll" {
@@ -2496,7 +2512,7 @@ index 720e9d5..aaaab7e 100644
              }
              "type_text" {
                  if (-not (Invoke-TypeText $process $operation.text)) {
-@@ -995,7 +1320,9 @@ try {
+@@ -995,7 +1327,9 @@ try {
          }
  
          Start-Sleep -Milliseconds 120
