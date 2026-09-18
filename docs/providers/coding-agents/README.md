@@ -17,8 +17,8 @@ information must never reach these providers, and the page explains both the rul
 gate that enforces it.
 
 **They get every built-in capability, on the same terms as any other provider.**
-Developer (shell, text editor, analyze, screen capture, image processor),
-Computer Use, Web & Documents, Knowledge, Workspace, Skills, Extension Manager, Memory,
+Developer (shell, text editor, analyze, image processor),
+Computer Use (the sole native desktop observation and control capability), Web & Documents, Knowledge, Workspace, Skills, Extension Manager, Memory,
 To Do, Chat Recall, Agent Drafter and Auto Visualiser all reach the child over
 the bridge. What still does *not* is a **third-party** extension's tools, which
 remain admitted case by case rather than wholesale.

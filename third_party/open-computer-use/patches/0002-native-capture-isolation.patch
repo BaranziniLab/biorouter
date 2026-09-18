@@ -798,7 +798,7 @@ index c42f41e..6ef053c 100644
  if __name__ == "__main__":
      unittest.main()
 diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
-index c70ed60..617d23c 100644
+index c70ed60..58d26e7 100644
 --- a/apps/OpenComputerUseWindows/main.go
 +++ b/apps/OpenComputerUseWindows/main.go
 @@ -24,7 +24,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
@@ -955,6 +955,15 @@ index c70ed60..617d23c 100644
  		{
  			Name:        "click",
  			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
+@@ -725,7 +791,7 @@ func toolDefinitions() []toolDefinition {
+ 		},
+ 		{
+ 			Name:        "drag",
+-			Description: "Drag from one point to another using pixel coordinates. This tool is part of plugin `Computer Use`.",
++			Description: "Drag within the selected window using screenshot-relative pixel coordinates. Requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1, moves the system pointer, and focuses the target window. Background drag is unsupported. This tool is part of plugin `Computer Use`.",
+ 			Annotations: defaultAnnotations(),
+ 			InputSchema: objectSchema(map[string]any{
+ 				"app":    stringProperty("App name or bundle identifier"),
 @@ -883,6 +949,23 @@ func runCLI(args []string, stdout io.Writer) error {
  	case "mcp":
  		return runMCP(os.Stdin, stdout)
@@ -980,7 +989,7 @@ index c70ed60..617d23c 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
-index c70def2..6a4edfd 100644
+index c70def2..3bb30c3 100644
 --- a/apps/OpenComputerUseWindows/main_test.go
 +++ b/apps/OpenComputerUseWindows/main_test.go
 @@ -3,13 +3,17 @@ package main
@@ -1003,7 +1012,7 @@ index c70def2..6a4edfd 100644
  	}
  }
  
-@@ -307,3 +311,144 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+@@ -307,3 +311,289 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
  	t.Fatalf("missing tool definition %q", name)
  	return toolDefinition{}
  }
@@ -1148,8 +1157,153 @@ index c70def2..6a4edfd 100644
 +		t.Fatalf("scroll provider contract: %v\n%s", err, output)
 +	}
 +}
++
++func TestWindowsDragRequiresConsentAndBatchesOwnedGesture(t *testing.T) {
++	if runtime.GOOS != "windows" {
++		t.Skip("PowerShell drag routing contract runs on Windows")
++	}
++	script := `$ErrorActionPreference = "Stop"
++Add-Type -TypeDefinition @'
++using System;
++using System.Collections.Generic;
++public static class OCUWin32 {
++    public struct POINT { public int X, Y; }
++    public struct MOUSEINPUT { public int dx, dy; public uint dwFlags; }
++    public struct INPUT { public uint type; public MOUSEINPUT mouse; }
++    public static string Mode = "normal";
++    public static List<INPUT[]> Batches = new List<INPUT[]>();
++    public static int FocusCalls, GeometryCalls, ForegroundCalls, ButtonCalls;
++    public static IntPtr Foreground = new IntPtr(900);
++    public static void Reset(string mode) {
++        Mode = mode; Batches.Clear(); FocusCalls = GeometryCalls = ForegroundCalls = ButtonCalls = 0; Foreground = new IntPtr(900);
++    }
++    public static uint GetWindowThreadProcessId(IntPtr handle, out uint processId) {
++        processId = 42;
++        if (Mode == "foreign_root" && handle.ToInt64() == 100) processId = 99;
++        if (Mode == "foreign_child" && handle.ToInt64() == 200) processId = 99;
++        return handle == IntPtr.Zero ? 0u : 7u;
++    }
++    public static bool IsChild(IntPtr root, IntPtr child) {
++        return root.ToInt64() == 100 && (child.ToInt64() == 150 || child.ToInt64() == 200);
++    }
++    public static bool ScreenToClient(IntPtr target, ref POINT point) {
++        if (Mode == "translation_failed") return false;
++        long handle = target.ToInt64();
++        point.X -= handle == 100 ? 140 : handle == 150 ? 150 : 160;
++        point.Y -= handle == 100 ? 100 : handle == 150 ? 210 : 230;
++        return true;
++    }
++    public static IntPtr ChildWindowFromPointEx(IntPtr target, POINT point, uint flags) {
++        if (flags != 3) throw new Exception("Disabled/invisible children must be skipped");
++        if (Mode == "outside" || point.X < 0 || point.Y < 0) return IntPtr.Zero;
++        if (Mode == "sibling") return new IntPtr(900);
++        if (Mode == "cycle") return target.ToInt64() == 150 ? new IntPtr(200) : new IntPtr(150);
++        if (target.ToInt64() == 100) {
++            if (point.X != 50 || point.Y != 150) throw new Exception("Wrong root client point");
++            return new IntPtr(150);
++        }
++        if (target.ToInt64() == 150) {
++            if (point.X != 40 || point.Y != 40) throw new Exception("Wrong nested client point");
++            return new IntPtr(200);
++        }
++        return target;
++    }
++    public static bool IsWindowVisible(IntPtr window) { return Mode != "hidden"; }
++    public static bool IsIconic(IntPtr window) { return Mode == "minimized"; }
++    public static short GetAsyncKeyState(int key) {
++        ButtonCalls++;
++        return (Mode == "held" || (Mode == "held_late" && ButtonCalls > 5)) ? unchecked((short)0x8000) : (short)0;
++    }
++    public static IntPtr GetForegroundWindow() {
++        ForegroundCalls++;
++        return Mode == "focus_changed" && ForegroundCalls >= 4 ? new IntPtr(900) : Foreground;
++    }
++    public static bool SetForegroundWindow(IntPtr window) { FocusCalls++; if (Mode != "focus_denied") Foreground = window; return Foreground == window; }
++    public static int GetSystemMetrics(int index) { return index == 76 ? -1000 : index == 77 ? 0 : index == 78 ? 2920 : 1080; }
++    public static IntPtr WindowFromPoint(POINT point) { return new IntPtr(Mode == "occluded" && point.X >= 230 ? 900 : 200); }
++    public static IntPtr GetAncestor(IntPtr window, uint flags) { return new IntPtr(Mode == "wrong_root" ? 900 : 100); }
++    public static INPUT MouseInput(int x, int y, uint flags) { return new INPUT { type = 0, mouse = new MOUSEINPUT { dx = x, dy = y, dwFlags = flags } }; }
++    public static int InputSize() { return 40; }
++    public static uint SendInput(uint count, INPUT[] inputs, int size) {
++        if (count != inputs.Length || size != 40) throw new Exception("Bad native input array layout");
++        Batches.Add(inputs);
++        if (Mode == "blocked") return 0;
++        if (Mode == "partial" && Batches.Count == 1) return 3;
++        return count;
++    }
++}
++'@
++function Start-Sleep { param($Milliseconds) }
++function Get-WindowRectFrame { param($window)
++    [OCUWin32]::GeometryCalls++
++    $x = if ([OCUWin32]::Mode -eq 'changed_geometry' -and [OCUWin32]::GeometryCalls -gt 1) { 141 } else { 140 }
++    return @{ x=$x; y=100; width=480; height=240 }
++}
++`
++	for _, name := range []string{"Test-EnvFlagEnabled", "Assert-DragTarget", "Get-DragTarget", "Assert-GlobalDragWindow", "Send-Drag"} {
++		start := strings.Index(windowsRuntimeScript, "function "+name+"(")
++		if start < 0 {
++			t.Fatalf("missing %s", name)
++		}
++		source := windowsRuntimeScript[start:]
++		if end := strings.Index(source[1:], "\nfunction "); end >= 0 {
++			source = source[:end+1]
++		}
++		script += source + "\n"
++	}
++	script += `
++$bounds = @{ x=140; y=100; width=480; height=240 }
++foreach ($consent in @('', '0', 'false', 'no', 'off')) {
++    [OCUWin32]::Reset('normal'); $env:OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS = $consent
++    $failed = $false
++    try { Send-Drag ([IntPtr]100) 42 $bounds 190 250 310 250 } catch { $failed = $true }
++    if (-not $failed -or [OCUWin32]::Batches.Count -ne 0 -or [OCUWin32]::FocusCalls -ne 0) { throw "Consent '$consent' allowed focus/input" }
++}
++$env:OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS = '1'
++[OCUWin32]::Reset('normal')
++Send-Drag ([IntPtr]100) 42 $bounds 190 250 310 250
++if ([OCUWin32]::Batches.Count -ne 1 -or [OCUWin32]::FocusCalls -ne 1) { throw 'Gesture was split or selected window not focused' }
++$batch = [OCUWin32]::Batches[0]
++if ($batch.Length -ne 15 -or $batch[1].mouse.dwFlags -ne 2 -or $batch[14].mouse.dwFlags -ne 4) { throw 'Batch must contain one complete down/move/up gesture' }
++for ($i = 0; $i -le 12; $i++) {
++    $index = if ($i -eq 0) { 0 } else { $i + 1 }
++    $event = $batch[$index]
++    $x = [int][math]::Floor((190 + $i * 10 + 1000 + 0.5) * 65536 / 2920)
++    $y = [int][math]::Floor(250.5 * 65536 / 1080)
++    if ($event.type -ne 0 -or $event.mouse.dwFlags -ne 0xE001 -or $event.mouse.dx -ne $x -or $event.mouse.dy -ne $y) { throw 'Incorrect virtual desktop coordinates or coalesced move flags' }
++}
++foreach ($mode in @('foreign_root','foreign_child','sibling','outside','translation_failed','cycle','hidden','minimized','held','held_late','changed_geometry','focus_denied','focus_changed','occluded','wrong_root')) {
++    [OCUWin32]::Reset($mode)
++    $failed = $false
++    try { Send-Drag ([IntPtr]100) 42 $bounds 190 250 310 250 } catch { $failed = $true }
++    if (-not $failed -or [OCUWin32]::Batches.Count -ne 0) { throw "Unsafe target $mode was not rejected before input" }
++    if ($mode -eq 'held' -and [OCUWin32]::FocusCalls -ne 0) { throw 'Focused window during existing user gesture' }
++}
++foreach ($mode in @('blocked', 'partial')) {
++    [OCUWin32]::Reset($mode)
++    $failed = $false
++    try { Send-Drag ([IntPtr]100) 42 $bounds 190 250 310 250 } catch { $failed = $true }
++    if (-not $failed) { throw 'Incomplete insertion was reported successful' }
++    $expected = if ($mode -eq 'partial') { 2 } else { 1 }
++    if ([OCUWin32]::Batches.Count -ne $expected) { throw 'Ambiguous gesture was replayed' }
++    if ($mode -eq 'partial') {
++        $release = [OCUWin32]::Batches[1]
++        if ($release.Length -ne 1 -or $release[0].mouse.dwFlags -ne 4 -or $release[0].mouse.dx -ne 0 -or $release[0].mouse.dy -ne 0) { throw 'Partial insertion cleanup moved pointer instead of releasing in place' }
++    }
++}
++Write-Output 'consented native drag batch contract passed'
++`
++	path := filepath.Join(t.TempDir(), "drag-contract.ps1")
++	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
++		t.Fatal(err)
++	}
++	output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-MTA", "-ExecutionPolicy", "Bypass", "-File", path).CombinedOutput()
++	if err != nil {
++		t.Fatalf("drag routing contract: %v\n%s", err, output)
++	}
++}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..7630bd2 100644
+index 720e9d5..16176bf 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1211,7 +1365,47 @@ index 720e9d5..7630bd2 100644
      [StructLayout(LayoutKind.Sequential)]
      public struct RECT {
          public int Left;
-@@ -52,6 +97,8 @@ public static class OCUWin32 {
+@@ -38,6 +83,39 @@ public static class OCUWin32 {
+     [DllImport("user32.dll")]
+     public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+ 
++    [StructLayout(LayoutKind.Sequential)]
++    public struct MOUSEINPUT {
++        public int dx, dy;
++        public uint mouseData, dwFlags, time;
++        public UIntPtr dwExtraInfo;
++    }
++    [StructLayout(LayoutKind.Sequential)]
++    public struct INPUT {
++        public uint type;
++        public MOUSEINPUT mouse;
++    }
++    public static INPUT MouseInput(int x, int y, uint flags) {
++        return new INPUT { type = 0, mouse = new MOUSEINPUT { dx = x, dy = y, dwFlags = flags } };
++    }
++    public static int InputSize() { return Marshal.SizeOf(typeof(INPUT)); }
++    [DllImport("user32.dll", SetLastError = true)]
++    public static extern uint SendInput(uint count, INPUT[] inputs, int size);
++    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
++    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
++    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
++    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
++    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
++    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
++
++    [DllImport("user32.dll")]
++    public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
++
++    [DllImport("user32.dll")]
++    public static extern bool IsChild(IntPtr parent, IntPtr child);
++
++    [DllImport("user32.dll")]
++    public static extern IntPtr ChildWindowFromPointEx(IntPtr parent, POINT point, uint flags);
++
+     [DllImport("user32.dll")]
+     public static extern bool ScreenToClient(IntPtr hWnd, ref POINT point);
+ 
+@@ -52,6 +130,8 @@ public static class OCUWin32 {
  }
  "@
  
@@ -1220,7 +1414,7 @@ index 720e9d5..7630bd2 100644
  $WM_SETTEXT = 0x000C
  $WM_MOUSEMOVE = 0x0200
  $WM_LBUTTONDOWN = 0x0201
-@@ -124,7 +171,7 @@ function Get-ElementFrame($element, $windowBounds) {
+@@ -124,7 +204,7 @@ function Get-ElementFrame($element, $windowBounds) {
  
  function Get-ScreenPoint($localFrame, $windowBounds) {
      if ($null -eq $localFrame -or $null -eq $windowBounds) {
@@ -1229,7 +1423,126 @@ index 720e9d5..7630bd2 100644
      }
      [pscustomobject]@{
          x = [int][math]::Round($windowBounds.x + $localFrame.x + ($localFrame.width / 2))
-@@ -186,20 +233,18 @@ function Send-Drag([IntPtr]$hwnd, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY
+@@ -162,44 +242,118 @@ function Send-MouseClick([IntPtr]$hwnd, [int]$screenX, [int]$screenY, [string]$b
+     }
+ }
+ 
+-function Send-Drag([IntPtr]$hwnd, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY) {
+-    $start = New-Object OCUWin32+POINT
+-    $start.X = $fromX
+-    $start.Y = $fromY
+-    [void][OCUWin32]::ScreenToClient($hwnd, [ref]$start)
+-    $end = New-Object OCUWin32+POINT
+-    $end.X = $toX
+-    $end.Y = $toY
+-    [void][OCUWin32]::ScreenToClient($hwnd, [ref]$end)
++function Assert-DragTarget([IntPtr]$root, [IntPtr]$target, [uint32]$expectedProcessId) {
++    [uint32]$rootProcessId = 0
++    [uint32]$targetProcessId = 0
++    if ([OCUWin32]::GetWindowThreadProcessId($root, [ref]$rootProcessId) -eq 0 -or
++        [OCUWin32]::GetWindowThreadProcessId($target, [ref]$targetProcessId) -eq 0 -or
++        $rootProcessId -ne $expectedProcessId -or $targetProcessId -ne $expectedProcessId -or
++        ($target -ne $root -and -not [OCUWin32]::IsChild($root, $target))) {
++        throw "Drag target changed or is outside the selected application window; run get_app_state again"
++    }
++}
+ 
+-    $steps = 12
+-    $startParam = ConvertTo-LParam $start.X $start.Y
+-    [void][OCUWin32]::PostMessage($hwnd, $WM_MOUSEMOVE, [IntPtr]::Zero, $startParam)
+-    [void][OCUWin32]::PostMessage($hwnd, $WM_LBUTTONDOWN, [IntPtr]1, $startParam)
+-    for ($i = 1; $i -le $steps; $i++) {
+-        $x = [int][math]::Round($start.X + (($end.X - $start.X) * $i / $steps))
+-        $y = [int][math]::Round($start.Y + (($end.Y - $start.Y) * $i / $steps))
+-        [void][OCUWin32]::PostMessage($hwnd, $WM_MOUSEMOVE, [IntPtr]1, (ConvertTo-LParam $x $y))
+-        Start-Sleep -Milliseconds 20
++function Get-DragTarget([IntPtr]$root, [uint32]$expectedProcessId, [int]$screenX, [int]$screenY) {
++    $target = $root
++    for ($depth = 0; $depth -lt 64; $depth++) {
++        Assert-DragTarget $root $target $expectedProcessId
++        $point = New-Object OCUWin32+POINT
++        $point.X = $screenX
++        $point.Y = $screenY
++        if (-not [OCUWin32]::ScreenToClient($target, [ref]$point)) {
++            throw "Cannot translate drag coordinates into the selected window"
++        }
++        # Resolve within the approved hierarchy; a desktop hit test could select an unrelated overlapping app.
++        $child = [OCUWin32]::ChildWindowFromPointEx($target, $point, 3)
++        if ($child -eq [IntPtr]::Zero) { throw "Drag start is outside the selected window client area" }
++        if ($child -eq $target) { return $target }
++        $target = $child
++    }
++    throw "Drag target hierarchy is too deep; run get_app_state again"
++}
++
++function Assert-GlobalDragWindow([IntPtr]$root, [uint32]$expectedProcessId, $bounds) {
++    Assert-DragTarget $root $root $expectedProcessId
++    $current = Get-WindowRectFrame $root
++    if ($null -eq $bounds -or $null -eq $current -or -not [OCUWin32]::IsWindowVisible($root) -or
++        [OCUWin32]::IsIconic($root) -or $current.x -ne $bounds.x -or $current.y -ne $bounds.y -or
++        $current.width -ne $bounds.width -or $current.height -ne $bounds.height) {
++        throw "Drag window geometry changed or is unavailable; run get_app_state again"
++    }
++}
++
++function Send-Drag([IntPtr]$hwnd, [uint32]$expectedProcessId, $windowBounds, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY) {
++    if (-not (Test-EnvFlagEnabled "OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS")) {
++        throw "Windows drag requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus; background drag is unsupported"
++    }
++    Assert-GlobalDragWindow $hwnd $expectedProcessId $windowBounds
++    $target = Get-DragTarget $hwnd $expectedProcessId $fromX $fromY
++    foreach ($button in @(1, 2, 4, 5, 6)) {
++        if (([OCUWin32]::GetAsyncKeyState($button) -band 0x8000) -ne 0) { throw "Cannot start drag while a mouse button is already held" }
++    }
++    if ([OCUWin32]::GetForegroundWindow() -ne $hwnd) {
++        [void][OCUWin32]::SetForegroundWindow($hwnd)
++        for ($attempt = 0; $attempt -lt 12 -and [OCUWin32]::GetForegroundWindow() -ne $hwnd; $attempt++) {
++            Start-Sleep -Milliseconds 25
++        }
++    }
++    Assert-GlobalDragWindow $hwnd $expectedProcessId $windowBounds
++    Assert-DragTarget $hwnd $target $expectedProcessId
++    if ([OCUWin32]::GetForegroundWindow() -ne $hwnd) { throw "Cannot focus the selected drag window; bring it to the foreground and run get_app_state again" }
++
++    $left = [OCUWin32]::GetSystemMetrics(76)
++    $top = [OCUWin32]::GetSystemMetrics(77)
++    $width = [OCUWin32]::GetSystemMetrics(78)
++    $height = [OCUWin32]::GetSystemMetrics(79)
++    if ($width -le 0 -or $height -le 0) { throw "Virtual desktop geometry is unavailable" }
++    $inputs = New-Object 'System.Collections.Generic.List[OCUWin32+INPUT]'
++    for ($step = 0; $step -le 12; $step++) {
++        $x = [int][math]::Round($fromX + (($toX - $fromX) * $step / 12))
++        $y = [int][math]::Round($fromY + (($toY - $fromY) * $step / 12))
++        if ($x -lt $left -or $x -ge $left + $width -or $y -lt $top -or $y -ge $top + $height) {
++            throw "Drag path leaves the virtual desktop"
++        }
++        $point = New-Object OCUWin32+POINT
++        $point.X = $x; $point.Y = $y
++        $hit = [OCUWin32]::WindowFromPoint($point)
++        Assert-DragTarget $hwnd $hit $expectedProcessId
++        if ([OCUWin32]::GetAncestor($hit, 2) -ne $hwnd) { throw "Drag path is occluded or leaves the selected window" }
++        $normalizedX = [int][math]::Floor(($x - $left + 0.5) * 65536 / $width)
++        $normalizedY = [int][math]::Floor(($y - $top + 0.5) * 65536 / $height)
++        $inputs.Add([OCUWin32]::MouseInput($normalizedX, $normalizedY, 0xE001))
++        if ($step -eq 0) { $inputs.Add([OCUWin32]::MouseInput(0, 0, 2)) }
++    }
++    $inputs.Add([OCUWin32]::MouseInput(0, 0, 4))
++    Assert-GlobalDragWindow $hwnd $expectedProcessId $windowBounds
++    Assert-DragTarget $hwnd $target $expectedProcessId
++    if ([OCUWin32]::GetForegroundWindow() -ne $hwnd) { throw "Foreground changed before drag delivery" }
++    foreach ($button in @(1, 2, 4, 5, 6)) {
++        if (([OCUWin32]::GetAsyncKeyState($button) -band 0x8000) -ne 0) { throw "A mouse button was pressed before drag delivery" }
++    }
++    # Keep button-down and release in one native batch instead of holding a button across script sleeps.
++    $sent = [OCUWin32]::SendInput([uint32]$inputs.Count, $inputs.ToArray(), [OCUWin32]::InputSize())
++    if ($sent -ne $inputs.Count) {
++        if ($sent -gt 0) {
++            [OCUWin32+INPUT[]]$release = @([OCUWin32]::MouseInput(0, 0, 4))
++            [void][OCUWin32]::SendInput(1, $release, [OCUWin32]::InputSize())
++        }
++        throw "Windows drag input was blocked or partially inserted; the gesture will not be replayed"
+     }
+-    [void][OCUWin32]::PostMessage($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, (ConvertTo-LParam $end.X $end.Y))
  }
  
  function Send-Scroll([IntPtr]$hwnd, [int]$screenX, [int]$screenY, [string]$direction, [double]$pages) {
@@ -1255,7 +1568,7 @@ index 720e9d5..7630bd2 100644
  }
  
  function Send-Text([IntPtr]$hwnd, [string]$text) {
-@@ -562,23 +607,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
+@@ -562,23 +716,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
      }
  }
  
@@ -1340,7 +1653,7 @@ index 720e9d5..7630bd2 100644
      }
  }
  
-@@ -764,8 +865,28 @@ function Invoke-SecondaryAction($element, [string]$action) {
+@@ -764,8 +974,28 @@ function Invoke-SecondaryAction($element, [string]$action) {
      throw "$action is not a valid secondary action for $($operation.element.index)"
  }
  
@@ -1371,7 +1684,7 @@ index 720e9d5..7630bd2 100644
      if ($null -eq $scroll) {
          return $false
      }
-@@ -899,7 +1020,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+@@ -899,7 +1129,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
@@ -1388,7 +1701,7 @@ index 720e9d5..7630bd2 100644
          $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
-@@ -963,7 +1092,7 @@ try {
+@@ -963,7 +1201,7 @@ try {
              "scroll" {
                  $handled = $false
                  if ($null -ne $element) {
@@ -1397,11 +1710,20 @@ index 720e9d5..7630bd2 100644
                  }
                  if (-not $handled) {
                      $point = Get-ScreenPoint $operation.element.frame $windowBounds
+@@ -971,7 +1209,7 @@ try {
+                 }
+             }
+             "drag" {
+-                Send-Drag $hwnd ([int][math]::Round($windowBounds.x + [double]$operation.from_x)) ([int][math]::Round($windowBounds.y + [double]$operation.from_y)) ([int][math]::Round($windowBounds.x + [double]$operation.to_x)) ([int][math]::Round($windowBounds.y + [double]$operation.to_y))
++                Send-Drag $hwnd ([uint32]$process.Id) $windowBounds ([int][math]::Round($windowBounds.x + [double]$operation.from_x)) ([int][math]::Round($windowBounds.y + [double]$operation.from_y)) ([int][math]::Round($windowBounds.x + [double]$operation.to_x)) ([int][math]::Round($windowBounds.y + [double]$operation.to_y))
+             }
+             "type_text" {
+                 if (-not (Invoke-TypeText $process $operation.text)) {
 diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
-index ac464ef..5ef24f8 100644
+index ac464ef..39cf5ea 100644
 --- a/docs/ARCHITECTURE.md
 +++ b/docs/ARCHITECTURE.md
-@@ -1,5 +1,21 @@
+@@ -1,5 +1,29 @@
  # 架构总览
  
 +## BioRouter downstream runtime contract
@@ -1418,6 +1740,14 @@ index ac464ef..5ef24f8 100644
 +
 +macOS snapshots associate the AX root with a unique on-screen window using its geometry, with title as an ambiguity tie-breaker. They never substitute an overlapping sibling window for the screenshot. Authorized global pointer input activates the app and raises that captured AX window, then checks fresh system-wide AX foreground identity and unchanged CG window ownership/geometry before delivery. Missing, ambiguous, changed, or unfocusable windows require a new `get_app_state`; preparation waits are bounded and cancellation-aware.
 +
++With global input consent, macOS `type_text` and `press_key` prepare the exact captured window and refresh its focused state without activation recovery before acting. Without that consent, they retain targeted-only behavior. `type_text` requires a text role or a settable control described as text entry before either AX value mutation or keyboard delivery; a generic settable container is not an editable text target.
++
++Focused AX elements are filtered by application PID and owning AX window before their selected text or summaries are read. Keyboard delivery and typing value mutations recheck current target focus without activation; consented foreground input also requires the same current foreground application and window. Focus changes during screenshot capture therefore cannot authorize a foreign target.
++
++macOS `set_value` reads the current AX scalar type before mutation: string controls receive literal strings, numeric controls receive finite CFNumber values, and boolean controls accept only `true` or `false`. Unsupported types or invalid values fail before input. An uncertain AX write outcome is not retried.
++
++Windows drag requires `OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1`; absent or disabled consent returns unsupported before focus or input. It resolves the start child under the selected root and verifies root/child ownership, unchanged snapshot geometry, foreground identity, unheld mouse buttons, and every planned point's visible owning window. One `SendInput` batch contains absolute virtual-desktop motion, down, noncoalesced drag moves, and up. This preserves native button state for controls such as WinForms and keeps the complete gesture inside one native call rather than holding a button across script sleeps. A blocked or partial batch is an error, never replayed; partial insertion attempts only a movement-free button release. Already inserted input cannot be cancelled. Drag paths into another window or through an occluding window are refused.
++
 +The remaining sections describe the pinned upstream baseline; BioRouter-specific behavior above takes precedence.
 +
  这个仓库当前已经从模板收敛成一个本地 `computer-use` 项目。主线仍是 Swift 实现的 macOS automation MCP server，同时新增了实验性的 Windows 和 Linux runtime，用独立 Go 二进制暴露同一组 9 个 Computer Use tools。
@@ -1425,10 +1755,10 @@ index ac464ef..5ef24f8 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..e20a685
+index 0000000..b4182d2
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,45 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1456,8 +1786,26 @@ index 0000000..e20a685
 +Preserved the snapshot AX window alongside its CG identity, removed capture substitution by overlapping sibling windows, and bound global pointer preparation to that captured target. Preparation validates ownership and geometry before and after activation/raise, checks current system-wide AX focus, and refuses changed or ambiguous targets. Input event timing is unchanged. Six focused Swift tests cover capture matching, ambiguity, ordering, stale identity/geometry, failure, timeout, and cancellation. Live drag acceptance remains separate.
 +
 +Cancellation is rechecked after the potentially blocking initial AX validation and readiness query. A callback regression first failed on the unfixed implementation (activation after cancellation and delivery after a cancelled readiness query), then passed after the checks. The final non-live Swift suite passes 179 tests; real-input tests are excluded.
++
++## Typing into an initially inactive application
++
++Actual BioRouter testing found that a settable root container could be misclassified as a text target. The type_text eligibility check now precedes both AX value writes and keyboard fallback, rejecting non-text containers while preserving text fields and described custom editors. With global input consent, typing and key presses prepare the captured window and refresh focus; targeted-only calls do not activate the app. The new container regression failed on the old implementation (four role cases), then passed; four focused and 180 non-live tests pass. Live verification of the new payload remains required.
++
++Focused element ownership is now checked before reading selected text, covering both foreign applications and other windows of the same application. Fresh nonactivating focus checks precede typing mutation and key delivery. Removing ownership checks deliberately fails one regression with four assertions; the restored non-live suite passes 181 tests.
++
++## Scalar AX value writes
++
++A live numeric slider accepted a string-typed AX write without changing value. set_value now preserves the current AX scalar category: literal CFString, finite CFNumber, or strict CFBoolean. Invalid input and unsupported current types fail before mutation; cancellation is checked around the type read and before the write, with no replay after uncertain completion. Four conversion tests fail against the old string-only conversion and pass after the fix; the full non-live suite passes 185 tests. Scroll delivery remains unchanged pending foreground retesting.
++
++## Windows native drag delivery
++
++The independent Windows child fixture received no drag events despite a successful tool acknowledgment. Root-HWND PostMessage delivery missed the child, and WinForms derives MouseMove button state from the input queue rather than posted message flags. Windows drag therefore now requires explicit global-pointer consent and uses one bounded native SendInput batch, including noncoalesced moves and release. Before delivery it validates the selected root/child ownership, unchanged snapshot geometry, foreground identity, unheld mouse buttons, and each planned point's visible owning window. Unsupported background drag fails explicitly. Partial insertion attempts movement-free release only and never replays the gesture; already inserted input cannot be cancelled.
++
++The PowerShell contract covers disabled consent without focus/input, nested child coordinate resolution, foreign process/root/sibling rejection, failed translation, out-of-window points, bounded traversal, hidden/minimized/changed windows, foreground failure/change, held buttons, occlusion, virtual-desktop normalization, complete batch ordering, and blocked/partial insertion. Script parsing, native C# declaration compilation and INPUT ABI checks, and the mocked contract pass in portable PowerShell. Deliberate consent-bypass and moving-release regressions fail. Actual Windows fixture validation remains required; its independent pressed-motion/displacement assertions are unchanged, with global-pointer consent enabled only in the fixture helper environment.
++
++API references: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput, https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput, and https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-childwindowfrompointex.
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
-index e0a56c0..850adff 100644
+index e0a56c0..a91ac94 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 @@ -106,6 +106,7 @@ public struct AppSnapshot {
@@ -1499,6 +1847,15 @@ index e0a56c0..850adff 100644
              }
          }
  
+@@ -224,7 +228,7 @@ enum SnapshotBuilder {
+     ) -> AppSnapshot {
+         let windowBounds = windowCapture.bounds
+         let screenshotPNGData = windowCapture.pngDataIfAvailable()
+-        let focusedElement = preferredFocusedElement(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide)
++        let focusedElement = preferredFocusedElement(appElement: appElement, appPID: app.pid, rootWindow: rootElement, systemWide: systemWide)
+         let selectedText = focusedElement.flatMap { copySelectedText($0, textLimit: textLimit) }
+         let context = RenderContext(
+             windowBounds: windowBounds,
 @@ -245,6 +249,7 @@ enum SnapshotBuilder {
              app: app,
              windowTitle: windowTitle,
@@ -1507,7 +1864,31 @@ index e0a56c0..850adff 100644
              targetWindowID: windowCapture.windowID,
              targetWindowLayer: windowCapture.layer,
              screenshotPNGData: screenshotPNGData,
-@@ -401,6 +406,7 @@ enum SnapshotBuilder {
+@@ -357,14 +362,16 @@ enum SnapshotBuilder {
+             && boolValue(of: element, attribute: kAXMinimizedAttribute) != true
+     }
+ 
+-    private static func preferredFocusedElement(appElement: AXUIElement, appPID: pid_t, focusedApplication: AXUIElement?, systemWide: AXUIElement) -> AXUIElement? {
+-        if let focusedApplication, pid(of: focusedApplication) == appPID {
+-            return copyElement(systemWide, attribute: kAXFocusedUIElementAttribute)
+-                ?? copyElement(focusedApplication, attribute: kAXFocusedUIElementAttribute)
+-                ?? copyElement(appElement, attribute: kAXFocusedUIElementAttribute)
++    private static func preferredFocusedElement(appElement: AXUIElement, appPID: pid_t, rootWindow: AXUIElement, systemWide: AXUIElement) -> AXUIElement? {
++        for source in [systemWide, appElement] {
++            if let element = ownedFocusedElement(
++                candidate: copyElement(source, attribute: kAXFocusedUIElementAttribute),
++                appPID: appPID,
++                readPID: { pid(of: $0) },
++                belongsToWindow: { focusedElementBelongsToWindow($0, window: rootWindow) }
++            ) { return element }
+         }
+-
+-        return copyElement(appElement, attribute: kAXFocusedUIElementAttribute)
++        return nil
+     }
+ 
+     private static func buildFixtureSnapshot(app: RunningAppDescriptor, state: FixtureAppState) -> AppSnapshot {
+@@ -401,6 +408,7 @@ enum SnapshotBuilder {
              app: app,
              windowTitle: state.windowTitle,
              windowBounds: state.windowBounds.cgRect,
@@ -1515,7 +1896,7 @@ index e0a56c0..850adff 100644
              targetWindowID: nil,
              targetWindowLayer: nil,
              screenshotPNGData: nil,
-@@ -428,7 +434,7 @@ private struct WindowCapture {
+@@ -428,7 +436,7 @@ private struct WindowCapture {
      let bounds: CGRect
      let image: CGImage?
  
@@ -1524,7 +1905,7 @@ index e0a56c0..850adff 100644
          guard let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
              return nil
          }
-@@ -457,7 +463,7 @@ private struct WindowCapture {
+@@ -457,7 +465,7 @@ private struct WindowCapture {
              )
          }
  
@@ -1533,7 +1914,7 @@ index e0a56c0..850adff 100644
              return nil
          }
  
-@@ -511,36 +517,21 @@ struct WindowCaptureCandidate {
+@@ -511,36 +519,21 @@ struct WindowCaptureCandidate {
      let frontToBackIndex: Int
  }
  
@@ -1584,7 +1965,7 @@ index e0a56c0..850adff 100644
  }
  
  func boundedScreenshotPNGData(
-@@ -629,6 +620,7 @@ enum BlockingAsyncBridge {
+@@ -629,6 +622,7 @@ enum BlockingAsyncBridge {
  
          guard waitForSignal(semaphore, timeout: timeout) else {
              task.cancel()
@@ -1592,7 +1973,7 @@ index e0a56c0..850adff 100644
              throw ComputerUseError.message("ScreenCaptureKit screenshot task timed out after \(timeout ?? 0) seconds.")
          }
  
-@@ -642,6 +634,7 @@ enum BlockingAsyncBridge {
+@@ -642,6 +636,7 @@ enum BlockingAsyncBridge {
  
          if Thread.isMainThread {
              while semaphore.wait(timeout: .now()) == .timedOut {
@@ -1600,7 +1981,7 @@ index e0a56c0..850adff 100644
                  if let deadline, Date() >= deadline {
                      return false
                  }
-@@ -651,11 +644,10 @@ enum BlockingAsyncBridge {
+@@ -651,11 +646,10 @@ enum BlockingAsyncBridge {
              return true
          }
  
@@ -1615,7 +1996,7 @@ index e0a56c0..850adff 100644
          return true
      }
  }
-@@ -680,6 +672,7 @@ private struct TreeRenderer {
+@@ -680,6 +674,7 @@ private struct TreeRenderer {
      }
  
      mutating func render(_ root: AXUIElement, depth: Int = 0, ancestors: [AXUIElement] = []) {
@@ -1623,7 +2004,7 @@ index e0a56c0..850adff 100644
          guard shouldContinueRendering(nextIndex: nextIndex, depth: depth, limits: context.treeLimits) else {
              return
          }
-@@ -1453,7 +1446,7 @@ private func displayIdentifierSegment(for element: AXUIElement, role: String, id
+@@ -1453,7 +1448,7 @@ private func displayIdentifierSegment(for element: AXUIElement, role: String, id
      return " ID: \(identifier)"
  }
  
@@ -1632,6 +2013,21 @@ index e0a56c0..850adff 100644
      var positionValue: CFTypeRef?
      var sizeValue: CFTypeRef?
      let positionError = AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue)
+@@ -2139,3 +2134,14 @@ private extension CGRect {
+         "x=\(Int(origin.x)), y=\(Int(origin.y)), w=\(Int(width)), h=\(Int(height))"
+     }
+ }
++
++func ownedFocusedElement<Element>(candidate: Element?, appPID: pid_t, readPID: (Element) -> pid_t, belongsToWindow: (Element) -> Bool) -> Element? {
++    guard let candidate, readPID(candidate) == appPID, belongsToWindow(candidate) else { return nil }
++    return candidate
++}
++
++func focusedElementBelongsToWindow(_ element: AXUIElement, window: AXUIElement) -> Bool {
++    if CFEqual(element, window) { return true }
++    guard let owner = copyElement(element, attribute: kAXWindowAttribute) else { return false }
++    return CFEqual(owner, window)
++}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseCancellation.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseCancellation.swift
 new file mode 100644
 index 0000000..319b77a
@@ -1670,10 +2066,33 @@ index 0000000..319b77a
 +    }
 +}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
-index ffee113..f351a0a 100644
+index ffee113..712b4e3 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
-@@ -674,6 +674,7 @@ public final class ComputerUseService {
+@@ -382,10 +382,6 @@ func canUseActivationOnlyClickFallback(role: String?) -> Bool {
+ }
+ 
+ func canUseKeyboardTextFallback(role: String?, roleDescription: String?, isValueSettable: Bool) -> Bool {
+-    if isValueSettable {
+-        return true
+-    }
+-
+     guard let role else {
+         return false
+     }
+@@ -398,9 +394,9 @@ func canUseKeyboardTextFallback(role: String?, roleDescription: String?, isValue
+         return false
+     }
+ 
+-    return roleDescription.contains("text field")
++    return isValueSettable && (roleDescription.contains("text field")
+         || roleDescription.contains("text area")
+-        || roleDescription.contains("text entry")
++        || roleDescription.contains("text entry"))
+ }
+ 
+ func isElectronScopedWebRowClickOptimizationTarget(appName: String, bundleIdentifier: String?) -> Bool {
+@@ -674,6 +670,7 @@ public final class ComputerUseService {
              throw ComputerUseError.stateUnavailable("element \(elementIndex) has no backing accessibility object")
          }
  
@@ -1681,7 +2100,7 @@ index ffee113..f351a0a 100644
          let result = AXUIElementPerformAction(element, rawAction as CFString)
          guard result == .success else {
              throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
-@@ -708,7 +709,11 @@ public final class ComputerUseService {
+@@ -708,7 +705,11 @@ public final class ComputerUseService {
             let rawAction = record.rawActions.first(where: { $0.caseInsensitiveCompare("AXScroll\(normalized.capitalized)ByPage") == .orderedSame }),
             let element = record.element {
              for _ in 0..<repeatCount {
@@ -1694,15 +2113,99 @@ index ffee113..f351a0a 100644
                  Thread.sleep(forTimeInterval: 0.05)
              }
          } else if let point = try globalPoint(for: record, snapshot: snapshot) {
-@@ -810,6 +815,7 @@ public final class ComputerUseService {
+@@ -749,38 +750,60 @@ public final class ComputerUseService {
+     }
+ 
+     public func typeText(app query: String, text: String) throws -> ToolCallResult {
+-        let snapshot = try currentSnapshot(for: query)
++        var snapshot = try currentSnapshot(for: query)
+         if snapshot.mode == .fixture {
+             try FixtureBridge.post(FixtureCommand(kind: "type_text", identifier: "fixture-input", value: text))
+             Thread.sleep(forTimeInterval: 0.15)
+             return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+         }
+ 
++        snapshot = try snapshotForKeyboardInput(snapshot)
++        guard try canTypeTextUsingKeyboardFallback(in: snapshot) else {
++            throw ComputerUseError.stateUnavailable("type_text requires a focused editable text element. Click a text entry area first, or use set_value on a settable text element.")
++        }
++
+         if try typeTextBySettingFocusedValueIfAvailable(text, in: snapshot) {
+             Thread.sleep(forTimeInterval: 0.1)
+             return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+         }
+ 
+-        guard try canTypeTextUsingKeyboardFallback(in: snapshot) else {
+-            throw ComputerUseError.stateUnavailable("type_text requires a focused editable text element. Click a text entry area first, or use set_value on a settable text element.")
+-        }
+-
++        try InputSimulation.validateKeyboardInputTarget(snapshot, requireTextFocus: true)
+         try InputSimulation.typeText(text, pid: snapshot.app.pid)
+         return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+     }
+ 
+     public func pressKey(app query: String, key: String) throws -> ToolCallResult {
+-        let snapshot = try currentSnapshot(for: query)
++        var snapshot = try currentSnapshot(for: query)
+         if snapshot.mode == .fixture {
+             try FixtureBridge.post(FixtureCommand(kind: "press_key", identifier: "fixture-key-capture", value: key))
+             Thread.sleep(forTimeInterval: 0.15)
+             return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+         }
+ 
++        _ = try KeyPressParser.parse(key)
++        snapshot = try snapshotForKeyboardInput(snapshot)
++        try ComputerUseCancellation.check()
++        try InputSimulation.validateKeyboardInputTarget(snapshot, requireTextFocus: false)
+         try InputSimulation.pressKey(key, pid: snapshot.app.pid)
+         return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+     }
+ 
++    private func snapshotForKeyboardInput(_ snapshot: AppSnapshot) throws -> AppSnapshot {
++        guard globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment) else {
++            return snapshot
++        }
++        try InputSimulation.prepareAppForGlobalPointerInput(snapshot)
++        let refreshed = try SnapshotBuilder.build(for: snapshot.app, recoveryPolicy: .readOnly)
++        try ComputerUseCancellation.check()
++        guard refreshed.targetWindowID == snapshot.targetWindowID,
++              let expected = snapshot.windowBounds,
++              let actual = refreshed.windowBounds,
++              windowGeometryMatches(actual, expected) else {
++            throw ComputerUseError.stateUnavailable("The keyboard target window changed. Run get_app_state again.")
++        }
++        return refreshed
++    }
++
+     public func setValue(app query: String, elementIndex: String, value: String) throws -> ToolCallResult {
+         let snapshot = try currentSnapshot(for: query)
+         let record = try lookupElement(snapshot: snapshot, index: elementIndex)
+@@ -806,11 +829,23 @@ public final class ComputerUseService {
+             throw ComputerUseError.message(nonSettableSetValueErrorMessage)
+         }
+ 
++        try ComputerUseCancellation.check()
++        var currentValue: CFTypeRef?
++        let readResult = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &currentValue)
++        try ComputerUseCancellation.check()
++        guard readResult == .success, let currentValue else {
++            throw ComputerUseError.stateUnavailable("Could not read the control's AX value type (error \(readResult.rawValue)). Run get_app_state again.")
++        }
++        let typedValue = try accessibilityValue(from: value, currentValue: currentValue)
+         let cursorTarget = visualCursorTarget(for: record, snapshot: snapshot)
          moveVisualCursor(to: cursorTarget)
  
          do {
+-            let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
 +            try ComputerUseCancellation.check()
-             let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
++            let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, typedValue)
++            if result == .cannotComplete {
++                throw ComputerUseError.message("Accessibility operation could not complete; outcome is uncertain. Inspect before retrying.")
++            }
              guard result == .success else {
                  throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
-@@ -826,11 +832,12 @@ public final class ComputerUseService {
+             }
+@@ -826,11 +861,12 @@ public final class ComputerUseService {
      }
  
      private func currentSnapshot(for query: String) throws -> AppSnapshot {
@@ -1716,7 +2219,7 @@ index ffee113..f351a0a 100644
      }
  
      @discardableResult
-@@ -840,6 +847,7 @@ public final class ComputerUseService {
+@@ -840,6 +876,7 @@ public final class ComputerUseService {
          treeLimits: AccessibilityTreeLimits = .defaults,
          recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation
      ) throws -> AppSnapshot {
@@ -1724,7 +2227,7 @@ index ffee113..f351a0a 100644
          let app = try AppDiscovery.resolve(query)
          let snapshot = try SnapshotBuilder.build(
              for: app,
-@@ -848,6 +856,7 @@ public final class ComputerUseService {
+@@ -848,6 +885,7 @@ public final class ComputerUseService {
              recoveryPolicy: recoveryPolicy
          )
  
@@ -1732,7 +2235,7 @@ index ffee113..f351a0a 100644
          let keys = Set([
              query.lowercased(),
              app.name.lowercased(),
-@@ -951,6 +960,7 @@ public final class ComputerUseService {
+@@ -951,6 +989,7 @@ public final class ComputerUseService {
              return false
          }
  
@@ -1740,7 +2243,7 @@ index ffee113..f351a0a 100644
          let result = AXUIElementSetAttributeValue(
              target.list,
              kAXSelectedChildrenAttribute as CFString,
-@@ -961,7 +971,9 @@ public final class ComputerUseService {
+@@ -961,7 +1000,9 @@ public final class ComputerUseService {
          case .success:
              Thread.sleep(forTimeInterval: 0.15)
              return true
@@ -1751,7 +2254,7 @@ index ffee113..f351a0a 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue(\(kAXSelectedChildrenAttribute)) failed with \(result.rawValue)")
-@@ -1083,6 +1095,7 @@ public final class ComputerUseService {
+@@ -1083,6 +1124,7 @@ public final class ComputerUseService {
  
          let attempts = max(repeatCount, 1)
          for index in 0..<attempts {
@@ -1759,7 +2262,7 @@ index ffee113..f351a0a 100644
              let result = AXUIElementPerformAction(element, action as CFString)
              switch result {
              case .success:
-@@ -1091,7 +1104,9 @@ public final class ComputerUseService {
+@@ -1091,7 +1133,9 @@ public final class ComputerUseService {
                  }
              case .attributeUnsupported where action.caseInsensitiveCompare("AXOpen") == .orderedSame:
                  return true
@@ -1770,7 +2273,7 @@ index ffee113..f351a0a 100644
                  return false
              default:
                  throw ComputerUseError.message("AXUIElementPerformAction(\(action)) failed with \(result.rawValue)")
-@@ -1120,11 +1135,14 @@ public final class ComputerUseService {
+@@ -1120,11 +1164,14 @@ public final class ComputerUseService {
      }
  
      private func setBoolAttribute(named attribute: String, on element: AXUIElement) throws -> Bool {
@@ -1786,10 +2289,11 @@ index ffee113..f351a0a 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue(\(attribute)) failed with \(result.rawValue)")
-@@ -1409,11 +1427,14 @@ public final class ComputerUseService {
+@@ -1409,11 +1456,15 @@ public final class ComputerUseService {
          }
  
          let baseValue = editableBaseValue(for: element)
++        try InputSimulation.validateKeyboardInputTarget(snapshot, requireTextFocus: true)
 +        try ComputerUseCancellation.check()
          let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, (baseValue + text) as CFString)
          switch result {
@@ -1802,7 +2306,7 @@ index ffee113..f351a0a 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
-@@ -1797,7 +1818,7 @@ public final class ComputerUseService {
+@@ -1797,7 +1848,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -1811,7 +2315,7 @@ index ffee113..f351a0a 100644
              try InputSimulation.scrollGlobally(at: eventPoint, direction: direction, pages: pages)
              return
          }
-@@ -1822,7 +1843,7 @@ public final class ComputerUseService {
+@@ -1822,7 +1873,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -1820,7 +2324,7 @@ index ffee113..f351a0a 100644
              try InputSimulation.dragGlobally(from: eventStart, to: eventEnd)
          case .appPost:
              try InputSimulation.dragTargeted(from: eventStart, to: eventEnd, pid: snapshot.app.pid)
-@@ -1846,7 +1867,7 @@ public final class ComputerUseService {
+@@ -1846,7 +1897,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -1829,7 +2333,7 @@ index ffee113..f351a0a 100644
              try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
              return
          }
-@@ -1910,7 +1931,7 @@ public final class ComputerUseService {
+@@ -1910,7 +1961,7 @@ public final class ComputerUseService {
                  )
              }
              debugClickDecision("requested=global executed=global_hid target=\(targetDescription)")
@@ -1838,6 +2342,30 @@ index ffee113..f351a0a 100644
              try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
          case .auto, .accessibility:
              throw ComputerUseError.message(
+@@ -1927,3 +1978,23 @@ public final class ComputerUseService {
+         return ToolCallResult(content: content)
+     }
+ }
++
++func accessibilityValue(from text: String, currentValue: CFTypeRef) throws -> CFTypeRef {
++    switch CFGetTypeID(currentValue) {
++    case CFStringGetTypeID():
++        return text as CFString
++    case CFBooleanGetTypeID():
++        switch text {
++        case "true": return kCFBooleanTrue
++        case "false": return kCFBooleanFalse
++        default: throw ComputerUseError.invalidArguments("set_value requires 'true' or 'false' for this boolean control")
++        }
++    case CFNumberGetTypeID():
++        guard let number = Double(text), number.isFinite else {
++            throw ComputerUseError.invalidArguments("set_value requires a finite number for this numeric control")
++        }
++        return NSNumber(value: number)
++    default:
++        throw ComputerUseError.invalidArguments("set_value supports text, numeric, and boolean AX values; this control has an unsupported value type")
++    }
++}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
 index c7e5770..279a1a0 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
@@ -1854,10 +2382,10 @@ index c7e5770..279a1a0 100644
              return service.listApps()
          case "get_app_state":
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
-index 5a06785..15dd4ff 100644
+index 5a06785..7df8227 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
-@@ -45,14 +45,38 @@ enum MouseButtonKind: String {
+@@ -45,14 +45,76 @@ enum MouseButtonKind: String {
  enum InputSimulation {
      static let maxKeyboardUnicodeChunkLength = 64
  
@@ -1866,9 +2394,6 @@ index 5a06785..15dd4ff 100644
 -            Thread.sleep(forTimeInterval: 0.12)
 -            return
 -        }
--
--        _ = app.runningApplication.activate(options: [.activateAllWindows])
--        Thread.sleep(forTimeInterval: 0.25)
 +    static func prepareAppForGlobalPointerInput(_ snapshot: AppSnapshot) throws {
 +        guard let window = snapshot.targetWindowElement,
 +              let windowID = snapshot.targetWindowID,
@@ -1901,10 +2426,50 @@ index 5a06785..15dd4ff 100644
 +            },
 +            pause: { Thread.sleep(forTimeInterval: 0.05) }
 +        )
++    }
+ 
+-        _ = app.runningApplication.activate(options: [.activateAllWindows])
+-        Thread.sleep(forTimeInterval: 0.25)
++    static func validateKeyboardInputTarget(_ snapshot: AppSnapshot, requireTextFocus: Bool) throws {
++        try ComputerUseCancellation.check()
++        guard let window = snapshot.targetWindowElement else {
++            throw ComputerUseError.stateUnavailable("Keyboard input requires an identified window. Run get_app_state again.")
++        }
++        let appElement = AXUIElementCreateApplication(snapshot.app.pid)
++        AXUIElementSetMessagingTimeout(appElement, 2)
++        guard let focusedWindow = copyElement(appElement, attribute: kAXFocusedWindowAttribute),
++              CFEqual(focusedWindow, window) else {
++            throw ComputerUseError.stateUnavailable("The keyboard target window lost focus. Run get_app_state again.")
++        }
++        if requireTextFocus {
++            guard let expected = snapshot.focusedElement,
++                  let current = copyElement(appElement, attribute: kAXFocusedUIElementAttribute),
++                  CFEqual(current, expected),
++                  focusedElementBelongsToWindow(current, window: window) else {
++                throw ComputerUseError.stateUnavailable("The text target changed. Run get_app_state again.")
++            }
++            var owner: pid_t = 0
++            guard AXUIElementGetPid(current, &owner) == .success, owner == snapshot.app.pid else {
++                throw ComputerUseError.stateUnavailable("The text target belongs to another app. Run get_app_state again.")
++            }
++        }
++        if globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment) {
++            let systemWide = AXUIElementCreateSystemWide()
++            AXUIElementSetMessagingTimeout(systemWide, 2)
++            var foregroundPID: pid_t = 0
++            guard let foreground = copyElement(systemWide, attribute: kAXFocusedApplicationAttribute),
++                  AXUIElementGetPid(foreground, &foregroundPID) == .success,
++                  foregroundPID == snapshot.app.pid,
++                  let foregroundWindow = copyElement(foreground, attribute: kAXFocusedWindowAttribute),
++                  CFEqual(foregroundWindow, window) else {
++                throw ComputerUseError.stateUnavailable("The keyboard target is no longer foreground. Run get_app_state again.")
++            }
++        }
++        try ComputerUseCancellation.check()
      }
  
      static func clickGlobally(at point: CGPoint, button: MouseButtonKind, clickCount: Int) throws {
-@@ -61,6 +85,7 @@ enum InputSimulation {
+@@ -61,6 +123,7 @@ enum InputSimulation {
          }
  
          for _ in 0..<max(clickCount, 1) {
@@ -1912,7 +2477,7 @@ index 5a06785..15dd4ff 100644
              try postMouseEvent(type: .mouseMoved, source: source, point: point, button: button.cgButton, clickState: clickCount)
              try postMouseEvent(type: button.downEvent, source: source, point: point, button: button.cgButton, clickState: clickCount)
              try postMouseEvent(type: button.upEvent, source: source, point: point, button: button.cgButton, clickState: clickCount)
-@@ -73,6 +98,7 @@ enum InputSimulation {
+@@ -73,6 +136,7 @@ enum InputSimulation {
          }
  
          for _ in 0..<max(clickCount, 1) {
@@ -1920,7 +2485,7 @@ index 5a06785..15dd4ff 100644
              try postMouseEventToPid(type: .mouseMoved, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
              try postMouseEventToPid(type: button.downEvent, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
              try postMouseEventToPid(type: button.upEvent, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
-@@ -87,16 +113,7 @@ enum InputSimulation {
+@@ -87,16 +151,7 @@ enum InputSimulation {
          clickCount: Int,
          pid: pid_t
      ) throws {
@@ -1938,7 +2503,7 @@ index 5a06785..15dd4ff 100644
      }
  
      static func scrollTargeted(at point: CGPoint, direction: String, pages: Double, pid: pid_t) throws {
-@@ -127,7 +144,9 @@ enum InputSimulation {
+@@ -127,7 +182,9 @@ enum InputSimulation {
          try postMouseEventToPid(type: .mouseMoved, source: source, point: start, button: .left, clickState: 1, pid: pid)
          try postMouseEventToPid(type: .leftMouseDown, source: source, point: start, button: .left, clickState: 1, pid: pid)
  
@@ -1948,7 +2513,7 @@ index 5a06785..15dd4ff 100644
              let progress = CGFloat(step) / 10
              let point = CGPoint(
                  x: start.x + ((end.x - start.x) * progress),
-@@ -136,7 +155,6 @@ enum InputSimulation {
+@@ -136,7 +193,6 @@ enum InputSimulation {
              try postMouseEventToPid(type: .leftMouseDragged, source: source, point: point, button: .left, clickState: 1, pid: pid)
          }
  
@@ -1956,7 +2521,7 @@ index 5a06785..15dd4ff 100644
      }
  
      static func dragGlobally(from start: CGPoint, to end: CGPoint) throws {
-@@ -151,7 +169,9 @@ enum InputSimulation {
+@@ -151,7 +207,9 @@ enum InputSimulation {
  
          var previous = start
          let steps = dragStepCount(from: start, to: end)
@@ -1966,7 +2531,7 @@ index 5a06785..15dd4ff 100644
              let progress = CGFloat(step) / CGFloat(steps)
              let point = CGPoint(
                  x: start.x + ((end.x - start.x) * progress),
-@@ -162,11 +182,11 @@ enum InputSimulation {
+@@ -162,11 +220,11 @@ enum InputSimulation {
              previous = point
          }
  
@@ -1979,7 +2544,7 @@ index 5a06785..15dd4ff 100644
              var mutableChunk = chunk
              guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                    let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
-@@ -310,11 +330,7 @@ enum InputSimulation {
+@@ -310,11 +368,7 @@ enum InputSimulation {
          Thread.sleep(forTimeInterval: 0.03)
      }
  
@@ -1992,7 +2557,7 @@ index 5a06785..15dd4ff 100644
  
          if performAction(named: kAXRaiseAction as String, on: window) {
              return true
-@@ -331,11 +347,6 @@ enum InputSimulation {
+@@ -331,11 +385,6 @@ enum InputSimulation {
          return false
      }
  
@@ -2004,7 +2569,7 @@ index 5a06785..15dd4ff 100644
      private static func performAction(named action: String, on element: AXUIElement) -> Bool {
          guard availableActions(for: element).contains(where: { $0.caseInsensitiveCompare(action) == .orderedSame }) else {
              return false
-@@ -378,16 +389,6 @@ enum InputSimulation {
+@@ -378,16 +427,6 @@ enum InputSimulation {
          return (value as! AXUIElement)
      }
  
@@ -2021,7 +2586,7 @@ index 5a06785..15dd4ff 100644
      private static func wheel1(direction: String, pages: Double) -> Int32 {
          switch direction {
          case "up":
-@@ -416,3 +417,43 @@ enum InputSimulation {
+@@ -416,3 +455,43 @@ enum InputSimulation {
          return Int32(clamped)
      }
  }
@@ -2297,10 +2862,10 @@ index 35dff4b..a11f54e 100644
              description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
 diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/GlobalPointerTargetTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/GlobalPointerTargetTests.swift
 new file mode 100644
-index 0000000..7383391
+index 0000000..a5eff56
 --- /dev/null
 +++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/GlobalPointerTargetTests.swift
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,126 @@
 +import AppKit
 +import XCTest
 +@testable import OpenComputerUseKit
@@ -2374,6 +2939,26 @@ index 0000000..7383391
 +        }
 +    }
 +
++    func testFocusedElementOwnershipFiltersBeforeReadingSelectedText() {
++        struct Focus { let pid: pid_t; let window: Int; let selectedText: String }
++        for candidate in [
++            Focus(pid: 999, window: 42, selectedText: "foreign app"),
++            Focus(pid: 123, window: 43, selectedText: "other window"),
++            Focus(pid: 123, window: 42, selectedText: "target"),
++        ] {
++            var selectedTextReads = 0
++            let focused = ownedFocusedElement(candidate: candidate, appPID: 123,
++                readPID: { $0.pid }, belongsToWindow: { $0.window == 42 })
++            let selected = focused.map { value in
++                selectedTextReads += 1
++                return value.selectedText
++            }
++            let accepted = candidate.pid == 123 && candidate.window == 42
++            XCTAssertEqual(selectedTextReads, accepted ? 1 : 0)
++            XCTAssertEqual(selected, accepted ? "target" : nil)
++        }
++    }
++
 +    func testFailedPreparationNeverReachesDelivery() {
 +        for failure in ["stale", "activation", "raise", "geometry after raise", "timeout", "cancel"] {
 +            var delivered = false
@@ -2408,7 +2993,7 @@ index 0000000..7383391
 +    }
 +}
 diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
-index 250f5f2..b40cd09 100644
+index 250f5f2..333d279 100644
 --- a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
 +++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
 @@ -253,7 +253,7 @@ final class OpenComputerUseKitTests: XCTestCase {
@@ -2420,7 +3005,20 @@ index 250f5f2..b40cd09 100644
      }
  
      func testReadToolArgumentsAcceptsJSONObject() throws {
-@@ -1902,7 +1902,7 @@ final class OpenComputerUseKitTests: XCTestCase {
+@@ -918,6 +918,12 @@ final class OpenComputerUseKitTests: XCTestCase {
+         )
+     }
+ 
++    func testKeyboardTextFallbackRejectsSettableNonTextContainers() {
++        for role in ["AXGroup", "AXWindow", "AXWebArea", "AXSlider"] {
++            XCTAssertFalse(canUseKeyboardTextFallback(role: role, roleDescription: "container", isValueSettable: true), role)
++        }
++    }
++
+     func testKeyboardTextFallbackAcceptsEditableTextRole() {
+         XCTAssertTrue(
+             canUseKeyboardTextFallback(
+@@ -1902,7 +1908,7 @@ final class OpenComputerUseKitTests: XCTestCase {
          XCTAssertEqual(point, CGPoint(x: 530, y: 395))
      }
  
@@ -2429,7 +3027,7 @@ index 250f5f2..b40cd09 100644
          let main = WindowCaptureCandidate(
              windowID: 1,
              layer: 0,
-@@ -1920,9 +1920,9 @@ final class OpenComputerUseKitTests: XCTestCase {
+@@ -1920,9 +1926,9 @@ final class OpenComputerUseKitTests: XCTestCase {
              frontToBackIndex: 0
          )
  
@@ -2441,7 +3039,7 @@ index 250f5f2..b40cd09 100644
      }
  
      func testWindowCaptureKeepsHintedWindowWhenFrontmostDoesNotOverlap() {
-@@ -1943,7 +1943,7 @@ final class OpenComputerUseKitTests: XCTestCase {
+@@ -1943,7 +1949,7 @@ final class OpenComputerUseKitTests: XCTestCase {
              frontToBackIndex: 0
          )
  
@@ -2450,7 +3048,7 @@ index 250f5f2..b40cd09 100644
  
          XCTAssertEqual(selected?.windowID, main.windowID)
      }
-@@ -2319,6 +2319,7 @@ final class OpenComputerUseKitTests: XCTestCase {
+@@ -2319,6 +2325,7 @@ final class OpenComputerUseKitTests: XCTestCase {
              ),
              windowTitle: "Sample Chat",
              windowBounds: nil,
@@ -2458,7 +3056,7 @@ index 250f5f2..b40cd09 100644
              targetWindowID: nil,
              targetWindowLayer: nil,
              screenshotPNGData: nil,
-@@ -2435,3 +2436,92 @@ final class OpenComputerUseKitTests: XCTestCase {
+@@ -2435,3 +2442,92 @@ final class OpenComputerUseKitTests: XCTestCase {
          return (width, height)
      }
  }

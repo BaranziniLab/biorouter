@@ -188,7 +188,8 @@ $timer.Dispose()
                     raise RuntimeError("WinForms fixture did not open in the interactive session")
                 time.sleep(0.1)
             helper = subprocess.Popen([str(directory / "ocu.exe"), "mcp"], stdin=subprocess.PIPE,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                      env=dict(os.environ, OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS="1"))
             lines = queue.Queue()
             def reader():
                 for line in helper.stdout:
