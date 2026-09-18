@@ -14,6 +14,18 @@ import threading
 import time
 
 
+
+def read_fixture_json(path, timeout=2):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except (FileNotFoundError, PermissionError, json.JSONDecodeError) as error:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Fixture telemetry remained unreadable: {path}") from error
+            time.sleep(0.02)
+
+
 def diagnostics(fixture_pid, report, snapshot):
     report.with_name(report.stem + "-native-snapshot.txt").write_text(
         "\n".join(item.get("text", "") for item in snapshot.get("content", [])), encoding="utf-8")
@@ -78,7 +90,7 @@ def capture_metadata(result):
 def validate_capture_scope(result, target_window, list_only=False):
     metadata = capture_metadata(result)
     windows = metadata["windows"]
-    if len(windows) != 1 or windows[0].get("id") != target_window["id"] or windows[0].get("title") != FIXTURE_TITLE:
+    if len(windows) != 1 or windows[0] != target_window or windows[0].get("title") != FIXTURE_TITLE:
         raise AssertionError(f"Targeted capture disclosed windows outside its selected target: {windows}")
     if SENTINEL_TITLE in "\n".join(item.get("text", "") for item in result.get("content", [])):
         raise AssertionError("Targeted capture leaked unrelated sentinel metadata")
@@ -297,7 +309,7 @@ $timer.Dispose()
             if (work / "key.txt").read_text() != "F6":
                 raise AssertionError("Independent fixture did not receive the key")
             call("get_app_state", {"app": app})
-            coordinates = json.loads((work / "drag-geometry.json").read_text(encoding="utf-8-sig"))
+            coordinates = read_fixture_json(work / "drag-geometry.json")
             call("drag", {"app": app, **coordinates})
             deadline = time.monotonic() + 10
             drag_result = {}
@@ -315,13 +327,13 @@ $timer.Dispose()
             for direction, pages in [("down", 0.5), ("up", 0.5), ("down", 2.5), ("up", 2.5), ("right", 0.5), ("left", 0.5), ("right", 2.5), ("left", 2.5)]:
                 state = call("get_app_state", {"app": app})
                 text = "\n".join(c.get("text", "") for c in state["content"])
-                before = json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig"))
+                before = read_fixture_json(work / "scroll-metrics.json")
                 axis = "x" if direction in {"left", "right"} else "y"
                 sign = -1 if direction in {"up", "left"} else 1
                 expected = min(before["max_" + axis], max(0, before[axis] + sign * pages * before["page_" + axis]))
                 scroll_result = call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": direction, "pages": pages}, allow_error=True)
                 time.sleep(0.2)
-                actual = json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig"))
+                actual = read_fixture_json(work / "scroll-metrics.json")
                 receipt = {"direction": direction, "pages": pages, "before": before[axis], "expected": expected, "actual": actual[axis], "before_metrics": before, "after_metrics": actual, "tool_result": scroll_result, "granularity": before["native_step_" + axis]}
                 scroll_receipts.append(receipt)
                 report.with_name(report.stem + "-independent-scroll.json").write_text(json.dumps(scroll_receipts, indent=2))
@@ -334,9 +346,9 @@ $timer.Dispose()
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
             for invalid in [None, True, "2", 0, -1, 101]:
-                before = json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig"))
+                before = read_fixture_json(work / "scroll-metrics.json")
                 rejected = call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "down", "pages": invalid}, allow_error=True)
-                if not rejected.get("isError") or json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig")) != before:
+                if not rejected.get("isError") or read_fixture_json(work / "scroll-metrics.json") != before:
                     raise AssertionError(f"Invalid pages caused input or silently defaulted: {invalid!r}")
             inventory = capture_metadata(call("screen_capture", {"list_only": True}))
             target_windows = [window for window in inventory["windows"] if window.get("title") == FIXTURE_TITLE]

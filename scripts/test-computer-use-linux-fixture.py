@@ -85,11 +85,20 @@ def fixture(work):
         scroll_adjustment.connect("value-changed", record_scroll)
         scroll_adjustment.connect("changed", record_scroll)
 
-    sentinel = Gtk.Window(title=SENTINEL_TITLE)
-    sentinel.set_default_size(220, 80)
-    sentinel.move(750, 10)
-    sentinel.add(Gtk.Label(label="Unrelated synthetic content"))
-    sentinel.show_all()
+    sentinel = None
+    def show_sentinel():
+        nonlocal sentinel
+        if not (work / "show-sentinel").exists():
+            return True
+        sentinel = Gtk.Window(title=SENTINEL_TITLE)
+        sentinel.set_default_size(220, 80)
+        sentinel.move(750, 10)
+        sentinel.add(Gtk.Label(label="Unrelated synthetic content"))
+        sentinel.show_all()
+        window.present()
+        (work / "sentinel-ready").write_text("ready")
+        return False
+    GLib.timeout_add(100, show_sentinel)
     window.show_all()
     window.present()
     def ready():
@@ -174,7 +183,7 @@ def capture_metadata(result):
 def validate_capture_scope(result, target_window, list_only=False):
     metadata = capture_metadata(result)
     windows = metadata["windows"]
-    if len(windows) != 1 or windows[0].get("id") != target_window["id"] or windows[0].get("title") != FIXTURE_TITLE:
+    if len(windows) != 1 or windows[0] != target_window or windows[0].get("title") != FIXTURE_TITLE:
         raise AssertionError(f"Targeted capture disclosed windows outside its selected target: {windows}")
     if SENTINEL_TITLE in "\n".join(item.get("text", "") for item in result.get("content", [])):
         raise AssertionError("Targeted capture leaked unrelated sentinel metadata")
@@ -278,6 +287,8 @@ def main(directory, report):
             drag_result = json.loads((work / "drag-result.json").read_text())
             validate_drag(drag_result)
             print("PASS: GTK child received pressed drag motion and release at displaced endpoint", flush=True)
+            (work / "show-sentinel").write_text("show")
+            eventually(lambda: (work / "sentinel-ready").exists())
             inventory = capture_metadata(client.call("screen_capture", {"list_only": True}))
             target_windows = [window for window in inventory["windows"] if window.get("title") == FIXTURE_TITLE]
             if len(target_windows) != 1 or not any(window.get("title") == SENTINEL_TITLE for window in inventory["windows"]):
