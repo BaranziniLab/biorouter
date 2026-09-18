@@ -1720,10 +1720,10 @@ index 720e9d5..16176bf 100644
              "type_text" {
                  if (-not (Invoke-TypeText $process $operation.text)) {
 diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
-index ac464ef..39cf5ea 100644
+index ac464ef..9f6f930 100644
 --- a/docs/ARCHITECTURE.md
 +++ b/docs/ARCHITECTURE.md
-@@ -1,5 +1,29 @@
+@@ -1,5 +1,31 @@
  # 架构总览
  
 +## BioRouter downstream runtime contract
@@ -1748,6 +1748,8 @@ index ac464ef..39cf5ea 100644
 +
 +Windows drag requires `OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1`; absent or disabled consent returns unsupported before focus or input. It resolves the start child under the selected root and verifies root/child ownership, unchanged snapshot geometry, foreground identity, unheld mouse buttons, and every planned point's visible owning window. One `SendInput` batch contains absolute virtual-desktop motion, down, noncoalesced drag moves, and up. This preserves native button state for controls such as WinForms and keeps the complete gesture inside one native call rather than holding a button across script sleeps. A blocked or partial batch is an error, never replayed; partial insertion attempts only a movement-free button release. Already inserted input cannot be cancelled. Drag paths into another window or through an occluding window are refused.
 +
++A successful macOS AX write is not sufficient evidence of a value change: `set_value` polls the same control for the requested scalar and otherwise returns an unconfirmed-outcome error without another mutation. Chromium intentionally rejects direct slider setters in [its AX implementation](https://chromium.googlesource.com/chromium/src/+/HEAD/ui/accessibility/platform/ax_platform_node_cocoa.mm); use the slider's exposed Increment/Decrement actions or a deliberate drag when direct setting is unavailable. Integral AX page scrolling observes target-local descendant geometry and exposed axis scrollbar values, then waits for movement to settle before sending the next requested page. A direct target-owned axis scrollbar with finite min/max can prove a reached boundary; the result reports the actual verified page count. Calls accept up to 100 pages to bound work and avoid numeric conversion overflow. Unobserved progress stops remaining actions and reports the verified page count; it is not silently retried. Neither polling path changes keyboard or pointer event recipes.
++
 +The remaining sections describe the pinned upstream baseline; BioRouter-specific behavior above takes precedence.
 +
  这个仓库当前已经从模板收敛成一个本地 `computer-use` 项目。主线仍是 Swift 实现的 macOS automation MCP server，同时新增了实验性的 Windows 和 Linux runtime，用独立 Go 二进制暴露同一组 9 个 Computer Use tools。
@@ -1755,10 +1757,10 @@ index ac464ef..39cf5ea 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..b4182d2
+index 0000000..93ed56d
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,51 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1804,6 +1806,206 @@ index 0000000..b4182d2
 +The PowerShell contract covers disabled consent without focus/input, nested child coordinate resolution, foreign process/root/sibling rejection, failed translation, out-of-window points, bounded traversal, hidden/minimized/changed windows, foreground failure/change, held buttons, occlusion, virtual-desktop normalization, complete batch ordering, and blocked/partial insertion. Script parsing, native C# declaration compilation and INPUT ABI checks, and the mocked contract pass in portable PowerShell. Deliberate consent-bypass and moving-release regressions fail. Actual Windows fixture validation remains required; its independent pressed-motion/displacement assertions are unchanged, with global-pointer consent enabled only in the fixture helper environment.
 +
 +API references: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput, https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput, and https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-childwindowfrompointex.
++
++## Verified scalar writes and sequential page scrolling
++
++Live fixture events prove page scrolling moved, but rapid repeated AX page requests were coalesced into one viewport per multi-page call. Added bounded target-local geometry observation between authorized page actions; missing progress reports partial/unconfirmed completion without sending remaining actions. Scalar setters now verify readback instead of treating acknowledgment as success; Chromium slider direct writes can be rejected by the application, so alternatives remain explicit user/agent choices. Nine targeted regressions fail under old-behavior mutations (21 assertions) and pass restored; full non-live suite passes 194 tests. Updated payload live verification remains required.
++
++Review additions cover fixed-frame controls through axis scrollbar values, finite page bounds, and explicit edge reporting only from a direct target-owned axis scrollbar with valid min/max. Ancestor progress sampling stops at the application/window boundary. The final non-live suite passes 198 tests; all four new source/test files are included in the patch diff via intent-to-add.
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift
+new file mode 100644
+index 0000000..ba1e393
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift
+@@ -0,0 +1,188 @@
++import AppKit
++import ApplicationServices
++import Foundation
++
++struct AccessibilityScrollObservation: Equatable {
++    let frames: [CGRect]
++    let values: [Double]
++    let reachedBoundary: Bool
++
++    init(frames: [CGRect], values: [Double], reachedBoundary: Bool = false) {
++        self.frames = frames
++        self.values = values
++        self.reachedBoundary = reachedBoundary
++    }
++}
++
++struct AccessibilityScrollProbe {
++    let elements: [AXUIElement]
++    let scrollBars: [AXUIElement]
++    let boundaryScrollBar: AXUIElement?
++    let direction: String
++
++    init(target: AXUIElement, direction: String) throws {
++        let vertical = direction == "up" || direction == "down"
++        let barAttribute = vertical ? kAXVerticalScrollBarAttribute : kAXHorizontalScrollBarAttribute
++        let directBar = Self.elementAttribute(target, barAttribute)
++        let targetWindow = Self.elementAttribute(target, kAXWindowAttribute)
++        var targetPID: pid_t = 0
++        AXUIElementGetPid(target, &targetPID)
++        var bars: [AXUIElement] = []
++        var ancestor: AXUIElement? = target
++        for _ in 0..<4 {
++            try ComputerUseCancellation.check()
++            guard let element = ancestor else { break }
++            var owner: pid_t = 0
++            guard AXUIElementGetPid(element, &owner) == .success, owner == targetPID else { break }
++            if let targetWindow, CFEqual(element, targetWindow) { break }
++            if let targetWindow {
++                guard let window = Self.elementAttribute(element, kAXWindowAttribute), CFEqual(window, targetWindow) else { break }
++            }
++            if let bar = Self.elementAttribute(element, barAttribute) { bars.append(bar); break }
++            guard targetWindow != nil else { break }
++            ancestor = Self.elementAttribute(element, kAXParentAttribute)
++        }
++        var queue: [(AXUIElement, Int)] = [(target, 0)]
++        var probes: [AXUIElement] = []
++        var visited = 0
++        while !queue.isEmpty, visited < 64, probes.count < 12 {
++            try ComputerUseCancellation.check()
++            let (element, depth) = queue.removeFirst()
++            visited += 1
++            if depth > 0, let frame = resolveLocalFrame(of: element, windowBounds: nil), !frame.isEmpty {
++                probes.append(element)
++            }
++            if Self.stringAttribute(element, kAXRoleAttribute) == kAXScrollBarRole as String {
++                let orientation = Self.stringAttribute(element, kAXOrientationAttribute)
++                if orientation == (vertical ? kAXVerticalOrientationValue : kAXHorizontalOrientationValue) {
++                    bars.append(element)
++                }
++            }
++            if depth < 5 {
++                var value: CFTypeRef?
++                if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success,
++                   let children = value as? [AXUIElement] {
++                    queue.append(contentsOf: children.prefix(24).map { ($0, depth + 1) })
++                }
++            }
++        }
++        elements = probes
++        scrollBars = bars
++        if let directBar, let targetWindow {
++            var owner: pid_t = 0
++            boundaryScrollBar = AXUIElementGetPid(directBar, &owner) == .success
++                && owner == targetPID && focusedElementBelongsToWindow(directBar, window: targetWindow) ? directBar : nil
++        } else {
++            boundaryScrollBar = nil
++        }
++        self.direction = direction
++    }
++
++    func read() throws -> AccessibilityScrollObservation {
++        let frames = try elements.map { element in
++            try ComputerUseCancellation.check()
++            guard let frame = resolveLocalFrame(of: element, windowBounds: nil) else {
++                throw ComputerUseError.stateUnavailable("Scroll observation became unavailable. Outcome may be partial; inspect before retrying.")
++            }
++            return frame
++        }
++        let values = try scrollBars.map { element in
++            try ComputerUseCancellation.check()
++            var value: CFTypeRef?
++            guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
++                  let number = value as? NSNumber, number.doubleValue.isFinite else {
++                throw ComputerUseError.stateUnavailable("Scroll bar observation became unavailable. Outcome may be partial; inspect before retrying.")
++            }
++            return number.doubleValue
++        }
++        var reachedBoundary = false
++        if let bar = boundaryScrollBar,
++           let value = Self.numberAttribute(bar, kAXValueAttribute),
++           let minimum = Self.numberAttribute(bar, kAXMinValueAttribute),
++           let maximum = Self.numberAttribute(bar, kAXMaxValueAttribute) {
++            reachedBoundary = scrollValueAtBoundary(value: value, minimum: minimum, maximum: maximum, direction: direction)
++        }
++        return AccessibilityScrollObservation(frames: frames, values: values, reachedBoundary: reachedBoundary)
++    }
++
++    private static func numberAttribute(_ element: AXUIElement, _ attribute: String) -> Double? {
++        var value: CFTypeRef?
++        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
++              let value, CFGetTypeID(value) == CFNumberGetTypeID(),
++              let number = value as? NSNumber else { return nil }
++        return number.doubleValue
++    }
++
++    private static func elementAttribute(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
++        var value: CFTypeRef?
++        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
++              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
++        return (value as! AXUIElement)
++    }
++
++    private static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
++        var value: CFTypeRef?
++        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
++        return value as? String
++    }
++}
++
++struct PageScrollOutcome: Equatable {
++    let verifiedPages: Int
++    let reachedBoundary: Bool
++}
++
++func scrollValueAtBoundary(value: Double, minimum: Double, maximum: Double, direction: String) -> Bool {
++    guard value.isFinite, minimum.isFinite, maximum.isFinite, minimum < maximum,
++          value >= minimum, value <= maximum else { return false }
++    switch direction {
++    case "up", "left": return value == minimum
++    case "down", "right": return value == maximum
++    default: return false
++    }
++}
++
++@discardableResult
++func performObservedPageScroll<Observation: Equatable>(
++    pages: Int,
++    read: () throws -> Observation,
++    performPage: () throws -> Void,
++    pause: () -> Void,
++    isAtBoundary: (Observation) -> Bool = { _ in false },
++    checkCancellation: () throws -> Void = ComputerUseCancellation.check
++) throws -> PageScrollOutcome {
++    var previous = try read()
++    try checkCancellation()
++    if isAtBoundary(previous) { return PageScrollOutcome(verifiedPages: 0, reachedBoundary: true) }
++    for completed in 0..<pages {
++        try checkCancellation()
++        try performPage()
++        var changed = false
++        var stableSamples = 0
++        var settled = false
++        let deadline = ProcessInfo.processInfo.systemUptime + 2
++        for sample in 0..<40 {
++            try checkCancellation()
++            pause()
++            if ProcessInfo.processInfo.systemUptime >= deadline { break }
++            let current = try read()
++            try checkCancellation()
++            if current != previous {
++                changed = true
++                stableSamples = 0
++            } else {
++                stableSamples += 1
++            }
++            previous = current
++            if changed, stableSamples >= 4, sample >= 5 {
++                settled = true
++                break
++            }
++        }
++        guard settled else {
++            throw ComputerUseError.stateUnavailable("Scroll progress could not be confirmed after page \(completed + 1) of \(pages); \(completed) pages were verified. The target may be at a boundary or still moving. No remaining page actions were sent; inspect before retrying.")
++        }
++        if isAtBoundary(previous) { return PageScrollOutcome(verifiedPages: completed + 1, reachedBoundary: true) }
++    }
++    return PageScrollOutcome(verifiedPages: pages, reachedBoundary: false)
++}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..a91ac94 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
@@ -2066,7 +2268,7 @@ index 0000000..319b77a
 +    }
 +}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
-index ffee113..712b4e3 100644
+index ffee113..4a725d4 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
 @@ -382,10 +382,6 @@ func canUseActivationOnlyClickFallback(role: String?) -> Bool {
@@ -2100,20 +2302,44 @@ index ffee113..712b4e3 100644
          let result = AXUIElementPerformAction(element, rawAction as CFString)
          guard result == .success else {
              throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
-@@ -708,7 +705,11 @@ public final class ComputerUseService {
+@@ -688,9 +685,7 @@ public final class ComputerUseService {
+         guard ["up", "down", "left", "right"].contains(normalized) else {
+             throw ComputerUseError.message("Invalid scroll direction: \(direction)")
+         }
+-        guard pages.isFinite, pages > 0 else {
+-            throw ComputerUseError.message("pages must be > 0")
+-        }
++        try validateScrollPages(pages)
+ 
+         let snapshot = try currentSnapshot(for: query)
+         let record = try lookupElement(snapshot: snapshot, index: elementIndex)
+@@ -707,9 +702,22 @@ public final class ComputerUseService {
+         if let repeatCount = integralScrollPageCount(pages),
             let rawAction = record.rawActions.first(where: { $0.caseInsensitiveCompare("AXScroll\(normalized.capitalized)ByPage") == .orderedSame }),
             let element = record.element {
-             for _ in 0..<repeatCount {
+-            for _ in 0..<repeatCount {
 -                _ = AXUIElementPerformAction(element, rawAction as CFString)
-+                try ComputerUseCancellation.check()
-+                let result = AXUIElementPerformAction(element, rawAction as CFString)
-+                guard result == .success else {
-+                    throw ComputerUseError.message("Scroll action failed (\(result.rawValue)); outcome may be uncertain. Inspect before retrying.")
-+                }
-                 Thread.sleep(forTimeInterval: 0.05)
+-                Thread.sleep(forTimeInterval: 0.05)
++            let probe = try AccessibilityScrollProbe(target: element, direction: normalized)
++            let outcome = try performObservedPageScroll(
++                pages: repeatCount,
++                read: { try probe.read() },
++                performPage: {
++                    let result = AXUIElementPerformAction(element, rawAction as CFString)
++                    guard result == .success else {
++                        throw ComputerUseError.message("Scroll action failed (\(result.rawValue)); outcome may be uncertain. Inspect before retrying.")
++                    }
++                },
++                pause: { Thread.sleep(forTimeInterval: 0.05) },
++                isAtBoundary: { $0.reachedBoundary }
++            )
++            if outcome.reachedBoundary {
++                let result = snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
++                return ToolCallResult(content: result.content + [.text("Reached the scroll boundary after \(outcome.verifiedPages) verified page actions of \(repeatCount) requested.")], isError: false)
              }
          } else if let point = try globalPoint(for: record, snapshot: snapshot) {
-@@ -749,38 +750,60 @@ public final class ComputerUseService {
+             try performScrollEvent(
+@@ -749,38 +757,60 @@ public final class ComputerUseService {
      }
  
      public func typeText(app query: String, text: String) throws -> ToolCallResult {
@@ -2180,7 +2406,7 @@ index ffee113..712b4e3 100644
      public func setValue(app query: String, elementIndex: String, value: String) throws -> ToolCallResult {
          let snapshot = try currentSnapshot(for: query)
          let record = try lookupElement(snapshot: snapshot, index: elementIndex)
-@@ -806,11 +829,23 @@ public final class ComputerUseService {
+@@ -806,16 +836,32 @@ public final class ComputerUseService {
              throw ComputerUseError.message(nonSettableSetValueErrorMessage)
          }
  
@@ -2197,15 +2423,29 @@ index ffee113..712b4e3 100644
  
          do {
 -            let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
+-            guard result == .success else {
+-                throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
+-            }
+-
+-            Thread.sleep(forTimeInterval: 0.1)
 +            try ComputerUseCancellation.check()
-+            let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, typedValue)
-+            if result == .cannotComplete {
-+                throw ComputerUseError.message("Accessibility operation could not complete; outcome is uncertain. Inspect before retrying.")
-+            }
-             guard result == .success else {
-                 throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
-             }
-@@ -826,11 +861,12 @@ public final class ComputerUseService {
++            try writeAccessibilityValueAndVerify(
++                expected: typedValue,
++                write: { AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, typedValue) },
++                read: {
++                    var observed: CFTypeRef?
++                    let result = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &observed)
++                    guard result == .success, let observed else {
++                        throw ComputerUseError.stateUnavailable("set_value was sent but its result could not be read (error \(result.rawValue)). Outcome is unconfirmed; inspect before retrying.")
++                    }
++                    return observed
++                },
++                pause: { Thread.sleep(forTimeInterval: 0.05) }
++            )
+         } catch {
+             settleVisualCursor(at: cursorTarget)
+             throw error
+@@ -826,11 +872,12 @@ public final class ComputerUseService {
      }
  
      private func currentSnapshot(for query: String) throws -> AppSnapshot {
@@ -2219,7 +2459,7 @@ index ffee113..712b4e3 100644
      }
  
      @discardableResult
-@@ -840,6 +876,7 @@ public final class ComputerUseService {
+@@ -840,6 +887,7 @@ public final class ComputerUseService {
          treeLimits: AccessibilityTreeLimits = .defaults,
          recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation
      ) throws -> AppSnapshot {
@@ -2227,7 +2467,7 @@ index ffee113..712b4e3 100644
          let app = try AppDiscovery.resolve(query)
          let snapshot = try SnapshotBuilder.build(
              for: app,
-@@ -848,6 +885,7 @@ public final class ComputerUseService {
+@@ -848,6 +896,7 @@ public final class ComputerUseService {
              recoveryPolicy: recoveryPolicy
          )
  
@@ -2235,7 +2475,7 @@ index ffee113..712b4e3 100644
          let keys = Set([
              query.lowercased(),
              app.name.lowercased(),
-@@ -951,6 +989,7 @@ public final class ComputerUseService {
+@@ -951,6 +1000,7 @@ public final class ComputerUseService {
              return false
          }
  
@@ -2243,7 +2483,7 @@ index ffee113..712b4e3 100644
          let result = AXUIElementSetAttributeValue(
              target.list,
              kAXSelectedChildrenAttribute as CFString,
-@@ -961,7 +1000,9 @@ public final class ComputerUseService {
+@@ -961,7 +1011,9 @@ public final class ComputerUseService {
          case .success:
              Thread.sleep(forTimeInterval: 0.15)
              return true
@@ -2254,7 +2494,7 @@ index ffee113..712b4e3 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue(\(kAXSelectedChildrenAttribute)) failed with \(result.rawValue)")
-@@ -1083,6 +1124,7 @@ public final class ComputerUseService {
+@@ -1083,6 +1135,7 @@ public final class ComputerUseService {
  
          let attempts = max(repeatCount, 1)
          for index in 0..<attempts {
@@ -2262,7 +2502,7 @@ index ffee113..712b4e3 100644
              let result = AXUIElementPerformAction(element, action as CFString)
              switch result {
              case .success:
-@@ -1091,7 +1133,9 @@ public final class ComputerUseService {
+@@ -1091,7 +1144,9 @@ public final class ComputerUseService {
                  }
              case .attributeUnsupported where action.caseInsensitiveCompare("AXOpen") == .orderedSame:
                  return true
@@ -2273,7 +2513,7 @@ index ffee113..712b4e3 100644
                  return false
              default:
                  throw ComputerUseError.message("AXUIElementPerformAction(\(action)) failed with \(result.rawValue)")
-@@ -1120,11 +1164,14 @@ public final class ComputerUseService {
+@@ -1120,11 +1175,14 @@ public final class ComputerUseService {
      }
  
      private func setBoolAttribute(named attribute: String, on element: AXUIElement) throws -> Bool {
@@ -2289,7 +2529,7 @@ index ffee113..712b4e3 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue(\(attribute)) failed with \(result.rawValue)")
-@@ -1409,11 +1456,15 @@ public final class ComputerUseService {
+@@ -1409,11 +1467,15 @@ public final class ComputerUseService {
          }
  
          let baseValue = editableBaseValue(for: element)
@@ -2306,7 +2546,7 @@ index ffee113..712b4e3 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
-@@ -1797,7 +1848,7 @@ public final class ComputerUseService {
+@@ -1797,7 +1859,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -2315,7 +2555,7 @@ index ffee113..712b4e3 100644
              try InputSimulation.scrollGlobally(at: eventPoint, direction: direction, pages: pages)
              return
          }
-@@ -1822,7 +1873,7 @@ public final class ComputerUseService {
+@@ -1822,7 +1884,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -2324,7 +2564,7 @@ index ffee113..712b4e3 100644
              try InputSimulation.dragGlobally(from: eventStart, to: eventEnd)
          case .appPost:
              try InputSimulation.dragTargeted(from: eventStart, to: eventEnd, pid: snapshot.app.pid)
-@@ -1846,7 +1897,7 @@ public final class ComputerUseService {
+@@ -1846,7 +1908,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -2333,7 +2573,7 @@ index ffee113..712b4e3 100644
              try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
              return
          }
-@@ -1910,7 +1961,7 @@ public final class ComputerUseService {
+@@ -1910,7 +1972,7 @@ public final class ComputerUseService {
                  )
              }
              debugClickDecision("requested=global executed=global_hid target=\(targetDescription)")
@@ -2342,7 +2582,7 @@ index ffee113..712b4e3 100644
              try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
          case .auto, .accessibility:
              throw ComputerUseError.message(
-@@ -1927,3 +1978,23 @@ public final class ComputerUseService {
+@@ -1927,3 +1989,56 @@ public final class ComputerUseService {
          return ToolCallResult(content: content)
      }
  }
@@ -2364,6 +2604,39 @@ index ffee113..712b4e3 100644
 +        return NSNumber(value: number)
 +    default:
 +        throw ComputerUseError.invalidArguments("set_value supports text, numeric, and boolean AX values; this control has an unsupported value type")
++    }
++}
++
++func writeAccessibilityValueAndVerify(
++    expected: CFTypeRef,
++    write: () -> AXError,
++    read: () throws -> CFTypeRef,
++    pause: () -> Void,
++    checkCancellation: () throws -> Void = ComputerUseCancellation.check
++) throws {
++    try checkCancellation()
++    let result = write()
++    guard result == .success else {
++        throw ComputerUseError.message("AX value write returned error \(result.rawValue); outcome is unconfirmed. Inspect before retrying.")
++    }
++    let deadline = ProcessInfo.processInfo.systemUptime + 1
++    for _ in 0..<20 {
++        try checkCancellation()
++        if ProcessInfo.processInfo.systemUptime >= deadline { break }
++        let observed = try read()
++        try checkCancellation()
++        if CFGetTypeID(observed) == CFGetTypeID(expected), CFEqual(observed, expected) { return }
++        pause()
++    }
++    throw ComputerUseError.stateUnavailable("set_value was acknowledged but the requested value was not observed. No alternate action was attempted. Inspect the control; if direct setting is unsupported, use an exposed Increment/Decrement action or drag intentionally.")
++}
++
++func validateScrollPages(_ pages: Double) throws {
++    guard pages.isFinite, pages > 0 else {
++        throw ComputerUseError.message("pages must be > 0")
++    }
++    guard pages <= 100 else {
++        throw ComputerUseError.invalidArguments("scroll supports at most 100 pages per call; inspect progress before requesting more")
 +    }
 +}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
@@ -2860,6 +3133,231 @@ index 35dff4b..a11f54e 100644
          ToolDefinition(
              name: "click",
              description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityScrollProgressTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityScrollProgressTests.swift
+new file mode 100644
+index 0000000..b0b1df2
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityScrollProgressTests.swift
+@@ -0,0 +1,102 @@
++import AppKit
++import XCTest
++@testable import OpenComputerUseKit
++
++final class AccessibilityScrollProgressTests: XCTestCase {
++    func testMultiplePagesWaitForProgressAndSettleBetweenActions() throws {
++        var pages = 0
++        var ticks = 100
++        var position = 0
++        try performObservedPageScroll(pages: 3, read: {
++            if ticks == 2 { position += 100 }
++            return position
++        }, performPage: {
++            XCTAssertGreaterThanOrEqual(ticks, 6, "A second action during animation would coalesce")
++            pages += 1
++            ticks = 0
++        }, pause: { ticks += 1 })
++        XCTAssertEqual(pages, 3)
++        XCTAssertEqual(position, 300)
++    }
++
++    func testFixedFrameScrollControlsUseChangingScrollBarValues() throws {
++        var pages = 0
++        let fixed = CGRect(x: 20, y: 40, width: 400, height: 300)
++        try performObservedPageScroll(pages: 3, read: {
++            AccessibilityScrollObservation(frames: [fixed], values: [Double(pages) / 10])
++        }, performPage: { pages += 1 }, pause: {})
++        XCTAssertEqual(pages, 3)
++    }
++
++    func testScrollPageBoundsRejectOverflowBeforeInput() {
++        for pages in [Double.greatestFiniteMagnitude, Double(Int.max), 101, Double.infinity, Double.nan, 0, -1] {
++            XCTAssertThrowsError(try validateScrollPages(pages))
++        }
++        for pages in [0.5, 1, 100] { XCTAssertNoThrow(try validateScrollPages(pages)) }
++    }
++
++    func testBoundaryDirectionAndRangeMustBeExplicit() {
++        for direction in ["up", "left"] {
++            XCTAssertTrue(scrollValueAtBoundary(value: 0, minimum: 0, maximum: 1, direction: direction))
++            XCTAssertFalse(scrollValueAtBoundary(value: 1, minimum: 0, maximum: 1, direction: direction))
++        }
++        for direction in ["down", "right"] {
++            XCTAssertTrue(scrollValueAtBoundary(value: 1, minimum: 0, maximum: 1, direction: direction))
++            XCTAssertFalse(scrollValueAtBoundary(value: 0, minimum: 0, maximum: 1, direction: direction))
++        }
++        XCTAssertFalse(scrollValueAtBoundary(value: 0.5, minimum: 0, maximum: 1, direction: "down"))
++        XCTAssertFalse(scrollValueAtBoundary(value: 0, minimum: 0, maximum: 0, direction: "up"))
++        XCTAssertFalse(scrollValueAtBoundary(value: .nan, minimum: 0, maximum: 1, direction: "up"))
++        XCTAssertFalse(scrollValueAtBoundary(value: 2, minimum: 0, maximum: 1, direction: "down"))
++    }
++
++    func testKnownBoundaryReturnsActualPagesWithoutOvershoot() throws {
++        var pages = 0
++        let outcome = try performObservedPageScroll(pages: 5, read: { min(pages, 2) }, performPage: {
++            pages += 1
++        }, pause: {}, isAtBoundary: { $0 == 2 })
++        XCTAssertEqual(outcome, PageScrollOutcome(verifiedPages: 2, reachedBoundary: true))
++        XCTAssertEqual(pages, 2)
++        let alreadyAtEdge = try performObservedPageScroll(pages: 5, read: { 2 }, performPage: {
++            XCTFail("Already at edge")
++        }, pause: {}, isAtBoundary: { $0 == 2 })
++        XCTAssertEqual(alreadyAtEdge, PageScrollOutcome(verifiedPages: 0, reachedBoundary: true))
++    }
++
++    func testNoProgressStopsBeforeRemainingActions() {
++        var pages = 0
++        XCTAssertThrowsError(try performObservedPageScroll(pages: 5, read: { 21 }, performPage: {
++            pages += 1
++        }, pause: {})) { error in
++            XCTAssertTrue(String(describing: error).contains("0 pages were verified"))
++        }
++        XCTAssertEqual(pages, 1)
++    }
++
++    func testPartialProgressReportsActualCompletedPages() {
++        var pages = 0
++        XCTAssertThrowsError(try performObservedPageScroll(pages: 3, read: { pages == 0 ? 0 : 100 }, performPage: {
++            pages += 1
++        }, pause: {})) { error in
++            XCTAssertTrue(String(describing: error).contains("1 pages were verified"))
++        }
++        XCTAssertEqual(pages, 2)
++    }
++
++    func testCancelledOrUnreadableObservationNeverSendsAnotherPage() {
++        for failure in ["cancel", "stale"] {
++            var pages = 0
++            var cancelled = false
++            XCTAssertThrowsError(try performObservedPageScroll(pages: 3, read: {
++                if pages > 0 {
++                    if failure == "stale" { throw ComputerUseError.stateUnavailable("stale") }
++                    cancelled = true
++                }
++                return pages
++            }, performPage: { pages += 1 }, pause: {}, checkCancellation: {
++                if cancelled { throw ComputerUseError.stateUnavailable("cancelled") }
++            }))
++            XCTAssertEqual(pages, 1)
++        }
++    }
++}
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityValueReadbackTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityValueReadbackTests.swift
+new file mode 100644
+index 0000000..8226ec9
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityValueReadbackTests.swift
+@@ -0,0 +1,66 @@
++import AppKit
++import XCTest
++@testable import OpenComputerUseKit
++
++final class AccessibilityValueReadbackTests: XCTestCase {
++    func testWritesOnceAndWaitsForRequestedValue() throws {
++        var writes = 0
++        var reads = 0
++        try writeAccessibilityValueAndVerify(expected: NSNumber(value: 60), write: {
++            writes += 1; return .success
++        }, read: {
++            reads += 1
++            return NSNumber(value: reads < 3 ? 21 : 60)
++        }, pause: {})
++        XCTAssertEqual(writes, 1)
++        XCTAssertEqual(reads, 3)
++    }
++
++    func testAcknowledgedNoOpNeverReportsSuccessOrReplays() {
++        var writes = 0
++        var reads = 0
++        XCTAssertThrowsError(try writeAccessibilityValueAndVerify(expected: NSNumber(value: 60), write: {
++            writes += 1; return .success
++        }, read: {
++            reads += 1; return NSNumber(value: 21)
++        }, pause: {}))
++        XCTAssertEqual(writes, 1)
++        XCTAssertEqual(reads, 20)
++    }
++
++    func testStaleOrUnreadableTargetDoesNotReplay() {
++        for error in [AXError.invalidUIElement, .cannotComplete, .attributeUnsupported] {
++            var writes = 0
++            var reads = 0
++            XCTAssertThrowsError(try writeAccessibilityValueAndVerify(expected: "requested" as CFString, write: {
++                writes += 1; return .success
++            }, read: {
++                reads += 1
++                throw ComputerUseError.stateUnavailable("read error \(error.rawValue)")
++            }, pause: { XCTFail("Uncertain read must stop") }))
++            XCTAssertEqual(writes, 1)
++            XCTAssertEqual(reads, 1)
++        }
++    }
++
++    func testCancellationDuringReadCannotBecomeSuccess() {
++        var cancelled = false
++        var writes = 0
++        XCTAssertThrowsError(try writeAccessibilityValueAndVerify(expected: kCFBooleanTrue, write: {
++            writes += 1; return .success
++        }, read: {
++            cancelled = true; return kCFBooleanTrue
++        }, pause: { XCTFail("Cancelled") }, checkCancellation: {
++            if cancelled { throw ComputerUseError.stateUnavailable("cancelled") }
++        }))
++        XCTAssertEqual(writes, 1)
++    }
++
++    func testUncertainWriteStopsBeforeReadOrReplay() {
++        var writes = 0
++        XCTAssertThrowsError(try writeAccessibilityValueAndVerify(expected: NSNumber(value: 42), write: {
++            writes += 1; return .cannotComplete
++        }, read: { XCTFail("Cannot infer completion"); return NSNumber(value: 42) }, pause: {}))
++        XCTAssertEqual(writes, 1)
++    }
++}
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityValueTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityValueTests.swift
+new file mode 100644
+index 0000000..b7f7a7d
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityValueTests.swift
+@@ -0,0 +1,39 @@
++import AppKit
++import XCTest
++@testable import OpenComputerUseKit
++
++final class AccessibilityValueTests: XCTestCase {
++    func testNumericValueUsesCFNumberInsteadOfString() throws {
++        let value = try accessibilityValue(from: "42", currentValue: NSNumber(value: 21))
++        XCTAssertEqual(CFGetTypeID(value), CFNumberGetTypeID())
++        XCTAssertEqual((value as? NSNumber)?.doubleValue, 42)
++        let fractional = try accessibilityValue(from: "12.5", currentValue: NSNumber(value: 0.5))
++        XCTAssertEqual((fractional as? NSNumber)?.doubleValue, 12.5)
++    }
++
++    func testBooleanValueUsesStrictCFBoolean() throws {
++        for text in ["true", "false"] {
++            let value = try accessibilityValue(from: text, currentValue: kCFBooleanFalse)
++            XCTAssertEqual(CFGetTypeID(value), CFBooleanGetTypeID())
++            XCTAssertEqual((value as? NSNumber)?.boolValue, text == "true")
++        }
++        for text in ["1", "0", "yes", "TRUE", ""] {
++            XCTAssertThrowsError(try accessibilityValue(from: text, currentValue: kCFBooleanTrue), text)
++        }
++    }
++
++    func testTextRemainsLiteral() throws {
++        for text in ["42", "false", "  text \n", ""] {
++            let value = try accessibilityValue(from: text, currentValue: "original" as CFString)
++            XCTAssertEqual(CFGetTypeID(value), CFStringGetTypeID())
++            XCTAssertEqual(value as? String, text)
++        }
++    }
++
++    func testNumericAndUnsupportedValuesRejectBeforeWriting() {
++        for text in ["NaN", "inf", "-Infinity", "1e999", "not a number", ""] {
++            XCTAssertThrowsError(try accessibilityValue(from: text, currentValue: NSNumber(value: 21)), text)
++        }
++        XCTAssertThrowsError(try accessibilityValue(from: "anything", currentValue: [] as CFArray))
++    }
++}
 diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/GlobalPointerTargetTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/GlobalPointerTargetTests.swift
 new file mode 100644
 index 0000000..a5eff56
