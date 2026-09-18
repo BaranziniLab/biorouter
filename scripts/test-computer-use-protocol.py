@@ -8,6 +8,30 @@ import subprocess
 
 TOOLS = {"list_apps", "get_app_state", "click", "perform_secondary_action", "scroll", "drag",
          "type_text", "press_key", "set_value", "screen_capture"}
+CONTRACT = Path(__file__).resolve().parents[1] / "crates/biorouter-mcp/tests/fixtures/computer-use-tools.json"
+
+
+def semantic_schema(value):
+    if isinstance(value, dict):
+        return {key: semantic_schema(item) for key, item in value.items()
+                if key not in {"description", "title", "default", "$schema"}}
+    if isinstance(value, list):
+        return [semantic_schema(item) for item in value]
+    return value
+
+
+def validate_tools(tools):
+    expected = json.loads(CONTRACT.read_text())["tools"]
+    names = {tool["name"] for tool in tools}
+    if names != TOOLS or len(tools) != len(TOOLS):
+        raise ValueError(f"Native tool contract mismatch: received {sorted(names)}")
+    for tool in expected:
+        actual = next(item for item in tools if item["name"] == tool["name"])
+        actual_schema = json.dumps(semantic_schema(actual.get("inputSchema")), sort_keys=True)
+        expected_schema = json.dumps(tool["inputSchema"], sort_keys=True)
+        if actual_schema != expected_schema:
+            raise ValueError(f"Native schema mismatch: {tool['name']}")
+    return names
 
 
 def check(directory):
@@ -31,11 +55,7 @@ def check(directory):
     if initialized["serverInfo"].get("version") != manifest["upstream_version"]:
         raise ValueError("Native helper runtime version does not match source manifest")
     tools = replies.get(2, {}).get("result", {}).get("tools", [])
-    names = {tool["name"] for tool in tools}
-    if names != TOOLS or len(tools) != len(TOOLS):
-        raise ValueError(f"Native tool contract mismatch: received {sorted(names)}")
-    if any(tool.get("inputSchema", {}).get("type") != "object" for tool in tools):
-        raise ValueError("Native tool has no object input schema")
+    names = validate_tools(tools)
     print(json.dumps({"target": manifest["target"], "server": replies[1]["result"]["serverInfo"],
                       "tools": sorted(names), "desktop_operations_performed": False}))
 

@@ -381,3 +381,38 @@ for line in sys.stdin:
         assert!(validate_tools(&listing).is_err());
     }
 }
+
+#[cfg(test)]
+mod schema_contract_tests {
+    use super::*;
+    #[test]
+    fn native_ci_schema_snapshot_matches_the_runtime_handshake_contract() {
+        let listing: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/computer-use-tools.json"))
+                .unwrap();
+        validate_tools(&listing).unwrap();
+        assert_eq!(
+            listing["tools"].as_array().unwrap().len(),
+            contract::TOOL_NAMES.len()
+        );
+        for (name, argument, bound) in [
+            ("click", "click_count", "minimum"),
+            ("click", "click_count", "maximum"),
+            ("scroll", "pages", "exclusiveMinimum"),
+            ("scroll", "pages", "maximum"),
+        ] {
+            let mut drifted = listing.clone();
+            let tool = drifted["tools"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            tool["inputSchema"]["properties"][argument]
+                .as_object_mut()
+                .unwrap()
+                .remove(bound);
+            assert!(validate_tools(&drifted).is_err());
+        }
+    }
+}

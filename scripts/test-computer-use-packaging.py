@@ -13,6 +13,39 @@ spec = importlib.util.spec_from_file_location("runtime", Path(__file__).with_nam
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
 
+protocol_spec = importlib.util.spec_from_file_location("protocol", Path(__file__).with_name("test-computer-use-protocol.py"))
+protocol = importlib.util.module_from_spec(protocol_spec)
+protocol_spec.loader.exec_module(protocol)
+
+
+class NativeContractTests(unittest.TestCase):
+    def test_reviewed_schema_accepts_only_documentation_differences(self):
+        tools = json.loads(protocol.CONTRACT.read_text())["tools"]
+        tools[0]["inputSchema"]["description"] = "Platform-specific documentation"
+        self.assertEqual(protocol.validate_tools(tools), protocol.TOOLS)
+
+    def test_native_bounds_drift_is_rejected_before_desktop_actions(self):
+        for name, parameter, keyword in [("click", "click_count", "maximum"),
+                                         ("click", "click_count", "minimum"),
+                                         ("scroll", "pages", "maximum"),
+                                         ("scroll", "pages", "exclusiveMinimum")]:
+            with self.subTest(name=name, keyword=keyword):
+                tools = json.loads(protocol.CONTRACT.read_text())["tools"]
+                tool = next(item for item in tools if item["name"] == name)
+                del tool["inputSchema"]["properties"][parameter][keyword]
+                with self.assertRaisesRegex(ValueError, "Native schema mismatch"):
+                    protocol.validate_tools(tools)
+
+    def test_boolean_is_not_a_numeric_schema_bound(self):
+        for name, parameter, keyword, boolean in [("click", "click_count", "minimum", True),
+                                                  ("scroll", "pages", "exclusiveMinimum", False)]:
+            with self.subTest(name=name):
+                tools = json.loads(protocol.CONTRACT.read_text())["tools"]
+                tool = next(item for item in tools if item["name"] == name)
+                tool["inputSchema"]["properties"][parameter][keyword] = boolean
+                with self.assertRaisesRegex(ValueError, "Native schema mismatch"):
+                    protocol.validate_tools(tools)
+
 
 class PayloadTests(unittest.TestCase):
     def setUp(self):

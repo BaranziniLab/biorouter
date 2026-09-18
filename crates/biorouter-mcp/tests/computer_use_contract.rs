@@ -10,6 +10,65 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+#[test]
+fn native_numeric_contract_rejects_invalid_supplied_values() {
+    for (name, argument, valid, invalid) in [
+        (
+            "click",
+            "click_count",
+            vec![json!(1), json!(2), json!(100)],
+            vec![
+                json!(0),
+                json!(-1),
+                json!(101),
+                json!(1.5),
+                json!(1e100),
+                json!(true),
+                json!(null),
+                json!("2"),
+            ],
+        ),
+        (
+            "scroll",
+            "pages",
+            vec![json!(0.25), json!(1), json!(100)],
+            vec![
+                json!(0),
+                json!(-1),
+                json!(100.01),
+                json!(1e100),
+                json!(true),
+                json!(null),
+                json!("2"),
+            ],
+        ),
+    ] {
+        let tool = contract::tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .unwrap();
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let mut arguments = if name == "scroll" {
+            json!({"app":"synthetic", "element_index":"1", "direction":"down"})
+        } else {
+            json!({"app":"synthetic"})
+        };
+        assert!(
+            validator.is_valid(&arguments),
+            "absent optional value retains its default"
+        );
+        for value in valid {
+            arguments[argument] = value;
+            assert!(validator.is_valid(&arguments), "{arguments}");
+        }
+        for value in invalid {
+            arguments[argument] = value;
+            assert!(!validator.is_valid(&arguments), "{arguments}");
+        }
+    }
+}
+
 async fn tools_over_mcp<S: rmcp::ServerHandler + Send + 'static>(
     handler: S,
 ) -> Vec<rmcp::model::Tool> {
