@@ -58,12 +58,33 @@ def fixture(work):
     view = Gtk.TextView()
     view.set_editable(False)
     view.get_accessible().set_name("FixtureScroll")
-    view.get_buffer().set_text("\n".join(f"Fixture scroll row {i:04d}" for i in range(400)))
+    view.get_buffer().set_text("\n".join(f"Fixture scroll row {i:04d} " + "0123456789 " * 100 for i in range(400)))
     scroller.add(view)
+    mixed = Gtk.Button(label="Use mixed length lines")
+    def use_mixed_lines(_button):
+        view.get_buffer().set_text("\n".join("0123456789 " * 100 if index == 50 else "short" for index in range(100)))
+        scroller.get_hadjustment().set_value(0)
+        scroller.get_vadjustment().set_value(0)
+        GLib.timeout_add(200, lambda: ((work / "mixed-ready").write_text("ready"), False)[1])
+    mixed.connect("clicked", use_mixed_lines)
+    box.pack_start(mixed, False, False, 0)
     box.pack_start(scroller, True, True, 0)
     adjustment = scroller.get_vadjustment()
     adjustment.connect("value-changed", lambda value: (work / "scroll.txt").write_text(str(value.get_value())))
     (work / "scroll.txt").write_text("0")
+    def record_scroll(*_args):
+        horizontal = scroller.get_hadjustment()
+        vertical = scroller.get_vadjustment()
+        metrics = {"x": horizontal.get_value(), "y": vertical.get_value(),
+                   "page_x": horizontal.get_page_size(), "page_y": vertical.get_page_size(),
+                   "max_x": horizontal.get_upper() - horizontal.get_page_size(),
+                   "max_y": vertical.get_upper() - vertical.get_page_size(),
+                   "line_height": view.get_iter_location(view.get_buffer().get_start_iter()).height}
+        (work / "scroll-metrics.json").write_text(json.dumps(metrics))
+    for scroll_adjustment in (scroller.get_hadjustment(), adjustment):
+        scroll_adjustment.connect("value-changed", record_scroll)
+        scroll_adjustment.connect("changed", record_scroll)
+
     window.show_all()
     window.present()
     def ready():
@@ -72,6 +93,7 @@ def fixture(work):
         (work / "drag-geometry.json").write_text(json.dumps({"from_x": surface.x - frame.x + 30,
             "from_y": surface.y - frame.y + surface.height / 2,
             "to_x": surface.x - frame.x + 150, "to_y": surface.y - frame.y + surface.height / 2}))
+        record_scroll()
         (work / "ready").write_text("ready")
         return False
     GLib.timeout_add(500, ready)
@@ -163,14 +185,44 @@ def main(directory, report):
             if (work / "result.txt").read_text() != "BioRouter AT-SPI verified":
                 raise AssertionError("Independent GTK fixture text/click result did not match")
             print("PASS: editable text and accessibility click independently confirmed by GTK fixture", flush=True)
+            scroll_receipts = []
+            for direction, pages in [("down", 0.5), ("up", 0.5), ("down", 2.5), ("up", 2.5), ("right", 0.5), ("left", 0.5), ("right", 2.5), ("left", 2.5)]:
+                tree = state()
+                before = json.loads((work / "scroll-metrics.json").read_text())
+                axis = "x" if direction in {"left", "right"} else "y"
+                sign = -1 if direction in {"up", "left"} else 1
+                expected = min(before["max_" + axis], max(0, before[axis] + sign * pages * before["page_" + axis]))
+                client.call("scroll", {"app": app, "element_index": element("FixtureScroll", tree), "direction": direction, "pages": pages})
+                actual = json.loads((work / "scroll-metrics.json").read_text())
+                tolerance = before["line_height"] + 1 if axis == "y" else 12
+                receipt = {"direction": direction, "pages": pages, "before": before[axis], "expected": expected, "actual": actual[axis], "tolerance": tolerance}
+                scroll_receipts.append(receipt)
+                report.with_name(report.stem + "-independent-scroll.json").write_text(json.dumps(scroll_receipts, indent=2))
+                if abs(actual[axis] - expected) > tolerance:
+                    raise AssertionError(f"Requested viewport displacement not observed: {receipt}")
+            print("PASS: independent GTK viewport fractions and multi-page scrolling in both axes", flush=True)
             tree = state()
-            scroll_index = element("FixtureScroll", tree)
-            client.call("click", {"app": app, "element_index": scroll_index})
+            for invalid in [None, True, "2", 0, -1, 101]:
+                before = json.loads((work / "scroll-metrics.json").read_text())
+                rejected = client.call("scroll", {"app": app, "element_index": element("FixtureScroll", tree), "direction": "down", "pages": invalid}, allow_error=True)
+                if not rejected.get("isError") or json.loads((work / "scroll-metrics.json").read_text()) != before:
+                    raise AssertionError(f"Invalid pages caused input or silently defaulted: {invalid!r}")
+            before = json.loads((work / "scroll-metrics.json").read_text())
+            rejected = client.call("scroll", {"app": app, "element_index": element("FixtureScroll", tree), "direction": "down", "pages": 0.001}, allow_error=True)
+            if not rejected.get("isError") or json.loads((work / "scroll-metrics.json").read_text()) != before:
+                raise AssertionError("Sub-character fractional scroll was not explicitly rejected without movement")
+
             tree = state()
-            print("Scroll target snapshot: " + tree, flush=True)
-            client.call("scroll", {"app": app, "element_index": element("FixtureScroll", tree), "direction": "down", "pages": 2})
-            eventually(lambda: float((work / "scroll.txt").read_text() or "0") > 0)
-            print("PASS: GTK scroll adjustment independently changed", flush=True)
+            client.call("click", {"app": app, "element_index": element("Use mixed length lines", tree), "click_method": "accessibility"})
+            eventually(lambda: (work / "mixed-ready").exists())
+            tree = state()
+            mixed_before = json.loads((work / "scroll-metrics.json").read_text())
+            rejected = client.call("scroll", {"app": app, "element_index": element("FixtureScroll", tree), "direction": "right", "pages": 0.5}, allow_error=True)
+            mixed_after = json.loads((work / "scroll-metrics.json").read_text())
+            mixed_receipt = {"before": mixed_before, "after": mixed_after, "tool_error": rejected.get("isError", False)}
+            report.with_name(report.stem + "-mixed-line-scroll.json").write_text(json.dumps(mixed_receipt, indent=2))
+            if mixed_before["max_x"] <= mixed_before["page_x"] or not rejected.get("isError") or mixed_after["x"] >= mixed_after["max_x"]:
+                raise AssertionError("Short visible text line was incorrectly treated as the container's horizontal boundary")
             state()
             drag_coordinates = json.loads((work / "drag-geometry.json").read_text())
             client.call("drag", {"app": app, **drag_coordinates})
@@ -214,7 +266,7 @@ def main(directory, report):
             if not denied.get("isError") or "unsupported" not in json.dumps(denied).lower() or any(c.get("type") == "image" for c in denied["content"]):
                 raise AssertionError("Unsupported Wayland capture did not fail explicitly without pixels")
             evidence = {"status": "passed", "validated": True, "target": json.loads((directory / "manifest.json").read_text())["target"],
-                        "checks": ["AT-SPI discovery and tree", "set_value", "accessibility click", "independent GTK text", "scroll adjustment changed", "independent child drag gesture", "nonblank window PNG", "explicit Wayland unsupported + doctor"],
+                        "checks": ["AT-SPI discovery and tree", "set_value", "accessibility click", "independent GTK text", "independent viewport fractions and multi-page movement on both axes", "invalid and sub-character amounts rejected without movement", "mixed-length visible line does not falsely prove container boundary", "independent child drag gesture", "nonblank window PNG", "explicit Wayland unsupported + doctor"],
                         "not_validated": ["native GNOME/KDE Wayland", "mixed DPI", "multiple displays"]}
             report.write_text(json.dumps(evidence, indent=2)); print(json.dumps(evidence))
         finally:

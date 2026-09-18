@@ -266,7 +266,7 @@ index a323e02..8daea47 100644
              let permissions = PermissionDiagnostics.current()
              print(permissions.summary)
 diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
-index 7a5c555..3bece52 100644
+index 7a5c555..8634387 100644
 --- a/apps/OpenComputerUseLinux/main.go
 +++ b/apps/OpenComputerUseLinux/main.go
 @@ -27,7 +27,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
@@ -278,7 +278,25 @@ index 7a5c555..3bece52 100644
  
  type toolDefinition struct {
  	Name        string         `json:"name"`
-@@ -135,6 +135,9 @@ func (s *appSnapshot) result() toolCallResult {
+@@ -84,6 +84,7 @@ type elementRecord struct {
+ }
+ 
+ type appSnapshot struct {
++	ActionSummary       string          `json:"actionSummary,omitempty"`
+ 	App                 appDescriptor   `json:"app"`
+ 	WindowTitle         string          `json:"windowTitle,omitempty"`
+ 	WindowBounds        *frame          `json:"windowBounds,omitempty"`
+@@ -111,6 +112,9 @@ func (s *appSnapshot) renderedText() string {
+ 		fmt.Sprintf("App=%s (pid %d)", appRef, s.App.PID),
+ 		fmt.Sprintf("Window: %q, App: %s.", title, s.App.Name),
+ 	}
++	if s.ActionSummary != "" {
++		lines = append(lines, s.ActionSummary)
++	}
+ 	lines = append(lines, s.TreeLines...)
+ 	if strings.TrimSpace(s.SelectedText) != "" {
+ 		lines = append(lines, "", fmt.Sprintf("Selected text: [%s]", s.SelectedText))
+@@ -135,6 +139,9 @@ func (s *appSnapshot) result() toolCallResult {
  }
  
  type linuxRequest struct {
@@ -288,7 +306,7 @@ index 7a5c555..3bece52 100644
  	Tool         string         `json:"tool"`
  	App          string         `json:"app,omitempty"`
  	Element      *elementRecord `json:"element,omitempty"`
-@@ -172,10 +175,11 @@ func (limit textLimit) runtimeValue() any {
+@@ -172,10 +179,11 @@ func (limit textLimit) runtimeValue() any {
  }
  
  type linuxResponse struct {
@@ -304,7 +322,7 @@ index 7a5c555..3bece52 100644
  }
  
  type service struct {
-@@ -188,6 +192,8 @@ func newService() *service {
+@@ -188,6 +196,8 @@ func newService() *service {
  
  func (s *service) callTool(name string, args map[string]any) toolCallResult {
  	switch name {
@@ -313,7 +331,42 @@ index 7a5c555..3bece52 100644
  	case "list_apps":
  		return s.listApps()
  	case "get_app_state":
-@@ -250,6 +256,55 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+@@ -209,12 +219,16 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 		if err != nil {
+ 			return textResult(err.Error(), true)
+ 		}
++		count, err := clickCount(args)
++		if err != nil {
++			return textResult(err.Error(), true)
++		}
+ 		return s.click(
+ 			requiredString(args, "app"),
+ 			optionalElementIndex(args),
+ 			optionalFloat(args, "x"),
+ 			optionalFloat(args, "y"),
+-			intValue(optionalFloat(args, "click_count"), 1),
++			count,
+ 			defaultString(optionalString(args, "mouse_button"), "left"),
+ 			clickMethod,
+ 		)
+@@ -225,11 +239,15 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 			requiredString(args, "action"),
+ 		)
+ 	case "scroll":
++		pages, err := scrollPages(args)
++		if err != nil {
++			return textResult(err.Error(), true)
++		}
+ 		return s.scroll(
+ 			requiredString(args, "app"),
+ 			requiredString(args, "direction"),
+ 			requiredElementIndex(args),
+-			floatValue(optionalFloat(args, "pages"), 1),
++			pages,
+ 		)
+ 	case "drag":
+ 		return s.drag(
+@@ -250,6 +268,55 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
  	}
  }
  
@@ -369,7 +422,28 @@ index 7a5c555..3bece52 100644
  func (s *service) listApps() toolCallResult {
  	response, err := runPython(linuxRequest{Tool: "list_apps"})
  	if err != nil {
-@@ -519,7 +574,7 @@ func runPython(request linuxRequest) (*linuxResponse, error) {
+@@ -286,6 +353,9 @@ func (s *service) getAppState(app string, textLimit *textLimit, maxTreeNodes, ma
+ }
+ 
+ func (s *service) click(app, elementIndex string, x, y *float64, clickCount int, mouseButton, clickMethod string) toolCallResult {
++	if clickCount < 1 || clickCount > 100 {
++		return textResult("click_count must be a whole number from 1 to 100", true)
++	}
+ 	if app == "" {
+ 		return textResult("Missing required argument: app", true)
+ 	}
+@@ -360,8 +430,8 @@ func (s *service) scroll(app, direction, elementIndex string, pages float64) too
+ 	if normalized != "up" && normalized != "down" && normalized != "left" && normalized != "right" {
+ 		return textResult("Invalid scroll direction: "+direction, true)
+ 	}
+-	if pages <= 0 {
+-		return textResult("pages must be > 0", true)
++	if math.IsNaN(pages) || math.IsInf(pages, 0) || pages <= 0 || pages > 100 {
++		return textResult("pages must be a finite number greater than 0 and at most 100", true)
+ 	}
+ 	snapshot := s.currentSnapshot(app)
+ 	if snapshot == nil {
+@@ -519,7 +589,7 @@ func runPython(request linuxRequest) (*linuxResponse, error) {
  	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
  	defer cancel()
  
@@ -378,7 +452,36 @@ index 7a5c555..3bece52 100644
  	cmd.Env = linuxRuntimeEnvironment(os.Environ())
  	var stderr bytes.Buffer
  	cmd.Stderr = &stderr
-@@ -1138,6 +1193,16 @@ func globalPointerFallbacksEnabled() bool {
+@@ -1003,6 +1073,28 @@ func requiredFloat(args map[string]any, key string) *float64 {
+ 	return optionalFloat(args, key)
+ }
+ 
++func clickCount(args map[string]any) (int, error) {
++	if _, exists := args["click_count"]; !exists {
++		return 1, nil
++	}
++	value := optionalFloat(args, "click_count")
++	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 1 || *value > 100 || math.Trunc(*value) != *value {
++		return 0, errors.New("click_count must be a whole number from 1 to 100")
++	}
++	return int(*value), nil
++}
++
++func scrollPages(args map[string]any) (float64, error) {
++	if _, exists := args["pages"]; !exists {
++		return 1, nil
++	}
++	value := optionalFloat(args, "pages")
++	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) || *value <= 0 || *value > 100 {
++		return 0, errors.New("pages must be a finite number greater than 0 and at most 100")
++	}
++	return *value, nil
++}
++
+ func optionalFloat(args map[string]any, key string) *float64 {
+ 	switch value := args[key].(type) {
+ 	case float64:
+@@ -1138,6 +1230,16 @@ func globalPointerFallbacksEnabled() bool {
  
  func toolDefinitions() []toolDefinition {
  	return []toolDefinition{
@@ -395,7 +498,25 @@ index 7a5c555..3bece52 100644
  		{
  			Name:        "click",
  			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
-@@ -1312,6 +1377,23 @@ func runCLI(args []string, stdout io.Writer) error {
+@@ -1147,7 +1249,7 @@ func toolDefinitions() []toolDefinition {
+ 				"element_index": stringProperty("Element index to click"),
+ 				"x":             numberProperty("X coordinate in screenshot pixel coordinates"),
+ 				"y":             numberProperty("Y coordinate in screenshot pixel coordinates"),
+-				"click_count":   integerProperty("Number of clicks. Defaults to 1"),
++				"click_count":   map[string]any{"type": "integer", "description": "Whole number of clicks from 1 to 100. Defaults to 1", "minimum": 1, "maximum": 100},
+ 				"mouse_button":  enumStringProperty("Mouse button to click. Defaults to left.", []string{"left", "right", "middle"}),
+ 				"click_method":  enumStringProperty("Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. Linux supports global AT-SPI mouse synthesis and does not currently support app_post or sky_click.", clickMethodValues),
+ 			}, []string{"app"}),
+@@ -1208,7 +1310,7 @@ func toolDefinitions() []toolDefinition {
+ 				"app":           stringProperty("App name or bundle identifier"),
+ 				"direction":     stringProperty("Scroll direction: up, down, left, or right"),
+ 				"element_index": stringProperty("Element identifier"),
+-				"pages":         numberProperty("Number of pages to scroll. Fractional values are supported. Defaults to 1"),
++				"pages":         map[string]any{"type": "number", "description": "Viewport pages; fractions require a measurable viewport adapter. Defaults to 1", "exclusiveMinimum": 0, "maximum": 100},
+ 			}, []string{"app", "element_index", "direction"}),
+ 		},
+ 		{
+@@ -1312,6 +1414,23 @@ func runCLI(args []string, stdout io.Writer) error {
  	case "mcp":
  		return runMCP(os.Stdin, stdout)
  	case "doctor":
@@ -420,10 +541,18 @@ index 7a5c555..3bece52 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseLinux/main_test.go b/apps/OpenComputerUseLinux/main_test.go
-index 73ef1db..e09fd30 100644
+index 73ef1db..cb7d5b4 100644
 --- a/apps/OpenComputerUseLinux/main_test.go
 +++ b/apps/OpenComputerUseLinux/main_test.go
-@@ -11,8 +11,8 @@ import (
+@@ -3,6 +3,7 @@ package main
+ import (
+ 	"bytes"
+ 	"encoding/json"
++	"math"
+ 	"net"
+ 	"os"
+ 	"path/filepath"
+@@ -11,8 +12,8 @@ import (
  )
  
  func TestToolDefinitionCount(t *testing.T) {
@@ -434,7 +563,7 @@ index 73ef1db..e09fd30 100644
  	}
  }
  
-@@ -383,3 +383,29 @@ func shortTempDir(t *testing.T) string {
+@@ -383,3 +384,61 @@ func shortTempDir(t *testing.T) string {
  	})
  	return path
  }
@@ -464,8 +593,40 @@ index 73ef1db..e09fd30 100644
 +	}
 +	t.Fatal("screen_capture missing")
 +}
++
++func TestScrollPagesRejectsInvalidNumbersWithoutDefaulting(t *testing.T) {
++	for _, value := range []any{nil, true, "2", json.Number("1e400"), math.NaN(), math.Inf(1), 0.0, -1.0, 100.01} {
++		if _, err := scrollPages(map[string]any{"pages": value}); err == nil {
++			t.Fatalf("accepted invalid pages %#v", value)
++		}
++	}
++	for _, value := range []any{0.001, 0.5, 2.5, 100.0, json.Number("0.5")} {
++		if _, err := scrollPages(map[string]any{"pages": value}); err != nil {
++			t.Fatalf("rejected valid pages %#v: %v", value, err)
++		}
++	}
++	if value, err := scrollPages(map[string]any{}); err != nil || value != 1 {
++		t.Fatal("omitted pages must default to one")
++	}
++}
++
++func TestClickCountRejectsInvalidProvidedValues(t *testing.T) {
++	for _, value := range []any{nil, true, "2", json.Number("1e400"), math.NaN(), math.Inf(1), 0.0, -1.0, 1.5, 101.0} {
++		if _, err := clickCount(map[string]any{"click_count": value}); err == nil {
++			t.Fatalf("accepted invalid click_count %#v", value)
++		}
++	}
++	for _, value := range []any{1.0, 2.0, 3.0, 100.0, json.Number("2")} {
++		if _, err := clickCount(map[string]any{"click_count": value}); err != nil {
++			t.Fatalf("rejected valid click_count %#v: %v", value, err)
++		}
++	}
++	if value, err := clickCount(map[string]any{}); err != nil || value != 1 {
++		t.Fatal("omitted click_count must default to one")
++	}
++}
 diff --git a/apps/OpenComputerUseLinux/runtime.py b/apps/OpenComputerUseLinux/runtime.py
-index 6c0f248..1e8280d 100644
+index 6c0f248..4927a57 100644
 --- a/apps/OpenComputerUseLinux/runtime.py
 +++ b/apps/OpenComputerUseLinux/runtime.py
 @@ -665,29 +665,44 @@ def keyval(name):
@@ -530,24 +691,186 @@ index 6c0f248..1e8280d 100644
  
  
  def send_text(text):
-@@ -756,7 +771,12 @@ def invoke_secondary_action(node, action):
+@@ -756,22 +771,275 @@ def invoke_secondary_action(node, action):
      raise RuntimeError("{} is not a valid secondary action for element".format(action))
  
  
 -def scroll_element(direction, pages):
-+def scroll_element(node, direction, pages):
+-    key = "Page_Down"
+-    if direction == "up":
+-        key = "Page_Up"
+-    elif direction == "left":
+-        key = "Left"
+-    elif direction == "right":
+-        key = "Right"
+-    repeat = max(1, int(math.ceil(float(pages or 1))))
+-    for _ in range(repeat):
+-        send_key(key)
++def validate_scroll_pages(pages):
++    if isinstance(pages, bool) or not isinstance(pages, (int, float)) or not math.isfinite(pages) or pages <= 0 or pages > 100:
++        raise RuntimeError("pages must be a finite number greater than 0 and at most 100")
++
++
++def horizontal_scroll_boundary(node, sign):
++    owner = node_pid(node)
++    candidate = safe(lambda: node.get_parent())
++    for _ in range(64):
++        if candidate is None or owner <= 0 or node_pid(candidate) != owner:
++            return False
++        role = node_role(candidate)
++        if role == "scroll pane":
++            bars = []
++            for index in range(min(child_count(candidate), 128)):
++                child = child_at(candidate, index)
++                if child is not None and node_pid(child) == owner and node_role(child) == "scroll bar" and supports_interface(child, "Value") and state_contains(child, Atspi.StateType.HORIZONTAL):
++                    bars.append(child)
++            if len(bars) != 1:
++                return False
++            value = safe(lambda: bars[0].get_value_iface())
++            if value is None:
++                return False
++            current = safe(lambda: Atspi.Value.get_current_value(value))
++            lower = safe(lambda: Atspi.Value.get_minimum_value(value))
++            upper = safe(lambda: Atspi.Value.get_maximum_value(value))
++            if any(item is None or not math.isfinite(item) for item in (current, lower, upper)) or upper < lower or current < lower or current > upper:
++                return False
++            return current <= lower if sign < 0 else current >= upper
++        if role in {"frame", "window", "dialog", "alert"}:
++            return False
++        candidate = safe(lambda: candidate.get_parent())
++    return False
++
++
++def text_scroll(node, direction, pages):
++    if not supports_interface(node, "Text"):
++        return None
++    viewport = extents(node)
++    if viewport is None:
++        return None
++    text = node.get_text_iface()
++    count = Atspi.Text.get_character_count(text)
++    if count <= 0:
++        return None
++    horizontal = direction in {"left", "right"}
++    axis = "x" if horizontal else "y"
++    size = "width" if horizontal else "height"
++    sign = -1 if direction in {"up", "left"} else 1
++    def character(offset):
++        rect = Atspi.Text.get_character_extents(text, offset, Atspi.CoordType.SCREEN)
++        if rect is None or rect.height <= 0 or rect.width < 0:
++            raise RuntimeError("Text anchor geometry is unavailable; precise scrolling is unsupported")
++        return {"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height}
++    low, high = 0, count - 1
++    if horizontal:
++        visible = Atspi.Text.get_offset_at_point(text, int(viewport["x"] + 1), int(viewport["y"] + viewport["height"] / 2), Atspi.CoordType.SCREEN)
++        if visible < 0:
++            raise RuntimeError("No visible text line anchors horizontal scrolling")
++        line = Atspi.Text.get_text_at_offset(text, visible, Atspi.TextBoundaryType.LINE_START)
++        low, high = line.start_offset, min(count - 1, line.end_offset - 1)
++    first, last = character(low), character(high)
++    if last[axis] < first[axis]:
++        raise RuntimeError("Nonmonotonic text layout cannot provide a precise scroll anchor")
++    initial = first
++    requested_pixels = pages * viewport[size]
++    target_position = viewport[axis] + sign * requested_pixels
++    left, right = low, high
++    while left < right:
++        middle = (left + right) // 2
++        if character(middle)[axis] < target_position:
++            left = middle + 1
++        else:
++            right = middle
++    offset = left
++    anchor = character(offset)
++    if offset > low:
++        previous = character(offset - 1)
++        if abs(previous[axis] - target_position) < abs(anchor[axis] - target_position):
++            offset -= 1
++            anchor = previous
++    # GTK exposes edge alignment, but does not implement Text.scroll_substring_to_point.
++    gtk_edge = str(safe(node.get_attributes, {}).get("toolkit", "")).casefold() == "gtk"
++    if gtk_edge and not horizontal:
++        line = Atspi.Text.get_text_at_offset(text, offset, Atspi.TextBoundaryType.LINE_START)
++        line_left, line_right = line.start_offset, min(count - 1, line.end_offset - 1)
++        while line_left < line_right:
++            middle = (line_left + line_right) // 2
++            if character(middle)["x"] < viewport["x"] + 1:
++                line_left = middle + 1
++            else:
++                line_right = middle
++        offset = line_left
++        anchor = character(offset)
++        if not viewport["x"] <= anchor["x"] < viewport["x"] + viewport["width"]:
++            raise RuntimeError("No text anchor preserves the other scroll axis")
++    granularity = max(1, anchor[size]) if gtk_edge else 1
++    if requested_pixels < granularity / 2:
++        raise RuntimeError("Requested scroll is smaller than the text anchor granularity; precise scrolling is unsupported")
++    if gtk_edge:
++        edge = Atspi.ScrollType.LEFT_EDGE if horizontal else Atspi.ScrollType.TOP_EDGE
++        accepted = Atspi.Text.scroll_substring_to(text, offset, min(count, offset + 1), edge)
++    else:
++        x, y = anchor["x"], anchor["y"]
++        if horizontal:
++            x -= sign * requested_pixels
++        else:
++            y -= sign * requested_pixels
++        accepted = Atspi.Text.scroll_substring_to_point(text, offset, min(count, offset + 1), Atspi.CoordType.SCREEN, int(round(x)), int(round(y)))
++    if not accepted:
++        if character(low) == initial and extents(node) == viewport and Atspi.Text.get_character_count(text) == count:
++            return None
++        raise RuntimeError("Native text scrolling was rejected after a possible movement; movement is not replayed")
++    actual = 0
++    after = initial
++    for _ in range(15):
++        after = character(low)
++        actual = initial[axis] - after[axis]
++        if abs(actual - sign * requested_pixels) <= granularity + 1:
++            break
++        time.sleep(0.02)
++    if Atspi.Text.get_character_count(text) != count or extents(node) != viewport:
++        raise RuntimeError("Text or viewport changed during scrolling; movement may be partial")
++    after_last = character(high)
++    if horizontal:
++        boundary = horizontal_scroll_boundary(node, sign)
++    else:
++        boundary = after[axis] >= viewport[axis] - granularity if sign < 0 else after_last[axis] + after_last[size] <= viewport[axis] + viewport[size] + granularity
++    if actual * sign < -1 or (not boundary and abs(actual - sign * requested_pixels) > granularity + 1):
++        raise RuntimeError("Native text scroll did not reach the requested displacement; movement may be partial and will not be replayed")
++    return "Scroll: requested {} viewport pages {}; observed {:.4f} pages; boundary={}; anchor granularity={} pixels (AT-SPI Text).".format(pages, direction, abs(actual) / viewport[size], boundary, granularity)
++
++
++def scroll_element(node, direction, pages, window=None):
++    validate_scroll_pages(pages)
++    if direction not in {"up", "down", "left", "right"}:
++        raise RuntimeError("Invalid scroll direction")
 +    if node is None:
 +        raise RuntimeError("unknown element_index")
++    if window is not None:
++        candidate = node
++        for _ in range(64):
++            if candidate is None or node_pid(candidate) != node_pid(window):
++                raise RuntimeError("Scroll target is outside the selected application window")
++            if candidate == window:
++                break
++            candidate = safe(candidate.get_parent)
++        else:
++            raise RuntimeError("Scroll target is outside the selected application window")
++    precise = text_scroll(node, direction, pages)
++    if precise is not None:
++        return precise
++    if direction in {"left", "right"} or pages != int(pages):
++        raise RuntimeError("No measurable text viewport; fractional or horizontal page scrolling is unsupported")
 +    component = safe(node.get_component_iface)
 +    if component is None or not Atspi.Component.grab_focus(component):
 +        raise RuntimeError("Target element cannot receive scroll keys; select a focusable element inside the scroll area")
-     key = "Page_Down"
-     if direction == "up":
-         key = "Page_Up"
-@@ -770,8 +790,104 @@ def scroll_element(direction, pages):
++    for _ in range(int(pages)):
++        if window is not None and (node_pid(node) != node_pid(window) or not state_contains(node, Atspi.StateType.FOCUSED)):
++            raise RuntimeError("Scroll target lost focus; remaining page commands were cancelled")
++        send_key("Page_Up" if direction == "up" else "Page_Down")
          time.sleep(0.04)
- 
- 
++    return "Scroll: delivered {} vertical page commands {}; actual viewport displacement is unverified.".format(int(pages), direction)
++
++
 +def screen_capture(operation):
 +    if Gdk is None:
 +        raise RuntimeError("missing_dependency: GDK 3 is required for native capture")
@@ -640,25 +963,41 @@ index 6c0f248..1e8280d 100644
 +    return {"ok": True, "text": json.dumps({"state": state, "desktop_available": desktop_available,
 +            "accessibility": accessibility, "screen_recording": desktop_available and not wayland,
 +            "capture_available": desktop_available and not wayland, "message": message})}
-+
-+
+ 
+ 
  def perform_operation(operation):
      tool = operation.get("tool")
++    if tool == "scroll":
++        validate_scroll_pages(operation.get("pages", 1))
++    if tool == "click":
++        count = operation.get("click_count", 1)
++        if isinstance(count, bool) or not isinstance(count, (int, float)) or not math.isfinite(count) or count < 1 or count > 100 or count != int(count):
++            raise RuntimeError("click_count must be a whole number from 1 to 100")
 +    if tool == "screen_capture":
 +        return screen_capture(operation)
      if tool == "list_apps":
          return {"ok": True, "text": list_apps_text()}
      if tool == "get_app_state":
-@@ -840,7 +956,7 @@ def perform_operation(operation):
+@@ -840,7 +1108,7 @@ def perform_operation(operation):
      elif tool == "perform_secondary_action":
          invoke_secondary_action(element, operation.get("action", ""))
      elif tool == "scroll":
 -        scroll_element(operation.get("direction", "down"), operation.get("pages", 1))
-+        scroll_element(element, operation.get("direction", "down"), operation.get("pages", 1))
++        scroll_summary = scroll_element(element, operation.get("direction", "down"), operation.get("pages", 1), window)
      elif tool == "drag":
          from_x, from_y = screen_point(
              bounds, None, operation.get("from_x"), operation.get("from_y")
-@@ -867,10 +983,13 @@ def perform_operation(operation):
+@@ -861,16 +1129,22 @@ def perform_operation(operation):
+         raise RuntimeError('unsupportedTool("{}")'.format(tool))
+ 
+     time.sleep(0.12)
+-    return {"ok": True, "snapshot": build_snapshot(operation.get("app", ""))}
++    snapshot = build_snapshot(operation.get("app", ""))
++    if tool == "scroll":
++        snapshot["actionSummary"] = scroll_summary
++    return {"ok": True, "snapshot": snapshot}
+ 
+ 
  def main():
      if len(sys.argv) != 2:
          raise RuntimeError("runtime.py requires an operation JSON path")
@@ -675,10 +1014,10 @@ index 6c0f248..1e8280d 100644
          response = perform_operation(operation)
      except Exception as exc:
 diff --git a/apps/OpenComputerUseLinux/runtime_test.py b/apps/OpenComputerUseLinux/runtime_test.py
-index c42f41e..6ef053c 100644
+index c42f41e..975619d 100644
 --- a/apps/OpenComputerUseLinux/runtime_test.py
 +++ b/apps/OpenComputerUseLinux/runtime_test.py
-@@ -85,6 +85,118 @@ class RuntimeInterfaceDetectionTests(unittest.TestCase):
+@@ -85,6 +85,219 @@ class RuntimeInterfaceDetectionTests(unittest.TestCase):
  
          self.assertTrue(self.runtime.set_element_value(node, "hello"))
  
@@ -794,11 +1133,112 @@ index c42f41e..6ef053c 100644
 +            self.runtime.scroll_element(node, "down", 1)
 +        self.assertEqual(self.events, [])
 +
++
++
++class ScrollViewportTests(unittest.TestCase):
++    def setUp(self):
++        self.runtime = load_runtime()
++        self.x = self.y = 0
++        self.calls = []
++        self.viewport = {"x": 300, "y": 400, "width": 200, "height": 100}
++        self.node = types.SimpleNamespace(get_interfaces=lambda: ["Text"], get_text_iface=lambda: self,
++                                          get_attributes=lambda: {"toolkit": "gtk"}, get_process_id=lambda: 42, get_parent=lambda: None)
++        self.runtime.extents = lambda _: dict(self.viewport)
++        self.runtime.Atspi.CoordType = types.SimpleNamespace(SCREEN=0)
++        self.runtime.Atspi.TextBoundaryType = types.SimpleNamespace(LINE_START=0)
++        self.runtime.Atspi.ScrollType = types.SimpleNamespace(LEFT_EDGE=0, TOP_EDGE=1)
++        def rect(_text, offset, _coords):
++            return types.SimpleNamespace(x=300 + offset % 100 * 8 - self.x,
++                                         y=400 + offset // 100 * 20 - self.y, width=8, height=20)
++        def scroll(_text, start, end, edge):
++            self.calls.append((start, edge))
++            if edge == 0: self.x = min(600, start % 100 * 8)
++            else: self.y = min(1900, start // 100 * 20)
++            return True
++        self.runtime.Atspi.Text = types.SimpleNamespace(
++            get_character_count=lambda _: 10000, get_character_extents=rect,
++            get_offset_at_point=lambda _t, x, y, _c: int((y - 400 + self.y) // 20) * 100 + int((x - 300 + self.x) // 8),
++            get_text_at_offset=lambda _t, offset, _b: types.SimpleNamespace(start_offset=offset // 100 * 100, end_offset=offset // 100 * 100 + 100),
++            scroll_substring_to=scroll,
++        )
++        self.runtime.time.sleep = lambda _: None
++
++    def test_fractional_and_multiple_pages_use_one_measured_anchor_action(self):
++        for direction, pages, axis, expected, tolerance in [("down", .5, "y", 50, 20), ("down", 2.5, "y", 250, 20),
++                                                            ("right", .5, "x", 100, 8), ("right", 2.5, "x", 500, 8)]:
++            self.x = self.y = 0; self.calls.clear()
++            summary = self.runtime.scroll_element(self.node, direction, pages)
++            self.assertLessEqual(abs(getattr(self, axis) - expected), tolerance)
++            self.assertEqual(len(self.calls), 1)
++            self.assertIn("observed", summary)
++
++    def test_short_visible_line_does_not_prove_horizontal_container_boundary(self):
++        self.runtime.Atspi.Text.get_text_at_offset = lambda _t, offset, _b: types.SimpleNamespace(start_offset=offset // 100 * 100, end_offset=offset // 100 * 100 + 5)
++        with self.assertRaisesRegex(RuntimeError, "did not reach"):
++            self.runtime.scroll_element(self.node, "right", .5)
++        self.assertEqual(len(self.calls), 1)
++
++    def test_horizontal_boundary_requires_owned_axis_scrollbar_range(self):
++        self.runtime.Atspi.StateType = types.SimpleNamespace(HORIZONTAL=1)
++        bar = types.SimpleNamespace(get_process_id=lambda: 42, get_role_name=lambda: "scroll bar", get_interfaces=lambda: ["Value"],
++                                    get_state_set=lambda: types.SimpleNamespace(contains=lambda state: state == 1),
++                                    get_value_iface=lambda: bar, current=25, lower=5, upper=45)
++        pane = types.SimpleNamespace(get_process_id=lambda: 42, get_role_name=lambda: "scroll pane", get_child_count=lambda: 1,
++                                     get_child_at_index=lambda _: bar)
++        self.node.get_parent = lambda: pane
++        self.runtime.Atspi.Value = types.SimpleNamespace(get_current_value=lambda v: v.current, get_minimum_value=lambda v: v.lower,
++                                                         get_maximum_value=lambda v: v.upper)
++        self.assertFalse(self.runtime.horizontal_scroll_boundary(self.node, 1))
++        bar.current = 45
++        self.assertTrue(self.runtime.horizontal_scroll_boundary(self.node, 1))
++        self.assertFalse(self.runtime.horizontal_scroll_boundary(self.node, -1))
++        bar.current = 5
++        self.assertTrue(self.runtime.horizontal_scroll_boundary(self.node, -1))
++        bar.current = 4
++        self.assertFalse(self.runtime.horizontal_scroll_boundary(self.node, -1))
++        bar.current = 46
++        self.assertFalse(self.runtime.horizontal_scroll_boundary(self.node, 1))
++        bar.current = 5
++        bar.get_process_id = lambda: 99
++        self.assertFalse(self.runtime.horizontal_scroll_boundary(self.node, -1))
++        bar.get_process_id = lambda: 42
++        bar.get_state_set = lambda: types.SimpleNamespace(contains=lambda _: False)
++        self.assertFalse(self.runtime.horizontal_scroll_boundary(self.node, -1))
++
++    def test_tiny_fraction_rejected_without_mutation(self):
++        with self.assertRaisesRegex(RuntimeError, "granularity"):
++            self.runtime.scroll_element(self.node, "down", .001)
++        self.assertEqual(self.calls, [])
++
++    def test_native_noop_is_error_without_replay(self):
++        self.runtime.Atspi.Text.scroll_substring_to = lambda *args: self.calls.append(args) or True
++        with self.assertRaisesRegex(RuntimeError, "did not reach"):
++            self.runtime.scroll_element(self.node, "down", 2.5)
++        self.assertEqual(len(self.calls), 1)
++
++    def test_native_invalid_click_count_is_rejected_before_target_lookup(self):
++        for value in [None, True, "2", float("nan"), float("inf"), 0, -1, 1.5, 101]:
++            with self.assertRaisesRegex(RuntimeError, "click_count"):
++                self.runtime.perform_operation({"tool": "click", "click_count": value})
++
++    def test_invalid_pages_fail_before_reading_or_focusing_target(self):
++        for value in [None, True, "2", float("nan"), float("inf"), 0, -1, 101]:
++            with self.assertRaisesRegex(RuntimeError, "finite number"):
++                self.runtime.scroll_element(None, "down", value)
++        self.assertEqual(self.calls, [])
++
++    def test_unmeasurable_horizontal_and_fraction_do_not_send_keys(self):
++        node = types.SimpleNamespace(get_interfaces=lambda: [])
++        self.runtime.send_key = mock.Mock()
++        for direction, pages in [("right", 1), ("down", .5)]:
++            with self.assertRaisesRegex(RuntimeError, "unsupported"):
++                self.runtime.scroll_element(node, direction, pages)
++        self.runtime.send_key.assert_not_called()
  
  if __name__ == "__main__":
      unittest.main()
 diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
-index c70ed60..58d26e7 100644
+index c70ed60..691435d 100644
 --- a/apps/OpenComputerUseWindows/main.go
 +++ b/apps/OpenComputerUseWindows/main.go
 @@ -24,7 +24,7 @@ var clickMethodValues = []string{"auto", "accessibility", "app_post", "sky_click
@@ -810,7 +1250,25 @@ index c70ed60..58d26e7 100644
  
  type toolDefinition struct {
  	Name        string         `json:"name"`
-@@ -132,6 +132,9 @@ func (s *appSnapshot) result() toolCallResult {
+@@ -81,6 +81,7 @@ type elementRecord struct {
+ }
+ 
+ type appSnapshot struct {
++	ActionSummary       string          `json:"actionSummary,omitempty"`
+ 	App                 appDescriptor   `json:"app"`
+ 	WindowTitle         string          `json:"windowTitle,omitempty"`
+ 	WindowBounds        *frame          `json:"windowBounds,omitempty"`
+@@ -108,6 +109,9 @@ func (s *appSnapshot) renderedText() string {
+ 		fmt.Sprintf("App=%s (pid %d)", appRef, s.App.PID),
+ 		fmt.Sprintf("Window: %q, App: %s.", title, s.App.Name),
+ 	}
++	if s.ActionSummary != "" {
++		lines = append(lines, s.ActionSummary)
++	}
+ 	lines = append(lines, s.TreeLines...)
+ 	if strings.TrimSpace(s.SelectedText) != "" {
+ 		lines = append(lines, "", fmt.Sprintf("Selected text: [%s]", s.SelectedText))
+@@ -132,6 +136,9 @@ func (s *appSnapshot) result() toolCallResult {
  }
  
  type psRequest struct {
@@ -820,7 +1278,7 @@ index c70ed60..58d26e7 100644
  	Tool         string         `json:"tool"`
  	App          string         `json:"app,omitempty"`
  	Element      *elementRecord `json:"element,omitempty"`
-@@ -169,22 +172,26 @@ func (limit textLimit) runtimeValue() any {
+@@ -169,22 +176,26 @@ func (limit textLimit) runtimeValue() any {
  }
  
  type psResponse struct {
@@ -852,7 +1310,42 @@ index c70ed60..58d26e7 100644
  	case "list_apps":
  		return s.listApps()
  	case "get_app_state":
-@@ -247,8 +254,57 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+@@ -206,12 +217,16 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 		if err != nil {
+ 			return textResult(err.Error(), true)
+ 		}
++		count, err := clickCount(args)
++		if err != nil {
++			return textResult(err.Error(), true)
++		}
+ 		return s.click(
+ 			requiredString(args, "app"),
+ 			optionalElementIndex(args),
+ 			optionalFloat(args, "x"),
+ 			optionalFloat(args, "y"),
+-			intValue(optionalFloat(args, "click_count"), 1),
++			count,
+ 			defaultString(optionalString(args, "mouse_button"), "left"),
+ 			clickMethod,
+ 		)
+@@ -222,11 +237,15 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 			requiredString(args, "action"),
+ 		)
+ 	case "scroll":
++		pages, err := scrollPages(args)
++		if err != nil {
++			return textResult(err.Error(), true)
++		}
+ 		return s.scroll(
+ 			requiredString(args, "app"),
+ 			requiredString(args, "direction"),
+ 			requiredElementIndex(args),
+-			floatValue(optionalFloat(args, "pages"), 1),
++			pages,
+ 		)
+ 	case "drag":
+ 		return s.drag(
+@@ -247,8 +266,57 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
  	}
  }
  
@@ -911,7 +1404,28 @@ index c70ed60..58d26e7 100644
  	if err != nil {
  		return textResult(err.Error(), true)
  	}
-@@ -365,7 +421,7 @@ func (s *service) scroll(app, direction, elementIndex string, pages float64) too
+@@ -283,6 +351,9 @@ func (s *service) getAppState(app string, textLimit *textLimit, maxTreeNodes, ma
+ }
+ 
+ func (s *service) click(app, elementIndex string, x, y *float64, clickCount int, mouseButton, clickMethod string) toolCallResult {
++	if clickCount < 1 || clickCount > 100 {
++		return textResult("click_count must be a whole number from 1 to 100", true)
++	}
+ 	if app == "" {
+ 		return textResult("Missing required argument: app", true)
+ 	}
+@@ -354,8 +425,8 @@ func (s *service) scroll(app, direction, elementIndex string, pages float64) too
+ 	if normalized != "up" && normalized != "down" && normalized != "left" && normalized != "right" {
+ 		return textResult("Invalid scroll direction: "+direction, true)
+ 	}
+-	if pages <= 0 {
+-		return textResult("pages must be > 0", true)
++	if math.IsNaN(pages) || math.IsInf(pages, 0) || pages <= 0 || pages > 100 {
++		return textResult("pages must be a finite number greater than 0 and at most 100", true)
+ 	}
+ 	snapshot := s.currentSnapshot(app)
+ 	if snapshot == nil {
+@@ -365,7 +436,7 @@ func (s *service) scroll(app, direction, elementIndex string, pages float64) too
  	if err != nil {
  		return textResult(err.Error(), true)
  	}
@@ -920,7 +1434,7 @@ index c70ed60..58d26e7 100644
  }
  
  func (s *service) drag(app string, fromX, fromY, toX, toY *float64) toolCallResult {
-@@ -448,7 +504,7 @@ func (s *service) currentSnapshot(app string) *appSnapshot {
+@@ -448,7 +519,7 @@ func (s *service) currentSnapshot(app string) *appSnapshot {
  }
  
  func (s *service) refreshSnapshot(app string, request psRequest) (*appSnapshot, toolCallResult) {
@@ -929,7 +1443,7 @@ index c70ed60..58d26e7 100644
  	if err != nil {
  		return nil, textResult(err.Error(), true)
  	}
-@@ -513,7 +569,7 @@ func runPowerShell(request psRequest) (*psResponse, error) {
+@@ -513,7 +584,7 @@ func runPowerShell(request psRequest) (*psResponse, error) {
  	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
  	defer cancel()
  
@@ -938,7 +1452,36 @@ index c70ed60..58d26e7 100644
  	output, err := cmd.CombinedOutput()
  	if ctx.Err() == context.DeadlineExceeded {
  		return nil, errors.New("Windows runtime timed out after 30s")
-@@ -709,6 +765,16 @@ func parseClickMethod(value string) (string, error) {
+@@ -583,6 +654,28 @@ func requiredFloat(args map[string]any, key string) *float64 {
+ 	return optionalFloat(args, key)
+ }
+ 
++func clickCount(args map[string]any) (int, error) {
++	if _, exists := args["click_count"]; !exists {
++		return 1, nil
++	}
++	value := optionalFloat(args, "click_count")
++	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 1 || *value > 100 || math.Trunc(*value) != *value {
++		return 0, errors.New("click_count must be a whole number from 1 to 100")
++	}
++	return int(*value), nil
++}
++
++func scrollPages(args map[string]any) (float64, error) {
++	if _, exists := args["pages"]; !exists {
++		return 1, nil
++	}
++	value := optionalFloat(args, "pages")
++	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) || *value <= 0 || *value > 100 {
++		return 0, errors.New("pages must be a finite number greater than 0 and at most 100")
++	}
++	return *value, nil
++}
++
+ func optionalFloat(args map[string]any, key string) *float64 {
+ 	switch value := args[key].(type) {
+ 	case float64:
+@@ -709,6 +802,16 @@ func parseClickMethod(value string) (string, error) {
  
  func toolDefinitions() []toolDefinition {
  	return []toolDefinition{
@@ -955,7 +1498,15 @@ index c70ed60..58d26e7 100644
  		{
  			Name:        "click",
  			Description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
-@@ -725,7 +791,7 @@ func toolDefinitions() []toolDefinition {
+@@ -718,14 +821,14 @@ func toolDefinitions() []toolDefinition {
+ 				"element_index": stringProperty("Element index to click"),
+ 				"x":             numberProperty("X coordinate in screenshot pixel coordinates"),
+ 				"y":             numberProperty("Y coordinate in screenshot pixel coordinates"),
+-				"click_count":   integerProperty("Number of clicks. Defaults to 1"),
++				"click_count":   map[string]any{"type": "integer", "description": "Whole number of clicks from 1 to 100. Defaults to 1", "minimum": 1, "maximum": 100},
+ 				"mouse_button":  enumStringProperty("Mouse button to click. Defaults to left.", []string{"left", "right", "middle"}),
+ 				"click_method":  enumStringProperty("Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. Windows supports app_post through HWND messages and does not currently support sky_click or global.", clickMethodValues),
+ 			}, []string{"app"}),
  		},
  		{
  			Name:        "drag",
@@ -964,7 +1515,16 @@ index c70ed60..58d26e7 100644
  			Annotations: defaultAnnotations(),
  			InputSchema: objectSchema(map[string]any{
  				"app":    stringProperty("App name or bundle identifier"),
-@@ -883,6 +949,23 @@ func runCLI(args []string, stdout io.Writer) error {
+@@ -779,7 +882,7 @@ func toolDefinitions() []toolDefinition {
+ 				"app":           stringProperty("App name or bundle identifier"),
+ 				"direction":     stringProperty("Scroll direction: up, down, left, or right"),
+ 				"element_index": stringProperty("Element identifier"),
+-				"pages":         numberProperty("Number of pages to scroll. Fractional values are supported. Defaults to 1"),
++				"pages":         map[string]any{"type": "number", "description": "Viewport pages; fractions require a measurable viewport adapter. Defaults to 1", "exclusiveMinimum": 0, "maximum": 100},
+ 			}, []string{"app", "element_index", "direction"}),
+ 		},
+ 		{
+@@ -883,6 +986,23 @@ func runCLI(args []string, stdout io.Writer) error {
  	case "mcp":
  		return runMCP(os.Stdin, stdout)
  	case "doctor":
@@ -989,13 +1549,14 @@ index c70ed60..58d26e7 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
-index c70def2..3bb30c3 100644
+index c70def2..835355a 100644
 --- a/apps/OpenComputerUseWindows/main_test.go
 +++ b/apps/OpenComputerUseWindows/main_test.go
-@@ -3,13 +3,17 @@ package main
+@@ -3,13 +3,18 @@ package main
  import (
  	"bytes"
  	"encoding/json"
++	"math"
 +	"os"
 +	"os/exec"
 +	"path/filepath"
@@ -1012,7 +1573,7 @@ index c70def2..3bb30c3 100644
  	}
  }
  
-@@ -307,3 +311,289 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+@@ -307,3 +312,373 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
  	t.Fatalf("missing tool definition %q", name)
  	return toolDefinition{}
  }
@@ -1083,39 +1644,51 @@ index c70def2..3bb30c3 100644
 +	}
 +}
 +
-+func TestWindowsHorizontalScrollSelectsAncestorBeforeMutation(t *testing.T) {
++func TestWindowsScrollViewportFractionsAndNoReplay(t *testing.T) {
 +	if runtime.GOOS != "windows" {
-+		t.Skip("PowerShell provider contract runs on Windows")
++		t.Skip("PowerShell viewport contract runs on Windows")
 +	}
 +	script := `$ErrorActionPreference = "Stop"
 +Add-Type -TypeDefinition @'
++public static class OCUWin32 {
++ public class Info { public int nMin=0,nMax=2000,nPos=0; public uint nPage=200; }
++ public static int Position,Posts,DelayReads; public static int Pending=-1; public static bool Noop,Large;
++ public static bool IsChild(System.IntPtr root,System.IntPtr child) { return root.ToInt64()==100 && child.ToInt64()==200; }
++ public static uint GetWindowThreadProcessId(System.IntPtr window,out uint processId) { processId=42; return 1; }
++ public static Info ReadScrollInfo(System.IntPtr window,int axis) { if (Pending >= 0 && DelayReads-- <= 0) { Position=Pending; Pending=-1; } return new Info { nPos=Position, nMax=Large ? 200000 : 2000, nPage=Large ? 1000u : 200u }; }
++ public static bool PostMessage(System.IntPtr window,uint message,System.IntPtr w,System.IntPtr l) {
++  Posts++; if (!Noop) { int requested=(int)((w.ToInt64() >> 16) & 65535); if (DelayReads>0) Pending=requested; else Position=requested; } return true;
++ }
++}
 +namespace Windows.Automation {
-+    public class ScrollPattern { public static object Pattern = new object(); }
-+    public enum ScrollAmount { NoAmount, LargeDecrement, LargeIncrement }
-+    public class TreeWalker { public static object ControlViewWalker; }
++ public class ScrollPattern { public static object Pattern = new object(); }
++ public class TreeWalker { public static object ControlViewWalker; }
 +}
 +'@
 +$walker = [pscustomobject]@{}
 +$walker | Add-Member ScriptMethod GetParent { param($node) return $node.Parent }
 +[Windows.Automation.TreeWalker]::ControlViewWalker = $walker
-+function New-Pattern([bool]$enabled, [bool]$fail = $false) {
-+    $pattern = [pscustomobject]@{ Current = [pscustomobject]@{ HorizontallyScrollable = $enabled }; Calls = 0; Fail = $fail }
-+    $pattern | Add-Member ScriptMethod Scroll { param($horizontal, $vertical)
-+        $this.Calls++
-+        if ($horizontal -ne [Windows.Automation.ScrollAmount]::LargeIncrement -or $vertical -ne [Windows.Automation.ScrollAmount]::NoAmount) { throw "wrong direction" }
-+        if ($this.Fail) { throw "ambiguous provider failure" }
-+    }
-+    return $pattern
++function Start-Sleep { param($Milliseconds) }
++function New-Pattern {
++ $pattern = [pscustomobject]@{ Current = [pscustomobject]@{ HorizontallyScrollable=$true; VerticallyScrollable=$true; HorizontalScrollPercent=0.0; VerticalScrollPercent=0.0; HorizontalViewSize=20.0; VerticalViewSize=10.0 }; Calls=0; Fail=$false; Noop=$false }
++ $pattern | Add-Member ScriptMethod SetScrollPercent { param($horizontal,$vertical)
++  $this.Calls++
++  if ($this.Fail) { throw 'ambiguous provider failure' }
++  if (-not $this.Noop) {
++   if ($horizontal -ge 0) { $this.Current.HorizontalScrollPercent=$horizontal }
++   if ($vertical -ge 0) { $this.Current.VerticalScrollPercent=$vertical }
++  }
++ }
++ return $pattern
 +}
-+function New-Node($pattern, $parent, [int]$processId = 42, [int]$hwnd = 0) {
-+    $node = [pscustomobject]@{ Pattern = $pattern; Parent = $parent; Current = [pscustomobject]@{ ProcessId = $processId; NativeWindowHandle = $hwnd } }
-+    $node | Add-Member ScriptMethod GetCurrentPattern { param($id) return $this.Pattern }
-+    return $node
++function New-Node($pattern,$parent,[int]$processId=42,[int]$hwnd=0) {
++ $node=[pscustomobject]@{Pattern=$pattern; Parent=$parent; Current=[pscustomobject]@{ProcessId=$processId; NativeWindowHandle=$hwnd}}
++ $node | Add-Member ScriptMethod GetCurrentPattern { param($id) return $this.Pattern }
++ return $node
 +}
 +`
-+	for _, name := range []string{"Get-CurrentPatternOrNull", "Get-HorizontalScrollPattern", "Invoke-Scroll"} {
-+		marker := "function " + name + "("
-+		start := strings.Index(windowsRuntimeScript, marker)
++	for _, name := range []string{"Get-CurrentPatternOrNull", "Assert-NativeNumber", "Assert-ScrollPages", "Test-ScrollWindow", "Get-ScrollPattern", "Invoke-Scroll", "Invoke-NativeScroll"} {
++		start := strings.Index(windowsRuntimeScript, "function "+name+"(")
 +		if start < 0 {
 +			t.Fatalf("missing %s", name)
 +		}
@@ -1126,27 +1699,67 @@ index c70def2..3bb30c3 100644
 +		script += source + "\n"
 +	}
 +	script += `
-+$process = [pscustomobject]@{ Id = 42; MainWindowHandle = 100 }
-+$outerPattern = New-Pattern $true
-+$root = New-Node $outerPattern $null 42 100
-+$innerPattern = New-Pattern $true
-+$inner = New-Node $innerPattern $root
-+$leaf = New-Node $null $inner
-+if (-not (Invoke-Scroll $leaf "right" 2 $process)) { throw "ancestor was not selected" }
-+if ($innerPattern.Calls -ne 2 -or $outerPattern.Calls -ne 0) { throw "did not select nearest ancestor" }
-+if (Invoke-Scroll $leaf "down" 1 $process) { throw "vertical fallback changed" }
-+$innerPattern.Fail = $true
-+$threw = $false
-+try { Invoke-Scroll $leaf "right" 2 $process | Out-Null } catch { $threw = $true }
-+if (-not $threw -or $innerPattern.Calls -ne 3 -or $outerPattern.Calls -ne 0) { throw "ambiguous mutation was replayed" }
-+$foreign = New-Node $outerPattern $null 99 900
-+$leaf = New-Node $null $foreign
-+if ($null -ne (Get-HorizontalScrollPattern $leaf $process)) { throw "crossed process boundary" }
-+$root = New-Node $null (New-Node $outerPattern $null 42 200) 42 100
-+if ($null -ne (Get-HorizontalScrollPattern $root $process)) { throw "crossed selected window boundary" }
-+$leaf = New-Node (New-Pattern $false) $null
-+if (Invoke-Scroll $leaf "right" 1 $process) { throw "selected non-scrollable pattern" }
-+Write-Output "horizontal ancestor contract passed"
++foreach ($name in @('pages','click_count')) {
++ foreach ($value in @($null,$true,'2',0,-1,101,[double]::NaN,[double]::PositiveInfinity)) {
++  $failed=$false;try {Assert-NativeNumber $value $name}catch{$failed=$true}
++  if (-not $failed) {throw "Native $name accepted invalid value"}
++ }
++}
++Assert-NativeNumber 0.5 'pages'
++Assert-NativeNumber 2 'click_count'
++$failed=$false;try {Assert-NativeNumber 1.5 'click_count'}catch{$failed=$true}
++if (-not $failed) {throw 'Native click_count accepted fractional value'}
++$process=[pscustomobject]@{Id=42;MainWindowHandle=100}
++$outer=New-Pattern; $inner=New-Pattern
++$root=New-Node $outer $null 42 100
++$parent=New-Node $inner $root
++$leaf=New-Node $null $parent
++$result=Invoke-Scroll $leaf 'right' 0.5 $process
++if ($inner.Calls -ne 1 -or $outer.Calls -ne 0 -or $inner.Current.HorizontalScrollPercent -ne 12.5 -or $inner.Current.VerticalScrollPercent -ne 0 -or $result -notmatch 'observed 0.5') {throw 'Fractional horizontal viewport mapping failed'}
++Invoke-Scroll $leaf 'down' 2.5 $process | Out-Null
++if ($inner.Calls -ne 2 -or [math]::Abs($inner.Current.VerticalScrollPercent - 27.7777777778) -gt 0.0001 -or $inner.Current.HorizontalScrollPercent -ne 12.5) {throw 'Multi-page vertical viewport mapping failed'}
++Invoke-Scroll $leaf 'up' 100 $process | Out-Null
++if ($inner.Current.VerticalScrollPercent -ne 0) {throw 'Boundary clamp failed'}
++$before=$inner.Calls
++foreach ($pages in @(0,-1,101,[double]::NaN,[double]::PositiveInfinity)) {
++ $failed=$false;try {Invoke-Scroll $leaf 'down' $pages $process | Out-Null}catch{$failed=$true}
++ if (-not $failed -or $inner.Calls -ne $before) {throw 'Invalid pages mutated provider'}
++}
++$inner.Fail=$true
++$failed=$false;try {Invoke-Scroll $leaf 'down' 1 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or $inner.Calls -ne $before+1 -or $outer.Calls -ne 0) {throw 'Ambiguous mutation replayed'}
++$inner.Fail=$false;$inner.Noop=$true
++$failed=$false;try {Invoke-Scroll $leaf 'down' 1 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or $inner.Calls -ne $before+2 -or $outer.Calls -ne 0) {throw 'No-op provider accepted or replayed'}
++$foreign=New-Node $outer $null 99 900
++if ($null -ne (Get-ScrollPattern (New-Node $null $foreign) $process $true)) {throw 'Crossed process boundary'}
++$root=New-Node $null (New-Node $outer $null 42 200) 42 100
++if ($null -ne (Get-ScrollPattern $root $process $true)) {throw 'Crossed root window boundary'}
++$nativeRoot=New-Node $null $null 42 100
++$nativeLeaf=New-Node $null $nativeRoot
++Invoke-NativeScroll $nativeLeaf 'down' 0.5 $process | Out-Null
++if ([OCUWin32]::Position -ne 100 -or [OCUWin32]::Posts -ne 1) {throw 'Native fractional viewport mapping failed'}
++Invoke-NativeScroll $nativeLeaf 'up' 0.5 $process | Out-Null
++if ([OCUWin32]::Position -ne 0) {throw 'Native reverse mapping failed'}
++Invoke-NativeScroll $nativeLeaf 'down' 2.5 $process | Out-Null
++if ([OCUWin32]::Position -ne 500) {throw 'Native multipage viewport mapping failed'}
++[OCUWin32]::Noop=$true
++$beforePosts=[OCUWin32]::Posts
++$failed=$false;try{Invoke-NativeScroll $nativeLeaf 'down' 0.5 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or [OCUWin32]::Posts -ne $beforePosts+1) {throw 'Native noop accepted or replayed'}
++$beforePosts=[OCUWin32]::Posts
++$failed=$false;try{Invoke-NativeScroll $nativeLeaf 'down' 0.005 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or [OCUWin32]::Posts -ne $beforePosts+1) {throw 'One-unit native noop accepted or replayed'}
++[OCUWin32]::Noop=$false;[OCUWin32]::DelayReads=3
++$beforePosts=[OCUWin32]::Posts
++Invoke-NativeScroll $nativeLeaf 'down' 0.005 $process | Out-Null
++if ([OCUWin32]::Position -ne 501 -or [OCUWin32]::Posts -ne $beforePosts+1 -or [OCUWin32]::Pending -ne -1) {throw 'Delayed one-unit readback accepted before actual movement'}
++[OCUWin32]::DelayReads=0
++[OCUWin32]::Noop=$false;[OCUWin32]::Large=$true
++$beforePosts=[OCUWin32]::Posts
++$failed=$false;try{Invoke-NativeScroll $nativeLeaf 'down' 100 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or [OCUWin32]::Posts -ne $beforePosts) {throw 'Native 16-bit coordinate overflow delivered input'}
++Write-Output 'viewport scroll contract passed'
 +`
 +	path := filepath.Join(t.TempDir(), "scroll-contract.ps1")
 +	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
@@ -1154,7 +1767,7 @@ index c70def2..3bb30c3 100644
 +	}
 +	output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-MTA", "-ExecutionPolicy", "Bypass", "-File", path).CombinedOutput()
 +	if err != nil {
-+		t.Fatalf("scroll provider contract: %v\n%s", err, output)
++		t.Fatalf("viewport scroll contract: %v\n%s", err, output)
 +	}
 +}
 +
@@ -1302,8 +1915,40 @@ index c70def2..3bb30c3 100644
 +		t.Fatalf("drag routing contract: %v\n%s", err, output)
 +	}
 +}
++
++func TestScrollPagesRejectsInvalidNumbersWithoutDefaulting(t *testing.T) {
++	for _, value := range []any{nil, true, "2", json.Number("1e400"), math.NaN(), math.Inf(1), 0.0, -1.0, 100.01} {
++		if _, err := scrollPages(map[string]any{"pages": value}); err == nil {
++			t.Fatalf("accepted invalid pages %#v", value)
++		}
++	}
++	for _, value := range []any{0.001, 0.5, 2.5, 100.0, json.Number("0.5")} {
++		if _, err := scrollPages(map[string]any{"pages": value}); err != nil {
++			t.Fatalf("rejected valid pages %#v: %v", value, err)
++		}
++	}
++	if value, err := scrollPages(map[string]any{}); err != nil || value != 1 {
++		t.Fatal("omitted pages must default to one")
++	}
++}
++
++func TestClickCountRejectsInvalidProvidedValues(t *testing.T) {
++	for _, value := range []any{nil, true, "2", json.Number("1e400"), math.NaN(), math.Inf(1), 0.0, -1.0, 1.5, 101.0} {
++		if _, err := clickCount(map[string]any{"click_count": value}); err == nil {
++			t.Fatalf("accepted invalid click_count %#v", value)
++		}
++	}
++	for _, value := range []any{1.0, 2.0, 3.0, 100.0, json.Number("2")} {
++		if _, err := clickCount(map[string]any{"click_count": value}); err != nil {
++			t.Fatalf("rejected valid click_count %#v: %v", value, err)
++		}
++	}
++	if value, err := clickCount(map[string]any{}); err != nil || value != 1 {
++		t.Fatal("omitted click_count must default to one")
++	}
++}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..16176bf 100644
+index 720e9d5..aaaab7e 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1365,7 +2010,7 @@ index 720e9d5..16176bf 100644
      [StructLayout(LayoutKind.Sequential)]
      public struct RECT {
          public int Left;
-@@ -38,6 +83,39 @@ public static class OCUWin32 {
+@@ -38,6 +83,52 @@ public static class OCUWin32 {
      [DllImport("user32.dll")]
      public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
  
@@ -1384,6 +2029,19 @@ index 720e9d5..16176bf 100644
 +        return new INPUT { type = 0, mouse = new MOUSEINPUT { dx = x, dy = y, dwFlags = flags } };
 +    }
 +    public static int InputSize() { return Marshal.SizeOf(typeof(INPUT)); }
++    [StructLayout(LayoutKind.Sequential)]
++    public struct SCROLLINFO {
++        public uint cbSize, fMask;
++        public int nMin, nMax;
++        public uint nPage;
++        public int nPos, nTrackPos;
++    }
++    [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr hwnd, int bar, ref SCROLLINFO info);
++    public static SCROLLINFO ReadScrollInfo(IntPtr hwnd, int bar) {
++        var info = new SCROLLINFO { cbSize = (uint)Marshal.SizeOf(typeof(SCROLLINFO)), fMask = 23 };
++        if (!GetScrollInfo(hwnd, bar, ref info)) throw new InvalidOperationException("Native scroll information unavailable");
++        return info;
++    }
 +    [DllImport("user32.dll", SetLastError = true)]
 +    public static extern uint SendInput(uint count, INPUT[] inputs, int size);
 +    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
@@ -1405,7 +2063,7 @@ index 720e9d5..16176bf 100644
      [DllImport("user32.dll")]
      public static extern bool ScreenToClient(IntPtr hWnd, ref POINT point);
  
-@@ -52,6 +130,8 @@ public static class OCUWin32 {
+@@ -52,6 +143,8 @@ public static class OCUWin32 {
  }
  "@
  
@@ -1414,7 +2072,7 @@ index 720e9d5..16176bf 100644
  $WM_SETTEXT = 0x000C
  $WM_MOUSEMOVE = 0x0200
  $WM_LBUTTONDOWN = 0x0201
-@@ -124,7 +204,7 @@ function Get-ElementFrame($element, $windowBounds) {
+@@ -124,7 +217,7 @@ function Get-ElementFrame($element, $windowBounds) {
  
  function Get-ScreenPoint($localFrame, $windowBounds) {
      if ($null -eq $localFrame -or $null -eq $windowBounds) {
@@ -1423,7 +2081,7 @@ index 720e9d5..16176bf 100644
      }
      [pscustomobject]@{
          x = [int][math]::Round($windowBounds.x + $localFrame.x + ($localFrame.width / 2))
-@@ -162,44 +242,118 @@ function Send-MouseClick([IntPtr]$hwnd, [int]$screenX, [int]$screenY, [string]$b
+@@ -162,46 +255,106 @@ function Send-MouseClick([IntPtr]$hwnd, [int]$screenX, [int]$screenY, [string]$b
      }
  }
  
@@ -1436,17 +2094,7 @@ index 720e9d5..16176bf 100644
 -    $end.X = $toX
 -    $end.Y = $toY
 -    [void][OCUWin32]::ScreenToClient($hwnd, [ref]$end)
-+function Assert-DragTarget([IntPtr]$root, [IntPtr]$target, [uint32]$expectedProcessId) {
-+    [uint32]$rootProcessId = 0
-+    [uint32]$targetProcessId = 0
-+    if ([OCUWin32]::GetWindowThreadProcessId($root, [ref]$rootProcessId) -eq 0 -or
-+        [OCUWin32]::GetWindowThreadProcessId($target, [ref]$targetProcessId) -eq 0 -or
-+        $rootProcessId -ne $expectedProcessId -or $targetProcessId -ne $expectedProcessId -or
-+        ($target -ne $root -and -not [OCUWin32]::IsChild($root, $target))) {
-+        throw "Drag target changed or is outside the selected application window; run get_app_state again"
-+    }
-+}
- 
+-
 -    $steps = 12
 -    $startParam = ConvertTo-LParam $start.X $start.Y
 -    [void][OCUWin32]::PostMessage($hwnd, $WM_MOUSEMOVE, [IntPtr]::Zero, $startParam)
@@ -1456,6 +2104,28 @@ index 720e9d5..16176bf 100644
 -        $y = [int][math]::Round($start.Y + (($end.Y - $start.Y) * $i / $steps))
 -        [void][OCUWin32]::PostMessage($hwnd, $WM_MOUSEMOVE, [IntPtr]1, (ConvertTo-LParam $x $y))
 -        Start-Sleep -Milliseconds 20
++function Assert-DragTarget([IntPtr]$root, [IntPtr]$target, [uint32]$expectedProcessId) {
++    [uint32]$rootProcessId = 0
++    [uint32]$targetProcessId = 0
++    if ([OCUWin32]::GetWindowThreadProcessId($root, [ref]$rootProcessId) -eq 0 -or
++        [OCUWin32]::GetWindowThreadProcessId($target, [ref]$targetProcessId) -eq 0 -or
++        $rootProcessId -ne $expectedProcessId -or $targetProcessId -ne $expectedProcessId -or
++        ($target -ne $root -and -not [OCUWin32]::IsChild($root, $target))) {
++        throw "Drag target changed or is outside the selected application window; run get_app_state again"
+     }
+-    [void][OCUWin32]::PostMessage($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, (ConvertTo-LParam $end.X $end.Y))
+ }
+ 
+-function Send-Scroll([IntPtr]$hwnd, [int]$screenX, [int]$screenY, [string]$direction, [double]$pages) {
+-    $point = New-Object OCUWin32+POINT
+-    $point.X = $screenX
+-    $point.Y = $screenY
+-    [void][OCUWin32]::ScreenToClient($hwnd, [ref]$point)
+-    $lParam = ConvertTo-LParam $point.X $point.Y
+-    $delta = [int][math]::Round(120 * $pages)
+-    $message = $WM_MOUSEWHEEL
+-    if ($direction -eq "down" -or $direction -eq "right") {
+-        $delta = -1 * $delta
 +function Get-DragTarget([IntPtr]$root, [uint32]$expectedProcessId, [int]$screenX, [int]$screenY) {
 +    $target = $root
 +    for ($depth = 0; $depth -lt 64; $depth++) {
@@ -1493,7 +2163,9 @@ index 720e9d5..16176bf 100644
 +    $target = Get-DragTarget $hwnd $expectedProcessId $fromX $fromY
 +    foreach ($button in @(1, 2, 4, 5, 6)) {
 +        if (([OCUWin32]::GetAsyncKeyState($button) -band 0x8000) -ne 0) { throw "Cannot start drag while a mouse button is already held" }
-+    }
+     }
+-    if ($direction -eq "left" -or $direction -eq "right") {
+-        $message = $WM_MOUSEHWHEEL
 +    if ([OCUWin32]::GetForegroundWindow() -ne $hwnd) {
 +        [void][OCUWin32]::SetForegroundWindow($hwnd)
 +        for ($attempt = 0; $attempt -lt 12 -and [OCUWin32]::GetForegroundWindow() -ne $hwnd; $attempt++) {
@@ -1542,33 +2214,14 @@ index 720e9d5..16176bf 100644
 +        }
 +        throw "Windows drag input was blocked or partially inserted; the gesture will not be replayed"
      }
--    [void][OCUWin32]::PostMessage($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, (ConvertTo-LParam $end.X $end.Y))
- }
- 
- function Send-Scroll([IntPtr]$hwnd, [int]$screenX, [int]$screenY, [string]$direction, [double]$pages) {
--    $point = New-Object OCUWin32+POINT
--    $point.X = $screenX
--    $point.Y = $screenY
--    [void][OCUWin32]::ScreenToClient($hwnd, [ref]$point)
--    $lParam = ConvertTo-LParam $point.X $point.Y
-+    $lParam = ConvertTo-LParam $screenX $screenY
-     $delta = [int][math]::Round(120 * $pages)
-     $message = $WM_MOUSEWHEEL
--    if ($direction -eq "down" -or $direction -eq "right") {
-+    if ($direction -eq "down" -or $direction -eq "left") {
-         $delta = -1 * $delta
-     }
-     if ($direction -eq "left" -or $direction -eq "right") {
-         $message = $WM_MOUSEHWHEEL
-     }
 -    [void][OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)
-+    if (-not [OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)) {
-+        throw "Windows rejected scroll input; inspect the target desktop before retrying"
-+    }
  }
  
++
  function Send-Text([IntPtr]$hwnd, [string]$text) {
-@@ -562,23 +716,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
+     foreach ($char in $text.ToCharArray()) {
+         [void][OCUWin32]::PostMessage($hwnd, $WM_CHAR, [IntPtr][int][char]$char, [IntPtr]::Zero)
+@@ -562,23 +715,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
      }
  }
  
@@ -1653,42 +2306,162 @@ index 720e9d5..16176bf 100644
      }
  }
  
-@@ -764,8 +974,28 @@ function Invoke-SecondaryAction($element, [string]$action) {
+@@ -764,23 +973,129 @@ function Invoke-SecondaryAction($element, [string]$action) {
      throw "$action is not a valid secondary action for $($operation.element.index)"
  }
  
 -function Invoke-Scroll($element, [string]$direction, [double]$pages) {
 -    $scroll = Get-CurrentPatternOrNull $element ([Windows.Automation.ScrollPattern]::Pattern)
-+function Get-HorizontalScrollPattern($element, $process) {
+-    if ($null -eq $scroll) {
+-        return $false
++function Assert-NativeNumber($value, [string]$name) {
++    if (-not ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal])) { throw "$name must be a JSON number" }
++    if ($name -eq "pages") { Assert-ScrollPages ([double]$value) }
++    elseif ([double]::IsNaN($value) -or [double]::IsInfinity($value) -or [math]::Truncate($value) -ne $value -or $value -lt 1 -or $value -gt 100) { throw "click_count must be a whole number from 1 to 100" }
++}
++
++function Assert-ScrollPages([double]$pages) {
++    if ([double]::IsNaN($pages) -or [double]::IsInfinity($pages) -or $pages -le 0 -or $pages -gt 100) {
++        throw "pages must be a finite number greater than 0 and at most 100"
+     }
+-    $horizontal = [Windows.Automation.ScrollAmount]::NoAmount
+-    $vertical = [Windows.Automation.ScrollAmount]::NoAmount
+-    if ($direction -eq "up") { $vertical = [Windows.Automation.ScrollAmount]::LargeDecrement }
+-    elseif ($direction -eq "down") { $vertical = [Windows.Automation.ScrollAmount]::LargeIncrement }
+-    elseif ($direction -eq "left") { $horizontal = [Windows.Automation.ScrollAmount]::LargeDecrement }
+-    elseif ($direction -eq "right") { $horizontal = [Windows.Automation.ScrollAmount]::LargeIncrement }
+-    $repeat = [math]::Max(1, [int][math]::Ceiling($pages))
+-    for ($i = 0; $i -lt $repeat; $i++) {
+-        $scroll.Scroll($horizontal, $vertical)
+-        Start-Sleep -Milliseconds 40
++}
++
++function Test-ScrollWindow($element, $process) {
++    $candidate = $element
++    for ($depth = 0; $depth -lt 64 -and $null -ne $candidate; $depth++) {
++        if ($candidate.Current.ProcessId -ne $process.Id) { return $false }
++        if ([IntPtr]$candidate.Current.NativeWindowHandle -eq [IntPtr]$process.MainWindowHandle) { return $true }
++        $candidate = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($candidate)
+     }
+-    return $true
++    return $false
++}
++
++function Get-ScrollPattern($element, $process, [bool]$horizontal) {
++    if (-not (Test-ScrollWindow $element $process)) { return $null }
 +    $candidate = $element
 +    for ($depth = 0; $depth -lt 64 -and $null -ne $candidate; $depth++) {
 +        if ($candidate.Current.ProcessId -ne $process.Id) { return $null }
 +        $pattern = Get-CurrentPatternOrNull $candidate ([Windows.Automation.ScrollPattern]::Pattern)
-+        if ($null -ne $pattern -and $pattern.Current.HorizontallyScrollable) {
-+            return $pattern
-+        }
-+        if ([IntPtr]$candidate.Current.NativeWindowHandle -eq [IntPtr]$process.MainWindowHandle) {
-+            return $null
-+        }
++        if ($null -ne $pattern -and (($horizontal -and $pattern.Current.HorizontallyScrollable) -or
++            (-not $horizontal -and $pattern.Current.VerticallyScrollable))) { return $pattern }
++        if ([IntPtr]$candidate.Current.NativeWindowHandle -eq [IntPtr]$process.MainWindowHandle) { return $null }
 +        $candidate = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($candidate)
 +    }
 +    return $null
 +}
 +
 +function Invoke-Scroll($element, [string]$direction, [double]$pages, $process) {
-+    $scroll = if ($direction -eq "left" -or $direction -eq "right") {
-+        Get-HorizontalScrollPattern $element $process
-+    } else {
-+        Get-CurrentPatternOrNull $element ([Windows.Automation.ScrollPattern]::Pattern)
++    Assert-ScrollPages $pages
++    $horizontal = $direction -eq "left" -or $direction -eq "right"
++    $scroll = Get-ScrollPattern $element $process $horizontal
++    if ($null -eq $scroll) { return $null }
++    $before = if ($horizontal) { $scroll.Current.HorizontalScrollPercent } else { $scroll.Current.VerticalScrollPercent }
++    $view = if ($horizontal) { $scroll.Current.HorizontalViewSize } else { $scroll.Current.VerticalViewSize }
++    if ([double]::IsNaN($before) -or [double]::IsInfinity($before) -or $before -lt 0 -or $before -gt 100 -or
++        [double]::IsNaN($view) -or [double]::IsInfinity($view) -or $view -le 0 -or $view -ge 100) {
++        throw "UIA viewport size or scroll position is unavailable; precise page scrolling is unsupported"
 +    }
-     if ($null -eq $scroll) {
-         return $false
-     }
-@@ -899,7 +1129,15 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
++    $sign = if ($direction -eq "up" -or $direction -eq "left") { -1 } else { 1 }
++    $perPage = 100 * $view / (100 - $view)
++    $target = [math]::Max([double]0, [math]::Min([double]100, $before + $sign * $pages * $perPage))
++    $distance = [math]::Abs($target - $before)
++    $tolerance = [math]::Min($perPage * 0.005, $distance * 0.1)
++    if ($distance -eq 0 -and $before -gt 0 -and $before -lt 100) { throw "Requested scroll is below UIA position resolution" }
++    if ($distance -gt 0) {
++        if (-not (Test-ScrollWindow $element $process)) { throw "Scroll target window changed before mutation" }
++        if ($horizontal) { $scroll.SetScrollPercent($target, -1) } else { $scroll.SetScrollPercent(-1, $target) }
++    }
++    $actual = $before
++    for ($attempt = 0; $attempt -lt 10; $attempt++) {
++        $actual = if ($horizontal) { $scroll.Current.HorizontalScrollPercent } else { $scroll.Current.VerticalScrollPercent }
++        if ([math]::Abs($actual - $target) -le $tolerance) { break }
++        Start-Sleep -Milliseconds 20
++    }
++    $actualView = if ($horizontal) { $scroll.Current.HorizontalViewSize } else { $scroll.Current.VerticalViewSize }
++    if ([double]::IsNaN($actual) -or [double]::IsInfinity($actual) -or [math]::Abs($actual - $target) -gt $tolerance -or [double]::IsNaN($actualView) -or [double]::IsInfinity($actualView) -or [math]::Abs($actualView - $view) -gt 0.01) {
++        throw "UIA scroll did not reach the requested position or viewport changed; movement may be partial and will not be replayed"
++    }
++    $moved = [math]::Abs($actual - $before) / $perPage
++    $edge = $target -eq 0 -or $target -eq 100
++    return "Scroll: requested $pages viewport pages $direction; observed $([math]::Round($moved, 4)) pages; boundary=$edge (UIA ScrollPattern)."
++}
++
++function Invoke-NativeScroll($element, [string]$direction, [double]$pages, $process) {
++    Assert-ScrollPages $pages
++    if (-not (Test-ScrollWindow $element $process)) { throw "Scroll target is outside the selected application window" }
++    $axis = if ($direction -eq "left" -or $direction -eq "right") { 0 } else { 1 }
++    $candidate = $element
++    $target = [IntPtr]::Zero
++    $info = $null
++    for ($depth = 0; $depth -lt 64 -and $null -ne $candidate; $depth++) {
++        if ($candidate.Current.ProcessId -ne $process.Id) { break }
++        $handle = [IntPtr]$candidate.Current.NativeWindowHandle
++        if ($handle -ne [IntPtr]::Zero) {
++            if ($handle -ne [IntPtr]$process.MainWindowHandle -and -not [OCUWin32]::IsChild([IntPtr]$process.MainWindowHandle, $handle)) { break }
++            try { $observed = [OCUWin32]::ReadScrollInfo($handle, $axis) } catch { $observed = $null }
++            if ($null -ne $observed -and $observed.nPage -gt 0 -and $observed.nMax - $observed.nMin + 1 -gt $observed.nPage) {
++                $target = $handle; $info = $observed; break
++            }
++        }
++        if ($handle -eq [IntPtr]$process.MainWindowHandle) { break }
++        $candidate = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($candidate)
++    }
++    if ($target -eq [IntPtr]::Zero) { throw "No measurable UIA or native scrollbar viewport; precise page scrolling is unsupported" }
++    $sign = if ($direction -eq "up" -or $direction -eq "left") { -1 } else { 1 }
++    $maximum = [double]$info.nMax - $info.nPage + 1
++    $requested = [math]::Max([double]$info.nMin, [math]::Min([double]$maximum, $info.nPos + $sign * $pages * $info.nPage))
++    $desired = [int][math]::Round($requested)
++    $before = $info.nPos
++    if ($desired -eq $before -and $requested -ne $before) { throw "Requested scroll is smaller than the native scrollbar unit" }
++    $message = if ($axis -eq 0) { 0x0114 } else { 0x0115 }
++    if ($desired -ne $before) {
++        if ($desired -lt 0 -or $desired -gt 65535) { throw "Native scrollbar target exceeds 16-bit thumb message range; precise scrolling is unsupported" }
++        [uint32]$owner = 0
++        if ([OCUWin32]::GetWindowThreadProcessId($target, [ref]$owner) -eq 0 -or $owner -ne $process.Id -or
++            ($target -ne [IntPtr]$process.MainWindowHandle -and -not [OCUWin32]::IsChild([IntPtr]$process.MainWindowHandle, $target))) { throw "Scroll target process or window changed" }
++        $wparam = [IntPtr](($desired -shl 16) -bor 4)
++        if (-not [OCUWin32]::PostMessage($target, $message, $wparam, [IntPtr]::Zero)) { throw "Windows rejected native scrollbar input; it will not be replayed" }
++    }
++    $actual = $info
++    $distance = [math]::Abs($desired - $before)
++    $tolerance = [math]::Min([double]1, $distance * 0.1)
++    $reached = $false
++    for ($attempt = 0; $attempt -lt 10; $attempt++) {
++        $actual = [OCUWin32]::ReadScrollInfo($target, $axis)
++        $reached = [math]::Abs($actual.nPos - $desired) -le $tolerance -and ($distance -eq 0 -or ($actual.nPos - $before) * $sign -gt 0)
++        if ($reached) { break }
++        Start-Sleep -Milliseconds 20
++    }
++    if (-not $reached -or $actual.nPage -ne $info.nPage) {
++        throw "Native scrollbar did not reach the requested position; movement may be partial and will not be replayed"
++    }
++    $moved = [math]::Abs($actual.nPos - $before) / [double]$info.nPage
++    return "Scroll: requested $pages viewport pages $direction; observed $([math]::Round($moved, 4)) pages (native scrollbar, one-unit granularity)."
+ }
+ 
+ function Find-TextEntryElement($process) {
+@@ -899,7 +1214,21 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
 -    if ($operation.tool -eq "list_apps") {
++    foreach ($name in @("pages", "click_count")) {
++        if (($name -eq "pages" -and $operation.tool -eq "scroll") -or ($name -eq "click_count" -and $operation.tool -eq "click")) {
++            if ($operation.PSObject.Properties.Name -notcontains $name) { $operation | Add-Member NoteProperty $name 1 }
++            Assert-NativeNumber $operation.$name $name
++        }
++    }
 +    if ($operation.tool -eq "diagnostics") {
 +        $desktop = [Environment]::UserInteractive -and [OCUWin32]::CanAccessInputDesktop() -and ([System.Windows.Forms.Screen]::AllScreens.Count -gt 0)
 +        $status = if ($desktop) { "ready" } else { "desktop_unavailable" }
@@ -1701,16 +2474,20 @@ index 720e9d5..16176bf 100644
          $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
-@@ -963,7 +1201,7 @@ try {
+@@ -961,17 +1290,13 @@ try {
+                 Invoke-SecondaryAction $element $operation.action
+             }
              "scroll" {
-                 $handled = $false
-                 if ($null -ne $element) {
+-                $handled = $false
+-                if ($null -ne $element) {
 -                    $handled = Invoke-Scroll $element $operation.direction ([double]$operation.pages)
-+                    $handled = Invoke-Scroll $element $operation.direction ([double]$operation.pages) $process
-                 }
-                 if (-not $handled) {
-                     $point = Get-ScreenPoint $operation.element.frame $windowBounds
-@@ -971,7 +1209,7 @@ try {
+-                }
+-                if (-not $handled) {
+-                    $point = Get-ScreenPoint $operation.element.frame $windowBounds
+-                    Send-Scroll $hwnd $point.x $point.y $operation.direction ([double]$operation.pages)
++                $scrollSummary = Invoke-Scroll $element $operation.direction ([double]$operation.pages) $process
++                if ($null -eq $scrollSummary) {
++                    $scrollSummary = Invoke-NativeScroll $element $operation.direction ([double]$operation.pages) $process
                  }
              }
              "drag" {
@@ -1719,11 +2496,22 @@ index 720e9d5..16176bf 100644
              }
              "type_text" {
                  if (-not (Invoke-TypeText $process $operation.text)) {
+@@ -995,7 +1320,9 @@ try {
+         }
+ 
+         Start-Sleep -Milliseconds 120
+-        $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app) }
++        $snapshot = Build-Snapshot $operation.app
++        if ($operation.tool -eq "scroll") { $snapshot | Add-Member NoteProperty actionSummary $scrollSummary }
++        $response = [pscustomobject]@{ ok = $true; snapshot = $snapshot }
+     }
+ } catch {
+     $message = $_.Exception.Message
 diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
-index ac464ef..9f6f930 100644
+index ac464ef..af0630a 100644
 --- a/docs/ARCHITECTURE.md
 +++ b/docs/ARCHITECTURE.md
-@@ -1,5 +1,31 @@
+@@ -1,5 +1,35 @@
  # 架构总览
  
 +## BioRouter downstream runtime contract
@@ -1750,6 +2538,10 @@ index ac464ef..9f6f930 100644
 +
 +A successful macOS AX write is not sufficient evidence of a value change: `set_value` polls the same control for the requested scalar and otherwise returns an unconfirmed-outcome error without another mutation. Chromium intentionally rejects direct slider setters in [its AX implementation](https://chromium.googlesource.com/chromium/src/+/HEAD/ui/accessibility/platform/ax_platform_node_cocoa.mm); use the slider's exposed Increment/Decrement actions or a deliberate drag when direct setting is unavailable. Integral AX page scrolling observes target-local descendant geometry and exposed axis scrollbar values, then waits for movement to settle before sending the next requested page. A direct target-owned axis scrollbar with finite min/max can prove a reached boundary; the result reports the actual verified page count. Calls accept up to 100 pages to bound work and avoid numeric conversion overflow. Unobserved progress stops remaining actions and reports the verified page count; it is not silently retried. Neither polling path changes keyboard or pointer event recipes.
 +
++The macOS wheel fallback also sequences requested pages through the progress observer. It uses pixel-unit events sized to the visible target viewport, one page per event plus any fractional remainder. The former single line-unit event (`12 * pages`) let applications cap a multi-page request to one viewport; neither global nor targeted wheel dispatch uses that encoding now.
++
++Numeric action defaults apply only when the argument is absent. Provided `pages` must be a finite number in `(0, 100]`; `click_count` must be a whole number in `[1, 100]`. Booleans, nulls, strings, nonfinite values, and out-of-range counts fail before action dispatch. Tool schemas publish these bounds; repeated clicks retain cancellation checks between actions.
++
 +The remaining sections describe the pinned upstream baseline; BioRouter-specific behavior above takes precedence.
 +
  这个仓库当前已经从模板收敛成一个本地 `computer-use` 项目。主线仍是 Swift 实现的 macOS automation MCP server，同时新增了实验性的 Windows 和 Linux runtime，用独立 Go 二进制暴露同一组 9 个 Computer Use tools。
@@ -1757,10 +2549,10 @@ index ac464ef..9f6f930 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..93ed56d
+index 0000000..35ab51d
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,59 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1812,12 +2604,20 @@ index 0000000..93ed56d
 +Live fixture events prove page scrolling moved, but rapid repeated AX page requests were coalesced into one viewport per multi-page call. Added bounded target-local geometry observation between authorized page actions; missing progress reports partial/unconfirmed completion without sending remaining actions. Scalar setters now verify readback instead of treating acknowledgment as success; Chromium slider direct writes can be rejected by the application, so alternatives remain explicit user/agent choices. Nine targeted regressions fail under old-behavior mutations (21 assertions) and pass restored; full non-live suite passes 194 tests. Updated payload live verification remains required.
 +
 +Review additions cover fixed-frame controls through axis scrollbar values, finite page bounds, and explicit edge reporting only from a direct target-owned axis scrollbar with valid min/max. Ancestor progress sampling stops at the application/window boundary. The final non-live suite passes 198 tests; all four new source/test files are included in the patch diff via intent-to-add.
++
++## Wheel fallback page semantics
++
++The next live run showed that the browser HTML-content node exposed no AXByPage action: it used the still-unmodified wheel fallback. Its single line-unit event was capped at one viewport even for pages=3. The fallback now sends one viewport-sized pixel event per authorized page and a fractional final event, observing progress between them. Tests inspect real constructed CGEvent pixel deltas without posting input, and cover horizontal axes and oversized-content clipping. The old single-event/line-unit mutation fails two tests with four assertions; restored non-live suite passes 200 tests. Live acceptance remains required.
++
++## Strict numeric action parsing
++
++Removed silent fallback for provided invalid pages/click_count and rejected Boolean bridging, nonfinite numbers, fractional click counts, and unsafe integer conversion. Both counts default only when absent; clicks are bounded to 1–100 and pages to greater than zero through 100, with matching tool schema bounds. Existing global, targeted, and AX repeated-click loops check cancellation between actions. The old invalid-type behavior failed one regression with 11 assertions; the restored non-live suite passes 205 tests, including schema and deserialized Boolean/null checks.
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift
 new file mode 100644
-index 0000000..ba1e393
+index 0000000..99c5997
 --- /dev/null
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityScrollProgress.swift
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,204 @@
 +import AppKit
 +import ApplicationServices
 +import Foundation
@@ -2000,11 +2800,27 @@ index 0000000..ba1e393
 +            }
 +        }
 +        guard settled else {
-+            throw ComputerUseError.stateUnavailable("Scroll progress could not be confirmed after page \(completed + 1) of \(pages); \(completed) pages were verified. The target may be at a boundary or still moving. No remaining page actions were sent; inspect before retrying.")
++            throw ComputerUseError.stateUnavailable("Scroll progress could not be confirmed after scroll step \(completed + 1) of \(pages); \(completed) scroll steps were verified. The target may be at a boundary or still moving. No remaining scroll steps were sent; inspect before retrying.")
 +        }
 +        if isAtBoundary(previous) { return PageScrollOutcome(verifiedPages: completed + 1, reachedBoundary: true) }
 +    }
 +    return PageScrollOutcome(verifiedPages: pages, reachedBoundary: false)
++}
++
++func scrollPageChunks(_ pages: Double) throws -> [Double] {
++    try validateScrollPages(pages)
++    let whole = Int(pages.rounded(.down))
++    let remainder = pages - Double(whole)
++    return Array(repeating: 1, count: whole) + (remainder > 0 ? [remainder] : [])
++}
++
++func scrollPageGeometry(elementFrame: CGRect, windowBounds: CGRect, direction: String) throws -> (point: CGPoint, extent: Double) {
++    let visible = elementFrame.intersection(CGRect(origin: .zero, size: windowBounds.size))
++    let extent = direction == "up" || direction == "down" ? visible.height : visible.width
++    guard !visible.isNull, !visible.isEmpty, extent.isFinite, extent > 0 else {
++        throw ComputerUseError.stateUnavailable("The scroll target has no visible viewport. Run get_app_state again.")
++    }
++    return (CGPoint(x: windowBounds.minX + visible.midX, y: windowBounds.minY + visible.midY), Double(extent))
 +}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..a91ac94 100644
@@ -2268,7 +3084,7 @@ index 0000000..319b77a
 +    }
 +}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
-index ffee113..4a725d4 100644
+index ffee113..175cce3 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift
 @@ -382,10 +382,6 @@ func canUseActivationOnlyClickFallback(role: String?) -> Bool {
@@ -2294,7 +3110,17 @@ index ffee113..4a725d4 100644
  }
  
  func isElectronScopedWebRowClickOptimizationTarget(appName: String, bundleIdentifier: String?) -> Bool {
-@@ -674,6 +670,7 @@ public final class ComputerUseService {
+@@ -476,6 +472,9 @@ public final class ComputerUseService {
+         mouseButton: String,
+         clickMethod: ClickMethod = .auto
+     ) throws -> ToolCallResult {
++        guard (1...100).contains(clickCount) else {
++            throw ComputerUseError.invalidArguments("click_count must be a whole number from 1 through 100")
++        }
+         try validateClickMethod(
+             clickMethod,
+             hasElementIndex: elementIndex != nil,
+@@ -674,6 +673,7 @@ public final class ComputerUseService {
              throw ComputerUseError.stateUnavailable("element \(elementIndex) has no backing accessibility object")
          }
  
@@ -2302,7 +3128,7 @@ index ffee113..4a725d4 100644
          let result = AXUIElementPerformAction(element, rawAction as CFString)
          guard result == .success else {
              throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
-@@ -688,9 +685,7 @@ public final class ComputerUseService {
+@@ -688,9 +688,7 @@ public final class ComputerUseService {
          guard ["up", "down", "left", "right"].contains(normalized) else {
              throw ComputerUseError.message("Invalid scroll direction: \(direction)")
          }
@@ -2313,7 +3139,7 @@ index ffee113..4a725d4 100644
  
          let snapshot = try currentSnapshot(for: query)
          let record = try lookupElement(snapshot: snapshot, index: elementIndex)
-@@ -707,9 +702,22 @@ public final class ComputerUseService {
+@@ -707,18 +705,50 @@ public final class ComputerUseService {
          if let repeatCount = integralScrollPageCount(pages),
             let rawAction = record.rawActions.first(where: { $0.caseInsensitiveCompare("AXScroll\(normalized.capitalized)ByPage") == .orderedSame }),
             let element = record.element {
@@ -2337,9 +3163,44 @@ index ffee113..4a725d4 100644
 +                let result = snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
 +                return ToolCallResult(content: result.content + [.text("Reached the scroll boundary after \(outcome.verifiedPages) verified page actions of \(repeatCount) requested.")], isError: false)
              }
-         } else if let point = try globalPoint(for: record, snapshot: snapshot) {
-             try performScrollEvent(
-@@ -749,38 +757,60 @@ public final class ComputerUseService {
+-        } else if let point = try globalPoint(for: record, snapshot: snapshot) {
+-            try performScrollEvent(
+-                at: point,
+-                direction: normalized,
+-                pages: pages,
+-                targetDescription: "element_index=\(elementIndex)",
+-                snapshot: snapshot
++        } else if let element = record.element, let frame = record.localFrame, let bounds = snapshot.windowBounds {
++            let geometry = try scrollPageGeometry(elementFrame: frame, windowBounds: bounds, direction: normalized)
++            let chunks = try scrollPageChunks(pages)
++            let probe = try AccessibilityScrollProbe(target: element, direction: normalized)
++            var index = 0
++            let outcome = try performObservedPageScroll(
++                pages: chunks.count,
++                read: { try probe.read() },
++                performPage: {
++                    let pixels = geometry.extent * chunks[index]
++                    index += 1
++                    try performScrollEvent(
++                        at: geometry.point,
++                        direction: normalized,
++                        pixels: pixels,
++                        targetDescription: "element_index=\(elementIndex)",
++                        snapshot: snapshot
++                    )
++                },
++                pause: { Thread.sleep(forTimeInterval: 0.05) },
++                isAtBoundary: { $0.reachedBoundary }
+             )
++            if outcome.reachedBoundary {
++                let result = snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
++                let completed = chunks.prefix(outcome.verifiedPages).reduce(0, +)
++                return ToolCallResult(content: result.content + [.text("Reached the scroll boundary after \(completed) verified pages of \(pages) requested.")], isError: false)
++            }
+         } else {
+             throw ComputerUseError.stateUnavailable("element \(elementIndex) has no scrollable frame")
+         }
+@@ -749,38 +779,60 @@ public final class ComputerUseService {
      }
  
      public func typeText(app query: String, text: String) throws -> ToolCallResult {
@@ -2406,7 +3267,7 @@ index ffee113..4a725d4 100644
      public func setValue(app query: String, elementIndex: String, value: String) throws -> ToolCallResult {
          let snapshot = try currentSnapshot(for: query)
          let record = try lookupElement(snapshot: snapshot, index: elementIndex)
-@@ -806,16 +836,32 @@ public final class ComputerUseService {
+@@ -806,16 +858,32 @@ public final class ComputerUseService {
              throw ComputerUseError.message(nonSettableSetValueErrorMessage)
          }
  
@@ -2445,7 +3306,7 @@ index ffee113..4a725d4 100644
          } catch {
              settleVisualCursor(at: cursorTarget)
              throw error
-@@ -826,11 +872,12 @@ public final class ComputerUseService {
+@@ -826,11 +894,12 @@ public final class ComputerUseService {
      }
  
      private func currentSnapshot(for query: String) throws -> AppSnapshot {
@@ -2459,7 +3320,7 @@ index ffee113..4a725d4 100644
      }
  
      @discardableResult
-@@ -840,6 +887,7 @@ public final class ComputerUseService {
+@@ -840,6 +909,7 @@ public final class ComputerUseService {
          treeLimits: AccessibilityTreeLimits = .defaults,
          recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation
      ) throws -> AppSnapshot {
@@ -2467,7 +3328,7 @@ index ffee113..4a725d4 100644
          let app = try AppDiscovery.resolve(query)
          let snapshot = try SnapshotBuilder.build(
              for: app,
-@@ -848,6 +896,7 @@ public final class ComputerUseService {
+@@ -848,6 +918,7 @@ public final class ComputerUseService {
              recoveryPolicy: recoveryPolicy
          )
  
@@ -2475,7 +3336,7 @@ index ffee113..4a725d4 100644
          let keys = Set([
              query.lowercased(),
              app.name.lowercased(),
-@@ -951,6 +1000,7 @@ public final class ComputerUseService {
+@@ -951,6 +1022,7 @@ public final class ComputerUseService {
              return false
          }
  
@@ -2483,7 +3344,7 @@ index ffee113..4a725d4 100644
          let result = AXUIElementSetAttributeValue(
              target.list,
              kAXSelectedChildrenAttribute as CFString,
-@@ -961,7 +1011,9 @@ public final class ComputerUseService {
+@@ -961,7 +1033,9 @@ public final class ComputerUseService {
          case .success:
              Thread.sleep(forTimeInterval: 0.15)
              return true
@@ -2494,7 +3355,7 @@ index ffee113..4a725d4 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue(\(kAXSelectedChildrenAttribute)) failed with \(result.rawValue)")
-@@ -1083,6 +1135,7 @@ public final class ComputerUseService {
+@@ -1083,6 +1157,7 @@ public final class ComputerUseService {
  
          let attempts = max(repeatCount, 1)
          for index in 0..<attempts {
@@ -2502,7 +3363,7 @@ index ffee113..4a725d4 100644
              let result = AXUIElementPerformAction(element, action as CFString)
              switch result {
              case .success:
-@@ -1091,7 +1144,9 @@ public final class ComputerUseService {
+@@ -1091,7 +1166,9 @@ public final class ComputerUseService {
                  }
              case .attributeUnsupported where action.caseInsensitiveCompare("AXOpen") == .orderedSame:
                  return true
@@ -2513,7 +3374,7 @@ index ffee113..4a725d4 100644
                  return false
              default:
                  throw ComputerUseError.message("AXUIElementPerformAction(\(action)) failed with \(result.rawValue)")
-@@ -1120,11 +1175,14 @@ public final class ComputerUseService {
+@@ -1120,11 +1197,14 @@ public final class ComputerUseService {
      }
  
      private func setBoolAttribute(named attribute: String, on element: AXUIElement) throws -> Bool {
@@ -2529,7 +3390,7 @@ index ffee113..4a725d4 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue(\(attribute)) failed with \(result.rawValue)")
-@@ -1409,11 +1467,15 @@ public final class ComputerUseService {
+@@ -1409,11 +1489,15 @@ public final class ComputerUseService {
          }
  
          let baseValue = editableBaseValue(for: element)
@@ -2546,16 +3407,32 @@ index ffee113..4a725d4 100644
              return false
          default:
              throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
-@@ -1797,7 +1859,7 @@ public final class ComputerUseService {
+@@ -1785,7 +1869,7 @@ public final class ComputerUseService {
+     private func performScrollEvent(
+         at point: CGPoint,
+         direction: String,
+-        pages: Double,
++        pixels: Double,
+         targetDescription: String,
+         snapshot: AppSnapshot
+     ) throws {
+@@ -1797,12 +1881,12 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
 -            InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
+-            try InputSimulation.scrollGlobally(at: eventPoint, direction: direction, pages: pages)
 +            try InputSimulation.prepareAppForGlobalPointerInput(snapshot)
-             try InputSimulation.scrollGlobally(at: eventPoint, direction: direction, pages: pages)
++            try InputSimulation.scrollGlobally(at: eventPoint, direction: direction, pixels: pixels)
              return
          }
-@@ -1822,7 +1884,7 @@ public final class ComputerUseService {
+ 
+-        try InputSimulation.scrollTargeted(at: eventPoint, direction: direction, pages: pages, pid: snapshot.app.pid)
++        try InputSimulation.scrollTargeted(at: eventPoint, direction: direction, pixels: pixels, pid: snapshot.app.pid)
+     }
+ 
+     private func performDragEvent(
+@@ -1822,7 +1906,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -2564,7 +3441,7 @@ index ffee113..4a725d4 100644
              try InputSimulation.dragGlobally(from: eventStart, to: eventEnd)
          case .appPost:
              try InputSimulation.dragTargeted(from: eventStart, to: eventEnd, pid: snapshot.app.pid)
-@@ -1846,7 +1908,7 @@ public final class ComputerUseService {
+@@ -1846,7 +1930,7 @@ public final class ComputerUseService {
                  targetDescription: targetDescription,
                  snapshot: snapshot
              )
@@ -2573,7 +3450,7 @@ index ffee113..4a725d4 100644
              try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
              return
          }
-@@ -1910,7 +1972,7 @@ public final class ComputerUseService {
+@@ -1910,7 +1994,7 @@ public final class ComputerUseService {
                  )
              }
              debugClickDecision("requested=global executed=global_hid target=\(targetDescription)")
@@ -2582,7 +3459,7 @@ index ffee113..4a725d4 100644
              try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
          case .auto, .accessibility:
              throw ComputerUseError.message(
-@@ -1927,3 +1989,56 @@ public final class ComputerUseService {
+@@ -1927,3 +2011,56 @@ public final class ComputerUseService {
          return ToolCallResult(content: content)
      }
  }
@@ -2640,7 +3517,7 @@ index ffee113..4a725d4 100644
 +    }
 +}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
-index c7e5770..279a1a0 100644
+index c7e5770..3f94a33 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift
 @@ -44,7 +44,10 @@ public final class ComputerUseToolDispatcher {
@@ -2654,8 +3531,54 @@ index c7e5770..279a1a0 100644
          case "list_apps":
              return service.listApps()
          case "get_app_state":
+@@ -62,7 +65,7 @@ public final class ComputerUseToolDispatcher {
+                 elementIndex: optionalElementIndex(in: arguments),
+                 x: optionalDouble("x", in: arguments),
+                 y: optionalDouble("y", in: arguments),
+-                clickCount: Int(optionalDouble("click_count", in: arguments) ?? 1),
++                clickCount: try clickCountArgument(in: arguments),
+                 mouseButton: optionalString("mouse_button", in: arguments) ?? "left",
+                 clickMethod: try parseClickMethod(optionalString("click_method", in: arguments))
+             )
+@@ -77,7 +80,7 @@ public final class ComputerUseToolDispatcher {
+                 app: requireString("app", in: arguments),
+                 direction: requireString("direction", in: arguments),
+                 elementIndex: requireElementIndex(in: arguments),
+-                pages: optionalDouble("pages", in: arguments) ?? 1
++                pages: try scrollPagesArgument(in: arguments)
+             )
+         case "drag":
+             return try service.drag(
+@@ -404,3 +407,27 @@ private func decodeOpenComputerUseJSONObject(_ source: String) throws -> Any {
+         )
+     }
+ }
++
++private func finiteNumericArgument(_ key: String, in arguments: [String: Any], defaultValue: Double) throws -> Double {
++    guard let raw = arguments[key] else { return defaultValue }
++    guard let number = raw as? NSNumber,
++          CFGetTypeID(number) != CFBooleanGetTypeID(),
++          number.doubleValue.isFinite else {
++        throw ComputerUseError.invalidArguments("\(key) must be a finite number; omit it to use the default")
++    }
++    return number.doubleValue
++}
++
++func scrollPagesArgument(in arguments: [String: Any]) throws -> Double {
++    let pages = try finiteNumericArgument("pages", in: arguments, defaultValue: 1)
++    try validateScrollPages(pages)
++    return pages
++}
++
++func clickCountArgument(in arguments: [String: Any]) throws -> Int {
++    let count = try finiteNumericArgument("click_count", in: arguments, defaultValue: 1)
++    guard count >= 1, count <= 100, let integer = Int(exactly: count) else {
++        throw ComputerUseError.invalidArguments("click_count must be a whole number from 1 through 100")
++    }
++    return integer
++}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
-index 5a06785..7df8227 100644
+index 5a06785..8ed47ab 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift
 @@ -45,14 +45,76 @@ enum MouseButtonKind: String {
@@ -2758,7 +3681,7 @@ index 5a06785..7df8227 100644
              try postMouseEventToPid(type: .mouseMoved, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
              try postMouseEventToPid(type: button.downEvent, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
              try postMouseEventToPid(type: button.upEvent, source: source, point: point, button: button.cgButton, clickState: clickCount, pid: pid)
-@@ -87,16 +151,7 @@ enum InputSimulation {
+@@ -87,34 +151,29 @@ enum InputSimulation {
          clickCount: Int,
          pid: pid_t
      ) throws {
@@ -2775,8 +3698,39 @@ index 5a06785..7df8227 100644
 +        throw ComputerUseError.message("unsupported_method: sky_click is not enabled in BioRouter; use accessibility or app_post")
      }
  
-     static func scrollTargeted(at point: CGPoint, direction: String, pages: Double, pid: pid_t) throws {
-@@ -127,7 +182,9 @@ enum InputSimulation {
+-    static func scrollTargeted(at point: CGPoint, direction: String, pages: Double, pid: pid_t) throws {
+-        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: wheel1(direction: direction, pages: pages), wheel2: wheel2(direction: direction, pages: pages), wheel3: 0) else {
++    static func scrollEvent(at point: CGPoint, direction: String, pixels: Double) throws -> CGEvent {
++        guard pixels.isFinite, pixels > 0 else {
++            throw ComputerUseError.invalidArguments("Scroll distance must be finite and positive")
++        }
++        let deltas = scrollPixelDeltas(direction: direction, pixels: pixels)
++        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: deltas.vertical, wheel2: deltas.horizontal, wheel3: 0) else {
+             throw ComputerUseError.message("Failed to create scroll event.")
+         }
+-
+         event.location = point
++        return event
++    }
++
++    static func scrollTargeted(at point: CGPoint, direction: String, pixels: Double, pid: pid_t) throws {
++        let event = try scrollEvent(at: point, direction: direction, pixels: pixels)
+         event.postToPid(pid)
+         Thread.sleep(forTimeInterval: 0.1)
+     }
+ 
+-    static func scrollGlobally(at point: CGPoint, direction: String, pages: Double) throws {
+-        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: wheel1(direction: direction, pages: pages), wheel2: wheel2(direction: direction, pages: pages), wheel3: 0) else {
+-            throw ComputerUseError.message("Failed to create scroll event.")
+-        }
+-
+-        event.location = point
++    static func scrollGlobally(at point: CGPoint, direction: String, pixels: Double) throws {
++        let event = try scrollEvent(at: point, direction: direction, pixels: pixels)
+         event.post(tap: .cghidEventTap)
+         Thread.sleep(forTimeInterval: 0.1)
+     }
+@@ -127,7 +186,9 @@ enum InputSimulation {
          try postMouseEventToPid(type: .mouseMoved, source: source, point: start, button: .left, clickState: 1, pid: pid)
          try postMouseEventToPid(type: .leftMouseDown, source: source, point: start, button: .left, clickState: 1, pid: pid)
  
@@ -2786,7 +3740,7 @@ index 5a06785..7df8227 100644
              let progress = CGFloat(step) / 10
              let point = CGPoint(
                  x: start.x + ((end.x - start.x) * progress),
-@@ -136,7 +193,6 @@ enum InputSimulation {
+@@ -136,7 +197,6 @@ enum InputSimulation {
              try postMouseEventToPid(type: .leftMouseDragged, source: source, point: point, button: .left, clickState: 1, pid: pid)
          }
  
@@ -2794,7 +3748,7 @@ index 5a06785..7df8227 100644
      }
  
      static func dragGlobally(from start: CGPoint, to end: CGPoint) throws {
-@@ -151,7 +207,9 @@ enum InputSimulation {
+@@ -151,7 +211,9 @@ enum InputSimulation {
  
          var previous = start
          let steps = dragStepCount(from: start, to: end)
@@ -2804,7 +3758,7 @@ index 5a06785..7df8227 100644
              let progress = CGFloat(step) / CGFloat(steps)
              let point = CGPoint(
                  x: start.x + ((end.x - start.x) * progress),
-@@ -162,11 +220,11 @@ enum InputSimulation {
+@@ -162,11 +224,11 @@ enum InputSimulation {
              previous = point
          }
  
@@ -2817,7 +3771,7 @@ index 5a06785..7df8227 100644
              var mutableChunk = chunk
              guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                    let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
-@@ -310,11 +368,7 @@ enum InputSimulation {
+@@ -310,11 +372,7 @@ enum InputSimulation {
          Thread.sleep(forTimeInterval: 0.03)
      }
  
@@ -2830,7 +3784,7 @@ index 5a06785..7df8227 100644
  
          if performAction(named: kAXRaiseAction as String, on: window) {
              return true
-@@ -331,11 +385,6 @@ enum InputSimulation {
+@@ -331,11 +389,6 @@ enum InputSimulation {
          return false
      }
  
@@ -2842,7 +3796,7 @@ index 5a06785..7df8227 100644
      private static func performAction(named action: String, on element: AXUIElement) -> Bool {
          guard availableActions(for: element).contains(where: { $0.caseInsensitiveCompare(action) == .orderedSame }) else {
              return false
-@@ -378,16 +427,6 @@ enum InputSimulation {
+@@ -378,41 +431,56 @@ enum InputSimulation {
          return (value as! AXUIElement)
      }
  
@@ -2852,18 +3806,20 @@ index 5a06785..7df8227 100644
 -        guard result == .success, let value else {
 -            return nil
 -        }
--
+ 
 -        return value as? [AXUIElement]
 -    }
--
-     private static func wheel1(direction: String, pages: Double) -> Int32 {
-         switch direction {
-         case "up":
-@@ -416,3 +455,43 @@ enum InputSimulation {
-         return Int32(clamped)
-     }
- }
-+
++}
+ 
+-    private static func wheel1(direction: String, pages: Double) -> Int32 {
+-        switch direction {
+-        case "up":
+-            return scrollWheelDelta(for: pages)
+-        case "down":
+-            return -scrollWheelDelta(for: pages)
+-        default:
+-            return 0
+-        }
 +func globalPointerWindowMatches(_ info: [[String: Any]], windowID: CGWindowID, pid: pid_t, bounds: CGRect) -> Bool {
 +    info.contains { item in
 +        guard (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID,
@@ -2872,9 +3828,18 @@ index 5a06785..7df8227 100644
 +              let value = item[kCGWindowBounds as String] as? NSDictionary,
 +              let actual = CGRect(dictionaryRepresentation: value) else { return false }
 +        return windowGeometryMatches(actual, bounds)
-+    }
+     }
 +}
-+
+ 
+-    private static func wheel2(direction: String, pages: Double) -> Int32 {
+-        switch direction {
+-        case "left":
+-            return scrollWheelDelta(for: pages)
+-        case "right":
+-            return -scrollWheelDelta(for: pages)
+-        default:
+-            return 0
+-        }
 +func prepareGlobalPointerTarget(
 +    validate: () throws -> Void,
 +    activate: () -> Bool,
@@ -2892,7 +3857,7 @@ index 5a06785..7df8227 100644
 +    try checkCancellation()
 +    guard raise() else {
 +        throw ComputerUseError.stateUnavailable("Could not raise the captured window. Run get_app_state again.")
-+    }
+     }
 +    for _ in 0..<20 {
 +        try checkCancellation()
 +        try validate()
@@ -2903,6 +3868,21 @@ index 5a06785..7df8227 100644
 +    }
 +    throw ComputerUseError.stateUnavailable("The captured window did not become focused. Run get_app_state again.")
 +}
+ 
+-    private static func scrollWheelDelta(for pages: Double) -> Int32 {
+-        let rawValue = (12.0 * pages).rounded(.toNearestOrAwayFromZero)
+-        let clamped = min(Double(Int32.max), max(1, rawValue))
+-        return Int32(clamped)
++func scrollPixelDeltas(direction: String, pixels: Double) -> (vertical: Int32, horizontal: Int32) {
++    let magnitude = Int32(min(Double(Int32.max), max(1, pixels.rounded(.toNearestOrAwayFromZero))))
++    switch direction {
++    case "up": return (magnitude, 0)
++    case "down": return (-magnitude, 0)
++    case "left": return (0, magnitude)
++    case "right": return (0, -magnitude)
++    default: return (0, 0)
+     }
+ }
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
 index 575bc71..93491ca 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
@@ -3113,7 +4093,7 @@ index 0000000..006df0d
 +    return String(decoding: data, as: UTF8.self)
 +}
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
-index 35dff4b..a11f54e 100644
+index 35dff4b..c0e7856 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
 @@ -30,6 +30,16 @@ public struct ToolDefinition: @unchecked Sendable {
@@ -3133,12 +4113,30 @@ index 35dff4b..a11f54e 100644
          ToolDefinition(
              name: "click",
              description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
+@@ -40,7 +50,7 @@ public enum ToolDefinitions {
+                     "element_index": stringProperty(description: "Element index to click"),
+                     "x": numberProperty(description: "X coordinate in screenshot pixel coordinates"),
+                     "y": numberProperty(description: "Y coordinate in screenshot pixel coordinates"),
+-                    "click_count": integerProperty(description: "Number of clicks. Defaults to 1"),
++                    "click_count": ["type": "integer", "minimum": 1, "maximum": 100, "default": 1, "description": "Number of clicks. Defaults to 1"],
+                     "mouse_button": stringProperty(
+                         description: "Mouse button to click. Defaults to left.",
+                         enumValues: ["left", "right", "middle"]
+@@ -122,7 +132,7 @@ public enum ToolDefinitions {
+                     "app": stringProperty(description: "App name or bundle identifier"),
+                     "direction": stringProperty(description: "Scroll direction: up, down, left, or right"),
+                     "element_index": stringProperty(description: "Element identifier"),
+-                    "pages": numberProperty(description: "Number of pages to scroll. Fractional values are supported. Defaults to 1"),
++                    "pages": ["type": "number", "exclusiveMinimum": 0, "maximum": 100, "default": 1, "description": "Number of pages to scroll. Fractional values are supported. Defaults to 1"],
+                 ],
+                 required: ["app", "element_index", "direction"]
+             )
 diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityScrollProgressTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityScrollProgressTests.swift
 new file mode 100644
-index 0000000..b0b1df2
+index 0000000..c8dfc43
 --- /dev/null
 +++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AccessibilityScrollProgressTests.swift
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,135 @@
 +import AppKit
 +import XCTest
 +@testable import OpenComputerUseKit
@@ -3204,12 +4202,45 @@ index 0000000..b0b1df2
 +        XCTAssertEqual(alreadyAtEdge, PageScrollOutcome(verifiedPages: 0, reachedBoundary: true))
 +    }
 +
++    func testFallbackPagesBecomeSeparateViewportPixelEvents() throws {
++        let geometry = try scrollPageGeometry(elementFrame: CGRect(x: 0, y: 143, width: 1570, height: 797),
++            windowBounds: CGRect(x: 204, y: 39, width: 1570, height: 940), direction: "down")
++        XCTAssertEqual(geometry.extent, 797)
++        XCTAssertEqual(geometry.point, CGPoint(x: 989, y: 580.5))
++        let chunks = try scrollPageChunks(3)
++        XCTAssertEqual(chunks, [1, 1, 1])
++        var sent = 0
++        var deltas: [Int64] = []
++        try performObservedPageScroll(pages: chunks.count, read: { sent }, performPage: {
++            let event = try InputSimulation.scrollEvent(at: geometry.point, direction: "down", pixels: geometry.extent * chunks[sent])
++            deltas.append(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
++            XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2), 0)
++            XCTAssertEqual(event.location, geometry.point)
++            sent += 1
++        }, pause: {})
++        XCTAssertEqual(deltas, [-797, -797, -797])
++        XCTAssertEqual(try scrollPageChunks(2.5), [1, 1, 0.5])
++        XCTAssertEqual(try scrollPageChunks(0.25), [0.25])
++    }
++
++    func testFallbackGeometryClipsOversizedContentAndSupportsHorizontalPages() throws {
++        let window = CGRect(x: 200, y: 40, width: 800, height: 600)
++        let frame = CGRect(x: 20, y: 100, width: 2000, height: 3000)
++        XCTAssertEqual(try scrollPageGeometry(elementFrame: frame, windowBounds: window, direction: "down").extent, 500)
++        XCTAssertEqual(try scrollPageGeometry(elementFrame: frame, windowBounds: window, direction: "right").extent, 780)
++        let event = try InputSimulation.scrollEvent(at: .zero, direction: "right", pixels: 390)
++        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2), -390)
++        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1), 0)
++        XCTAssertThrowsError(try scrollPageGeometry(elementFrame: CGRect(x: 900, y: 0, width: 100, height: 100), windowBounds: window, direction: "down"))
++        XCTAssertThrowsError(try InputSimulation.scrollEvent(at: .zero, direction: "down", pixels: .nan))
++    }
++
 +    func testNoProgressStopsBeforeRemainingActions() {
 +        var pages = 0
 +        XCTAssertThrowsError(try performObservedPageScroll(pages: 5, read: { 21 }, performPage: {
 +            pages += 1
 +        }, pause: {})) { error in
-+            XCTAssertTrue(String(describing: error).contains("0 pages were verified"))
++            XCTAssertTrue(String(describing: error).contains("0 scroll steps were verified"))
 +        }
 +        XCTAssertEqual(pages, 1)
 +    }
@@ -3219,7 +4250,7 @@ index 0000000..b0b1df2
 +        XCTAssertThrowsError(try performObservedPageScroll(pages: 3, read: { pages == 0 ? 0 : 100 }, performPage: {
 +            pages += 1
 +        }, pause: {})) { error in
-+            XCTAssertTrue(String(describing: error).contains("1 pages were verified"))
++            XCTAssertTrue(String(describing: error).contains("1 scroll steps were verified"))
 +        }
 +        XCTAssertEqual(pages, 2)
 +    }
@@ -3357,6 +4388,77 @@ index 0000000..b7f7a7d
 +        }
 +        XCTAssertThrowsError(try accessibilityValue(from: "anything", currentValue: [] as CFArray))
 +    }
++}
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ComputerUseNumericArgumentTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ComputerUseNumericArgumentTests.swift
+new file mode 100644
+index 0000000..b153d69
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ComputerUseNumericArgumentTests.swift
+@@ -0,0 +1,65 @@
++import Foundation
++import XCTest
++@testable import OpenComputerUseKit
++
++final class ComputerUseNumericArgumentTests: XCTestCase {
++    func testProvidedInvalidNumericTypesDoNotSilentlyDefault() {
++        let dispatcher = ComputerUseToolDispatcher()
++        for value: Any in ["3", NSNull(), true, NSNumber(value: false), [1], ["value": 1]] {
++            let scroll = dispatcher.callToolAsResult(name: "scroll", arguments: [
++                "app": "missing-fixture", "element_index": "22", "direction": "down", "pages": value,
++            ])
++            XCTAssertTrue(scroll.isError)
++            XCTAssertTrue(scroll.primaryText?.contains("pages") == true, scroll.primaryText ?? "no text")
++            let click = dispatcher.callToolAsResult(name: "click", arguments: [
++                "app": "missing-fixture", "element_index": "22", "click_count": value,
++            ])
++            XCTAssertTrue(click.isError)
++            XCTAssertTrue(click.primaryText?.contains("click_count") == true, click.primaryText ?? "no text")
++        }
++    }
++    func testDefaultsApplyOnlyToAbsentFieldsAndValidNumbersPreserveValue() throws {
++        XCTAssertEqual(try scrollPagesArgument(in: [:]), 1)
++        XCTAssertEqual(try clickCountArgument(in: [:]), 1)
++        for value in [0.25, 1, 3, 100] {
++            XCTAssertEqual(try scrollPagesArgument(in: ["pages": value]), value)
++        }
++        for value in [1, 2, 3, 100] {
++            XCTAssertEqual(try clickCountArgument(in: ["click_count": value]), value)
++        }
++    }
++
++    func testHugeNonFiniteFractionalAndOutOfRangeCountsRejectBeforeService() {
++        let dispatcher = ComputerUseToolDispatcher()
++        for value in [Double.greatestFiniteMagnitude, Double(Int.max), Double.infinity, -Double.infinity, Double.nan, 0, -1, 101, 1.5] {
++            let result = dispatcher.callToolAsResult(name: "click", arguments: ["app": "missing-fixture", "element_index": "2", "click_count": value])
++            XCTAssertTrue(result.isError)
++            XCTAssertTrue(result.primaryText?.contains("click_count") == true)
++        }
++        for value in [Double.greatestFiniteMagnitude, Double.infinity, Double.nan, 0, -1, 101] {
++            let result = dispatcher.callToolAsResult(name: "scroll", arguments: ["app": "missing-fixture", "element_index": "2", "direction": "down", "pages": value])
++            XCTAssertTrue(result.isError)
++            XCTAssertTrue(result.primaryText?.contains("pages") == true)
++        }
++    }
++
++    func testJSONBooleansAndNullStayInvalidAfterDeserialization() throws {
++        for json in ["{\"pages\":true,\"click_count\":true}", "{\"pages\":null,\"click_count\":null}"] {
++            let arguments = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
++            XCTAssertThrowsError(try scrollPagesArgument(in: arguments))
++            XCTAssertThrowsError(try clickCountArgument(in: arguments))
++        }
++    }
++
++    func testSchemaAdvertisesNumericRuntimeBounds() throws {
++        let click = try XCTUnwrap(ToolDefinitions.all.first { $0.name == "click" })
++        let scroll = try XCTUnwrap(ToolDefinitions.all.first { $0.name == "scroll" })
++        let clickProperties = try XCTUnwrap(click.inputSchema["properties"] as? [String: [String: Any]])
++        let scrollProperties = try XCTUnwrap(scroll.inputSchema["properties"] as? [String: [String: Any]])
++        XCTAssertEqual(clickProperties["click_count"]?["minimum"] as? Int, 1)
++        XCTAssertEqual(clickProperties["click_count"]?["maximum"] as? Int, 100)
++        XCTAssertEqual(scrollProperties["pages"]?["exclusiveMinimum"] as? Int, 0)
++        XCTAssertEqual(scrollProperties["pages"]?["maximum"] as? Int, 100)
++    }
++
 +}
 diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/GlobalPointerTargetTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/GlobalPointerTargetTests.swift
 new file mode 100644

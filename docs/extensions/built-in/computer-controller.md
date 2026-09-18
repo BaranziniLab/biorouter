@@ -19,6 +19,10 @@ Computer Use (`computercontroller`) observes and controls applications through B
 
 Use the advertised schemas for platform-specific arguments. Discover, inspect, act, and verify; refresh state after a changed window, stale element, handoff, or helper restart. Actions are sequential. A timed-out action can already have happened, so inspect before any retry.
 
+`scroll.pages` accepts finite values greater than zero and no larger than 100, including fractions. `click.click_count` accepts whole numbers from 1 through 100. Both default to one only when omitted; malformed supplied values produce an error before an action.
+
+Scrolling uses the target viewport where the platform exposes measurable geometry. Windows verifies UI Automation or native scrollbar position. Linux text views can align only to a line or character boundary; the result reports the observed movement and granularity. Unsupported fractional or horizontal scrolling fails explicitly. For a Linux nontext control that supports only vertical page keys, the result identifies the delivered commands and states that actual displacement is unverified. Inspect fresh state to confirm the outcome.
+
 ## Approval and privacy
 
 Enable Computer Use in Settings → Chat → Capabilities or `biorouter configure`. Enabling it does not approve desktop access. Before the first observation or action, BioRouter requests approval for the task, model/provider, and target computer. The grant covers all tool turns within the current user request without a prompt for every click or capture. Completion or cancellation ends it; a new user request is a new task. Stop or revoke prevents further actions. OS accessibility and capture permissions are separate prerequisites.

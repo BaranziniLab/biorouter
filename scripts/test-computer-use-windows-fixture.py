@@ -139,7 +139,7 @@ $form.Text = 'BioRouter Computer Use Fixture'
 $form.Width = 480; $form.Height = 240
 $form.StartPosition = 'Manual'; $form.Location = New-Object System.Drawing.Point(140, 100)
 $form.AutoScroll = $true
-$form.AutoScrollMinSize = New-Object System.Drawing.Size(1200, 1200)
+$form.AutoScrollMinSize = New-Object System.Drawing.Size(4000, 4000)
 $form.Add_Scroll({
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-x.txt'), [string][Math]::Abs($form.AutoScrollPosition.X))
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-y.txt'), [string][Math]::Abs($form.AutoScrollPosition.Y))
@@ -168,6 +168,8 @@ $form.Controls.Add($text); $form.Controls.Add($button); $form.Controls.Add($rese
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 $timer.Add_Tick({
+  @{x = [Math]::Abs($form.AutoScrollPosition.X); y = [Math]::Abs($form.AutoScrollPosition.Y); page_x = $form.ClientSize.Width; page_y = $form.ClientSize.Height; max_x = $form.DisplayRectangle.Width - $form.ClientSize.Width; max_y = $form.DisplayRectangle.Height - $form.ClientSize.Height} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-metrics.json')
+
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-x.txt'), [string][Math]::Abs($form.AutoScrollPosition.X))
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-y.txt'), [string][Math]::Abs($form.AutoScrollPosition.Y))
 })
@@ -209,7 +211,7 @@ $timer.Dispose()
                             raise RuntimeError(reply["error"])
                         return reply["result"]
                 raise TimeoutError(method)
-            def call(name, arguments):
+            def call(name, arguments, allow_error=False):
                 result = request("tools/call", {"name": name, "arguments": arguments})
                 receipt = {
                     "tool": name, "arguments": arguments, "isError": result.get("isError", False),
@@ -217,7 +219,7 @@ $timer.Dispose()
                     "image_count": sum(item.get("type") == "image" for item in result.get("content", [])),
                 }
                 report.with_name(f"{report.stem}-{request_id:02d}-{name}.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
-                if result.get("isError"):
+                if result.get("isError") and not allow_error:
                     raise RuntimeError(f"{name}: {result}")
                 return result
             request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "BioRouter-fixture", "version": "1"}})
@@ -271,49 +273,34 @@ $timer.Dispose()
                 time.sleep(0.1)
             report.with_name(report.stem + "-independent-drag.json").write_text(json.dumps(drag_result, indent=2))
             validate_drag(drag_result)
+            scroll_receipts = []
+            for direction, pages in [("down", 0.5), ("up", 0.5), ("down", 2.5), ("up", 2.5), ("right", 0.5), ("left", 0.5), ("right", 2.5), ("left", 2.5)]:
+                state = call("get_app_state", {"app": app})
+                text = "\n".join(c.get("text", "") for c in state["content"])
+                before = json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig"))
+                axis = "x" if direction in {"left", "right"} else "y"
+                sign = -1 if direction in {"up", "left"} else 1
+                expected = min(before["max_" + axis], max(0, before[axis] + sign * pages * before["page_" + axis]))
+                call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": direction, "pages": pages})
+                actual = json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig"))
+                receipt = {"direction": direction, "pages": pages, "before": before[axis], "expected": expected, "actual": actual[axis]}
+                scroll_receipts.append(receipt)
+                report.with_name(report.stem + "-independent-scroll.json").write_text(json.dumps(scroll_receipts, indent=2))
+                if abs(actual[axis] - expected) > 2:
+                    raise AssertionError(f"Requested WinForms viewport displacement not observed: {receipt}")
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
-            call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "down", "pages": 2})
-            scroll_failures = []
-            def wait_scroll(axis):
-                deadline = time.monotonic() + 10
-                while time.monotonic() < deadline:
-                    receipt = work / f"scroll-{axis}.txt"
-                    if receipt.exists() and float(receipt.read_text() or "0") > 0:
-                        return float(receipt.read_text())
-                    time.sleep(0.1)
-                wheel_path = work / "wheel.json"
-                wheel_receipt = wheel_path.read_text() if wheel_path.exists() else "No wheel message received"
-                report.with_name(f"{report.stem}-{axis}-wheel-failure.txt").write_text(wheel_receipt, encoding="utf-8")
-                scroll_failures.append(f"Independent WinForms {axis} scroll offset did not change; wheel: {wheel_receipt}")
-                return 0.0
-            vertical_offset = wait_scroll("y")
-            wheel = json.loads((work / "wheel.json").read_text())
-            report.with_name(report.stem + "-wheel-coordinates.json").write_text(json.dumps(wheel, indent=2))
-            if wheel["message"] != 0x020A or abs(wheel["x"] - wheel["expected_x"]) > 1 or abs(wheel["y"] - wheel["expected_y"]) > 1:
-                scroll_failures.append(f"Mouse wheel did not carry the target's screen coordinates: {wheel}")
-            state = call("get_app_state", {"app": app})
-            text = "\n".join(c.get("text", "") for c in state["content"])
-            call("click", {"app": app, "element_index": element("Reset scroll", text), "click_method": "accessibility"})
-            state = call("get_app_state", {"app": app})
-            text = "\n".join(c.get("text", "") for c in state["content"])
-            (work / "wheel.json").unlink(missing_ok=True)
-            call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "right", "pages": 2})
-            horizontal_offset = wait_scroll("x")
-            horizontal_wheel = json.loads((work / "wheel.json").read_text()) if (work / "wheel.json").exists() else None
-            report.with_name(report.stem + "-horizontal-wheel-coordinates.json").write_text(json.dumps(horizontal_wheel, indent=2))
-            if horizontal_wheel is not None and (horizontal_wheel["message"] != 0x020E or abs(horizontal_wheel["x"] - horizontal_wheel["expected_x"]) > 1 or abs(horizontal_wheel["y"] - horizontal_wheel["expected_y"]) > 1):
-                scroll_failures.append(f"Horizontal mouse wheel did not carry the target's screen coordinates: {horizontal_wheel}")
-            report.with_name(report.stem + "-independent-scroll.json").write_text(json.dumps({
-                "down_y": vertical_offset, "right_x": horizontal_offset, "failures": scroll_failures}, indent=2))
+            for invalid in [None, True, "2", 0, -1, 101]:
+                before = json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig"))
+                rejected = call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "down", "pages": invalid}, allow_error=True)
+                if not rejected.get("isError") or json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig")) != before:
+                    raise AssertionError(f"Invalid pages caused input or silently defaulted: {invalid!r}")
             capture = call("screen_capture", {})
             if not any(c.get("type") == "image" and base64.b64decode(c.get("data", "")).startswith(b"\x89PNG") for c in capture["content"]):
                 raise AssertionError("Native capture returned no PNG")
-            if scroll_failures:
-                raise AssertionError("; ".join(scroll_failures))
             result = {"status": "passed", "validated": True, "session": session.value,
-                      "scroll_offsets": {"down_y": vertical_offset, "right_x": horizontal_offset},
-                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "independent child drag gesture", "vertical and horizontal scroll offsets changed", "wheel screen coordinates", "screen_capture"],
+                      "scroll_receipts": scroll_receipts,
+                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "independent child drag gesture", "fractional and multi-page viewport displacement in both axes", "screen_capture"],
                       "not_validated": ["mixed DPI", "multiple monitors", "occluded windows", "secure desktop"]}
             report.write_text(json.dumps(result, indent=2))
             print(json.dumps(result))
