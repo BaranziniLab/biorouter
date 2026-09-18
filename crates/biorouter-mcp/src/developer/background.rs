@@ -18,6 +18,7 @@ use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{watch, Mutex};
+use tokio::task::JoinSet;
 
 use super::shell::{configure_shell_command, ShellConfig};
 use crate::active_work::{active_work, ActiveWorkKind};
@@ -67,6 +68,7 @@ struct Output {
     buf: String,
     cursor: usize,
     truncated: bool,
+    capture_incomplete: bool,
 }
 
 struct Job {
@@ -85,6 +87,7 @@ struct Job {
     /// Set before signalling so the supervisor records `Killed` rather than
     /// `Ended` when `wait()` returns.
     killed: Arc<AtomicBool>,
+    process_exited: Arc<AtomicBool>,
     /// Flips to `true` once the job reaches a terminal state; `wait` parks on
     /// this race-free instead of polling.
     done_rx: watch::Receiver<bool>,
@@ -159,13 +162,15 @@ impl BackgroundJobs {
         let status = Arc::new(Mutex::new(JobStatus::Running));
         let output = Arc::new(Mutex::new(Output::default()));
         let killed = Arc::new(AtomicBool::new(false));
+        let process_exited = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = watch::channel(false);
 
+        let mut readers = JoinSet::new();
         if let Some(out) = child.stdout.take() {
-            spawn_reader(out, output.clone());
+            readers.spawn(read_output(out, output.clone()));
         }
         if let Some(err) = child.stderr.take() {
-            spawn_reader(err, output.clone());
+            readers.spawn(read_output(err, output.clone()));
         }
 
         // Surface this job in the process-wide "active work" view (BR-42) with a
@@ -173,6 +178,7 @@ impl BackgroundJobs {
         // supervisor sees it reach a terminal state below.
         let reg_id = {
             let killed_for_cancel = killed.clone();
+            let exited_for_cancel = process_exited.clone();
             let pid_for_cancel = pid;
             let identity_for_cancel = identity.clone();
             active_work().register(
@@ -182,7 +188,9 @@ impl BackgroundJobs {
                 session_id,
                 Some(Arc::new(move || {
                     killed_for_cancel.store(true, Ordering::SeqCst);
-                    kill_process_group(pid_for_cancel, identity_for_cancel.clone());
+                    if !exited_for_cancel.load(Ordering::SeqCst) {
+                        kill_process_group(pid_for_cancel, identity_for_cancel.clone());
+                    }
                 })),
             )
         };
@@ -193,20 +201,27 @@ impl BackgroundJobs {
         let killed_for_sup = killed.clone();
         let pid_for_sup = pid;
         let reg_id_for_sup = reg_id.clone();
+        let output_for_sup = output.clone();
+        let exited_for_sup = process_exited.clone();
         tokio::spawn(async move {
             let wait_result = child.wait().await;
-            let terminal = if killed_for_sup.load(Ordering::SeqCst) {
-                JobStatus::Killed
-            } else {
-                match wait_result {
-                    Ok(st) => match st.code() {
-                        Some(code) => JobStatus::Exited(code),
-                        None => JobStatus::Ended("terminated by signal".to_string()),
-                    },
-                    Err(e) => JobStatus::Ended(format!("wait failed: {e}")),
-                }
+            exited_for_sup.store(true, Ordering::SeqCst);
+            let terminal = match wait_result {
+                Ok(st) => match st.code() {
+                    Some(code) => JobStatus::Exited(code),
+                    None => JobStatus::Ended("terminated by signal".to_string()),
+                },
+                Err(e) => JobStatus::Ended(format!("wait failed: {e}")),
             };
-            *status_for_sup.lock().await = terminal;
+            finish_output(
+                &mut readers,
+                &output_for_sup,
+                &status_for_sup,
+                &killed_for_sup,
+                terminal,
+                std::time::Duration::from_secs(2),
+            )
+            .await;
             // The job reached a terminal state under our supervision, so it is
             // no longer an orphan candidate — drop its run-dir record — and it is
             // no longer "active work".
@@ -226,6 +241,7 @@ impl BackgroundJobs {
             status,
             output,
             killed,
+            process_exited,
             done_rx,
         });
         self.jobs.lock().await.insert(id.clone(), job);
@@ -250,6 +266,9 @@ impl BackgroundJobs {
         let mut s = new;
         if out.truncated {
             s.push_str("\n[output truncated at 400 KB]");
+        }
+        if out.capture_incomplete {
+            s.push_str("\n[output capture incomplete: pipes did not close after process exit]");
         }
         s
     }
@@ -300,7 +319,10 @@ impl BackgroundJobs {
             return Ok(format!("job {id} has already finished; nothing to kill"));
         }
         job.killed.store(true, Ordering::SeqCst);
-        kill_process_group(job.pid, job.identity.clone());
+        let signal_sent = !job.process_exited.load(Ordering::SeqCst);
+        if signal_sent {
+            kill_process_group(job.pid, job.identity.clone());
+        }
         let mut rx = job.done_rx.clone();
         let confirmed = matches!(
             tokio::time::timeout(
@@ -312,11 +334,17 @@ impl BackgroundJobs {
         ) || job.status.lock().await.is_terminal();
         if !confirmed {
             job.killed.store(false, Ordering::SeqCst);
-            return Err(format!(
-                "sent kill signal to job {id}, but its exit was not confirmed within {KILL_CONFIRM_SECS} seconds"
-            ));
+            return Err(if signal_sent {
+                format!("sent kill signal to job {id}, but its exit was not confirmed within {KILL_CONFIRM_SECS} seconds")
+            } else {
+                format!("job {id} had already exited, but output finalization was not confirmed within {KILL_CONFIRM_SECS} seconds; no kill signal was sent")
+            });
         }
-        Ok(format!("sent kill signal to job {id}"))
+        if signal_sent {
+            Ok(format!("sent kill signal to job {id}"))
+        } else {
+            Ok(format!("job {id} had already exited; cancellation recorded during output finalization; no kill signal was sent"))
+        }
     }
 
     /// One-line summary of every background job — id, label, status, runtime,
@@ -356,22 +384,47 @@ impl BackgroundJobs {
 }
 
 /// Stream a child pipe into the shared buffer, line by line, honoring the cap.
-fn spawn_reader<R>(reader: R, output: Arc<Mutex<Output>>)
+async fn read_output<R>(reader: R, output: Arc<Mutex<Output>>)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let mut out = output.lock().await;
-            if out.buf.len() >= MAX_OUTPUT_BYTES {
-                out.truncated = true;
-                continue;
-            }
-            out.buf.push_str(&line);
-            out.buf.push('\n');
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let mut out = output.lock().await;
+        if out.buf.len() >= MAX_OUTPUT_BYTES {
+            out.truncated = true;
+            continue;
         }
-    });
+        out.buf.push_str(&line);
+        out.buf.push('\n');
+    }
+}
+
+async fn finish_output(
+    readers: &mut JoinSet<()>,
+    output: &Arc<Mutex<Output>>,
+    status: &Mutex<JobStatus>,
+    killed: &AtomicBool,
+    terminal: JobStatus,
+    grace: std::time::Duration,
+) {
+    // Descendants can inherit pipes after the supervised process exits. Stop
+    // collecting at a bounded deadline, and join aborted readers before publishing
+    // terminal status so no output can arrive after the final snapshot.
+    if tokio::time::timeout(grace, async {
+        while readers.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        readers.shutdown().await;
+        output.lock().await.capture_incomplete = true;
+    }
+    *status.lock().await = if killed.load(Ordering::SeqCst) {
+        JobStatus::Killed
+    } else {
+        terminal
+    };
 }
 
 /// How long a job gets to shut down cleanly before we force-kill it. Same on
@@ -944,6 +997,135 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         collected
+    }
+
+    #[tokio::test]
+    async fn final_output_waits_for_both_readers() {
+        use tokio::io::AsyncWriteExt;
+
+        let output = Arc::new(Mutex::new(Output::default()));
+        let mut readers = JoinSet::new();
+        let (mut stdout, out) = tokio::io::duplex(64);
+        let (mut stderr, err) = tokio::io::duplex(64);
+        readers.spawn(read_output(out, output.clone()));
+        readers.spawn(read_output(err, output.clone()));
+        stdout.write_all(b"stdout tail").await.unwrap();
+        drop(stdout);
+        let status = Mutex::new(JobStatus::Running);
+        let killed = AtomicBool::new(false);
+        let finish = finish_output(
+            &mut readers,
+            &output,
+            &status,
+            &killed,
+            JobStatus::Exited(0),
+            std::time::Duration::from_secs(2),
+        );
+        tokio::pin!(finish);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut finish)
+                .await
+                .is_err()
+        );
+        assert_eq!(*status.lock().await, JobStatus::Running);
+        stderr.write_all(b"stderr tail").await.unwrap();
+        drop(stderr);
+        finish.await;
+        assert_eq!(*status.lock().await, JobStatus::Exited(0));
+        let captured = output.lock().await;
+        assert!(captured.buf.contains("stdout tail"));
+        assert!(captured.buf.contains("stderr tail"));
+        assert!(!captured.capture_incomplete);
+    }
+
+    #[tokio::test]
+    async fn inherited_open_pipe_is_bounded_and_cannot_append_after_completion() {
+        use tokio::io::AsyncWriteExt;
+
+        let output = Arc::new(Mutex::new(Output::default()));
+        let mut readers = JoinSet::new();
+        let (mut inherited, reader) = tokio::io::duplex(64);
+        readers.spawn(read_output(reader, output.clone()));
+        let status = Mutex::new(JobStatus::Running);
+        let killed = AtomicBool::new(false);
+        {
+            let finish = finish_output(
+                &mut readers,
+                &output,
+                &status,
+                &killed,
+                JobStatus::Exited(0),
+                std::time::Duration::from_millis(40),
+            );
+            tokio::pin!(finish);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), &mut finish)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(*status.lock().await, JobStatus::Running);
+            killed.store(true, Ordering::SeqCst);
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut finish)
+                .await
+                .unwrap();
+        }
+        assert_eq!(*status.lock().await, JobStatus::Killed);
+        assert!(readers.is_empty());
+        assert!(output.lock().await.capture_incomplete);
+        assert!(inherited.write_all(b"late output\n").await.is_err());
+        assert!(output.lock().await.buf.is_empty());
+    }
+
+    #[tokio::test]
+    async fn incomplete_capture_notice_survives_output_cap_and_incremental_reads() {
+        let jobs = new_jobs();
+        let id = jobs.spawn("echo capped", None, None, None).await.unwrap();
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Exited(0)
+        );
+        let job = jobs.job(&id).await.unwrap();
+        {
+            let mut output = job.output.lock().await;
+            output.buf = "x".repeat(MAX_OUTPUT_BYTES);
+            output.truncated = true;
+            output.capture_incomplete = true;
+        }
+        for _ in 0..2 {
+            let snapshot = jobs.snapshot(&id).await.unwrap();
+            assert!(snapshot.contains("output truncated at 400 KB"));
+            assert!(snapshot.contains("output capture incomplete"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_process_exit_does_not_claim_a_signal_was_sent() {
+        let jobs = new_jobs();
+        let (_, done_rx) = watch::channel(true);
+        let job = Arc::new(Job {
+            label: "draining".into(),
+            command: "synthetic completed process".into(),
+            started: Instant::now(),
+            pid: None,
+            identity: Arc::new(JobIdentity {
+                started_epoch: now_epoch(),
+                command: String::new(),
+            }),
+            status: Arc::new(Mutex::new(JobStatus::Running)),
+            output: Arc::new(Mutex::new(Output::default())),
+            killed: Arc::new(AtomicBool::new(false)),
+            process_exited: Arc::new(AtomicBool::new(true)),
+            done_rx,
+        });
+        jobs.jobs
+            .lock()
+            .await
+            .insert("draining".into(), job.clone());
+        let result = jobs.kill("draining").await.unwrap();
+        assert!(result.contains("already exited"), "{result}");
+        assert!(result.contains("no kill signal was sent"), "{result}");
+        assert!(!result.contains("sent kill signal"), "{result}");
+        assert!(job.killed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
