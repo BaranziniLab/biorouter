@@ -1039,8 +1039,7 @@ impl CodexProvider {
         if bridge_url.is_none() {
             tracing::warn!(
                 "Codex turn is starting WITHOUT a tool bridge: the child will have \
-                 none of Biorouter's tools. Expected only when the daemon has not \
-                 published its base URL (a CLI process with no HTTP server)."
+                 none of Biorouter's tools. The host has not established a tool bridge."
             );
         } else {
             tracing::debug!("Codex turn has a tool bridge");
@@ -2328,6 +2327,77 @@ for line in sys.stdin:
     /// A bridge URL becomes an `mcp_servers` config override, which is how
     /// Biorouter's own tools reach the child. Without a bridge no `config` key is
     /// sent at all, so the child gets no tools rather than an empty server map.
+    #[tokio::test]
+    async fn standalone_bridge_config_exposes_native_tools_and_revokes_the_turn() {
+        use crate::providers::coding_agent::bridge_http::LoopbackBridge;
+
+        let listener = LoopbackBridge::start_for_test().await.unwrap();
+        let mut tools = biorouter_mcp::computer_use::contract::tools();
+        for tool in &mut tools {
+            tool.name = format!("computercontroller__{}", tool.name).into();
+        }
+        let lease = bridge::issue_at_base_for_test(
+            bridge::grant_with_tools_for_test(tools.clone()),
+            listener.base_url(),
+        );
+        let url = lease.url();
+        let params =
+            CodexProvider::thread_params("Synthetic fixture", "/tmp", "gpt-6-astra", Some(url));
+        let configured_url = params["config"]["mcp_servers"]["biorouter"]["url"]
+            .as_str()
+            .unwrap();
+        let client = reqwest::Client::new();
+        let init: Value = client
+            .post(configured_url)
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(init["result"]["capabilities"]["tools"].is_object());
+        let listed: Value = client
+            .post(configured_url)
+            .json(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let names: Vec<_> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(names.len(), 10);
+        let refused: Value = client.post(configured_url)
+            .json(&json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"not_granted","arguments":{}}}))
+            .send().await.unwrap().json().await.unwrap();
+        assert_eq!(refused["result"]["isError"], true);
+        assert!(refused["result"].to_string().contains("not granted"));
+        drop(lease);
+        let revoked: Value = client
+            .post(configured_url)
+            .json(&json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(revoked["error"]["code"], -32001);
+    }
+
     #[test]
     fn a_bridge_url_becomes_an_mcp_server_override() {
         let with = CodexProvider::thread_params(

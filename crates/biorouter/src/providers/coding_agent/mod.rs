@@ -53,6 +53,7 @@
 
 pub mod appserver;
 pub mod bridge;
+pub mod bridge_http;
 pub mod claude_stream;
 pub mod codex_stream;
 pub mod discovery;

@@ -2728,6 +2728,27 @@ async fn handle_default_session() -> Result<()> {
     session.interactive(None).await
 }
 
+fn needs_tool_bridge(command: &Option<Command>) -> bool {
+    matches!(
+        command,
+        None | Some(
+            Command::Run { .. }
+                | Command::Session { command: None, .. }
+                | Command::Acp { .. }
+                | Command::Doctor { fix: Some(_), .. }
+                | Command::Term {
+                    command: TermCommand::Run { .. }
+                }
+                | Command::Bench {
+                    cmd: BenchCommand::ExecEval { .. }
+                }
+                | Command::Schedule {
+                    command: SchedulerCommand::RunNow { .. }
+                }
+        )
+    )
+}
+
 pub async fn cli() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -2741,6 +2762,12 @@ pub async fn cli() -> anyhow::Result<()> {
         command = command_name,
         "CLI command executed"
     );
+
+    let _tool_bridge = if needs_tool_bridge(&cli.command) {
+        Some(biorouter::providers::coding_agent::bridge_http::LoopbackBridge::start().await?)
+    } else {
+        None
+    };
 
     dispatch(cli.command).await
 }
@@ -2852,6 +2879,39 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn every_standalone_agent_entry_point_starts_the_tool_bridge() {
+        for args in [
+            vec!["biorouter"],
+            vec!["biorouter", "run"],
+            vec!["biorouter", "session"],
+            vec!["biorouter", "acp"],
+            vec!["biorouter", "doctor", "--fix", "node"],
+            vec!["biorouter", "term", "run", "synthetic prompt"],
+            vec!["biorouter", "bench", "exec-eval", "--config", "synthetic"],
+            vec![
+                "biorouter",
+                "schedule",
+                "run-now",
+                "--schedule-id",
+                "synthetic",
+            ],
+        ] {
+            let parsed = Cli::try_parse_from(&args).unwrap();
+            assert!(needs_tool_bridge(&parsed.command), "{args:?}");
+        }
+        for args in [
+            vec!["biorouter", "info"],
+            vec!["biorouter", "doctor"],
+            vec!["biorouter", "session", "list"],
+            vec!["biorouter", "schedule", "list"],
+            vec!["biorouter", "term", "init", "zsh"],
+        ] {
+            let parsed = Cli::try_parse_from(&args).unwrap();
+            assert!(!needs_tool_bridge(&parsed.command), "{args:?}");
+        }
+    }
 
     #[tokio::test]
     #[serial_test::serial]
