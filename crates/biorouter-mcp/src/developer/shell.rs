@@ -74,18 +74,131 @@ impl ShellConfig {
     }
 }
 
+/// The user's home directory, by the rule the host OS actually uses.
+///
+/// ⚠ `HOME` is not defined on Windows — `USERPROFILE` is, with
+/// `HOMEDRIVE`+`HOMEPATH` as the older fallback some domain profiles still set.
+/// Reading only `HOME` is why `~` silently stopped expanding there.
+fn home_dir() -> Option<String> {
+    #[cfg(windows)]
+    {
+        if let Ok(profile) = env::var("USERPROFILE") {
+            if !profile.is_empty() {
+                return Some(profile);
+            }
+        }
+        match (env::var("HOMEDRIVE"), env::var("HOMEPATH")) {
+            (Ok(drive), Ok(path)) if !drive.is_empty() && !path.is_empty() => {
+                Some(format!("{drive}{path}"))
+            }
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        env::var("HOME").ok().filter(|home| !home.is_empty())
+    }
+}
+
+/// Expand a leading `~`, on every platform.
+///
+/// Only a *leading* tilde, and only when the whole string is `~` or the next
+/// character is a separator — `~user` is another user's home, which we do not
+/// resolve, and `file~` is an ordinary backup name.
+///
+/// ⚠ Both separators are accepted on Windows. A model writes `~/notes.md`, a
+/// Windows user writes `~\notes.md`, and the same session sees both.
+fn expand_tilde(path_str: &str) -> String {
+    let Some(rest) = path_str.strip_prefix('~') else {
+        return path_str.to_string();
+    };
+    let is_home_root = rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\');
+    if !is_home_root {
+        return path_str.to_string();
+    }
+    match home_dir() {
+        // Leave it alone rather than produce `\notes.md`, which would resolve to
+        // the root of the current drive — a real path, and the wrong one.
+        None => path_str.to_string(),
+        Some(home) => {
+            let home = home.trim_end_matches(['/', '\\']);
+            if rest.is_empty() {
+                home.to_string()
+            } else {
+                format!("{home}{rest}")
+            }
+        }
+    }
+}
+
+/// Expand `%VAR%` references against the real environment (Windows only).
+///
+/// ⚠ Generic and case-insensitive, because the previous version handled exactly
+/// two names (`%USERPROFILE%`, `%APPDATA%`) by literal substring replacement.
+/// Everything else — `%LOCALAPPDATA%`, `%TEMP%`, `%ProgramFiles%`, and even
+/// `%userprofile%` in the wrong case — survived into the path and became a
+/// directory name that cannot exist.
+///
+/// An unset variable is left **as written** rather than replaced with an empty
+/// string: `%NOPE%\data` should fail saying it cannot find `%NOPE%\data`, not
+/// silently become `\data` at the root of the current drive.
+#[cfg(windows)]
+fn expand_windows_env_vars(path_str: &str) -> String {
+    let mut out = String::with_capacity(path_str.len());
+    let mut rest = path_str;
+    while let Some(open) = rest.find('%') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('%') {
+            Some(close) => {
+                let name = &after[..close];
+                // `%%` is an escaped percent, and a name containing a separator
+                // is not a variable reference at all.
+                match env::vars()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value)
+                {
+                    Some(value) if !name.is_empty() => out.push_str(&value),
+                    _ => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[close + 1..];
+            }
+            None => {
+                // Unpaired `%` — keep it verbatim.
+                out.push('%');
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Resolve a path the model wrote into one the OS can open.
+///
+/// ⚠ On Windows this used to do **no tilde expansion whatsoever**, so
+/// `text_editor` on `~/notes.md` created a directory literally named `~` under
+/// the working directory, or failed with "The system cannot find the path
+/// specified. (os error 3)". The shell tool did not share the confusion —
+/// PowerShell expands `~` itself — so one session held two different answers to
+/// where `~/notes.md` lived, which is the shape of the "it doesn't recognise the
+/// file structure" reports.
 pub fn expand_path(path_str: &str) -> String {
-    if cfg!(windows) {
-        // Expand Windows environment variables (%VAR%)
-        let with_userprofile = path_str.replace(
-            "%USERPROFILE%",
-            &env::var("USERPROFILE").unwrap_or_default(),
-        );
-        // Add more Windows environment variables as needed
-        with_userprofile.replace("%APPDATA%", &env::var("APPDATA").unwrap_or_default())
-    } else {
-        // Unix-style expansion
-        shellexpand::tilde(path_str).into_owned()
+    let expanded = expand_tilde(path_str);
+    #[cfg(windows)]
+    {
+        expand_windows_env_vars(&expanded)
+    }
+    #[cfg(not(windows))]
+    {
+        // `shellexpand` also handles `~user` and `$VAR`, which the hand-rolled
+        // tilde pass deliberately does not, so keep it as the Unix path.
+        shellexpand::tilde(&expanded).into_owned()
     }
 }
 
@@ -94,6 +207,7 @@ pub fn is_absolute_path(path_str: &str) -> bool {
     path.is_absolute() || (cfg!(windows) && path.has_root())
 }
 
+/// Line endings for a file that does not exist yet: the host convention.
 pub fn normalize_line_endings(text: &str) -> String {
     if cfg!(windows) {
         // Ensure CRLF line endings on Windows
@@ -101,6 +215,53 @@ pub fn normalize_line_endings(text: &str) -> String {
     } else {
         // Ensure LF line endings on Unix
         text.replace("\r\n", "\n")
+    }
+}
+
+/// Rewrite `text` to use LF everywhere.
+fn to_lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// Does `existing` already use CRLF?
+///
+/// Decided on the **first** line ending rather than a majority vote: a file's
+/// style is set by whatever wrote it, and a mixed file is nearly always an LF
+/// file some tool touched once. Counting would let a handful of stray CRLFs flip
+/// an otherwise-LF file wholesale, which is the bug this function exists to
+/// prevent.
+fn uses_crlf(existing: &str) -> bool {
+    match existing.find('\n') {
+        Some(0) => false,
+        Some(idx) => existing.as_bytes()[idx - 1] == b'\r',
+        // No newline at all: nothing to preserve, so defer to the host.
+        None => cfg!(windows),
+    }
+}
+
+/// Normalise `text` to the line endings the file **already uses**, falling back
+/// to the host convention for a file that does not exist yet.
+///
+/// ⚠ This is the fix for a genuinely nasty Windows bug, and the naive version is
+/// what caused it. Every `text_editor` write ran its content through
+/// [`normalize_line_endings`], which on Windows rewrites the file to CRLF — so a
+/// one-line `str_replace` inside an LF repository rewrote **every line of the
+/// file**, producing a whole-file diff for a one-word change. Worse, it then fed
+/// the next edit: `view` returned CRLF content, the model echoed a CRLF `old_str`
+/// back, and the match failed against whatever the file held.
+///
+/// A file's own style is the only defensible answer. The platform's preference
+/// applies to files the platform is creating, not to files it is editing.
+pub fn normalize_line_endings_like(existing: Option<&str>, text: &str) -> String {
+    let crlf = match existing {
+        Some(existing) => uses_crlf(existing),
+        None => cfg!(windows),
+    };
+    let lf = to_lf(text);
+    if crlf {
+        lf.replace('\n', "\r\n")
+    } else {
+        lf
     }
 }
 
@@ -668,6 +829,107 @@ pub async fn kill_process_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defect this replaced: on Windows `expand_path` had no tilde branch at
+    /// all, so `~/notes.md` reached `std::fs` verbatim and either created a
+    /// directory literally named `~` under the working directory or failed with
+    /// "The system cannot find the path specified. (os error 3)".
+    #[test]
+    fn a_leading_tilde_expands_to_the_home_directory() {
+        let home = home_dir().expect("a test host has a home directory");
+        let home = home.trim_end_matches(['/', '\\']);
+
+        assert_eq!(expand_path("~"), home);
+        assert_eq!(expand_path("~/notes.md"), format!("{home}/notes.md"));
+
+        // A model writes `~/x`; a Windows user writes `~\x`. One session sees both.
+        #[cfg(windows)]
+        assert_eq!(expand_path(r"~\notes.md"), format!(r"{home}\notes.md"));
+    }
+
+    /// A tilde that is not a home reference must survive untouched — `~user` is
+    /// another account's home (which we do not resolve) and `notes~` is an
+    /// ordinary backup filename.
+    #[test]
+    fn a_tilde_that_is_not_a_home_reference_is_left_alone() {
+        assert_eq!(expand_tilde("notes~"), "notes~");
+        assert_eq!(expand_tilde("~someone/notes.md"), "~someone/notes.md");
+        assert_eq!(expand_tilde("./a~b"), "./a~b");
+    }
+
+    /// `%VAR%` handling used to be two hardcoded names matched case-sensitively.
+    #[cfg(windows)]
+    #[test]
+    fn windows_environment_variables_expand_by_name_in_any_case() {
+        let appdata = env::var("APPDATA").expect("APPDATA is always set on Windows");
+
+        assert_eq!(expand_path(r"%APPDATA%\br"), format!(r"{appdata}\br"));
+        // Case-insensitive: Windows treats variable names that way, and the old
+        // literal `replace` did not.
+        assert_eq!(expand_path(r"%appdata%\br"), format!(r"{appdata}\br"));
+        // Any variable, not a list of two.
+        let local = env::var("LOCALAPPDATA").expect("LOCALAPPDATA is always set");
+        assert_eq!(expand_path(r"%LOCALAPPDATA%\br"), format!(r"{local}\br"));
+    }
+
+    /// ⚠ An unset variable must NOT become the empty string. `%NOPE%\data` would
+    /// then collapse to `\data`, which is the root of the current drive — an
+    /// existing, writable, and completely wrong location.
+    #[cfg(windows)]
+    #[test]
+    fn an_unset_windows_variable_is_left_verbatim_rather_than_blanked() {
+        let expanded = expand_path(r"%BIOROUTER_NO_SUCH_VAR_12345%\data");
+        assert_eq!(expanded, r"%BIOROUTER_NO_SUCH_VAR_12345%\data");
+        assert!(
+            !expanded.starts_with('\\'),
+            "an unset variable must never resolve to the drive root: {expanded}"
+        );
+    }
+
+    /// The whole-file-diff bug: a one-line edit inside an LF file, made from
+    /// Windows, used to rewrite every line of that file to CRLF.
+    #[test]
+    fn an_edit_keeps_the_line_endings_the_file_already_had() {
+        let lf = "one\ntwo\nthree\n";
+        let crlf = "one\r\ntwo\r\nthree\r\n";
+
+        // An LF file stays LF, on every host.
+        assert_eq!(
+            normalize_line_endings_like(Some(lf), "one\nTWO\nthree\n"),
+            "one\nTWO\nthree\n"
+        );
+        // A CRLF file stays CRLF, on every host.
+        assert_eq!(
+            normalize_line_endings_like(Some(crlf), "one\nTWO\nthree\n"),
+            "one\r\nTWO\r\nthree\r\n"
+        );
+        // Content arriving in the other style is converted to the file's own.
+        assert_eq!(normalize_line_endings_like(Some(lf), crlf), lf);
+        assert_eq!(normalize_line_endings_like(Some(crlf), lf), crlf);
+    }
+
+    /// A file that does not exist yet has no style to preserve, so the host's
+    /// convention still applies — the previous behaviour, kept deliberately.
+    #[test]
+    fn a_new_file_takes_the_host_convention() {
+        let written = normalize_line_endings_like(None, "one\ntwo\n");
+        if cfg!(windows) {
+            assert_eq!(written, "one\r\ntwo\r\n");
+        } else {
+            assert_eq!(written, "one\ntwo\n");
+        }
+    }
+
+    /// A mostly-LF file with one stray CRLF is an LF file, not a CRLF one.
+    #[test]
+    fn the_first_line_ending_decides_a_mixed_file() {
+        let mostly_lf = "one\ntwo\r\nthree\n";
+        assert!(!uses_crlf(mostly_lf));
+        assert_eq!(
+            normalize_line_endings_like(Some(mostly_lf), "a\nb\n"),
+            "a\nb\n"
+        );
+    }
 
     #[cfg(windows)]
     #[test]
