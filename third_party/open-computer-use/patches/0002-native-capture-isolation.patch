@@ -1423,10 +1423,10 @@ index ac464ef..407911f 100644
  ## 当前目录结构
 diff --git a/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
 new file mode 100644
-index 0000000..98b42af
+index 0000000..abdf27a
 --- /dev/null
 +++ b/docs/histories/2026-09/20260917-1200-biorouter-native-capture.md
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,21 @@
 +# BioRouter native capture and connection isolation
 +
 +Request: ship a pinned native computer-use helper with display/window capture and per-chat observation state, replacing host capture/script fallbacks.
@@ -1446,6 +1446,8 @@ index 0000000..98b42af
 +The next Windows fixture independently confirmed vertical scrolling but caught a second coordinate defect: the Go scroll request omitted WindowBounds, so Get-ScreenPoint returned null and PowerShell coerced both integer coordinates to zero. Scroll now forwards the observed window bounds like click and drag; missing geometry raises an actionable error instead of targeting screen origin. A request-level regression exercises serialized positive and negative desktop origins through the real service scroll path.
 +
 +Windows candidate5 confirmed correct wheel delivery and screen coordinates, but standard WinForms ignored horizontal wheel messages. Before dispatching horizontal input, the runtime now selects the nearest horizontally scrollable UIA ancestor within the selected process/window. Vertical behavior remains unchanged. Selection occurs before mutation; provider exceptions propagate without retrying another ancestor or sending wheel input. Windows-only provider contract tests cover nearest ancestor selection, process/window boundaries, unchanged vertical fallback, and no replay after an ambiguous exception. The interactive fixture continues to require an independently measured positive horizontal offset. API documentation: https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.scrollpattern.scroll and https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.treewalker.getparent.
++
++On macOS 26.6.2, final nested-app validation showed Accessibility attributed to org.biorouter.computer-use while Screen Recording was attributed to the enclosing com.electron.biorouter bundle. The passive runtime check correctly rejected missing outer-app permission. Diagnostics and capture-denial guidance now name the helper for Accessibility and the outermost enclosing application for Screen Recording; standalone helpers retain one permission owner. Only valid application bundles are used to resolve the display name. Both CGPreflightScreenCaptureAccess guards remain unchanged. Focused tests cover standalone, multiply nested, and non-application directory paths.
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
 index e0a56c0..79575e5 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift
@@ -1810,10 +1812,10 @@ index 183b067..695a6ef 100644
          return try parseSimpleCommand(name: "list-apps", arguments: Array(arguments.dropFirst()), result: .listApps)
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift
 new file mode 100644
-index 0000000..5380b85
+index 0000000..006df0d
 --- /dev/null
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,161 @@
 +import AppKit
 +import ApplicationServices
 +import CoreGraphics
@@ -1857,12 +1859,45 @@ index 0000000..5380b85
 +    }
 +}
 +
++struct NativePermissionTargets {
++    let accessibility: String
++    let screenRecording: String
++
++    init(helperBundleURL: URL = Bundle.main.bundleURL, helperName: String = PermissionSupport.currentBundleDisplayName()) {
++        accessibility = helperName
++        var screenRecordingOwner = helperName
++        var ancestor = helperBundleURL.standardizedFileURL.deletingLastPathComponent()
++        while ancestor.path != "/" {
++            if ancestor.pathExtension.lowercased() == "app", let bundle = Bundle(url: ancestor),
++               bundle.object(forInfoDictionaryKey: "CFBundlePackageType") as? String == "APPL" {
++                let names = [bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String,
++                             bundle.object(forInfoDictionaryKey: "CFBundleName") as? String]
++                screenRecordingOwner = names.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
++                    .first { !$0.isEmpty } ?? ancestor.deletingPathExtension().lastPathComponent
++            }
++            ancestor.deleteLastPathComponent()
++        }
++        screenRecording = screenRecordingOwner
++    }
++
++    var setupMessage: String {
++        if accessibility == screenRecording {
++            return "Enable Accessibility and Screen Recording for \(accessibility) in System Settings."
++        }
++        return "Enable Accessibility for \(accessibility) and Screen Recording for \(screenRecording) in System Settings."
++    }
++
++    var captureDeniedMessage: String {
++        "screen_recording_permission_required: enable Screen Recording for \(screenRecording) in System Settings, then retry"
++    }
++}
++
 +enum NativeScreenCapture {
 +    static func capture(arguments: [String: Any]) throws -> ToolCallResult {
 +        let request = try ScreenCaptureRequest(arguments: arguments)
 +        try ComputerUseCancellation.check()
 +        guard CGPreflightScreenCaptureAccess() else {
-+            throw ComputerUseError.permissionDenied("screen_recording_permission_required: enable Screen Recording for BioRouter Computer Use in System Settings, then retry")
++            throw ComputerUseError.permissionDenied(NativePermissionTargets().captureDeniedMessage)
 +        }
 +        return try BlockingAsyncBridge.run(timeout: 15) {
 +            try Task.checkCancellation()
@@ -1935,7 +1970,7 @@ index 0000000..5380b85
 +    let screenRecording = CGPreflightScreenCaptureAccess()
 +    let state = !desktop ? "desktop_unavailable" : (!accessibility || !screenRecording ? "os_permission_required" : "ready")
 +    let message = !desktop ? "Run BioRouter in the signed-in user's desktop session." :
-+        (!accessibility || !screenRecording ? "Enable Accessibility and Screen Recording for BioRouter Computer Use in System Settings." : "Native desktop access is ready.")
++        (!accessibility || !screenRecording ? NativePermissionTargets().setupMessage : "Native desktop access is ready.")
 +    let data = try JSONSerialization.data(withJSONObject: [
 +        "state": state, "desktop_available": desktop, "accessibility": accessibility,
 +        "screen_recording": screenRecording, "capture_available": desktop && screenRecording, "message": message,
@@ -1964,7 +1999,7 @@ index 35dff4b..a11f54e 100644
              name: "click",
              description: "Click an element by index or pixel coordinates from screenshot. This tool is part of plugin `Computer Use`.",
 diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
-index 250f5f2..0b8d619 100644
+index 250f5f2..2f6369b 100644
 --- a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
 +++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
 @@ -253,7 +253,7 @@ final class OpenComputerUseKitTests: XCTestCase {
@@ -1976,12 +2011,52 @@ index 250f5f2..0b8d619 100644
      }
  
      func testReadToolArgumentsAcceptsJSONObject() throws {
-@@ -2435,3 +2435,52 @@ final class OpenComputerUseKitTests: XCTestCase {
+@@ -2435,3 +2435,92 @@ final class OpenComputerUseKitTests: XCTestCase {
          return (width, height)
      }
  }
 +
 +final class BioRouterCaptureContractTests: XCTestCase {
++    func testStandalonePermissionTargetsUseHelperName() {
++        let targets = NativePermissionTargets(helperBundleURL: URL(fileURLWithPath: "/Applications/BioRouter Computer Use.app"), helperName: "BioRouter Computer Use")
++        XCTAssertEqual(targets.accessibility, "BioRouter Computer Use")
++        XCTAssertEqual(targets.screenRecording, "BioRouter Computer Use")
++        XCTAssertEqual(targets.setupMessage, "Enable Accessibility and Screen Recording for BioRouter Computer Use in System Settings.")
++    }
++
++    func testNestedPermissionTargetsUseOutermostApplication() throws {
++        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let outer = directory.appendingPathComponent("Biorouter.app")
++        let inner = outer.appendingPathComponent("Contents/Resources/Intermediate.app")
++        try writePermissionTestBundle(at: outer, name: "Biorouter")
++        try writePermissionTestBundle(at: inner, name: "Intermediate")
++        let helper = inner.appendingPathComponent("Contents/Resources/BioRouter Computer Use.app")
++        let targets = NativePermissionTargets(helperBundleURL: helper, helperName: "BioRouter Computer Use")
++        XCTAssertEqual(targets.accessibility, "BioRouter Computer Use")
++        XCTAssertEqual(targets.screenRecording, "Biorouter")
++        XCTAssertEqual(targets.setupMessage, "Enable Accessibility for BioRouter Computer Use and Screen Recording for Biorouter in System Settings.")
++        XCTAssertEqual(targets.captureDeniedMessage, "screen_recording_permission_required: enable Screen Recording for Biorouter in System Settings, then retry")
++    }
++
++    func testPermissionTargetsIgnoreAppSuffixWithoutApplicationBundle() throws {
++        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let fakeApp = directory.appendingPathComponent("Documents.app")
++        try FileManager.default.createDirectory(at: fakeApp, withIntermediateDirectories: true)
++        let helper = fakeApp.appendingPathComponent("BioRouter Computer Use.app")
++        let targets = NativePermissionTargets(helperBundleURL: helper, helperName: "BioRouter Computer Use")
++        XCTAssertEqual(targets.screenRecording, "BioRouter Computer Use")
++    }
++
++    private func writePermissionTestBundle(at url: URL, name: String) throws {
++        let contents = url.appendingPathComponent("Contents")
++        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
++        let info = ["CFBundlePackageType": "APPL", "CFBundleDisplayName": name, "CFBundleIdentifier": "org.biorouter.fixture.\(UUID().uuidString)"]
++        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
++        try data.write(to: contents.appendingPathComponent("Info.plist"))
++    }
++
 +    func testPassiveDoctorCommandIsDistinctFromOnboarding() throws {
 +        XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["doctor", "--json"]), .diagnostics)
 +        XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["doctor"]), .doctor)

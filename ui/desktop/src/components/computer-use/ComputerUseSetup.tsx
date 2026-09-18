@@ -51,10 +51,10 @@ export function ComputerUseRuntimeDetails({ runtime }: { runtime: ComputerUseRun
       )}
       {/darwin/.test(target) ? (
         <p>
-          Allow the Biorouter Computer Use helper in System Settings → Privacy &amp; Security →
-          Accessibility and Screen Recording, then check again.
+          Review Accessibility and Screen Recording in System Settings → Privacy &amp; Security on
+          the backend computer, then check again.
         </p>
-      ) : /windows/.test(target) ? (
+      ) : target.startsWith('win32-') || target.includes('windows') ? (
         <p>
           Use a signed-in interactive desktop. Secure desktops and elevation prompts cannot be
           controlled.

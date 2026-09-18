@@ -58,6 +58,44 @@ describe('ComputerUseSetup', () => {
     expect(screen.getByText(/System Settings/)).toBeVisible();
   });
 
+  it.each([
+    'Enable Accessibility for BioRouter Computer Use and Screen Recording for Biorouter in System Settings.',
+    'Enable Accessibility and Screen Recording for BioRouter Computer Use in System Settings.',
+  ])(
+    'uses the native permission owners without contradictory static guidance: %s',
+    async (message) => {
+      mocks.setup.mockResolvedValue({
+        status: 'os_permission_required',
+        permissions: { accessibility: false, screen_recording: false },
+        message,
+        target: 'aarch64-apple-darwin',
+      });
+      render(<ComputerUseSetup />);
+      fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
+
+      expect(await screen.findByText(message)).toBeVisible();
+      expect(screen.getAllByText(/Biorouter Computer Use/i)).toHaveLength(1);
+      expect(
+        screen.getByText(/Review Accessibility and Screen Recording in System Settings/)
+      ).toHaveTextContent('on the backend computer, then check again.');
+    }
+  );
+
+  it('shows interactive desktop guidance for the native win32-x64 target', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'desktop_unavailable',
+      permissions: 'unknown',
+      target: 'win32-x64',
+    });
+    render(<ComputerUseSetup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Computer Use setup' }));
+
+    expect(await screen.findByText(/Use a signed-in interactive desktop/)).toHaveTextContent(
+      'Secure desktops and elevation prompts cannot be controlled.'
+    );
+    expect(screen.queryByText(/Grant the operating-system permissions requested/)).toBeNull();
+  });
+
   it('rechecks setup after permissions change instead of reusing the previous displayed result', async () => {
     mocks.setup
       .mockResolvedValueOnce({
