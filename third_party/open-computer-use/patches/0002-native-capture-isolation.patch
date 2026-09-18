@@ -1549,7 +1549,7 @@ index c70ed60..691435d 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
-index c70def2..6c002f7 100644
+index c70def2..aa35c4d 100644
 --- a/apps/OpenComputerUseWindows/main_test.go
 +++ b/apps/OpenComputerUseWindows/main_test.go
 @@ -3,13 +3,18 @@ package main
@@ -1573,7 +1573,7 @@ index c70def2..6c002f7 100644
  	}
  }
  
-@@ -307,3 +312,382 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+@@ -307,3 +312,436 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
  	t.Fatalf("missing tool definition %q", name)
  	return toolDefinition{}
  }
@@ -1652,12 +1652,12 @@ index c70def2..6c002f7 100644
 +Add-Type -TypeDefinition @'
 +public static class OCUWin32 {
 + public class Info { public int nMin=0,nMax=2000,nPos=0; public uint nPage=200; }
-+ public static int Position,Posts,DelayReads; public static int Pending=-1; public static bool Noop,Large;
-+ public static bool IsChild(System.IntPtr root,System.IntPtr child) { return root.ToInt64()==100 && child.ToInt64()==200; }
++ public static int Position,Posts,DelayReads; public static int Pending=-1; public static bool Noop,Large,LineMode,ForeignChild; public static int Step=5,ChangeStepAt=0;
++ public static bool IsChild(System.IntPtr root,System.IntPtr child) { return !ForeignChild && root.ToInt64()==100 && child.ToInt64()==200; }
 + public static uint GetWindowThreadProcessId(System.IntPtr window,out uint processId) { processId=42; return 1; }
 + public static Info ReadScrollInfo(System.IntPtr window,int axis) { if (Pending >= 0 && DelayReads-- <= 0) { Position=Pending; Pending=-1; } return new Info { nPos=Position, nMax=Large ? 200000 : 2000, nPage=Large ? 1000u : 200u }; }
 + public static bool PostMessage(System.IntPtr window,uint message,System.IntPtr w,System.IntPtr l) {
-+  Posts++; if (!Noop) { int requested=(int)((w.ToInt64() >> 16) & 65535); if (DelayReads>0) Pending=requested; else Position=requested; } return true;
++  Posts++; if (!Noop && LineMode) { int step=ChangeStepAt>0 && Posts>=ChangeStepAt ? Step*2 : Step; Position += w.ToInt64()==1 ? step : -step; return true; } if (!Noop) { int requested=(int)((w.ToInt64() >> 16) & 65535); if (DelayReads>0) Pending=requested; else Position=requested; } return true;
 + }
 +}
 +namespace Windows.Automation {
@@ -1682,12 +1682,12 @@ index c70def2..6c002f7 100644
 + return $pattern
 +}
 +function New-Node($pattern,$parent,[int]$processId=42,[int]$hwnd=0) {
-+ $node=[pscustomobject]@{Pattern=$pattern; Parent=$parent; Current=[pscustomobject]@{ProcessId=$processId; NativeWindowHandle=$hwnd}}
++ $node=[pscustomobject]@{Pattern=$pattern; Parent=$parent; Current=[pscustomobject]@{ProcessId=$processId; NativeWindowHandle=$hwnd;FrameworkId="Win32";ClassName="test";BoundingRectangle="stable"}}
 + $node | Add-Member ScriptMethod GetCurrentPattern { param($id) return $this.Pattern }
 + return $node
 +}
 +`
-+	for _, name := range []string{"Get-CurrentPatternOrNull", "Assert-NativeNumber", "Assert-ScrollPages", "Test-ScrollWindow", "Get-ScrollPattern", "Invoke-Scroll", "Invoke-NativeScroll"} {
++	for _, name := range []string{"Get-CurrentPatternOrNull", "Assert-NativeNumber", "Assert-ScrollPages", "Test-ScrollWindow", "Get-ScrollPattern", "Invoke-Scroll", "Invoke-WinFormsLineScroll", "Invoke-NativeScroll"} {
 +		start := strings.Index(windowsRuntimeScript, "function "+name+"(")
 +		if start < 0 {
 +			t.Fatalf("missing %s", name)
@@ -1744,6 +1744,60 @@ index c70def2..6c002f7 100644
 +$failed=$false;try {Invoke-Scroll $nativeChild 'down' 0.5 $process | Out-Null}catch{$failed=$true}
 +if (-not $failed -or [OCUWin32]::Posts -ne 2 -or $nativePattern.Calls -ne 0) {throw 'Failed native owner scroll replayed through UIA'}
 +[OCUWin32]::Noop=$false;[OCUWin32]::Position=0;[OCUWin32]::Posts=0
++$form=New-Node (New-Pattern) $null 42 100
++$form.Current.FrameworkId='WinForm';$form.Current.ClassName='WindowsForms10.Window.8.app.0.test'
++[OCUWin32]::LineMode=$true
++$result=Invoke-Scroll $form 'down' 0.46 $process
++if ([OCUWin32]::Position -ne 90 -or [OCUWin32]::Posts -ne 18 -or $form.Pattern.Calls -ne 0 -or $result -notmatch 'granularity=5') {throw 'WinForms measured line routing/nearest position failed'}
++Invoke-Scroll $form 'up' 0.46 $process | Out-Null
++if ([OCUWin32]::Position -ne 0 -or [OCUWin32]::Posts -ne 36) {throw 'WinForms reverse command direction failed'}
++$posts=[OCUWin32]::Posts
++foreach ($amount in @(0.001)) {
++ $failed=$false;try {Invoke-Scroll $form 'right' $amount $process | Out-Null}catch{$failed=$true}
++ if (-not $failed -or [OCUWin32]::Posts -ne $posts) {throw 'WinForms unsupported amount mutated target'}
++}
++[OCUWin32]::Large=$true
++Invoke-Scroll $form 'right' 6.6 $process | Out-Null
++if ([OCUWin32]::Position -ne 6600) {throw 'WinForms native units incorrectly capped instead of command count'}
++[OCUWin32]::Position=0;$posts=[OCUWin32]::Posts
++$failed=$false;try {Invoke-Scroll $form 'right' 100 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or [OCUWin32]::Posts -ne $posts+1) {throw 'WinForms measured command budget not enforced'}
++[OCUWin32]::Position=0;$posts=[OCUWin32]::Posts
++[OCUWin32]::Large=$false;[OCUWin32]::ChangeStepAt=$posts+2
++$failed=$false;try {Invoke-Scroll $form 'right' 0.5 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or [OCUWin32]::Posts -ne $posts+2 -or $form.Pattern.Calls -ne 0) {throw 'WinForms changing granularity accepted or replayed'}
++[OCUWin32]::ChangeStepAt=0;[OCUWin32]::Position=0;$posts=[OCUWin32]::Posts
++[OCUWin32]::Noop=$true
++$failed=$false;try {Invoke-Scroll $form 'down' 0.5 $process | Out-Null}catch{$failed=$true}
++if (-not $failed -or [OCUWin32]::Posts -ne $posts+1 -or $form.Pattern.Calls -ne 0) {throw 'WinForms noop retried or accepted'}
++[OCUWin32]::Noop=$false;[OCUWin32]::Position=0
++$lineRoot=New-Node $null $null 42 100
++$lineChild=New-Node $null $lineRoot 42 200
++$originalWalker=[Windows.Automation.TreeWalker]::ControlViewWalker
++$script:guardMode='recreate';$script:guardReads=0;$script:guardTrigger=2
++$changedWalker=[pscustomobject]@{}
++$changedWalker | Add-Member ScriptMethod GetParent { param($node)
++ $script:guardReads++
++ if ($script:guardReads -eq $script:guardTrigger) {
++  if ($script:guardMode -eq 'recreate') {$node.Current.NativeWindowHandle=300}
++  else {[OCUWin32]::ForeignChild=$true}
++ }
++ return $node.Parent
++}
++[Windows.Automation.TreeWalker]::ControlViewWalker=$changedWalker
++foreach ($trigger in @(1,2)) {
++ foreach ($mode in @('recreate','reuse')) {
++ $script:guardTrigger=$trigger
++ $script:guardMode=$mode;$script:guardReads=0
++ $lineChild.Current.NativeWindowHandle=200;[OCUWin32]::ForeignChild=$false;[OCUWin32]::Position=0
++ $posts=[OCUWin32]::Posts
++ $failed=$false;try {Invoke-WinFormsLineScroll $lineChild ([IntPtr]200) 1 5 ([OCUWin32]::ReadScrollInfo([IntPtr]200,1)) $process 0.025 'down' | Out-Null}catch{$failed=$true}
++ if (-not $failed -or [OCUWin32]::Posts -ne $posts+$trigger-1) {throw 'Changed or reused HWND was accepted before input or after readback'}
++ }
++}
++[Windows.Automation.TreeWalker]::ControlViewWalker=$originalWalker
++[OCUWin32]::ForeignChild=$false
++[OCUWin32]::Noop=$false;[OCUWin32]::LineMode=$false;[OCUWin32]::Position=0;[OCUWin32]::Posts=0
 +$nativeRoot=New-Node $null $null 42 100
 +$nativeLeaf=New-Node $null $nativeRoot
 +Invoke-NativeScroll $nativeLeaf 'down' 0.5 $process | Out-Null
@@ -1957,7 +2011,7 @@ index c70def2..6c002f7 100644
 +	}
 +}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..99bd330 100644
+index 720e9d5..8405c5b 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -2150,7 +2204,9 @@ index 720e9d5..99bd330 100644
 +        if ($child -eq [IntPtr]::Zero) { throw "Drag start is outside the selected window client area" }
 +        if ($child -eq $target) { return $target }
 +        $target = $child
-+    }
+     }
+-    if ($direction -eq "left" -or $direction -eq "right") {
+-        $message = $WM_MOUSEHWHEEL
 +    throw "Drag target hierarchy is too deep; run get_app_state again"
 +}
 +
@@ -2161,9 +2217,10 @@ index 720e9d5..99bd330 100644
 +        [OCUWin32]::IsIconic($root) -or $current.x -ne $bounds.x -or $current.y -ne $bounds.y -or
 +        $current.width -ne $bounds.width -or $current.height -ne $bounds.height) {
 +        throw "Drag window geometry changed or is unavailable; run get_app_state again"
-+    }
-+}
-+
+     }
+-    [void][OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)
+ }
+ 
 +function Send-Drag([IntPtr]$hwnd, [uint32]$expectedProcessId, $windowBounds, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY) {
 +    if (-not (Test-EnvFlagEnabled "OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS")) {
 +        throw "Windows drag requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus; background drag is unsupported"
@@ -2172,9 +2229,7 @@ index 720e9d5..99bd330 100644
 +    $target = Get-DragTarget $hwnd $expectedProcessId $fromX $fromY
 +    foreach ($button in @(1, 2, 4, 5, 6)) {
 +        if (([OCUWin32]::GetAsyncKeyState($button) -band 0x8000) -ne 0) { throw "Cannot start drag while a mouse button is already held" }
-     }
--    if ($direction -eq "left" -or $direction -eq "right") {
--        $message = $WM_MOUSEHWHEEL
++    }
 +    if ([OCUWin32]::GetForegroundWindow() -ne $hwnd) {
 +        [void][OCUWin32]::SetForegroundWindow($hwnd)
 +        for ($attempt = 0; $attempt -lt 12 -and [OCUWin32]::GetForegroundWindow() -ne $hwnd; $attempt++) {
@@ -2222,10 +2277,9 @@ index 720e9d5..99bd330 100644
 +            [void][OCUWin32]::SendInput(1, $release, [OCUWin32]::InputSize())
 +        }
 +        throw "Windows drag input was blocked or partially inserted; the gesture will not be replayed"
-     }
--    [void][OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)
- }
- 
++    }
++}
++
 +
  function Send-Text([IntPtr]$hwnd, [string]$text) {
      foreach ($char in $text.ToCharArray()) {
@@ -2315,7 +2369,7 @@ index 720e9d5..99bd330 100644
      }
  }
  
-@@ -764,23 +973,136 @@ function Invoke-SecondaryAction($element, [string]$action) {
+@@ -764,23 +973,195 @@ function Invoke-SecondaryAction($element, [string]$action) {
      throw "$action is not a valid secondary action for $($operation.element.index)"
  }
  
@@ -2412,6 +2466,61 @@ index 720e9d5..99bd330 100644
 +    return "Scroll: requested $pages viewport pages $direction; observed $([math]::Round($moved, 4)) pages; boundary=$edge (UIA ScrollPattern)."
 +}
 +
++function Invoke-WinFormsLineScroll($element, [IntPtr]$target, [int]$axis, [double]$requested, $info, $process, [double]$requestedPages, [string]$direction) {
++    $before = [double]$info.nPos
++    $distance = [math]::Abs($requested - $before)
++    if ($distance -gt 0 -and $distance -lt 1) { throw "Requested scroll is smaller than the native scrollbar unit" }
++    $sign = if ($requested -lt $before) { -1 } else { 1 }
++    $message = if ($axis -eq 0) { 0x0114 } else { 0x0115 }
++    $command = if ($sign -gt 0) { 1 } else { 0 }
++    $geometry = $element.Current.BoundingRectangle
++    $position = $before
++    $step = 0.0
++    $clock = [Diagnostics.Stopwatch]::StartNew()
++    for ($count = 0; $distance -gt 0 -and $count -lt 4096; $count++) {
++        if ($clock.ElapsedMilliseconds -gt 5000) { throw "WinForms scroll time budget exceeded; movement may be partial and will not be replayed" }
++        [uint32]$owner = 0
++        if (-not (Test-ScrollWindow $element $process) -or
++            [IntPtr]$element.Current.NativeWindowHandle -ne $target -or
++            ($target -ne [IntPtr]$process.MainWindowHandle -and -not [OCUWin32]::IsChild([IntPtr]$process.MainWindowHandle, $target)) -or
++            [OCUWin32]::GetWindowThreadProcessId($target, [ref]$owner) -eq 0 -or $owner -ne $process.Id -or
++            -not $element.Current.BoundingRectangle.Equals($geometry)) { throw "WinForms scroll owner or geometry changed; movement will not be replayed" }
++        $current = [OCUWin32]::ReadScrollInfo($target, $axis)
++        if ($current.nMin -ne $info.nMin -or $current.nMax -ne $info.nMax -or $current.nPage -ne $info.nPage -or $current.nPos -ne $position) {
++            throw "WinForms scroll range or position changed; movement will not be replayed"
++        }
++        if (-not [OCUWin32]::PostMessage($target, $message, [IntPtr]$command, [IntPtr]::Zero)) { throw "Windows rejected line scroll; it will not be replayed" }
++        for ($attempt = 0; $attempt -lt 20; $attempt++) {
++            $actual = [OCUWin32]::ReadScrollInfo($target, $axis)
++            if ($actual.nPos -ne $position) { break }
++            Start-Sleep -Milliseconds 10
++        }
++        if ($actual.nMin -ne $info.nMin -or $actual.nMax -ne $info.nMax -or $actual.nPage -ne $info.nPage -or
++            -not (Test-ScrollWindow $element $process) -or
++            [IntPtr]$element.Current.NativeWindowHandle -ne $target -or
++            ($target -ne [IntPtr]$process.MainWindowHandle -and -not [OCUWin32]::IsChild([IntPtr]$process.MainWindowHandle, $target)) -or
++            [OCUWin32]::GetWindowThreadProcessId($target, [ref]$owner) -eq 0 -or $owner -ne $process.Id -or
++            -not $element.Current.BoundingRectangle.Equals($geometry)) {
++            throw "WinForms scroll viewport or owner changed after input; movement will not be replayed"
++        }
++        $delta = ($actual.nPos - $position) * $sign
++        if ($delta -le 0) { throw "WinForms line scroll made no direction-consistent progress; input will not be replayed" }
++        $boundary = $actual.nPos -eq $info.nMin -or $actual.nPos -eq ($info.nMax - $info.nPage + 1)
++        if ($step -gt 0 -and $delta -ne $step -and -not $boundary) { throw "WinForms line scroll granularity changed; movement may be partial and will not be replayed" }
++        if ($step -eq 0) { $step = $delta }
++        $position = [double]$actual.nPos
++        $remaining = ($requested - $position) * $sign
++        if ([math]::Abs($remaining) -le $step / 2) { break }
++        if ($remaining -lt 0 -or $boundary) { throw "WinForms line scroll cannot represent the requested displacement; movement may be partial and will not be replayed" }
++        if ($count + 1 + [math]::Floor($remaining / $step + 0.5) -gt 4096) { throw "WinForms scroll exceeds the remaining line-command budget; movement may be partial and will not be replayed" }
++    }
++    if ($distance -gt 0 -and ([math]::Abs($position - $requested) -gt $step / 2 -or $position -eq $before)) {
++        throw "WinForms line scroll did not reach the nearest representable position; movement may be partial and will not be replayed"
++    }
++    $moved = [math]::Abs($position - $before) / [double]$info.nPage
++    return "Scroll: requested $requestedPages viewport pages $direction; observed $([math]::Round($moved, 4)) pages; native granularity=$step units (WinForms line scrolling)."
++}
++
 +function Invoke-NativeScroll($element, [string]$direction, [double]$pages, $process, [bool]$exactOwner = $false) {
 +    Assert-ScrollPages $pages
 +    if (-not (Test-ScrollWindow $element $process)) { throw "Scroll target is outside the selected application window" }
@@ -2437,6 +2546,10 @@ index 720e9d5..99bd330 100644
 +    $sign = if ($direction -eq "up" -or $direction -eq "left") { -1 } else { 1 }
 +    $maximum = [double]$info.nMax - $info.nPage + 1
 +    $requested = [math]::Max([double]$info.nMin, [math]::Min([double]$maximum, $info.nPos + $sign * $pages * $info.nPage))
++    # WinForms containers read SIF_TRACKPOS instead of the thumb message position.
++    if ($candidate.Current.FrameworkId -eq "WinForm" -and $candidate.Current.ClassName -like "WindowsForms10.Window.*") {
++        return Invoke-WinFormsLineScroll $candidate $target $axis $requested $info $process $pages $direction
++    }
 +    $desired = [int][math]::Round($requested)
 +    $before = $info.nPos
 +    if ($desired -eq $before -and $requested -ne $before) { throw "Requested scroll is smaller than the native scrollbar unit" }
@@ -2467,7 +2580,7 @@ index 720e9d5..99bd330 100644
  }
  
  function Find-TextEntryElement($process) {
-@@ -899,7 +1221,21 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+@@ -899,7 +1280,21 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
@@ -2490,7 +2603,7 @@ index 720e9d5..99bd330 100644
          $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
-@@ -961,17 +1297,13 @@ try {
+@@ -961,17 +1356,13 @@ try {
                  Invoke-SecondaryAction $element $operation.action
              }
              "scroll" {
@@ -2512,7 +2625,7 @@ index 720e9d5..99bd330 100644
              }
              "type_text" {
                  if (-not (Invoke-TypeText $process $operation.text)) {
-@@ -995,7 +1327,9 @@ try {
+@@ -995,7 +1386,9 @@ try {
          }
  
          Start-Sleep -Milliseconds 120

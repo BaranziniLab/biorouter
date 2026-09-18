@@ -168,7 +168,7 @@ $form.Controls.Add($text); $form.Controls.Add($button); $form.Controls.Add($rese
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 $timer.Add_Tick({
-  @{x = [Math]::Abs($form.AutoScrollPosition.X); y = [Math]::Abs($form.AutoScrollPosition.Y); page_x = $form.ClientSize.Width; page_y = $form.ClientSize.Height; max_x = $form.DisplayRectangle.Width - $form.ClientSize.Width; max_y = $form.DisplayRectangle.Height - $form.ClientSize.Height; native_x = $form.HorizontalScroll.Value; native_y = $form.VerticalScroll.Value; native_page_x = $form.HorizontalScroll.LargeChange; native_page_y = $form.VerticalScroll.LargeChange; native_max_x = $form.HorizontalScroll.Maximum; native_max_y = $form.VerticalScroll.Maximum} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-metrics.json')
+  @{x = [Math]::Abs($form.AutoScrollPosition.X); y = [Math]::Abs($form.AutoScrollPosition.Y); page_x = $form.ClientSize.Width; page_y = $form.ClientSize.Height; max_x = $form.DisplayRectangle.Width - $form.ClientSize.Width; max_y = $form.DisplayRectangle.Height - $form.ClientSize.Height; native_x = $form.HorizontalScroll.Value; native_y = $form.VerticalScroll.Value; native_page_x = $form.HorizontalScroll.LargeChange; native_page_y = $form.VerticalScroll.LargeChange; native_max_x = $form.HorizontalScroll.Maximum; native_max_y = $form.VerticalScroll.Maximum; native_step_x = $form.HorizontalScroll.SmallChange; native_step_y = $form.VerticalScroll.SmallChange} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-metrics.json')
 
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-x.txt'), [string][Math]::Abs($form.AutoScrollPosition.X))
   [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'scroll-y.txt'), [string][Math]::Abs($form.AutoScrollPosition.Y))
@@ -284,12 +284,14 @@ $timer.Dispose()
                 scroll_result = call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": direction, "pages": pages}, allow_error=True)
                 time.sleep(0.2)
                 actual = json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig"))
-                receipt = {"direction": direction, "pages": pages, "before": before[axis], "expected": expected, "actual": actual[axis], "before_metrics": before, "after_metrics": actual, "tool_result": scroll_result}
+                receipt = {"direction": direction, "pages": pages, "before": before[axis], "expected": expected, "actual": actual[axis], "before_metrics": before, "after_metrics": actual, "tool_result": scroll_result, "granularity": before["native_step_" + axis]}
                 scroll_receipts.append(receipt)
                 report.with_name(report.stem + "-independent-scroll.json").write_text(json.dumps(scroll_receipts, indent=2))
                 if scroll_result.get("isError"):
                     raise AssertionError(f"Scroll failed; independent metrics preserved: {receipt}")
-                if abs(actual[axis] - expected) > 2:
+                if expected != before[axis] and (actual[axis] - before[axis]) * sign <= 0:
+                    raise AssertionError(f"Scroll made no direction-consistent movement: {receipt}")
+                if abs(actual[axis] - expected) > before["native_step_" + axis] / 2:
                     raise AssertionError(f"Requested WinForms viewport displacement not observed: {receipt}")
             state = call("get_app_state", {"app": app})
             text = "\n".join(c.get("text", "") for c in state["content"])
