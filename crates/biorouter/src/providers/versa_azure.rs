@@ -1371,6 +1371,83 @@ mod routing_tests {
         );
     }
 
+    #[tokio::test]
+    async fn native_tool_function_envelopes_survive_multi_turn_streaming_http_requests() {
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string("data: [DONE]\n\n"),
+            )
+            .mount(&server)
+            .await;
+        let provider = aimed_at(bound("gpt-5.5-2026-04-24", config("", "")).await, &server);
+        let mut tools = biorouter_mcp::computer_use::contract::tools();
+        for tool in &mut tools {
+            tool.name = format!("computercontroller__{}", tool.name).into();
+        }
+        tools.extend(
+            crate::agents::platform_tools::PlatformToolGates {
+                scheduler: false,
+                knowledge: false,
+                session_blobs: false,
+                workflows: true,
+                bug_report: true,
+                can_ask_a_person: true,
+            }
+            .tools(None),
+        );
+        let mut messages = vec![Message::user().with_text("Use only the synthetic fixture")];
+        for turn in 0..=17 {
+            let stream = provider
+                .stream("Synthetic fixture only", &messages, &tools)
+                .await
+                .unwrap();
+            drop(stream);
+            if turn < 17 {
+                let id = format!("fixture-{turn}");
+                messages.push(Message::assistant().with_tool_request(
+                    &id,
+                    Ok(CallToolRequestParams {
+                        name: "computercontroller__get_app_state".into(),
+                        arguments: Some(rmcp::object!({"app":"Synthetic Fixture"})),
+                        meta: None,
+                        task: None,
+                    }),
+                ));
+                messages.push(Message::user().with_tool_response(
+                    &id,
+                    Ok(CallToolResult::success(vec![
+                        Content::text("Synthetic fixture state"),
+                        Content::image("iVBORw0KGgo=", "image/png"),
+                    ])),
+                ));
+            }
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 18);
+        for (turn, request) in requests.iter().enumerate() {
+            let payload: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(payload["stream"], true);
+            let sent = payload["tools"].as_array().unwrap();
+            assert_eq!(sent.len(), tools.len());
+            for (index, (envelope, tool)) in sent.iter().zip(&tools).enumerate() {
+                assert_eq!(envelope["type"], "function", "turn {turn}, tool {index}");
+                assert_eq!(
+                    envelope["function"]["name"],
+                    tool.name.as_ref(),
+                    "turn {turn}, tool {index}"
+                );
+                assert!(envelope["function"]["parameters"].is_object());
+                assert_eq!(envelope.as_object().unwrap().len(), 2);
+            }
+            assert!(!payload["messages"].as_array().unwrap().is_empty());
+        }
+    }
+
     /// The QA probe itself. Refused readably, and NOTHING reaches the gateway —
     /// where it used to complete normally on gpt-5.5.
     #[tokio::test]

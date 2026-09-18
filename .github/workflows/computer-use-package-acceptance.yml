@@ -1,0 +1,159 @@
+name: Computer Use installed packages
+'on':
+  workflow_dispatch: null
+  push:
+    branches:
+      - codex/computer-use-package-ci
+permissions:
+  contents: read
+concurrency:
+  group: computer-use-packages-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  BIOROUTER_BUILD_JOBS: '2'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  cross:
+    name: Production GNU build (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cross-cache/registry
+            .cross-cache/target/${{ matrix.target }}
+          key: cross-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
+          restore-keys: cross-${{ matrix.target }}-
+      - run: bash scripts/build-computer-use-package-cross.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-backends-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/
+          if-no-files-found: error
+          retention-days: 7
+  packages:
+    name: Install packages (${{ matrix.target }})
+    needs: cross
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
+          - target: win32-x64
+            runner: windows-latest
+            triple: x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: matrix.triple != ''
+        with:
+          name: package-backends-${{ matrix.triple }}
+          path: target/${{ matrix.triple }}/release/
+      - name: Restore Unix executable modes after Actions artifact download
+        if: runner.os == 'Linux'
+        run: chmod +x target/${{ matrix.triple }}/release/biorouter target/${{ matrix.triple }}/release/biorouterd
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.8
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux package maker and extraction tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm libarchive-tools
+      - name: Test installed readiness assertions
+        run: python scripts/test-installed-computer-use.py
+      - name: Build genuine candidate packages
+        run: python scripts/computer-use-package-acceptance.py build ${{ matrix.target }}
+      - name: Verify archives and installed runtimes
+        timeout-minutes: 35
+        run: python scripts/computer-use-package-acceptance.py verify ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-packages-${{ matrix.target }}
+          path: target/package-acceptance/
+          if-no-files-found: error
+          retention-days: 7
+  package-gate:
+    if: always()
+    needs:
+      - cross
+      - packages
+      - mac-packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all nine release-format candidates and installed checks
+        env:
+          CROSS: ${{ needs.cross.result }}
+          PACKAGES: ${{ needs.packages.result }}
+          MAC: ${{ needs.mac-packages.result }}
+        run: test "$CROSS" = success && test "$PACKAGES" = success && test "$MAC" = success
+  mac-packages:
+    name: Install packages (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-26
+          - target: darwin-x64
+            runner: macos-26-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.8
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.92'
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-release-${{ matrix.target }}
+      - name: Test installed readiness assertions
+        run: python scripts/test-installed-computer-use.py
+      - name: Build genuine candidate packages
+        run: python scripts/computer-use-package-acceptance.py build ${{ matrix.target }}
+      - name: Verify archives and installed runtimes
+        timeout-minutes: 35
+        run: python scripts/computer-use-package-acceptance.py verify ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-packages-${{ matrix.target }}
+          path: target/package-acceptance/
+          if-no-files-found: error
+          retention-days: 7
