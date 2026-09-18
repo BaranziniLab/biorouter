@@ -55,6 +55,38 @@ foreach ($window in $windows) {
         report.with_name(report.stem + "-diagnostics-error.txt").write_text(str(error), encoding="utf-8")
 
 
+
+FIXTURE_TITLE = "BioRouter Computer Use Fixture"
+SENTINEL_TITLE = "BioRouter Unrelated Window Sentinel"
+
+
+def capture_metadata(result):
+    metadata = []
+    for item in result.get("content", []):
+        if item.get("type") == "text":
+            try:
+                value = json.loads(item.get("text", ""))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("windows"), list):
+                metadata.append(value)
+    if len(metadata) != 1:
+        raise AssertionError("Capture must return exactly one windows metadata object")
+    return metadata[0]
+
+
+def validate_capture_scope(result, target_window, list_only=False):
+    metadata = capture_metadata(result)
+    windows = metadata["windows"]
+    if len(windows) != 1 or windows[0].get("id") != target_window["id"] or windows[0].get("title") != FIXTURE_TITLE:
+        raise AssertionError(f"Targeted capture disclosed windows outside its selected target: {windows}")
+    if SENTINEL_TITLE in "\n".join(item.get("text", "") for item in result.get("content", [])):
+        raise AssertionError("Targeted capture leaked unrelated sentinel metadata")
+    if list_only and any(item.get("type") == "image" for item in result.get("content", [])):
+        raise AssertionError("Metadata-only capture unexpectedly returned pixels")
+    return metadata
+
+
 def validate_drag(result):
     if not result.get("released") or result.get("down") or result.get("moves", 0) < 2 or abs(result.get("end_x", 0) - result.get("start_x", 0) - 120) > 3:
         raise AssertionError(f"Independent child drag did not complete the requested 120px gesture: {result}")
@@ -177,7 +209,13 @@ $form.Add_Shown({
   $origin = $drag.PointToScreen((New-Object System.Drawing.Point(30, 20)))
   @{from_x = $origin.X - $form.Bounds.X; from_y = $origin.Y - $form.Bounds.Y; to_x = $origin.X - $form.Bounds.X + 120; to_y = $origin.Y - $form.Bounds.Y} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:BIOROUTER_FIXTURE_DIR 'drag-geometry.json')
   $timer.Start(); [System.IO.File]::WriteAllText((Join-Path $env:BIOROUTER_FIXTURE_DIR 'ready'), 'ready') })
+$sentinel = New-Object System.Windows.Forms.Form
+$sentinel.Text = 'BioRouter Unrelated Window Sentinel'
+$sentinel.Width = 220; $sentinel.Height = 100
+$sentinel.StartPosition = 'Manual'; $sentinel.Location = New-Object System.Drawing.Point(750, 10)
+$sentinel.Show()
 [System.Windows.Forms.Application]::Run($form)
+$sentinel.Dispose()
 $timer.Dispose()
 '''
         fixture = subprocess.Popen(["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand",
@@ -300,12 +338,23 @@ $timer.Dispose()
                 rejected = call("scroll", {"app": app, "element_index": element("FixtureInput", text), "direction": "down", "pages": invalid}, allow_error=True)
                 if not rejected.get("isError") or json.loads((work / "scroll-metrics.json").read_text(encoding="utf-8-sig")) != before:
                     raise AssertionError(f"Invalid pages caused input or silently defaulted: {invalid!r}")
+            inventory = capture_metadata(call("screen_capture", {"list_only": True}))
+            target_windows = [window for window in inventory["windows"] if window.get("title") == FIXTURE_TITLE]
+            if len(target_windows) != 1 or not any(window.get("title") == SENTINEL_TITLE for window in inventory["windows"]):
+                raise AssertionError("Capture isolation fixture must expose both target and unrelated sentinel windows")
+            target_window = target_windows[0]
+            targeted_capture = call("screen_capture", {"window_title": FIXTURE_TITLE})
+            scoped_capture = validate_capture_scope(targeted_capture, target_window)
+            if not any(c.get("type") == "image" and base64.b64decode(c.get("data", "")).startswith(b"\x89PNG") for c in targeted_capture["content"]):
+                raise AssertionError("Targeted native capture returned no PNG")
+            scoped_list = validate_capture_scope(call("screen_capture", {"window_title": FIXTURE_TITLE, "list_only": True}), target_window, list_only=True)
+            report.with_name(report.stem + "-capture-scope.json").write_text(json.dumps({"sentinel_confirmed_visible": True, "target": target_window, "capture": scoped_capture, "list_only": scoped_list}, indent=2), encoding="utf-8")
             capture = call("screen_capture", {})
             if not any(c.get("type") == "image" and base64.b64decode(c.get("data", "")).startswith(b"\x89PNG") for c in capture["content"]):
                 raise AssertionError("Native capture returned no PNG")
             result = {"status": "passed", "validated": True, "session": session.value,
                       "scroll_receipts": scroll_receipts,
-                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "independent child drag gesture", "fractional and multi-page viewport displacement in both axes", "screen_capture"],
+                      "checks": ["list_apps", "get_app_state", "set_value", "type_text", "press_key", "click", "independent fixture state", "independent child drag gesture", "fractional and multi-page viewport displacement in both axes", "screen_capture", "targeted capture and list_only metadata exclude unrelated same-process window"],
                       "not_validated": ["mixed DPI", "multiple monitors", "occluded windows", "secure desktop"]}
             report.write_text(json.dumps(result, indent=2))
             print(json.dumps(result))

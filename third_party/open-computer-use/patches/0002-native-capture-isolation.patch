@@ -626,7 +626,7 @@ index 73ef1db..cb7d5b4 100644
 +	}
 +}
 diff --git a/apps/OpenComputerUseLinux/runtime.py b/apps/OpenComputerUseLinux/runtime.py
-index 6c0f248..4927a57 100644
+index 6c0f248..283ea36 100644
 --- a/apps/OpenComputerUseLinux/runtime.py
 +++ b/apps/OpenComputerUseLinux/runtime.py
 @@ -665,29 +665,44 @@ def keyval(name):
@@ -691,7 +691,7 @@ index 6c0f248..4927a57 100644
  
  
  def send_text(text):
-@@ -756,22 +771,275 @@ def invoke_secondary_action(node, action):
+@@ -756,22 +771,288 @@ def invoke_secondary_action(node, action):
      raise RuntimeError("{} is not a valid secondary action for element".format(action))
  
  
@@ -871,6 +871,15 @@ index 6c0f248..4927a57 100644
 +    return "Scroll: delivered {} vertical page commands {}; actual viewport displacement is unverified.".format(int(pages), direction)
 +
 +
++def capture_scope(displays, windows, target, window_target):
++    def intersects(item):
++        a, b = item["bounds"], target["bounds"]
++        return (a["x"] < b["x"] + b["width"] and b["x"] < a["x"] + a["width"]
++                and a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"])
++    return {"displays": [item for item in displays if intersects(item)] if window_target else [target],
++            "windows": [target] if window_target else [item for item in windows if item["visible"] and intersects(item)]}
++
++
 +def screen_capture(operation):
 +    if Gdk is None:
 +        raise RuntimeError("missing_dependency: GDK 3 is required for native capture")
@@ -901,9 +910,9 @@ index 6c0f248..4927a57 100644
 +                "coordinate_space": "desktop logical coordinates",
 +                "capture_available": not wayland,
 +                "window_capture": "visible screen pixels; occluding windows are included"}
-+    if operation.get("list_only", False):
++    if operation.get("list_only", False) and not operation.get("window_title") and operation.get("display") is None:
 +        return {"ok": True, "text": json.dumps(metadata)}
-+    if wayland:
++    if wayland and not operation.get("list_only", False):
 +        raise RuntimeError("unsupported_environment: Wayland screenshot requires a consented desktop portal; this native helper currently supports X11 capture only")
 +    title = operation.get("window_title")
 +    if title:
@@ -920,6 +929,10 @@ index 6c0f248..4927a57 100644
 +        if index < 0 or index >= len(displays):
 +            raise RuntimeError("display index out of range; use list_only")
 +        target = displays[index]
++    metadata.update(capture_scope(displays, windows, target, bool(title)))
++    metadata["target"] = target
++    if operation.get("list_only", False):
++        return {"ok": True, "text": json.dumps(metadata)}
 +    bounds = target["bounds"]
 +    root = Gdk.Screen.get_default().get_root_window()
 +    if root is None:
@@ -978,7 +991,7 @@ index 6c0f248..4927a57 100644
      if tool == "list_apps":
          return {"ok": True, "text": list_apps_text()}
      if tool == "get_app_state":
-@@ -840,7 +1108,7 @@ def perform_operation(operation):
+@@ -840,7 +1121,7 @@ def perform_operation(operation):
      elif tool == "perform_secondary_action":
          invoke_secondary_action(element, operation.get("action", ""))
      elif tool == "scroll":
@@ -987,7 +1000,7 @@ index 6c0f248..4927a57 100644
      elif tool == "drag":
          from_x, from_y = screen_point(
              bounds, None, operation.get("from_x"), operation.get("from_y")
-@@ -861,16 +1129,22 @@ def perform_operation(operation):
+@@ -861,16 +1142,22 @@ def perform_operation(operation):
          raise RuntimeError('unsupportedTool("{}")'.format(tool))
  
      time.sleep(0.12)
@@ -1014,10 +1027,10 @@ index 6c0f248..4927a57 100644
          response = perform_operation(operation)
      except Exception as exc:
 diff --git a/apps/OpenComputerUseLinux/runtime_test.py b/apps/OpenComputerUseLinux/runtime_test.py
-index c42f41e..975619d 100644
+index c42f41e..c541347 100644
 --- a/apps/OpenComputerUseLinux/runtime_test.py
 +++ b/apps/OpenComputerUseLinux/runtime_test.py
-@@ -85,6 +85,219 @@ class RuntimeInterfaceDetectionTests(unittest.TestCase):
+@@ -85,6 +85,258 @@ class RuntimeInterfaceDetectionTests(unittest.TestCase):
  
          self.assertTrue(self.runtime.set_element_value(node, "hello"))
  
@@ -1047,6 +1060,45 @@ index c42f41e..975619d 100644
 +            self.assertNotIn("capturePngBase64", result)
 +            with self.assertRaisesRegex(RuntimeError, "unsupported_environment"):
 +                runtime.screen_capture({})
++
++    def test_target_capture_and_target_list_do_not_serialize_other_windows(self):
++        runtime = load_runtime()
++        runtime.Atspi.StateType = types.SimpleNamespace(SHOWING="showing")
++        monitors = [types.SimpleNamespace(get_geometry=lambda x=x: types.SimpleNamespace(x=x, y=0, width=100, height=80),
++                                         get_model=lambda: "fixture", get_scale_factor=lambda: 1) for x in (-100, 0)]
++        display = types.SimpleNamespace(get_primary_monitor=lambda: monitors[0], get_n_monitors=lambda: 2,
++                                        get_monitor=lambda index: monitors[index])
++        pixels = mock.Mock(return_value=types.SimpleNamespace(save_to_bufferv=lambda *_: (True, b"png"),
++                                                             get_width=lambda: 20, get_height=lambda: 30))
++        runtime.Gdk = types.SimpleNamespace(Display=types.SimpleNamespace(get_default=lambda: display),
++            Screen=types.SimpleNamespace(get_default=lambda: types.SimpleNamespace(get_root_window=lambda: object())),
++            pixbuf_get_from_window=pixels)
++        nodes = [types.SimpleNamespace(name=name, bounds=runtime.frame(x, 10, 20, 30))
++                 for name, x in [("fixture target", -90), ("private overlapping title", -85), ("private other display", 20)]]
++        with mock.patch.object(runtime, "iter_apps", return_value=[object()]), \
++             mock.patch.object(runtime, "app_windows", return_value=list(enumerate(nodes))), \
++             mock.patch.object(runtime, "extents", side_effect=lambda node: node.bounds), \
++             mock.patch.object(runtime, "node_name", side_effect=lambda node: getattr(node, "name", "fixture app")), \
++             mock.patch.object(runtime, "node_pid", return_value=42), \
++             mock.patch.object(runtime, "state_contains", return_value=True), \
++             mock.patch.dict("os.environ", {"XDG_SESSION_TYPE": "x11"}):
++            import json
++            for listing in (False, True):
++                result = runtime.screen_capture({"window_title": "fixture target", "list_only": listing})
++                self.assertNotIn("private", result["text"])
++                metadata = json.loads(result["text"])
++                self.assertEqual(metadata["target"]["bounds"], nodes[0].bounds)
++                self.assertEqual(len(metadata["windows"]), 1)
++                self.assertEqual(len(metadata["displays"]), 1)
++            pixels.assert_called_once()
++            self.assertEqual(pixels.call_args.args[1:], (-90, 10, 20, 30))
++            listed = runtime.screen_capture({"display": 0, "list_only": True})["text"]
++            self.assertIn("private overlapping title", listed)
++            self.assertNotIn("private other display", listed)
++            self.assertIn("private other display", runtime.screen_capture({"list_only": True})["text"])
++            with self.assertRaisesRegex(RuntimeError, "exactly one window; found 2") as error:
++                runtime.screen_capture({"window_title": "private", "list_only": True})
++            self.assertNotIn("overlapping", str(error.exception))
 +
 +    def test_x11_capture_keeps_image_and_ambiguous_window_errors(self):
 +        runtime = load_runtime()
@@ -1549,7 +1601,7 @@ index c70ed60..691435d 100644
  		return nil
  	case "list-apps":
 diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
-index c70def2..aa35c4d 100644
+index c70def2..2390e44 100644
 --- a/apps/OpenComputerUseWindows/main_test.go
 +++ b/apps/OpenComputerUseWindows/main_test.go
 @@ -3,13 +3,18 @@ package main
@@ -1573,7 +1625,7 @@ index c70def2..aa35c4d 100644
  	}
  }
  
-@@ -307,3 +312,436 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
+@@ -307,3 +312,502 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
  	t.Fatalf("missing tool definition %q", name)
  	return toolDefinition{}
  }
@@ -2010,8 +2062,74 @@ index c70def2..aa35c4d 100644
 +		t.Fatal("omitted click_count must default to one")
 +	}
 +}
++
++func TestTargetCaptureMetadataScope(t *testing.T) {
++	if runtime.GOOS != "windows" {
++		t.Skip("PowerShell capture contract runs on Windows")
++	}
++	script := `$ErrorActionPreference='Stop'
++Add-Type -TypeDefinition @'
++public static class OCUWin32 {
++ public static bool CanAccessInputDesktop() {return true;}
++ public static System.IntPtr[] VisibleWindows() {return new[]{new System.IntPtr(1),new System.IntPtr(2),new System.IntPtr(3)};}
++ public static string WindowTitle(System.IntPtr h) {return h.ToInt64()==1 ? "fixture target" : h.ToInt64()==2 ? "private overlapping title" : "private other display";}
++ public static bool IsIconic(System.IntPtr h) {return false;}
++}
++namespace System.Windows.Forms {
++ public class Bounds {public int X,Y,Width=100,Height=80;}
++ public class Screen {public string DeviceName="fixture";public bool Primary;public Bounds Bounds;
++ public static Screen[] AllScreens {get{return new[]{new Screen{Primary=true,Bounds=new Bounds{X=-100}},new Screen{Bounds=new Bounds{X=0}}};}}}
++}
++'@
++function Get-WindowRectFrame($hwnd) { $x=if($hwnd.ToInt64() -eq 1){-90}elseif($hwnd.ToInt64() -eq 2){-85}else{20}; return New-Frame $x 10 20 30 }
++$script:captures=0
++function Capture-WindowPngBase64($bounds) {
++ $script:captures++
++ if ($bounds.x -ne -90 -or $bounds.y -ne 10 -or $bounds.width -ne 20 -or $bounds.height -ne 30) {throw 'Capture coordinates changed'}
++ return 'cG5n'
++}
++`
++	for _, name := range []string{"New-Frame", "Get-CaptureScope", "Get-ScreenCapture"} {
++		start := strings.Index(windowsRuntimeScript, "function "+name+"(")
++		if start < 0 {
++			t.Fatalf("missing %s", name)
++		}
++		source := windowsRuntimeScript[start:]
++		if end := strings.Index(source[1:], "\nfunction "); end >= 0 {
++			source = source[:end+1]
++		}
++		script += source + "\n"
++	}
++	script += `
++foreach ($listing in @($false,$true)) {
++ $result=Get-ScreenCapture ([pscustomobject]@{window_title='fixture target';list_only=$listing;display=$null})
++ if ($result.text -match 'private') {throw 'Target capture leaked unrelated title'}
++ $metadata=$result.text|ConvertFrom-Json
++ if ($metadata.windows.Count -ne 1 -or $metadata.displays.Count -ne 1 -or $metadata.target.bounds.x -ne -90) {throw 'Target topology/coordinates changed'}
++}
++if ($script:captures -ne 1) {throw 'Target list_only captured pixels'}
++$result=Get-ScreenCapture ([pscustomobject]@{display=0;list_only=$true;window_title=$null})
++if ($result.text -notmatch 'private overlapping title' -or $result.text -match 'private other display') {throw 'Display metadata crossed capture bounds'}
++$inventory=Get-ScreenCapture ([pscustomobject]@{display=$null;list_only=$true;window_title=$null})
++if ($inventory.text -notmatch 'private other display') {throw 'Explicit inventory unexpectedly lost discovery'}
++$failed=$false
++try {Get-ScreenCapture ([pscustomobject]@{display=$null;list_only=$true;window_title='private'})|Out-Null}catch{
++ $failed=$true
++ if ($_.Exception.Message -match 'overlapping' -or $_.Exception.Message -notmatch 'found 2') {throw 'Ambiguous selection leaked title or failed incorrectly'}
++}
++if (-not $failed) {throw 'Ambiguous target was accepted'}
++Write-Output 'capture scope contract passed'
++`
++	path := filepath.Join(t.TempDir(), "capture-scope.ps1")
++	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
++		t.Fatal(err)
++	}
++	if output, err := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path).CombinedOutput(); err != nil {
++		t.Fatalf("capture scope contract: %v\n%s", err, output)
++	}
++}
 diff --git a/apps/OpenComputerUseWindows/runtime.ps1 b/apps/OpenComputerUseWindows/runtime.ps1
-index 720e9d5..8405c5b 100644
+index 720e9d5..50f1a15 100644
 --- a/apps/OpenComputerUseWindows/runtime.ps1
 +++ b/apps/OpenComputerUseWindows/runtime.ps1
 @@ -14,13 +14,58 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -2204,9 +2322,7 @@ index 720e9d5..8405c5b 100644
 +        if ($child -eq [IntPtr]::Zero) { throw "Drag start is outside the selected window client area" }
 +        if ($child -eq $target) { return $target }
 +        $target = $child
-     }
--    if ($direction -eq "left" -or $direction -eq "right") {
--        $message = $WM_MOUSEHWHEEL
++    }
 +    throw "Drag target hierarchy is too deep; run get_app_state again"
 +}
 +
@@ -2217,14 +2333,15 @@ index 720e9d5..8405c5b 100644
 +        [OCUWin32]::IsIconic($root) -or $current.x -ne $bounds.x -or $current.y -ne $bounds.y -or
 +        $current.width -ne $bounds.width -or $current.height -ne $bounds.height) {
 +        throw "Drag window geometry changed or is unavailable; run get_app_state again"
-     }
--    [void][OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)
- }
- 
++    }
++}
++
 +function Send-Drag([IntPtr]$hwnd, [uint32]$expectedProcessId, $windowBounds, [int]$fromX, [int]$fromY, [int]$toX, [int]$toY) {
 +    if (-not (Test-EnvFlagEnabled "OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS")) {
 +        throw "Windows drag requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus; background drag is unsupported"
-+    }
+     }
+-    if ($direction -eq "left" -or $direction -eq "right") {
+-        $message = $WM_MOUSEHWHEEL
 +    Assert-GlobalDragWindow $hwnd $expectedProcessId $windowBounds
 +    $target = Get-DragTarget $hwnd $expectedProcessId $fromX $fromY
 +    foreach ($button in @(1, 2, 4, 5, 6)) {
@@ -2277,17 +2394,30 @@ index 720e9d5..8405c5b 100644
 +            [void][OCUWin32]::SendInput(1, $release, [OCUWin32]::InputSize())
 +        }
 +        throw "Windows drag input was blocked or partially inserted; the gesture will not be replayed"
-+    }
-+}
-+
+     }
+-    [void][OCUWin32]::PostMessage($hwnd, $message, (ConvertTo-WheelWParam $delta), $lParam)
+ }
+ 
 +
  function Send-Text([IntPtr]$hwnd, [string]$text) {
      foreach ($char in $text.ToCharArray()) {
          [void][OCUWin32]::PostMessage($hwnd, $WM_CHAR, [IntPtr][int][char]$char, [IntPtr]::Zero)
-@@ -562,23 +715,79 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
+@@ -562,23 +715,96 @@ function Render-Tree($element, $windowBounds, $TextLimit = $script:DefaultTextLi
      }
  }
  
++function Get-CaptureScope($displays, $windows, $target, [bool]$windowTarget) {
++    $intersects = {
++        $a = $_.bounds; $b = $target.bounds
++        $a.x -lt $b.x + $b.width -and $b.x -lt $a.x + $a.width -and
++            $a.y -lt $b.y + $b.height -and $b.y -lt $a.y + $a.height
++    }
++    if ($windowTarget) {
++        return @{ displays = @($displays | Where-Object $intersects); windows = @($target) }
++    }
++    return @{ displays = @($target); windows = @($windows | Where-Object { -not $_.minimized } | Where-Object $intersects) }
++}
++
 +function Get-ScreenCapture($operation) {
 +    if (-not [Environment]::UserInteractive -or -not [OCUWin32]::CanAccessInputDesktop()) {
 +        throw "desktop_unavailable: capture requires an interactive user desktop"
@@ -2315,7 +2445,7 @@ index 720e9d5..8405c5b 100644
 +        coordinate_space = "desktop physical pixels"
 +        window_capture = "visible screen pixels; occluding windows are included"
 +    }
-+    if ($operation.list_only) {
++    if ($operation.list_only -and -not $operation.window_title -and $null -eq $operation.display) {
 +        return [pscustomobject]@{ ok = $true; text = ($metadata | ConvertTo-Json -Depth 10 -Compress) }
 +    }
 +    if ($operation.window_title) {
@@ -2333,6 +2463,11 @@ index 720e9d5..8405c5b 100644
 +        if ($index -lt 0 -or $index -ge $displays.Count) { throw "display index out of range; use list_only" }
 +        $target = $displays[$index]
 +    }
++    $scope = Get-CaptureScope $displays $windows $target ([bool]$operation.window_title)
++    $metadata['displays'] = $scope.displays
++    $metadata['windows'] = $scope.windows
++    $metadata['target'] = $target
++    if ($operation.list_only) { return [pscustomobject]@{ ok = $true; text = ($metadata | ConvertTo-Json -Depth 10 -Compress) } }
 +    $png = Capture-WindowPngBase64 $target.bounds
 +    if ([string]::IsNullOrEmpty($png)) { throw "capture_unavailable: screen pixel capture failed (desktop may be locked or secure)" }
 +    $metadata['target'] = $target
@@ -2369,7 +2504,7 @@ index 720e9d5..8405c5b 100644
      }
  }
  
-@@ -764,23 +973,195 @@ function Invoke-SecondaryAction($element, [string]$action) {
+@@ -764,23 +990,195 @@ function Invoke-SecondaryAction($element, [string]$action) {
      throw "$action is not a valid secondary action for $($operation.element.index)"
  }
  
@@ -2580,7 +2715,7 @@ index 720e9d5..8405c5b 100644
  }
  
  function Find-TextEntryElement($process) {
-@@ -899,7 +1280,21 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
+@@ -899,7 +1297,21 @@ $operationJson = [System.IO.File]::ReadAllText($OperationPath, [System.Text.Enco
  $operation = $operationJson | ConvertFrom-Json
  
  try {
@@ -2603,7 +2738,7 @@ index 720e9d5..8405c5b 100644
          $response = [pscustomobject]@{ ok = $true; text = (List-Apps) }
      } elseif ($operation.tool -eq "get_app_state") {
          $response = [pscustomobject]@{ ok = $true; snapshot = (Build-Snapshot $operation.app (Resolve-TextLimit $operation.text_limit) ([int]$operation.max_tree_nodes) ([int]$operation.max_tree_depth)) }
-@@ -961,17 +1356,13 @@ try {
+@@ -961,17 +1373,13 @@ try {
                  Invoke-SecondaryAction $element $operation.action
              }
              "scroll" {
@@ -2625,7 +2760,7 @@ index 720e9d5..8405c5b 100644
              }
              "type_text" {
                  if (-not (Invoke-TypeText $process $operation.text)) {
-@@ -995,7 +1386,9 @@ try {
+@@ -995,7 +1403,9 @@ try {
          }
  
          Start-Sleep -Milliseconds 120
@@ -4056,10 +4191,10 @@ index 183b067..695a6ef 100644
          return try parseSimpleCommand(name: "list-apps", arguments: Array(arguments.dropFirst()), result: .listApps)
 diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift
 new file mode 100644
-index 0000000..006df0d
+index 0000000..ea4d774
 --- /dev/null
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ScreenCapture.swift
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,175 @@
 +import AppKit
 +import ApplicationServices
 +import CoreGraphics
@@ -4137,6 +4272,19 @@ index 0000000..006df0d
 +}
 +
 +enum NativeScreenCapture {
++    static func scopedMetadata(displays: [[String: Any]], windows: [[String: Any]], target: [String: Any], windowTarget: Bool) -> [String: Any] {
++        func rect(_ item: [String: Any]) -> CGRect {
++            guard let bounds = item["bounds"] as? [String: Double],
++                  let x = bounds["x"], let y = bounds["y"],
++                  let width = bounds["width"], let height = bounds["height"] else { return .null }
++            return CGRect(x: x, y: y, width: width, height: height)
++        }
++        let targetRect = rect(target)
++        return ["displays": windowTarget ? displays.filter { rect($0).intersects(targetRect) } : [target],
++                "windows": windowTarget ? [target] : windows.filter { rect($0).intersects(targetRect) },
++                "target": target]
++    }
++
 +    static func capture(arguments: [String: Any]) throws -> ToolCallResult {
 +        let request = try ScreenCaptureRequest(arguments: arguments)
 +        try ComputerUseCancellation.check()
@@ -4166,7 +4314,7 @@ index 0000000..006df0d
 +            func text(_ metadata: [String: Any]) throws -> String {
 +                String(decoding: try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]), as: UTF8.self)
 +            }
-+            if request.listOnly { return .text(try text(metadata)) }
++            if request.listOnly && request.windowTitle == nil && request.display == nil { return .text(try text(metadata)) }
 +            let filter: SCContentFilter
 +            let configuration = SCStreamConfiguration()
 +            configuration.showsCursor = false
@@ -4178,7 +4326,7 @@ index 0000000..006df0d
 +                    throw ComputerUseError.message("window_title must match exactly one window; found \(matches.count)")
 +                }
 +                filter = SCContentFilter(desktopIndependentWindow: match.element)
-+                metadata["target"] = windowMetadata[match.offset]
++                metadata.merge(scopedMetadata(displays: displayMetadata, windows: windowMetadata, target: windowMetadata[match.offset], windowTarget: true)) { _, scoped in scoped }
 +                configuration.width = max(1, Int(ceil(filter.contentRect.width * CGFloat(filter.pointPixelScale))))
 +                configuration.height = max(1, Int(ceil(filter.contentRect.height * CGFloat(filter.pointPixelScale))))
 +            } else {
@@ -4188,10 +4336,11 @@ index 0000000..006df0d
 +                }
 +                let display = displays[index]
 +                filter = SCContentFilter(display: display, excludingWindows: [])
-+                metadata["target"] = displayMetadata[index]
++                metadata.merge(scopedMetadata(displays: displayMetadata, windows: windowMetadata, target: displayMetadata[index], windowTarget: false)) { _, scoped in scoped }
 +                configuration.width = max(1, CGDisplayPixelsWide(display.displayID))
 +                configuration.height = max(1, CGDisplayPixelsHigh(display.displayID))
 +            }
++            if request.listOnly { return .text(try text(metadata)) }
 +            try Task.checkCancellation()
 +            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
 +            try Task.checkCancellation()
@@ -4722,7 +4871,7 @@ index 0000000..a5eff56
 +    }
 +}
 diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
-index 250f5f2..333d279 100644
+index 250f5f2..6046dd0 100644
 --- a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
 +++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift
 @@ -253,7 +253,7 @@ final class OpenComputerUseKitTests: XCTestCase {
@@ -4785,7 +4934,7 @@ index 250f5f2..333d279 100644
              targetWindowID: nil,
              targetWindowLayer: nil,
              screenshotPNGData: nil,
-@@ -2435,3 +2442,92 @@ final class OpenComputerUseKitTests: XCTestCase {
+@@ -2435,3 +2442,116 @@ final class OpenComputerUseKitTests: XCTestCase {
          return (width, height)
      }
  }
@@ -4834,6 +4983,30 @@ index 250f5f2..333d279 100644
 +    func testPassiveDoctorCommandIsDistinctFromOnboarding() throws {
 +        XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["doctor", "--json"]), .diagnostics)
 +        XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["doctor"]), .doctor)
++    }
++
++    func testCaptureMetadataExcludesUnrelatedTitlesAndPreservesCoordinates() throws {
++        func item(_ title: String, _ x: Double) -> [String: Any] {
++            ["title": title, "bounds": ["x": x, "y": 10.0, "width": 20.0, "height": 30.0]]
++        }
++        let target = item("fixture", -90)
++        let overlap = item("private overlapping app", -85)
++        let other = item("private other display", 100)
++        let displays: [[String: Any]] = [
++            ["index": 0, "bounds": ["x": -100.0, "y": 0.0, "width": 100.0, "height": 80.0]],
++            ["index": 1, "bounds": ["x": 0.0, "y": 0.0, "width": 200.0, "height": 80.0]],
++        ]
++        let scoped = NativeScreenCapture.scopedMetadata(displays: displays, windows: [target, overlap, other], target: target, windowTarget: true)
++        let text = String(decoding: try JSONSerialization.data(withJSONObject: scoped), as: UTF8.self)
++        XCTAssertFalse(text.contains("private"))
++        XCTAssertEqual((scoped["windows"] as? [[String: Any]])?.count, 1)
++        XCTAssertEqual((scoped["displays"] as? [[String: Any]])?.count, 1)
++        XCTAssertEqual((scoped["target"] as? [String: Any])?["bounds"] as? [String: Double], target["bounds"] as? [String: Double])
++        let displayScope = NativeScreenCapture.scopedMetadata(displays: displays, windows: [target, overlap, other], target: displays[0], windowTarget: false)
++        let displayText = String(decoding: try JSONSerialization.data(withJSONObject: displayScope), as: UTF8.self)
++        XCTAssertTrue(displayText.contains("private overlapping app"))
++        XCTAssertFalse(displayText.contains("private other display"))
++        XCTAssertEqual((displayScope["displays"] as? [[String: Any]])?.count, 1)
 +    }
 +
 +    func testMalformedCaptureArguments() {

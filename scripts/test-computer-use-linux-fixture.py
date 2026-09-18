@@ -85,6 +85,11 @@ def fixture(work):
         scroll_adjustment.connect("value-changed", record_scroll)
         scroll_adjustment.connect("changed", record_scroll)
 
+    sentinel = Gtk.Window(title=SENTINEL_TITLE)
+    sentinel.set_default_size(220, 80)
+    sentinel.move(750, 10)
+    sentinel.add(Gtk.Label(label="Unrelated synthetic content"))
+    sentinel.show_all()
     window.show_all()
     window.present()
     def ready():
@@ -144,6 +149,38 @@ def eventually(predicate, timeout=20):
             return
         time.sleep(0.1)
     raise TimeoutError("Fixture state did not change before its deadline")
+
+
+
+FIXTURE_TITLE = "BioRouter Computer Use Fixture"
+SENTINEL_TITLE = "BioRouter Unrelated Window Sentinel"
+
+
+def capture_metadata(result):
+    metadata = []
+    for item in result.get("content", []):
+        if item.get("type") == "text":
+            try:
+                value = json.loads(item.get("text", ""))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("windows"), list):
+                metadata.append(value)
+    if len(metadata) != 1:
+        raise AssertionError("Capture must return exactly one windows metadata object")
+    return metadata[0]
+
+
+def validate_capture_scope(result, target_window, list_only=False):
+    metadata = capture_metadata(result)
+    windows = metadata["windows"]
+    if len(windows) != 1 or windows[0].get("id") != target_window["id"] or windows[0].get("title") != FIXTURE_TITLE:
+        raise AssertionError(f"Targeted capture disclosed windows outside its selected target: {windows}")
+    if SENTINEL_TITLE in "\n".join(item.get("text", "") for item in result.get("content", [])):
+        raise AssertionError("Targeted capture leaked unrelated sentinel metadata")
+    if list_only and any(item.get("type") == "image" for item in result.get("content", [])):
+        raise AssertionError("Metadata-only capture unexpectedly returned pixels")
+    return metadata
 
 
 def validate_drag(result):
@@ -241,7 +278,15 @@ def main(directory, report):
             drag_result = json.loads((work / "drag-result.json").read_text())
             validate_drag(drag_result)
             print("PASS: GTK child received pressed drag motion and release at displaced endpoint", flush=True)
-            capture = client.call("screen_capture", {"window_title": "BioRouter Computer Use Fixture"})
+            inventory = capture_metadata(client.call("screen_capture", {"list_only": True}))
+            target_windows = [window for window in inventory["windows"] if window.get("title") == FIXTURE_TITLE]
+            if len(target_windows) != 1 or not any(window.get("title") == SENTINEL_TITLE for window in inventory["windows"]):
+                raise AssertionError("Capture isolation fixture must expose both target and unrelated sentinel windows")
+            target_window = target_windows[0]
+            capture = client.call("screen_capture", {"window_title": FIXTURE_TITLE})
+            scoped_capture = validate_capture_scope(capture, target_window)
+            scoped_list = validate_capture_scope(client.call("screen_capture", {"window_title": FIXTURE_TITLE, "list_only": True}), target_window, list_only=True)
+            report.with_name(report.stem + "-capture-scope.json").write_text(json.dumps({"sentinel_confirmed_visible": True, "target": target_window, "capture": scoped_capture, "list_only": scoped_list}, indent=2))
             images = [base64.b64decode(c["data"]) for c in capture["content"] if c.get("type") == "image"]
             if len(images) != 1 or not images[0].startswith(b"\x89PNG"):
                 raise AssertionError("Native window capture did not return one PNG")
@@ -266,7 +311,7 @@ def main(directory, report):
             if not denied.get("isError") or "unsupported" not in json.dumps(denied).lower() or any(c.get("type") == "image" for c in denied["content"]):
                 raise AssertionError("Unsupported Wayland capture did not fail explicitly without pixels")
             evidence = {"status": "passed", "validated": True, "target": json.loads((directory / "manifest.json").read_text())["target"],
-                        "checks": ["AT-SPI discovery and tree", "set_value", "accessibility click", "independent GTK text", "independent viewport fractions and multi-page movement on both axes", "invalid and sub-character amounts rejected without movement", "mixed-length visible line does not falsely prove container boundary", "independent child drag gesture", "nonblank window PNG", "explicit Wayland unsupported + doctor"],
+                        "checks": ["AT-SPI discovery and tree", "set_value", "accessibility click", "independent GTK text", "independent viewport fractions and multi-page movement on both axes", "invalid and sub-character amounts rejected without movement", "mixed-length visible line does not falsely prove container boundary", "independent child drag gesture", "nonblank window PNG", "targeted capture and list_only metadata exclude unrelated same-process window", "explicit Wayland unsupported + doctor"],
                         "not_validated": ["native GNOME/KDE Wayland", "mixed DPI", "multiple displays"]}
             report.write_text(json.dumps(evidence, indent=2)); print(json.dumps(evidence))
         finally:
