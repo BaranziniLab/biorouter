@@ -464,7 +464,7 @@ cmd_linux() {
   log "packaging Linux deb + rpm (docker)"
   docker volume create biorouter-linux-npm-cache >/dev/null 2>&1 || true
   docker run --rm --platform linux/amd64 -v "$ROOT":/ws -v biorouter-linux-npm-cache:/root/.npm \
-    node:24-bookworm bash /ws/ui/desktop/scripts/build-linux-deb.sh \
+    "$(node -e 'console.log(require(process.argv[1]).image)' "$ROOT/ui/desktop/scripts/linux-native-baseline.json")" bash /ws/ui/desktop/scripts/build-linux-deb.sh \
     || die "the linux docker build failed — see the output above"
   # Assert the artifacts EXIST before announcing them. A bash function returns
   # its LAST command's status, so the three `log` lines that used to end this

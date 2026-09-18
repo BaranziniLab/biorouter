@@ -4,6 +4,7 @@ const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-
 const { resolve } = require('path');
 const { verifyPackagedDependencies } = require('./scripts/verify-packaged-dependencies');
 const { verifyComputerUse } = require('./scripts/computer-use-resources');
+const { prepareNativeDependencies } = require('./scripts/prepare-native-dependencies');
 
 // `node-pty` is the only runtime dependency that cannot be bundled by Vite: it
 // is a native module, so `vite.main.config.mts` externalises it and the built
@@ -19,7 +20,7 @@ const { verifyComputerUse } = require('./scripts/computer-use-resources');
 // (see VitePlugin.resolveForgeConfig), so defining one here keeps its rule and
 // adds the single exception node-pty needs.
 //
-// Only the target platform's prebuild is shipped. The tree also carries
+// Ship the target platform's prebuild, or the native Linux build. The tree also carries
 // Windows prebuilds whose `.pdb` symbol files are ~40 MB, which have no
 // business in a macOS bundle.
 const nodePtyTargetPlatform = process.env.ELECTRON_PLATFORM || process.platform;
@@ -43,6 +44,10 @@ function keepInPackage(file) {
   if (file.endsWith('.pdb')) return false;
   if (isUnder(file, '/node_modules/node-pty/prebuilds')) {
     return file === '/node_modules/node-pty/prebuilds' || isUnder(file, nodePtyPrebuildDir);
+  }
+  if (nodePtyTargetPlatform === 'linux' && isUnder(file, '/node_modules/node-pty/build')) {
+    return file === '/node_modules/node-pty/build' || file === '/node_modules/node-pty/build/Release' ||
+      file === '/node_modules/node-pty/build/Release/pty.node';
   }
   return (
     file === '/node_modules/node-pty' ||
@@ -161,6 +166,8 @@ module.exports = {
   hooks: {
     prePackage: async (_config, platform, arch) => {
       verifyComputerUse(resolve(__dirname, 'src/computer-use'), `${platform}-${arch}`);
+      // Linux has no node-pty prebuild, and npm may disable dependency install scripts.
+      await prepareNativeDependencies(__dirname, platform, arch);
     },
     postPackage: async (_config, options) => {
       for (const output of options.outputPaths) {

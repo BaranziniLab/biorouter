@@ -7,6 +7,7 @@ const glob = require('fast-glob');
 const asar = require('@electron/asar');
 const { verifyPackagedDependencies, validateArchiveLinks } = require('./verify-packaged-dependencies');
 const { packagerConfig } = require('../forge.config.ts');
+const { spawnSync } = require('node:child_process');
 
 async function fixture(run) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'biorouter-package-deps-'));
@@ -52,6 +53,33 @@ test('archive validation requires unpacked native modules for the selected archi
   await asar.createPackageWithOptions(source, path.join(resources, 'app.asar'), { unpack: '**/node_modules/node-pty/**' });
   verifyPackagedDependencies(resources, 'darwin', 'arm64');
   assert.throws(() => verifyPackagedDependencies(resources, 'darwin', 'x64'), /native module missing/);
+}));
+
+test('Linux Forge filter retains its built native module in the unpacked archive', async () => fixture(async (root) => {
+  const candidates = [
+    '/node_modules/node-pty/build',
+    '/node_modules/node-pty/build/Release',
+    '/node_modules/node-pty/build/Release/pty.node',
+    '/node_modules/node-pty/build/Release/obj.target/source.o',
+    '/node_modules/node-pty/prebuilds/darwin-arm64/pty.node',
+  ];
+  const inspect = spawnSync(process.execPath, ['-e',
+    `const cfg=require('./forge.config.ts').packagerConfig; process.stdout.write(JSON.stringify(${JSON.stringify(candidates)}.map(p=>!cfg.ignore(p))));`], {
+    cwd: path.resolve(__dirname, '..'), encoding: 'utf8',
+    env: { ...process.env, ELECTRON_PLATFORM: 'linux', ELECTRON_ARCH: 'x64' },
+  });
+  assert.equal(inspect.status, 0, inspect.stderr);
+  assert.deepEqual(JSON.parse(inspect.stdout), [true, true, true, false, false]);
+  const source = path.join(root, 'source');
+  const resources = path.join(root, 'resources');
+  await fs.outputFile(path.join(source, 'node_modules/node-pty/lib/index.js'), 'module.exports = {};');
+  const native = 'node_modules/node-pty/build/Release/pty.node';
+  await fs.outputFile(path.join(source, native), 'native placement fixture');
+  await fs.ensureDir(resources);
+  await asar.createPackageWithOptions(source, path.join(resources, 'app.asar'), packagerConfig.asar);
+  verifyPackagedDependencies(resources, 'linux', 'x64');
+  await fs.remove(path.join(resources, 'app.asar.unpacked', native));
+  assert.throws(() => verifyPackagedDependencies(resources, 'linux', 'x64'), /native module missing/);
 }));
 
 

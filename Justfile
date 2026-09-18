@@ -110,7 +110,7 @@ make-ui-linux:
         --platform linux/amd64 \
         -v "$(pwd)":/ws \
         -v biorouter-linux-npm-cache:/root/.npm \
-        node:20-bookworm \
+        "$(node -e 'console.log(require(process.argv[1]).image)' "$(pwd)/ui/desktop/scripts/linux-native-baseline.json")" \
         bash /ws/ui/desktop/scripts/build-linux-deb.sh
     echo ""
     echo "✓ .deb package: ui/desktop/out/make/deb/x64/"

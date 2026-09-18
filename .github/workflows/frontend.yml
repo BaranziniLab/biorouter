@@ -121,7 +121,7 @@ jobs:
         run: npm ci
 
       - name: Packaged dependency isolation regressions
-        run: node --test scripts/verify-packaged-dependencies.test.cjs
+        run: node --test scripts/verify-packaged-dependencies.test.cjs scripts/npm-command.test.cjs scripts/prepare-native-dependencies.test.cjs
 
       # Each gate is its own step rather than a single `npm run lint:check`, and
       # each runs even if an earlier one failed. `lint:check` chains with && and
