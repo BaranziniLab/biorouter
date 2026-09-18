@@ -209,6 +209,31 @@ def survivors(before, after):
     return sorted(f'{pid} {name}' for pid, name in after.items() if pid not in before)
 
 
+def stop_tree(child):
+    """Stop a hung doctor and everything it started, without ever raising.
+
+    The informative ValueError this precedes must always win: a reap that
+    itself times out (a process wedged in uninterruptible I/O) would otherwise
+    replace the diagnosis with a bare TimeoutExpired.
+    """
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(child.pid)],
+                           capture_output=True, timeout=30)
+        else:
+            os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        child.kill()
+    except OSError:
+        pass
+    try:
+        child.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_doctor(cli, env, scratch):
     """Run the installed `doctor` twice, observing process exit independently of its pipes.
 
@@ -231,14 +256,20 @@ def run_doctor(cli, env, scratch):
         budget = max(1.0, deadline - started)
         before = live_processes()
         with out.open('wb') as stdout, err.open('wb') as stderr:
+            # Its own process group / job, so abandoning a hung doctor takes its
+            # descendants with it. Otherwise they keep running on the runner and
+            # can hold the extracted package files open, which then fails the
+            # artifact upload for a reason that looks unrelated.
+            grouping = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP}
+                        if os.name == 'nt' else {'start_new_session': True})
             child = subprocess.Popen([str(cli), 'doctor', '--format', 'json', '--no-update'],
-                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=env)
+                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                     env=env, **grouping)
             try:
                 code = child.wait(timeout=budget)
             except subprocess.TimeoutExpired:
                 written = out.read_bytes()
-                child.kill()
-                child.wait(timeout=30)
+                stop_tree(child)
                 raise ValueError(
                     f'Installed doctor ({attempt}) exceeded its {budget:.0f}s share of the '
                     f'{DOCTOR_TIMEOUT}s budget. Its stdout held {describe_output(written)}. '

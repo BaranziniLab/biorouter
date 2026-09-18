@@ -61,6 +61,9 @@ fi
 shipped=$scratch/shipped
 mkdir -p "$shipped"
 for file in $sources; do
+  # A tracked file deleted but not yet committed is the normal mid-refactor
+  # state; without this awk aborts the whole gate with an unattributed error.
+  [ -f "$file" ] || continue
   mkdir -p "$shipped/$(dirname "$file")"
   awk '
     # A cfg(test) family attribute: cfg(test), cfg(all(test, ...)), indented.
@@ -112,12 +115,19 @@ if [ -n "$offenders" ]; then
   status=1
 fi
 
-# 4. The pairing that keeps the internal key legible: the extension key must
-#    carry the user-facing label, so the identifier never surfaces on its own.
-grep -q "label: 'Computer Use'" ui/desktop/src/components/settings/capabilities/capabilities.ts || {
-  echo "Computer Use naming: the 'computercontroller' capability row lost its 'Computer Use' label." >&2
+# 4. The pairing that keeps the internal key legible: the `computercontroller`
+#    row must carry the user-facing label, so the identifier never surfaces on
+#    its own. Asserted as a PAIR -- a bare label grep passes even if the row is
+#    renamed away, which is the only thing this rule exists to catch.
+capabilities=ui/desktop/src/components/settings/capabilities/capabilities.ts
+if [ ! -f "$capabilities" ]; then
+  echo "Computer Use naming: $capabilities not found -- has it moved?" >&2
   status=1
-}
+elif ! grep -A4 "key: 'computercontroller'" "$capabilities" | grep -qE "label: ['\"]Computer Use['\"]"; then
+  echo "Computer Use naming: the 'computercontroller' capability row does not carry the" >&2
+  echo "label 'Computer Use', so the internal identifier can reach the user." >&2
+  status=1
+fi
 
 if [ "$status" -eq 0 ]; then
   echo "Computer Use naming is consistent"

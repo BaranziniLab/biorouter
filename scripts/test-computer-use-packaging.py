@@ -81,6 +81,32 @@ class PackagedResourceLocationTests(unittest.TestCase):
             self.assertEqual(len(acceptance.installed_linux_helper_roots(
                 opt=root / "opt", lib=lib, libexec=libexec)), 2)
 
+    def test_linux_paths_resolves_the_cli_beside_each_kind_of_install(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            lib, libexec, opt = root / 'usr/lib', root / 'usr/libexec', root / 'opt'
+            # GUI package: helper inside the app's resources, CLI beside it.
+            stage_helper(lib, 'biorouter/resources')
+            cli, helper = acceptance.linux_paths(lib=lib, libexec=libexec, opt=opt)
+            self.assertEqual(helper, lib / 'biorouter/resources/computer-use')
+            self.assertEqual(cli, lib / 'biorouter/resources/bin/biorouter')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            lib, libexec, opt = root / 'usr/lib', root / 'usr/libexec', root / 'opt'
+            # CLI package: FHS layout, binary on PATH.
+            stage_helper(libexec, 'biorouter')
+            cli, helper = acceptance.linux_paths(lib=lib, libexec=libexec, opt=opt)
+            self.assertEqual(helper, libexec / 'biorouter/computer-use')
+            self.assertEqual(cli, Path('/usr/bin/biorouter'))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            lib, libexec, opt = root / 'usr/lib', root / 'usr/libexec', root / 'opt'
+            # Both installed at once is ambiguous and must refuse, not guess.
+            stage_helper(lib, 'biorouter/resources')
+            stage_helper(libexec, 'biorouter')
+            with self.assertRaisesRegex(ValueError, 'Expected one installed helper'):
+                acceptance.linux_paths(lib=lib, libexec=libexec, opt=opt)
+
     def test_no_maker_declares_an_inert_install_prefix(self):
         # Comments are stripped first: the explanatory note deliberately quotes the
         # option it is warning about, and matching that would be a check that can

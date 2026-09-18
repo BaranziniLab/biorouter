@@ -227,11 +227,17 @@ def owned_container(arguments):
         run(['docker', 'rm', '--force', container], timeout=30)
 
 
-def linux_paths():
-    manifests = installed_linux_helper_roots()
+def linux_paths(**roots):
+    """The one installed helper and the CLI beside it. Roots are injectable so the
+    GUI-vs-CLI branch and the 'exactly one' refusal are reachable from a test --
+    otherwise they run only inside a container after a ~35 minute build, which is
+    how the /opt assumption survived unnoticed from the day it was written."""
+    manifests = installed_linux_helper_roots(**roots)
     if len(manifests) != 1:
         raise ValueError(f'Expected one installed helper: {manifests}')
     helper = manifests[0].parent
+    # The CLI package puts the helper under <prefix>/libexec/biorouter and its
+    # binary on PATH; the GUI package keeps both inside its resources tree.
     fhs = helper.parent.name == 'biorouter' and helper.parent.parent.name == 'libexec'
     cli = Path('/usr/bin/biorouter') if fhs else helper.parent / 'bin/biorouter'
     return cli, helper

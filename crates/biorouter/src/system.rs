@@ -421,6 +421,18 @@ fn terminate(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// Decrements the in-flight count however `check_spec` returns.
+#[cfg(test)]
+fn scopeguard_leave() -> impl Drop {
+    struct Leave;
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            leave_probe();
+        }
+    }
+    Leave
+}
+
 /// A known per-OS install command for a prerequisite, if any.
 pub fn install_command(name: &str) -> Option<String> {
     install_info(name).command
@@ -428,6 +440,10 @@ pub fn install_command(name: &str) -> Option<String> {
 
 /// Check a prerequisite by trying each probe in turn.
 fn check_spec(spec: &Spec) -> DependencyStatus {
+    #[cfg(test)]
+    enter_probe();
+    #[cfg(test)]
+    let _leave = scopeguard_leave();
     // ONE deadline for the whole prerequisite. `python` tries python3 then
     // python, and llama-server tries PATH then the bundled sidecar; a budget
     // per probe would silently double the worst case for exactly those two.
@@ -475,6 +491,27 @@ fn check_spec(spec: &Spec) -> DependencyStatus {
 
 /// Check every prerequisite. This is what `biorouter doctor` and the desktop
 /// dependency setup both consume.
+/// Observes how many probes were in flight at once. Test-only: the concurrency
+/// is otherwise unfalsifiable, because every real probe answers in milliseconds
+/// when warm and a serial run clears any wall-clock threshold just as easily.
+#[cfg(test)]
+pub(crate) static PROBE_HIGH_WATER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static PROBES_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn enter_probe() {
+    use std::sync::atomic::Ordering;
+    let now = PROBES_IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+    PROBE_HIGH_WATER.fetch_max(now, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn leave_probe() {
+    PROBES_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn check_all() -> Vec<DependencyStatus> {
     // Concurrently, because these probes are dominated by the operating system's
     // first-execution scan of a freshly installed binary — near-zero CPU, seconds
@@ -1435,20 +1472,26 @@ mod probe_bound_tests {
     /// The probes run concurrently, so a cold machine pays roughly the slowest
     /// probe rather than the sum. This is what keeps `biorouter doctor` inside the
     /// desktop's 15 s startup budget and the installed-package check's 60 s one.
+    /// Asserts the PROPERTY, not the clock. Every real probe answers in
+    /// milliseconds when warm, so a wall-clock threshold is satisfied by a
+    /// serial run too and would pin nothing: reverting `check_all` to
+    /// `.iter().map(check_spec)` left the old version of this test green.
     #[test]
     fn check_all_runs_its_probes_concurrently() {
+        use std::sync::atomic::Ordering;
         let specs = specs();
-        let started = Instant::now();
+        PROBE_HIGH_WATER.store(0, Ordering::SeqCst);
         let statuses = check_all();
-        let elapsed = started.elapsed();
+        let peak = PROBE_HIGH_WATER.load(Ordering::SeqCst);
         assert_eq!(statuses.len(), specs.len());
         for (status, spec) in statuses.iter().zip(specs.iter()) {
             assert_eq!(status.name, spec.name, "check_all must preserve spec order");
         }
         assert!(
-            elapsed < PROBE_TIMEOUT,
-            "check_all took {elapsed:?}; with {} specs run in series a slow probe \
-             would multiply, which is the regression this test exists to catch",
+            peak > 1,
+            "at most {peak} probe was ever in flight: check_all ran its {} specs in \
+             series, so a cold machine pays their SUM. That is what blew the \
+             desktop's startup budget and the installed-package check's.",
             specs.len()
         );
     }
