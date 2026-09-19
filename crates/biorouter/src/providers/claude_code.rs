@@ -305,6 +305,7 @@ impl ClaudeCodeProvider {
         system: &str,
         output_format: &str,
         mcp_config: Option<&std::path::Path>,
+        system_prompt_file: Option<&std::path::Path>,
     ) -> Vec<String> {
         let mut args: Vec<String> = vec!["-p".into()];
 
@@ -342,11 +343,21 @@ impl ClaudeCodeProvider {
         // side: a coding-agent child arrives with native tools Biorouter
         // deliberately switches off, and naming the real ones is cheaper than
         // letting the model discover the disabled ones by failing.
-        args.push("--system-prompt".into());
-        args.push(format!(
-            "{system}{}",
-            coding_agent::native_tools_notice(bridge::active_bridge_url().as_deref())
-        ));
+        //
+        // ⚠ Two spellings, one meaning. Windows caps a command line at 32,767
+        // characters, and a realistic prompt plus this notice exceeds it — so
+        // above `SYSTEM_PROMPT_ARGV_LIMIT` the caller has written the same text
+        // to a file and hands us its path instead. See `system_prompt_file`.
+        match system_prompt_file {
+            Some(path) => {
+                args.push("--system-prompt-file".into());
+                args.push(path.to_string_lossy().into_owned());
+            }
+            None => {
+                args.push("--system-prompt".into());
+                args.push(full_system_prompt(system));
+            }
+        }
 
         // Sessions are Biorouter's to persist. Letting the CLI also write them
         // would leave a second, divergent transcript on disk that no Biorouter
@@ -383,9 +394,16 @@ impl ClaudeCodeProvider {
         system: &str,
         output_format: &str,
         mcp_config: Option<&std::path::Path>,
+        system_prompt_file: Option<&std::path::Path>,
     ) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(&self.command);
-        cmd.args(self.base_args(model_config, system, output_format, mcp_config));
+        cmd.args(self.base_args(
+            model_config,
+            system,
+            output_format,
+            mcp_config,
+            system_prompt_file,
+        ));
 
         // The child shells out to git, ripgrep and node on its own account, so
         // handing it the resolved absolute path is not enough — it needs the
@@ -427,6 +445,7 @@ impl ClaudeCodeProvider {
         model_config: &ModelConfig,
         system: &str,
         mcp_config: Option<&std::path::Path>,
+        system_prompt_file: Option<&std::path::Path>,
         prompt: &transcript::Prompt,
     ) -> tokio::process::Command {
         let multimodal = !prompt.images.is_empty();
@@ -435,6 +454,7 @@ impl ClaudeCodeProvider {
             system,
             if multimodal { "stream-json" } else { "json" },
             mcp_config,
+            system_prompt_file,
         );
         if multimodal {
             cmd.arg("--input-format");
@@ -897,6 +917,10 @@ fn emit_tool_event(
 struct PumpInputs {
     child: tokio::process::Child,
     bridge_config: Option<tempfile::NamedTempFile>,
+    /// Owned here for the same reason as `bridge_config`: the child reads the
+    /// system prompt from this path after it starts, and dropping the
+    /// `NamedTempFile` would delete it out from under that read.
+    system_prompt_file: Option<tempfile::NamedTempFile>,
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     stderr_task: tokio::task::JoinHandle<String>,
@@ -1206,6 +1230,7 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
     let PumpInputs {
         child,
         bridge_config,
+        system_prompt_file,
         mut stdin,
         stdout,
         stderr_task,
@@ -1221,6 +1246,8 @@ async fn pump_claude_stdout(inputs: PumpInputs) {
     // pull the MCP configuration out from under a child that is still
     // starting.
     let _bridge_config = bridge_config;
+    // Same rule: the child reads `--system-prompt-file` after it starts.
+    let _system_prompt_file = system_prompt_file;
     let mut child = child;
     let mut router = claude_stream::ClaudeStreamRouter::new();
     let mut lines = BufReader::new(stdout).lines();
@@ -1350,6 +1377,74 @@ async fn resolve_terminal(
 /// `Ok(None)` means this turn has no bridge — a CLI process with no HTTP server, or
 /// an agent that did not establish one. The child then runs with no tools at all,
 /// which is the correct degradation rather than an error.
+/// The exact text Claude Code receives as its system prompt.
+///
+/// One definition, because it must be byte-identical whether it travels in
+/// `argv` or in a file — otherwise the two transports would quietly configure
+/// the child differently and only the large-prompt path would carry the notice.
+fn full_system_prompt(system: &str) -> String {
+    format!(
+        "{system}{}",
+        coding_agent::native_tools_notice(bridge::active_bridge_url().as_deref())
+    )
+}
+
+/// Above this many characters, the system prompt travels in a file instead of
+/// in `argv`.
+///
+/// ⚠ **Windows caps a whole command line at 32,767 characters** (`CreateProcess`
+/// `lpCommandLine`), and a failure reads `The filename or extension is too long.
+/// (os error 206)` — which names neither the argument nor the real limit. A
+/// realistic system prompt plus the native-tools notice passes that on a session
+/// with a normal number of tools loaded, so `--system-prompt` in `argv` is not
+/// merely fragile there, it is unusable.
+///
+/// The threshold sits well below the cap because the prompt is only part of the
+/// line: the model name, the MCP config path, the isolation flags and the
+/// tools notice all share the budget.
+const SYSTEM_PROMPT_ARGV_LIMIT: usize = 8_192;
+
+/// Should this system prompt travel in a file rather than in `argv`?
+///
+/// ⚠ Deliberately **not** "always use the file". `--system-prompt-file` is a
+/// newer flag than `--system-prompt`, so a user on an older `claude` would get
+/// "unknown option" on every turn — trading a bug that bites large prompts for
+/// one that bites all of them. Below the threshold the long-proven inline form
+/// is kept; above it, `argv` would fail anyway, so the file is strictly better.
+///
+/// Off Windows the cap is `ARG_MAX`, which is megabytes, so nothing changes
+/// there.
+fn system_prompt_goes_in_a_file(system: &str) -> bool {
+    cfg!(windows) && system.len() > SYSTEM_PROMPT_ARGV_LIMIT
+}
+
+/// Write the system prompt to a temp file when it is too large for `argv`.
+///
+/// Owned by the caller for exactly as long as the child runs — dropping a
+/// `NamedTempFile` deletes it, and a child that has not read it yet then starts
+/// without a system prompt. This is the same rule, and the same failure, as
+/// [`bridge_mcp_config`].
+fn system_prompt_file(system: &str) -> Result<Option<tempfile::NamedTempFile>, ProviderError> {
+    if !system_prompt_goes_in_a_file(system) {
+        return Ok(None);
+    }
+    let mut file = tempfile::Builder::new()
+        .prefix("biorouter-system-")
+        .suffix(".txt")
+        .tempfile()
+        .map_err(|e| {
+            ProviderError::ExecutionError(format!("could not write the system prompt: {e}"))
+        })?;
+    use std::io::Write;
+    file.write_all(system.as_bytes()).map_err(|e| {
+        ProviderError::ExecutionError(format!("could not write the system prompt: {e}"))
+    })?;
+    file.flush().map_err(|e| {
+        ProviderError::ExecutionError(format!("could not write the system prompt: {e}"))
+    })?;
+    Ok(Some(file))
+}
+
 fn bridge_mcp_config() -> Result<Option<tempfile::NamedTempFile>, ProviderError> {
     let Some(url) = bridge::active_bridge_url() else {
         return Ok(None);
@@ -1441,11 +1536,17 @@ impl ClaudeCodeProvider {
         let model_config = self.model.clone();
         let model_name = model_config.model_name.clone();
 
+        // Held for the child's lifetime beside `bridge_config`, and for the same
+        // reason: dropping a `NamedTempFile` deletes it, and a child that has
+        // not read it yet would start with no system prompt at all.
+        let system_file = system_prompt_file(&full_system_prompt(system))?;
+
         let mut cmd = self.command_for(
             &model_config,
             system,
             "stream-json",
             bridge_config.as_ref().map(|f| f.path()),
+            system_file.as_ref().map(|f| f.path()),
         );
         cmd.arg("--input-format");
         cmd.arg("stream-json");
@@ -1488,6 +1589,7 @@ impl ClaudeCodeProvider {
         let reader = tokio::spawn(pump_claude_stdout(PumpInputs {
             child,
             bridge_config,
+            system_prompt_file: system_file,
             stdin,
             stdout,
             stderr_task,
@@ -1573,10 +1675,13 @@ impl Provider for ClaudeCodeProvider {
         // inlined: dropping a `NamedTempFile` deletes it, and a child that started
         // a moment later would find no configuration.
         let bridge_config = bridge_mcp_config()?;
+        // Bound here for the same reason, and awaited below while still in scope.
+        let system_file = system_prompt_file(&full_system_prompt(system))?;
         let cmd = self.completion_command(
             model_config,
             system,
             bridge_config.as_ref().map(|f| f.path()),
+            system_file.as_ref().map(|f| f.path()),
             &prompt,
         );
         let (lines, stderr, status) = self.run(cmd, &prompt).await?;
@@ -1835,6 +1940,7 @@ mod tests {
             "SYS",
             "json",
             None,
+            None,
         );
 
         let i = args
@@ -1875,7 +1981,7 @@ mod tests {
         let p = provider();
         let m = ModelConfig::new("claude-sonnet-4-6").unwrap();
         let path = std::path::Path::new("/tmp/bridge.json");
-        let args = p.base_args(&m, "SYS", "json", Some(path));
+        let args = p.base_args(&m, "SYS", "json", Some(path), None);
 
         let i = args
             .iter()
@@ -1913,10 +2019,62 @@ mod tests {
             "SYS",
             "json",
             None,
+            None,
         );
         assert!(
             !args.iter().any(|a| a == "--bare"),
             "--bare never reads OAuth credentials and must not be passed"
+        );
+    }
+
+    /// ⚠ **Windows caps a command line at 32,767 characters**, and a realistic
+    /// system prompt plus the native-tools notice passes that once a normal set
+    /// of tools is loaded. The failure is `The filename or extension is too
+    /// long. (os error 206)`, which names neither the argument nor the limit.
+    ///
+    /// Measured on Windows before this: a session with 40 tools loaded failed
+    /// every turn that way, *after* resolution past the npm `.cmd` shim had
+    /// already raised the ceiling from cmd.exe's ~8,191 to CreateProcess's
+    /// 32,767. Raising a ceiling is not the same as removing it.
+    #[test]
+    fn a_large_system_prompt_travels_in_a_file_rather_than_argv() {
+        let big = "x".repeat(SYSTEM_PROMPT_ARGV_LIMIT + 1);
+        assert_eq!(
+            system_prompt_goes_in_a_file(&big),
+            cfg!(windows),
+            "only Windows has a command-line cap small enough to matter"
+        );
+        assert!(
+            !system_prompt_goes_in_a_file("SYS"),
+            "a small prompt keeps the long-proven inline form, so an older              `claude` without --system-prompt-file still works"
+        );
+    }
+
+    /// The two transports must configure the child identically.
+    ///
+    /// ⚠ The notice is appended to the prompt, so a file holding only `system`
+    /// would silently drop it — and only on the large-prompt path, which is the
+    /// hardest place to notice a missing instruction.
+    #[cfg(windows)]
+    #[test]
+    fn the_file_carries_exactly_what_argv_would_have_carried() {
+        let big = "x".repeat(SYSTEM_PROMPT_ARGV_LIMIT + 1);
+        let file = system_prompt_file(&full_system_prompt(&big))
+            .expect("writable")
+            .expect("a large prompt must produce a file");
+        let written = std::fs::read_to_string(file.path()).expect("readable");
+        assert_eq!(written, full_system_prompt(&big));
+
+        let m = ModelConfig::new("claude-sonnet-4-6").unwrap();
+        let args = provider().base_args(&m, &big, "json", None, Some(file.path()));
+        let i = args
+            .iter()
+            .position(|a| a == "--system-prompt-file")
+            .expect("the file flag must be used");
+        assert_eq!(args[i + 1], file.path().to_string_lossy());
+        assert!(
+            !args.iter().any(|a| a == "--system-prompt"),
+            "the prompt must travel once, not twice"
         );
     }
 
@@ -1928,6 +2086,7 @@ mod tests {
             &ModelConfig::new("claude-sonnet-4-6").unwrap(),
             "SYS",
             "json",
+            None,
             None,
         );
         let i = args.iter().position(|a| a == "--system-prompt").unwrap();
@@ -1951,7 +2110,7 @@ mod tests {
             let m = ModelConfig::new("claude-sonnet-4-6")
                 .unwrap()
                 .with_reasoning_effort(effort);
-            let args = provider().base_args(&m, "SYS", "json", None);
+            let args = provider().base_args(&m, "SYS", "json", None, None);
             let i = args
                 .iter()
                 .position(|a| a == "--effort")
@@ -1980,7 +2139,7 @@ mod tests {
             let m = ModelConfig::new("claude-sonnet-4-6")
                 .unwrap()
                 .with_reasoning_effort(effort);
-            let args = provider().base_args(&m, "SYS", "json", None);
+            let args = provider().base_args(&m, "SYS", "json", None, None);
             let i = args
                 .iter()
                 .position(|a| a == "--effort")
@@ -2004,7 +2163,7 @@ mod tests {
             let m = ModelConfig::new("claude-sonnet-4-6")
                 .unwrap()
                 .with_reasoning_effort(effort);
-            let args = provider().base_args(&m, "SYS", "json", None);
+            let args = provider().base_args(&m, "SYS", "json", None, None);
             let i = args.iter().position(|a| a == "--effort").unwrap();
             assert!(
                 ACCEPTED.contains(&args[i + 1].as_str()),
@@ -2024,7 +2183,7 @@ mod tests {
             .unwrap()
             .with_reasoning_effort(Some(ReasoningEffort::Deep));
         let path = std::path::Path::new("/tmp/bridge.json");
-        let args = provider().base_args(&m, "SYS", "json", Some(path));
+        let args = provider().base_args(&m, "SYS", "json", Some(path), None);
 
         let i = args.iter().position(|a| a == "--mcp-config").unwrap();
         assert_eq!(args[i + 1], path.to_string_lossy());
@@ -2041,8 +2200,8 @@ mod tests {
     fn the_output_format_is_the_only_axis_that_varies() {
         let p = provider();
         let m = ModelConfig::new("claude-sonnet-4-6").unwrap();
-        let json = p.base_args(&m, "SYS", "json", None);
-        let stream = p.base_args(&m, "SYS", "stream-json", None);
+        let json = p.base_args(&m, "SYS", "json", None, None);
+        let stream = p.base_args(&m, "SYS", "stream-json", None, None);
         assert_eq!(json.len(), stream.len());
         let differences: Vec<_> = json
             .iter()
@@ -2070,7 +2229,7 @@ mod tests {
         let model = ModelConfig::new("claude-sonnet-4-6").unwrap();
 
         let text_prompt = transcript::Prompt::text_only("Name this chat");
-        let text_command = provider.completion_command(&model, "SYS", None, &text_prompt);
+        let text_command = provider.completion_command(&model, "SYS", None, None, &text_prompt);
         let text_args: Vec<String> = text_command
             .as_std()
             .get_args()
@@ -2090,7 +2249,7 @@ mod tests {
                 mime_type: "image/png",
             }],
         };
-        let image_command = provider.completion_command(&model, "SYS", None, &image_prompt);
+        let image_command = provider.completion_command(&model, "SYS", None, None, &image_prompt);
         let image_args: Vec<String> = image_command
             .as_std()
             .get_args()

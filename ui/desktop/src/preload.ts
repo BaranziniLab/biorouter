@@ -213,6 +213,8 @@ const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}
 interface UpdaterEvent {
   event: string;
   data?: unknown;
+  /** Assisted GitHub download rather than electron-updater. */
+  usingFallback?: boolean;
 }
 
 // Define the API types in a single place

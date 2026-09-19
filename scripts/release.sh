@@ -246,7 +246,14 @@ verify_release_provenance() {
     count="$(awk -F '\t' -v rel="$rel" '$1 == "asset" && $2 == rel { count++ } END { print count+0 }' "$manifest")"
     [ "$count" -eq 1 ] || die "release provenance must contain exactly one entry for $rel"
     case "$file" in
+      # A manifest, not an archive.
       *.yml) ;;
+      # The Squirrel installer. `verify-computer-use-artifact.py` unpacks
+      # .zip/.dmg/.deb/.rpm and refuses a PE, so this one cannot be attested
+      # directly; it is built from the same staged app directory as the
+      # attested win32 zip. Do not "fix" this by dropping the attestation for
+      # everything -- narrow the exemption, not the rule.
+      *.exe) ;;
       *)
         count="$(awk -F '\t' -v rel="$rel" '$1 == "computer_use" && $2 == rel { count++ } END { print count+0 }' "$manifest")"
         [ "$count" -eq 1 ] || die "release provenance must attest helper bytes exactly once for $rel"
@@ -263,11 +270,23 @@ verify_release_provenance() {
   actual_count="$(awk -F '\t' '$1 == "asset" { count++ } END { print count+0 }' "$manifest")"
   [ "$actual_count" -eq "$expected_count" ] \
     || die "release provenance contains $actual_count assets; expected exactly $expected_count"
-  [ "$expected_count" -eq 10 ] || die "internal release asset list changed; expected exactly 10 assets"
+  # 11 since the Windows Squirrel installer joined the set. This count is a
+  # tripwire for an asset list edited in one place and not the others -- keep
+  # it in step with `release_assets`, `cmd_verify` and CLAUDE.md.
+  [ "$expected_count" -eq 11 ] || die "internal release asset list changed; expected exactly 11 assets"
   local helper_count
   helper_count="$(awk -F '\t' '$1 == "computer_use" { count++ } END { print count+0 }' "$manifest")"
-  [ "$helper_count" -eq 9 ] || die "release provenance must attest the helper bytes in all 9 install/update archives"
-  log "release provenance verified for 10 assets at $(release_provenance_value "$manifest" source_sha)"
+  # 9, not 11: two of the eleven carry no helper attestation of their own.
+  # `latest-mac.yml` is a manifest rather than an archive, and
+  # `Biorouter-Setup-<ver>.exe` is a Squirrel installer --
+  # `verify-computer-use-artifact.py` reads .zip/.dmg/.deb/.rpm and dies with
+  # "Unsupported release archive" on a PE. The installer is built from the same
+  # staged app directory as `Biorouter-win32-x64-<ver>.zip`, which IS attested,
+  # so the win32 helper bytes are covered -- but covered indirectly. Teaching
+  # the verifier to open a Squirrel exe (its embedded nupkg) would make this
+  # direct and is worth doing separately.
+  [ "$helper_count" -eq 9 ] || die "release provenance must attest the helper bytes in all 9 attestable install/update archives"
+  log "release provenance verified for 11 assets at $(release_provenance_value "$manifest" source_sha)"
 }
 
 # ── bump ────────────────────────────────────────────────────────────────────
@@ -455,6 +474,16 @@ cmd_windows() {
   [ -f "$zip" ] || die "windows reported success but produced no zip at $zip"
   record_release_asset "$v" "$zip" "win32-x64"
   log "windows zip: $zip"
+  # The Squirrel installer is what makes a Windows update in-place: running it
+  # over an existing install replaces the app directory and keeps the shortcuts,
+  # where the zip leaves the user to extract and swap a folder by hand. The
+  # updater looks for this exact filename (forge.config.ts WINDOWS_SETUP_EXE,
+  # githubUpdater.ts), so a missing or misnamed one silently sends Windows back
+  # to the assisted download.
+  local setup="$DESK/out/make/squirrel.windows/x64/Biorouter-Setup-$v.exe"
+  [ -f "$setup" ] || die "windows produced no installer at $setup - is maker-squirrel still in forge.config.ts?"
+  record_release_asset "$v" "$setup"
+  log "windows installer: $setup"
 }
 
 # ── linux packaging (fully dockerized; run LAST — corrupts node_modules) ───────
@@ -513,13 +542,14 @@ cmd_verify() {
   local arm="$DESK/out/make/Biorouter-$v-arm64.dmg"
   local x64="$DESK/out/make/Biorouter-$v-x64.dmg"
   local win="$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
+  local winsetup="$DESK/out/make/squirrel.windows/x64/Biorouter-Setup-$v.exe"
   local deb="$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
   local rpm="$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
   local clideb="$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   local clirpm="$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
   local armzip="$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip"
   local x64zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
-  for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$deb" "$rpm" "$clideb" "$clirpm"; do
+  for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$winsetup" "$deb" "$rpm" "$clideb" "$clirpm"; do
     [ -f "$f" ] && log "present: $(basename "$f") ($(du -h "$f" | cut -f1))" || { printf 'MISSING: %s\n' "$f"; ok=0; }
   done
   # ⚠ Opens the built .app rather than trusting the packaging config. The macOS
@@ -595,6 +625,7 @@ release_assets() {
     "$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip" \
     "$DESK/out/make/latest-mac.yml" \
     "$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip" \
+    "$DESK/out/make/squirrel.windows/x64/Biorouter-Setup-$v.exe" \
     "$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb" \
     "$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm" \
     "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" \
@@ -656,9 +687,9 @@ with open(manifest_path, encoding="utf-8") as handle:
         local_assets[name] = {"digest": fields[2].lower(), "size": int(fields[3])}
 
 remote_assets = release.get("assets") or []
-if len(local_assets) != 10 or len(remote_assets) != 10:
+if len(local_assets) != 11 or len(remote_assets) != 11:
     raise SystemExit(
-        f"expected exactly 10 local and 10 uploaded assets; found {len(local_assets)} local and {len(remote_assets)} uploaded"
+        f"expected exactly 11 local and 11 uploaded assets; found {len(local_assets)} local and {len(remote_assets)} uploaded"
     )
 remote_by_name = {}
 for asset in remote_assets:

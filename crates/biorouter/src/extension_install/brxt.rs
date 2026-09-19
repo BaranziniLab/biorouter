@@ -295,7 +295,10 @@ pub fn uv_missing_message() -> String {
 
 /// Build the bundle's Python environment.
 pub fn run_uv_sync(dir: &Path) -> Result<()> {
-    let output = Command::new("uv").arg("sync").current_dir(dir).output();
+    let mut command = Command::new("uv");
+    command.arg("sync").current_dir(dir);
+    biorouter_mcp::developer::shell::no_console_window_std(&mut command);
+    let output = command.output();
     match output {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {

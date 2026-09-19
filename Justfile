@@ -184,22 +184,39 @@ sign-dev-binaries BUILD_MODE="release":
         fi
     done
 
+# Stage the locally built backend binaries where the desktop app looks for them.
+#
+# ⚠ The executable suffix is computed, not assumed. This recipe hardcoded bare
+# `biorouterd` / `biorouter`, so on Windows — where cargo emits `.exe` — it found
+# nothing and died with "Binary not found in target/debug". `run-dev` calls it,
+# which is why there was NO way to run a native Windows dev build from the
+# Justfile at all: `copy-binary-windows` only handles the *cross-compiled gnu
+# release* target, not whatever you just built.
 copy-binary BUILD_MODE="release":
-    @just sign-dev-binaries {{BUILD_MODE}}
-    @mkdir -p ./ui/desktop/src/bin
-    @if [ -f ./target/{{BUILD_MODE}}/biorouterd ]; then \
-        echo "Copying biorouterd binary from target/{{BUILD_MODE}}..."; \
-        cp -p ./target/{{BUILD_MODE}}/biorouterd ./ui/desktop/src/bin/; \
-    else \
-        echo "Binary not found in target/{{BUILD_MODE}}"; \
-        exit 1; \
-    fi
-    @if [ -f ./target/{{BUILD_MODE}}/biorouter ]; then \
-        echo "Copying biorouter CLI binary from target/{{BUILD_MODE}}..."; \
-        cp -p ./target/{{BUILD_MODE}}/biorouter ./ui/desktop/src/bin/; \
-    else \
-        echo "biorouter CLI binary not found in target/{{BUILD_MODE}}"; \
-        exit 1; \
+    #!/usr/bin/env sh
+    set -e
+    just sign-dev-binaries {{BUILD_MODE}}
+    mkdir -p ./ui/desktop/src/bin
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*|Windows_NT) EXT=".exe" ;;
+        *) EXT="" ;;
+    esac
+    for bin in biorouterd biorouter; do
+        src="./target/{{BUILD_MODE}}/${bin}${EXT}"
+        if [ -f "$src" ]; then
+            echo "Copying ${bin}${EXT} from target/{{BUILD_MODE}}..."
+            cp -p "$src" ./ui/desktop/src/bin/
+        else
+            echo "${bin}${EXT} not found in target/{{BUILD_MODE}}" >&2
+            exit 1
+        fi
+    done
+    # A mingw cross build leaves its runtime DLLs beside the binaries; a native
+    # MSVC build has none. Copy them when they exist, and do not fail when they
+    # do not.
+    if ls ./target/{{BUILD_MODE}}/*.dll >/dev/null 2>&1; then
+        echo "Copying runtime DLLs from target/{{BUILD_MODE}}..."
+        cp -p ./target/{{BUILD_MODE}}/*.dll ./ui/desktop/src/bin/
     fi
 
 # Copy binary command for Intel build
@@ -219,12 +236,26 @@ copy-binary-intel:
         exit 1; \
     fi
 
-# Copy Windows binary command
+# Stage the CROSS-COMPILED (mingw) Windows release binaries for packaging.
+#
+# ⚠ Copies the CLI as well as the daemon. It used to take only `biorouterd.exe`,
+# but `ui/desktop/scripts/prepare-platform-binaries.js` requires BOTH
+# (`win32: ['biorouterd.exe', 'biorouter.exe', …]`), and the desktop app resolves
+# `biorouter.exe` beside the daemon for the in-app CLI install. A staging step
+# that drops it leaves the packaged app without the CLI it offers to install.
 copy-binary-windows:
-    @powershell.exe -Command "if (Test-Path ./target/x86_64-pc-windows-gnu/release/biorouterd.exe) { \
-        Write-Host 'Copying Windows binary and DLLs to ui/desktop/src/bin...'; \
-        Copy-Item -Path './target/x86_64-pc-windows-gnu/release/biorouterd.exe' -Destination './ui/desktop/src/bin/' -Force; \
-        Copy-Item -Path './target/x86_64-pc-windows-gnu/release/*.dll' -Destination './ui/desktop/src/bin/' -Force; \
+    @powershell.exe -Command "$src = './target/x86_64-pc-windows-gnu/release'; \
+    if (Test-Path \"$src/biorouterd.exe\") { \
+        Write-Host 'Copying Windows binaries and DLLs to ui/desktop/src/bin...'; \
+        New-Item -ItemType Directory -Force -Path './ui/desktop/src/bin' | Out-Null; \
+        Copy-Item -Path \"$src/biorouterd.exe\" -Destination './ui/desktop/src/bin/' -Force; \
+        if (Test-Path \"$src/biorouter.exe\") { \
+            Copy-Item -Path \"$src/biorouter.exe\" -Destination './ui/desktop/src/bin/' -Force; \
+        } else { \
+            Write-Host 'biorouter.exe not found -- the packaged app will have no CLI.' -ForegroundColor Red; \
+            exit 1; \
+        } \
+        Copy-Item -Path \"$src/*.dll\" -Destination './ui/desktop/src/bin/' -Force -ErrorAction SilentlyContinue; \
     } else { \
         Write-Host 'Windows binary not found.' -ForegroundColor Red; \
         exit 1; \
@@ -425,16 +456,33 @@ make-ui-intel:
 
 
 # Run UI with debug build
+# Build a debug backend, stage it, and launch the GUI.
+#
+# ⚠ A shebang recipe, not a plain one, so it runs under `sh` on every platform.
+# `set windows-shell := ["powershell.exe", …]` sends plain recipes through
+# **Windows PowerShell 5.1**, which cannot parse `&&` at all (it is a syntax
+# error, not a runtime one) — so the last line alone made this recipe
+# unrunnable on Windows before it ever reached npm.
+#
+# The `win-*` family below is the PowerShell-native path and is deliberately
+# left alone: it uses `;` separators and the `copy` builtin precisely because
+# that is the shell it runs in. `just win-run-dbg` remains the no-sh option.
 run-dev:
-    @echo "Building development version..."
+    #!/usr/bin/env sh
+    set -e
+    echo "Building development version..."
     cargo build
-    @just copy-binary debug
-    @echo "Running UI..."
-    cd ui/desktop && npm run start-gui
+    just copy-binary debug
+    echo "Running UI..."
+    cd ui/desktop
+    npm run start-gui
 
 # Install all dependencies (run once after fresh clone)
 install-deps:
-    cd ui/desktop && npm ci
+    #!/usr/bin/env sh
+    set -e
+    cd ui/desktop
+    npm ci
 
 ensure-release-branch:
     #!/usr/bin/env bash

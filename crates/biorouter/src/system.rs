@@ -352,6 +352,12 @@ fn probe_until(cmd: &str, args: &[&str], deadline: std::time::Instant) -> ProbeO
         command.process_group(0);
     }
     biorouter_mcp::developer::shell::strip_daemon_private_env_std(&mut command);
+    // The daemon owns no console, so a console-subsystem child spawned without
+    // this flag gets a NEW visible console window for its lifetime — a black box
+    // flashing on the user's desktop once per probe. It sits beside the env strip
+    // because they are the two things every agent-spawned child needs, and it
+    // must be applied BEFORE the spawn below.
+    biorouter_mcp::developer::shell::no_console_window_std(&mut command);
     let Ok(mut child) = command.spawn() else {
         return ProbeOutcome::Absent;
     };

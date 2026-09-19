@@ -2260,6 +2260,7 @@ async fn run_uv_sync(install_dir: &Path) -> anyhow::Result<()> {
         .arg("sync")
         .current_dir(install_dir)
         .env("PATH", &search_path);
+    biorouter_mcp::developer::shell::no_console_window(&mut command);
     // `HOME` is meaningful to `uv` on Unix and is not the variable Windows uses;
     // setting it there would point the tool at nothing.
     #[cfg(unix)]

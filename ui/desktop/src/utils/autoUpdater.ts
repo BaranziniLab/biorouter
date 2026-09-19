@@ -234,12 +234,23 @@ export function registerUpdateIpcHandlers() {
           throw new Error('Update file not found. Download the update first.');
         }
 
-        // Improved dialog with clearer instructions
+        // ⚠ The instructions MUST match the platform. This dialog told every
+        // user to "drag the new Biorouter.app to your Applications folder" --
+        // on Windows, where the downloaded artifact is a .zip, there is no
+        // .app, and there is no Applications folder. The user was then asked to
+        // quit the app on the strength of instructions they could not follow.
+        const detail =
+          process.platform === 'win32'
+            ? `The update has been downloaded. Biorouter cannot replace itself while it is running on Windows, so the last step is manual:\n\n1. Click "Open Folder" to reveal the downloaded Biorouter zip\n2. Quit Biorouter (this app will close)\n3. Extract the zip and replace your existing Biorouter folder with it\n4. Launch Biorouter again\n\nYour settings, chats and extensions live outside the app folder and are preserved.`
+            : process.platform === 'linux'
+              ? `The update has been downloaded.\n\n1. Click "Open Folder" to reveal the downloaded package\n2. Quit Biorouter (this app will close)\n3. Install the .deb or .rpm with your package manager\n4. Launch Biorouter again\n\nYour settings, chats and extensions are preserved.`
+              : `The update has been downloaded and extracted. To complete the installation:\n\n1. Click "Open Folder" to view the new Biorouter.app\n2. Quit Biorouter (this app will close)\n3. Drag the new Biorouter.app to your Applications folder\n4. Replace the existing app when prompted\n\nThe update will be available the next time you launch Biorouter.`;
+
         const dialogResult = (await dialog.showMessageBox({
           type: 'info',
           title: 'Update ready to install',
           message: `Version ${githubUpdateInfo.latestVersion} is ready to install.`,
-          detail: `The update has been downloaded and extracted. To complete the installation:\n\n1. Click "Open Folder" to view the new Biorouter.app\n2. Quit Biorouter (this app will close)\n3. Drag the new Biorouter.app to your Applications folder\n4. Replace the existing app when prompted\n\nThe update will be available the next time you launch Biorouter.`,
+          detail,
           buttons: ['Open Folder & Quit', 'Open Folder Only', 'Cancel'],
           defaultId: 0,
           cancelId: 2,
@@ -637,6 +648,8 @@ export function setupAutoUpdater(tray?: Tray) {
 interface UpdaterEvent {
   event: string;
   data?: unknown;
+  /** Assisted GitHub download rather than electron-updater. */
+  usingFallback?: boolean;
 }
 
 function sendStatusToWindow(event: string, data?: unknown) {
@@ -645,7 +658,16 @@ function sendStatusToWindow(event: string, data?: unknown) {
   recordStateForEvent(event, data);
   const windows = BrowserWindow.getAllWindows();
   windows.forEach((win) => {
-    win.webContents.send('updater-event', { event, data } as UpdaterEvent);
+    // Stamp the mode on EVERY event. The renderer decides between "downloading
+    // in the background" (electron-updater does it itself) and "press Download"
+    // (the assisted GitHub path, which waits for the user) purely from this, and
+    // it previously only ever reached the renderer through the late-mount
+    // snapshot -- so a renderer that was already mounted never learned it.
+    win.webContents.send('updater-event', {
+      event,
+      data,
+      usingFallback: isUsingGitHubFallback,
+    } as UpdaterEvent);
   });
 }
 

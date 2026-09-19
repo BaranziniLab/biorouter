@@ -75,8 +75,15 @@ enum Commands {
 /// the app read "Backend disconnected" and never came back.
 ///
 /// See `biorouter::execution::runtime` for the measurement and the size.
+/// ⚠ The body runs on a thread this sizes, not on the main thread: `block_on`
+/// drives the future on the calling thread, and Windows pins the main thread's
+/// stack at 1 MiB in the executable header, where no runtime setting can reach
+/// it. The CLI hit that limit outright; the daemon shares the shape, so it
+/// shares the fix. See `biorouter::execution::runtime::run_on_agent_stack`.
 fn main() -> anyhow::Result<()> {
-    biorouter::execution::runtime::build_agent_runtime()?.block_on(async_main())
+    biorouter::execution::runtime::run_on_agent_stack(|| {
+        biorouter::execution::runtime::build_agent_runtime()?.block_on(async_main())
+    })?
 }
 
 async fn async_main() -> anyhow::Result<()> {

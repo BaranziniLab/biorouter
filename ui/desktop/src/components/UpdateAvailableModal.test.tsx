@@ -188,3 +188,67 @@ describe('UpdateAvailableModal — one-click flow', () => {
     expect(await screen.findByRole('button', { name: /Restart & Update/i })).toBeTruthy();
   });
 });
+
+describe('UpdateAvailableModal — assisted (non-mac) download', () => {
+  /**
+   * The Windows bug in one test.
+   *
+   * On Windows there is no electron-updater manifest, so the GitHub fallback
+   * takes over — and that fallback deliberately does NOT download, waiting for
+   * the user via the `download-update` IPC. Nothing in the renderer ever called
+   * that IPC, so the modal announced "downloading in the background" and parked
+   * a progress bar at 0% forever, with a permanently disabled "Preparing…"
+   * button underneath.
+   */
+  it('offers a working Download button instead of a progress bar that never moves', async () => {
+    const downloadUpdate = vi.fn().mockResolvedValue({ success: true, error: null });
+    (window as unknown as { electron: Record<string, unknown> }).electron.downloadUpdate =
+      downloadUpdate;
+
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-available', data: { version: '1.86.0' }, usingFallback: true });
+    requestModal({
+      phase: 'available',
+      latestVersion: '1.86.0',
+      percent: 0,
+      usingFallback: true,
+    });
+
+    // It must NOT claim a download is already running.
+    expect(await screen.findByText(/Update available/i)).toBeTruthy();
+    expect(screen.queryByText(/downloading in the background/i)).toBeNull();
+    expect(screen.queryByText(/Preparing/i)).toBeNull();
+
+    // It must offer an enabled control that actually starts the download.
+    const button = await screen.findByRole('button', { name: /Download update/i });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(downloadUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  /** On macOS electron-updater really is downloading, so the old copy stands. */
+  it('keeps the background-download copy when electron-updater is doing the work', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-available', data: { version: '1.86.0' }, usingFallback: false });
+    requestModal({ phase: 'available', latestVersion: '1.86.0', percent: 0, usingFallback: false });
+
+    expect(await screen.findByText(/downloading in the background/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Download update/i })).toBeNull();
+  });
+
+  /** Once bytes are moving, progress is real again even in assisted mode. */
+  it('switches to the progress bar once the assisted download starts', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-available', data: { version: '1.86.0' }, usingFallback: true });
+    emitAct({ event: 'download-progress', data: { percent: 12 }, usingFallback: true });
+    requestModal({
+      phase: 'available',
+      latestVersion: '1.86.0',
+      percent: 12,
+      usingFallback: true,
+    });
+
+    expect(await screen.findByText('12%')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Download update/i })).toBeNull();
+  });
+});
