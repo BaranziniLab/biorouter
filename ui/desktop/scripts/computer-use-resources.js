@@ -75,6 +75,25 @@ function stageComputerUse(platform, arch) {
   const target = `${platform}-${arch}`;
   const source = path.join(root, 'target/computer-use', target);
   const destination = path.join(root, 'ui/desktop/src/computer-use');
+  // ⚠ Say what is missing and how to produce it. This is the FIRST statement of
+  // `preparePlatformBinaries`, so it is the first thing every packaging command
+  // reaches — `just make-ui`, `make-ui-windows`, `make-ui-intel`,
+  // `make-ui-linux`, and `npm run bundle:*` directly. Nothing in the Justfile
+  // builds this directory: in the whole tree only `scripts/release.sh` and the
+  // CI workflow invoke `computer-use-runtime.py build`. Without this check the
+  // developer gets a bare
+  //     ENOENT: no such file or directory, open '.../manifest.json'
+  // from inside `verifyComputerUse`, which names neither the payload nor the
+  // command that creates it.
+  if (!fs.existsSync(path.join(source, 'manifest.json'))) {
+    throw new Error(
+      `Computer Use helper payload missing for ${target}.\n` +
+        `  expected: ${source}\n` +
+        `  build it: python3 scripts/computer-use-runtime.py build ${target}\n` +
+        `            (needs Go; see .github/workflows/computer-use-native.yml)\n` +
+        `  Packaging bundles this helper, so it cannot be skipped.`
+    );
+  }
   verifyComputerUse(source, target);
   fs.rmSync(destination, { recursive: true, force: true });
   fs.cpSync(source, destination, { recursive: true });
