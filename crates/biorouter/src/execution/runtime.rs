@@ -90,6 +90,54 @@ pub fn build_agent_runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
+/// Run a host process's body on a thread sized for agent work, and give back
+/// what it returned.
+///
+/// # Why the main thread is not good enough
+///
+/// [`build_agent_runtime`] sizes the runtime's **worker** threads. It cannot
+/// size the thread that calls `block_on`, because `block_on` drives the future
+/// on the *calling* thread — and for both `biorouter` and `biorouterd` that is
+/// the process's main thread.
+///
+/// ⚠ **On Windows the main thread's stack is fixed in the executable header**
+/// (`SizeOfStackReserve`, 1 MiB by default) and no runtime call can change it.
+/// Linux gives 8 MiB and macOS 8 MiB, which is why this was invisible off
+/// Windows for so long. The CLI's `async_main` future is large enough on its own
+/// that materialising it blew that 1 MiB immediately: **every** invocation of
+/// `biorouter.exe` — including `--version` — died with
+///
+/// ```text
+/// thread 'main' has overflowed its stack
+/// ```
+///
+/// Measured on Windows Server 2025: a debug `biorouter.exe --version` aborted,
+/// and the *same binary* with `editbin /STACK:16777216` applied printed its
+/// version and ran `session list` correctly. So it is purely stack reservation,
+/// not a runaway recursion.
+///
+/// Spawning a thread is preferred over a linker flag (`/STACK`) because it needs
+/// no per-target `rustflags`, applies identically to every toolchain and
+/// cross-build, and reuses [`worker_stack_size`] — so the escape hatch and the
+/// documented size stay in one place instead of two.
+///
+/// A panic inside `body` is re-raised on the caller's thread rather than being
+/// converted into an error, so panic output and exit behaviour are unchanged.
+pub fn run_on_agent_stack<T, F>(body: F) -> std::io::Result<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("biorouter-main".to_string())
+        .stack_size(worker_stack_size())
+        .spawn(body)?;
+    match handle.join() {
+        Ok(value) => Ok(value),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +175,71 @@ mod tests {
         {
             None
         }
+    }
+
+    /// The Windows analogue of the probe above.
+    ///
+    /// ⚠ This platform had **no coverage at all** here, and that is exactly how
+    /// the main-thread gap survived: `build_agent_runtime` was tested on unix,
+    /// where the main thread starts with 8 MiB and nothing was ever short of
+    /// stack, while Windows gives it 1 MiB and `biorouter.exe` could not print
+    /// its own `--version`.
+    ///
+    /// `GetCurrentThreadStackLimits` reports the reserved span of the calling
+    /// thread's stack, which is the number `stack_size` asked for.
+    #[cfg(windows)]
+    fn current_thread_stack_size() -> Option<usize> {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
+        }
+        let (mut low, mut high) = (0usize, 0usize);
+        unsafe { GetCurrentThreadStackLimits(&mut low, &mut high) };
+        high.checked_sub(low).filter(|size| *size > 0)
+    }
+
+    /// **The regression guard for `biorouter.exe` failing to start on Windows.**
+    ///
+    /// A thread from [`run_on_agent_stack`] must really carry the larger stack.
+    /// Asserted by asking the OS, for the same reason the worker test does: a
+    /// test that actually overflowed would abort the binary rather than fail.
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn the_host_body_really_gets_the_larger_stack() {
+        let Some(baseline) = std::thread::spawn(current_thread_stack_size)
+            .join()
+            .expect("probe thread")
+        else {
+            eprintln!("stack size is not readable on this target; skipping");
+            return;
+        };
+        // The same negative control as the worker test: without it, a platform
+        // that handed every thread a huge stack would pass this regardless.
+        assert!(
+            baseline < AGENT_WORKER_STACK_SIZE,
+            "a default thread already has {baseline} bytes, so this test cannot              distinguish a sized host thread from an unsized one"
+        );
+
+        let measured = run_on_agent_stack(current_thread_stack_size)
+            .expect("the host thread spawns")
+            .expect("stack size is readable on the sized thread too");
+
+        assert!(
+            measured >= AGENT_WORKER_STACK_SIZE,
+            "the host body ran on a {measured}-byte stack, but agent work needs              at least {AGENT_WORKER_STACK_SIZE}. On Windows the main thread is              pinned to 1 MiB by the executable header, so the body must run on a              thread this function sized."
+        );
+    }
+
+    /// A value comes back, and a panic is still a panic.
+    #[test]
+    fn the_host_body_returns_its_value() {
+        assert_eq!(run_on_agent_stack(|| 6 * 7).expect("spawns"), 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "the body panicked")]
+    fn a_panic_in_the_body_is_re_raised_rather_than_swallowed() {
+        let _ = run_on_agent_stack(|| panic!("the body panicked"));
     }
 
     /// **The regression guard for the subagent SIGABRT.**

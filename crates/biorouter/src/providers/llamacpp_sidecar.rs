@@ -29,6 +29,7 @@ use utoipa::ToSchema;
 fn system_command(program: &str) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     biorouter_mcp::developer::shell::strip_daemon_private_env_std(&mut command);
+    biorouter_mcp::developer::shell::no_console_window_std(&mut command);
     command
 }
 

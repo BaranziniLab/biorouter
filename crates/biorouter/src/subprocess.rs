@@ -1,13 +1,20 @@
 use tokio::process::Command;
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
-
-#[allow(unused_variables)]
-pub fn configure_command_no_window(command: &mut Command) {
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW_FLAG);
-}
+/// Suppress a child's console window on Windows.
+///
+/// ⚠ **This is a re-export, not a second implementation.** The flag itself lives
+/// in [`biorouter_sandbox::console`], because `biorouter` depends on
+/// `biorouter-mcp` which depends on `biorouter-sandbox` — never the reverse — so
+/// the hot spawn sites in `biorouter-mcp` (`developer__shell`, background jobs,
+/// Computer Controller, Agent Drafter) cannot reach a helper defined *here*
+/// without a dependency cycle. That is exactly why they ran without the flag and
+/// flashed a console window on every tool call. Keeping one definition in the
+/// leaf crate is what makes a single fix cover every layer.
+///
+/// Reached through `biorouter-mcp`'s re-export rather than from
+/// `biorouter-sandbox` directly, because this crate does not depend on the
+/// sandbox crate — only on `biorouter-mcp`, which does.
+pub use biorouter_mcp::developer::shell::no_console_window as configure_command_no_window;
 
 /// Prepare a child process that runs on the agent's behalf.
 ///

@@ -11,6 +11,7 @@ import {
   stateFromSnapshot,
   normalizeVersion,
   hasKnownUpdate,
+  needsAssistedDownload,
   type UpdaterState,
 } from '../utils/updaterState';
 import { OPEN_UPDATE_MODAL_EVENT } from '../utils/updateUiEvents';
@@ -92,6 +93,30 @@ export default function UpdateAvailableModal() {
     setOpen(false);
   };
 
+  // ⚠ Nothing in the renderer called `downloadUpdate` before this. The IPC
+  // existed on both ends -- `preload.ts` invokes it, `autoUpdater.ts` handles
+  // it -- and the assisted GitHub path deliberately waits for it rather than
+  // writing hundreds of megabytes into Downloads on a background timer. With no
+  // caller, a Windows user was told an update was "downloading in the
+  // background" and watched a progress bar sit at 0% forever.
+  const [downloadRequested, setDownloadRequested] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  const handleDownload = async () => {
+    setDownloadRequested(true);
+    setDownloadError(null);
+    try {
+      const result = await window.electron?.downloadUpdate?.();
+      if (result && result.success === false && result.error) {
+        setDownloadError(result.error);
+        setDownloadRequested(false);
+      }
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : String(err));
+      setDownloadRequested(false);
+    }
+  };
+
   const handleRestartAndUpdate = () => {
     // Fire-and-forget: the main process quits the app, installs the staged
     // update, and relaunches into the new version.
@@ -111,6 +136,8 @@ export default function UpdateAvailableModal() {
 
   const downloaded = state.phase === 'downloaded';
   const isError = state.phase === 'error';
+  // Assisted mode, nothing downloading yet: the update is FOUND, not arriving.
+  const awaitingDownload = needsAssistedDownload(state) && !downloadRequested;
 
   return (
     <ModalShell
@@ -131,7 +158,9 @@ export default function UpdateAvailableModal() {
             ? 'Update ready to install'
             : isError
               ? 'Update download failed'
-              : 'Downloading update…'}
+              : awaitingDownload
+                ? 'Update available'
+                : 'Downloading update…'}
         </span>
       }
       footer={
@@ -157,6 +186,16 @@ export default function UpdateAvailableModal() {
             >
               <Rocket className="w-4 h-4" />
               Restart &amp; Update
+            </Button>
+          ) : awaitingDownload ? (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleDownload}
+              className="flex items-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              Download update
             </Button>
           ) : !isError ? (
             <Button variant="default" size="sm" disabled className="flex items-center gap-2">
@@ -193,7 +232,22 @@ export default function UpdateAvailableModal() {
           </p>
         )}
 
-        {state.phase === 'available' && (
+        {awaitingDownload && (
+          <div className="space-y-2">
+            <p className="text-sm text-text-default">
+              A new version is ready to download. Biorouter will fetch it and then show you the
+              file to finish installing — it can&apos;t replace itself while it&apos;s running on
+              this platform.
+            </p>
+            {downloadError && (
+              <p className="text-xs font-mono text-text-danger bg-background-muted rounded px-2 py-1">
+                {downloadError}
+              </p>
+            )}
+          </div>
+        )}
+
+        {state.phase === 'available' && !awaitingDownload && (
           <div className="space-y-2">
             <p className="text-sm text-text-default">
               A new version is downloading in the background. You can keep working. We&apos;ll let

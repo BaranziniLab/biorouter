@@ -12,7 +12,7 @@ use rmcp::model::{Content, ErrorCode, ErrorData, Role};
 
 use super::editor_models::EditorModel;
 use super::lang;
-use super::shell::normalize_line_endings;
+use super::shell::normalize_line_endings_like;
 use super::undo_history::FileHistory;
 
 fn ensure_trailing_newline(content: &mut String) {
@@ -763,7 +763,13 @@ pub async fn text_editor_view(
 }
 
 pub async fn text_editor_write(path: &PathBuf, file_text: &str) -> Result<Vec<Content>, ErrorData> {
-    let mut normalized_text = normalize_line_endings(file_text);
+    // Overwriting an existing file keeps that file's line endings; only a file
+    // being created takes the host convention. Without this, every write from
+    // Windows rewrote an LF file to CRLF end to end -- a whole-file diff for a
+    // one-line change, and a `view` whose output no longer matched the next
+    // `old_str` the model sent back.
+    let existing = std::fs::read_to_string(path).ok();
+    let mut normalized_text = normalize_line_endings_like(existing.as_deref(), file_text);
     ensure_trailing_newline(&mut normalized_text);
 
     // Write to the file
@@ -851,7 +857,8 @@ pub async fn text_editor_replace(
         match editor.edit_code(&content, old_str, new_str).await {
             Ok(updated_content) => {
                 // Write the updated content directly
-                let mut normalized_content = normalize_line_endings(&updated_content);
+                let mut normalized_content =
+                    normalize_line_endings_like(Some(&content), &updated_content);
 
                 ensure_trailing_newline(&mut normalized_content);
 
@@ -900,7 +907,9 @@ pub async fn text_editor_replace(
     save_file_history(path, file_history)?;
 
     let new_content = content.replace(old_str, new_str);
-    let mut normalized_content = normalize_line_endings(&new_content);
+    // The file's own line endings win over the host's -- see
+    // `normalize_line_endings_like`.
+    let mut normalized_content = normalize_line_endings_like(Some(&content), &new_content);
 
     ensure_trailing_newline(&mut normalized_content);
 
@@ -1033,7 +1042,7 @@ pub async fn text_editor_insert(
     }
 
     let new_content = new_lines.join("\n");
-    let mut final_content = normalize_line_endings(&new_content);
+    let mut final_content = normalize_line_endings_like(Some(&content), &new_content);
     ensure_trailing_newline(&mut final_content);
 
     std::fs::write(path, &final_content).map_err(|e| {
