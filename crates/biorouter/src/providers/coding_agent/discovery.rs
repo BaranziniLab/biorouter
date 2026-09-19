@@ -119,9 +119,20 @@ impl CodingAgentKind {
     /// than run automatically — installing another vendor's toolchain is the
     /// user's decision, and the Claude Code installer in particular is a piped
     /// shell script.
+    /// ⚠ The Claude Code hint is platform-dependent, because the one we shipped
+    /// is a `curl | bash` pipeline and Windows has neither. A user who saw it
+    /// there was handed a command that cannot run, for a CLI that installs
+    /// perfectly well from npm — which is how `claude` came to be "not
+    /// installed" on Windows machines whose owners had followed the instructions.
     pub const fn install_hint(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "curl -fsSL https://claude.ai/install.sh | bash",
+            Self::ClaudeCode => {
+                if cfg!(windows) {
+                    "npm install -g @anthropic-ai/claude-code"
+                } else {
+                    "curl -fsSL https://claude.ai/install.sh | bash"
+                }
+            }
             Self::Codex => "npm install -g @openai/codex@latest",
         }
     }
@@ -240,11 +251,119 @@ pub fn resolve_binary(kind: CodingAgentKind, configured: Option<&str>) -> Option
     // escape hatch for toolchain managers `SearchPaths` does not know about
     // (nvm, volta, bun, asdf all install outside every directory it searches).
     let as_path = Path::new(name);
-    if as_path.components().count() > 1 {
-        return as_path.exists().then(|| as_path.to_path_buf());
+    let resolved = if as_path.components().count() > 1 {
+        as_path.exists().then(|| as_path.to_path_buf())?
+    } else {
+        SearchPaths::builder().with_npm().resolve(name).ok()?
+    };
+
+    Some(through_cmd_shim(&resolved))
+}
+
+/// On Windows, resolve an npm `.cmd` shim to the native executable it wraps.
+///
+/// ⚠ **This is what makes the Claude Code provider work on Windows at all.**
+///
+/// An npm-installed CLI is not an `.exe` on `PATH` — it is a `.cmd` batch shim,
+/// and `which` finds that shim first because `PATHEXT` lists `.CMD`. Windows
+/// cannot execute a batch file directly, so Rust's `std::process::Command`
+/// routes it through `cmd.exe` (the CVE-2024-24576 fix). That hop is the
+/// problem, because `cmd.exe` imposes two limits the direct call does not:
+///
+/// * **no argument may contain a newline** — Rust refuses outright with
+///   `InvalidInput: "batch file arguments are invalid"`;
+/// * the whole command line is capped at ~8191 characters.
+///
+/// `claude_code`'s `--system-prompt` carries BioRouter's entire system prompt,
+/// which is both multi-line and far past 8191 characters, so **every turn
+/// failed**. Measured on Windows against the real shim:
+///
+/// ```text
+/// claude.cmd + multi-line arg -> Err(InvalidInput, "batch file arguments are invalid")
+/// claude.cmd + 9000-char arg  -> exit 1, no output
+/// claude.exe + either         -> ok
+/// ```
+///
+/// Nothing caught it: every test that spawns the provider is `#[cfg(unix)]`, and
+/// the health surfaces (`/coding_agents/status`, `check_provider_configured`)
+/// only ever run `--version` and `auth status` — short, newline-free arguments
+/// that succeed through the shim. So the app reported Claude Code as installed,
+/// signed in and "Configured", offered it in the model picker, and then failed
+/// every turn.
+///
+/// The npm shim names its target on one line, relative to the shim's own
+/// directory (`%dp0%`):
+///
+/// ```bat
+/// "%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*
+/// ```
+///
+/// ⚠ Only a **native executable** is taken. Codex's shim names a `.js` and runs
+/// it through `node`, and rewriting that into a direct `node script.js` spawn
+/// would drop the `PATHEXT` juggling the shim does around it. Codex's argv is
+/// short and newline-free, so it works through the shim as-is; leaving it there
+/// is deliberate, not an oversight.
+///
+/// A no-op off Windows, and a no-op for any path that is not a shim we
+/// recognise — a CLI installed as a real `.exe` already resolves to itself.
+fn through_cmd_shim(resolved: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        native_behind_cmd_shim(resolved).unwrap_or_else(|| resolved.to_path_buf())
+    }
+    #[cfg(not(windows))]
+    {
+        resolved.to_path_buf()
+    }
+}
+
+/// The native executable an npm `.cmd`/`.bat` shim launches, if it launches one.
+#[cfg(windows)]
+fn native_behind_cmd_shim(shim: &Path) -> Option<PathBuf> {
+    let is_batch = shim
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if !is_batch {
+        return None;
     }
 
-    SearchPaths::builder().with_npm().resolve(name).ok()
+    let dir = shim.parent()?;
+    let text = std::fs::read_to_string(shim).ok()?;
+
+    for line in text.lines() {
+        for segment in quoted_segments(line) {
+            // `%dp0%` carries batch's trailing separator, so the recorded form
+            // is `%dp0%\rest`.
+            let Some(rest) = strip_dp0(segment) else {
+                continue;
+            };
+            let candidate = dir.join(rest.trim_start_matches(['\\', '/']));
+            let is_exe = candidate
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
+            if is_exe && candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// `%dp0%`-relative remainder of a shim token, case-insensitively.
+#[cfg(windows)]
+fn strip_dp0(segment: &str) -> Option<&str> {
+    const MARKER: &str = "%dp0%";
+    let head = segment.get(..MARKER.len())?;
+    head.eq_ignore_ascii_case(MARKER)
+        .then(|| &segment[MARKER.len()..])
+}
+
+/// The double-quoted runs of a line, which is how a shim names its target.
+#[cfg(windows)]
+fn quoted_segments(line: &str) -> impl Iterator<Item = &str> {
+    line.split('"').skip(1).step_by(2)
 }
 
 /// Read the configured command for `kind` out of global config, if set.
@@ -682,6 +801,141 @@ mod tests {
                 error.contains(&format!("{}.", kind.not_installed_summary())),
                 "{kind:?}: {error}"
             );
+        }
+    }
+}
+
+/// Resolving an npm `.cmd` shim to the native executable behind it (Windows).
+///
+/// See [`through_cmd_shim`] for why this exists: a shim target routes through
+/// `cmd.exe`, which rejects any argument containing a newline and truncates at
+/// ~8191 characters, and `claude_code`'s `--system-prompt` is both multi-line
+/// and much longer than that.
+#[cfg(all(test, windows))]
+mod windows_shim_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Write an npm-style shim whose target is `target`, in npm's real layout.
+    fn shim_naming(dir: &Path, name: &str, target: &str) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).expect("create shim");
+        // The real npm cmd-shim preamble, abridged to the load-bearing line.
+        write!(
+            f,
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n\
+             :start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\"%dp0%\\{target}\"   %*\r\n"
+        )
+        .expect("write shim");
+        path
+    }
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::File::create(path).expect("touch");
+    }
+
+    #[test]
+    fn a_shim_resolves_to_the_native_executable_it_wraps() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+        touch(&exe);
+        let shim = shim_naming(
+            dir.path(),
+            "claude.cmd",
+            r"node_modules\@anthropic-ai\claude-code\bin\claude.exe",
+        );
+
+        assert_eq!(
+            through_cmd_shim(&shim),
+            exe,
+            "the shim must resolve to the .exe, or every turn dies with \
+             'batch file arguments are invalid'"
+        );
+    }
+
+    /// ⚠ Codex's shim runs a `.js` through `node`. There is no native binary to
+    /// find, and rewriting it into a direct `node script.js` spawn would drop
+    /// the `PATHEXT` juggling the shim does. Its argv is short and newline-free,
+    /// so it works through the shim — leaving it alone is the correct outcome.
+    #[test]
+    fn a_node_script_shim_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        touch(&dir.path().join("node_modules/@openai/codex/bin/codex.js"));
+        let shim = shim_naming(
+            dir.path(),
+            "codex.cmd",
+            r"node_modules\@openai\codex\bin\codex.js",
+        );
+
+        assert_eq!(
+            through_cmd_shim(&shim),
+            shim,
+            "a shim with no native target must be returned unchanged"
+        );
+    }
+
+    /// A shim naming an executable that is not actually there must not be
+    /// trusted — better the shim, which at least reports a real error.
+    #[test]
+    fn a_shim_naming_a_missing_executable_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shim = shim_naming(dir.path(), "ghost.cmd", r"bin\ghost.exe");
+        assert_eq!(through_cmd_shim(&shim), shim);
+    }
+
+    /// A CLI installed as a real `.exe` already resolves to itself.
+    #[test]
+    fn a_real_executable_is_returned_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = dir.path().join("claude.exe");
+        touch(&exe);
+        assert_eq!(through_cmd_shim(&exe), exe);
+    }
+
+    /// The marker is written `%dp0%` by npm but batch is case-insensitive.
+    #[test]
+    fn the_dp0_marker_is_matched_case_insensitively() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = dir.path().join("bin/tool.exe");
+        touch(&exe);
+        let path = dir.path().join("tool.cmd");
+        std::fs::write(&path, "@ECHO off\r\n\"%DP0%\\bin\\tool.exe\" %*\r\n").expect("write");
+        assert_eq!(through_cmd_shim(&path), exe);
+    }
+
+    /// ⚠ The end-to-end proof, against whatever is really installed on this
+    /// machine. A synthetic shim only shows the parser works on a shim we wrote
+    /// ourselves; this shows the resolution survives the real npm layout AND
+    /// that the resolved target accepts the argument shape that kills the shim.
+    ///
+    /// Skips when Claude Code is not installed, so it is silent on CI and
+    /// meaningful on a developer's Windows box.
+    #[test]
+    fn the_real_installed_claude_resolves_to_something_that_accepts_a_multiline_argument() {
+        let Some(resolved) = resolve_binary(CodingAgentKind::ClaudeCode, None) else {
+            eprintln!("claude is not installed here; skipping");
+            return;
+        };
+
+        // A `--system-prompt` is always multi-line. This is the exact shape that
+        // fails through a shim.
+        let multiline = "You are a helpful assistant.\nSecond line of the prompt.";
+        let outcome = std::process::Command::new(&resolved)
+            .arg("--version")
+            .arg(multiline)
+            .output();
+
+        match outcome {
+            Ok(_) => {}
+            Err(error) => panic!(
+                "resolved `{}` cannot carry a multi-line argument ({error}). A `.cmd` \
+                 shim routes through cmd.exe, which refuses them — resolution to the \
+                 native executable is what this test exists to prove.",
+                resolved.display()
+            ),
         }
     }
 }
