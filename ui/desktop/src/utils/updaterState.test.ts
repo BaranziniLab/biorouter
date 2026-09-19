@@ -262,20 +262,20 @@ describe('reduceUpdaterEvent — assisted-download mode', () => {
 
 describe('needsAssistedDownload', () => {
   it('is true only while an assisted update is found but not yet downloading', () => {
-    expect(
-      needsAssistedDownload({ phase: 'available', percent: 0, usingFallback: true })
-    ).toBe(true);
+    expect(needsAssistedDownload({ phase: 'available', percent: 0, usingFallback: true })).toBe(
+      true
+    );
     // electron-updater is doing it itself.
-    expect(
-      needsAssistedDownload({ phase: 'available', percent: 0, usingFallback: false })
-    ).toBe(false);
+    expect(needsAssistedDownload({ phase: 'available', percent: 0, usingFallback: false })).toBe(
+      false
+    );
     // bytes are already moving.
-    expect(
-      needsAssistedDownload({ phase: 'available', percent: 5, usingFallback: true })
-    ).toBe(false);
+    expect(needsAssistedDownload({ phase: 'available', percent: 5, usingFallback: true })).toBe(
+      false
+    );
     // nothing to download.
-    expect(
-      needsAssistedDownload({ phase: 'downloaded', percent: 100, usingFallback: true })
-    ).toBe(false);
+    expect(needsAssistedDownload({ phase: 'downloaded', percent: 100, usingFallback: true })).toBe(
+      false
+    );
   });
 });

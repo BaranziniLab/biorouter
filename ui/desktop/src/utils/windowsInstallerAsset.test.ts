@@ -45,7 +45,9 @@ describe('the Windows installer asset name', () => {
 
   it('is spelled the same way by the maker and the updater', () => {
     // The maker's single definition.
-    expect(forgeConfig).toMatch(/const WINDOWS_SETUP_EXE = `Biorouter-Setup-\$\{APP_VERSION\}\.exe`/);
+    expect(forgeConfig).toMatch(
+      /const WINDOWS_SETUP_EXE = `Biorouter-Setup-\$\{APP_VERSION\}\.exe`/
+    );
     expect(forgeConfig).toMatch(/setupExe:\s*WINDOWS_SETUP_EXE/);
 
     // The updater's expectation, with `v` being the release version.
