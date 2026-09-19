@@ -28,6 +28,13 @@ class InstalledDoctorTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.helper = Path(self.temp.name)
         (self.helper / 'manifest.json').write_text(json.dumps({'executable': 'ocu', 'upstream_version': '0.3.5'}))
+        # The payload file has to exist on disk. `validate_doctor` compares
+        # filesystem IDENTITY (`os.path.samefile`) rather than path spelling, so
+        # a manifest naming a file that was never written cannot be matched --
+        # and on macOS it fails in a way that reads as a path bug, because
+        # `tempfile` hands out `/var/...` while `resolve()` reports the
+        # `/private/var/...` the symlink points at.
+        (self.helper / 'ocu').write_bytes(b'not a real helper')
         self.report = {'computer_use': {'integrity': 'verified', 'development_override': False,
             'executable': str(self.helper / 'ocu'), 'target': 'linux-x64', 'runtime_version': '0.3.5',
             'status': 'ready', 'desktop_available': True, 'capture_available': True,
@@ -41,6 +48,26 @@ class InstalledDoctorTests(unittest.TestCase):
         denied = copy.deepcopy(self.report)
         denied['computer_use'].update(status='os_permission_required', permissions={'accessibility': False, 'screen_recording': True})
         self.validate(denied, ('os_permission_required',))
+
+    def test_a_missing_payload_is_named_not_raised_as_an_oserror(self):
+        # `os.path.samefile` raises OSError when EITHER side is absent, and the
+        # absent side that matters is the installed one: that is the broken
+        # install this check exists to catch. Asserting on ValueError is what
+        # makes the difference visible -- an OSError escapes as an unhandled
+        # traceback naming a single path.
+        (self.helper / 'ocu').unlink()
+        with self.assertRaises(ValueError) as caught:
+            self.validate(self.report)
+        self.assertIn('does not exist', str(caught.exception))
+        self.assertIn('ocu', str(caught.exception))
+
+    def test_a_symlinked_temp_root_is_still_the_same_payload(self):
+        # macOS hands out `/var/folders/...` while `resolve()` reports the
+        # `/private/var/...` it points at. Spelling differs, identity does not,
+        # and a spelling comparison fails every macOS run.
+        report = copy.deepcopy(self.report)
+        report['computer_use']['executable'] = str(self.helper / '.' / 'ocu')
+        self.validate(report)
 
     def test_wrong_installation_and_unverified_bytes_fail(self):
         for field, value in [('executable', '/another/install/ocu'), ('integrity', 'verified_on_start'),

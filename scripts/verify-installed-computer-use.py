@@ -82,10 +82,18 @@ def validate_doctor(document, helper, target, expected_status):
     # reintroduce exactly this failure. `os.path.samefile` compares file IDs and
     # is immune to all of it.
     reported = Path(report.get('executable', ''))
-    if not reported.exists() or not os.path.samefile(reported, expected):
+    # ⚠ Both sides must be probed BEFORE `samefile`, which raises `OSError` when
+    # either path is absent. Guarding only the reported side means a missing
+    # INSTALLED payload -- precisely the broken install this check exists to
+    # catch -- surfaces as a bare `FileNotFoundError` naming one path, instead of
+    # the sentence naming both. A check that cannot explain itself is barely a
+    # check.
+    missing = [str(p) for p in (reported, expected) if not p.exists()]
+    if missing or not os.path.samefile(reported, expected):
+        detail = f'; does not exist: {", ".join(missing)}' if missing else ''
         raise ValueError(
             'Doctor resolved outside the installed payload '
-            f'(reported {reported!s}, expected {expected!s})'
+            f'(reported {reported!s}, expected {expected!s}{detail})'
         )
     if report.get('target') != target or report.get('runtime_version') != manifest['upstream_version']:
         raise ValueError('Installed runtime target/version mismatch')
