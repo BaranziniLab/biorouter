@@ -42,7 +42,7 @@ change the system Python environment.
 
 ## Choose the operation
 
-When `computercontroller__pdf_tool` is callable, it offers text and embedded-image
+When `webdocuments__pdf_tool` is callable, it offers text and embedded-image
 extraction. Use it for supported inspection, checking incomplete extraction against
 the rendered page. Extracting embedded images is not page rendering. For creation,
 page operations, forms, or unsupported extraction, use the Python workflow below.

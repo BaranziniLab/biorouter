@@ -42,7 +42,7 @@ change the system Python environment.
 
 ## Read and plan
 
-When `computercontroller__docx_tool` is callable, it can extract text and perform
+When `webdocuments__docx_tool` is callable, it can extract text and perform
 simple document updates. Read its actual schema and use it when the operation fits;
 use Python for richer tables/layouts or when that tool is unavailable. Verify feature
 preservation whichever route is used.

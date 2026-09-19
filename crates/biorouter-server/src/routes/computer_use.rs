@@ -31,6 +31,28 @@ fn conflict(error: anyhow::Error) -> ErrorResponse {
     }
 }
 
+/// Separate "this chat will never run Computer Use" from "not yet".
+///
+/// ⚠ Only [`ModeForbidsComputerUse`] may be a 409 here. The interface treats a
+/// 409 from the status poll as a permanent verdict -- it hides the panel and
+/// stops polling for the life of the chat, taking the **Stop** button with it --
+/// so a chat that merely had no model bound yet, or whose runtime was briefly
+/// held by another chat, was written off forever and could not be recovered by
+/// binding a model, because the component never remounts. Everything else is
+/// retryable and says so, which is what keeps the poll alive.
+fn status_refusal(error: anyhow::Error) -> ErrorResponse {
+    if error
+        .downcast_ref::<biorouter::security::computer_use::ModeForbidsComputerUse>()
+        .is_some()
+    {
+        return conflict(error);
+    }
+    ErrorResponse {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: error.to_string(),
+    }
+}
+
 #[utoipa::path(get, path = "/agent/computer_use/setup", operation_id = "computer_use_setup", responses((status = 200, body = serde_json::Value)))]
 pub async fn setup() -> Json<serde_json::Value> {
     Json(biorouter_mcp::computer_use::probe_readiness(true).await)
@@ -62,7 +84,7 @@ pub async fn status(
         .extension_manager
         .computer_use_status(&request.session_id)
         .await
-        .map_err(conflict)?;
+        .map_err(status_refusal)?;
     status.runtime = biorouter_mcp::computer_use::probe_readiness(false).await;
     Ok(Json(status))
 }
@@ -133,5 +155,51 @@ mod tests {
         assert!(require_human(UserActionProof::Unproven).is_err());
         assert!(require_human(UserActionProof::NoKeyInstalled).is_err());
         assert!(require_human(UserActionProof::Proven).is_ok());
+    }
+
+    /// ⚠ The interface acts on the STATUS CODE, not on the sentence: a 409 from
+    /// the status poll hides the Computer Use panel and stops polling for the
+    /// rest of the chat, which removes the **Stop** button. So only the refusal
+    /// that can never change may be a 409.
+    ///
+    /// `status` also fails while a chat simply has no model bound yet -- the
+    /// state a chat is in whenever its restore did not bind one, which the
+    /// renderer treats as ready -- and while another chat holds the runtime.
+    /// Both of those become true a moment later, and while they shared 409 with
+    /// the mode refusal, binding a model could not bring the panel back: the
+    /// component is keyed on the chat id, so it never remounts.
+    #[test]
+    fn only_the_mode_refusal_is_permanent() {
+        use biorouter::security::computer_use::ModeForbidsComputerUse;
+
+        assert_eq!(
+            status_refusal(ModeForbidsComputerUse.into()).status,
+            StatusCode::CONFLICT
+        );
+        for transient in [
+            "Bind a model before starting Computer Use",
+            "Computer Use runtime belongs to a different chat",
+            "Computer Use is busy in another BioRouter process. Stop its task before switching control.",
+        ] {
+            let answer = status_refusal(anyhow::anyhow!(transient));
+            assert_eq!(
+                answer.status,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{transient:?} is not permanent and must not read as one"
+            );
+            assert_eq!(answer.message, transient, "the reason must survive");
+        }
+    }
+
+    /// A sentence that merely READS like the mode refusal is not one. This is
+    /// what keeps the classification on the type rather than drifting back into
+    /// a string comparison two crates apart.
+    #[test]
+    fn the_mode_refusal_is_a_type_not_a_sentence() {
+        let impostor = anyhow::anyhow!("Chat mode does not run Computer Use tools");
+        assert_eq!(
+            status_refusal(impostor).status,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

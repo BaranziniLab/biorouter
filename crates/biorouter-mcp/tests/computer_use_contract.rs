@@ -331,3 +331,93 @@ async fn capabilities_are_disjoint_and_listing_never_launches_a_helper() {
         assert!(developer.iter().all(|tool| tool.name != removed));
     }
 }
+
+/// Every `server__tool` a SHIPPED skill names must be a tool that server really
+/// advertises.
+///
+/// ⚠ This is not hygiene. A skill's prose is injected into the model's context
+/// as instructions, so a name that no longer resolves does not fail loudly — the
+/// model tries the call, gets "unknown tool", and silently falls back to the
+/// slower path the skill describes as a last resort. Nothing in CI noticed.
+///
+/// It had already happened when this test was written: the three office skills
+/// shipped on 2026-09-18 told the model to call
+/// `computercontroller__{docx,xlsx,pdf}_tool`, and those three tools had moved
+/// to the `webdocuments` server in this branch. The skills were right when they
+/// were written and wrong when they shipped, which is exactly the drift a
+/// cross-crate gate exists to catch: the skills live in `biorouter`, the tools
+/// in `biorouter-mcp`, and neither crate's own tests can see both halves.
+#[tokio::test]
+async fn every_tool_a_shipped_skill_names_is_a_tool_that_exists() {
+    let mut registry: Vec<(&str, Vec<String>)> = vec![
+        (
+            "computercontroller",
+            contract::tools()
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
+        ),
+        (
+            "webdocuments",
+            tools_over_mcp(WebDocumentsServer::new())
+                .await
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
+        ),
+        (
+            "developer",
+            tools_over_mcp(DeveloperServer::new())
+                .await
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
+        ),
+    ];
+    registry.sort();
+
+    let skills = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../biorouter/src/agents/builtin_skills")
+        .canonicalize()
+        .expect("builtin skills directory");
+    let mut checked = 0usize;
+    let mut unknown: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&skills).expect("read builtin skills") {
+        let skill = entry.expect("skill entry").path().join("SKILL.md");
+        let Ok(body) = std::fs::read_to_string(&skill) else {
+            continue;
+        };
+        // Only backtick-quoted references: prose mentions a server by name all
+        // the time, and matching those would make the gate noisy enough to be
+        // switched off.
+        for quoted in body.split('`').skip(1).step_by(2) {
+            let Some((server, tool)) = quoted.split_once("__") else {
+                continue;
+            };
+            if tool.is_empty() || !tool.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                continue;
+            }
+            let Some((_, tools)) = registry.iter().find(|(name, _)| *name == server) else {
+                continue;
+            };
+            checked += 1;
+            if !tools.iter().any(|name| name == tool) {
+                unknown.push(format!(
+                    "{}: `{quoted}` -- `{server}` advertises {tools:?}",
+                    skill.strip_prefix(&skills).unwrap_or(&skill).display()
+                ));
+            }
+        }
+    }
+    assert!(
+        unknown.is_empty(),
+        "shipped skills name {} tool(s) that do not exist:\n  {}",
+        unknown.len(),
+        unknown.join("\n  ")
+    );
+    // A gate that checked nothing would pass just as quietly as one that passed.
+    assert!(
+        checked >= 3,
+        "expected the office skills' tool references to be checked, saw {checked}"
+    );
+}
