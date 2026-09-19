@@ -72,8 +72,21 @@ def validate_doctor(document, helper, target, expected_status):
     expected = (helper / manifest['executable']).resolve()
     if report.get('integrity') != 'verified' or report.get('development_override') is not False:
         raise ValueError('Installed runtime integrity/override assertion failed')
-    if Path(report.get('executable', '')).resolve() != expected:
-        raise ValueError('Doctor resolved outside the installed payload')
+    # Compare filesystem IDENTITY, not path spelling. Two paths can name one
+    # file and still differ as strings: Windows' verbatim prefix (`\\?\C:\…`,
+    # which `Path.resolve()` preserves when it is already present), 8.3 short
+    # names, and case. The product now strips the verbatim prefix, but
+    # `dunce::simplified` deliberately declines to strip it when the plain form
+    # is not equivalent — a path over 260 characters, a reserved DOS name, a
+    # component ending in a dot or space — so a deep install directory would
+    # reintroduce exactly this failure. `os.path.samefile` compares file IDs and
+    # is immune to all of it.
+    reported = Path(report.get('executable', ''))
+    if not reported.exists() or not os.path.samefile(reported, expected):
+        raise ValueError(
+            'Doctor resolved outside the installed payload '
+            f'(reported {reported!s}, expected {expected!s})'
+        )
     if report.get('target') != target or report.get('runtime_version') != manifest['upstream_version']:
         raise ValueError('Installed runtime target/version mismatch')
     if report.get('status') not in expected_status:

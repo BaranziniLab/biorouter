@@ -55,8 +55,15 @@ pub fn validate(root: &Path, development_override: bool) -> Result<RuntimePayloa
 }
 
 fn inspect(root: &Path, development_override: bool, verify_hashes: bool) -> Result<RuntimePayload> {
-    let root = root
-        .canonicalize()
+    // ⚠ `dunce::canonicalize`, never `Path::canonicalize`. On Windows the latter
+    // returns a verbatim path (`\\?\C:\…`), and this value does not stay local:
+    // it becomes `RuntimePayload::root`/`executable`, which `diagnostics()`
+    // serializes into `biorouter doctor --format json`. The installed-payload
+    // acceptance check compares that against a path it spelled itself, and
+    // Python's `Path.resolve()` preserves a verbatim prefix it was given, so the
+    // two can never be equal and the check fails as "Doctor resolved outside the
+    // installed payload" on EVERY Windows install.
+    let root = dunce::canonicalize(root)
         .context("computer_use_missing_runtime: payload directory is unavailable")?;
     let bytes = std::fs::read(root.join("manifest.json"))
         .context("computer_use_missing_runtime: manifest.json is unavailable")?;
@@ -84,7 +91,15 @@ fn inspect(root: &Path, development_override: bool, verify_hashes: bool) -> Resu
         if !relative_path(&entry.path) {
             bail!("computer_use_incompatible_runtime: invalid payload path");
         }
-        let file = root.join(&entry.path).canonicalize()?;
+        // ⚠ This MUST use the same canonicaliser as `root` above, and changing
+        // one without the other is worse than changing neither. `starts_with`
+        // compares path COMPONENTS, and a prefix component carries its kind:
+        // `Prefix::Disk('C')` and `Prefix::VerbatimDisk('C')` are different
+        // values even though they name the same volume. A simplified `root`
+        // against a verbatim `file` therefore fails the containment check and
+        // every Windows install would bail with "payload file escapes its
+        // directory" — turning a reporting bug into a hard startup failure.
+        let file = dunce::canonicalize(root.join(&entry.path))?;
         if !file.starts_with(&root) {
             bail!("computer_use_incompatible_runtime: payload file escapes its directory");
         }
@@ -123,7 +138,7 @@ pub fn locate_for_executable(executable: &Path) -> Result<RuntimePayload> {
 }
 
 fn locate_executable(executable: &Path, verify_hashes: bool) -> Result<RuntimePayload> {
-    let exe = executable.canonicalize()?;
+    let exe = dunce::canonicalize(executable)?;
     let parent = exe
         .parent()
         .context("computer_use_missing_runtime: executable has no parent")?;
@@ -156,5 +171,98 @@ fn install_origin(bin: &Path) -> Option<PathBuf> {
     let raw = std::fs::read_to_string(bin.join(".biorouter-origin")).ok()?;
     let line = raw.trim_start_matches('\u{feff}').lines().next()?.trim();
     let path = Path::new(line);
-    path.is_absolute().then(|| path.to_path_buf())
+    // `biorouter::system::install_origin`, which this says it mirrors, ends with
+    // `dunce::simplified`. Dropping it here would let a breadcrumb written by an
+    // installer that spelled the path verbatim seed a verbatim candidate root.
+    path.is_absolute()
+        .then(|| dunce::simplified(path).to_path_buf())
+}
+
+#[cfg(all(test, windows))]
+mod windows_path_spelling_tests {
+    use super::*;
+    use std::path::Prefix;
+
+    /// Build a payload directory that `inspect` will accept, so the test
+    /// exercises the real function rather than a re-implementation of it.
+    fn payload(dir: &Path) -> std::io::Result<()> {
+        let exe = dir.join("ocu.exe");
+        std::fs::write(&exe, b"not a real helper")?;
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&exe)?));
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "upstream_version": UPSTREAM_VERSION,
+            "upstream_commit": UPSTREAM_COMMIT,
+            "patch_revision": "biorouter-1",
+            "target": target(),
+            "executable": "ocu.exe",
+            "files": [{ "path": "ocu.exe", "sha256": digest }],
+        });
+        std::fs::write(dir.join("manifest.json"), manifest.to_string())
+    }
+
+    /// ⚠ The bug this pins is a REPORTING bug with a remote blast radius, which
+    /// is why it survived: nothing on the Rust side misbehaves. `inspect`
+    /// canonicalizes, and on Windows `Path::canonicalize` returns a verbatim
+    /// path (`\?\C:\…`). That value becomes `RuntimePayload::executable`, which
+    /// `diagnostics()` serializes into `biorouter doctor --format json`, which
+    /// the installed-package acceptance check compares against a path it
+    /// spelled itself. Python's `Path.resolve()` PRESERVES a verbatim prefix it
+    /// is given, so the two strings can never match and the job fails with
+    /// "Doctor resolved outside the installed payload".
+    ///
+    /// It is unconditional on Windows. The acceptance job's install directory
+    /// happens to contain a space and a non-ASCII character, which makes the
+    /// failure look like an encoding problem; it is not, and chasing that is
+    /// how this stays unfixed.
+    #[test]
+    fn no_reported_payload_path_is_a_windows_verbatim_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        payload(dir.path()).expect("write payload");
+
+        let found = inspect(dir.path(), false, true).expect("payload must validate");
+
+        for (label, path) in [("root", &found.root), ("executable", &found.executable)] {
+            // Ask the path what KIND of prefix it has rather than matching the
+            // literal characters. The first draft of this test compared against
+            // a raw string and the assertion silently tested the wrong prefix,
+            // so it passed with the bug reinstated — a gate that cannot fail is
+            // worse than no gate. `Prefix::kind()` cannot be mis-spelled.
+            let verbatim = matches!(
+                path.components().next(),
+                Some(Component::Prefix(prefix)) if matches!(
+                    prefix.kind(),
+                    Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(..)
+                )
+            );
+            assert!(
+                !verbatim,
+                "{label} is a verbatim path ({}). It is serialized into \
+                 `biorouter doctor --format json`, where the installed-payload \
+                 check compares it against a plainly-spelled path and can never \
+                 match. Use `dunce::canonicalize`, not `Path::canonicalize`.",
+                path.display()
+            );
+        }
+    }
+
+    /// The containment check in `inspect` compares path COMPONENTS, and a
+    /// prefix component carries its kind — `Prefix::Disk('C')` is not equal to
+    /// `Prefix::VerbatimDisk('C')` even though both name drive C. So
+    /// simplifying `root` while leaving the per-file canonicalize verbatim does
+    /// not half-fix the bug, it converts it into a hard failure: every payload
+    /// file would "escape its directory" and no Windows install would start.
+    /// This test fails in exactly that case, which the test above cannot see.
+    #[test]
+    fn a_payload_validates_at_all_so_the_two_canonicalisers_agree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        payload(dir.path()).expect("write payload");
+
+        let found = inspect(dir.path(), false, true).expect(
+            "payload must validate: if this fails with 'payload file escapes its \
+             directory', `root` and the per-file path were canonicalised by \
+             different functions and their Prefix components disagree",
+        );
+        assert!(found.executable.starts_with(&found.root));
+    }
 }
