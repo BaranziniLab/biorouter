@@ -8,11 +8,17 @@ const mocks = vi.hoisted(() => ({
   decision: vi.fn(),
   setup: vi.fn(),
   browser: false,
+  // The component compares with `instanceof`, so the class it imports and the
+  // class the test throws must be the SAME object. Declaring it here and
+  // returning it from the factory is what guarantees that; importing the real
+  // module would also drag in the generated SDK this suite deliberately avoids.
+  NotApplicable: class ComputerUseNotApplicable extends Error {},
 }));
 vi.mock('./computerUseApi', () => ({
   computerUseStatus: mocks.status,
   computerUseDecision: mocks.decision,
   computerUseSetup: mocks.setup,
+  ComputerUseNotApplicable: mocks.NotApplicable,
 }));
 vi.mock('../../utils/surface', () => ({ isBrowserSurface: () => mocks.browser }));
 
@@ -40,6 +46,44 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('ComputerUseControl', () => {
+  it('renders nothing and stops polling when the chat mode forbids Computer Use', async () => {
+    // `GET /agent/computer_use/status` answers 409 for a Chat-mode session
+    // ("Chat mode does not run Computer Use tools"). That is a fact about the
+    // chat, not a transient fault: re-asking can never change it.
+    mocks.status.mockRejectedValue(
+      new mocks.NotApplicable('Chat mode does not run Computer Use tools')
+    );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    const { container } = render(<ComputerUseControl sessionId="task-a" />);
+    await waitFor(() => expect(mocks.status).toHaveBeenCalled());
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+
+    // Not an alert above the composer, and no Retry offering an action that
+    // cannot work.
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+
+    // And the 2 s poll is gone. Each surviving poll re-spawns the native
+    // helper's PowerShell/UIA bridge once its 30 s cache expires, for a chat
+    // that can never use it.
+    const settled = mocks.status.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(mocks.status.mock.calls.length).toBe(settled);
+  });
+
+  it('still retries an ordinary failure, which a mode refusal must not be confused with', async () => {
+    // The negative control for the test above: if "not applicable" swallowed
+    // every failure, a genuinely transient error would silently hide the panel
+    // instead of offering Retry.
+    mocks.status.mockRejectedValue(new Error('network down'));
+    render(<ComputerUseControl sessionId="task-a" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('network down');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
+  });
+
   it('discloses destination and host before a public grant and retains a working Stop', async () => {
     render(<ComputerUseControl sessionId="task-a" />);
     const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });

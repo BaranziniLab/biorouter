@@ -39,7 +39,28 @@ fi
 echo "Source of truth (Cargo [workspace.package].version): $truth"
 
 # ── helper: extract a JSON value with python (already a build dep) ────────────
-jget() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))$2)" "$1"; }
+#
+# ⚠ Resolve the interpreter; do not hardcode `python3`. On Windows `python3` is
+# normally a 0-byte Microsoft Store app-execution alias that exits 9009 with
+# "Python was not found", so `command -v python3` SUCCEEDS and running it does
+# not. This script then read every desktop version as the empty string and
+# reported drift against a tree that had none — a guard failing open into a
+# false alarm, which is the kind people learn to ignore.
+pick_python() {
+  local candidate
+  for candidate in python3 python py; do
+    # Must both exist AND execute: existence alone is what the Store alias fakes.
+    if command -v "$candidate" >/dev/null 2>&1 \
+      && "$candidate" -c 'import json,sys' >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  echo "✗ no working python interpreter found (tried python3, python, py)" >&2
+  exit 2
+}
+PY="$(pick_python)"
+jget() { "$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))$2)" "$1"; }
 
 # ── desktop JSON files ───────────────────────────────────────────────────────
 check() {

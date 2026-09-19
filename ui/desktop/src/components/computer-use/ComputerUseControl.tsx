@@ -5,6 +5,7 @@ import { PermissionCheckButton } from './PermissionCheckButton';
 import { Button } from '../ui/button';
 import { isBrowserSurface } from '../../utils/surface';
 import {
+  ComputerUseNotApplicable,
   computerUseDecision,
   computerUseSetup,
   computerUseStatus,
@@ -44,6 +45,8 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
   const [approvalKey, setApprovalKey] = useState('');
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
+  // A refusal this chat's mode produces, which re-asking cannot change.
+  const [notApplicable, setNotApplicable] = useState(false);
   const [sending, setSending] = useState(false);
   const [checking, setChecking] = useState(false);
   // Only that a check completed. The SENTENCE is derived from the runtime
@@ -76,7 +79,15 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
         setLoadError('');
       }
     } catch (failure) {
-      if (mounted.current && startedAt === generation.current) setLoadError(requestError(failure));
+      if (!mounted.current || startedAt !== generation.current) return;
+      // A refusal the chat's own mode produces is permanent. Re-asking cannot
+      // change it, so record it as "not applicable" rather than as an error:
+      // the panel disappears and the poll below stops. Treating it as retryable
+      // left a dead alert above the composer AND kept the 2 s poll running,
+      // which re-spawns the native helper's PowerShell/UIA bridge every 30 s
+      // for a chat that can never use it.
+      if (failure instanceof ComputerUseNotApplicable) setNotApplicable(true);
+      else setLoadError(requestError(failure));
     } finally {
       polling.current = false;
     }
@@ -84,13 +95,17 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     mounted.current = true;
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 2000);
+    // Nothing left to poll for once the answer is settled. Re-running this
+    // effect on `notApplicable` is what tears the existing interval down; the
+    // cleanup is returned on BOTH paths so unmount still marks us unmounted,
+    // otherwise an in-flight refresh could set state on a dead component.
+    const timer = notApplicable ? undefined : window.setInterval(() => void refresh(), 2000);
+    if (!notApplicable) void refresh();
     return () => {
       mounted.current = false;
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearInterval(timer);
     };
-  }, [refresh]);
+  }, [refresh, notApplicable]);
 
   const decide = async (action: 'consent' | 'revoke') => {
     if (!status || mutation.current || (action === 'consent' && !status.requested)) return;
@@ -139,6 +154,10 @@ function SessionComputerUseControl({ sessionId }: { sessionId: string }) {
     }
   };
 
+  // A chat whose mode forbids Computer Use has no panel at all -- not an empty
+  // one, and certainly not an error one. This sits ABOVE the `!status` branch
+  // because `status` stays undefined when the very first read is refused.
+  if (notApplicable) return null;
   if (!status)
     return loadError ? (
       <section aria-label="Computer Use" className={`${PANEL_SHELL} text-text-muted`}>

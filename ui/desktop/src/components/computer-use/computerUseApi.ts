@@ -53,13 +53,38 @@ function statusForDisplay(status: ApiComputerUseStatus): ComputerUseStatus {
   return { ...status, runtime: parseRuntime(status.runtime) };
 }
 
+/**
+ * Thrown when `GET /agent/computer_use/status` refuses in a way that RE-ASKING
+ * cannot change.
+ *
+ * The route answers 409 for a session whose mode forbids Computer Use outright
+ * ("Chat mode does not run Computer Use tools"). That is a statement about the
+ * chat, not a transient fault, and the difference matters twice over: a caller
+ * that treats it as retryable shows the user a permanent error they cannot act
+ * on, and it keeps polling a probe that re-spawns the native helper.
+ */
+export class ComputerUseNotApplicable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ComputerUseNotApplicable';
+  }
+}
+
 export async function computerUseStatus(sessionId: string): Promise<ComputerUseStatus> {
-  const response = await readComputerUseStatus({
+  // Deliberately NOT `throwOnError`: the status code is the signal, and
+  // throwing discards it. Every other helper here keeps `throwOnError` because
+  // a failed decision or probe really is retryable.
+  const result = await readComputerUseStatus({
     query: { session_id: sessionId },
     headers: await userActionHeaders(),
-    throwOnError: true,
   });
-  return statusForDisplay(response.data);
+  if (result.error !== undefined || result.data === undefined) {
+    const detail = result.error as { message?: string } | undefined;
+    const message = detail?.message ?? 'Computer Use status unavailable';
+    if (result.response?.status === 409) throw new ComputerUseNotApplicable(message);
+    throw new Error(message);
+  }
+  return statusForDisplay(result.data);
 }
 
 export async function computerUseDecision(

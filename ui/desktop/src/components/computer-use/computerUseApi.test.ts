@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computerUseDecision, computerUseSetup, computerUseStatus } from './computerUseApi';
+import {
+  ComputerUseNotApplicable,
+  computerUseDecision,
+  computerUseSetup,
+  computerUseStatus,
+} from './computerUseApi';
 
 const mocks = vi.hoisted(() => ({
   status: vi.fn(),
@@ -89,5 +94,35 @@ describe('generated Computer Use API adapter', () => {
       status: 'probe_failed',
       permissions: 'unknown',
     });
+  });
+});
+
+describe('a refusal that re-asking cannot change', () => {
+  it('maps a 409 to ComputerUseNotApplicable so the caller can stop asking', async () => {
+    // The route answers 409 for a session whose mode forbids Computer Use.
+    // Losing the STATUS here is what made the panel show a permanent error and
+    // keep polling a probe that re-spawns the native helper.
+    mocks.status.mockResolvedValue({
+      error: { message: 'Chat mode does not run Computer Use tools' },
+      response: { status: 409 },
+    });
+    await expect(computerUseStatus('task-a')).rejects.toBeInstanceOf(ComputerUseNotApplicable);
+    await expect(computerUseStatus('task-a')).rejects.toThrow(
+      'Chat mode does not run Computer Use tools'
+    );
+  });
+
+  it('leaves every other failure an ordinary, retryable Error', async () => {
+    // The discriminating control. A 500 or a 403 IS worth retrying, and must
+    // not be silently turned into "this chat has no Computer Use".
+    for (const code of [403, 500, 503]) {
+      mocks.status.mockResolvedValue({
+        error: { message: 'upstream unavailable' },
+        response: { status: code },
+      });
+      const failure = await computerUseStatus('task-a').catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(ComputerUseNotApplicable);
+    }
   });
 });
