@@ -7,6 +7,7 @@ import {
   stateFromSnapshot,
   isNewerVersion,
   normalizeVersion,
+  needsAssistedDownload,
   type UpdaterState,
 } from './updaterState';
 
@@ -206,5 +207,75 @@ describe('stateFromSnapshot', () => {
   it('carries the fallback flag', () => {
     const s = stateFromSnapshot({ status: 'downloaded', usingFallback: true });
     expect(s.usingFallback).toBe(true);
+  });
+});
+
+describe('reduceUpdaterEvent — assisted-download mode', () => {
+  /**
+   * ⚠ This is the load-bearing half of the Windows update fix.
+   *
+   * `usingFallback` lived on `UpdaterState` but was populated ONLY by
+   * `stateFromSnapshot`, i.e. by a renderer that mounted late enough to ask for
+   * a snapshot. The background check fires ~5s after launch, by which time the
+   * sidebar button is already mounted and driving itself purely from
+   * `reduceUpdaterEvent` — so it never learned it was in assisted mode, and the
+   * state it later handed the modal said `usingFallback: false` on a platform
+   * that cannot do a silent in-place update.
+   */
+  it('takes usingFallback from the live event', () => {
+    const state = reduceUpdaterEvent(initialUpdaterState, {
+      event: 'update-available',
+      data: { version: '1.86.0' },
+      usingFallback: true,
+    });
+    expect(state.usingFallback).toBe(true);
+    expect(state.phase).toBe('available');
+  });
+
+  /** An event that omits the flag must not silently clear a known mode. */
+  it('latches the mode across events that do not carry it', () => {
+    const inFallback = reduceUpdaterEvent(initialUpdaterState, {
+      event: 'update-available',
+      data: { version: '1.86.0' },
+      usingFallback: true,
+    });
+    const next = reduceUpdaterEvent(inFallback, {
+      event: 'download-progress',
+      data: { percent: 30 },
+    });
+    expect(next.usingFallback).toBe(true);
+  });
+
+  it('clears the mode when an event says the fallback is no longer in use', () => {
+    const inFallback = reduceUpdaterEvent(initialUpdaterState, {
+      event: 'update-available',
+      data: { version: '1.86.0' },
+      usingFallback: true,
+    });
+    const next = reduceUpdaterEvent(inFallback, {
+      event: 'checking-for-update',
+      usingFallback: false,
+    });
+    expect(next.usingFallback).toBe(false);
+  });
+});
+
+describe('needsAssistedDownload', () => {
+  it('is true only while an assisted update is found but not yet downloading', () => {
+    expect(
+      needsAssistedDownload({ phase: 'available', percent: 0, usingFallback: true })
+    ).toBe(true);
+    // electron-updater is doing it itself.
+    expect(
+      needsAssistedDownload({ phase: 'available', percent: 0, usingFallback: false })
+    ).toBe(false);
+    // bytes are already moving.
+    expect(
+      needsAssistedDownload({ phase: 'available', percent: 5, usingFallback: true })
+    ).toBe(false);
+    // nothing to download.
+    expect(
+      needsAssistedDownload({ phase: 'downloaded', percent: 100, usingFallback: true })
+    ).toBe(false);
   });
 });
