@@ -45,6 +45,37 @@ export const initialUpdaterState: UpdaterState = {
 export interface UpdaterEventPayload {
   event: string;
   data?: unknown;
+  /**
+   * Whether the main process is serving this event from the assisted GitHub
+   * downloader rather than electron-updater.
+   *
+   * ⚠ This rides on every event, not just the snapshot. `usingFallback` existed
+   * on `UpdaterState` and was only ever populated by `stateFromSnapshot`, so a
+   * renderer that mounted before the check (the normal case -- the background
+   * check fires ~5s after launch) never learned it was in assisted mode and
+   * showed the silent-in-place-update copy on a platform that cannot do one.
+   */
+  usingFallback?: boolean;
+}
+
+/**
+ * Is the app waiting for the user to start an assisted download?
+ *
+ * ⚠ The distinction this encodes is the whole Windows update bug. On macOS
+ * electron-updater downloads the update by itself, so `phase === 'available'`
+ * genuinely means "downloading in the background". On Windows there is no
+ * electron-updater manifest, the GitHub fallback takes over, and that fallback
+ * deliberately does NOT download -- it waits for the user, via the
+ * `download-update` IPC (see `autoUpdater.ts`, "Deliberately NOT downloaded
+ * here"). Nothing in the renderer ever invoked that IPC, so the modal promised
+ * a background download that was never going to start and parked a progress bar
+ * at 0% forever.
+ *
+ * So in assisted mode `available` means "found, awaiting your go-ahead", and
+ * only once a download is actually running does progress mean anything.
+ */
+export function needsAssistedDownload(state: UpdaterState): boolean {
+  return state.phase === 'available' && state.usingFallback && state.percent === 0;
 }
 
 export function normalizeVersion(v: unknown): string {
@@ -108,6 +139,15 @@ function percentFromData(data: unknown): number | undefined {
  * new object and never mutates `prev`.
  */
 export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayload): UpdaterState {
+  // Latch it: the main process stamps every event, but a payload that omits it
+  // (an older main process, or a hand-built test event) must not silently clear
+  // a mode we already know we are in.
+  const prevState: UpdaterState =
+    payload.usingFallback === undefined
+      ? prev
+      : { ...prev, usingFallback: payload.usingFallback };
+  prev = prevState;
+
   switch (payload.event) {
     case 'checking-for-update':
       // Don't clobber a finished download with a later background re-check.
