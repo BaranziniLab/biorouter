@@ -260,7 +260,68 @@ fn strip_literals(text: &str) -> String {
     out
 }
 
-/// Line numbers inside a `#[cfg(test)]` module. Test children are spawned by a
+/// Split a `cfg` predicate list on the commas that sit at nesting depth zero,
+/// so `all(test, windows)` yields `["test", "windows"]` and
+/// `all(test, any(a, b))` yields `["test", "any(a, b)"]` rather than splitting
+/// the inner list.
+fn split_top_level(list: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in list.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(list[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(list[start..].trim());
+    parts
+}
+
+/// Whether a `cfg` predicate holds ONLY in a test build.
+///
+/// `all(...)` is test-only when any of its arms is, because every arm must
+/// hold. `any(...)` and `not(...)` are deliberately NOT test-only: an item
+/// gated that way also exists in a normal build, so its spawn sites are
+/// production code and must stay in the census. Erring that way keeps this
+/// function's mistakes in the direction of over-reporting, which is visible,
+/// rather than under-reporting, which is silent.
+fn cfg_is_test_only(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    if predicate == "test" {
+        return true;
+    }
+    match predicate
+        .strip_prefix("all(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        Some(inner) => split_top_level(inner).into_iter().any(cfg_is_test_only),
+        None => false,
+    }
+}
+
+/// Whether an attribute line gates the item below it to test builds only.
+///
+/// ⚠ Matching the literal string `#[cfg(test)]` is not enough, and it fails
+/// SILENTLY in the dangerous direction. A module gated `#[cfg(all(test,
+/// windows))]` is invisible to such a matcher, so every spawn site inside it
+/// is reported as production code — which is exactly what happened when the
+/// Claude Code shim's Windows-only test module landed: a census written
+/// against one spelling met a second one and cried wolf. There are 14 such
+/// modules in this repo, so the spelling is ordinary, not exotic.
+fn is_test_only_cfg(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("#[cfg(")
+        .and_then(|rest| rest.strip_suffix(")]"))
+        .is_some_and(cfg_is_test_only)
+}
+
+/// Line numbers inside a test-only module. Test children are spawned by a
 /// console test runner and never open a window.
 ///
 /// ⚠ The obvious brace-matcher is wrong, and wrong in the direction that makes
@@ -275,7 +336,7 @@ fn test_module_lines(text: &str) -> BTreeSet<usize> {
     let mut marked = BTreeSet::new();
     let mut i = 0;
     while i < lines.len() {
-        if !lines[i].trim_start().starts_with("#[cfg(test)]") {
+        if !is_test_only_cfg(lines[i]) {
             i += 1;
             continue;
         }
@@ -532,4 +593,96 @@ fn the_known_hot_paths_are_covered() {
              paths whose console flash was reported on Windows"
         );
     }
+}
+
+/// The census must recognise EVERY spelling of a test-only gate, not just the
+/// bare `#[cfg(test)]`.
+///
+/// ⚠ This is a regression test for a real merge failure, and the failure mode
+/// is worth stating because it is not the obvious one. The census and the
+/// Claude Code shim fix were written on separate branches. Each passed alone.
+/// The moment they met on `main`, the shim's `#[cfg(all(test, windows))] mod
+/// windows_shim_tests` became invisible to a matcher that only knew
+/// `#[cfg(test)]`, so a `std::process::Command` inside a `#[test]` function was
+/// reported as a production console flash. A census that cries wolf gets
+/// disabled, which costs the coverage it exists to provide.
+#[test]
+fn a_test_only_gate_is_recognised_however_it_is_spelled() {
+    for spelling in [
+        "#[cfg(test)]",
+        "#[cfg(all(test, windows))]",
+        "#[cfg(all(windows, test))]", // order must not matter
+        "#[cfg(all(test, unix))]",
+        "#[cfg(all(test, target_os = \"macos\"))]",
+        "#[cfg(all(test, feature = \"aws-providers\"))]",
+        "    #[cfg(all(test, windows))]", // indented
+        "#[cfg(all(test, all(windows, feature = \"x\")))]", // nested
+    ] {
+        assert!(
+            is_test_only_cfg(spelling),
+            "`{spelling}` gates its module to test builds, so the census must \
+             skip the spawn sites inside it"
+        );
+    }
+}
+
+/// The other direction, and the one that matters more: over-excluding is
+/// SILENT. If this predicate ever returns true for a gate that also holds in a
+/// normal build, the census stops reporting real production spawn sites and
+/// nothing tells us.
+#[test]
+fn a_gate_that_also_holds_outside_tests_is_not_treated_as_test_only() {
+    for spelling in [
+        "#[cfg(windows)]",
+        "#[cfg(unix)]",
+        "#[cfg(not(test))]",                 // the exact inverse
+        "#[cfg(any(test, windows))]",        // holds on windows WITHOUT test
+        "#[cfg(all(not(test), windows))]",   // holds only outside test
+        "#[cfg(feature = \"test-utils\")]",  // merely contains the word "test"
+        "#[cfg(feature = \"integration-test\")]",
+        "let x = 1;",                        // not an attribute at all
+        "#[test]",                           // a test fn, not a module gate
+    ] {
+        assert!(
+            !is_test_only_cfg(spelling),
+            "`{spelling}` can hold in a normal build, so a spawn site under it \
+             is production code and must stay in the census"
+        );
+    }
+}
+
+/// End-to-end proof against the real file that broke, rather than a synthetic
+/// string. A fixture only states what we think the tree looks like.
+#[test]
+fn the_real_windows_only_test_module_is_excluded_from_the_census() {
+    let root = repo_root();
+    let rel = "crates/biorouter/src/providers/coding_agent/discovery.rs";
+    let text = std::fs::read_to_string(root.join(rel))
+        .unwrap_or_else(|e| panic!("{rel} must be readable: {e}"));
+
+    // Precondition: this test is meaningless if the module was renamed or
+    // re-gated, so fail loudly rather than passing vacuously.
+    let gate = "#[cfg(all(test, windows))]";
+    let gate_at = text
+        .lines()
+        .position(|l| l.trim() == gate)
+        .unwrap_or_else(|| {
+            panic!("{rel} no longer contains a `{gate}` module — this test's premise is gone")
+        });
+
+    let spawn_at = text
+        .lines()
+        .position(|l| l.contains("std::process::Command::new(&resolved)"))
+        .expect("the live shim test must still spawn the resolved binary");
+    assert!(
+        spawn_at > gate_at,
+        "the spawn site must sit inside the gated module for this test to mean anything"
+    );
+
+    let marked = test_module_lines(&text);
+    assert!(
+        marked.contains(&(spawn_at + 1)),
+        "line {} of {rel} is inside `{gate}` and must be excluded from the census",
+        spawn_at + 1
+    );
 }
