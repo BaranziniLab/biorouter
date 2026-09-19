@@ -216,9 +216,15 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter-bench` | — | Benchmarking harness |
 | `biorouter-test` | — | Integration tests |
 
-Only four of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
-`biorouter mcp <name>` — `autovisualiser`, `computercontroller`, `developer`,
-`memory` (the `McpCommand` enum in `mcp_server_runner.rs`).
+Only five of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
+`biorouter mcp <name>` — `autovisualiser`, `computercontroller`, `webdocuments`,
+`developer`, `memory` (the `McpCommand` enum in `mcp_server_runner.rs`).
+⚠ `computercontroller` is the **Computer Use** server: the extension key kept its
+legacy spelling so existing `config.yaml` entries and per-chat tool overrides keep
+working, and only the display name changed. The web, document and cache tools that
+used to live under that key — `web_scrape`, `xlsx_tool`, `docx_tool`, `pdf_tool`,
+`cache` — moved to `webdocuments`, so a `computercontroller__docx_tool` written
+anywhere now names nothing. Three shipped office skills did exactly that.
 `agent_drafter` (as `appcontrol`), `datasql`, `files_server` and `compute_server`
 are injected **in-process** by `configure_agent` in `routes/apps.rs` via
 `add_inprocess_server`, and have no subprocess name; their absence from that enum
@@ -1600,7 +1606,8 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 
 ### Native Computer Use
 
-`computercontroller` exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
+`computercontroller` — the extension key Computer Use kept for config
+compatibility — exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
 `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
 `screen_capture`. The native helper owns all desktop observation/control; Developer has no
 capture or control tool. `webdocuments` owns web/document/cache utilities. Old scripting,

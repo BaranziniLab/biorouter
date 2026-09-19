@@ -11,6 +11,25 @@ use uuid::Uuid;
 
 use crate::agents::types::SharedProvider;
 
+/// The ONE refusal from [`ComputerUseConsent::status`] that re-asking can never
+/// change: this chat's MODE does not run Computer Use tools.
+///
+/// ⚠ It is a TYPE and not a sentence because the caller that has to tell it
+/// apart is an HTTP route in another crate, and what it does with the answer is
+/// permanent: the interface renders a 409 as "this chat cannot use Computer
+/// Use", hides the panel, and tears down its poll for the life of the chat --
+/// taking the **Stop** button, the safety control of a desktop-control feature,
+/// with it.
+///
+/// `status` also fails for reasons that are merely NOT YET true: the chat has
+/// no model bound, or another chat holds the runtime. While all of them
+/// collapsed into one 409, a chat that was a moment from working was written
+/// off forever. Matching on the message text instead would put that distinction
+/// in a string literal two crates apart.
+#[derive(Debug, thiserror::Error)]
+#[error("Chat mode does not run Computer Use tools")]
+pub struct ModeForbidsComputerUse;
+
 pub const APPROVAL_REQUIRED: &str = "COMPUTER_USE_APPROVAL_REQUIRED";
 pub const TOOLS: &[&str] = &[
     "list_apps",
@@ -194,10 +213,9 @@ impl ComputerUseConsent {
         session: &str,
         provider: &SharedProvider,
     ) -> Result<ComputerUseStatus> {
-        ensure!(
-            self.execution_allowed.load(Ordering::Acquire),
-            "Chat mode does not run Computer Use tools"
-        );
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            return Err(ModeForbidsComputerUse.into());
+        }
         let scope = Self::scope(session, provider).await?;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut desktop = desktop().lock().unwrap_or_else(|e| e.into_inner());
@@ -381,10 +399,9 @@ impl ComputerUseConsent {
         cancel: &CancellationToken,
     ) -> Result<ComputerUsePermit> {
         ensure!(!crate::user_surface::no_human_surface(), "{APPROVAL_REQUIRED}: Computer Use must run within its approved chat request; an identity-free API call cannot consume a chat's grant");
-        ensure!(
-            self.execution_allowed.load(Ordering::Acquire),
-            "Chat mode does not run Computer Use tools"
-        );
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            return Err(ModeForbidsComputerUse.into());
+        }
         let status = self.status(session, provider).await?;
         let (expected_scope, expected_task) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());

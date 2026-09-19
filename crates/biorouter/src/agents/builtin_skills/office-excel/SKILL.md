@@ -42,7 +42,7 @@ change the system Python environment.
 
 ## Read and plan
 
-When `computercontroller__xlsx_tool` is callable, prefer it for supported existing
+When `webdocuments__xlsx_tool` is callable, prefer it for supported existing
 workbook inspection (worksheets, ranges, cells, formulas) and simple cell edits.
 Read its schema; it is not a new-workbook builder or formula calculation engine.
 For richer authoring or unavailable tools, use the Python workflow below.

@@ -273,6 +273,23 @@ def stop_tree(child):
         pass
 
 
+def tail_text(path, limit=4000):
+    """The tail of a text file written by a process we just killed.
+
+    Best-effort on purpose: this runs inside the construction of an error
+    message, and a diagnostic that can itself raise would replace the real
+    failure with its own.
+    """
+    try:
+        text = path.read_text(errors='replace').strip()
+    except OSError as error:
+        return f'(stderr unreadable: {error})'
+    if not text:
+        return '(stderr was empty -- doctor produced no phase breadcrumb at all, ' \
+               'so it had not reached its first phase)'
+    return text[-limit:]
+
+
 def run_doctor(cli, env, scratch):
     """Run the installed `doctor` twice, observing process exit independently of its pipes.
 
@@ -307,12 +324,23 @@ def run_doctor(cli, env, scratch):
             except subprocess.TimeoutExpired:
                 written = out.read_bytes()
                 stop_tree(child)
+                # ⚠ Read stderr too. stdout carries the JSON and is written only
+                # at the END, so on a timeout it is empty BY CONSTRUCTION and
+                # says nothing about where the time went -- which left the
+                # Windows job reporting "exceeded its 40s budget, stdout held no
+                # output" and no way to tell a slow dependency probe from a slow
+                # Computer Use probe from a wedged process. `doctor` writes one
+                # `[doctor] <phase> (+Ns)` breadcrumb per phase to stderr for
+                # exactly this moment; the non-timeout failure path below already
+                # reported stderr, and only this path threw it away.
+                trace = tail_text(err)
                 raise ValueError(
                     f'Installed doctor ({attempt}) exceeded its {budget}s budget. '
                     f'Its stdout held {describe_output(written)}. '
                     # Carry what already finished, so a reader sees the cold cost
                     # instead of inferring it from what the warm run had left.
                     f'Completed attempts: {timings or "none"}. '
+                    f'Phase trace (stderr):\n{trace}\n'
                     f'Live processes:\n{process_tree()}') from None
         elapsed = time.monotonic() - started
         # A descendant that outlives the CLI is the OTHER mechanism that can make

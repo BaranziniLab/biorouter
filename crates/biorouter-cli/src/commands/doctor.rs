@@ -17,19 +17,59 @@ async fn computer_use_diagnostics() -> serde_json::Value {
     status
 }
 
+/// Say on stderr which phase is in flight, and how long the last one took.
+///
+/// ⚠ This exists because a `doctor` that exceeds its caller's budget is killed,
+/// and stdout is written only at the END — so a reader is handed an empty file
+/// and no way to tell a slow dependency probe from a slow Computer Use probe
+/// from a wedged process. That is exactly the state the Windows package job was
+/// left in: "exceeded its 40s budget, stdout held no output", with nothing to
+/// say where the 40 seconds went.
+///
+/// stderr, not stdout: `--format json` must stay machine-readable, and callers
+/// that capture stdout for parsing already keep stderr separate.
+fn phase(label: &str, since: &mut std::time::Instant) {
+    let elapsed = since.elapsed();
+    eprintln!("[doctor] {label} (+{:.2}s)", elapsed.as_secs_f64());
+    *since = std::time::Instant::now();
+}
+
 fn section(title: &str) {
     println!("  {} {}", style("▌").fg(ACCENT), style(title).bold());
 }
 
 pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
-    let deps = system::check_all();
+    let mut mark = std::time::Instant::now();
+    phase("start", &mut mark);
+    // ⚠ Concurrent, not sequential. These two are independent — one probes the
+    // prerequisites, the other the bundled Computer Use helper — and each is
+    // already bounded on its own (12s per prerequisite; 30s for the readiness
+    // probe plus its shutdown). Run in series their worst cases ADD, which is
+    // how `doctor` came to exceed budgets its callers had sized for one of them:
+    // the desktop kills it at DOCTOR_TIMEOUT_MS = 20_000 and silently falls back
+    // to its own probes, and the installed-package job allows 40s.
+    //
+    // `check_all` is synchronous and does its own threading, so it goes on a
+    // blocking task rather than being awaited on this one.
+    let (deps, computer_use) = tokio::join!(
+        tokio::task::spawn_blocking(system::check_all),
+        computer_use_diagnostics()
+    );
+    // ⚠ Never `unwrap_or_default()` here. A panicked probe would then report an
+    // EMPTY dependency list, which renders as "nothing is missing" — a check
+    // that cannot fail is worse than no check. A JoinError is a bug in us and
+    // should say so.
+    let deps = deps.map_err(|error| {
+        anyhow::anyhow!("the dependency check panicked rather than reporting a result: {error}")
+    })?;
+    phase("dependencies + computer use", &mut mark);
     let cli_path = system::biorouter_on_path();
-    let computer_use = computer_use_diagnostics().await;
     // Snapshot the local-model sidecar. `status()` health-probes the configured
     // port, so this also detects a llama-server started by the desktop app or a
     // standalone `biorouterd` — useful for "the local model works in the app but
     // my CLI says nothing".
     let llama = llamacpp_sidecar::global().status().await;
+    phase("local model sidecar", &mut mark);
     let model_cache_dir = llamacpp_sidecar::model_cache_dir().display().to_string();
     // Best-effort, networked (offline → None); skipped for fast callers (GUI).
     let update = if check_update {

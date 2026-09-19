@@ -346,6 +346,30 @@ fn operation_is_mutating(tool_name: &str, args: &Map<String, Value>) -> bool {
             None => true, // no explicit command → fail safe (check it)
         };
     }
+    // ⚠ A tool whose destructive verb lives in an ARGUMENT rather than in its
+    // name is invisible to a name-only rule, and the shipped example is
+    // `webdocuments__cache`: it is named for the thing it manages, and
+    // `{command: "delete", path: …}` calls `fs::remove_file` on whatever that
+    // path names. "cache" contains no mutating hint and no read-only hint, so
+    // the rule below answered `false` and no approval card was ever built —
+    // in Auto mode the delete simply happened.
+    //
+    // The editor branch above already treats `command` as authoritative for the
+    // one tool family that was known to carry it; this generalises that to any
+    // tool that does. Only a single-token value counts as a verb: `developer__shell`
+    // also carries `command`, but its value is a command LINE and is scanned as
+    // one by `command_findings`, so admitting whitespace here would grade the
+    // same string twice under two different meanings.
+    if let Some(verb) = args.get("command").and_then(Value::as_str) {
+        let verb = verb.trim().to_ascii_lowercase();
+        if !verb.is_empty()
+            && !verb.contains(char::is_whitespace)
+            && (MUTATING_EDITOR_COMMANDS.contains(&verb.as_str())
+                || MUTATING_NAME_HINTS.iter().any(|hint| verb.contains(hint)))
+        {
+            return true;
+        }
+    }
     if READONLY_NAME_HINTS.iter().any(|h| name.contains(h)) {
         return false;
     }
@@ -1864,6 +1888,79 @@ mod tests {
     }
 
     // --- mutation detection -----------------------------------------------
+
+    /// The verb can live in an ARGUMENT instead of the tool's name, and then a
+    /// name-only rule cannot see it. `webdocuments__cache` is the shipped case:
+    /// `{command: "delete", path: …}` calls `fs::remove_file` on that path, so
+    /// in Auto mode the file went without an approval card ever being built.
+    #[test]
+    fn a_verb_in_an_argument_is_a_mutation_even_when_the_name_is_inert() {
+        assert!(
+            operation_is_mutating(
+                "webdocuments__cache",
+                &args(json!({"command": "delete", "path": "~/.ssh/id_rsa"}))
+            ),
+            "cache delete must read as a mutation"
+        );
+        for read_only in [
+            json!({"command": "view", "path": "~/.ssh/id_rsa"}),
+            json!({"command": "list"}),
+        ] {
+            assert!(
+                !operation_is_mutating("webdocuments__cache", &args(read_only.clone())),
+                "{read_only} must stay read-only"
+            );
+        }
+    }
+
+    /// ⚠ The coverage this replaced was an ACCIDENT, which is the whole reason
+    /// moving the tool removed it silently.
+    ///
+    /// `cache` was `computercontroller__cache` until the Computer Use change,
+    /// and that name matches [`MUTATING_NAME_HINTS`] — not because anything in
+    /// it is a verb, but because `"put"` is a substring of `"com·put·er"`. So
+    /// EVERY `computercontroller__*` tool graded as mutating, `cache delete`
+    /// among them, and the gate appeared to work. Renaming the server to
+    /// `webdocuments` dropped the letters and the gate with them.
+    ///
+    /// Pinned so nobody re-derives the coverage from the name. A rule that
+    /// holds only while a product name happens to contain three letters is not
+    /// a rule.
+    #[test]
+    fn the_old_names_matched_the_mutating_hints_only_by_accident() {
+        assert!(MUTATING_NAME_HINTS.contains(&"put"));
+        assert!(
+            "computercontroller__cache".contains("put"),
+            "the old coverage came from com-PUT-er, not from a verb"
+        );
+        assert!(
+            !"webdocuments__cache".contains("put"),
+            "the new name has no accidental hint, which is what exposed the gap"
+        );
+        // Both names must now be graded on the ARGUMENT, not on their letters.
+        for tool in ["webdocuments__cache", "computercontroller__cache"] {
+            assert!(operation_is_mutating(
+                tool,
+                &args(json!({"command": "delete", "path": "~/x"}))
+            ));
+        }
+    }
+
+    /// ⚠ A command LINE is not a verb. `developer__shell` also carries
+    /// `command`, and its value is graded as a shell command by
+    /// `command_findings`. Admitting whitespace here would grade one string
+    /// twice under two different meanings, and the false positives land as
+    /// approval prompts in Auto mode — the failure mode that gets a gate
+    /// switched off rather than obeyed.
+    #[test]
+    fn a_command_line_is_not_read_as_a_verb() {
+        for line in ["rm -rf /tmp/x", "cp a b", "git remote -v", "echo move"] {
+            assert!(
+                !operation_is_mutating("developer__shell", &args(json!({"command": line}))),
+                "{line:?} must not be graded as a verb by the name rule"
+            );
+        }
+    }
 
     #[test]
     fn editor_view_is_not_a_mutation_but_writes_are() {
