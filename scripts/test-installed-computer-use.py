@@ -147,12 +147,20 @@ class InstalledDoctorInvocationTests(unittest.TestCase):
 
     def test_a_doctor_that_never_finishes_fails_with_what_it_had_written(self):
         cli, scratch = self.fake_cli('sleep 90\n')
-        with patch.object(installed, 'DOCTOR_TIMEOUT', 1):
+        # Patch the PER-ATTEMPT budgets: the loop reads these, not the total.
+        with patch.object(installed, 'ATTEMPT_TIMEOUTS', {'cold': 1, 'warm': 1}):
             with self.assertRaises(ValueError) as caught:
                 installed.run_doctor(cli, dict(os.environ), scratch)
         message = str(caught.exception)
-        self.assertIn('exceeded', message)
+        self.assertIn('(cold)', message)
+        self.assertIn('exceeded its 1s budget', message)
         self.assertIn('no output, so the work had not finished', message)
+
+    def test_a_slow_cold_run_cannot_squeeze_the_warm_one(self):
+        # A single shared deadline let a slow cold attempt starve the warm one, so
+        # the reported failure named the WRONG attempt. Each gets its own budget.
+        self.assertEqual(installed.DOCTOR_TIMEOUT, sum(installed.ATTEMPT_TIMEOUTS.values()))
+        self.assertGreaterEqual(installed.ATTEMPT_TIMEOUTS['warm'], 20)
 
     def test_a_truncated_document_is_not_reported_as_a_finished_run(self):
         # Rust's stdout is line-buffered, so a doctor that hangs partway through

@@ -2,6 +2,7 @@ const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-natives');
 const { resolve } = require('path');
+const { mkdirSync, writeFileSync } = require('fs');
 const { verifyPackagedDependencies } = require('./scripts/verify-packaged-dependencies');
 const { verifyComputerUse } = require('./scripts/computer-use-resources');
 const { prepareNativeDependencies } = require('./scripts/prepare-native-dependencies');
@@ -161,9 +162,66 @@ let cfg = {
   ],
 };
 
+/**
+ * Stop rpmbuild rewriting the Computer Use helper behind our back.
+ *
+ * `%__os_install_post` runs over the buildroot. On Debian/Ubuntu rpm 4.18 that
+ * includes `brp-strip-comment-note`, whose selector is the COMPLEMENT of
+ * brp-strip's: it matches ELF files that are already `stripped`, which is
+ * exactly what the helper is (built with `-ldflags=-s -w`). It then runs
+ * `strip -R .comment -R .note` on it. The helper has neither section, but GNU
+ * strip still REPACKS the file -- `.shstrtab` slides into the alignment gap
+ * after `.data` and `e_shoff` is rewritten -- taking `ocu` from 2,609,314 to
+ * 2,606,840 bytes. The binary still runs, so the only thing that notices is the
+ * provenance check, which rejected the rpm with "Helper payload was modified,
+ * incomplete, or contains unrecorded files" while the deb passed (dpkg does not
+ * post-process, and the CLI rpm is written directly by nfpm, never rpmbuild).
+ *
+ * There is no supported option for this: electron-installer-redhat spawns
+ * rpmbuild with a fixed argv and generates its spec from a hardcoded template,
+ * with no `specTemplate` equivalent to the desktop file's. What rpmbuild does
+ * still read is `$HOME/.rpmmacros`, and the maker's spawn inherits `process.env`
+ * -- so a build-scoped HOME is the one lever left. Scoped to the rpm make only,
+ * and restored afterwards, so nothing else in the build sees a moved HOME.
+ */
+let restoreHome;
+
+function useRpmMacros() {
+  // Linux only: this is the sole platform that runs rpmbuild, and a moved HOME
+  // has no business affecting the macOS or Windows makers.
+  if (process.platform !== 'linux') return;
+  const home = resolve(__dirname, 'out/.rpm-home');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    resolve(home, '.rpmmacros'),
+    // Disable the post-install binary rewriting entirely. The helper's bytes are
+    // verified against a recorded manifest, so anything that edits them after the
+    // build invalidates that provenance -- which is the whole point of the check.
+    '%__os_install_post %{nil}\n%__strip /bin/true\n%_build_id_links none\n'
+  );
+  const previous = process.env.HOME;
+  process.env.HOME = home;
+  restoreHome = () => {
+    if (previous === undefined) delete process.env.HOME;
+    else process.env.HOME = previous;
+    restoreHome = undefined;
+  };
+}
+
+function releaseRpmMacros() {
+  if (restoreHome) restoreHome();
+}
+
 module.exports = {
   packagerConfig: cfg,
   hooks: {
+    preMake: async () => {
+      useRpmMacros();
+    },
+    postMake: async (_config, results) => {
+      releaseRpmMacros();
+      return results;
+    },
     prePackage: async (_config, platform, arch) => {
       verifyComputerUse(resolve(__dirname, 'src/computer-use'), `${platform}-${arch}`);
       // Linux has no node-pty prebuild, and npm may disable dependency install scripts.
@@ -296,7 +354,6 @@ module.exports = {
             'at-spi2-core',
             'gtk3',
           ],
-          fpm: ['--rpm-rpmbuild-define', '_build_id_links none'],
         },
       },
     },

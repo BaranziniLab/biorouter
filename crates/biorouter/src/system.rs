@@ -371,8 +371,18 @@ fn probe_until(cmd: &str, args: &[&str], deadline: std::time::Instant) -> ProbeO
         });
         receiver
     };
-    let out = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
-    let err = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let out = drain(
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let err = drain(
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -1415,11 +1425,7 @@ mod probe_bound_tests {
     fn a_descendant_holding_the_pipe_cannot_outlive_the_budget() {
         let budget = Duration::from_millis(300);
         let started = Instant::now();
-        let outcome = probe_within(
-            "/bin/sh",
-            &["-c", "echo 1.2.3; sleep 30 & exit 0"],
-            budget,
-        );
+        let outcome = probe_within("/bin/sh", &["-c", "echo 1.2.3; sleep 30 & exit 0"], budget);
         let elapsed = started.elapsed();
         assert!(
             elapsed < budget * 10,
@@ -1444,7 +1450,11 @@ mod probe_bound_tests {
     #[test]
     fn a_missing_command_is_absent_not_a_timeout() {
         assert!(matches!(
-            probe_within("/nonexistent/biorouter-probe-fixture", &[], Duration::from_secs(5)),
+            probe_within(
+                "/nonexistent/biorouter-probe-fixture",
+                &[],
+                Duration::from_secs(5)
+            ),
             ProbeOutcome::Absent
         ));
         // A command that exists but fails is also Absent, not TimedOut.

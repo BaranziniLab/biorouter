@@ -137,12 +137,16 @@ def builtin_tools(cli, env):
             child.stdout.close()
 
 
-# One deadline for BOTH attempts, not one each: the callers bound this whole
-# verifier, and a per-attempt budget made the worst case exceed that outer cap,
-# so the diagnostic this function exists to produce was SIGKILLed before it
-# could be written. scripts/computer-use-package-acceptance.py derives its own
-# timeout from this number rather than stating one independently.
-DOCTOR_TIMEOUT = 60
+# A budget PER ATTEMPT, summing to the bound the callers size themselves
+# against. One shared deadline let a slow cold run squeeze the warm one -- on
+# Windows to 14 s -- so the error named the warm attempt when the cold one was
+# the problem. The numbers come from measurement, not taste: the slowest
+# platform that PASSES needs ~13.3 s per attempt (darwin-arm64), so 40 s cold
+# leaves roughly 3x headroom and is TIGHTER than the 60 s a cold run could
+# reach before. scripts/computer-use-package-acceptance.py imports the total
+# rather than restating it.
+ATTEMPT_TIMEOUTS = {'cold': 40, 'warm': 20}
+DOCTOR_TIMEOUT = sum(ATTEMPT_TIMEOUTS.values())
 
 
 # What a timeout report is looking for. A whole-machine snapshot buries the two
@@ -150,18 +154,43 @@ DOCTOR_TIMEOUT = 60
 RELEVANT = ('biorouter', 'ocu', 'OpenComputerUse', 'llama-server', 'powershell', 'node')
 
 
+def snapshot(fields):
+    """Live processes as `pid rest` lines, EXCLUDING the query itself.
+
+    The exclusion is not tidiness. `powershell` is in RELEVANT and the POSIX arm
+    shells out to `ps`, so without it the snapshot reports its own helper as a
+    surviving process -- which it did, in four receipts of the run that motivated
+    this, listing `ps` as a process left behind.
+    """
+    command = (['powershell', '-NoProfile', '-Command',
+                '$me = $PID; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $me } '
+                '| ForEach-Object { "' + fields + '" }']
+               if os.name == 'nt' else ['/bin/ps', '-axo', 'pid=,ppid=,comm='])
+    # Popen, not run(): the POSIX arm cannot exclude itself from inside `ps`, so
+    # the caller needs the child's pid to drop that one row.
+    try:
+        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        out, _ = child.communicate(timeout=20)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, f'process snapshot unavailable: {error}'
+    rows = {}
+    for line in (out or '').splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and parts[0].isdigit():
+            rows[parts[0]] = parts[1].strip()
+    rows.pop(str(child.pid), None)
+    return rows, None
+
+
 def process_tree():
     """Live processes that could plausibly be holding the doctor's stdout."""
-    command = (['powershell', '-NoProfile', '-Command',
-                'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name)" }']
-               if os.name == 'nt' else ['/bin/ps', '-axo', 'pid=,ppid=,comm='])
-    try:
-        lines = subprocess.run(command, capture_output=True, text=True, timeout=20).stdout.splitlines()
-    except (OSError, subprocess.SubprocessError) as error:
-        return f'process snapshot unavailable: {error}'
-    named = [line for line in lines if any(token in line for token in RELEVANT)]
+    rows, failure = snapshot('$($_.ProcessId) $($_.ParentProcessId) $($_.Name)')
+    if rows is None:
+        return failure
+    named = [f'{pid} {rest}' for pid, rest in rows.items()
+             if any(token in rest for token in RELEVANT)]
     return '\n'.join(named[:40] or ['(no Biorouter-related process alive)']) + \
-        f'\n  [{len(named)} relevant of {len(lines)} total processes]'
+        f'\n  [{len(named)} relevant of {len(rows)} total processes]'
 
 
 def describe_output(written):
@@ -184,19 +213,8 @@ def describe_output(written):
 
 def live_processes():
     """pid -> command, for every process this user can see. Empty on failure."""
-    command = (['powershell', '-NoProfile', '-Command',
-                'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.Name)" }']
-               if os.name == 'nt' else ['/bin/ps', '-axo', 'pid=,comm='])
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    seen = {}
-    for line in result.stdout.splitlines():
-        fields = line.split(maxsplit=1)
-        if len(fields) == 2 and fields[0].isdigit():
-            seen[fields[0]] = fields[1].strip()
-    return seen
+    rows, _ = snapshot('$($_.ProcessId) $($_.Name)')
+    return rows or {}
 
 
 def survivors(before, after):
@@ -249,11 +267,9 @@ def run_doctor(cli, env, scratch):
     """
     timings = []
     document = None
-    deadline = time.monotonic() + DOCTOR_TIMEOUT
-    for attempt in ('cold', 'warm'):
+    for attempt, budget in ATTEMPT_TIMEOUTS.items():
         out, err = scratch / f'doctor-{attempt}.json', scratch / f'doctor-{attempt}.err'
         started = time.monotonic()
-        budget = max(1.0, deadline - started)
         before = live_processes()
         with out.open('wb') as stdout, err.open('wb') as stderr:
             # Its own process group / job, so abandoning a hung doctor takes its
@@ -271,8 +287,11 @@ def run_doctor(cli, env, scratch):
                 written = out.read_bytes()
                 stop_tree(child)
                 raise ValueError(
-                    f'Installed doctor ({attempt}) exceeded its {budget:.0f}s share of the '
-                    f'{DOCTOR_TIMEOUT}s budget. Its stdout held {describe_output(written)}. '
+                    f'Installed doctor ({attempt}) exceeded its {budget}s budget. '
+                    f'Its stdout held {describe_output(written)}. '
+                    # Carry what already finished, so a reader sees the cold cost
+                    # instead of inferring it from what the warm run had left.
+                    f'Completed attempts: {timings or "none"}. '
                     f'Live processes:\n{process_tree()}') from None
         elapsed = time.monotonic() - started
         # A descendant that outlives the CLI is the OTHER mechanism that can make

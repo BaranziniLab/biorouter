@@ -32,6 +32,77 @@ impl Drop for Runtime {
     }
 }
 
+/// Pass through the desktop/session prerequisites the helper needs, and nothing
+/// else: model credentials and daemon secrets never reach it.
+fn inherit_session_env(command: &mut Command) {
+    const SESSION: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "LC_ALL",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "SystemRoot",
+        "WINDIR",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_RUNTIME_DIR",
+        "XDG_SESSION_TYPE",
+        "DBUS_SESSION_BUS_ADDRESS",
+    ];
+    // Windows process startup is not self-contained: the loader, the CRT and
+    // `powershell.exe` -- which the helper shells out to for every UIA call --
+    // read these. The operating system writes them at logon, so none of them
+    // can carry a model credential or a daemon secret, and inheriting the OS's
+    // own PATHEXT or ComSpec is strictly safer than clearing it: a cleared
+    // variable falls back to a default the agent equally cannot influence.
+    //
+    // Measured differential that motivated this: the SAME helper binary on the
+    // SAME runner image answers `doctor --json` in 2.17 s with the full
+    // inherited environment, and exceeds its 30 s timeout under this allowlist.
+    //
+    // PSModulePath is deliberately NOT here: it steers module autoloading,
+    // which is an execution-hijack surface, and Windows PowerShell recomputes a
+    // default when it is absent.
+    #[cfg(windows)]
+    const PLATFORM: &[&str] = &[
+        "ComSpec",
+        "PATHEXT",
+        "SystemDrive",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "CommonProgramFiles",
+        "CommonProgramFiles(x86)",
+        "CommonProgramW6432",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USERNAME",
+        "USERDOMAIN",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_ARCHITEW6432",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+    ];
+    #[cfg(not(windows))]
+    const PLATFORM: &[&str] = &[];
+    for name in SESSION.iter().chain(PLATFORM.iter()) {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+}
+
 impl Runtime {
     pub async fn start() -> Result<Self> {
         Self::start_payload(tokio::task::spawn_blocking(manifest::locate).await??).await
@@ -52,33 +123,7 @@ impl Runtime {
             .args(arguments)
             .current_dir(&payload.root)
             .env_clear();
-        // Only desktop/session prerequisites are inherited; model credentials and daemon secrets never reach the helper.
-        for name in [
-            "PATH",
-            "HOME",
-            "USER",
-            "LOGNAME",
-            "LANG",
-            "LC_ALL",
-            "TMPDIR",
-            "TMP",
-            "TEMP",
-            "SystemRoot",
-            "WINDIR",
-            "USERPROFILE",
-            "LOCALAPPDATA",
-            "APPDATA",
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "XAUTHORITY",
-            "XDG_RUNTIME_DIR",
-            "XDG_SESSION_TYPE",
-            "DBUS_SESSION_BUS_ADDRESS",
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
+        inherit_session_env(&mut command);
         for name in ["TMPDIR", "TMP", "TEMP"] {
             command.env(name, temporary_files.path());
         }
@@ -127,12 +172,18 @@ impl Runtime {
         let payload = tokio::task::spawn_blocking(manifest::locate).await??;
         let mut runtime = Self::spawn_payload(payload, &["doctor", "--json"])?;
         let operation = async {
+            // ONE newline-terminated line, not read-to-EOF. `read_to_end` returns
+            // only when every writer closes the pipe -- and on Windows the helper's
+            // own children inherit that handle, so a descendant that outlives the
+            // probe stalls it for the full 30 s timeout even though the readiness
+            // JSON was already written. All three helpers emit exactly one line
+            // (Windows main.go, Linux main.go, macOS OpenComputerUseMain.swift).
             let mut bytes = Vec::new();
-            (&mut runtime.output)
+            let read = (&mut runtime.output)
                 .take(65537)
-                .read_to_end(&mut bytes)
+                .read_until(b'\n', &mut bytes)
                 .await?;
-            if bytes.len() > 65536 {
+            if read > 65536 {
                 bail!("computer_use_protocol_error: oversized readiness response");
             }
             let status = runtime.child.wait().await?;

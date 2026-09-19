@@ -107,6 +107,23 @@ class PackagedResourceLocationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Expected one installed helper'):
                 acceptance.linux_paths(lib=lib, libexec=libexec, opt=opt)
 
+    def test_rpmbuild_cannot_rewrite_the_helper_after_the_build(self):
+        """rpm 4.18's brp-strip-comment-note targets ALREADY-stripped ELF -- which a
+        `-ldflags=-s -w` Go binary is -- and repacks it, shrinking the helper by
+        2,474 bytes and breaking the recorded payload hashes. The deb is unaffected
+        because dpkg does not post-process. electron-installer-redhat offers no
+        option for this (fixed rpmbuild argv, hardcoded spec template), so the lever
+        is a build-scoped $HOME holding .rpmmacros."""
+        desktop = (runtime.ROOT / "ui/desktop/forge.config.ts").read_text()
+        self.assertIn("%__os_install_post %{nil}", desktop,
+                      "rpmbuild would strip the helper and invalidate its provenance")
+        for hook in ["preMake", "postMake"]:
+            self.assertIn(hook, desktop, f"the macros are applied and released in {hook}")
+        code = "\n".join(line for line in desktop.splitlines() if not line.strip().startswith("//"))
+        self.assertNotIn("fpm:", code,
+                         "electron-installer-redhat never reads fpm options; it invokes "
+                         "rpmbuild with a fixed argv, so the entry was dead configuration")
+
     def test_no_maker_declares_an_inert_install_prefix(self):
         # Comments are stripped first: the explanatory note deliberately quotes the
         # option it is warning about, and matching that would be a check that can

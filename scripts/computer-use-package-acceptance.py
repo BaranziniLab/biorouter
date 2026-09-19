@@ -3,6 +3,7 @@
 import argparse
 from collections import Counter
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -40,10 +41,15 @@ def npm(args, env):
 
 
 # The verifier's own doctor budget, plus room for the MCP tool census and the
-# receipt. Derived, not restated: an outer cap smaller than what the inner step
+# receipt. IMPORTED, not restated: an outer cap smaller than what the inner step
 # is allowed to spend kills the diagnostic before it can be written, which is
-# exactly the opaque failure this harness exists to replace.
-INSTALLED_CHECK_TIMEOUT = 60 + 90
+# exactly the opaque failure this harness exists to replace -- and two numbers
+# maintained independently is how they drift apart.
+_verifier = importlib.util.spec_from_file_location(
+    'verify_installed', ROOT / 'scripts/verify-installed-computer-use.py')
+_installed = importlib.util.module_from_spec(_verifier)
+_verifier.loader.exec_module(_installed)
+INSTALLED_CHECK_TIMEOUT = _installed.DOCTOR_TIMEOUT + 90
 
 
 def installed(cli, helper, target, status, label):
