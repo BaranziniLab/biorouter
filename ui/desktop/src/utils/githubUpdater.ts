@@ -32,7 +32,25 @@ interface UpdateCheckResult {
 export class GitHubUpdater {
   private readonly owner = 'BaranziniLab';
   private readonly repo = 'biorouter';
-  private readonly apiUrl = `https://api.github.com/repos/${this.owner}/${this.repo}/releases/latest`;
+  /**
+   * Where to ask for the latest release.
+   *
+   * ⚠ Overridable **for testing only**, and this is not a convenience. The
+   * production owner/repo were hardcoded, so the only way to exercise the
+   * Windows update path end to end was to publish a release to the real
+   * repository — where it immediately becomes `/releases/latest` and every
+   * installed client, including the macOS ones whose auto-update works, is
+   * offered it. A test that can only be run by shipping to users is a test
+   * nobody runs.
+   *
+   * `BIOROUTER_UPDATE_API_URL` points the check at a release feed under your own
+   * control (a scratch repository, or a local server returning the same JSON).
+   * It is the GitHub-fallback sibling of `BIOROUTER_UPDATE_FEED_URL`, which
+   * already does this for the electron-updater path.
+   */
+  private readonly apiUrl =
+    process.env.BIOROUTER_UPDATE_API_URL?.trim() ||
+    `https://api.github.com/repos/${this.owner}/${this.repo}/releases/latest`;
 
   async checkForUpdates(): Promise<UpdateCheckResult> {
     const startTime = Date.now();
@@ -111,7 +129,16 @@ export class GitHubUpdater {
       if (platform === 'darwin') {
         candidates = arch === 'arm64' ? [`Biorouter-${v}-arm64.dmg`] : [`Biorouter-${v}-x64.dmg`];
       } else if (platform === 'win32') {
-        candidates = [`Biorouter-win32-x64-${v}.zip`];
+        // ⚠ The installer FIRST, the zip only as a fallback. Running
+        // `Biorouter-Setup-<ver>.exe` upgrades an existing install in place --
+        // Squirrel replaces the app directory and keeps shortcuts -- whereas the
+        // zip leaves the user to extract it and replace a folder by hand, which
+        // is what "Windows has no in-place updater" actually meant in practice.
+        //
+        // The zip stays in the list because a release cut before the installer
+        // maker existed has only that, and an updater that finds nothing is
+        // worse than one that falls back to the old instructions.
+        candidates = [`Biorouter-Setup-${v}.exe`, `Biorouter-win32-x64-${v}.zip`];
       } else {
         // Linux: prefer .deb, then .rpm.
         candidates = [`biorouter_${v}_amd64.deb`, `Biorouter-${v}-1.x86_64.rpm`];
@@ -125,16 +152,22 @@ export class GitHubUpdater {
         .find(Boolean);
       // Resilient fallback: match by OS/arch tokens + extension if exact names drift.
       if (!asset) {
-        const tokens =
+        // Ordered token sets: the first that matches wins, so Windows still
+        // prefers the installer but can still find a zip-only release whose
+        // exact name drifted.
+        const tokenSets: string[][] =
           platform === 'darwin'
-            ? [arch === 'arm64' ? 'arm64' : 'x64', '.dmg']
+            ? [[arch === 'arm64' ? 'arm64' : 'x64', '.dmg']]
             : platform === 'win32'
-              ? ['win32', '.zip']
-              : ['.deb'];
-        asset = release.assets.find((a) => {
-          const n = a.name.toLowerCase();
-          return tokens.every((t) => n.includes(t.toLowerCase()));
-        });
+              ? [['setup', '.exe'], ['win32', '.zip']]
+              : [['.deb']];
+        for (const tokens of tokenSets) {
+          asset = release.assets.find((a) => {
+            const n = a.name.toLowerCase();
+            return tokens.every((t) => n.includes(t.toLowerCase()));
+          });
+          if (asset) break;
+        }
       }
 
       if (asset) {
@@ -222,10 +255,17 @@ export class GitHubUpdater {
       // Written to a `.part` file and renamed on completion, so an interrupted
       // download can never be mistaken for a finished installer.
       const downloadsDir = path.join(os.homedir(), 'Downloads');
-      // Preserve the real asset extension (.dmg/.zip/.deb/.rpm) from the URL so
-      // the file the user double-clicks is the actual installer.
+      // Preserve the real asset extension from the URL so the file the user
+      // double-clicks is the actual installer.
+      //
+      // ⚠ `exe` belongs in this list and was missing. The fallback is `zip`, so
+      // the Windows installer downloaded as `Biorouter-<ver>.zip` — a perfectly
+      // intact `.exe` under a name that makes Windows hand it to an archive
+      // tool instead of running it. Silent, and it defeats the entire point of
+      // shipping an installer. Caught by downloading a real one end to end, not
+      // by reading the code: every byte was correct, only the name was wrong.
       const urlName = downloadUrl.split('/').pop() || '';
-      const ext = urlName.match(/\.(dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
+      const ext = urlName.match(/\.(exe|dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
       const fileName = `Biorouter-${latestVersion}.${ext}`;
       const downloadPath = path.join(downloadsDir, fileName);
       const partPath = `${downloadPath}.part`;

@@ -3,6 +3,16 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-natives');
 const { resolve } = require('path');
 
+// ⚠ Read from package.json, NOT `process.env.npm_package_version`. That variable
+// only exists when forge is invoked through an `npm run` script, so a direct
+// `npx electron-forge make` would name the installer `Biorouter-Setup-.exe` --
+// and the updater matches that filename EXACTLY
+// (`githubUpdater.ts`, `Biorouter-Setup-${v}.exe`), so a mis-named asset is an
+// update that silently finds nothing. `WINDOWS_SETUP_EXE` is the one spelling
+// both sides agree on; `forgeConfig.windowsSetupExe.test.ts` pins them together.
+const { version: APP_VERSION } = require('./package.json');
+const WINDOWS_SETUP_EXE = `Biorouter-Setup-${APP_VERSION}.exe`;
+
 // `node-pty` is the only runtime dependency that cannot be bundled by Vite: it
 // is a native module, so `vite.main.config.mts` externalises it and the built
 // main.js issues a real `require('node-pty')`. That means the module has to
@@ -175,6 +185,42 @@ module.exports = {
         options: {
           icon: 'src/images/icon.ico',
         },
+      },
+    },
+    // Windows in-place updates.
+    //
+    // ⚠ Without this the Windows release is a plain zip, which nothing can
+    // install *over* an existing copy — so Windows had no in-place updater at
+    // all and fell back to "download it yourself and replace the folder".
+    //
+    // Squirrel.Windows rather than NSIS because this project packages with
+    // electron-**forge**: `maker-squirrel` is first-party here (and was already
+    // a declared devDependency), while NSIS + `latest.yml` belong to the
+    // electron-builder world and would mean adopting a second packaging stack.
+    //
+    // The install-time half was already in place and is what makes this safe to
+    // add: Squirrel re-launches the app with `--squirrel-install` /
+    // `--squirrel-updated` / `--squirrel-uninstall` to create and remove
+    // shortcuts, and `main.ts` already quits immediately on those
+    // (`import started from 'electron-squirrel-startup'; if (started) app.quit()`).
+    // Without that guard, installing would flash several real app windows.
+    {
+      name: '@electron-forge/maker-squirrel',
+      platforms: ['win32'],
+      config: {
+        // ⚠ Squirrel keys its installed package on this name, and changing it
+        // later orphans every existing install (the updater looks for a package
+        // that is no longer published). It is `package.json`'s `name`, which is
+        // what Squirrel defaults to, spelled out so a rename of that field
+        // cannot silently break updates for shipped clients.
+        name: 'biorouter_app',
+        // The Start-menu and Add/Remove Programs entry the user actually reads.
+        setupExe: WINDOWS_SETUP_EXE,
+        setupIcon: 'src/images/icon.ico',
+        iconUrl:
+          'https://raw.githubusercontent.com/BaranziniLab/biorouter/main/ui/desktop/src/images/icon.ico',
+        authors: 'Baranzini Lab, UCSF',
+        description: 'Biorouter',
       },
     },
     {
