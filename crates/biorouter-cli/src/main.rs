@@ -14,10 +14,20 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// ⚠ Not `#[tokio::main]`: the CLI hosts agent turns too, and a subagent spawn
 /// polls the child's reply on the parent's stack. See
 /// `biorouter::execution::runtime`.
+///
+/// ⚠ And not run on the main thread either. `block_on` drives the future on the
+/// *calling* thread, and Windows pins the main thread's stack at 1 MiB in the
+/// executable header — too small for `async_main`'s future alone, so every
+/// `biorouter.exe` invocation (`--version` included) died with "thread 'main'
+/// has overflowed its stack". `run_on_agent_stack` gives the body the same
+/// 16 MiB the runtime's workers get.
 fn main() -> ExitCode {
-    biorouter::execution::runtime::build_agent_runtime()
-        .expect("build the agent runtime")
-        .block_on(async_main())
+    biorouter::execution::runtime::run_on_agent_stack(|| {
+        biorouter::execution::runtime::build_agent_runtime()
+            .expect("build the agent runtime")
+            .block_on(async_main())
+    })
+    .expect("spawn the sized host thread")
 }
 
 async fn async_main() -> ExitCode {
