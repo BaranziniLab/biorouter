@@ -111,7 +111,16 @@ export class GitHubUpdater {
       if (platform === 'darwin') {
         candidates = arch === 'arm64' ? [`Biorouter-${v}-arm64.dmg`] : [`Biorouter-${v}-x64.dmg`];
       } else if (platform === 'win32') {
-        candidates = [`Biorouter-win32-x64-${v}.zip`];
+        // ⚠ The installer FIRST, the zip only as a fallback. Running
+        // `Biorouter-Setup-<ver>.exe` upgrades an existing install in place --
+        // Squirrel replaces the app directory and keeps shortcuts -- whereas the
+        // zip leaves the user to extract it and replace a folder by hand, which
+        // is what "Windows has no in-place updater" actually meant in practice.
+        //
+        // The zip stays in the list because a release cut before the installer
+        // maker existed has only that, and an updater that finds nothing is
+        // worse than one that falls back to the old instructions.
+        candidates = [`Biorouter-Setup-${v}.exe`, `Biorouter-win32-x64-${v}.zip`];
       } else {
         // Linux: prefer .deb, then .rpm.
         candidates = [`biorouter_${v}_amd64.deb`, `Biorouter-${v}-1.x86_64.rpm`];
@@ -125,16 +134,22 @@ export class GitHubUpdater {
         .find(Boolean);
       // Resilient fallback: match by OS/arch tokens + extension if exact names drift.
       if (!asset) {
-        const tokens =
+        // Ordered token sets: the first that matches wins, so Windows still
+        // prefers the installer but can still find a zip-only release whose
+        // exact name drifted.
+        const tokenSets: string[][] =
           platform === 'darwin'
-            ? [arch === 'arm64' ? 'arm64' : 'x64', '.dmg']
+            ? [[arch === 'arm64' ? 'arm64' : 'x64', '.dmg']]
             : platform === 'win32'
-              ? ['win32', '.zip']
-              : ['.deb'];
-        asset = release.assets.find((a) => {
-          const n = a.name.toLowerCase();
-          return tokens.every((t) => n.includes(t.toLowerCase()));
-        });
+              ? [['setup', '.exe'], ['win32', '.zip']]
+              : [['.deb']];
+        for (const tokens of tokenSets) {
+          asset = release.assets.find((a) => {
+            const n = a.name.toLowerCase();
+            return tokens.every((t) => n.includes(t.toLowerCase()));
+          });
+          if (asset) break;
+        }
       }
 
       if (asset) {
