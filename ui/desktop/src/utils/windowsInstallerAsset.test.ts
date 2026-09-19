@@ -75,3 +75,30 @@ describe('the Windows installer asset name', () => {
     expect(setupAt).toBeLessThan(zipAt);
   });
 });
+
+describe('the downloaded installer keeps its .exe extension', () => {
+  /**
+   * ⚠ Found by downloading a real 257 MB installer end to end, not by reading
+   * the code. `downloadUpdate` derives the saved filename from the asset URL's
+   * extension against an allowlist, and `exe` was missing from it — so the
+   * Windows installer landed in Downloads as `Biorouter-<ver>.zip`. Every byte
+   * was correct; only the name was wrong, which is worse than a failed
+   * download: Windows hands a `.zip` to an archive tool, so the user never gets
+   * an installer to run and the whole point of shipping one is lost.
+   */
+  it('lists exe in the extension allowlist, ahead of the zip fallback', () => {
+    const src = readFileSync(resolve(root, 'src/utils/githubUpdater.ts'), 'utf8');
+    const match = src.match(/urlName\.match\(([^)]*)\)/);
+    expect(match, 'the extension-deriving regex must still exist').toBeTruthy();
+    const pattern = match![1];
+    expect(pattern, 'a Windows installer saved as .zip will not run').toContain('exe');
+
+    // And prove the regex itself does the right thing for each platform asset.
+    const derive = (name: string) => name.match(/\.(exe|dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
+    expect(derive('Biorouter-Setup-1.2.3.exe')).toBe('exe');
+    expect(derive('Biorouter-win32-x64-1.2.3.zip')).toBe('zip');
+    expect(derive('Biorouter-1.2.3-arm64.dmg')).toBe('dmg');
+    expect(derive('biorouter_1.2.3_amd64.deb')).toBe('deb');
+    expect(derive('Biorouter-1.2.3-1.x86_64.rpm')).toBe('rpm');
+  });
+});

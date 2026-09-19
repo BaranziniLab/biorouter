@@ -32,7 +32,25 @@ interface UpdateCheckResult {
 export class GitHubUpdater {
   private readonly owner = 'BaranziniLab';
   private readonly repo = 'biorouter';
-  private readonly apiUrl = `https://api.github.com/repos/${this.owner}/${this.repo}/releases/latest`;
+  /**
+   * Where to ask for the latest release.
+   *
+   * ⚠ Overridable **for testing only**, and this is not a convenience. The
+   * production owner/repo were hardcoded, so the only way to exercise the
+   * Windows update path end to end was to publish a release to the real
+   * repository — where it immediately becomes `/releases/latest` and every
+   * installed client, including the macOS ones whose auto-update works, is
+   * offered it. A test that can only be run by shipping to users is a test
+   * nobody runs.
+   *
+   * `BIOROUTER_UPDATE_API_URL` points the check at a release feed under your own
+   * control (a scratch repository, or a local server returning the same JSON).
+   * It is the GitHub-fallback sibling of `BIOROUTER_UPDATE_FEED_URL`, which
+   * already does this for the electron-updater path.
+   */
+  private readonly apiUrl =
+    process.env.BIOROUTER_UPDATE_API_URL?.trim() ||
+    `https://api.github.com/repos/${this.owner}/${this.repo}/releases/latest`;
 
   async checkForUpdates(): Promise<UpdateCheckResult> {
     const startTime = Date.now();
@@ -237,10 +255,17 @@ export class GitHubUpdater {
       // Written to a `.part` file and renamed on completion, so an interrupted
       // download can never be mistaken for a finished installer.
       const downloadsDir = path.join(os.homedir(), 'Downloads');
-      // Preserve the real asset extension (.dmg/.zip/.deb/.rpm) from the URL so
-      // the file the user double-clicks is the actual installer.
+      // Preserve the real asset extension from the URL so the file the user
+      // double-clicks is the actual installer.
+      //
+      // ⚠ `exe` belongs in this list and was missing. The fallback is `zip`, so
+      // the Windows installer downloaded as `Biorouter-<ver>.zip` — a perfectly
+      // intact `.exe` under a name that makes Windows hand it to an archive
+      // tool instead of running it. Silent, and it defeats the entire point of
+      // shipping an installer. Caught by downloading a real one end to end, not
+      // by reading the code: every byte was correct, only the name was wrong.
       const urlName = downloadUrl.split('/').pop() || '';
-      const ext = urlName.match(/\.(dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
+      const ext = urlName.match(/\.(exe|dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
       const fileName = `Biorouter-${latestVersion}.${ext}`;
       const downloadPath = path.join(downloadsDir, fileName);
       const partPath = `${downloadPath}.part`;
