@@ -34,6 +34,7 @@ MODEL = "gpt-5.5-2026-04-24"
 BUILTIN_EXTENSIONS = {
     "developer",
     "computercontroller",
+    "webdocuments",
     "autovisualiser",
     "memory",
     "agent_drafter",
@@ -154,7 +155,7 @@ NON-NEGOTIABLE AUTHORING RULES:
 - `br.kb` is an API namespace, not a knowledge-base id. Never invent it as an
   id; any configured KB id must be a valid lowercase a-z/0-9/hyphen slug.
 - PLATFORM CATALOG FOR THIS ISOLATED RUN: available built-in extensions are
-  developer, computercontroller, autovisualiser, memory, agent_drafter, and
+  developer, computercontroller, webdocuments, autovisualiser, memory, agent_drafter, and
   knowledge. Available external extensions/connectors: none.
   Installed runtime skills: none. Installed knowledge bases: none. Configure
   only real catalog entries. Never invent a skill, KB, connector, or extension

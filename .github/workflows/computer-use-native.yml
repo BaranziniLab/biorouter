@@ -1,0 +1,107 @@
+name: Computer Use native payloads
+
+on:
+  pull_request:
+    paths:
+      - "third_party/open-computer-use/**"
+      - "crates/biorouter-mcp/src/computer_use/**"
+      - "crates/biorouter-mcp/src/computercontroller/**"
+      - "Dockerfile"
+      - "scripts/*computer-use*"
+      - "ui/desktop/scripts/computer-use-resources.js"
+      - "ui/desktop/scripts/prepare-platform-binaries.js"
+      - "ui/desktop/forge.config.ts"
+      - "packaging/cli/nfpm.yaml"
+      - ".github/workflows/computer-use-native.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-26
+          - target: darwin-x64
+            runner: macos-26-intel
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: win32-x64
+            runner: windows-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      BIOROUTER_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.8"
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb xauth dbus-x11 openbox
+          /usr/bin/python3 -c 'import gi; gi.require_version("Atspi", "2.0"); gi.require_version("Gdk", "3.0"); from gi.repository import Atspi, Gdk'
+      - name: Build pinned native payload
+        run: python scripts/computer-use-runtime.py build ${{ matrix.target }}
+      - name: Test Windows native runtime regressions
+        if: runner.os == 'Windows'
+        working-directory: target/computer-use/source.noindex/apps/OpenComputerUseWindows
+        run: go test -p 2 ./...
+      - name: Test Linux native runtime regressions
+        if: runner.os == 'Linux'
+        working-directory: target/computer-use/source.noindex/apps/OpenComputerUseLinux
+        run: go test -p 2 ./...
+      - name: Verify target, patch set and all payload bytes
+        run: python scripts/computer-use-runtime.py verify ${{ matrix.target }}
+      - name: Packaging regression checks
+        run: python scripts/test-computer-use-packaging.py
+      - name: Verify native stdio protocol and ten tools
+        run: python scripts/test-computer-use-protocol.py target/computer-use/${{ matrix.target }}
+      - name: Exercise GTK accessibility and native capture in X11
+        timeout-minutes: 5
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- /usr/bin/python3 scripts/test-computer-use-linux-fixture.py target/computer-use/${{ matrix.target }} --report target/computer-use/linux-fixture.json
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux' && always()
+        with:
+          name: computer-use-${{ matrix.target }}-fixture-evidence
+          path: target/computer-use/linux-fixture*
+          if-no-files-found: warn
+      - name: Exercise Windows UI Automation on an isolated fixture
+        timeout-minutes: 5
+        if: runner.os == 'Windows'
+        run: python scripts/test-computer-use-windows-fixture.py target/computer-use/win32-x64 --report target/computer-use/windows-fixture.json
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows' && always()
+        with:
+          name: computer-use-windows-fixture-evidence
+          path: target/computer-use/windows-fixture*
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: computer-use-${{ matrix.target }}
+          path: target/computer-use/${{ matrix.target }}/
+          if-no-files-found: error
+  native-release-gate:
+    timeout-minutes: 5
+    if: always()
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every desktop and container native target
+        env:
+          RESULT: ${{ needs.native.result }}
+        run: test "$RESULT" = success

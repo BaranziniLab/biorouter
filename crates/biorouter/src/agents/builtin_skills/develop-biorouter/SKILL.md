@@ -243,10 +243,11 @@ build.
 - `ALPHA=true` enables alpha features. `BIOROUTER_SERVER__SECRET_KEY` sets the
   server auth key (the `__` form is only for nested config keys; the port is
   plain `BIOROUTER_PORT`).
-- Verify a GUI change with a screenshot over the Chrome DevTools protocol rather
-  than a full-screen capture, and read
-  `docs/desktop-ui/launching-the-dev-gui.md` before launching the app from a
-  shell without a TTY.
+- Verify desktop UI behavior through the native Computer Use capability after its
+  per-request approval. Inspect the target app and use the native window capture
+  when an image is needed; refresh state after app changes. Do not revive removed
+  script or Developer screenshot routes. Read
+  `docs/desktop-ui/launching-the-dev-gui.md` before launching from a shell without a TTY.
 
 ## Change checklist
 

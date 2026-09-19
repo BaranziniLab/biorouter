@@ -784,6 +784,16 @@ pub trait LeadWorkerProviderTrait {
     fn get_config_generation(&self) -> &str;
 }
 
+pub(crate) fn computer_use_destination_origin(endpoint: &str) -> Option<String> {
+    let url = url::Url::parse(endpoint).ok()?;
+    matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
+}
+
+pub(crate) fn computer_use_destination_digest(endpoint: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(endpoint.as_bytes()))
+}
+
 /// Base trait for AI providers (OpenAI, Anthropic, etc)
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -794,6 +804,18 @@ pub trait Provider: Send + Sync {
 
     /// Get the name of this provider instance
     fn get_name(&self) -> &str;
+
+    /// HTTP(S) origin(s) that can receive this chat's computer-use results.
+    /// Never include credentials, paths, query strings, or fragments.
+    fn computer_use_destination(&self) -> Option<String> {
+        None
+    }
+
+    /// Opaque digest of the exact resolved endpoint configuration, for consent binding.
+    /// This value is internal identity, not a user-facing destination or credential.
+    fn computer_use_destination_identity(&self) -> Option<String> {
+        None
+    }
 
     /// A secret-free recipe for reconstructing this exact resolved provider.
     /// Built-ins with mutable routes or commands override this; registry-backed
@@ -2009,5 +2031,39 @@ mod tests {
                 "image/jpg".to_string()
             ])
         );
+    }
+}
+
+#[cfg(test)]
+mod computer_use_destination_tests {
+    use super::{computer_use_destination_digest, computer_use_destination_origin};
+
+    #[test]
+    fn disclosure_retains_only_http_origin_including_ipv6_and_port() {
+        for (endpoint, expected) in [
+            (
+                "https://user:secret@gateway.example:8443/private/route?token=hidden#secret",
+                Some("https://gateway.example:8443"),
+            ),
+            ("http://[::1]:11434/api/chat", Some("http://[::1]:11434")),
+            ("file:///private/config", None),
+            ("not a URL", None),
+        ] {
+            assert_eq!(
+                computer_use_destination_origin(endpoint).as_deref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn consent_identity_distinguishes_routes_without_disclosing_them() {
+        let first =
+            computer_use_destination_digest("https://gateway.example/private-a?token=secret");
+        let second =
+            computer_use_destination_digest("https://gateway.example/private-b?token=secret");
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 64);
+        assert!(first.chars().all(|character| character.is_ascii_hexdigit()));
     }
 }

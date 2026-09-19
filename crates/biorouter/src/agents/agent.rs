@@ -1019,7 +1019,6 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
 const CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS: &[&str] = &[
     "developer__analyze",
     "developer__image_processor",
-    "developer__screen_capture",
     "developer__shell",
     "developer__shell_kill",
     "developer__shell_status",
@@ -1094,18 +1093,26 @@ const CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS: &[&str] = &[
     "knowledge__kb_get_active",
 ];
 
-// Computer Controller was absent from the policy table entirely rather than
-// present-and-empty, which is why the gap read as a missing feature rather than
-// as a decision: an extension the user has switched ON, whose tools simply never
-// reached the child.
+// Native computer use and web/document utilities have independent capability grants.
 const CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS: &[&str] = &[
-    "computercontroller__automation_script",
-    "computercontroller__cache",
-    "computercontroller__computer_control",
-    "computercontroller__docx_tool",
-    "computercontroller__pdf_tool",
-    "computercontroller__web_scrape",
-    "computercontroller__xlsx_tool",
+    "computercontroller__list_apps",
+    "computercontroller__get_app_state",
+    "computercontroller__click",
+    "computercontroller__perform_secondary_action",
+    "computercontroller__scroll",
+    "computercontroller__drag",
+    "computercontroller__type_text",
+    "computercontroller__press_key",
+    "computercontroller__set_value",
+    "computercontroller__screen_capture",
+];
+
+const CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS: &[&str] = &[
+    "webdocuments__cache",
+    "webdocuments__docx_tool",
+    "webdocuments__pdf_tool",
+    "webdocuments__web_scrape",
+    "webdocuments__xlsx_tool",
 ];
 
 // ⚠ There is deliberately NO `code_execution` policy, and its absence is the
@@ -1165,9 +1172,14 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS,
     },
     CodingAgentBridgePolicy {
-        capability_name: "Computer Controller",
+        capability_name: "Computer Use",
         target_name: "computercontroller",
         tools: CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Web & Documents",
+        target_name: "webdocuments",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS,
     },
     CodingAgentBridgePolicy {
         capability_name: "Agent Drafter",
@@ -4675,10 +4687,14 @@ impl Agent {
         // The store `WorkspaceMutationInspector`'s pre-flight resolves targets
         // in — this agent's own, which is the one its workspace handler reads.
         let inspector_sessions = Arc::clone(&config.session_manager);
+        let extension_manager = Arc::new(ExtensionManager::new(provider.clone(), session_manager));
+        extension_manager
+            .computer_use
+            .set_mode(config.biorouter_mode);
         Self {
             provider: provider.clone(),
             config,
-            extension_manager: Arc::new(ExtensionManager::new(provider.clone(), session_manager)),
+            extension_manager,
             sub_workflows: Mutex::new(HashMap::new()),
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
@@ -7393,7 +7409,9 @@ impl Agent {
         if privacy_enforced && !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
             return Ok(false);
         }
-        *self.provider.lock().await = Some(provider);
+        let mut current_provider = self.provider.lock().await;
+        self.extension_manager.computer_use.revoke();
+        *current_provider = Some(provider);
         Ok(true)
     }
 
@@ -9177,6 +9195,29 @@ impl Agent {
     #[instrument(skip(self, user_message, session_config), fields(user_message))]
     #[allow(clippy::too_many_lines)]
     pub async fn reply(
+        &self,
+        user_message: Message,
+        session_config: SessionConfig,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        let task = self.extension_manager.computer_use.task_guard();
+        let _ = self
+            .extension_manager
+            .bind_computer_use_task(&session_config.id)
+            .await;
+        let mut replies = self
+            .reply_with_computer_use_scope(user_message, session_config, cancel_token)
+            .await?;
+        Ok(Box::pin(async_stream::try_stream! {
+            let _task = task;
+            while let Some(event) = replies.next().await {
+                yield event?;
+            }
+        }))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn reply_with_computer_use_scope(
         &self,
         user_message: Message,
         session_config: SessionConfig,
@@ -12707,6 +12748,7 @@ impl Agent {
         provider: Arc<dyn Provider>,
         session_id: &str,
     ) -> Result<()> {
+        self.extension_manager.computer_use.revoke();
         let provider_name = provider.get_name().to_string();
         let model_config = crate::providers::persisted_model_config(provider.as_ref())?;
         let tier = provider.tier();
@@ -12814,6 +12856,7 @@ impl Agent {
         seams::after_bind_before_swap().await;
         {
             let mut current_provider = self.provider.lock().await;
+            self.extension_manager.computer_use.revoke();
             *current_provider = Some(provider);
         }
 
@@ -16374,7 +16417,7 @@ mod tests {
             "developer__shell",
             "developer__text_editor",
             "developer__image_processor",
-            "computercontroller__automation_script",
+            "computercontroller__get_app_state",
             "agent_drafter__create_app",
             "autovisualiser__render_dashboard",
             "autovisualiser__render_figure",
@@ -16416,7 +16459,14 @@ mod tests {
     #[serial_test::serial]
     async fn coding_agent_bridge_policy_matches_the_reviewed_builtin_router_rosters() {
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
-        for name in ["agent_drafter", "autovisualiser", "memory", "developer"] {
+        for name in [
+            "agent_drafter",
+            "autovisualiser",
+            "memory",
+            "developer",
+            "computercontroller",
+            "webdocuments",
+        ] {
             let target = resolve_bundled_extension(name).expect("reviewed bundled target");
             agent
                 .add_extension(target.into_config(format!("{name} policy parity")))
@@ -16457,6 +16507,14 @@ mod tests {
         assert_eq!(
             prefixed("developer"),
             expected(CODING_AGENT_BRIDGE_ALLOWED_DEVELOPER_TOOLS)
+        );
+        assert_eq!(
+            prefixed("computercontroller"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS)
+        );
+        assert_eq!(
+            prefixed("webdocuments"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS)
         );
     }
 
@@ -17769,7 +17827,7 @@ mod tests {
         for allowed in [
             "developer__shell",
             "developer__text_editor",
-            "computercontroller__computer_control",
+            "computercontroller__click",
         ] {
             assert!(
                 coding_agent_bridge_policy_allows_tool(allowed),

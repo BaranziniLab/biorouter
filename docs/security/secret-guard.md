@@ -5,7 +5,7 @@
 > judged, and the redaction of credential material in what a tool returns.
 > **Status:** Current. The argument scan was rebuilt and the output redaction added on
 > 2026-09-11, fixing QA-C finding H1; the sections below describe that code.
-> **Audience:** developers working on tool dispatch, the Developer and Computer Controller
+> **Audience:** developers working on tool dispatch, the Developer and Computer Use
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
 A model with a shell can read any file the user can. The secret guard is the part of BioRouter
@@ -34,10 +34,9 @@ gitignore negation (`!path`), because user patterns are layered after the floor.
 | `ExtensionManager::dispatch_tool_call` (`secret_guard_denial`) | Every tool call's arguments, for every extension. The one choke point every call passes. |
 | Developer server, `validate_shell_command` | `developer__shell`'s command, from the directory it will actually run in. |
 | Developer server, `is_ignored` | `text_editor` and `image_processor` paths, after symlinks are resolved. |
-| Computer Controller, `refuse_secret_access` | `automation_script` and `computer_control` bodies, from the server's own working directory. |
 | `call_tool_withholding_secrets`, inside the dispatched future | Every tool **result** and error, before any model sees it. |
 
-The three argument checks share one resolver, so they cannot disagree about what a command means.
+The command argument checks share one resolver, so they cannot disagree about what a command means.
 
 ## How a command is judged
 
@@ -140,7 +139,7 @@ recognises credential material in a tool result and replaces the value with a ma
 It runs inside the future `dispatch_tool_call` returns, so the agent loop, the Claude Code and
 Codex tool bridge (whose results never pass the agent loop's own output guardrail),
 `POST /agent/call_tool` and code execution's sub-calls all receive the redacted result. Errors are
-redacted as well: a failing `automation_script` puts the script's output in its error. A redacted
+redacted as well: a failing tool can include command output in its error. A redacted
 result carries `_meta.biorouterSecretRedaction` (`{count, kinds}`); the agent loop turns that into
 a `[BIOROUTER GUARDRAIL]` line above the untrusted-data frame, and the daemon logs a warning that
 names the tool and the kinds — never a value. There is no switch.
@@ -180,7 +179,7 @@ BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --lib -- secret_output ex
 
 The H1 tables run every measured spelling — and the families around them — against a throwaway
 HOME holding made-up credentials, through the dispatch scan, through the resolver alone, through
-`developer__shell`'s own check and through `automation_script`'s. The fake key material is
+`developer__shell`'s own check. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 

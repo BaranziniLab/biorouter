@@ -4481,9 +4481,9 @@ mod tests {
     fn web_news_search_returns_ranked_ready_to_execute_signatures() {
         let tools = vec![
             ToolInfo {
-                server_name: "computercontroller".to_string(),
+                server_name: "webdocuments".to_string(),
                 tool_name: "web_scrape".to_string(),
-                full_name: "computercontroller__web_scrape".to_string(),
+                full_name: "webdocuments__web_scrape".to_string(),
                 description:
                     "Fetch web, RSS, and news search-result URLs and return content inline"
                         .to_string(),
@@ -4491,14 +4491,6 @@ mod tests {
                     ("save_as".to_string(), "string".to_string(), false),
                     ("url".to_string(), "string".to_string(), true),
                 ],
-                return_type: "string".to_string(),
-            },
-            ToolInfo {
-                server_name: "computercontroller".to_string(),
-                tool_name: "automation_script".to_string(),
-                full_name: "computercontroller__automation_script".to_string(),
-                description: "Run network-aware scripts for web, RSS, or news searches".to_string(),
-                params: vec![("script".to_string(), "string".to_string(), true)],
                 return_type: "string".to_string(),
             },
             ToolInfo {
@@ -4510,9 +4502,9 @@ mod tests {
                 return_type: "string".to_string(),
             },
             ToolInfo {
-                server_name: "computercontroller".to_string(),
+                server_name: "webdocuments".to_string(),
                 tool_name: "xlsx_tool".to_string(),
-                full_name: "computercontroller__xlsx_tool".to_string(),
+                full_name: "webdocuments__xlsx_tool".to_string(),
                 description: "Read and write spreadsheets".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
@@ -4537,15 +4529,39 @@ mod tests {
 
         assert!(text.contains("complete imports and signatures"));
         assert!(text.contains("do not call read_module"));
-        assert!(text.contains("import * as module_computercontroller from \"computercontroller\";"));
-        assert!(text.contains(
-            "module_computercontroller[\"web_scrape\"]({save_as?: string, url: string})"
-        ));
-        assert!(!text.contains("xlsx_tool"));
+        assert!(text.contains("import * as module_webdocuments from \"webdocuments\";"));
         assert!(
-            text.find("computercontroller/web_scrape").unwrap()
-                < text.find("cdwagent/CDW-search_notes").unwrap()
+            text.contains("module_webdocuments[\"web_scrape\"]({save_as?: string, url: string})")
         );
+        let web_fetch = text.find("webdocuments/web_scrape").unwrap();
+        let clinical_search = text.find("cdwagent/CDW-search_notes").unwrap();
+        let namespace_only = text.find("webdocuments/xlsx_tool").unwrap();
+        assert!(
+            web_fetch < clinical_search && clinical_search < namespace_only,
+            "{text}"
+        );
+
+        // "web" also matches the module name; a content-specific search must not
+        // inherit unrelated document tools merely because they share that module.
+        let focused = CodeExecutionClient::handle_search(
+            &tools,
+            &[
+                "news".to_string(),
+                "search".to_string(),
+                "browser".to_string(),
+            ],
+            false,
+        )
+        .unwrap();
+        let focused_text = match &focused[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            focused_text.contains("webdocuments/web_scrape"),
+            "{focused_text}"
+        );
+        assert!(!focused_text.contains("xlsx_tool"), "{focused_text}");
     }
 
     #[test]
@@ -4556,18 +4572,17 @@ mod tests {
     #[test]
     fn signatures_use_first_nonempty_description_line() {
         let tool = ToolInfo {
-            server_name: "computercontroller".to_string(),
-            tool_name: "automation_script".to_string(),
-            full_name: "computercontroller__automation_script".to_string(),
-            description: "\n    Run scripts for web and API research.\n    More detail."
-                .to_string(),
+            server_name: "webdocuments".to_string(),
+            tool_name: "web_scrape".to_string(),
+            full_name: "webdocuments__web_scrape".to_string(),
+            description: "\n    Fetch URLs for web and API research.\n    More detail.".to_string(),
             params: vec![],
             return_type: "string".to_string(),
         };
 
         assert!(tool
             .to_signature()
-            .ends_with(" - Run scripts for web and API research."));
+            .ends_with(" - Fetch URLs for web and API research."));
     }
 
     #[test]
@@ -4647,13 +4662,13 @@ mod tests {
         "enum param, no output schema"
     )]
     #[test_case(
-        "computercontroller__web_scrape",
+        "webdocuments__web_scrape",
         serde_json::json!({"type": "object", "properties": {
             "url": {"type": "string"},
             "save_as": {"oneOf": [{"const": "text"}, {"const": "json"}, {"const": "binary"}]}
         }, "required": ["url"]}),
         None,
-        "computercontroller[\"web_scrape\"]({save_as?: \"text\" | \"json\" | \"binary\", url: string}): string - Scrape content from URL";
+        "webdocuments[\"web_scrape\"]({save_as?: \"text\" | \"json\" | \"binary\", url: string}): string - Scrape content from URL";
         "oneOf const param (schemars), no output schema"
     )]
     #[test_case(
@@ -5035,11 +5050,11 @@ mod tests {
     /// pinned independently of the engine.
     #[test]
     fn module_not_found_message_lists_every_available_module() {
-        let available = vec!["computercontroller".to_string(), "developer".to_string()];
+        let available = vec!["webdocuments".to_string(), "developer".to_string()];
         let message = module_not_found_message("path", &available);
 
         assert!(message.starts_with(r#"Module "path" could not be found."#));
-        assert!(message.contains("Importable modules are exactly: computercontroller, developer"));
+        assert!(message.contains("Importable modules are exactly: webdocuments, developer"));
 
         let empty = module_not_found_message("developer", &[]);
         assert!(

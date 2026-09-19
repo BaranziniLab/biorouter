@@ -18,17 +18,10 @@ import {
   providers,
   getProviderModels as apiGetProviderModels,
 } from '../api';
-import { syncBundledExtensions } from './settings/extensions';
 import { userActionHeaders } from '../utils/userAction';
 import { newlyInstalledExtensions, subscribeToCatalog } from '../utils/catalogSubscription';
 import type { CatalogDelta } from '../api';
 import { toastService } from '../toasts';
-import {
-  isCapabilityDefaultEnabled,
-  shouldDefaultEnableAgentDrafter,
-  shouldDefaultEnableWorkspace,
-  shouldDefaultEnablePromotedCapability,
-} from './settings/capabilities/capabilities';
 import {
   PRIVACY_TIERS_KEY,
   PRIVACY_TIERS_RECORD_KEY,
@@ -482,67 +475,8 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       // Load extensions
       try {
         const extensionsResponse = await apiGetExtensions();
-        let extensions = extensionsResponse.data?.extensions || [];
-
-        // Always sync from bundled-extensions.json so new built-ins added across
-        // versions get picked up automatically. syncBundledExtensions is idempotent —
-        // it skips bundled extensions already present in the user's config.
-        const addExtensionForSync = async (
-          name: string,
-          config: ExtensionConfig,
-          enabled: boolean
-        ) => {
-          const query: ExtensionQuery = { name, config, enabled };
-          await apiAddExtension({ body: query });
-        };
-        await syncBundledExtensions(extensions, addExtensionForSync);
-
-        const capabilityMigrations = [
-          {
-            flag: 'biorouter.capabilities.defaultEnabled.v1',
-            shouldEnable: (ext: FixedExtensionEntry) =>
-              !ext.enabled && isCapabilityDefaultEnabled(ext),
-          },
-          {
-            flag: 'biorouter.capabilities.promotedDefaults.v2',
-            shouldEnable: shouldDefaultEnablePromotedCapability,
-          },
-          {
-            flag: 'biorouter.capabilities.agentDrafterDefault.v3',
-            shouldEnable: shouldDefaultEnableAgentDrafter,
-          },
-          {
-            // #76. Required, not optional: the Rust `default_enabled` is only
-            // consulted when config.yaml has no stored entry, and saving any
-            // extension persists the whole injected map — so most installs
-            // already carry `workspace: {enabled: false}` and would never see
-            // the new default.
-            flag: 'biorouter.capabilities.workspaceDefault.v4',
-            shouldEnable: shouldDefaultEnableWorkspace,
-          },
-        ];
-
-        for (const migration of capabilityMigrations) {
-          if (localStorage.getItem(migration.flag)) continue;
-
-          try {
-            const current = (await apiGetExtensions()).data?.extensions || [];
-            for (const ext of current) {
-              if (!migration.shouldEnable(ext)) continue;
-
-              const { enabled: _omit, ...cfg } = ext;
-              await addExtensionForSync(ext.name, cfg as ExtensionConfig, true);
-            }
-          } catch (e) {
-            console.error('Capability default-enable migration failed:', e);
-          }
-          localStorage.setItem(migration.flag, '1');
-        }
-
-        const refreshedResponse = await apiGetExtensions();
-        extensions = refreshedResponse.data?.extensions || [];
-
-        setExtensionsList(extensions);
+        // Defaults and migrations are applied by the backend, including CLI-only installs.
+        setExtensionsList(extensionsResponse.data?.extensions || []);
         setExtensionWarnings(extensionsResponse.data?.warnings || []);
       } catch (error) {
         console.error('Failed to load extensions:', error);

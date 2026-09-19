@@ -102,6 +102,12 @@ pub struct DependencyStatus {
     pub name: String,
     pub display_name: String,
     pub installed: bool,
+    /// The probe was still running at the timeout and was killed, so this tool's
+    /// presence is UNKNOWN rather than disproved. `installed` is false either
+    /// way; this separates "could not tell" from "not there" for any surface
+    /// that would otherwise tell the user to install what they already have.
+    #[serde(default)]
+    pub timed_out: bool,
     pub version: Option<String>,
     pub required: bool,
     pub purpose: String,
@@ -277,15 +283,127 @@ fn install_info(name: &str) -> InstallInfo {
     }
 }
 
+/// How long ONE PREREQUISITE may take to answer, across every probe it tries.
+///
+/// Per spec, not per probe: `python` tries `python3` then `python`, and
+/// `llama-server` tries PATH then the bundled sidecar, so a per-probe budget
+/// would make the real worst case twice this number.
+///
+/// 12 s admits the measured cold cost of a freshly installed binary — first
+/// execution is an operating-system scan, not compute: `llama-server --version`
+/// measured 8.33 s real at 0.04 s CPU on a fast Mac against 0.05 s warm — while
+/// leaving `biorouter doctor` comfortably inside the two budgets that bound it:
+/// the desktop's startup call (`ui/desktop/src/utils/dependencyChecker.ts`) and
+/// the installed-package check's. Specs run concurrently, so this is also
+/// `check_all`'s whole worst case, not a per-spec cost that sums.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// What one probe established about a command.
+enum ProbeOutcome {
+    /// The command ran and reported this version line (possibly empty).
+    Version(String),
+    /// The command is absent, or exited non-zero.
+    Absent,
+    /// The command had not answered by its deadline and was abandoned.
+    ///
+    /// Distinct from `Absent` on purpose: "we could not tell" and "it is not
+    /// there" are different answers, and collapsing them is how a slow machine
+    /// gets told to install software it already has.
+    TimedOut,
+}
+
 /// Probe one command; returns its first version line on success.
-fn probe(cmd: &str, args: &[&str]) -> Option<String> {
+///
+/// Bounded by [`PROBE_TIMEOUT`]. Both pipes are drained by their own threads
+/// while we wait, because reading them in sequence deadlocks as soon as a child
+/// fills the one we are not reading.
+/// Test seam: a probe expressed as a duration rather than an instant. Production
+/// threads one deadline per prerequisite through [`probe_until`] instead.
+#[cfg(test)]
+fn probe_within(cmd: &str, args: &[&str], budget: std::time::Duration) -> ProbeOutcome {
+    probe_until(cmd, args, std::time::Instant::now() + budget)
+}
+
+/// Probe one command, abandoning it at `deadline`.
+///
+/// The deadline covers the WHOLE probe, including reading the child's output.
+/// Bounding only the child's exit is not enough: a child can answer and exit
+/// while a descendant it spawned still holds the inherited pipe, and a blocking
+/// read then waits for that descendant instead. Measured at 30 s against a 2 s
+/// budget before this was fixed -- the same mechanism that makes a hung pipe
+/// indistinguishable from slow work on the Python side of the harness.
+fn probe_until(cmd: &str, args: &[&str], deadline: std::time::Instant) -> ProbeOutcome {
+    use std::io::Read;
+    use std::process::Stdio;
+
     let mut command = Command::new(cmd);
-    command.args(args);
+    command
+        .args(args)
+        // Never inherit the caller's stdin: a probe that waits on a terminal
+        // that will never answer is indistinguishable from a slow one.
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Its own process group, so abandoning a probe can take its descendants
+    // with it. Without this a grandchild survives holding the inherited pipe.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     biorouter_mcp::developer::shell::strip_daemon_private_env_std(&mut command);
+    // The daemon owns no console, so a console-subsystem child spawned without
+    // this flag gets a NEW visible console window for its lifetime — a black box
+    // flashing on the user's desktop once per probe. It sits beside the env strip
+    // because they are the two things every agent-spawned child needs, and it
+    // must be applied BEFORE the spawn below.
     biorouter_mcp::developer::shell::no_console_window_std(&mut command);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
+    let Ok(mut child) = command.spawn() else {
+        return ProbeOutcome::Absent;
+    };
+    // Each pipe is drained by its own thread -- reading them in sequence
+    // deadlocks as soon as the child fills the one we are not reading -- and
+    // each reports through a channel so the wait for it can be bounded. A
+    // thread still blocked on a pipe a descendant holds is detached and
+    // harmless; its send simply never arrives.
+    let drain = |handle: Option<_>| {
+        let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut stream) = handle {
+                let _: Option<usize> = std::io::Read::read_to_end(&mut stream, &mut bytes).ok();
+            }
+            let _: Result<(), _> = sender.send(bytes);
+        });
+        receiver
+    };
+    let out = drain(
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let err = drain(
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Err(_) => return ProbeOutcome::Absent,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    terminate(&mut child);
+                    return ProbeOutcome::TimedOut;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    };
+    if !status.success() {
+        return ProbeOutcome::Absent;
     }
     let pick = |bytes: &[u8]| {
         String::from_utf8_lossy(bytes)
@@ -294,9 +412,41 @@ fn probe(cmd: &str, args: &[&str]) -> Option<String> {
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
     };
-    pick(&output.stdout)
-        .or_else(|| pick(&output.stderr))
-        .or(Some(String::new()))
+    // Bounded by the SAME deadline. A descendant holding the pipe cannot make a
+    // probe outlive its budget; what it costs is the version string, not time.
+    let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
+    let stdout = out.recv_timeout(remaining()).unwrap_or_default();
+    let stderr = err.recv_timeout(remaining()).unwrap_or_default();
+    ProbeOutcome::Version(pick(&stdout).or_else(|| pick(&stderr)).unwrap_or_default())
+}
+
+/// Stop a probe and everything it started.
+///
+/// `Child::kill` signals only the direct child, so a descendant would survive
+/// holding the pipe. On Unix the probe is its own process group (set at spawn),
+/// which is what makes one signal reach the whole tree.
+fn terminate(child: &mut std::process::Child) {
+    // Before the child is reaped, so its pid cannot have been reused. Negative
+    // pid addresses the group. Best effort: the group is already gone if the
+    // child exited, which is not an error worth reporting.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Decrements the in-flight count however `check_spec` returns.
+#[cfg(test)]
+fn scopeguard_leave() -> impl Drop {
+    struct Leave;
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            leave_probe();
+        }
+    }
+    Leave
 }
 
 /// A known per-OS install command for a prerequisite, if any.
@@ -306,12 +456,37 @@ pub fn install_command(name: &str) -> Option<String> {
 
 /// Check a prerequisite by trying each probe in turn.
 fn check_spec(spec: &Spec) -> DependencyStatus {
-    let mut version = spec.probes.iter().find_map(|(cmd, args)| probe(cmd, args));
+    #[cfg(test)]
+    enter_probe();
+    #[cfg(test)]
+    let _leave = scopeguard_leave();
+    // ONE deadline for the whole prerequisite. `python` tries python3 then
+    // python, and llama-server tries PATH then the bundled sidecar; a budget
+    // per probe would silently double the worst case for exactly those two.
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    let mut version = None;
+    let mut timed_out = false;
+    // Each probe in turn; a timeout is remembered but does not stop the next
+    // candidate (Windows' `python3` -> `python` fallback depends on that).
+    for (cmd, args) in spec.probes {
+        match probe_until(cmd, args, deadline) {
+            ProbeOutcome::Version(found) => {
+                version = Some(found);
+                break;
+            }
+            ProbeOutcome::TimedOut => timed_out = true,
+            ProbeOutcome::Absent => {}
+        }
+    }
     // llama-server usually isn't on PATH: the desktop app bundles it next to
     // the Biorouter binaries. Fall back to the sidecar's resolution logic.
     if version.is_none() && spec.name == "llama-server" {
         if let Some(bin) = crate::providers::llamacpp_sidecar::find_binary() {
-            version = probe(&bin.display().to_string(), &["--version"]);
+            match probe_until(&bin.display().to_string(), &["--version"], deadline) {
+                ProbeOutcome::Version(found) => version = Some(found),
+                ProbeOutcome::TimedOut => timed_out = true,
+                ProbeOutcome::Absent => {}
+            }
         }
     }
     let install = install_info(spec.name);
@@ -319,6 +494,7 @@ fn check_spec(spec: &Spec) -> DependencyStatus {
         name: spec.name.to_string(),
         display_name: spec.display_name.to_string(),
         installed: version.is_some(),
+        timed_out: timed_out && version.is_none(),
         version,
         required: spec.required,
         purpose: spec.purpose.to_string(),
@@ -331,8 +507,67 @@ fn check_spec(spec: &Spec) -> DependencyStatus {
 
 /// Check every prerequisite. This is what `biorouter doctor` and the desktop
 /// dependency setup both consume.
+/// Observes how many probes were in flight at once. Test-only: the concurrency
+/// is otherwise unfalsifiable, because every real probe answers in milliseconds
+/// when warm and a serial run clears any wall-clock threshold just as easily.
+#[cfg(test)]
+pub(crate) static PROBE_HIGH_WATER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static PROBES_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn enter_probe() {
+    use std::sync::atomic::Ordering;
+    let now = PROBES_IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+    PROBE_HIGH_WATER.fetch_max(now, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn leave_probe() {
+    PROBES_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn check_all() -> Vec<DependencyStatus> {
-    specs().iter().map(check_spec).collect()
+    // Concurrently, because these probes are dominated by the operating system's
+    // first-execution scan of a freshly installed binary — near-zero CPU, seconds
+    // of wall clock each. Run in series they add up: `biorouter doctor` is on the
+    // desktop's startup path under a 15 s budget (ui/desktop/src/utils/
+    // dependencyChecker.ts) and on the installed-package check's 60 s budget, and
+    // a cold machine blew through both. Order of the results is preserved.
+    let specs = specs();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = specs
+            .iter()
+            .map(|spec| scope.spawn(move || check_spec(spec)))
+            .collect();
+        handles
+            .into_iter()
+            .zip(specs.iter())
+            .map(|(handle, spec)| {
+                handle.join().unwrap_or_else(|_| {
+                    // A panic here is a defect in the probe, not a slow machine,
+                    // so it must NOT be dressed up as a timeout -- that would
+                    // print "did not answer in time" and hide a bug. The row is
+                    // otherwise built exactly as check_spec builds it.
+                    let install = install_info(spec.name);
+                    DependencyStatus {
+                        name: spec.name.to_string(),
+                        display_name: spec.display_name.to_string(),
+                        installed: false,
+                        timed_out: false,
+                        version: None,
+                        required: spec.required,
+                        purpose: spec.purpose.to_string(),
+                        doc_url: spec.doc_url.to_string(),
+                        install_command: install.command,
+                        requires_sudo: install.requires_sudo,
+                        download_url: install.download_url,
+                    }
+                })
+            })
+            .collect()
+    })
 }
 
 /// Check a single prerequisite by name (e.g. `"uv"`). Returns `None` if there is
@@ -1019,6 +1254,9 @@ pub fn debug_prompt(failure: &DependencyFailure<'_>) -> String {
         "- Currently detected as: {}\n",
         if d.installed {
             d.version.as_deref().unwrap_or("installed")
+        } else if d.timed_out {
+            // Do not hand the debugging agent an absence nobody established.
+            "check timed out — presence unknown, not disproved"
         } else {
             "not installed"
         }
@@ -1087,6 +1325,7 @@ mod debug_prompt_tests {
             name: name.to_string(),
             display_name: format!("{name} (test)"),
             installed: false,
+            timed_out: false,
             version: None,
             required: true,
             purpose: "test purpose".to_string(),
@@ -1155,5 +1394,121 @@ mod debug_prompt_tests {
         });
         assert!(p.contains("git --version"));
         assert!(!p.contains("Output from the failed command"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod probe_bound_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A probe that never returns must be abandoned and its child reaped, rather
+    /// than hanging `biorouter doctor` forever. Before this bound existed,
+    /// `Command::output()` waited indefinitely on every platform.
+    #[test]
+    fn a_hanging_probe_is_bounded_killed_and_reported_as_unknown() {
+        let budget = Duration::from_millis(300);
+        let started = Instant::now();
+        let outcome = probe_within("/bin/sh", &["-c", "sleep 60"], budget);
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(outcome, ProbeOutcome::TimedOut),
+            "a hanging probe must report TimedOut, not Absent: collapsing them tells \
+             the user to install software they already have"
+        );
+        assert!(
+            elapsed < budget * 10,
+            "probe took {elapsed:?}, which is not bounded by {budget:?}"
+        );
+    }
+
+    /// A child can answer, exit, and still leave a descendant holding the
+    /// inherited pipe. Reading that pipe to EOF then waits for the DESCENDANT.
+    /// Measured at 30 s against a 2 s budget before the read was bounded -- the
+    /// same mechanism that makes a held pipe look like slow work on the Python
+    /// side of the installed-package harness.
+    #[test]
+    fn a_descendant_holding_the_pipe_cannot_outlive_the_budget() {
+        let budget = Duration::from_millis(300);
+        let started = Instant::now();
+        let outcome = probe_within("/bin/sh", &["-c", "echo 1.2.3; sleep 30 & exit 0"], budget);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < budget * 10,
+            "probe took {elapsed:?} for a {budget:?} budget: the read is not bounded"
+        );
+        // Whichever answer it lands on, it must not have BLOCKED for it.
+        match outcome {
+            ProbeOutcome::Version(_) | ProbeOutcome::TimedOut => {}
+            ProbeOutcome::Absent => panic!("a command that exited 0 is not absent"),
+        }
+    }
+
+    #[test]
+    fn a_probe_that_answers_is_unaffected_by_the_bound() {
+        let outcome = probe_within("/bin/echo", &["1.2.3"], Duration::from_secs(5));
+        match outcome {
+            ProbeOutcome::Version(version) => assert_eq!(version, "1.2.3"),
+            _ => panic!("a command that answers must report its version line"),
+        }
+    }
+
+    #[test]
+    fn a_missing_command_is_absent_not_a_timeout() {
+        assert!(matches!(
+            probe_within(
+                "/nonexistent/biorouter-probe-fixture",
+                &[],
+                Duration::from_secs(5)
+            ),
+            ProbeOutcome::Absent
+        ));
+        // A command that exists but fails is also Absent, not TimedOut.
+        assert!(matches!(
+            probe_within("/bin/sh", &["-c", "exit 3"], Duration::from_secs(5)),
+            ProbeOutcome::Absent
+        ));
+    }
+
+    /// A child that writes more than one pipe buffer must not deadlock the probe.
+    /// Draining stdout and stderr in sequence hangs here; concurrent drains do not.
+    #[test]
+    fn a_noisy_child_does_not_deadlock_the_probe() {
+        let outcome = probe_within(
+            "/bin/sh",
+            &["-c", "yes error | head -c 200000 >&2; echo 9.9.9"],
+            Duration::from_secs(20),
+        );
+        match outcome {
+            ProbeOutcome::Version(version) => assert_eq!(version, "9.9.9"),
+            _ => panic!("a child that fills stderr must still yield its stdout version"),
+        }
+    }
+
+    /// The probes run concurrently, so a cold machine pays roughly the slowest
+    /// probe rather than the sum. This is what keeps `biorouter doctor` inside the
+    /// desktop's 15 s startup budget and the installed-package check's 60 s one.
+    /// Asserts the PROPERTY, not the clock. Every real probe answers in
+    /// milliseconds when warm, so a wall-clock threshold is satisfied by a
+    /// serial run too and would pin nothing: reverting `check_all` to
+    /// `.iter().map(check_spec)` left the old version of this test green.
+    #[test]
+    fn check_all_runs_its_probes_concurrently() {
+        use std::sync::atomic::Ordering;
+        let specs = specs();
+        PROBE_HIGH_WATER.store(0, Ordering::SeqCst);
+        let statuses = check_all();
+        let peak = PROBE_HIGH_WATER.load(Ordering::SeqCst);
+        assert_eq!(statuses.len(), specs.len());
+        for (status, spec) in statuses.iter().zip(specs.iter()) {
+            assert_eq!(status.name, spec.name, "check_all must preserve spec order");
+        }
+        assert!(
+            peak > 1,
+            "at most {peak} probe was ever in flight: check_all ran its {} specs in \
+             series, so a cold machine pays their SUM. That is what blew the \
+             desktop's startup budget and the installed-package check's.",
+            specs.len()
+        );
     }
 }

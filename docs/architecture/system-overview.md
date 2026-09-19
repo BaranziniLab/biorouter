@@ -44,7 +44,7 @@ The backend is a Rust workspace (`crates/`) organized into several crates:
 | `biorouter-bench` | Benchmarking tools |
 | `biorouter-test` | Integration tests |
 
-The built-in MCP servers shipped in `biorouter-mcp` are `developer`, `computercontroller`, `memory`,
+The built-in MCP servers shipped in `biorouter-mcp` are `developer`, `computercontroller`, `webdocuments`, `memory`,
 `autovisualiser`, `knowledge`, `agent_drafter`, `datasql`, `compute_server`, and
 `files_server`.
 

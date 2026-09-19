@@ -231,37 +231,18 @@ reaching the port as equivalent to a shell account.
 - **There are no user accounts.** Everyone who opens the address is the same user, with the same
   files and the same conversation history.
 
-## Optional: a virtual display for GUI automation
+## Computer Use requires a desktop session
 
-Most of Biorouter needs no display. The [Computer Controller](../extensions/built-in/computer-controller.md)
-extension is the exception: on Linux it drives X11 tools (`xdotool`, `wmctrl`, `xclip`,
-`xwininfo`), which need a display to talk to. On a host with no desktop, give it a virtual one:
+Most of BioRouter needs no display. [Computer Use](../extensions/built-in/computer-controller.md)
+uses its bundled native helper on the backend host. A headless service must report
+`desktop_unavailable` without breaking chat or Web & Documents. Opening the browser client does
+not expose the browser user's desktop.
 
-```bash
-sudo apt install xvfb xdotool wmctrl xclip x11-utils
-```
-
-Run `Xvfb` as its own unit, and set `DISPLAY` in `/etc/biorouter/env` so the service inherits it:
-
-```ini
-# /etc/systemd/system/biorouter-xvfb.service
-[Unit]
-Description=Virtual X display for Biorouter GUI automation
-After=network-online.target
-
-[Service]
-Type=simple
-User=biorouter
-ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then add `DISPLAY=:99` to the environment file and `After=biorouter-xvfb.service` to the Biorouter
-unit. Skip all of this if you are not using that extension.
+Linux desktop operation requires a real user session, the declared AT-SPI/Python GI dependencies,
+and supported capture/input methods. Xvfb alone does not establish accessibility or Wayland
+support. Do not install the retired shell-automation stack as a fallback. See the
+[implementation status](../design/computer-use-implementation-status.md) for platform evidence.
+Task approval and OS permissions are required before observing or controlling the desktop.
 
 ## Upgrading
 

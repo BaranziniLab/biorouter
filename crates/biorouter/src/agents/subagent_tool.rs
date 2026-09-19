@@ -2239,6 +2239,41 @@ mod tests {
         assert!(unsupported_bridged_extension_names(&serde_json::json!({}), &available).is_empty());
     }
 
+    #[tokio::test]
+    async fn computer_use_delegated_bridge_rejects_unavailable_capability_before_spawn() {
+        use std::{sync::Arc, time::Duration};
+        let root = tempfile::tempdir().unwrap();
+        let config = AgentConfig::new(
+            Arc::new(crate::session::SessionManager::new(
+                root.path().to_path_buf(),
+            )),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                root.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        for name in ["computercontroller", "ComputerController"] {
+            let task = parent_task_config(ProviderTier::Public, vec![]);
+            let call = handle_bridged_subagent_tool(
+                &config,
+                serde_json::json!({"instructions":"Read the synthetic screen", "extensions":[name]}),
+                task,
+                HashMap::new(),
+                root.path().to_path_buf(),
+                Some(CancellationToken::new()),
+            );
+            assert!(call.notification_stream.is_none());
+            let error = tokio::time::timeout(Duration::from_secs(1), call.result)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert!(error.message.contains("Nothing was started"));
+            assert!(error.message.contains(name));
+        }
+    }
+
     #[test]
     fn child_name_narrowing_retains_validated_bundled_capability_keys() {
         let extensions = ["skills", "extensionmanager"]

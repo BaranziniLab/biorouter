@@ -2934,6 +2934,30 @@
    Tailwind's scanner uses to notice new class strings). A clamp that fails to
    generate does not degrade — it prints the whole document, which is the defect
    the clamp exists to fix. */
+/* Computer Use permission check — the settled confirmation.
+   Authored here rather than as a Tailwind utility because a NEWLY written class
+   can silently fail to generate: under BIOROUTER_NO_HMR the renderer runs
+   `watch: { ignored: ['**'] }`, which is the same signal Tailwind's scanner uses
+   to notice new class strings. Nothing load-bearing may depend on that scan.
+
+   The check this decorates usually returns exactly what is already on screen,
+   so this brief settle is what tells the user the click did something. The
+   global prefers-reduced-motion reset below nulls it for anyone who asks. */
+.biorouter-check-settled {
+  animation: biorouter-check-settle var(--dur-med-min) var(--ease-out);
+}
+
+@keyframes biorouter-check-settle {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .biorouter-note-clamp {
   position: relative;
   max-height: var(--note-max-height);

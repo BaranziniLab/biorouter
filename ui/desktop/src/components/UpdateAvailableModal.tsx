@@ -235,9 +235,9 @@ export default function UpdateAvailableModal() {
         {awaitingDownload && (
           <div className="space-y-2">
             <p className="text-sm text-text-default">
-              A new version is ready to download. Biorouter will fetch it and then show you the
-              file to finish installing — it can&apos;t replace itself while it&apos;s running on
-              this platform.
+              A new version is ready to download. Biorouter will fetch it and then show you the file
+              to finish installing — it can&apos;t replace itself while it&apos;s running on this
+              platform.
             </p>
             {downloadError && (
               <p className="text-xs font-mono text-text-danger bg-background-muted rounded px-2 py-1">

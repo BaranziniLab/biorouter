@@ -21,8 +21,8 @@
     {
      "type": "builtin",
      "name": "computercontroller",
-     "description": "General computer control tools that don't require you to be a developer or engineer.",
-     "display_name": "Computer Controller",
+     "description": "Native desktop observation and control after per-chat task approval.",
+     "display_name": "Computer Use",
      "timeout": 300,
      "bundled": true,
      "available_tools": []

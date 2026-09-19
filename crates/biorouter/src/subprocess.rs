@@ -6,7 +6,7 @@ use tokio::process::Command;
 /// in [`biorouter_sandbox::console`], because `biorouter` depends on
 /// `biorouter-mcp` which depends on `biorouter-sandbox` — never the reverse — so
 /// the hot spawn sites in `biorouter-mcp` (`developer__shell`, background jobs,
-/// Computer Controller, Agent Drafter) cannot reach a helper defined *here*
+/// Computer Use, Agent Drafter) cannot reach a helper defined *here*
 /// without a dependency cycle. That is exactly why they ran without the flag and
 /// flashed a console window on every tool call. Keeping one definition in the
 /// leaf crate is what makes a single fix cover every layer.

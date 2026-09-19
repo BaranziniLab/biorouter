@@ -1,0 +1,259 @@
+{
+  "tools": [
+    {
+      "name": "click",
+      "inputSchema": {
+        "additionalProperties": false,
+        "required": [
+          "app"
+        ],
+        "properties": {
+          "mouse_button": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ]
+          },
+          "x": {
+            "type": "number"
+          },
+          "element_index": {
+            "type": "string"
+          },
+          "click_count": {
+            "minimum": 1,
+            "maximum": 100,
+            "type": "integer"
+          },
+          "y": {
+            "type": "number"
+          },
+          "click_method": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "accessibility",
+              "app_post",
+              "sky_click",
+              "global"
+            ]
+          },
+          "app": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "name": "drag",
+      "inputSchema": {
+        "properties": {
+          "to_x": {
+            "type": "number"
+          },
+          "to_y": {
+            "type": "number"
+          },
+          "from_y": {
+            "type": "number"
+          },
+          "from_x": {
+            "type": "number"
+          },
+          "app": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "app",
+          "from_x",
+          "from_y",
+          "to_x",
+          "to_y"
+        ]
+      }
+    },
+    {
+      "name": "get_app_state",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "max_tree_depth": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "text_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "max"
+                ]
+              }
+            ]
+          },
+          "max_tree_nodes": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_apps",
+      "inputSchema": {
+        "properties": {},
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "perform_secondary_action",
+      "inputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "element_index": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "app",
+          "element_index",
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "press_key",
+      "inputSchema": {
+        "required": [
+          "app",
+          "key"
+        ],
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      }
+    },
+    {
+      "name": "screen_capture",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "window_title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "display": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "list_only": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "scroll",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "element_index": {
+            "type": "string"
+          },
+          "pages": {
+            "exclusiveMinimum": 0,
+            "type": "number",
+            "maximum": 100
+          }
+        },
+        "required": [
+          "app",
+          "element_index",
+          "direction"
+        ]
+      }
+    },
+    {
+      "name": "set_value",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "element_index": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "element_index",
+          "value"
+        ]
+      }
+    },
+    {
+      "name": "type_text",
+      "inputSchema": {
+        "required": [
+          "app",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ]
+}

@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fetchLlamaServer } = require('./fetch-llama-server');
+const { stageComputerUse } = require('./computer-use-resources');
+const { npmCommand } = require('./npm-command');
 
 // Paths
 const appRoot = path.join(__dirname, '..');
@@ -139,14 +141,8 @@ function buildWebBundle() {
 
   // Prefer the npm that invoked us so the build runs under the same Node
   // (packaging requires Node 24 — a newer Node makes electron-forge no-op).
-  // `npm_execpath` is a JS file when npm ran us, so it has to go through
-  // process.execPath; falling back to the `npm` on PATH covers a bare
-  // `node scripts/prepare-platform-binaries.js`.
-  const npmCli = process.env.npm_execpath;
-  const [command, args] =
-    npmCli && /\.[cm]?js$/.test(npmCli)
-      ? [process.execPath, [npmCli, 'run', 'build:web']]
-      : [process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build:web']];
+  // Windows .cmd launchers cannot be spawned directly; resolve their JS CLI.
+  const [command, args] = npmCommand(['run', 'build:web']);
 
   const result = spawnSync(command, args, { cwd: appRoot, stdio: 'inherit' });
 
@@ -198,11 +194,13 @@ function assertNoForeignBinaries(targetPlatform) {
 
   if (offenders.length > 0) {
     const label = targetPlatform === 'darwin' ? 'macOS' : 'Linux';
-    console.error(`\n❌ PACKAGING ERROR: ${offenders.length} foreign executable(s) in the ${label} bundle:`);
+    console.error(
+      `\n❌ PACKAGING ERROR: ${offenders.length} foreign executable(s) in the ${label} bundle:`
+    );
     for (const o of offenders.slice(0, 40)) console.error(`   - ${o}`);
     if (offenders.length > 40) console.error(`   ... and ${offenders.length - 40} more`);
     console.error('\nThese belong to another platform and must not ship. If they are');
-    console.error('under llamacpp/, the wrong platform\'s sidecar was fetched.');
+    console.error("under llamacpp/, the wrong platform's sidecar was fetched.");
     process.exit(1);
   }
 }
@@ -273,6 +271,8 @@ function preparePlatformBinaries() {
   const targetArch = process.env.ELECTRON_ARCH || process.arch;
 
   console.log(`Preparing binaries for platform: ${targetPlatform} (${targetArch})`);
+
+  stageComputerUse(targetPlatform, targetArch);
 
   // First copy platform-specific files if needed
   copyPlatformFiles(targetPlatform);

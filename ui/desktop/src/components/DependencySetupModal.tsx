@@ -204,7 +204,9 @@ export default function DependencySetupModal() {
     const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) => {
       const payload = args[0] as DependencyEvent;
       if (payload.type === 'check-results' && payload.deps) {
-        const missing = payload.deps.filter((d) => !d.installed);
+        // Never prompt to install something whose check merely timed out: the
+        // probe established nothing, and offering an install asserts absence.
+        const missing = payload.deps.filter((d) => !d.installed && !d.timedOut);
         if (missing.length === 0) return;
         setDeps(
           missing.map((info) => ({

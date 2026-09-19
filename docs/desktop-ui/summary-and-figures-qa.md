@@ -1,5 +1,8 @@
 # Chat summary and academic figure acceptance
 
+> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+
+
 ## Contract
 
 The chat summary is a compact contextual popover, not a dashboard: use the
@@ -428,7 +431,7 @@ Luna's natural SQLite/comparator request in parent `20260831_4` successfully
 spawned child `20260831_5`, but the child correctly reported that its actual
 tools could neither create the project nor execute tests. Its grants were the
 audited Knowledge, Skills and Extension Manager subset. Developer, Code
-Execution, Computer Controller and native host tools are intentionally absent
+Execution, Computer Use and native host tools are intentionally absent
 from this subscription bridge; configured enablement is not callable access.
 No SQLite fixture, comparator or executed tests were produced. The attempted
 live steer targeted the same child but arrived after it stopped, returning
@@ -684,7 +687,7 @@ resources or explicit informed user approval; no unrelated files were removed.
   live preview behavior still need rebuilt-app Luna verification. Recorded
   successful Soul ingestion and Meditation (including pending/completion UI)
   remain valid evidence; they are not reopened simply because another check is
-  pending. Explicit useful live receipts for Memory and Computer Controller are
+  pending. Explicit useful live receipts for Memory and Computer Use are
   still missing from this QA record.
 - Full repository gates and a green full UI rerun remain required. Remote source
   synchronization is separately awaiting clearance of the denied push. No merge
@@ -1190,7 +1193,7 @@ Source files and existing binaries remain untouched. Memory later returned to
 normal, but root did not stop the previously dominant security extension and
 does not attribute that recovery to cache deletion.
 
-### Direct Computer Controller file refresh
+### Direct Computer Use file refresh
 
 The direct `computercontroller__automation_script` path was missing from the
 UI's successful opaque-execution refresh hints. Three fail-first assertions
@@ -1337,7 +1340,7 @@ symlink, package removal or third-party script executed during this audit. Any
 later test must use exact package identity, preserve approval/archive boundaries,
 and distinguish shared-asset import correctness from dependency availability.
 
-### Workspace Memory and direct Computer Controller acceptance
+### Workspace Memory and direct Computer Use acceptance
 
 Using Versa API Azure's actual `gpt-5.5-2026-04-24` deployment and the isolated
 synthetic workspace, Luna observed successful executed `memory/remember_memory`
@@ -1349,7 +1352,7 @@ minutes from 100 capacity and 75 ready work, excluding 20 blocked and 15 done.
 This is actual tool-use evidence, not just a graph-planning label or promise.
 No real user preference, unrelated category or global memory was requested.
 
-The separate direct Computer Controller attempt did not reach a tool call.
+The separate direct Computer Use attempt did not reach a tool call.
 In fresh session `20260831_23` (`Queue report automation`), disabling only Code
 Execution while retaining the other capabilities produced a generic context
 limit notice after compaction. GUI diagnostics exposed no original provider

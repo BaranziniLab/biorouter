@@ -58,6 +58,7 @@ async fn manager_with_the_bundled_extensions() -> (Arc<ExtensionManager>, Vec<&'
     for name in [
         "developer",
         "computercontroller",
+        "webdocuments",
         "autovisualiser",
         "memory",
         "knowledge",

@@ -531,34 +531,15 @@ fn store_removal_pause(attempt: u32) -> std::time::Duration {
 
 /// Remove a directory, re-trying while the OS says something still has it open.
 ///
-/// ⚠ Closing the SQLite pool is NOT enough on Windows, which is the whole
-/// reason this exists. Measured on windows-latest: with
-/// `SessionManager::close()` awaited AND a following query already refused
-/// because the pool is closed, removing the store still fails with os error
-/// 32, "The process cannot access the file because it is being used by another
-/// process", and an immediate second attempt fails identically. Unix never
-/// notices, because unlinking an open file is allowed there.
+/// `SessionStorage::close` must drain every connection before this runs.
+/// SQLx 0.8.0 can otherwise accept a late idle connection during its final
+/// shutdown wait and return with SQLite still open. A closed pool rejecting
+/// new queries does not establish that its existing connections are gone.
+/// The storage close handles that race; waiting here cannot fix it.
 ///
-/// ⚠ **The mechanism this comment named for a month was wrong, and it matters
-/// because it pointed at a fix that does not exist.** It said sqlx reaches
-/// `sqlite3_close` on a per-connection background thread and `Pool::close()`
-/// waits for the pool's bookkeeping instead, so the db/-wal/-shm handles
-/// "outlive the await by a little" — inviting the next reader to wait on the
-/// pool rather than on the OS. Measured on macOS 2026-09-08 with `lsof` against
-/// the test process's own pid: SIX handles under the store before
-/// `SessionManager::close().await` (db, -wal and -shm on two connections) and
-/// **zero** the instant it returns. sqlx 0.8's `PoolInner::close` awaits every
-/// connection's graceful close, and `sqlx-sqlite`'s `Connection::close` awaits
-/// the worker thread's confirmation, which that thread sends only after
-/// dropping the connection state and therefore the `sqlite3` handle. On our
-/// side of the process there is nothing left to wait for.
-///
-/// What still holds the file on a loaded windows-latest runner could not be
-/// named from here — no Windows machine to point `handle.exe` at — but every
-/// remaining candidate (a scanner reading the freshly written db, a filter
-/// driver) is OUTSIDE this process. Waiting is therefore the fix and not a
-/// workaround: there is nothing else to ask. The pause is bounded, and entered
-/// only after an attempt has already failed, so the ordinary path pays nothing.
+/// Keep a bounded retry for transient OS sharing failures after our handles
+/// are closed. It runs only after removal fails, so the ordinary path pays
+/// nothing. Do not increase this budget to mask a live connection.
 ///
 /// `remove` is injected so the retry can be tested on any platform. A test that
 /// could only fail on Windows would not be a test.
@@ -608,8 +589,7 @@ where
 /// not it succeeded, so the retry below owns the path alone and cannot race a
 /// second removal from `Drop`.
 pub(super) async fn close_ephemeral_store(ephemeral_store_dir: Option<tempfile::TempDir>) {
-    // The retry sleeps, and Windows may need the async runtime to keep moving
-    // while sqlx's connection threads release their final file handles.
+    // The retry sleeps; keep it off the async runtime thread.
     let _ =
         tokio::task::spawn_blocking(move || close_ephemeral_store_blocking(ephemeral_store_dir))
             .await;
@@ -1626,9 +1606,8 @@ mod tests {
     /// that attempt loses: with the pool closed and a following query already
     /// refused, the removal still failed with os error 32, "The process cannot
     /// access the file because it is being used by another process", and so
-    /// did an immediate retry. sqlx reaches `sqlite3_close` on a
-    /// per-connection background thread, so the handles outlive
-    /// `Pool::close().await`.
+    /// did an immediate retry. SQLx 0.8.0 can leave a late idle connection
+    /// behind during shutdown; `SessionStorage::close` must drain that too.
     ///
     /// A single best-effort attempt is therefore not a contract any test can
     /// hold on Windows, and production does not depend on one:

@@ -610,6 +610,31 @@ export type CommitResponse = {
     commit_sha: string;
 };
 
+export type ComputerUseConsentRequest = {
+    challenge_id: string;
+    session_id: string;
+};
+
+export type ComputerUseSessionRequest = {
+    session_id: string;
+};
+
+export type ComputerUseStatus = {
+    challenge_id: string;
+    destination: string;
+    disclosure: string;
+    enabled: boolean;
+    handoff_required: boolean;
+    model: string;
+    provider: string;
+    public_model: boolean;
+    requested: boolean;
+    runtime: unknown;
+    session_id: string;
+    state: string;
+    target: string;
+};
+
 /**
  * Configuration key metadata for provider setup
  */
@@ -4617,6 +4642,87 @@ export type CancelTurnResponses = {
 };
 
 export type CancelTurnResponse2 = CancelTurnResponses[keyof CancelTurnResponses];
+
+export type ComputerUseConsentData = {
+    body: ComputerUseConsentRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/computer_use/consent';
+};
+
+export type ComputerUseConsentErrors = {
+    /**
+     * Human proof required
+     */
+    403: unknown;
+    /**
+     * Scope changed or desktop busy
+     */
+    409: unknown;
+};
+
+export type ComputerUseConsentResponses = {
+    200: ComputerUseStatus;
+};
+
+export type ComputerUseConsentResponse = ComputerUseConsentResponses[keyof ComputerUseConsentResponses];
+
+export type ComputerUseRevokeData = {
+    body: ComputerUseSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/computer_use/revoke';
+};
+
+export type ComputerUseRevokeErrors = {
+    /**
+     * Session out of reach
+     */
+    403: unknown;
+};
+
+export type ComputerUseRevokeResponses = {
+    200: ComputerUseStatus;
+};
+
+export type ComputerUseRevokeResponse = ComputerUseRevokeResponses[keyof ComputerUseRevokeResponses];
+
+export type ComputerUseSetupData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/agent/computer_use/setup';
+};
+
+export type ComputerUseSetupResponses = {
+    200: unknown;
+};
+
+export type ComputerUseStatusData = {
+    body?: never;
+    path?: never;
+    query: {
+        session_id: string;
+    };
+    url: '/agent/computer_use/status';
+};
+
+export type ComputerUseStatusErrors = {
+    /**
+     * Session out of reach
+     */
+    403: unknown;
+    /**
+     * Chat not loaded
+     */
+    424: unknown;
+};
+
+export type ComputerUseStatusResponses = {
+    200: ComputerUseStatus;
+};
+
+export type ComputerUseStatusResponse = ComputerUseStatusResponses[keyof ComputerUseStatusResponses];
 
 export type AbandonContinuationLeaseData = {
     body: AbandonContinuationLeaseRequest;

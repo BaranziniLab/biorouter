@@ -10,6 +10,7 @@ activities:
   - Validate shell command execution and error handling
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
+  - Validate native Computer Use, per-chat consent, isolation, and fixture-scoped desktop interaction
   - Validate Auto Visualiser and JavaScript-executed artifact handoff
   - Verify session-anchored file links and live updates without losing preview edits
   - Exercise paper previews, syntax highlighting, and responsive panel motion
@@ -29,13 +30,13 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
   
   - key: test_depth
     input_type: string
     requirement: optional
     default: "standard"
-    description: "Testing depth: quick (smoke tests), standard (normal coverage), deep (exhaustive)"
+    description: "Testing depth: fixture_only (native Computer Use fixtures only; terminal report; no builds or other capabilities), quick (smoke tests), standard (normal coverage), deep (exhaustive)"
   
   - key: workspace_dir
     input_type: string
@@ -67,6 +68,12 @@ parameters:
     default: "biorouter-self-test-preview"
     description: "Unused app id for preview tests, distinct from sdk_app_id; existing apps are preserved"
 
+  - key: computer_use_fixture
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Exact disposable app/window title approved for native desktop testing; empty means report GUI checks unavailable"
+
   - key: office_python
     input_type: string
     requirement: optional
@@ -90,8 +97,19 @@ instructions: |
   - Document everything meticulously
   - Handle errors gracefully - a test failure shouldn't stop the suite
   
+  Execute only the selected phases ({{ test_phases }}). Unselected phases are not tasks.
+  {% if test_depth == "fixture_only" %}
+  This run authorizes only native Computer Use against {{ computer_use_fixture }}.
+  Do not run repository tests, builds, shell commands, scripts, subagents, or other capabilities.
+  Do not create a report file, alter configuration, restart helpers, switch providers, or enable tools.
+  Use only synthetic content in those fixtures and report directly in the terminal.
+  Observe the fixtures with fresh native app state; never substitute another app after a failure.
+  If a fixture is missing or a permission is denied, report BLOCKED and stop that scenario.
+  {% endif %}
+
   ## Test Execution Framework
   
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "basic" in test_phases) %}
   ### Phase 1: Environment Setup & Basic Tool Validation
   Create a structured test workspace and validate core developer tools:
   - File operations (CRUD + undo)
@@ -99,6 +117,9 @@ instructions: |
   - Code analysis capabilities
   - Error handling and recovery
   
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "extensions" in test_phases) %}
   ### Phase 2: Extension System Testing
   Test dynamic extension management:
   - Discover available extensions
@@ -106,6 +127,9 @@ instructions: |
   - Test extension interactions
   - Verify isolation between extensions
 
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "apps" in test_phases) %}
   ### Phase 2B: Apps SDK v2 Testing
   Exercise Agent Drafter's typed app contract end to end:
   - Create one isolated dashboard app with the configured self-test id
@@ -116,6 +140,9 @@ instructions: |
   - Delete only the dashboard app created by this run during cleanup
   {% endif %}
 
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "previews" in test_phases) %}
   ### Phase 2C: Artifact Preview Handoff
   Validate artifact-producing tools through the JavaScript execution extension:
   - Render one Auto Visualiser chart through `execute_code`
@@ -127,6 +154,17 @@ instructions: |
   - Delete only the preview app created by this run during cleanup
   {% endif %}
   
+  {% endif %}
+
+  {% if test_phases == "all" or "computer_use" in test_phases %}
+  ### Phase 2D: Native Computer Use
+  Validate the ten-tool native roster, per-request approval, private/public isolation and
+  sequential control against the explicitly supplied disposable app/window fixture. A missing
+  fixture or desktop leaves GUI evidence unavailable; never claim a skipped action passed.
+
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "subagents" in test_phases) %}
   ### Phase 3: Subagent Testing (Meta-Recursion)
   Create subagents to test yourself recursively:
   - Basic subagent creation and execution
@@ -139,6 +177,9 @@ instructions: |
   - Watch long-running children without treating a watch timeout as failure
   - Verify the child retains its exact provider/model and delegated tool profile
 
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "knowledge" in test_phases) %}
   ### Phase 3B: Knowledge Round Trips
   Validate the current knowledge formats without touching the user's real bases:
   - Run deterministic OKF and BioOKF ingest → lint → query round trips
@@ -147,6 +188,9 @@ instructions: |
   - Exercise startup purge of registered and unregistered legacy residue
   - Verify the recreated built-in is named `soul` and has an OKF profile
   
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "advanced" in test_phases) %}
   ### Phase 4: Advanced Self-Testing
   Push boundaries and test limits:
   - Intentionally trigger errors
@@ -155,6 +199,9 @@ instructions: |
   - Measure performance metrics
   - Test resource constraints
 
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "reset" in test_phases) %}
   ### Phase 4B: Settings Reset Safety
   Validate the destructive reset feature without deleting the active self-test session:
   - Inspect the reset API and Settings panel definitions and verify all seven reset categories match
@@ -162,6 +209,9 @@ instructions: |
   - Run the targeted reset storage and factory-default tests from the repository
   - Never submit a destructive reset against the live self-test profile
 
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "providers" in test_phases) %}
   ### Phase 4C: Provider and Conversation Boundaries
   - Validate content-filter error frames without exposing raw provider payloads
   - Verify Quick, Normal, and Deep produce model-compatible requests
@@ -169,13 +219,21 @@ instructions: |
   - Verify saved-credential deletion refuses shared and protected credentials
   - Use synthetic credentials and isolated profiles for all destructive checks
   
+  {% endif %}
+
   ### Phase 5: Report Generation
+  {% if test_depth == "fixture_only" %}
+  Summarize only observed native fixture outcomes in the terminal. Mark all unobserved
+  coverage NOT OBSERVABLE; do not label the comprehensive suite passed.
+  {% else %}
   Compile comprehensive test results:
   - Aggregate all test outcomes
   - Calculate success metrics
   - Document failures and issues
   - Generate recommendations
   
+  {% endif %}
+
   ## Success Criteria
   - Phase success: Every required scenario passes; report optional skips separately
   - Suite success: All selected phases complete with no unresolved required failures
@@ -183,6 +241,7 @@ instructions: |
   - Each test logs: setup → execute → validate → result → cleanup
 
 extensions:
+# {% if test_depth != "fixture_only" %}
   - type: platform
     name: skills
     bundled: true
@@ -194,6 +253,22 @@ extensions:
     timeout: 600
     bundled: true
     description: Core tool for file operations, shell commands, and code analysis
+
+# {% endif %}
+  - type: builtin
+    name: computercontroller
+    display_name: Computer Use
+    timeout: 300
+    bundled: true
+    description: Native application observation and control after per-chat task approval
+
+# {% if test_depth != "fixture_only" %}
+  - type: builtin
+    name: webdocuments
+    display_name: Web & Documents
+    timeout: 300
+    bundled: true
+    description: URL fetching and document utilities independent of desktop availability
 
   - type: builtin
     name: agent_drafter
@@ -214,6 +289,7 @@ extensions:
     bundled: true
     description: Sandboxed JavaScript orchestration for nested extension and artifact validation
   
+# {% endif %}
 prompt: |
   Execute the BioRouter Self-Testing Integration Suite in {{ workspace_dir }}.
   Test phases: {{ test_phases }}, Depth: {{ test_depth }}, Parallel: {{ parallel_tests }}
@@ -221,15 +297,19 @@ prompt: |
   Never stage, commit, or push test artifacts or source changes. Leave every generated report
   untracked in the test workspace for the caller to inspect and remove.
   
+  {% if test_depth == "fixture_only" %}
+  Run only PHASE 2D below. Keep results in the terminal; do not create workspace files.
+  {% else %}
   ## 🚀 INITIALIZATION
   Create test workspace: {{ workspace_dir }}/ for all test artifacts and reports.
   
   Track your progress using the todo extension. Start with:
   - [ ] Initialize test workspace
   - [ ] Set up logging infrastructure
-  - [ ] Begin Phase 1 testing
+  - [ ] Begin selected phases: {{ test_phases }}
+  {% endif %}
   
-  {% if test_phases == "all" or "office" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "office" in test_phases) %}
   ## Office Contexts
 
   For an office-only run, execute this section after initialization and then report
@@ -265,7 +345,7 @@ prompt: |
   and distinguish structural, calculation, visual, and native-application evidence.
   {% endif %}
 
-  {% if test_phases == "all" or "basic" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "basic" in test_phases) %}
   ## 📝 PHASE 1: Basic Tool Validation
   
   ### File Operations Testing
@@ -291,7 +371,7 @@ prompt: |
   Log results to: {{ workspace_dir }}/phase1_basic_tools.md
   {% endif %}
   
-  {% if test_phases == "all" or "extensions" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "extensions" in test_phases) %}
   ## 🔧 PHASE 2: Extension System Testing
   
   ### To Do Capability and Chat Summary
@@ -341,12 +421,63 @@ prompt: |
   Log results to: {{ workspace_dir }}/phase2_extensions.md
   {% endif %}
 
-  {% if test_phases == "all" or "apps" in test_phases %}
+  {% if test_phases == "all" or "computer_use" in test_phases %}
+  ## PHASE 2D: Native Computer Use
+
+  {% if test_depth == "fixture_only" %}
+  1. Use only the ten native Computer Use tools loaded for this run. The only approved
+     targets are {{ computer_use_fixture }}. Do not inspect or interact with unrelated apps.
+  2. Wait for host task approval before observing the desktop. The workflow cannot approve itself.
+     After approval, use list_apps to resolve the fixture to its exact running app name or bundle ID.
+     Do not invent generic app aliases such as "Browser". If read-only discovery returns appNotFound,
+     use list_apps and the explicit fixture identity to correct the target before proceeding.
+     Obtain fresh state for the exact fixture and perform synthetic typing,
+     a click, scrolling, dragging, a key press, and setting a value where the fixture supports them.
+     Verify outcomes using refreshed state and a fixture-window screen capture.
+  3. The same grant should cover subsequent actions in this request. Do not replay failed or
+     timed-out mutations; obtain fresh state before any different action. If stopped, do not
+     retry, seek another approval, or use a fallback tool. Report the observed stopped outcome.
+  4. Report the target, helper version if exposed, exact fixture, each observed tool outcome,
+     and missing coverage in the terminal. Cross-chat isolation, helper restart, provider
+     variants, and regression suites are NOT OBSERVABLE in this bounded run, not passes.
+  {% else %}
+  1. Inspect the effective roster. Computer Use must expose exactly list_apps, get_app_state,
+     click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and
+     screen_capture. Web & Documents must expose web_scrape, xlsx_tool, docx_tool, pdf_tool,
+     and cache independently. Developer must expose no desktop capture/control tool.
+  2. Exercise contract, consent, non-pooling, ownership, cancellation and bridge/nested-call
+     regression tests. Require removed tool names to fail rather than forward. A disabled
+     capability or restricted roster must remain restricted after reload.
+  3. Native GUI fixture: use only the exact disposable app/window {{ computer_use_fixture }}.
+     If none is supplied, record GUI checks NOT OBSERVABLE and leave the acceptance gate open.
+     Before any desktop observation, obtain the host's per-chat task grant for this model and
+     target. The test workflow cannot self-approve. Denied permissions, missing runtime,
+     unsupported environment, no desktop or busy ownership are explicit blocked outcomes;
+     never loop on approval or bypass with scripts or another desktop tool.
+  4. After approval, discover the fixture, inspect fresh app state, then type synthetic text,
+     click a fixture control, scroll, drag, press a key and set a value using actual returned
+     targets. Verify each outcome from refreshed state and native screen_capture. Never send
+     a message, use a real user's document, or operate an unrelated app. Do not claim success
+     from an empty application list or an unexecuted action. Do not replay timed-out mutations.
+  5. Verify the same grant covers subsequent authorized actions without repeated prompts.
+     Verify Stop/revoke blocks further actions and helper restart invalidates element state.
+     Private and public chats must retain separate snapshots, trees, elements, results and
+     grants. Verify a private-to-public handoff pauses before capture; do not transfer real
+     private observations into the test report or a public model.
+  6. Repeat through native direct calls, code execution and a coding-agent provider where
+     available. Test Computer Use with Developer and Web & Documents disabled in an isolated
+     profile. Missing GUI/provider evidence is NOT OBSERVABLE, never PASS. Record target host,
+     helper version, exact fixture, tool results and remaining gaps in
+     {{ workspace_dir }}/phase2d_computer_use.md.
+  {% endif %}
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "apps" in test_phases) %}
   ## 🧩 PHASE 2B: Apps SDK v2 Validation
 
   Use only the exact app id `{{ sdk_app_id }}`; never modify or delete any other app.
 
-  1. Call `list_apps`. If that exact app id already exists or matches the preview id `{{ preview_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
+  1. Call `agent_drafter__list_apps`. If that exact app id already exists or matches the preview id `{{ preview_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
   2. Call `create_app` with that id, kind `agentic`, archetype `dashboard`, a concise title and description, and a system prompt that updates dashboard metrics through the declared action.
   3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, `refresh_requested` signal, and nonblank `surface.state_initial` metric labels. Missing measurements must be explicitly unavailable, not invented zero values. Keep declared initial state as the source of first-load values; do not add duplicate imperative initialization to work around the smoke harness.
   4. Call `build_app`; require a successful bundle.
@@ -358,12 +489,12 @@ prompt: |
   {% endif %}
   {% endif %}
 
-  {% if test_phases == "all" or "previews" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "previews" in test_phases) %}
   ## 🖼️ PHASE 2C: Artifact Preview Handoff
 
   Use only the exact app id `{{ preview_app_id }}`; never modify or delete any other app.
 
-  First call `list_apps`. If that exact app id already exists or matches the dashboard id `{{ sdk_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
+  First call `agent_drafter__list_apps`. If that exact app id already exists or matches the dashboard id `{{ sdk_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
 
   1. In one `execute_code` script, import an Auto Visualiser chart tool, render a small bar chart, and record its textual result. The outer call must also emit a user-facing HTML resource block for the client.
   2. In one `execute_code` script, import Agent Drafter's `create_app` and `launch_app`, create a static app with id `{{ preview_app_id }}`, launch it, and record the launch result.
@@ -378,7 +509,7 @@ prompt: |
   {% endif %}
   {% endif %}
   
-  {% if test_phases == "all" or "subagents" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "subagents" in test_phases) %}
   ## 🤖 PHASE 3: Subagent Meta-Testing
   
   ### Basic Subagent Test
@@ -449,7 +580,7 @@ prompt: |
   Log results to: {{ workspace_dir }}/phase3_subagents.md
   {% endif %}
 
-  {% if test_phases == "all" or "knowledge" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "knowledge" in test_phases) %}
   ## 🧠 PHASE 3B: Isolated OKF, BioOKF, and Soul Validation
 
   Never delete, rename, import into, or mutate any knowledge base in the user's active profile.
@@ -471,7 +602,7 @@ prompt: |
      user knowledge base into the report.
   {% endif %}
 
-  {% if test_phases == "all" or "reset" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "reset" in test_phases) %}
   ## ♻️ PHASE 4: Settings Reset Safety
 
   This phase verifies the destructive reset contract without invoking it against this live profile.
@@ -487,7 +618,7 @@ prompt: |
   Log results to: {{ workspace_dir }}/phase4_reset.md
   {% endif %}
   
-  {% if test_phases == "all" or "advanced" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "advanced" in test_phases) %}
   ## 🔬 PHASE 4B: Advanced Testing
   
   ### Error Boundary Testing
@@ -514,7 +645,7 @@ prompt: |
   Log results to: {{ workspace_dir }}/phase4_advanced.md
   {% endif %}
 
-  {% if test_phases == "all" or "providers" in test_phases %}
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "providers" in test_phases) %}
   ## PHASE 4C: Provider, Reasoning, and Credential Boundaries
 
   Use the repository's focused regression tests and record their actual exit codes and test counts.
@@ -556,6 +687,11 @@ prompt: |
 
   ## 📊 PHASE 5: Final Report Generation
   
+  {% if test_depth == "fixture_only" %}
+  Display a concise terminal report for the native fixture run only: PASS, FAIL, BLOCKED,
+  or NOT OBSERVABLE for each requested action, with evidence and remaining gaps.
+  Do not create files or claim comprehensive suite success.
+  {% else %}
   Create TWO reports:
   
   ### 1. Detailed Report at {{ workspace_dir }}/detailed_report.md
@@ -617,6 +753,8 @@ prompt: |
   3. Keep only the final report and logs
   {% endif %}
   
+  {% endif %}
+
   ## 🎯 META-TESTING NOTES
   Remember: You are testing yourself. This is recursive validation where:
   - Success means your tools work as expected
@@ -624,7 +762,9 @@ prompt: |
   - The ability to complete this test IS itself a test
   - Document everything - your future self (or another BioRouter instance) will thank you
   
+  {% if test_depth != "fixture_only" %}
   Use your todo extension to track progress throughout.
+  {% endif %}
   Handle errors gracefully - a failed test shouldn't crash the suite.
   Be thorough but efficient based on the test_depth parameter.
   

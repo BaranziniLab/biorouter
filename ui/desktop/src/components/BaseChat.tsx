@@ -5,6 +5,7 @@ import ProgressiveMessageList from './ProgressiveMessageList';
 import { PendingToolCallList } from './PendingToolCallCard';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
+import { ComputerUseControl } from './computer-use/ComputerUseControl';
 import { deriveWorkingDirLocked } from './bottom_menu/DirSwitcher';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
@@ -2303,6 +2304,7 @@ function BaseChatContent({
         say, which is almost always.
       */}
         <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
+        {sessionId && agentReady && <ComputerUseControl key={sessionId} sessionId={sessionId} />}
         <ChatInput
           sessionId={sessionId}
           // The chat stream's own copy of the row, which the reply stream keeps

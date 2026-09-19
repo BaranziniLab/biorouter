@@ -38,3 +38,6 @@ crates/biorouter/src/agents/snapshots/*.snap linguist-language=Text
 *.gguf      binary
 *.brxt      binary
 *.brkb      binary
+
+# Unified diff markers require spaces on blank context lines and before Go tab indentation.
+third_party/open-computer-use/patches/*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab

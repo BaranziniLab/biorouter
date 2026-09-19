@@ -415,6 +415,7 @@ struct ExtensionReach {
 }
 
 pub struct ExtensionManager {
+    pub computer_use: Arc<crate::security::computer_use::ComputerUseConsent>,
     extensions: Mutex<HashMap<String, Extension>>,
     context: PlatformExtensionContext,
     provider: SharedProvider,
@@ -513,7 +514,7 @@ fn dispatch_meta(
 /// agent loop, the coding-agent tool bridge (whose results never pass the
 /// agent loop's own output guardrail), `POST /agent/call_tool`, and code
 /// execution's sub-calls. An error is redacted as well: a failing
-/// `automation_script` carries the script's stdout in its message.
+/// external script tools can carry stdout in their error messages.
 async fn call_tool_withholding_secrets(
     client: &McpClientBox,
     tool_name: &str,
@@ -547,6 +548,97 @@ async fn call_tool_withholding_secrets(
         );
     }
     outcome
+}
+
+async fn call_computer_use(
+    client: &McpClientBox,
+    tool_name: &str,
+    arguments: Option<rmcp::model::JsonObject>,
+    meta: McpMeta,
+    cancellation_token: CancellationToken,
+    permit: crate::security::computer_use::ComputerUsePermit,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    let _desktop = tokio::select! {
+        biased;
+        _ = cancellation_token.cancelled() => {
+            permit.cancel.cancel();
+            return Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use cancelled before acquiring desktop control", None));
+        },
+        guard = permit.lock() => guard.map_err(|e| ErrorData::new(ErrorCode::INVALID_REQUEST, e.to_string(), None))?,
+    };
+    let call_cancel = cancellation_token.child_token();
+    let call =
+        call_tool_withholding_secrets(client, tool_name, arguments, meta, call_cancel.clone());
+    tokio::pin!(call);
+    tokio::select! {
+        biased;
+        _ = permit.cancel.cancelled() => {
+            call_cancel.cancel();
+            let _ = tokio::time::timeout(Duration::from_secs(10), &mut call).await;
+            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use stopped. An action already delivered to the desktop may have completed; no result was shared.", None))
+        },
+        _ = cancellation_token.cancelled() => {
+            permit.cancel.cancel();
+            call_cancel.cancel();
+            let _ = tokio::time::timeout(Duration::from_secs(10), &mut call).await;
+            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use stopped; inspect the desktop before retrying a mutation.", None))
+        },
+        result = &mut call => {
+            if permit.cancel.is_cancelled() {
+                Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Computer Use result withheld after revoke", None))
+            } else { result }
+        }
+    }
+}
+
+async fn call_admitted_tool(
+    client: &McpClientBox,
+    tool_name: &str,
+    arguments: Option<rmcp::model::JsonObject>,
+    meta: McpMeta,
+    cancellation_token: CancellationToken,
+    computer_permit: Option<crate::security::computer_use::ComputerUsePermit>,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    if let Some(permit) = computer_permit {
+        call_computer_use(
+            client,
+            tool_name,
+            arguments,
+            meta,
+            cancellation_token,
+            permit,
+        )
+        .await
+    } else {
+        call_tool_withholding_secrets(client, tool_name, arguments, meta, cancellation_token).await
+    }
+}
+
+fn configured_tool_name(
+    prefixed_name: &str,
+    supplied_name: &str,
+    client_name: &str,
+    config: &ExtensionConfig,
+) -> Result<String> {
+    let tool_name = prefixed_name
+        .strip_prefix(client_name)
+        .and_then(|name| name.strip_prefix("__"))
+        .ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                format!("Invalid tool name format: '{supplied_name}'"),
+                None,
+            )
+        })?;
+    if !config.is_tool_available(tool_name) {
+        return Err(ErrorData::new(
+            ErrorCode::RESOURCE_NOT_FOUND,
+            format!("Tool '{tool_name}' is not available for extension '{client_name}'"),
+            None,
+        )
+        .into());
+    }
+    Ok(tool_name.to_owned())
 }
 
 /// Sanitizes a string by replacing invalid characters with underscores.
@@ -1041,6 +1133,7 @@ impl ExtensionManager {
             tools_cache: Mutex::new(None),
             tools_cache_version: AtomicU64::new(0),
             working_dir: Mutex::new(None),
+            computer_use: Arc::default(),
         }
     }
 
@@ -1052,6 +1145,66 @@ impl ExtensionManager {
 
     pub fn get_context(&self) -> &PlatformExtensionContext {
         &self.context
+    }
+
+    pub async fn computer_use_status(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::security::computer_use::ComputerUseStatus> {
+        let mut status = self.computer_use.status(session_id, &self.provider).await?;
+        status.enabled = self.is_extension_enabled("computercontroller").await;
+        Ok(status)
+    }
+
+    async fn admit_computer_use(
+        &self,
+        session_id: &str,
+        config: &ExtensionConfig,
+        tool: &str,
+        cap: crate::privacy::CallCapability,
+        cancel: &CancellationToken,
+    ) -> Result<Option<crate::security::computer_use::ComputerUsePermit>> {
+        let builtin =
+            matches!(config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
+        anyhow::ensure!(
+            builtin || !crate::security::computer_use::is_computer_use_tool(tool),
+            "The Computer Use namespace is reserved for BioRouter's reviewed built-in capability"
+        );
+        if !builtin {
+            return Ok(None);
+        }
+        anyhow::ensure!(crate::security::computer_use::is_computer_use_tool(tool),
+            "This legacy Computer Controller tool was removed. Use the Computer Use tools or Web & Documents capability.");
+        let status = self.computer_use_status(session_id).await?;
+        anyhow::ensure!(
+            status.public_model != cap.tier().is_private(),
+            "Computer Use caller differs from the approved model destination"
+        );
+        Ok(Some(
+            self.computer_use
+                .permit(session_id, &self.provider, cancel)
+                .await?,
+        ))
+    }
+
+    pub async fn bind_computer_use_task(&self, session_id: &str) -> Result<()> {
+        self.computer_use
+            .bind_task(session_id, &self.provider)
+            .await
+    }
+
+    pub async fn approve_computer_use(
+        &self,
+        session_id: &str,
+        challenge_id: &str,
+    ) -> Result<crate::security::computer_use::ComputerUseStatus> {
+        anyhow::ensure!(
+            self.is_extension_enabled("computercontroller").await,
+            "Enable Computer Use for this chat before allowing control"
+        );
+        self.computer_use
+            .approve(session_id, challenge_id, &self.provider)
+            .await
     }
 
     /// Set the session working directory that newly-loaded extensions should run
@@ -1136,6 +1289,14 @@ impl ExtensionManager {
     ) -> ExtensionResult<()> {
         let config_name = config.key().to_string();
         let sanitized_name = normalize(&config_name);
+        if sanitized_name == "computercontroller"
+            && !matches!(&config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller")
+        {
+            return Err(ExtensionError::ConfigError(
+                "The computercontroller name is reserved for BioRouter's Computer Use built-in"
+                    .into(),
+            ));
+        }
 
         if !Self::should_load_over(self.extensions.lock().await.get(&sanitized_name), origin) {
             return Ok(());
@@ -1592,6 +1753,9 @@ impl ExtensionManager {
     /// Get aggregated usage statistics
     pub async fn remove_extension(&self, name: &str) -> ExtensionResult<()> {
         let sanitized_name = normalize(name);
+        if sanitized_name == "computercontroller" {
+            self.computer_use.revoke();
+        }
         self.extensions.lock().await.remove(&sanitized_name);
         self.invalidate_tools_cache_and_bump_version().await;
         Ok(())
@@ -2995,32 +3159,26 @@ impl ExtensionManager {
             .await
             .ok_or_else(|| unroutable_tool_error(&prefixed_name, tool_call.name.as_ref()))?;
 
-        let tool_name = prefixed_name
-            .strip_prefix(client_name.as_str())
-            .and_then(|s| s.strip_prefix("__"))
-            .ok_or_else(|| {
-                ErrorData::new(
-                    ErrorCode::RESOURCE_NOT_FOUND,
-                    format!("Invalid tool name format: '{}'", tool_call.name),
-                    None,
-                )
-            })?
-            .to_string();
-
         // Unconditional: the config was resolved with the client, so there is no
         // "the extension has gone" branch that could skip the check rather than
         // fail it.
-        if !client_config.is_tool_available(&tool_name) {
-            return Err(ErrorData::new(
-                ErrorCode::RESOURCE_NOT_FOUND,
-                format!(
-                    "Tool '{}' is not available for extension '{}'",
-                    tool_name, client_name
-                ),
-                None,
+        let tool_name = configured_tool_name(
+            &prefixed_name,
+            tool_call.name.as_ref(),
+            &client_name,
+            &client_config,
+        )?;
+
+        let computer_use = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
+        let computer_permit = self
+            .admit_computer_use(
+                session_id,
+                &client_config,
+                &prefixed_name,
+                cap,
+                &cancellation_token,
             )
-            .into());
-        }
+            .await?;
 
         // Issue #56 Gate C, beside BR-23's SecretGuard block below for the
         // reason that block's own comment states: this is the single choke
@@ -3113,13 +3271,16 @@ impl ExtensionManager {
         // semaphore, minutes later, against whatever provider is bound by then.
         let workspace_child_scope_only =
             client_name == "workspace" && extension_origin == ExtensionOrigin::AutoInjected;
-        let meta = dispatch_meta(
+        let mut meta = dispatch_meta(
             &session_id,
             cap,
             &client_name,
             progress_token,
             workspace_child_scope_only,
         );
+        if let Some(permit) = &computer_permit {
+            meta.computer_use_generation = Some(permit.generation.clone());
+        }
 
         let fut = async move {
             tracing::debug!(
@@ -3136,13 +3297,24 @@ impl ExtensionManager {
             let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
             // H1: credential material is withheld from what comes back, here,
             // where every path to a model converges.
-            call_tool_withholding_secrets(&client, &tool_name, arguments, meta, cancellation_token)
-                .await
+            call_admitted_tool(
+                &client,
+                &tool_name,
+                arguments,
+                meta,
+                cancellation_token,
+                computer_permit,
+            )
+            .await
         };
 
         Ok(ToolCallResult {
             result: Box::new(fut.boxed()),
-            notification_stream: Some(Box::new(ReceiverStream::new(notifications_receiver))),
+            notification_stream: if computer_use {
+                None
+            } else {
+                Some(Box::new(ReceiverStream::new(notifications_receiver)))
+            },
         })
     }
 
@@ -3682,6 +3854,7 @@ fn extension_listing_lines(
 
 #[cfg(test)]
 mod tests {
+    include!("computer_use_nested_tests.rs");
     use super::*;
     use rmcp::model::CallToolResult;
     use rmcp::model::{InitializeResult, JsonObject};
@@ -3694,6 +3867,46 @@ mod tests {
     use rmcp::model::ServerNotification;
 
     use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn external_servers_cannot_impersonate_the_computer_use_approval_namespace() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        for name in [
+            "computercontroller",
+            "Computer Controller",
+            "COMPUTERCONTROLLER",
+        ] {
+            let config = ExtensionConfig::stdio(name, "must-not-launch", "untrusted", 30_u64);
+            let error = manager
+                .add_extension(config)
+                .await
+                .expect_err("reserved namespace must reject before process launch");
+            assert!(error.to_string().contains("reserved"));
+        }
+        manager
+            .add_mock_third_party_extension("computercontroller", Arc::new(MockClient {}))
+            .await;
+        for tool in ["click", "screen_capture", "list_apps"] {
+            let result = manager
+                .dispatch_tool_call(
+                    "chat",
+                    CallToolRequestParams {
+                        name: format!("computercontroller__{tool}").into(),
+                        arguments: None,
+                        meta: None,
+                        task: None,
+                    },
+                    crate::privacy::CallCapability::for_test_restricted(),
+                    CancellationToken::new(),
+                )
+                .await;
+            assert!(result.is_err());
+            assert!(result.err().unwrap().to_string().contains("reserved"));
+        }
+    }
 
     impl ExtensionManager {
         async fn add_mock_extension(&self, name: String, client: McpClientBox) {
@@ -8266,6 +8479,59 @@ mod tests {
         let provider: SharedProvider = Arc::new(Mutex::new(Some(provider_at(tier))));
         let em = ExtensionManager::new(provider.clone(), session_manager);
         (dir, em, provider)
+    }
+
+    #[tokio::test]
+    async fn revoked_native_result_is_withheld_even_when_the_client_ignores_cancellation() {
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        manager
+            .add_mock_extension(
+                "computercontroller".into(),
+                Arc::new(SlowMockClient {
+                    delay: Duration::from_millis(50),
+                }),
+            )
+            .await;
+        let _task = manager.computer_use.task_guard();
+        manager
+            .bind_computer_use_task("isolated-chat")
+            .await
+            .unwrap();
+        let admission = manager.dispatch_tool_call(
+            "isolated-chat",
+            CallToolRequestParams {
+                name: "computercontroller__get_app_state".into(),
+                arguments: None,
+                meta: None,
+                task: None,
+            },
+            crate::privacy::CallCapability::for_test_restricted(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(admission);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut admission)
+                .await
+                .is_err()
+        );
+        let status = manager.computer_use_status("isolated-chat").await.unwrap();
+        manager
+            .approve_computer_use("isolated-chat", &status.challenge_id)
+            .await
+            .unwrap();
+        let mut admitted = admission.await.unwrap();
+        assert!(admitted.notification_stream.is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut admitted.result)
+                .await
+                .is_err()
+        );
+        manager.computer_use.revoke();
+        let error = admitted.result.await.unwrap_err();
+        assert!(error.message.contains("no result was shared"));
     }
 
     impl ExtensionManager {

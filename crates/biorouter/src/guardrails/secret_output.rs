@@ -15,7 +15,7 @@
 //! point every tool result crosses on its way to a model: the agent loop, the
 //! coding-agent tool bridge (Claude Code, Codex — whose results never pass the
 //! agent loop's own output guardrail), `POST /agent/call_tool`, and code
-//! execution's sub-calls. Error results are redacted too: `automation_script`
+//! execution's sub-calls. Error results are redacted too: a tool
 //! returns a failing script's stdout inside its error.
 //!
 //! It has no switch and does not read the privacy tier. The secret floor is not

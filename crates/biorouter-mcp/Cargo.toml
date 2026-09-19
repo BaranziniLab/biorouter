@@ -13,6 +13,15 @@ workspace = true
 [dependencies]
 rmcp = { workspace = true, features = ["server", "client", "transport-io", "macros"] }
 biorouter-sandbox = { path = "../biorouter-sandbox" }
+# `std::fs::canonicalize` on Windows returns a VERBATIM path (`\\?\C:\…`). The
+# Computer Use payload paths are canonicalized and then reported by
+# `biorouter doctor`, so without this they reach the installed-payload
+# acceptance check, the CLI's human output and the desktop Diagnostics view in
+# a spelling nothing else in the tree uses. `biorouter::system::real_path` has
+# applied `dunce::simplified` for the same reason since before this crate
+# needed it; MCP cannot import that crate, because the host already depends on
+# MCP.
+dunce = "1"
 aes-gcm = "0.10"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
 anyhow = { workspace = true }
@@ -37,7 +46,6 @@ ammonia = "4.1"
 schemars = "1.0"
 shellexpand = "3.1.0"
 indoc = "2.0.5"
-xcap = "=0.4.0"
 reqwest = { version = "0.11", features = [
     "json",
     "rustls-tls-native-roots",
@@ -115,3 +123,6 @@ env-lock = { workspace = true }
 
 [features]
 utoipa = ["dep:utoipa"]
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }

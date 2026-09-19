@@ -993,18 +993,28 @@ pub fn provider_uses_bridge(provider_name: &str) -> bool {
 static GRANTS: LazyLock<RwLock<HashMap<String, Arc<BridgeGrant>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// The daemon's own base URL, published once it has bound a port.
+/// The host's own base URL, published once it has bound a port.
 ///
-/// `None` in a CLI process with no HTTP server, which is exactly the case where
-/// the bridge must not be offered: there would be nothing for the child to
-/// connect to. The providers treat absence as "run tool-less" rather than as an
-/// error.
+/// Standalone CLI agent commands and the daemon both serve the same MCP route.
+/// Hosts without a listener cannot issue a bridge lease.
 static BASE_URL: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Called by the server once it knows its bound address.
 pub fn publish_base_url(base: impl Into<String>) {
     if let Ok(mut guard) = BASE_URL.write() {
         *guard = Some(base.into());
+    }
+}
+
+pub(super) fn clear_base_url_if(expected: &str) {
+    clear_matching_base_url(&BASE_URL, expected);
+}
+
+fn clear_matching_base_url(store: &RwLock<Option<String>>, expected: &str) {
+    if let Ok(mut guard) = store.write() {
+        if guard.as_deref() == Some(expected) {
+            *guard = None;
+        }
     }
 }
 
@@ -1051,8 +1061,11 @@ impl Drop for BridgeLease {
 
 /// Register a grant and return its lease, or `None` when there is no HTTP server
 /// to serve it.
-pub fn issue(mut grant: BridgeGrant) -> Option<BridgeLease> {
-    let base = base_url()?;
+pub fn issue(grant: BridgeGrant) -> Option<BridgeLease> {
+    issue_at_base(grant, &base_url()?)
+}
+
+fn issue_at_base(mut grant: BridgeGrant, base: &str) -> Option<BridgeLease> {
     let cancel = grant
         .cancel
         .as_ref()
@@ -1203,6 +1216,18 @@ pub(crate) fn inert_grant_for_test() -> BridgeGrant {
     )
 }
 
+#[cfg(test)]
+pub(crate) fn issue_at_base_for_test(grant: BridgeGrant, base: &str) -> BridgeLease {
+    issue_at_base(grant, base).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn grant_with_tools_for_test(tools: Vec<Tool>) -> BridgeGrant {
+    let mut grant = inert_grant_for_test();
+    grant.tools = tools;
+    grant
+}
+
 /// A live lease whose grant already holds `result` for `child_call_id`, as if
 /// the child had just made that call — for the providers' mirror tests.
 #[cfg(test)]
@@ -1254,6 +1279,15 @@ pub fn active_bridge_url() -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn standalone_listener_cleanup_preserves_a_newer_host_publication() {
+        let store = RwLock::new(Some("http://127.0.0.1:2".to_string()));
+        clear_matching_base_url(&store, "http://127.0.0.1:1");
+        assert_eq!(store.read().unwrap().as_deref(), Some("http://127.0.0.1:2"));
+        clear_matching_base_url(&store, "http://127.0.0.1:2");
+        assert!(store.read().unwrap().is_none());
+    }
+
     /// A lease revokes its grant when dropped. A grant that outlived its turn
     /// would be a live capability onto a session's tools with nothing owning it.
     ///
@@ -1279,6 +1313,44 @@ mod tests {
                 "{other} receives its tools in the request and needs no grant"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn standalone_http_dispatches_only_its_grant_and_listener_lifetimes_are_independent() {
+        use super::super::bridge_http::LoopbackBridge;
+        use serde_json::{json, Value};
+
+        let first = LoopbackBridge::start_for_test().await.unwrap();
+        let second = LoopbackBridge::start_for_test().await.unwrap();
+        let mut grant = inert_grant_for_test();
+        grant.inspections = Arc::new(inspections_with(&grant.hooks, false));
+        grant.tools = vec![Tool::new(
+            "synthetic_tool",
+            "test only",
+            serde_json::Map::new(),
+        )];
+        grant.dispatcher = Arc::new(FixedResultDispatch(CallToolResult::success(vec![
+            rmcp::model::Content::text("synthetic result"),
+        ])));
+        let lease = issue_at_base_for_test(grant, second.base_url());
+        let url = format!(
+            "{}/tool_bridge/{}",
+            second.base_url(),
+            lease.url().rsplit('/').next().unwrap()
+        );
+        drop(first);
+        let client = reqwest::Client::new();
+        let called: Value = client.post(&url)
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"synthetic_tool","arguments":{}}}))
+            .send().await.unwrap().json().await.unwrap();
+        assert_ne!(called["result"]["isError"], true, "{called}");
+        assert!(called["result"].to_string().contains("synthetic result"));
+        let unknown: Value = client.post(format!("{}/tool_bridge/unknown", second.base_url()))
+            .json(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"synthetic_tool"}}))
+            .send().await.unwrap().json().await.unwrap();
+        assert_eq!(unknown["error"]["code"], -32001);
+        drop(lease);
+        drop(second);
     }
 
     #[tokio::test]

@@ -574,10 +574,24 @@ fn the_known_hot_paths_are_covered() {
             "crates/biorouter-mcp/src/developer/background.rs",
             "no_console_window",
         ),
-        // Computer Controller drives the desktop through PowerShell.
+        // Desktop control. This row used to name
+        // `computercontroller/mod.rs`, which drove the desktop through
+        // PowerShell. Built-in Computer Use replaced that: the file is now a
+        // 128-line shim over `computer_use::SessionRuntime` and spawns nothing
+        // at all, so the old row asserted a call in a file with no children to
+        // prepare — a hot-path guard that could only ever pass vacuously.
+        // The spawning moved here, and this runtime reaches the flag directly
+        // through `creation_flags` rather than through the helper.
         (
-            "crates/biorouter-mcp/src/computercontroller/mod.rs",
-            "no_console_window",
+            "crates/biorouter-mcp/src/computer_use/runtime.rs",
+            "CREATE_NO_WINDOW",
+        ),
+        // The helper is started suspended and assigned to a job object before
+        // it is resumed, so this file spawns too and needs the flag in its own
+        // right.
+        (
+            "crates/biorouter-mcp/src/computer_use/windows_job.rs",
+            "CREATE_NO_WINDOW",
         ),
         // Agent Drafter builds run node/npx on every app build.
         (

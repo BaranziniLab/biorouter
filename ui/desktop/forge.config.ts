@@ -2,6 +2,10 @@ const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-natives');
 const { resolve } = require('path');
+const { mkdirSync, writeFileSync } = require('fs');
+const { verifyPackagedDependencies } = require('./scripts/verify-packaged-dependencies');
+const { verifyComputerUse } = require('./scripts/computer-use-resources');
+const { prepareNativeDependencies } = require('./scripts/prepare-native-dependencies');
 
 // ⚠ Read from package.json, NOT `process.env.npm_package_version`. That variable
 // only exists when forge is invoked through an `npm run` script, so a direct
@@ -27,7 +31,7 @@ const WINDOWS_SETUP_EXE = `Biorouter-Setup-${APP_VERSION}.exe`;
 // (see VitePlugin.resolveForgeConfig), so defining one here keeps its rule and
 // adds the single exception node-pty needs.
 //
-// Only the target platform's prebuild is shipped. The tree also carries
+// Ship the target platform's prebuild, or the native Linux build. The tree also carries
 // Windows prebuilds whose `.pdb` symbol files are ~40 MB, which have no
 // business in a macOS bundle.
 const nodePtyTargetPlatform = process.env.ELECTRON_PLATFORM || process.platform;
@@ -50,9 +54,11 @@ function keepInPackage(file) {
   if (!isUnder(file, '/node_modules/node-pty')) return false;
   if (file.endsWith('.pdb')) return false;
   if (isUnder(file, '/node_modules/node-pty/prebuilds')) {
-    return (
-      file === '/node_modules/node-pty/prebuilds' || isUnder(file, nodePtyPrebuildDir)
-    );
+    return file === '/node_modules/node-pty/prebuilds' || isUnder(file, nodePtyPrebuildDir);
+  }
+  if (nodePtyTargetPlatform === 'linux' && isUnder(file, '/node_modules/node-pty/build')) {
+    return file === '/node_modules/node-pty/build' || file === '/node_modules/node-pty/build/Release' ||
+      file === '/node_modules/node-pty/build/Release/pty.node';
   }
   return (
     file === '/node_modules/node-pty' ||
@@ -62,6 +68,9 @@ function keepInPackage(file) {
 }
 
 let cfg = {
+  // Forge's API does not inherit Packager CLI's default; copied dependency links
+  // otherwise let rebuild mutate the source tree and escape the final archive.
+  derefSymlinks: true,
   // A native module cannot be `dlopen`'d from inside an asar archive, and
   // node-pty's macOS `spawn-helper` cannot be `posix_spawn`'d from one either.
   // node-pty handles this itself — `unixTerminal.js` rewrites `app.asar` to
@@ -85,7 +94,7 @@ let cfg = {
   // It must also stay a SIBLING of `src/bin`, never a child: `stage_bin` in
   // scripts/release.sh does `rm -rf ui/desktop/src/bin`, which would take the
   // bundle with it.
-  extraResource: ['src/bin', 'src/images', 'src/web'],
+  extraResource: ['src/bin', 'src/images', 'src/web', 'src/computer-use'],
   icon: 'src/images/icon',
   // macOS code signing and notarization
   // Activate by setting APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD in the build environment.
@@ -93,8 +102,11 @@ let cfg = {
   ...(process.env.APPLE_ID
     ? {
         osxSign: {
-          identity: 'Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)',
+          identity:
+            'Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)',
           hardenedRuntime: true,
+          // The helper is signed before its byte manifest is generated.
+          ignore: (file) => file.includes('/computer-use/BioRouter Computer Use.app'),
           entitlements: 'entitlements.plist',
           'entitlements-inherit': 'entitlements.plist',
           'signature-flags': 'library',
@@ -160,8 +172,85 @@ let cfg = {
   ],
 };
 
+/**
+ * Stop rpmbuild rewriting the Computer Use helper behind our back.
+ *
+ * `%__os_install_post` runs over the buildroot. On Debian/Ubuntu rpm 4.18 that
+ * includes `brp-strip-comment-note`, whose selector is the COMPLEMENT of
+ * brp-strip's: it matches ELF files that are already `stripped`, which is
+ * exactly what the helper is (built with `-ldflags=-s -w`). It then runs
+ * `strip -R .comment -R .note` on it. The helper has neither section, but GNU
+ * strip still REPACKS the file -- `.shstrtab` slides into the alignment gap
+ * after `.data` and `e_shoff` is rewritten -- taking `ocu` from 2,609,314 to
+ * 2,606,840 bytes. The binary still runs, so the only thing that notices is the
+ * provenance check, which rejected the rpm with "Helper payload was modified,
+ * incomplete, or contains unrecorded files" while the deb passed (dpkg does not
+ * post-process, and the CLI rpm is written directly by nfpm, never rpmbuild).
+ *
+ * There is no supported option for this: electron-installer-redhat spawns
+ * rpmbuild with a fixed argv and generates its spec from a hardcoded template,
+ * with no `specTemplate` equivalent to the desktop file's. What rpmbuild does
+ * still read is `$HOME/.rpmmacros`, and the maker's spawn inherits `process.env`
+ * -- so a build-scoped HOME is the one lever left. Scoped to the rpm make only,
+ * and restored afterwards, so nothing else in the build sees a moved HOME.
+ */
+let restoreHome;
+
+function useRpmMacros() {
+  // Linux only: this is the sole platform that runs rpmbuild, and a moved HOME
+  // has no business affecting the macOS or Windows makers.
+  if (process.platform !== 'linux') return;
+  const home = resolve(__dirname, 'out/.rpm-home');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    resolve(home, '.rpmmacros'),
+    // Disable the post-install binary rewriting entirely. The helper's bytes are
+    // verified against a recorded manifest, so anything that edits them after the
+    // build invalidates that provenance -- which is the whole point of the check.
+    '%__os_install_post %{nil}\n%__strip /bin/true\n%_build_id_links none\n'
+  );
+  const previous = process.env.HOME;
+  process.env.HOME = home;
+  restoreHome = () => {
+    if (previous === undefined) delete process.env.HOME;
+    else process.env.HOME = previous;
+    restoreHome = undefined;
+  };
+}
+
+function releaseRpmMacros() {
+  if (restoreHome) restoreHome();
+}
+
 module.exports = {
   packagerConfig: cfg,
+  hooks: {
+    preMake: async () => {
+      useRpmMacros();
+    },
+    postMake: async (_config, results) => {
+      releaseRpmMacros();
+      return results;
+    },
+    prePackage: async (_config, platform, arch) => {
+      verifyComputerUse(resolve(__dirname, 'src/computer-use'), `${platform}-${arch}`);
+      // Linux has no node-pty prebuild, and npm may disable dependency install scripts.
+      await prepareNativeDependencies(__dirname, platform, arch);
+    },
+    postPackage: async (_config, options) => {
+      for (const output of options.outputPaths) {
+        const resources =
+          options.platform === 'darwin'
+            ? resolve(output, 'Biorouter.app/Contents/Resources')
+            : resolve(output, 'resources');
+        verifyPackagedDependencies(resources, options.platform, options.arch);
+        verifyComputerUse(
+          resolve(resources, 'computer-use'),
+          `${options.platform}-${options.arch}`
+        );
+      }
+    },
+  },
   rebuildConfig: {},
   publishers: [
     {
@@ -243,8 +332,13 @@ module.exports = {
         mimeType: ['application/x-biorouter-brxt'],
         desktopTemplate: './forge.deb.desktop',
         options: {
+          // NOTE: electron-installer-debian and electron-installer-redhat expose no
+          // `prefix` option -- a `prefix: '/opt'` here was silently ignored for the
+          // whole life of this config. Both makers install to usr/lib/<name>
+          // (lowercased by the deb maker, case-preserved by the rpm one). Anything
+          // that needs to find the packaged tree must locate it by content, not by
+          // an install prefix; scripts/computer-use-package-acceptance.py does.
           icon: 'src/images/icon.png',
-          prefix: '/opt',
           // Runtime deps of the bundled llama-server (Llama Server provider):
           // OpenSSL 3 and OpenMP. Implies Debian 12+ / Ubuntu 22.04+.
           //
@@ -260,7 +354,17 @@ module.exports = {
           // zlib1g provides libz.so.1, linked through git2/libgit2.
           // scripts/check-linux-runtime-deps.sh asserts it stays in step with
           // what the binaries actually link.
-          depends: ['libssl3', 'libgomp1', 'libxcb1', 'zlib1g'],
+          depends: [
+            'libssl3',
+            'libgomp1',
+            'libxcb1',
+            'zlib1g',
+            'python3',
+            'python3-gi',
+            'gir1.2-atspi-2.0',
+            'gir1.2-gtk-3.0',
+            'at-spi2-core',
+          ],
         },
       },
     },
@@ -275,14 +379,27 @@ module.exports = {
         mimeType: ['application/x-biorouter-brxt'],
         desktopTemplate: './forge.rpm.desktop',
         options: {
+          // NOTE: electron-installer-debian and electron-installer-redhat expose no
+          // `prefix` option -- a `prefix: '/opt'` here was silently ignored for the
+          // whole life of this config. Both makers install to usr/lib/<name>
+          // (lowercased by the deb maker, case-preserved by the rpm one). Anything
+          // that needs to find the packaged tree must locate it by content, not by
+          // an install prefix; scripts/computer-use-package-acceptance.py does.
           icon: 'src/images/icon.png',
-          prefix: '/opt',
           // openssl-libs ships libssl.so.3 on EL9+/Fedora; libgomp for llama-server.
           // libxcb is the RPM spelling of the deb's libxcb1 — see the maker-deb
           // comment above for why the bundled binaries need it.
           // zlib provides libz.so.1 on RPM-based distributions.
-          requires: ['openssl-libs', 'libgomp', 'libxcb', 'zlib'],
-          fpm: ['--rpm-rpmbuild-define', '_build_id_links none'],
+          requires: [
+            'openssl-libs',
+            'libgomp',
+            'libxcb',
+            'zlib',
+            'python3',
+            'python3-gobject',
+            'at-spi2-core',
+            'gtk3',
+          ],
         },
       },
     },
@@ -305,9 +422,9 @@ module.exports = {
                 'mkdir -p /app/lib',
                 // Point to the actual library in the 25.08 runtime
                 // We use a wildcard to handle multi-arch paths (x86_64-linux-gnu, etc)
-                'ln -s $(find /usr/lib -name "libbz2.so.1" | head -n 1) /app/lib/libbz2.so.1.0'
-              ]
-            }
+                'ln -s $(find /usr/lib -name "libbz2.so.1" | head -n 1) /app/lib/libbz2.so.1.0',
+              ],
+            },
           ],
           finishArgs: [
             '--share=ipc',
@@ -320,7 +437,7 @@ module.exports = {
             '--socket=session-bus',
             '--socket=system-bus',
             // This ensures the app looks in our shim folder first
-            '--env=LD_LIBRARY_PATH=/app/lib'
+            '--env=LD_LIBRARY_PATH=/app/lib',
           ],
         },
       },

@@ -1023,7 +1023,7 @@ mod tests {
         );
 
         let (text, summary) = framed_text(apply_from(
-            Some("computercontroller__web_search"),
+            Some("webdocuments__web_scrape"),
             paraphrased,
             ToolOutputGuardrailMode::Annotate,
         ));
@@ -1036,7 +1036,7 @@ mod tests {
             "the frame must be closed, got: {text}"
         );
         assert!(
-            text.contains("tool=\"computercontroller__web_search\""),
+            text.contains("tool=\"webdocuments__web_scrape\""),
             "the frame must name the tool it came from, got: {text}"
         );
         assert!(

@@ -10,7 +10,7 @@ UI automation of Slack is inherently brittle: Slack exposes almost no AppleScrip
 
 Two existing facts shape every option below:
 
-- The Computer Controller capability's `automation_script` tool runs shell, so it can already `curl -X POST` to a URL. Its `web_scrape` tool is GET-only, so `web_scrape` cannot post.
+- Developer's `shell` can call a user-authorized HTTP API. Web & Documents' `web_scrape` is GET-only. Native Computer Use is a separate application-control capability with its own task grant.
 - External MCP servers can be added via **Settings → Extensions → Add custom extension** (type: Standard IO or Streamable HTTP), with secrets stored in the OS Keychain (`env_keys`). The repo already anticipates a `slack-mcp` stdio extension keyed on `SLACK_TOKEN` — see `crates/biorouter-cli/src/workflows/secret_discovery.rs`.
 
 ---
@@ -19,7 +19,7 @@ Two existing facts shape every option below:
 
 **What it is:** a Slack "Incoming Webhook" is one URL tied to one channel. POST `{"text":"..."}` to it and the message appears in that channel. Send-only, one channel.
 
-**Biorouter support today:** already works — the agent can post via `automation_script`:
+**Biorouter support today:** already works — the agent can post via `developer__shell` after the user authorizes sending:
 
 ```bash
 curl -s -X POST -H 'Content-type: application/json' -d '{"text":"<msg>"}' <WEBHOOK_URL>
@@ -85,6 +85,6 @@ To make Option A first-class instead of the agent shelling out `curl`, Biorouter
 ## Related documentation
 
 - [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — how to actually add the custom stdio extension Option B depends on
-- [Computer Controller capability](built-in/computer-controller.md) — the `automation_script` and `web_scrape` tools whose capabilities constrain Option A
+- [Web & Documents](built-in/web-documents.md) — its GET-only URL tool cannot post messages
 - [Secret storage](../security/secret-storage.md) — how `env_keys` secrets such as `SLACK_TOKEN` reach the OS Keychain
-- [Computer Controller multi-app orchestration run](../history/computer-controller-hardening/multi-app-orchestration-run.md) — the hardening run that exercised Slack via UI automation, showing the brittleness this memo proposes routing around
+- [Computer Use multi-app orchestration run](../history/computer-controller-hardening/multi-app-orchestration-run.md) — the hardening run that exercised Slack via UI automation, showing the brittleness this memo proposes routing around

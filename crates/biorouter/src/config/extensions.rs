@@ -12,6 +12,9 @@ pub const DEFAULT_EXTENSION_TIMEOUT: u64 = 300;
 pub const DEFAULT_EXTENSION_DESCRIPTION: &str = "";
 pub const DEFAULT_DISPLAY_NAME: &str = "Developer";
 const EXTENSIONS_CONFIG_KEY: &str = "extensions";
+const COMPUTER_USE_MIGRATION_KEY: &str = "computer_use_capabilities_version";
+const COMPUTER_USE_MIGRATION_VERSION: u32 = 1;
+const WEB_DOCUMENT_TOOLS: &[&str] = &["web_scrape", "xlsx_tool", "docx_tool", "pdf_tool", "cache"];
 const RETIRED_BUILTIN_EXTENSIONS: &[&str] = &["tutorial"];
 
 /// ⚠ `PartialEq` is not derive-everything hygiene: `remove_extension_if_matches`
@@ -61,8 +64,149 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
         }
     }
 
+    let migrated = Config::global()
+        .get_param::<u32>(COMPUTER_USE_MIGRATION_KEY)
+        .unwrap_or_default();
+    if migrated < COMPUTER_USE_MIGRATION_VERSION {
+        let migration = Config::global().update_param::<IndexMap<String, ExtensionEntry>, _, _>(
+            EXTENSIONS_CONFIG_KEY,
+            |current| {
+                migrate_computer_use_capabilities(current);
+                current.clone()
+            },
+        );
+        match migration {
+            Ok(current) => {
+                extensions_map = current;
+                extensions_map.retain(|_, entry| !is_retired_builtin_extension(entry));
+                if let Err(error) = Config::global()
+                    .set_param(COMPUTER_USE_MIGRATION_KEY, COMPUTER_USE_MIGRATION_VERSION)
+                {
+                    warn!(%error, "Could not record Computer Use capability migration");
+                }
+            }
+            Err(error) => {
+                warn!(%error, "Could not persist Computer Use capability migration");
+                migrate_computer_use_capabilities(&mut extensions_map);
+            }
+        }
+    }
+    // Also project the idempotent split on reads, including a concurrent pre-migration snapshot.
+    migrate_computer_use_capabilities(&mut extensions_map);
+    inject_builtin_extensions(&mut extensions_map);
     inject_platform_extensions(&mut extensions_map);
     extensions_map
+}
+
+fn builtin_entry(name: &str, display_name: &str, description: &str) -> ExtensionEntry {
+    ExtensionEntry {
+        enabled: true,
+        config: ExtensionConfig::Builtin {
+            name: name.to_owned(),
+            display_name: Some(display_name.to_owned()),
+            description: description.to_owned(),
+            timeout: Some(DEFAULT_EXTENSION_TIMEOUT),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        },
+    }
+}
+
+fn migrate_computer_use_capabilities(extensions: &mut IndexMap<String, ExtensionEntry>) {
+    let existing_web = extensions.contains_key("webdocuments")
+        || extensions
+            .values()
+            .any(|entry| entry.config.key() == "webdocuments");
+    let Some(computer) = extensions.values_mut().find(|entry| {
+        matches!(&entry.config, ExtensionConfig::Builtin { name, .. } if name_to_key(name) == "computercontroller")
+    }) else {
+        return;
+    };
+    let ExtensionConfig::Builtin {
+        display_name,
+        available_tools,
+        ..
+    } = &mut computer.config
+    else {
+        return;
+    };
+    *display_name = Some("Computer Use".to_owned());
+    if existing_web {
+        return;
+    }
+    let mut web = builtin_entry(
+        "webdocuments",
+        "Web & Documents",
+        "Read web pages and work with spreadsheets, documents, and PDFs.",
+    );
+    web.enabled = computer.enabled;
+    if !available_tools.is_empty() {
+        let moved: Vec<String> = available_tools
+            .iter()
+            .filter_map(|tool| {
+                let bare = tool.strip_prefix("computercontroller__").unwrap_or(tool);
+                WEB_DOCUMENT_TOOLS.contains(&bare).then(|| bare.to_owned())
+            })
+            .collect();
+        if moved.is_empty() {
+            // An empty allowlist means unrestricted; never turn an empty intersection into that.
+            web.enabled = false;
+        } else if let ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &mut web.config
+        {
+            *available_tools = moved;
+        }
+        // Keep the original Computer Use allowlist. Retired names match no native tool,
+        // so a legacy utility-only configuration cannot silently gain desktop control.
+    }
+    extensions.insert("webdocuments".to_owned(), web);
+}
+
+fn inject_builtin_extensions(extensions: &mut IndexMap<String, ExtensionEntry>) {
+    for (name, label, description) in [
+        (
+            "developer",
+            "Developer",
+            "Read, write and run code, and run shell commands.",
+        ),
+        (
+            "computercontroller",
+            "Computer Use",
+            "View and control desktop apps for an approved task.",
+        ),
+        (
+            "webdocuments",
+            "Web & Documents",
+            "Read web pages and work with spreadsheets, documents, and PDFs.",
+        ),
+        (
+            "autovisualiser",
+            "Auto Visualiser",
+            "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
+        ),
+        (
+            "memory",
+            "Memory",
+            "Teach Biorouter your preferences so it remembers them as you go.",
+        ),
+        (
+            "knowledge",
+            "Knowledge",
+            "Personal knowledge bases stored as markdown with full history.",
+        ),
+        (
+            "agent_drafter",
+            "Agent Drafter",
+            "Build interactive artifacts, static pages or apps with an embedded Biorouter agent.",
+        ),
+    ] {
+        if !extensions.contains_key(name)
+            && !extensions.values().any(|entry| entry.config.key() == name)
+        {
+            extensions.insert(name.to_owned(), builtin_entry(name, label, description));
+        }
+    }
 }
 
 fn is_retired_builtin_extension(entry: &ExtensionEntry) -> bool {
@@ -519,6 +663,22 @@ pub fn get_warnings() -> Vec<String> {
         if let (serde_yaml::Value::String(key), Ok(entry)) =
             (k, serde_yaml::from_value::<ExtensionEntry>(v))
         {
+            if let ExtensionConfig::Builtin {
+                name,
+                available_tools,
+                ..
+            } = &entry.config
+            {
+                if name_to_key(name) == "computercontroller"
+                    && available_tools.iter().any(|tool| {
+                        let bare = tool.strip_prefix("computercontroller__").unwrap_or(tool);
+                        WEB_DOCUMENT_TOOLS.contains(&bare)
+                            || matches!(bare, "automation_script" | "computer_control")
+                    })
+                {
+                    warnings.push(format!("'{key}': legacy Computer Controller tool restrictions remain restricted. Web/document tools moved to Web & Documents; select the new native Computer Use tools explicitly to allow desktop control. Retired scripts are no longer callable."));
+                }
+            }
             if matches!(entry.config, ExtensionConfig::Sse { .. }) {
                 warnings.push(format!(
                     "'{}': SSE is unsupported, migrate to streamable_http",
@@ -886,5 +1046,108 @@ mod retired_builtin_tests {
         assert!(!is_retired_builtin_extension(&entry(
             ExtensionConfig::default()
         )));
+    }
+}
+
+#[cfg(test)]
+mod computer_use_migration_tests {
+    use super::*;
+
+    fn legacy(enabled: bool, tools: &[&str]) -> ExtensionEntry {
+        let mut entry = builtin_entry("computercontroller", "Computer Controller", "legacy");
+        entry.enabled = enabled;
+        if let ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &mut entry.config
+        {
+            *available_tools = tools.iter().map(|tool| (*tool).to_owned()).collect();
+        }
+        entry
+    }
+
+    #[test]
+    fn fresh_defaults_are_available_without_a_renderer() {
+        let mut entries = IndexMap::new();
+        inject_builtin_extensions(&mut entries);
+        assert!(entries["computercontroller"].enabled);
+        assert!(entries["webdocuments"].enabled);
+    }
+
+    #[test]
+    fn disabled_computer_use_keeps_both_capabilities_disabled() {
+        let mut entries = IndexMap::from([("custom-key".to_owned(), legacy(false, &[]))]);
+        migrate_computer_use_capabilities(&mut entries);
+        inject_builtin_extensions(&mut entries);
+        assert!(!entries["custom-key"].enabled);
+        assert!(!entries["webdocuments"].enabled);
+        assert!(!entries.contains_key("computercontroller"));
+    }
+
+    #[test]
+    fn utility_restrictions_split_without_authorizing_native_actions() {
+        let original = legacy(true, &["computercontroller__pdf_tool"]);
+        let mut entries = IndexMap::from([("computercontroller".to_owned(), original.clone())]);
+        migrate_computer_use_capabilities(&mut entries);
+        let ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &entries["webdocuments"].config
+        else {
+            panic!()
+        };
+        assert_eq!(available_tools, &["pdf_tool"]);
+        let ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &entries["computercontroller"].config
+        else {
+            panic!()
+        };
+        assert_eq!(available_tools, &["computercontroller__pdf_tool"]);
+        let first = entries.clone();
+        migrate_computer_use_capabilities(&mut entries);
+        assert_eq!(entries, first);
+    }
+
+    #[test]
+    fn no_matching_utility_never_becomes_an_unrestricted_enabled_capability() {
+        let mut entries = IndexMap::from([(
+            "computercontroller".to_owned(),
+            legacy(true, &["computer_control"]),
+        )]);
+        migrate_computer_use_capabilities(&mut entries);
+        assert!(!entries["webdocuments"].enabled);
+    }
+
+    #[test]
+    fn destination_key_collision_never_overwrites_a_custom_extension() {
+        let custom = ExtensionEntry {
+            enabled: false,
+            config: ExtensionConfig::stdio("custom", "custom-command", "configured", 30_u64),
+        };
+        let mut entries = IndexMap::from([
+            ("computercontroller".to_owned(), legacy(true, &[])),
+            ("webdocuments".to_owned(), custom.clone()),
+        ]);
+        migrate_computer_use_capabilities(&mut entries);
+        inject_builtin_extensions(&mut entries);
+        assert_eq!(entries["webdocuments"], custom);
+    }
+
+    #[test]
+    fn existing_destination_disable_and_allowlist_are_preserved() {
+        let mut web = builtin_entry("webdocuments", "Web & Documents", "configured");
+        web.enabled = false;
+        if let ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &mut web.config
+        {
+            *available_tools = vec!["docx_tool".to_owned()];
+        }
+        let mut entries = IndexMap::from([
+            ("computercontroller".to_owned(), legacy(true, &[])),
+            ("webdocuments".to_owned(), web.clone()),
+        ]);
+        migrate_computer_use_capabilities(&mut entries);
+        inject_builtin_extensions(&mut entries);
+        assert_eq!(entries["webdocuments"], web);
     }
 }

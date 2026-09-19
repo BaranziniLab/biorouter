@@ -133,7 +133,7 @@ impl Provider for XiaomiMimoProvider {
         // mimo-v2-pro) return `404: No endpoints found that support image input`
         // when sent an image — so declaring them vision-capable made the harness
         // and UI feed them screenshots (e.g. via the developer image_processor /
-        // Computer Controller screen_capture), which then 404'd and got the agent
+        // Computer Use screen_capture), which then 404'd and got the agent
         // stuck. We therefore declare `.with_vision()` ONLY for vision-capable
         // models (name contains "omni"); see `model_supports_vision`.
         let models = XIAOMI_MIMO_KNOWN_MODELS

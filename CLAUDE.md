@@ -210,7 +210,7 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, workflow execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Use, Web & Documents, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
 | `biorouter-sandbox` | — | Capability-scoped sandboxed execution (`docker.rs`, `seatbelt.rs`, `local.rs`, `environment.rs`, `shell_sandbox/`); a leaf crate with no engine deps |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
@@ -397,8 +397,7 @@ The always-on floor that keeps credential files (`~/.aws/credentials`, SSH priva
   (`lex` → `expand` → `resolve`) reads a command the way the shell will — `~`, `$VAR`, globs
   against the real directory, `cd`/`pushd`, nested `sh -c`/`eval`/here-documents, symlinks,
   case folded — and is shared by the dispatch scan (`secret_guard_denial`), `developer__shell`
-  (`validate_shell_command`, resolved from the directory the command really runs in) and
-  Computer Controller (`refuse_secret_access`).
+  (`validate_shell_command`, resolved from the directory the command really runs in).
 - ⚠ **Fail closed: a match is a refusal whether or not the file exists.** The old `exists()` gate
   was asked of the *unexpanded* token, which is exactly how `cat ~/.aws/credentials` reached a
   public model. Do not restore it to quiet a false positive — the refusal message and a
@@ -713,10 +712,10 @@ was removed to make it true:
     never runs and the app renders as unstyled serif HTML that is fully
     functional — it looks like a broken app, it is a broken launcher. Always
     pass `--config vite.renderer.config.mts`.
-  - verify with a **CDP screenshot** (`--remote-debugging-port`, then
-    agent-browser), never `screencapture` of the whole screen: the app window
-    sits behind the editor, raising it is unreliable, and a full-screen grab
-    captures the user's mail and browser history.
+  - verify native desktop behavior with Computer Use after per-request consent.
+    Inspect the target app and capture its window through the native helper;
+    avoid collecting unrelated desktop content. The removed script/capture
+    routes must never be used as a fallback.
 
   Ruled out with evidence, so don't re-diagnose: Electron *can* open a window
   from an agent shell (a minimal app fires `ready` and stays alive), and the
@@ -1598,3 +1597,17 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 - **biorouter-workflows** — shareable workflow YAML definitions (e.g. `ehr-diabetes-dashboard.yaml`, referenced from `baam.html` via `raw.githubusercontent.com`). GitHub: https://github.com/BaranziniLab/biorouter-workflows (the `Broccolito/biorouter-workflows` URL in `baam.html` 301-redirects to the BaranziniLab repo).
 
 > Maintenance note: the authoritative, always-current catalog of extensions and skills is `landing/registry.json` in this repo (formerly the `biorouter-landing` repo). When agents/skills are added or versions change, that file (not this section) is the source of truth — re-derive this section from it if it drifts.
+
+### Native Computer Use
+
+`computercontroller` exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
+`perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
+`screen_capture`. The native helper owns all desktop observation/control; Developer has no
+capture or control tool. `webdocuments` owns web/document/cache utilities. Old scripting,
+control and capture implementations and aliases are removed, not migrated or hidden.
+
+The host obtains one computer-use grant per task/chat/model/target before observation. Respect
+Stop/revoke, avoid retry loops and script fallbacks, refresh stale state, and verify outcomes.
+Private/public chats retain separate observations and consent. Pause before private-to-public
+handoff because the physical desktop is shared. See `docs/design/computer-use-integration-plan.md`
+and the implementation-status ledger for all acceptance gates, including real-app validation.

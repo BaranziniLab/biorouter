@@ -22,6 +22,7 @@ smoke_mac() {
   hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
   local app="$mount/Biorouter.app"
   [ -d "$app" ] || die "$arch DMG does not contain Biorouter.app"
+  python3 "$ROOT/scripts/computer-use-runtime.py" verify "darwin-$arch" --directory "$app/Contents/Resources/computer-use" --require-signed
   codesign --verify --deep --strict --verbose=2 "$app"
   spctl --assess --type execute --verbose "$app"
   xcrun stapler validate "$app"

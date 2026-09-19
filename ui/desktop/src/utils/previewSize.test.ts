@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   PREVIEW_SIZE_INSTALL,
   PREVIEW_SIZE_MESSAGE_TYPE,
@@ -36,48 +36,70 @@ describe('withPreviewSizeReporting', () => {
   });
 });
 
+function installReporter(): () => void {
+  const observers: Array<MutationObserver | ResizeObserver> = [];
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const windowListeners = vi.spyOn(window, 'addEventListener');
+  const documentListeners = vi.spyOn(document, 'addEventListener');
+  const createMutationObserver = function (
+    callback: ConstructorParameters<typeof MutationObserver>[0]
+  ) {
+    const observer = new MutationObserver(callback);
+    observers.push(observer);
+    return observer;
+  };
+  const createResizeObserver = function (
+    callback: ConstructorParameters<typeof ResizeObserver>[0]
+  ) {
+    const observer = new ResizeObserver(callback);
+    observers.push(observer);
+    return observer;
+  };
+  const schedule = (callback: () => void, delay: number) => {
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      callback();
+    }, delay);
+    timers.add(timer);
+    return timer;
+  };
+
+  new Function('MutationObserver', 'ResizeObserver', 'setTimeout', PREVIEW_SIZE_INSTALL)(
+    typeof MutationObserver === 'undefined' ? undefined : createMutationObserver,
+    typeof ResizeObserver === 'undefined' ? undefined : createResizeObserver,
+    schedule
+  );
+  const removeListeners = [
+    ...windowListeners.mock.calls.map(
+      ([type, listener, options]) =>
+        () =>
+          window.removeEventListener(type, listener, options)
+    ),
+    ...documentListeners.mock.calls.map(
+      ([type, listener, options]) =>
+        () =>
+          document.removeEventListener(type, listener, options)
+    ),
+  ];
+  windowListeners.mockRestore();
+  documentListeners.mockRestore();
+
+  // A browser destroys these with its iframe. This test shares its document with Vitest.
+  return () => {
+    removeListeners.forEach((remove) => remove());
+    observers.forEach((observer) => observer.disconnect());
+    timers.forEach((timer) => clearTimeout(timer));
+    timers.clear();
+  };
+}
+
 describe('PREVIEW_SIZE_INSTALL', () => {
   const originalParent = Object.getOwnPropertyDescriptor(window, 'parent');
-  type WindowListener = Parameters<typeof window.addEventListener>[1];
-  type WindowListenerOptions = Parameters<typeof window.addEventListener>[2];
-  type PreviewMutationObserver = InstanceType<typeof window.MutationObserver>;
-  type PreviewMutationCallback = ConstructorParameters<typeof window.MutationObserver>[0];
-  const installedObservers: PreviewMutationObserver[] = [];
-  const installedListeners: Array<{
-    type: string;
-    listener: WindowListener;
-    options?: WindowListenerOptions;
-  }> = [];
-  const originalAddEventListener = window.addEventListener;
-  const originalRemoveEventListener = window.removeEventListener;
-  const originalMutationObserver = window.MutationObserver;
-
-  beforeEach(() => {
-    window.addEventListener = ((
-      type: string,
-      listener: WindowListener,
-      options?: WindowListenerOptions
-    ) => {
-      installedListeners.push({ type, listener, options });
-      return originalAddEventListener.call(window, type, listener, options);
-    }) as typeof window.addEventListener;
-    window.MutationObserver = class extends originalMutationObserver {
-      constructor(callback: PreviewMutationCallback) {
-        super(callback);
-        installedObservers.push(this);
-      }
-    };
-  });
+  let disposeReporter: (() => void) | undefined;
 
   afterEach(() => {
-    for (const observer of installedObservers.splice(0)) observer.disconnect();
-    for (const { type, listener, options } of installedListeners.splice(0)) {
-      originalRemoveEventListener.call(window, type, listener, options);
-    }
-    vi.clearAllTimers();
-    window.addEventListener = originalAddEventListener;
-    window.removeEventListener = originalRemoveEventListener;
-    window.MutationObserver = originalMutationObserver;
+    disposeReporter?.();
+    disposeReporter = undefined;
     if (originalParent) Object.defineProperty(window, 'parent', originalParent);
     delete (window as unknown as Record<symbol, unknown>)[Symbol.for('biorouter.preview.size.v1')];
     document.body.innerHTML = '';
@@ -106,7 +128,7 @@ describe('PREVIEW_SIZE_INSTALL', () => {
       width: 576,
     } as DOMRect);
 
-    new Function(PREVIEW_SIZE_INSTALL)();
+    disposeReporter = installReporter();
     vi.advanceTimersByTime(50);
 
     expect(postMessage).toHaveBeenCalledWith({ type: PREVIEW_SIZE_MESSAGE_TYPE, height: 156 }, '*');
@@ -116,10 +138,50 @@ describe('PREVIEW_SIZE_INSTALL', () => {
     );
   });
 
+  it('releases queued observations, listeners, and timers before restoring the test environment', async () => {
+    vi.useFakeTimers();
+    const postMessage = vi.fn();
+    Object.defineProperty(window, 'parent', { configurable: true, value: { postMessage } });
+    document.body.innerHTML = '<div>Preview</div>';
+    disposeReporter = installReporter();
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+    vi.advanceTimersByTime(50);
+    postMessage.mockClear();
+    document.body.append(document.createElement('span'));
+
+    disposeReporter();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+    const schedule = vi.spyOn(globalThis, 'setTimeout');
+    document.body.innerHTML = '';
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+    window.dispatchEvent(new Event('load'));
+    window.dispatchEvent(new Event('resize'));
+    await Promise.resolve();
+
+    expect(schedule).not.toHaveBeenCalled();
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it('cancels a queued report when its test document is disposed before the first frame', () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, 'parent', {
+      configurable: true,
+      value: { postMessage: vi.fn() },
+    });
+    disposeReporter = installReporter();
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    disposeReporter();
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('does nothing in a top-level document, where nobody frames it', () => {
     vi.useFakeTimers();
     const post = vi.spyOn(window, 'postMessage');
-    new Function(PREVIEW_SIZE_INSTALL)();
+    disposeReporter = installReporter();
     vi.advanceTimersByTime(50);
     expect(post).not.toHaveBeenCalled();
   });

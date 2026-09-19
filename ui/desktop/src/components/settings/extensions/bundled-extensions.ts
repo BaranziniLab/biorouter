@@ -51,8 +51,8 @@ export async function syncBundledExtensions(
       // Find if this extension already exists
       const existingExt = existingExtensions.find((ext) => nameToKey(ext.name) === bundledExt.id);
 
-      // Skip if extension exists and is already marked as bundled
-      if (existingExt && 'bundled' in existingExt && existingExt.bundled) continue;
+      // Existing configuration owns its enabled state and tool restrictions.
+      if (existingExt) continue;
 
       // Create the config for this extension
       let extConfig: ExtensionConfig;
@@ -92,7 +92,7 @@ export async function syncBundledExtensions(
       }
 
       // Add or update the extension, preserving enabled state if it exists
-      const enabled = existingExt ? existingExt.enabled : bundledExt.enabled;
+      const enabled = bundledExt.enabled;
       await addExtensionFn(bundledExt.name, extConfig, enabled);
     }
   } catch (error) {

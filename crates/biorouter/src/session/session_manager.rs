@@ -3720,6 +3720,12 @@ impl SessionStorage {
     /// even if the lazy pool never connected; idempotent.
     pub async fn close(&self) {
         self.pool.close().await;
+        // SQLx 0.8.0 can enqueue a returning connection during close's final
+        // semaphore wait, after its last idle-queue drain. The pool rejects new
+        // acquires now, but that late connection still needs a graceful close.
+        while self.pool.size() != 0 {
+            self.pool.close().await;
+        }
     }
 
     /// The migrated pool. `pub(crate)` rather than private because
@@ -9117,6 +9123,64 @@ mod tests {
     use crate::conversation::message::{Message, MessageContent};
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn close_drains_a_connection_returned_during_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let returning = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .after_release({
+                let returning = Arc::clone(&returning);
+                let release = Arc::clone(&release);
+                move |_, _| {
+                    let returning = Arc::clone(&returning);
+                    let release = Arc::clone(&release);
+                    Box::pin(async move {
+                        returning.notify_one();
+                        release.notified().await;
+                        Ok(true)
+                    })
+                }
+            })
+            .connect_lazy_with(
+                SqliteConnectOptions::new()
+                    .filename(dir.path().join(DB_NAME))
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+            );
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query("CREATE TABLE shutdown_test (id INTEGER)")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        drop(connection);
+        returning.notified().await;
+
+        let storage = SessionStorage {
+            pool,
+            initialized: tokio::sync::OnceCell::new(),
+            session_dir: dir.path().to_path_buf(),
+        };
+        assert_eq!(storage.pool.size(), 1);
+        let close = storage.close();
+        tokio::pin!(close);
+        // The returning connection passed SQLx's is_closed check before its
+        // callback. Close is now waiting for the final semaphore permit.
+        assert!(futures::poll!(close.as_mut()).is_pending());
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), close)
+            .await
+            .expect("shutdown must finish after the connection returns");
+
+        assert!(storage.pool.is_closed());
+        assert_eq!(storage.pool.size(), 0, "a late return must also be closed");
+        assert!(matches!(
+            storage.pool.acquire().await,
+            Err(sqlx::Error::PoolClosed)
+        ));
+        dir.close().expect("closed SQLite files must be removable");
+    }
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
 
     /// Issue #56 — the export gate, at every corner.

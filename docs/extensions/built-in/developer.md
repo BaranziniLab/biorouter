@@ -1,7 +1,7 @@
 # Developer capability
 
 > **What this is.** Two things in one file: a walkthrough of the built-in Developer capability (enabling it, a worked project-setup example, its five tools), and a reference on constraining it with permission modes, tool permissions and `.biorouterignore`.
-> **Status:** Current. The capability and its `shell` / `text_editor` / `analyze` / `screen_capture` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
+> **Status:** Current. The capability and its `shell` / `text_editor` / `analyze` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
 > **Audience:** end users, and anyone deciding how much autonomy to grant BioRouter.
 
 The Developer capability lets BioRouter automate developer-centric tasks: editing files, running shell commands, and setting up projects. It also provides enhanced code editing and codebase analysis tools. It is enabled by default when BioRouter is installed.
@@ -147,10 +147,15 @@ The Developer capability provides these tools:
 | Tool | Description | Use Cases | Risk Level |
 |------|-------------|-----------|------------|
 | `shell` | Execute shell commands | Running tests, installing packages, git operations | ⚠️ High<br />Can run any system command with your user privileges |
+| `shell_status` | Inspect a running shell job | Check progress and collect output | Read-only job status |
+| `shell_kill` | Stop a shell job | Cancel work started by the shell tool | Terminates the selected job |
 | `text_editor` | Read, write, and edit files | Code refactoring, creating files, updating configs | ⚠️ High<br />Can modify any accessible file |
 | `analyze` | Analyze code structure | Understanding codebase, finding dependencies | ✅ Low<br />Read-only code analysis |
-| `screen_capture` | Take screenshots | Debugging UI issues, documenting state | ✅ Low<br />Visual information only |
 | `image_processor` | Process and resize images | Optimizing assets, format conversion | ✅ Low<br />Image manipulation only |
+
+Desktop observation and control belong exclusively to [Computer Use](computer-controller.md),
+which obtains a separate grant for each user request. Developer does not supply a desktop
+screenshot tool or an alternate native-control route.
 
 ### Access control features
 
@@ -202,6 +207,6 @@ As you become more comfortable with BioRouter's behavior, you can adjust these s
 
 - [Security guide](../../security/README.md) — the umbrella page for using BioRouter safely.
 - [Permission modes](../../security/permission-modes.md) — the full reference for approval modes and per-tool permissions.
-- [Computer Controller capability](computer-controller.md) — the other high-privilege built-in capability; it automates your desktop rather than your project, and the same access controls apply.
+- [Computer Use capability](computer-controller.md) — the other high-privilege built-in capability; it automates your desktop rather than your project, and the same access controls apply.
 - [Code Execution capability](code-execution.md) — Code Mode scripts import `shell` and `text_editor` from this capability, so they inherit its blast radius.
 - [Configuration file reference](../../configuration/config-file-reference.md) — where `BIOROUTER_MODE` and other settings live in `config.yaml`.

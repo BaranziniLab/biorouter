@@ -1,0 +1,30 @@
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
+@@ -108,10 +108,10 @@
+ }
+ 
+ public enum PermissionSupport {
+-    public static let bundleDisplayName = "Open Computer Use"
+-    public static let bundleIdentifier = "com.ifuryst.opencomputeruse"
+-    public static let developmentBundleDisplayName = "Open Computer Use (Dev)"
+-    public static let developmentBundleIdentifier = "com.ifuryst.opencomputeruse.dev"
++    public static let bundleDisplayName = "BioRouter Computer Use"
++    public static let bundleIdentifier = "org.biorouter.computer-use"
++    public static let developmentBundleDisplayName = "BioRouter Computer Use (Dev)"
++    public static let developmentBundleIdentifier = "org.biorouter.computer-use.dev"
+     private static let releaseAppBundleName = "\(bundleDisplayName).app"
+     private static let developmentAppBundleName = "\(developmentBundleDisplayName).app"
+     private static let appVariantInfoKey = "OpenComputerUseAppVariant"
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift
+@@ -40,8 +40,8 @@
+ 
+ enum SoftwareCursorGlyphMetrics {
+     static let windowSize = CGSize(width: 126, height: 126)
+-    static let tipAnchor = CGPoint(x: 60.35, y: 70.3)
+-    static let referenceImageResourceName = "official-software-cursor-window-252"
++    static let tipAnchor = CGPoint(x: 60, y: 70)
++    static let referenceImageResourceName = "biorouter-cursor"
+ 
+     static let pointerSize = CGSize(width: 21, height: 21)
+     static let pointerOffset = CGPoint(x: 2.6, y: -3.2)

@@ -184,7 +184,7 @@ Source: `/Users/wgu/Desktop/biorouter/documentation/providers-and-models.md`
 
 #### Extensions & Skills
 Source: `/Users/wgu/Desktop/biorouter/documentation/extensions-skills-mcp.md`
-- Built-in extensions table (Developer, Computer Controller, Memory, Auto Visualiser, Chat Recall, Code Execution)
+- Built-in extensions table (Developer, Computer Use, Memory, Auto Visualiser, Chat Recall, Code Execution)
 - Adding external MCP servers (Desktop UI + config YAML)
 - Skills system description
 

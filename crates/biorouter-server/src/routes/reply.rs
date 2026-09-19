@@ -2375,6 +2375,9 @@ pub async fn cancel_turn(
     if let Err(refusal) = authorize_turn_control(&state, &req.session_id, &headers).await {
         return refusal;
     }
+    if let Some(agent) = state.peek_agent(&req.session_id).await {
+        agent.extension_manager.computer_use.revoke();
+    }
     match cancel_turn_bounded(&state, &req, CANCEL_SETTLEMENT_TIMEOUT).await {
         Ok(response) => Json(response).into_response(),
         Err(failure) => failure.into_response(),

@@ -27,7 +27,7 @@
 //! adding its assertion too.
 //!
 //! Not every `choose_app_strategy` call in this crate is a defect: the cache-dir
-//! resolvers (`computercontroller`, `autovisualiser`) are deliberately outside
+//! resolvers (`webdocuments`, `autovisualiser`) are deliberately outside
 //! this module's remit, and `developer::undo_history` hand-rolls the same
 //! `BIOROUTER_PATH_ROOT` branch correctly.
 

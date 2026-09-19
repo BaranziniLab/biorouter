@@ -723,7 +723,10 @@ describe('rung 2 — the preview split in main.css agrees with the ladder', () =
    */
   it('has no container or media condition of its own', () => {
     const start = CSS_CODE.indexOf('[data-preview-split][data-preview-layout] {');
-    const end = CSS_CODE.indexOf('body.biorouter-window-resizing .biorouter-sidebar-inset-depth', start);
+    const end = CSS_CODE.indexOf(
+      'body.biorouter-window-resizing .biorouter-sidebar-inset-depth',
+      start
+    );
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     const block = CSS_CODE.slice(start, end);
@@ -735,7 +738,10 @@ describe('rung 2 — the preview split in main.css agrees with the ladder', () =
 
   it('transitions nothing geometric (the motion pass owns motion)', () => {
     const start = CSS_CODE.indexOf('[data-preview-split][data-preview-layout] {');
-    const end = CSS_CODE.indexOf('body.biorouter-window-resizing .biorouter-sidebar-inset-depth', start);
+    const end = CSS_CODE.indexOf(
+      'body.biorouter-window-resizing .biorouter-sidebar-inset-depth',
+      start
+    );
     expect(CSS_CODE.slice(start, end)).not.toMatch(/transition|animation/);
   });
 

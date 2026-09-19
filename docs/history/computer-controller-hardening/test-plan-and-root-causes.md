@@ -1,5 +1,8 @@
 # Computer Controller — test plan and root causes
 
+> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+
+
 > **What this is.** The matrixed test plan for the Computer Controller extension: the five reported user problems with the root cause found for each, and roughly 60 numbered cases across screenshots, UI control, apps, settings, files, web, multi-app workflows, permissions, multi-monitor behaviour and cross-OS invariance.
 > **Status:** Historical record — written for the 2026-06-20 multi-monitor / vision / honest-errors change. Its fixes shipped in that commit, and the executed outcomes live in [the executed test results](./executed-test-results.md). This is the plan of record for a finished pass, not a live checklist.
 > **Audience:** maintainers working on the Computer Controller extension.

@@ -1,5 +1,8 @@
 # Privacy tiers
 
+> Computer-use references in historical investigations below are superseded by the [native Computer Use contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+
+
 > **What this is.** The design for a privacy-tier system that keeps conversations touched by
 > private models or private data sources from ever reaching a model hosted outside the user's
 > institution. It classifies models, sessions, MCP extensions and knowledge bases, and enforces the
@@ -1428,7 +1431,7 @@ the user's own UI, not a model."
 > measured two channels that survive it, because the *daemon* still holds the secret: on macOS a
 > child reads its parent's environment with `ps -Ewww -p $PPID` (under a hardened, notarized binary,
 > and under every sandbox profile that can be constructed, because `sysctl-read` is not gated), and
-> on Linux `computercontroller__cache view /proc/self/environ` returns it in-process. So a
+> on Linux `webdocuments__cache view /proc/self/environ` returns it in-process. So a
 > tool-capable session can still obtain the secret; what it can no longer do is find it lying in its
 > own environment. Fix (2) is what closes those channels, and it is open.
 >
@@ -1484,10 +1487,9 @@ reaches the knowledge tree, the global memory store and the Agent Drafter apps: 
 are readable by any tool that can run a command or open a path, and none of the five gates is on
 that path. `developer__shell` executes an arbitrary command (`rmcp_developer.rs:1307`) and is
 explicitly *not* jailed by the file tools' containment base (`:1950`); the OS sandbox that could
-confine it defaults to **off** (`shell_sandbox/mod.rs:244`);
-`computercontroller__automation_script` writes and executes a model-supplied script
-(`computercontroller/mod.rs:833`). **So a public-capability model does not need to defeat any gate
-in §9.1 — it can read the private material directly.**
+confine it defaults to **off** (`shell_sandbox/mod.rs:244`). The former controller scripting
+path is removed; native Computer Use has a separate task grant. **Removing that old path does
+not remove the need to guard arbitrary shell/file reads of private material.**
 
 Adding `**/sessions.db*` and the data directory to `DEFAULT_SECRET_PATTERNS` was this design's first
 answer and is **rejected**, for two reasons that only appear on measurement. That list is an
@@ -1758,7 +1760,7 @@ acceptable is a root whose contents are **undifferentiated** being handed over b
 exists. That was the Agent Drafter root, which had no per-app classification at all, and §9.5.3 says
 what it gets instead.
 
-**Why an in-process check has to exist at all.** `computercontroller__cache` reads a caller-supplied path with
+**Why an in-process check has to exist at all.** `webdocuments__cache` reads a caller-supplied path with
 `tokio::fs::read_to_string`; `agent_drafter__read_app` reads app bytes with `std::fs::read_to_string`;
 `developer__text_editor` opens files directly. **None of them spawns anything — they are the
 daemon.** No sandbox the daemon installs on its children can constrain the daemon, so on every
@@ -1780,9 +1782,11 @@ roots' doors hold everywhere — neither needs kernel support — Layer B's plat
 feature-killers. Landlock cannot subtract a read and
 Windows has no unprivileged confinement — but that no longer means *"a public session cannot read
 files on those hosts"*, it means *"a public session cannot spawn a shell on those hosts"*. The
-fail-closed refusal narrows from **every file tool** to the five that spawn a child:
-`developer__shell` and its background jobs, `computercontroller__automation_script`,
-`computer_control`, and `compute_run`/`compute_python`. `text_editor`, `analyze`, `image_processor`,
+fail-closed refusal narrows from **every file tool** to arbitrary-code child execution:
+`developer__shell` and its background jobs, and `compute_run`/`compute_python`. The old desktop
+scripting handlers are removed. The native Computer Use helper uses its own per-request consent,
+observation isolation, and environment filtering; it is not an arbitrary-script fallback.
+`text_editor`, `analyze`, `image_processor`,
 `cache`, `xlsx_tool`, `pdf_tool`, `docx_tool` and every knowledge / memory / drafter tool keep
 working on Windows.
 
@@ -2032,7 +2036,7 @@ existing-but-discarded `live: boolean` is surfaced as "catalogue last updated <d
 | `medcp` | **no** | PUBLIC | verified absent — all 37 ids scanned |
 | `msbaseagent` | **no** | PUBLIC | verified absent |
 | the remaining 34 catalogue entries | yes | PUBLIC | no marker |
-| built-ins: `developer`, `autovisualiser`, `computercontroller`, `memory`, `agent_drafter`, `knowledge` | n/a | PUBLIC | R11 |
+| built-ins: `developer`, `autovisualiser`, `computercontroller`, `webdocuments`, `memory`, `agent_drafter`, `knowledge` | n/a | PUBLIC | R11 |
 | platform: `todo`, `chatrecall`, `extensionmanager`, `skills`, `code_execution` | n/a | PUBLIC | R11 |
 | in-process app servers: `appcontrol`, `datasql`, `files`, `compute`, `evidence` | n/a | PUBLIC | per-app sandbox |
 | anything hand-installed | no | PUBLIC | R11(ii) |

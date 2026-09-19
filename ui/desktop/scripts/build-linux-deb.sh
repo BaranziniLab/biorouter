@@ -11,6 +11,7 @@ BIN_DIR="$DESKTOP_DIR/src/bin"
 LINUX_RELEASE="$PROJECT_ROOT/target/x86_64-unknown-linux-gnu/release"
 
 echo "Installing system dependencies (fakeroot, dpkg, rpm)..."
+bash "$SCRIPT_DIR/setup-linux-native-baseline.sh"
 apt-get update -q
 apt-get install -y --no-install-recommends fakeroot dpkg rpm
 

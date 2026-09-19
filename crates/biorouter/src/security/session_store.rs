@@ -219,7 +219,7 @@ enum ArgumentRole {
 const DIRECTORY_ARG_KEYS: &[&str] = &["dir", "directory", "working_directory", "local_dir"];
 
 /// Argument keys whose value is executable source text (`execute_code.code`,
-/// `compute_python.code`, `automation_script.script`).
+/// `compute_python.code`, and generic external `script` fields).
 const SCRIPT_ARG_KEYS: &[&str] = &["code", "script"];
 
 fn argument_role(key: &str) -> Option<ArgumentRole> {

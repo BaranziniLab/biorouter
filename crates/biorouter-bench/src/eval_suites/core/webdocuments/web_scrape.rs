@@ -13,24 +13,27 @@ use rmcp::model::Role;
 use serde_json::{self, Value};
 
 #[derive(Debug)]
-pub struct ComputerControllerScript {}
+pub struct ComputerControllerWebScrape {}
 
-impl ComputerControllerScript {
+impl ComputerControllerWebScrape {
     pub fn new() -> Self {
-        ComputerControllerScript {}
+        ComputerControllerWebScrape {}
     }
 }
 
 #[async_trait]
-impl Evaluation for ComputerControllerScript {
+impl Evaluation for ComputerControllerWebScrape {
     async fn run(
         &self,
         agent: &mut BenchAgent,
         _run_loc: &mut BenchmarkWorkDir,
     ) -> anyhow::Result<Vec<(String, EvalMetricValue)>> {
         // Send the prompt to list files
-        let (messages, perf_metrics) =
-            collect_baseline_metrics(agent, "Make a beep sound".to_string()).await;
+        let (messages, perf_metrics) = collect_baseline_metrics(
+            agent,
+            "What are the headlines on hackernews? Organize the list into categories.".to_string(),
+        )
+        .await;
 
         // Convert HashMap to Vec for our metrics
         let mut metrics = metrics_hashmap_to_vec(perf_metrics);
@@ -43,14 +46,14 @@ impl Evaluation for ComputerControllerScript {
                 if let MessageContent::ToolRequest(tool_req) = content {
                     if let Ok(tool_call) = tool_req.tool_call.as_ref() {
                         // Check tool name is correct
-                        if tool_call.name != "computercontroller__computer_control" {
+                        if tool_call.name != "webdocuments__web_scrape" {
                             return false;
                         }
 
                         // Parse the arguments as JSON
                         if let Ok(args) = serde_json::from_value::<Value>(serde_json::Value::Object(tool_call.arguments.clone().unwrap_or_default())) {
-                            // Check all required parameters match exactly
-                            args.get("script").and_then(Value::as_str).is_some_and(|s| s.contains("beep"))
+                            // Check all required parameters match exactly                                                        
+                            args.get("url").and_then(Value::as_str).map(|s| s.trim_end_matches('/')) == Some("https://news.ycombinator.com")
                         } else {
                             false
                         }
@@ -64,23 +67,23 @@ impl Evaluation for ComputerControllerScript {
         });
 
         metrics.push((
-            "Running os scripts".to_string(),
+            "Retrieve and scrape web pages".to_string(),
             EvalMetricValue::Boolean(valid_tool_call),
         ));
         Ok(metrics)
     }
 
     fn name(&self) -> &str {
-        "computercontroller_script"
+        "webdocuments_web_scrape"
     }
 
     fn required_extensions(&self) -> ExtensionRequirements {
         ExtensionRequirements {
-            builtin: vec!["computercontroller".to_string()],
+            builtin: vec!["webdocuments".to_string()],
             external: Vec::new(),
             streamable_http: Vec::new(),
         }
     }
 }
 
-register_evaluation!(ComputerControllerScript);
+register_evaluation!(ComputerControllerWebScrape);

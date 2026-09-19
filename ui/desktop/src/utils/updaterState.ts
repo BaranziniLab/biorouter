@@ -143,9 +143,7 @@ export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayl
   // (an older main process, or a hand-built test event) must not silently clear
   // a mode we already know we are in.
   const prevState: UpdaterState =
-    payload.usingFallback === undefined
-      ? prev
-      : { ...prev, usingFallback: payload.usingFallback };
+    payload.usingFallback === undefined ? prev : { ...prev, usingFallback: payload.usingFallback };
   prev = prevState;
 
   switch (payload.event) {

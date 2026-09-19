@@ -356,6 +356,17 @@ impl Provider for OpenAiProvider {
         &self.name
     }
 
+    fn computer_use_destination(&self) -> Option<String> {
+        self.api_client.computer_use_destination(&self.base_path)
+    }
+
+    fn computer_use_destination_identity(&self) -> Option<String> {
+        Some(
+            self.api_client
+                .computer_use_destination_identity(&self.base_path),
+        )
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
@@ -612,6 +623,30 @@ mod alias_tests {
         ] {
             assert!(!replays_reasoning_content(name), "{name} must not replay");
         }
+    }
+
+    #[test]
+    fn computer_use_disclosure_tracks_actual_request_origin_and_route_identity() {
+        let mut provider = provider_for_host("https://user:secret@gateway.example:8443/private");
+        assert_eq!(
+            provider.computer_use_destination().as_deref(),
+            Some("https://gateway.example:8443")
+        );
+        let before = provider.computer_use_destination_identity().unwrap();
+        provider.base_path = "another-route?token=hidden".into();
+        assert_eq!(
+            provider.computer_use_destination().as_deref(),
+            Some("https://gateway.example:8443")
+        );
+        assert_ne!(
+            provider.computer_use_destination_identity().unwrap(),
+            before
+        );
+        provider.base_path = "https://other.example/inference?token=hidden".into();
+        assert_eq!(
+            provider.computer_use_destination().as_deref(),
+            Some("https://other.example")
+        );
     }
 
     fn provider_for_host(host: &str) -> OpenAiProvider {

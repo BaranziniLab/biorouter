@@ -176,13 +176,13 @@ biorouter will create a plan and then get right to work on it. Once done, your d
 
 ## Enable an extension
 
-While biorouter can already work with files in your directory, wouldn't it be better if it could fetch papers and data from the web for you? Let's give biorouter the ability to browse the web and scrape sources by enabling the [Computer Controller capability](../extensions/built-in/computer-controller.md).
+While biorouter can already work with files in your directory, wouldn't it be better if it could fetch papers and data from the web for you? Let's give biorouter the ability to browse the web and scrape sources by enabling the [Web & Documents capability](../extensions/built-in/web-documents.md).
 
 ### Desktop
 
 1. Click the button in the top-left to open the sidebar.
 2. Click `Extensions` in the sidebar menu.
-3. Toggle the `Computer Controller` extension to enable it. This extension enables webscraping, file caching, and automations.
+3. Toggle the `Web & Documents` extension to enable it. This extension enables URL fetching, file caching, and document utilities.
 4. Return to your session to continue.
 5. Now that biorouter has browser capabilities, let's ask it to pull an abstract from the web.
 
@@ -195,7 +195,7 @@ While biorouter can already work with files in your directory, wouldn't it be be
    biorouter configure
    ```
 
-3. Choose `Add Extension` > `Built-in Extension` > `Computer Controller`, and set the timeout to 300s. This extension enables webscraping, file caching, and automations.
+3. Choose `Add Extension` > `Built-in Extension` > `Web & Documents`, and set the timeout to 300s. This extension enables URL fetching, file caching, and document utilities.
 
    ```text
    ┌   biorouter-configure
@@ -207,12 +207,12 @@ While biorouter can already work with files in your directory, wouldn't it be be
    │  Built-in Extension
    │
    ◇  Which built-in extension would you like to enable?
-   │  Computer Controller
+   │  Web & Documents
    │
    ◇  Please set the timeout for this tool (in secs):
    │  300
    │
-   └  Enabled computercontroller extension
+   └  Enabled webdocuments extension
    ```
 
 4. Now that biorouter has browser capabilities, let's resume your last session:
@@ -247,5 +247,5 @@ Here are some ideas for next steps:
 - [Installation and setup](installation.md) — the long-form install guide, including UCSF institutional providers, remote MCP agents, and config file locations.
 - [Choosing a model provider](choosing-a-model-provider.md) — per-provider credentials, default models, and how to switch providers.
 - [Usage tips](usage-tips.md) — short habits for prompting, cost control, and session hygiene once you are past the first task.
-- [Computer Controller capability](../extensions/built-in/computer-controller.md) — the full tool list for the extension you enabled above.
+- [Web & Documents capability](../extensions/built-in/web-documents.md) — the full tool list for the extension you enabled above.
 - [biorouter CLI command reference](../cli/command-reference.md) — every subcommand, including `session` and `web`.

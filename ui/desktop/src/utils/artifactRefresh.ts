@@ -60,7 +60,11 @@ export function artifactRefreshEvents(
       const args = record(call.args);
       // An opaque execution can modify the already-open file. Re-read that file
       // only: command text is not evidence that a guessed output path was written.
-      if (['shell', 'bash', 'execute_code', 'run_code', 'automation_script'].includes(name)) {
+      const desktopMutation =
+        /^computercontroller__(?:click|perform_secondary_action|scroll|drag|type_text|press_key|set_value)$/.test(
+          call.name
+        );
+      if (desktopMutation || ['shell', 'bash', 'execute_code', 'run_code'].includes(name)) {
         events.set(content.id, { id: content.id, paths: [], checkActiveFile: true });
         if (name === 'execute_code' || name === 'run_code') {
           const executedCalls = record(result._meta)?.['biorouter/tool-calls'];

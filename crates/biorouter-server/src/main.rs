@@ -105,6 +105,7 @@ async fn async_main() -> anyhow::Result<()> {
             match server {
                 McpCommand::AutoVisualiser => serve(AutoVisualiserRouter::new()).await?,
                 McpCommand::ComputerController => serve(ComputerControllerServer::new()).await?,
+                McpCommand::WebDocuments => serve(biorouter_mcp::WebDocumentsServer::new()).await?,
                 McpCommand::Memory => serve(MemoryServer::new()).await?,
                 McpCommand::Developer => {
                     let bash_env = Paths::config_dir().join(".bash_env");

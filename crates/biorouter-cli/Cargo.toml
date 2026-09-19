@@ -71,6 +71,7 @@ clap_complete = "4.5.62"
 arboard = "3.6.1"
 url = "2.5.4"
 zeroize = "1"
+sha2 = "0.10"
 
 # jemalloc only builds on Unix; the mingw windows-gnu cross target can't link it,
 # so depend on it only off Windows. Windows uses the system allocator.

@@ -10,8 +10,17 @@
   },
   {
     "id": "computercontroller",
-    "name": "Computer Controller",
-    "description": "Control desktop apps, scrape web pages, and work with local files.",
+    "name": "Computer Use",
+    "description": "View and control desktop apps for an approved task.",
+    "enabled": true,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 300
+  },
+  {
+    "id": "webdocuments",
+    "name": "Web & Documents",
+    "description": "Read web pages and work with spreadsheets, documents, and PDFs.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],

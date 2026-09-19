@@ -364,8 +364,7 @@ const DIRECTORY_ARG_KEYS: &[&str] = &["dir", "directory", "working_directory", "
 /// Argument keys whose value is executable source text.
 ///
 /// `execute_code.code` and `compute_python.code` (JS / Python bodies), and
-/// `automation_script.script` / `computer_control.script` (shell, batch,
-/// PowerShell, AppleScript).
+/// generic external tools with a `script` field.
 const SCRIPT_ARG_KEYS: &[&str] = &["code", "script"];
 
 /// How the value under `key` should be read, or `None` if a path inside it is
@@ -1259,7 +1258,7 @@ record_result(all);"#;
                     json!({"command": "view", "path": format!("{store}/clinical.txt")}),
                 ),
                 (
-                    "computercontroller__cache",
+                    "webdocuments__cache",
                     json!({"command": "delete", "path": format!("{store}/clinical.txt")}),
                 ),
                 // Nested inside a structure, and inside a script body.

@@ -64,7 +64,7 @@ if [ "$CODE_EXEC_MODE" = true ]; then
   FAILURE_MSG="no code_execution tools called"
 else
   echo "Mode: normal (direct tool calls)"
-  BUILTINS="developer,autovisualiser,computercontroller,todo,extensionmanager"
+  BUILTINS="developer,autovisualiser,computercontroller,webdocuments,todo,extensionmanager"
   SUCCESS_PATTERN="shell \| developer"
   SUCCESS_MSG="developer tool called"
   FAILURE_MSG="no developer tools called"

@@ -1363,6 +1363,76 @@ enum AppsCommand {
     },
 }
 
+#[derive(Args)]
+struct ServeOptions {
+    /// Address to bind
+    #[arg(
+        long,
+        default_value = "127.0.0.1",
+        help = "Address to bind. Anything reachable from another machine requires a token."
+    )]
+    host: String,
+
+    /// Port to listen on
+    #[arg(
+        short,
+        long,
+        default_value_t = crate::commands::serve::DEFAULT_PORT,
+        help = "Port to listen on"
+    )]
+    port: u16,
+
+    /// Use this access token instead of a freshly generated one
+    #[arg(
+        long,
+        help = "Use this access token instead of generating one. Takes precedence over \
+                BIOROUTER_BROWSER_TOKEN, which is read when this is not given."
+    )]
+    token: Option<String>,
+
+    /// Serve without an access token
+    #[arg(
+        long,
+        conflicts_with = "token",
+        help = "Serve without an access token. Refused for a non-loopback bind."
+    )]
+    no_token: bool,
+
+    /// Directory holding the built interface
+    #[arg(
+        long,
+        help = "Directory holding the built web interface. Takes precedence over \
+                BIOROUTER_SERVE_UI; either must contain an index.html"
+    )]
+    web_dir: Option<std::path::PathBuf>,
+
+    /// Configure a separate approval key for computer-use tasks in the browser
+    #[arg(
+        long,
+        help = "Interactively set a computer-use approval key; requires a terminal"
+    )]
+    computer_use_approval: bool,
+
+    /// Open a browser once it is ready
+    #[arg(long, help = "Open a browser once the server is ready")]
+    open: bool,
+}
+
+impl ServeOptions {
+    async fn run(self) -> anyhow::Result<()> {
+        crate::commands::serve::handle_serve(
+            self.host,
+            self.port,
+            self.token,
+            self.no_token,
+            self.web_dir,
+            self.open,
+            self.computer_use_approval,
+        )
+        .await
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Configure Biorouter settings
@@ -1615,52 +1685,7 @@ enum Command {
         about = "Run Biorouter and open it in a browser",
         visible_alias = "headless"
     )]
-    Serve {
-        /// Address to bind
-        #[arg(
-            long,
-            default_value = "127.0.0.1",
-            help = "Address to bind. Anything reachable from another machine requires a token."
-        )]
-        host: String,
-
-        /// Port to listen on
-        #[arg(
-            short,
-            long,
-            default_value_t = crate::commands::serve::DEFAULT_PORT,
-            help = "Port to listen on"
-        )]
-        port: u16,
-
-        /// Use this access token instead of a freshly generated one
-        #[arg(
-            long,
-            help = "Use this access token instead of generating one. Takes precedence over \
-                    BIOROUTER_BROWSER_TOKEN, which is read when this is not given."
-        )]
-        token: Option<String>,
-
-        /// Serve without an access token
-        #[arg(
-            long,
-            conflicts_with = "token",
-            help = "Serve without an access token. Refused for a non-loopback bind."
-        )]
-        no_token: bool,
-
-        /// Directory holding the built interface
-        #[arg(
-            long,
-            help = "Directory holding the built web interface. Takes precedence over \
-                    BIOROUTER_SERVE_UI; either must contain an index.html"
-        )]
-        web_dir: Option<std::path::PathBuf>,
-
-        /// Open a browser once it is ready
-        #[arg(long, help = "Open a browser once the server is ready")]
-        open: bool,
-    },
+    Serve(ServeOptions),
 
     /// Deprecated: use `biorouter serve`
     ///
@@ -1835,7 +1860,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::SetupPath { .. }) => "setup-path",
         Some(Command::Bench { .. }) => "bench",
         Some(Command::Workflow { .. }) => "workflow",
-        Some(Command::Serve { .. }) => "serve",
+        Some(Command::Serve(_)) => "serve",
         Some(Command::Web { .. }) => "web",
         Some(Command::Term { .. }) => "term",
         Some(Command::Completion { .. }) => "completion",
@@ -1849,6 +1874,7 @@ async fn handle_mcp_command(server: McpCommand) -> Result<()> {
     match server {
         McpCommand::AutoVisualiser => serve(AutoVisualiserRouter::new()).await?,
         McpCommand::ComputerController => serve(ComputerControllerServer::new()).await?,
+        McpCommand::WebDocuments => serve(biorouter_mcp::WebDocumentsServer::new()).await?,
         McpCommand::Memory => serve(MemoryServer::new()).await?,
         McpCommand::Developer => serve(DeveloperServer::new()).await?,
     }
@@ -2584,9 +2610,11 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
     let chosen = if dep.is_empty() {
         // Bare `--fix`: the first missing required prerequisite, then any missing
         // optional one. Nothing missing is a success, not an error.
+        // A probe that timed out did not disprove the tool: offering to install
+        // something the machine may already have is worse than saying nothing.
         deps.iter()
-            .find(|d| d.required && !d.installed)
-            .or_else(|| deps.iter().find(|d| !d.installed))
+            .find(|d| d.required && !d.installed && !d.timed_out)
+            .or_else(|| deps.iter().find(|d| !d.installed && !d.timed_out))
             .cloned()
     } else {
         match biorouter::system::status_of(&dep) {
@@ -2607,6 +2635,7 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
                     name: dep.clone(),
                     display_name: dep.clone(),
                     installed: false,
+                    timed_out: false,
                     version: None,
                     required: false,
                     purpose: "Required by a Biorouter setup or build script".to_string(),
@@ -2702,6 +2731,27 @@ async fn handle_default_session() -> Result<()> {
     session.interactive(None).await
 }
 
+fn needs_tool_bridge(command: &Option<Command>) -> bool {
+    matches!(
+        command,
+        None | Some(
+            Command::Run { .. }
+                | Command::Session { command: None, .. }
+                | Command::Acp { .. }
+                | Command::Doctor { fix: Some(_), .. }
+                | Command::Term {
+                    command: TermCommand::Run { .. }
+                }
+                | Command::Bench {
+                    cmd: BenchCommand::ExecEval { .. }
+                }
+                | Command::Schedule {
+                    command: SchedulerCommand::RunNow { .. }
+                }
+        )
+    )
+}
+
 pub async fn cli() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -2715,6 +2765,12 @@ pub async fn cli() -> anyhow::Result<()> {
         command = command_name,
         "CLI command executed"
     );
+
+    let _tool_bridge = if needs_tool_bridge(&cli.command) {
+        Some(biorouter::providers::coding_agent::bridge_http::LoopbackBridge::start().await?)
+    } else {
+        None
+    };
 
     dispatch(cli.command).await
 }
@@ -2810,16 +2866,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,
         Some(Command::Apps { command }) => handle_apps_subcommand(command).await,
-        Some(Command::Serve {
-            host,
-            port,
-            token,
-            no_token,
-            web_dir,
-            open,
-        }) => {
-            crate::commands::serve::handle_serve(host, port, token, no_token, web_dir, open).await
-        }
+        Some(Command::Serve(options)) => options.run().await,
         Some(Command::Web {
             port,
             host,
@@ -2835,6 +2882,39 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn every_standalone_agent_entry_point_starts_the_tool_bridge() {
+        for args in [
+            vec!["biorouter"],
+            vec!["biorouter", "run"],
+            vec!["biorouter", "session"],
+            vec!["biorouter", "acp"],
+            vec!["biorouter", "doctor", "--fix", "node"],
+            vec!["biorouter", "term", "run", "synthetic prompt"],
+            vec!["biorouter", "bench", "exec-eval", "--config", "synthetic"],
+            vec![
+                "biorouter",
+                "schedule",
+                "run-now",
+                "--schedule-id",
+                "synthetic",
+            ],
+        ] {
+            let parsed = Cli::try_parse_from(&args).unwrap();
+            assert!(needs_tool_bridge(&parsed.command), "{args:?}");
+        }
+        for args in [
+            vec!["biorouter", "info"],
+            vec!["biorouter", "doctor"],
+            vec!["biorouter", "session", "list"],
+            vec!["biorouter", "schedule", "list"],
+            vec!["biorouter", "term", "init", "zsh"],
+        ] {
+            let parsed = Cli::try_parse_from(&args).unwrap();
+            assert!(!needs_tool_bridge(&parsed.command), "{args:?}");
+        }
+    }
 
     #[tokio::test]
     #[serial_test::serial]
@@ -3152,6 +3232,70 @@ mod cli_tests {
             Cli::try_parse_from(["biorouter", "--provider", "claude_code"]).is_err(),
             "if a global --provider is ever added, this refusal should name it instead"
         );
+    }
+
+    #[test]
+    fn serve_options_preserve_defaults_alias_flags_and_token_conflict() {
+        let parsed = Cli::try_parse_from(["biorouter", "serve"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert_eq!(options.host, "127.0.0.1");
+        assert_eq!(options.port, crate::commands::serve::DEFAULT_PORT);
+        assert!(options.token.is_none());
+        assert!(options.web_dir.is_none());
+        assert!(!options.no_token);
+        assert!(!options.computer_use_approval);
+        assert!(!options.open);
+
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "headless",
+            "--host",
+            "0.0.0.0",
+            "-p",
+            "9876",
+            "--token",
+            "test-token",
+            "--web-dir",
+            "/tmp/web",
+            "--computer-use-approval",
+            "--open",
+        ])
+        .unwrap();
+        assert_eq!(get_command_name(&parsed.command), "serve");
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("headless alias must select serve");
+        };
+        assert_eq!(options.host, "0.0.0.0");
+        assert_eq!(options.port, 9876);
+        assert_eq!(options.token.as_deref(), Some("test-token"));
+        assert_eq!(
+            options.web_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/web"))
+        );
+        assert!(!options.no_token);
+        assert!(options.computer_use_approval);
+        assert!(options.open);
+
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "serve",
+            "--no-token",
+            "--computer-use-approval",
+            "--open",
+        ])
+        .unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(options.no_token && options.computer_use_approval && options.open);
+
+        let conflict =
+            Cli::try_parse_from(["biorouter", "serve", "--token", "test-token", "--no-token"])
+                .err()
+                .expect("token and no-token must conflict");
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     /// BR-71 / issue #56: `biorouter sessions <verb>` really is a command.

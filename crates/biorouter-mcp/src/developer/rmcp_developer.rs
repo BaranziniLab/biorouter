@@ -24,7 +24,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use xcap::{Monitor, Window};
 
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -135,173 +134,6 @@ fn git_context_block(cwd: &std::path::Path) -> String {
           `git push --force`, `git clean -fd`, `git rebase`, branch deletion) unless the
           user explicitly asks for them.
     "#}
-}
-
-/// Parameters for the screen_capture tool
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ScreenCaptureParams {
-    /// The 0-based display index to capture. If omitted, the primary display is
-    /// captured. Every display capture also reports the full list of connected
-    /// displays (with indices), so on a multi-monitor setup you can re-capture
-    /// another screen by its index.
-    #[serde(default)]
-    pub display: Option<u64>,
-
-    /// Optional: the title (or any substring of it, case-insensitive) of the
-    /// window to capture. Set `list_only: true` first to see the available
-    /// titles.
-    pub window_title: Option<String>,
-
-    /// Return the available window titles and connected displays as text, and
-    /// capture nothing. Use it to discover what to pass to `window_title` or
-    /// `display`; when true, both of those are ignored.
-    #[serde(default)]
-    pub list_only: bool,
-}
-
-/// Produce a compact, agent-readable description of every connected display:
-/// index, name, resolution, position, scale factor, and which one is primary.
-/// `screen_capture` includes this on each display capture so the agent always
-/// knows how many screens exist and which index is which — directly avoiding
-/// the multi-monitor failure where it only ever sees display 0 and reports the
-/// rest as "not found". Cross-platform via xcap (macOS/Windows/Linux).
-fn describe_monitors(monitors: &[Monitor]) -> String {
-    let mut out = String::from("Connected displays:");
-    for (i, m) in monitors.iter().enumerate() {
-        let name = m.name().unwrap_or_else(|_| "unknown".to_string());
-        let w = m.width().unwrap_or(0);
-        let h = m.height().unwrap_or(0);
-        let x = m.x().unwrap_or(0);
-        let y = m.y().unwrap_or(0);
-        let primary = if m.is_primary().unwrap_or(false) {
-            " [primary]"
-        } else {
-            ""
-        };
-        let scale = m.scale_factor().unwrap_or(1.0);
-        out.push_str(&format!(
-            "\n  {i}: \"{name}\" {w}x{h} at ({x},{y}) scale {scale:.1}{primary}"
-        ));
-    }
-    out.push_str(
-        "\nPass the 0-based `display` index above to screen_capture to grab a specific screen.",
-    );
-    out
-}
-
-/// macOS gates every form of screen capture behind the Screen Recording
-/// privacy permission, and it does **not** fail loudly when the permission is
-/// absent — it degrades:
-///
-/// - `Window::all()` still returns every window, but each `title()` comes back
-///   empty, so `list_windows` printed a list of nothing and `screen_capture`
-///   said *"no titled windows are currently open"*. Read literally, that says
-///   the user has no windows open, which is never true and sends everyone
-///   looking for the wrong bug.
-/// - A display capture still succeeds and still returns a real PNG — of the
-///   desktop wallpaper with every window missing. The agent then confidently
-///   describes an empty desktop.
-///
-/// Both readings are wrong in the same direction: they blame the screen for a
-/// permission. `CGPreflightScreenCaptureAccess` answers the actual question
-/// without side effects and without blocking, so it is safe to call from the
-/// daemon on every capture.
-///
-/// ⚠ **Preflight only — never `CGRequestScreenCaptureAccess`.** The request
-/// variant raises a system consent dialog, and this code runs inside
-/// `biorouterd`, a background child of the GUI. The identical shape (a
-/// synchronous macOS consent call from a non-foreground daemon) is what hung
-/// the privacy switch for the full 60-second timeout, and a hung
-/// `screen_capture` would be a worse failure than the misleading message it
-/// replaces. The first capture attempt is itself what registers the app in the
-/// Screen Recording list, so preflighting and telling the user where to look
-/// gets them there without the dialog.
-#[cfg(target_os = "macos")]
-mod screen_recording_permission {
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        // CG_EXTERN bool CGPreflightScreenCaptureAccess(void)
-        fn CGPreflightScreenCaptureAccess() -> bool;
-        // CG_EXTERN bool CGRequestScreenCaptureAccess(void)
-        fn CGRequestScreenCaptureAccess() -> bool;
-    }
-
-    pub fn granted() -> bool {
-        // SAFETY: a no-argument CoreGraphics predicate with no out-params and
-        // no ownership transfer. It reads the calling process's TCC decision
-        // and returns a C `bool`, which is ABI-identical to Rust's.
-        unsafe { CGPreflightScreenCaptureAccess() }
-    }
-
-    /// Ask macOS for the permission — which is what puts Biorouter in the
-    /// Screen Recording list in the first place.
-    ///
-    /// ⚠ **Preflighting alone was not enough, and that was a real defect.**
-    /// `CGPreflightScreenCaptureAccess` only *reads* the decision; it never
-    /// registers the app with TCC. So the first version of this guard refused
-    /// with "enable Biorouter in System Settings → Screen Recording" while
-    /// Biorouter was not in that list to enable — an instruction that sent the
-    /// user somewhere there was nothing to do. `CGRequestScreenCaptureAccess`
-    /// both registers the app and raises the system prompt the first time.
-    ///
-    /// ⚠ **Bounded, on its own thread.** Elsewhere in this release a macOS
-    /// consent call (`LAContext.evaluatePolicy`) was measured never to return
-    /// when the daemon runs under the desktop app, hanging the request for its
-    /// full timeout. Whether this call shares that fate is not known, and a
-    /// screenshot tool that can hang forever is worse than one that reports a
-    /// missing permission — so the answer is waited for briefly and its absence
-    /// is read as "not granted", which is the outcome the caller already
-    /// handles. The spawned thread is deliberately left to finish on its own:
-    /// the prompt it raised is still useful to the user even if we stopped
-    /// waiting for it.
-    pub fn request_bounded() -> bool {
-        let (tx, rx) = mpsc::sync_channel::<bool>(1);
-        std::thread::spawn(move || {
-            // SAFETY: same contract as the preflight above — no arguments, no
-            // out-params, returns a C `bool`.
-            let _ = tx.send(unsafe { CGRequestScreenCaptureAccess() });
-        });
-        rx.recv_timeout(Duration::from_secs(3)).unwrap_or(false)
-    }
-}
-
-/// The message a capture fails with when macOS has not granted the permission.
-///
-/// It names the app rather than the binary because the permission is attributed
-/// to the bundle the user sees in System Settings, not to `biorouterd`.
-#[cfg(target_os = "macos")]
-const SCREEN_RECORDING_DENIED: &str = "macOS has not granted Biorouter permission to record the \
-     screen, so screenshots would show only the desktop wallpaper with every window missing, and \
-     window titles would all come back empty.\n\nBiorouter has just asked macOS for that \
-     permission. If a system dialog appeared, choose Allow and try again. If it did not (macOS \
-     only offers it once per app), open System Settings → Privacy & Security → Screen Recording \
-     and switch Biorouter on; the request just made puts it in that list. Either way, QUIT AND \
-     REOPEN Biorouter afterwards: macOS applies a new screen-recording grant only to a freshly \
-     launched process.";
-
-/// `Ok(())` when a capture can actually see windows, `Err` with instructions
-/// when it cannot. Never blocks; a no-op off macOS, where no such gate exists.
-fn ensure_screen_capture_permitted() -> Result<(), ErrorData> {
-    #[cfg(target_os = "macos")]
-    if !screen_recording_permission::granted() {
-        // Ask, don't just look. Requesting is what registers Biorouter with TCC
-        // and raises the system prompt; without it the refusal below names a
-        // System Settings entry that does not exist yet.
-        //
-        // A grant made right here is honoured immediately rather than costing
-        // the user a second attempt — macOS returns true once they approve.
-        if !screen_recording_permission::request_bounded() {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                SCREEN_RECORDING_DENIED.to_string(),
-                None,
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Parameters for the text_editor tool
@@ -1119,244 +951,6 @@ impl DeveloperServer {
         }
     }
 
-    /// The window/display inventory, reachable as
-    /// `screen_capture { list_only: true }`.
-    ///
-    /// ⚠ **Not a declared tool any more.** `list_windows` returned a listing
-    /// `screen_capture` already computes and returns on a no-match — two tools
-    /// for one answer, and the model had to know the first one existed to use
-    /// the second. The function stays because the body is shared and because
-    /// the retired name still dispatches.
-    pub async fn list_windows(&self) -> Result<CallToolResult, ErrorData> {
-        // Before the list, not after: without the permission every title is
-        // empty, so the honest answer is about the permission, not the windows.
-        ensure_screen_capture_permitted()?;
-        let windows = Window::all().map_err(|_| {
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                "Failed to list windows".to_string(),
-                None,
-            )
-        })?;
-
-        let window_titles: Vec<String> =
-            windows.into_iter().filter_map(|w| w.title().ok()).collect();
-
-        // ⚠ Byte-identical to what the retired `list_windows` returned, and
-        // deliberately so. Folding in the display list looked like an
-        // improvement — a model asking "what can I capture?" learns both halves
-        // — but it made the output depend on the machine's monitors, and this
-        // exchange is replayed from a recorded cassette
-        // (tests/mcp_replays/…mcpdeveloper). A consolidation moves the entry
-        // point; it does not quietly change what comes back. The display list
-        // is already reported on every display capture, which is where a model
-        // meets it.
-        let content_text = format!("Available windows:\n{}", window_titles.join("\n"));
-
-        Ok(CallToolResult::success(vec![
-            Content::text(content_text.clone()).with_audience(vec![Role::Assistant]),
-            Content::text(content_text)
-                .with_audience(vec![Role::User])
-                .with_priority(0.0),
-        ]))
-    }
-
-    /// Capture a screenshot of a specified display or window.
-    /// You can capture either:
-    /// 1. A full display (monitor) using the display parameter
-    /// 2. A specific window by its title using the window_title parameter
-    ///
-    /// Only one of display or window_title should be specified.
-    #[tool(
-        name = "screen_capture",
-        description = "Capture a screenshot of a display or a window, or list what is available to capture. Pass `list_only: true` to get the open window titles and connected displays as text, capturing nothing. Otherwise capture either: 1. a full display via the 0-based `display` index (omit it to capture the primary display; the result lists every connected display with its index so you can target other monitors), or 2. a specific window via `window_title` (case-insensitive substring match; on no match the result lists the open window titles). Specify only one of `display` or `window_title`. Works across macOS, Windows, and Linux."
-    )]
-    pub async fn screen_capture(
-        &self,
-        params: Parameters<ScreenCaptureParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let params = params.0;
-
-        // ⚠ First, before any capture path. A denied display capture does not
-        // error — it returns a real PNG of an empty desktop — so there is no
-        // later point at which this can be detected from the result.
-        ensure_screen_capture_permitted()?;
-
-        // The inventory branch, absorbed from the retired `list_windows`. It
-        // sits AFTER the permission check for the same reason that check exists
-        // at all: without Screen Recording every window title comes back empty,
-        // so the honest answer is about the permission, not the windows.
-        if params.list_only {
-            return self.list_windows().await;
-        }
-
-        // Human/agent-readable note describing what was captured and, for
-        // display captures, the full multi-monitor topology. Reporting the
-        // topology on every capture is what lets the agent realise it has more
-        // than one screen (and which index is which) instead of repeatedly
-        // capturing display 0 and reporting things "not found".
-        // Assigned in each branch below (deferred init).
-        let capture_note: String;
-
-        let mut image = if let Some(window_title) = &params.window_title {
-            // Try to find and capture the specified window. Match case-insensitively
-            // and by substring: real window titles are noisy (e.g. "Slack | general
-            // | Acme") so requiring an exact match is the main reason window capture
-            // "fails to find" an app that is clearly open.
-            let windows = Window::all().map_err(|_| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    "Failed to list windows".to_string(),
-                    None,
-                )
-            })?;
-
-            let needle = window_title.to_lowercase();
-            let titles: Vec<String> = windows
-                .iter()
-                .filter_map(|w| w.title().ok())
-                .filter(|t| !t.is_empty())
-                .collect();
-
-            // Prefer an exact (case-insensitive) match, then fall back to substring.
-            let window = windows
-                .iter()
-                .find(|w| {
-                    w.title()
-                        .is_ok_and(|t| t.eq_ignore_ascii_case(window_title))
-                })
-                .or_else(|| {
-                    windows
-                        .iter()
-                        .find(|w| w.title().is_ok_and(|t| t.to_lowercase().contains(&needle)))
-                })
-                .ok_or_else(|| {
-                    ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!(
-                            "No open window matches '{}'. Available window titles:\n{}\n\nPick one \
-                             of the titles above (a substring is enough), or capture a whole \
-                             display instead.",
-                            window_title,
-                            if titles.is_empty() {
-                                "  (none: no titled windows are currently open)".to_string()
-                            } else {
-                                titles
-                                    .iter()
-                                    .map(|t| format!("  - {t}"))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            }
-                        ),
-                        None,
-                    )
-                })?;
-
-            let matched_title = window.title().unwrap_or_default();
-            capture_note = format!("Captured window '{matched_title}'.");
-
-            window.capture_image().map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to capture window '{}': {}", matched_title, e),
-                    None,
-                )
-            })?
-        } else {
-            let monitors = Monitor::all().map_err(|_| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    "Failed to access monitors".to_string(),
-                    None,
-                )
-            })?;
-            if monitors.is_empty() {
-                return Err(ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    "No displays were detected.".to_string(),
-                    None,
-                ));
-            }
-
-            let topology = describe_monitors(&monitors);
-
-            // Default to the *primary* display rather than index 0: on
-            // multi-monitor setups Monitor::all() ordering is not guaranteed, so
-            // index 0 is frequently the wrong (secondary) screen.
-            let display = match params.display {
-                Some(d) => d as usize,
-                None => monitors
-                    .iter()
-                    .position(|m| m.is_primary().unwrap_or(false))
-                    .unwrap_or(0),
-            };
-
-            let monitor = monitors.get(display).ok_or_else(|| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!(
-                        "Display {} does not exist. {} display(s) are connected (valid indices \
-                         0..={}).\n{}",
-                        display,
-                        monitors.len(),
-                        monitors.len() - 1,
-                        topology
-                    ),
-                    None,
-                )
-            })?;
-
-            capture_note = format!("Captured display {}.\n{}", display, topology);
-
-            monitor.capture_image().map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to capture display {}: {}", display, e),
-                    None,
-                )
-            })?
-        };
-
-        // Resize the image to a reasonable width while maintaining aspect ratio
-        let max_width = 768;
-        if image.width() > max_width {
-            let scale = max_width as f32 / image.width() as f32;
-            let new_height = (image.height() as f32 * scale) as u32;
-            image = xcap::image::imageops::resize(
-                &image,
-                max_width,
-                new_height,
-                xcap::image::imageops::FilterType::Lanczos3,
-            );
-        }
-
-        let mut bytes: Vec<u8> = Vec::new();
-        image
-            .write_to(&mut Cursor::new(&mut bytes), xcap::image::ImageFormat::Png)
-            .map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to write image buffer {}", e),
-                    None,
-                )
-            })?;
-
-        // Convert to base64
-        let data = base64::prelude::BASE64_STANDARD.encode(bytes);
-
-        // Return two Content objects like the old implementation:
-        // one text for Assistant, one image with priority 0.0
-        let note = if capture_note.is_empty() {
-            "Screenshot captured".to_string()
-        } else {
-            format!("Screenshot captured. {capture_note}")
-        };
-        Ok(CallToolResult::success(vec![
-            Content::text(note).with_audience(vec![Role::Assistant]),
-            Content::image(data, "image/png").with_priority(0.0),
-        ]))
-    }
-
     /// Perform text editing operations on files.
     ///
     /// The `command` parameter specifies the operation to perform. Allowed options are:
@@ -2164,7 +1758,7 @@ impl DeveloperServer {
         }
 
         // Open and decode the image
-        let image = xcap::image::open(&path).map_err(|e| {
+        let image = image::open(&path).map_err(|e| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("Failed to open image file: {}", e),
@@ -2172,24 +1766,24 @@ impl DeveloperServer {
             )
         })?;
 
-        // Resize if necessary (same logic as screen_capture)
+        // Resize if necessary while preserving aspect ratio
         let mut processed_image = image;
         let max_width = 768;
         if processed_image.width() > max_width {
             let scale = max_width as f32 / processed_image.width() as f32;
             let new_height = (processed_image.height() as f32 * scale) as u32;
-            processed_image = xcap::image::DynamicImage::ImageRgba8(xcap::image::imageops::resize(
+            processed_image = image::DynamicImage::ImageRgba8(image::imageops::resize(
                 &processed_image,
                 max_width,
                 new_height,
-                xcap::image::imageops::FilterType::Lanczos3,
+                image::imageops::FilterType::Lanczos3,
             ));
         }
 
         // Convert to PNG and encode as base64
         let mut bytes: Vec<u8> = Vec::new();
         processed_image
-            .write_to(&mut Cursor::new(&mut bytes), xcap::image::ImageFormat::Png)
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
             .map_err(|e| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -2611,37 +2205,6 @@ impl DeveloperServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn describe_monitors_empty_is_safe_and_explains_indexing() {
-        // Must not panic on zero monitors and must always tell the agent how
-        // the `display` index works.
-        let s = describe_monitors(&[]);
-        assert!(s.contains("Connected displays:"));
-        assert!(s.contains("display"));
-    }
-
-    #[test]
-    fn describe_monitors_lists_each_connected_display_with_index() {
-        // Environment-dependent: only assert structure when displays exist
-        // (headless CI may have none).
-        if let Ok(monitors) = Monitor::all() {
-            if !monitors.is_empty() {
-                let s = describe_monitors(&monitors);
-                assert!(s.contains("0:"), "should index the first display: {s}");
-                // One line per monitor plus the header and the trailing hint.
-                let display_lines = s
-                    .lines()
-                    .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
-                    .count();
-                assert_eq!(
-                    display_lines,
-                    monitors.len(),
-                    "every connected display should be listed: {s}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn test_text_editor_params_accepts_file_path_alias() {

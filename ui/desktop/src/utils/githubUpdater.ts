@@ -159,7 +159,10 @@ export class GitHubUpdater {
           platform === 'darwin'
             ? [[arch === 'arm64' ? 'arm64' : 'x64', '.dmg']]
             : platform === 'win32'
-              ? [['setup', '.exe'], ['win32', '.zip']]
+              ? [
+                  ['setup', '.exe'],
+                  ['win32', '.zip'],
+                ]
               : [['.deb']];
         for (const tokens of tokenSets) {
           asset = release.assets.find((a) => {

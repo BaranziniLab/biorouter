@@ -374,6 +374,14 @@ impl ApiClient {
         self.request(path).response_get().await
     }
 
+    pub(super) fn computer_use_destination(&self, path: &str) -> Option<String> {
+        super::base::computer_use_destination_origin(self.build_url(path).ok()?.as_str())
+    }
+
+    pub(super) fn computer_use_destination_identity(&self, path: &str) -> String {
+        super::base::computer_use_destination_digest(&format!("{}\0{}", self.host, path))
+    }
+
     fn build_url(&self, path: &str) -> Result<url::Url> {
         use url::Url;
         let mut base_url =

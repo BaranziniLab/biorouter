@@ -27,8 +27,14 @@ export const CAPABILITIES: CapabilityMeta[] = [
   },
   {
     key: 'computercontroller',
-    label: 'Computer Controller',
-    description: 'Control desktop apps, scrape web pages, and work with local files.',
+    label: 'Computer Use',
+    description: 'View and control desktop apps for an approved task.',
+    defaultEnabled: true,
+  },
+  {
+    key: 'webdocuments',
+    label: 'Web & Documents',
+    description: 'Read web pages and work with spreadsheets, documents, and PDFs.',
     defaultEnabled: true,
   },
   {
@@ -117,12 +123,6 @@ const CAPABILITIES_BY_KEY: ReadonlyMap<string, CapabilityMeta> = new Map(
   CAPABILITIES.map((capability) => [capability.key, capability])
 );
 
-const PROMOTED_DEFAULT_ON_CAPABILITY_KEYS: ReadonlySet<string> = new Set([
-  'autovisualiser',
-  'code_execution',
-  'computercontroller',
-]);
-
 /** True when the given extension is one of the shipped capabilities. */
 export function isCapabilityExtension(extension: { name: string } | ExtensionConfig): boolean {
   return CAPABILITY_KEYS.has(nameToKey(extension.name));
@@ -130,35 +130,4 @@ export function isCapabilityExtension(extension: { name: string } | ExtensionCon
 
 export function isCapabilityDefaultEnabled(extension: { name: string } | ExtensionConfig): boolean {
   return CAPABILITIES_BY_KEY.get(nameToKey(extension.name))?.defaultEnabled ?? false;
-}
-
-export function shouldDefaultEnablePromotedCapability(extension: {
-  name: string;
-  enabled: boolean;
-}): boolean {
-  const key = nameToKey(extension.name);
-  return !extension.enabled && PROMOTED_DEFAULT_ON_CAPABILITY_KEYS.has(key);
-}
-
-export function shouldDefaultEnableAgentDrafter(extension: {
-  name: string;
-  enabled: boolean;
-}): boolean {
-  return !extension.enabled && nameToKey(extension.name) === 'agent_drafter';
-}
-
-/**
- * ⚠ **Without this the Rust default reaches almost nobody** (#76).
- *
- * `default_enabled` is read only when `config.yaml` has no stored entry. But
- * saving any extension persists the WHOLE injected map, so the first time a
- * user toggles anything, `workspace: {enabled: false}` is written and honoured
- * from then on. Flipping the Rust flag alone would change behaviour for fresh
- * installs only.
- */
-export function shouldDefaultEnableWorkspace(extension: {
-  name: string;
-  enabled: boolean;
-}): boolean {
-  return !extension.enabled && nameToKey(extension.name) === 'workspace';
 }

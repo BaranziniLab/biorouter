@@ -9,6 +9,80 @@ use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+static COMPUTER_USE_FAILED_ATTEMPTS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+const COMPUTER_USE_ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
+const COMPUTER_USE_ATTEMPT_BUDGET: usize = 10;
+
+pub fn computer_use_action_locked_out() -> bool {
+    let mut attempts = COMPUTER_USE_FAILED_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    prune_computer_use_attempts(&mut attempts, Instant::now());
+    attempts.len() >= COMPUTER_USE_ATTEMPT_BUDGET
+}
+
+fn prune_computer_use_attempts(attempts: &mut Vec<Instant>, now: Instant) {
+    attempts.retain(|attempt| now.duration_since(*attempt) < COMPUTER_USE_ATTEMPT_WINDOW);
+}
+
+static COMPUTER_USE_ACTION_DIGEST: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+
+pub fn install_computer_use_action_digest(digest: Option<[u8; 32]>) {
+    let _ = COMPUTER_USE_ACTION_DIGEST.set(digest);
+}
+
+/// Browser computer-use authority is deliberately separate from general user authority.
+/// The launcher passes only a digest on stdin; neither the browser cookie nor the
+/// daemon API secret can authorize desktop access.
+pub fn computer_use_action_proof(headers: &axum::http::HeaderMap) -> UserActionProof {
+    let existing = user_action_proof(headers);
+    if existing == UserActionProof::Proven {
+        return existing;
+    }
+    let digest = COMPUTER_USE_ACTION_DIGEST.get().and_then(Option::as_ref);
+    if digest.is_none() {
+        return existing;
+    }
+    let mut attempts = COMPUTER_USE_FAILED_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let now = Instant::now();
+    prune_computer_use_attempts(&mut attempts, now);
+    if attempts.len() >= COMPUTER_USE_ATTEMPT_BUDGET {
+        return UserActionProof::Unproven;
+    }
+    let proof = computer_use_proof_with_digest(headers, existing, digest);
+    if proof == UserActionProof::Proven {
+        attempts.clear();
+    } else {
+        attempts.push(now);
+    }
+    proof
+}
+
+fn computer_use_proof_with_digest(
+    headers: &axum::http::HeaderMap,
+    existing: UserActionProof,
+    expected: Option<&[u8; 32]>,
+) -> UserActionProof {
+    if existing == UserActionProof::Proven {
+        return existing;
+    }
+    let Some(expected) = expected else {
+        return existing;
+    };
+    if user_action_matches(
+        headers
+            .get("X-Computer-Use-Key")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected),
+    ) {
+        UserActionProof::Proven
+    } else {
+        UserActionProof::Unproven
+    }
+}
+
 /// The constant-time secret comparison this middleware gates on.
 ///
 /// The implementation moved to `routes` (with its rationale) so that
@@ -1017,5 +1091,76 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(attempts.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod computer_use_proof_tests {
+    use super::*;
+
+    #[test]
+    fn scoped_proof_does_not_accept_browser_cookie_api_secret_or_general_header() {
+        let digest: [u8; 32] =
+            <sha2::Sha256 as sha2::Digest>::digest(b"human-held-computer-key").into();
+        for header in ["Cookie", "X-Secret-Key", "X-User-Action"] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(header, "human-held-computer-key".parse().unwrap());
+            assert_eq!(
+                computer_use_proof_with_digest(
+                    &headers,
+                    UserActionProof::NoKeyInstalled,
+                    Some(&digest)
+                ),
+                UserActionProof::Unproven
+            );
+        }
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "X-Computer-Use-Key",
+            "human-held-computer-key".parse().unwrap(),
+        );
+        assert_eq!(
+            computer_use_proof_with_digest(
+                &headers,
+                UserActionProof::NoKeyInstalled,
+                Some(&digest)
+            ),
+            UserActionProof::Proven
+        );
+        assert_eq!(
+            computer_use_proof_with_digest(&headers, UserActionProof::NoKeyInstalled, None),
+            UserActionProof::NoKeyInstalled
+        );
+        headers.insert("X-Computer-Use-Key", hex::encode(digest).parse().unwrap());
+        assert_eq!(
+            computer_use_proof_with_digest(
+                &headers,
+                UserActionProof::NoKeyInstalled,
+                Some(&digest)
+            ),
+            UserActionProof::Unproven
+        );
+    }
+
+    #[test]
+    fn scoped_approval_attempt_window_expires_without_accepting_fresh_guesses() {
+        let now = Instant::now();
+        let mut attempts = vec![now; COMPUTER_USE_ATTEMPT_BUDGET];
+        prune_computer_use_attempts(&mut attempts, now + Duration::from_secs(59));
+        assert_eq!(attempts.len(), COMPUTER_USE_ATTEMPT_BUDGET);
+        prune_computer_use_attempts(&mut attempts, now + COMPUTER_USE_ATTEMPT_WINDOW);
+        assert!(attempts.is_empty());
+    }
+
+    #[test]
+    fn existing_desktop_human_proof_still_authorizes_computer_use() {
+        assert_eq!(
+            computer_use_proof_with_digest(
+                &axum::http::HeaderMap::new(),
+                UserActionProof::Proven,
+                None
+            ),
+            UserActionProof::Proven
+        );
     }
 }

@@ -56,19 +56,19 @@ async fn manager() -> Arc<ExtensionManager> {
     manager
 }
 
-async fn manager_with_computercontroller() -> Arc<ExtensionManager> {
+async fn manager_with_webdocuments() -> Arc<ExtensionManager> {
     let manager = manager().await;
     manager
         .add_extension(ExtensionConfig::Builtin {
-            name: "computercontroller".to_string(),
-            description: "Computer and web tools".to_string(),
-            display_name: Some("Computer Controller".to_string()),
+            name: "webdocuments".to_string(),
+            description: "Web and document tools".to_string(),
+            display_name: Some("Web & Documents".to_string()),
             timeout: Some(300),
             bundled: Some(true),
             available_tools: vec![],
         })
         .await
-        .expect("add computercontroller");
+        .expect("add webdocuments");
     manager
 }
 
@@ -665,7 +665,7 @@ async fn simple_news_search_discovery_and_fetch_needs_no_read_module_call() {
         ))
         .mount(&mock_server)
         .await;
-    let manager = manager_with_computercontroller().await;
+    let manager = manager_with_webdocuments().await;
 
     let discovery = call_tool(
         &manager,
@@ -673,16 +673,16 @@ async fn simple_news_search_discovery_and_fetch_needs_no_read_module_call() {
         json!({ "terms": ["web", "search", "browser", "news"] }),
     )
     .await;
-    assert!(discovery.contains("computercontroller/web_scrape"));
-    assert!(discovery.contains("module_computercontroller[\"web_scrape\"]"));
+    assert!(discovery.contains("webdocuments/web_scrape"));
+    assert!(discovery.contains("module_webdocuments[\"web_scrape\"]"));
     assert!(discovery.contains("do not call read_module"));
 
     let result = exec(
         &manager,
         &format!(
             r#"
-            import * as module_computercontroller from "computercontroller";
-            const feed = module_computercontroller["web_scrape"]({{ url: "{}" }});
+            import * as module_webdocuments from "webdocuments";
+            const feed = module_webdocuments["web_scrape"]({{ url: "{}" }});
             record_result(feed);
             "#,
             mock_server.uri()
@@ -692,32 +692,30 @@ async fn simple_news_search_discovery_and_fetch_needs_no_read_module_call() {
     assert!(result.contains("Apple Watch update"), "got: {result}");
 }
 
-#[cfg(not(target_os = "windows"))]
 #[tokio::test]
-async fn failed_nested_search_script_is_an_execute_code_error() {
-    let manager = manager_with_computercontroller().await;
+async fn failed_nested_web_fetch_is_an_execute_code_error() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("search unavailable"))
+        .mount(&mock_server)
+        .await;
+    let manager = manager_with_webdocuments().await;
     let (is_error, result) = exec_raw(
         &manager,
-        r#"
-        import * as module_computercontroller from "computercontroller";
-        const script = String.raw`printf 'search failed\n' >&2
-exit 7`;
-        const output = module_computercontroller["automation_script"]({
-            language: "shell",
-            script,
-            save_output: false
-        });
-        record_result(output);
-        "#,
+        &format!(
+            r#"
+            import * as webdocuments from "webdocuments";
+            record_result(webdocuments["web_scrape"]({{ url: "{}" }}));
+            "#,
+            mock_server.uri()
+        ),
     )
     .await;
-
     assert!(
         is_error,
-        "failed inner script must fail execute_code: {result}"
+        "failed inner fetch must fail execute_code: {result}"
     );
-    assert!(result.contains("Script failed"), "got: {result}");
-    assert!(result.contains("search failed"), "got: {result}");
+    assert!(result.contains("503"), "got: {result}");
 }
 
 #[tokio::test]

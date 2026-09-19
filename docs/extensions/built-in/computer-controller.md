@@ -1,150 +1,64 @@
-# Computer Controller capability
+# Computer Use capability
 
-> **What this is.** User guide to the built-in Computer Controller capability: how to enable it, which tools it provides, and a worked example combining web research with macOS system automation.
-> **Status:** Current. `crates/biorouter-mcp/src/computercontroller/` ships in the product and the tools described below are real. The worked example is macOS-specific.
-> **Audience:** end users.
+Computer Use (`computercontroller`) observes and controls applications through BioRouter's bundled native helper. It is the only built-in desktop observation and control capability. Web fetching and document processing are provided separately by [Web & Documents](web-documents.md).
 
-The Computer Controller capability automates everyday computer tasks and web interactions — searching the web, controlling system settings, processing data files, and driving applications — without you having to write code. It is the highest-blast-radius built-in capability, because it acts on your actual desktop rather than on a sandboxed workspace.
+## Tools
 
-> **Warning.** `computer_control` drives your real machine: it can launch and quit applications, click buttons, type text, change system settings, and reorganize files. Before running an unattended automation, decide whether you want BioRouter to ask first — see [permission modes](../../security/permission-modes.md) for how to switch out of Autonomous mode, and the [security guide](../../security/README.md) for the wider picture.
+| Tool | Purpose |
+| --- | --- |
+| `list_apps` | Discover available applications. |
+| `get_app_state` | Inspect an application's current accessibility state and image. |
+| `click` | Click a current target. |
+| `perform_secondary_action` | Invoke a target's supported secondary action. |
+| `scroll` | Scroll a target. |
+| `drag` | Drag between supported targets. |
+| `type_text` | Enter text. |
+| `press_key` | Send a supported key or key combination. |
+| `set_value` | Set an accessible control's value. |
+| `screen_capture` | Capture a display/window or request list-only discovery through the native helper. |
 
-> **Tip.** Let BioRouter complete its tasks without interruption — avoid using your mouse or keyboard until it is done.
+Use the advertised schemas for platform-specific arguments. Discover, inspect, act, and verify; refresh state after a changed window, stale element, handoff, or helper restart. Actions are sequential. A timed-out action can already have happened, so inspect before any retry.
 
-## Platform support
+`scroll.pages` accepts finite values greater than zero and no larger than 100, including fractions. `click.click_count` accepts whole numbers from 1 through 100. Both default to one only when omitted; malformed supplied values produce an error before an action.
 
-The `computer_control` tool exists on every platform, but its automation backend and therefore its capabilities differ:
+Scrolling uses the target viewport where the platform exposes measurable geometry. Windows verifies UI Automation or native scrollbar position. Linux text views can align only to a line or character boundary; the result reports the observed movement and granularity. Unsupported fractional or horizontal scrolling fails explicitly. For a Linux nontext control that supports only vertical page keys, the result identifies the delivered commands and states that actual displacement is unverified. Inspect fresh state to confirm the outcome.
 
-| Platform | Backend | Notes |
-|----------|---------|-------|
-| macOS | AppleScript | Application control, UI automation, system settings, web and email, media, file operations, Calendar/Reminders/Messages integration. |
-| Windows | PowerShell | PowerShell system control and UI automation, file and system management, Windows-specific features and settings. |
-| Linux | Shell scripting | X11/Wayland window management, D-Bus system services, desktop-environment control (GNOME, KDE), process management, system settings. |
-| Other | System automation | Available features depend on the operating system. |
+## Approval and privacy
 
-The `automation_script` tool runs PowerShell or Batch scripts on Windows. The worked example later on this page is **macOS-only** — it uses Safari, Numbers and macOS screen brightness — so Linux and Windows users should read it as an illustration of shape, not as a runnable recipe.
+Enable Computer Use in Settings → Chat → Capabilities or `biorouter configure`. Enabling it does not approve desktop access. Before the first observation or action, BioRouter requests approval for the task, model/provider, and target computer. The grant covers all tool turns within the current user request without a prompt for every click or capture. Completion or cancellation ends it; a new user request is a new task. Stop or revoke prevents further actions. OS accessibility and capture permissions are separate prerequisites.
 
-## Configuration
+Public-model approval discloses that screenshots and app text can be sent to the provider. Private-model approval names the actual provider/deployment; private does not always mean on-device. Each chat has separate results, snapshots, element references, and approval. Private and public chats never share stored observations or grants. They still operate the same physical desktop: material left visible can appear in a new capture. A private-to-public handoff therefore pauses for acknowledgement before capture.
 
-1. Run the `configure` command:
+The target is the backend host. A browser connected to `biorouter serve` does not grant access to the browser user's computer. Missing runtime, denied OS permission, no desktop, and unsupported actions produce explicit errors; never bypass them with a script or loop on approval requests.
 
-   ```bash
-   biorouter configure
-   ```
+## Platform prerequisites and current limits
 
-2. Choose `Toggle Extensions`, then enable `computercontroller`:
+The helper operates in the signed-in desktop session of the **host running BioRouter's backend**.
+A remote browser connection does not expose the browser user's machine. These prerequisites do
+not guarantee that every application, display server, or packaged environment supports every action.
 
-   ```text
-   ┌   biorouter-configure
-   │
-   ◇  What would you like to configure?
-   │  Toggle Extensions
-   │
-   ◆  Enable capabilities and extensions: (use "space" to toggle and "enter" to submit)
-   │  ● computercontroller
-   └  Extension settings updated successfully
-   ```
+| Platform | Prerequisites | Current limits |
+| --- | --- | --- |
+| macOS | macOS 14 or later; Accessibility and Screen Recording permission for the native helper. | Earlier macOS versions are unsupported. Signed-package installation, Intel execution, and permission continuity after upgrades require separate release validation. |
+| Windows | An interactive signed-in desktop; Windows PowerShell and .NET UI Automation available under local policy. | No UAC/secure-desktop control or automatic elevation. Window capture uses visible screen pixels, so overlapping windows can appear in the result; minimized windows may be unavailable. |
+| Linux X11 | An active X11 desktop and user D-Bus session; Python 3, GI bindings, AT-SPI, and GDK 3/GTK 3 dependencies. | Application accessibility support varies. Window capture uses visible screen pixels and may include overlapping windows; minimized windows may be unavailable. Xvfb alone does not establish working accessibility or input. |
+| Linux Wayland | Accessibility discovery depends on the compositor, user session, and AT-SPI support. | **Pixel capture is currently unsupported.** The helper reports that a consented desktop portal is required; list-only discovery is not proof that capture or input works. |
+| Headless service/container | A desktop session and its dependencies would need to be explicitly available to the backend. | No desktop means no computer use. Ordinary chat and Web & Documents remain independent. |
 
-## Available tools
+Use the runtime's diagnostics and returned errors to determine what is available on the actual
+host. Native unit tests and a successful protocol handshake do not establish cross-platform GUI
+or installer support; the [implementation status](../../design/computer-use-implementation-status.md)
+records those validation gaps.
 
-| Tool | Description | Risk |
-|------|-------------|------|
-| `computer_control` | Control the computer through the platform's automation backend (AppleScript, PowerShell or shell). Launch and quit applications, simulate clicks and typing, manage system settings, open URLs, organize files. Combines well with a screenshot tool for visual assistance. | ⚠️ High — acts on your real desktop |
-| `automation_script` | Create and run small PowerShell or Batch scripts. Also usable for network-aware scripts (web, API, RSS, news searches) when no dedicated search tool exists. The script is saved to a temporary file and executed. | ⚠️ High — runs arbitrary scripts |
-| `web_scrape` | Fetch an HTTP(S) URL for web research, APIs, RSS/Atom feeds, and search-result URLs. Text and JSON are returned inline and a cached copy is saved; large responses are truncated inline but stay complete in the cache. Prefer this over an automation script when you already know the URL. | ✅ Low — read-only fetch |
-| `xlsx_tool` | Read and manipulate Excel workbooks: `list_worksheets`, `get_columns`, `get_range`, `find_text`, `get_cell`, `update_cell`, `save`. | Moderate — can modify workbooks |
-| `docx_tool` | Extract text and structure from DOCX files (`extract_text`), or create/update documents (`update_doc`, with `append`, `replace`, `structured` and `add_image` modes). | Moderate — can modify documents |
-| `pdf_tool` | Extract text (`extract_text`) or embedded images (`extract_images`, saved as PNG) from PDF files. | ✅ Low — read-only extraction |
-| `cache` | Manage cached files and data: `list`, `view`, `delete`, `clear`. | ✅ Low |
+## Native runtime and replacement
 
-> **Note.** When embedding a multiline script inside `execute_code` (Code Mode), wrap it in a `` String.raw`...` `` JavaScript template literal so backslashes survive intact.
+Computer Use works independently of Developer and Web & Documents. The native helper exposes all ten tool contracts without a runtime npm/install bootstrap; each operation still requires the platform prerequisites above. Platform support and GUI release evidence are tracked in the [implementation status](../../design/computer-use-implementation-status.md).
 
-## Example usage
-
-This example shows BioRouter multitasking across system controls, music playback, web research and data organization. It was run on macOS.
-
-To follow along, either open a new session in BioRouter Desktop, or start one from a terminal:
-
-```bash
-biorouter session
-```
-
-> **Note.** This transcript was produced with Anthropic's Claude 4 Sonnet. Any tool-capable model can drive the capability; the exact wording of the response will differ by model.
-
-### BioRouter prompt
-
-```text
-biorouter, I need to decompress while researching candidate drugs for tomorrow's lab meeting. Can you create a relaxing environment and help me research?
-
-1. Play classical music in Safari
-2. Dim screen brightness (2 levels)
-3. Research current approved therapies for a target indication:
-    * Verify approval status
-    * Collect: approval date, mechanism of action, indication, dosing
-    * Use official sources only (e.g. FDA, DailyMed)
-4. Create "drug-candidates-comparison.csv" on desktop with collected data
-5. Launch Numbers and open the CSV file
-6. Reset brightness and close Safari
-```
-
-### BioRouter output
-
-```md
-I'll help you create a relaxing research environment and gather information about AI models. I'll break this down into steps:
-
-1. First, let's set up the relaxing environment with classical music and dimmed screen:
-
-─── computer_control | computercontroller ──────────────────────────
-script: ...
-
-2. Now, let's research the candidate drugs. I'll use web search and scraping to gather
- information from official sources:
-
-─── web_search | computercontroller ──────────────────────────
-query: drug A approval indication
-
-─── web_search | computercontroller ──────────────────────────
-query: drug B mechanism of action
-
-─── web_search | computercontroller ──────────────────────────
-query: drug C dosing
-
-3. Let's create the CSV file with the collected information:
-
-─── automation_script | computercontroller ──────────────────────────
-language: shell
-script: ...
-
-4. Now, let's open the CSV file in Numbers and reset the environment:
-
-─── computer_control | computercontroller ──────────────────────────
-script: ...
-
-I've completed all the requested tasks:
-1. ✅ Played classical music in Safari
-2. ✅ Dimmed screen brightness
-3. ✅ Researched current approved therapies for the indication
-4. ✅ Created the CSV file on desktop
-5. ✅ Launched Numbers and opened the CSV file
-6. ✅ Reset brightness and closed Safari
-
-The CSV file has been created on your desktop with the following information for each drug:
-- Drug name
-- Approval status
-- Approval date
-- Mechanism of action
-- Indication
-- Dosing information
-
-The file is now open in Numbers for your review. The environment has been reset to normal settings. Is there anything specific about any of the drugs you'd like me to elaborate on?
-```
-
-### Results
-
-The run produced `drug-candidates-comparison.csv` on the desktop and opened it in Numbers. (The screenshot that originally accompanied this section is no longer part of the documentation.)
+The previous script-driven controller and Developer capture tools have been removed. There are no compatibility aliases or script fallback routes. Update stored workflows to current native tools; an old tool approval does not grant the new capability.
 
 ## Related documentation
 
-- [Developer capability](developer.md) — the other high-privilege built-in capability, and the fullest description of BioRouter's layered access controls.
-- [Permission modes](../../security/permission-modes.md) — how to make BioRouter ask before it acts on your machine.
-- [Security guide](../../security/README.md) — using BioRouter safely, including what a high-privilege extension implies.
-- [Computer Controller hardening: test plan and root causes](../../history/computer-controller-hardening/test-plan-and-root-causes.md) — the historical campaign that exercised these tools and the failure modes it found.
+- [Developer](developer.md): code, shell, and file tools.
+- [Web & Documents](web-documents.md): URL and document utilities.
+- [Permission modes](../../security/permission-modes.md): ordinary tool approval behavior.
+- [Integration plan](../../design/computer-use-integration-plan.md): runtime, isolation, packaging, and validation requirements.

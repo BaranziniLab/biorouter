@@ -304,7 +304,8 @@ find_biorouterd() {{
     "/Applications/Biorouter.app/Contents/Resources/bin/biorouterd" \
     "$HOME/Applications/Biorouter.app/Contents/Resources/bin/biorouterd" \
     "/opt/Biorouter/resources/bin/biorouterd" \
-    "/usr/lib/biorouter/resources/bin/biorouterd"
+    "/usr/lib/biorouter/resources/bin/biorouterd" \
+    "/usr/lib/Biorouter/resources/bin/biorouterd"
   do
     [ -x "$p" ] && {{ echo "$p"; return 0; }}
   done
@@ -677,6 +678,10 @@ const DAEMON_PATHS = [
   "/Applications/Biorouter.app/Contents/Resources/bin/biorouterd",
   join(homedir(), "Applications/Biorouter.app/Contents/Resources/bin/biorouterd"),
   "/opt/Biorouter/resources/bin/biorouterd",
+  // Linux GUI packages install under usr/lib/<name>: the deb maker lowercases
+  // the name and the rpm maker preserves its case, so both spellings are real.
+  "/usr/lib/biorouter/resources/bin/biorouterd",
+  "/usr/lib/Biorouter/resources/bin/biorouterd",
 ].filter(Boolean);
 
 /** Copy the runtime files into the store so the daemon can resolve the app. */

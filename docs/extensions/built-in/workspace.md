@@ -113,7 +113,7 @@ Some capability changes ask you first **in every permission mode, including Full
 
 A confirmation card appears when a `workspace_set_tools` call:
 
-- **adds a process-spawning capability or extension** (Developer, Computer Controller, Code Execution, and anything the config describes as running a command), or one that sends the conversation's traffic to a remote endpoint;
+- **adds a process-spawning capability or extension** (Developer, Computer Use, Code Execution, and anything the config describes as running a command), or one that sends the conversation's traffic to a remote endpoint;
 - **removes a security-relevant capability** — today Workspace Control itself or the Extension Manager, both of which are how a change stays visible from inside the target;
 - **removes an extension you configured explicitly** in `config.yaml`;
 - **switches the conversation's provider**, which sends its whole stored history to that provider's endpoint;

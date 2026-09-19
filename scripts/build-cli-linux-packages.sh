@@ -48,6 +48,8 @@ br_require_command npm "The browser interface bundle is built with npm run build
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
 
+python3 "$ROOT/scripts/computer-use-runtime.py" verify linux-x64
+
 mkdir -p "$OUT"
 rm -f "$DEB" "$RPM"
 
@@ -77,6 +79,10 @@ log "smoke-testing .deb on debian:bookworm-slim"
 docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim bash -euxc '
   apt-get update -q
   apt-get install -y --no-install-recommends "/pkg/'"$(basename "$DEB")"'"
+  test -x /usr/libexec/biorouter/computer-use/ocu
+  test -s /usr/libexec/biorouter/computer-use/manifest.json
+  /usr/libexec/biorouter/computer-use/ocu --version
+  python3 -c "import gi; gi.require_version(\"Atspi\", \"2.0\"); gi.require_version(\"Gdk\", \"3.0\"); from gi.repository import Atspi, Gdk"
   command -v biorouter && command -v biorouterd
   biorouter --version
   biorouterd --version
@@ -91,6 +97,10 @@ log "deb smoke test passed ✓"
 log "smoke-testing .rpm on rockylinux:9"
 docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -euxc '
   dnf install -y "/pkg/'"$(basename "$RPM")"'"
+  test -x /usr/libexec/biorouter/computer-use/ocu
+  test -s /usr/libexec/biorouter/computer-use/manifest.json
+  /usr/libexec/biorouter/computer-use/ocu --version
+  python3 -c "import gi; gi.require_version(\"Atspi\", \"2.0\"); gi.require_version(\"Gdk\", \"3.0\"); from gi.repository import Atspi, Gdk"
   command -v biorouter && command -v biorouterd
   biorouter --version
   biorouterd --version

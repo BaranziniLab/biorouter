@@ -19,6 +19,8 @@ check-everything:
     ./scripts/check-version-consistency.sh
     @echo "  → Checking Biorouter name and logo consistency..."
     ./scripts/check-brand-consistency.sh
+    @echo "  → Checking the capability is called Computer Use everywhere a person reads it..."
+    ./scripts/check-computer-use-naming.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
     @echo "  → Checking the BAAM registry generator still refuses what it must..."
@@ -110,7 +112,7 @@ make-ui-linux:
         --platform linux/amd64 \
         -v "$(pwd)":/ws \
         -v biorouter-linux-npm-cache:/root/.npm \
-        node:20-bookworm \
+        "$(node -e 'console.log(require(process.argv[1]).image)' "$(pwd)/ui/desktop/scripts/linux-native-baseline.json")" \
         bash /ws/ui/desktop/scripts/build-linux-deb.sh
     echo ""
     echo "✓ .deb package: ui/desktop/out/make/deb/x64/"
