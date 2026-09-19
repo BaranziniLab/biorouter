@@ -21,12 +21,24 @@ workspace directory chosen for this task, quote paths, and record the output pat
 Before editing, inspect the existing file and identify features that the chosen
 library might lose. Never execute embedded macros, external links, or attachments.
 
-Check the Python interpreter and imports before running a builder. If dependencies
-are missing, prefer an isolated environment, for example `uv run --with PACKAGE
-python builder.py`, or a task-local `python3 -m venv .office-venv` and that venv's
-pip. Install only the packages required for this task through the normal permission
-flow. Do not assume Codex/Claude runtimes, helper scripts, or cloud connectors exist.
-Do not install into or change the system Python environment.
+Check the Python interpreter and imports before running a builder. Resolve the
+interpreter instead of assuming its name. On Windows `python3` is usually a
+0-byte Microsoft Store alias, not an interpreter: it exits 9009 with "Python was
+not found; run without arguments to install from the Microsoft Store", which
+reads as a missing dependency and is not one. Prefer `python` on Windows and
+`python3` elsewhere, and confirm the choice with `<interpreter> --version`
+before relying on it. If dependencies are missing, prefer an isolated
+environment: `uv run --with PACKAGE python builder.py` when `uv` is on PATH
+(it often is not), otherwise a task-local `<interpreter> -m venv .office-venv`.
+A venv puts its interpreter at `.office-venv/bin/python` on macOS and Linux but
+at `.office-venv\Scripts\python.exe` on Windows; invoke that path directly rather
+than activating, and install with `<venv python> -m pip install PACKAGE`. Keep
+the venv path short on Windows: the default 260-character path limit is measured
+against the deepest file installed, so a deep workspace fails partway through
+`pip` with a bare "No such file or directory". Install only the packages required
+for this task through the normal permission flow. Do not assume Codex/Claude
+runtimes, helper scripts, or cloud connectors exist. Do not install into or
+change the system Python environment.
 
 ## Read and plan
 
@@ -88,7 +100,9 @@ instead of silently stripping them. Never invent a reviewer identity.
 ## Rendering
 
 Find `soffice` or `libreoffice` on PATH (on macOS also check the installed
-LibreOffice application). Use an isolated LibreOffice user profile, a separate
+LibreOffice application; on Windows it is almost never on PATH, so also check
+`C:\Program Files\LibreOffice\program\soffice.exe` and the 32-bit
+`C:\Program Files (x86)\LibreOffice\program\soffice.exe`). Use an isolated LibreOffice user profile, a separate
 output directory, a bounded process timeout, and a subprocess argument list rather
 than a shell string built from filenames. Convert to PDF with `--headless
 --convert-to pdf --outdir <qa-directory> <input>`. Pass

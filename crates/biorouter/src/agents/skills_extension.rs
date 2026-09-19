@@ -6998,3 +6998,78 @@ mod installed_usability_tests {
         assert_eq!(blocked[0]["bundle"], "hyperframes");
     }
 }
+
+
+/// The built-in office contexts tell the model how to reach a Python runtime,
+/// and that advice has to hold on Windows too.
+#[cfg(test)]
+mod office_context_windows_guidance_tests {
+    use super::BUILTIN_SKILLS;
+
+    fn office_skills() -> Vec<(&'static str, &'static str)> {
+        let found: Vec<_> = BUILTIN_SKILLS
+            .iter()
+            .copied()
+            .filter(|(name, _)| name.starts_with("office-"))
+            .collect();
+        // Never let this pass vacuously: a rename would silently check nothing.
+        assert_eq!(
+            found.len(),
+            4,
+            "expected the four office contexts; found {:?}",
+            found.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
+        found
+    }
+
+    /// ⚠ On Windows `python3` is not an interpreter. A default install ships a
+    /// 0-byte Microsoft Store *app execution alias* at that name, and running
+    /// it exits 9009 with "Python was not found; run without arguments to
+    /// install from the Microsoft Store". Measured on Windows Server 2025,
+    /// where `python` resolved to a working 3.12.10 at the same moment.
+    ///
+    /// That failure is worse than a missing dependency because it does not look
+    /// like one: the model is told to install something rather than to use the
+    /// interpreter that is already present.
+    #[test]
+    fn no_office_context_tells_the_model_to_run_bare_python3() {
+        for (name, body) in office_skills() {
+            for offender in ["python3 -m venv", "python3 -m pip", "run `python3"] {
+                assert!(
+                    !body.contains(offender),
+                    "{name} instructs `{offender}`. On Windows `python3` is a Store                      alias that exits 9009, so this reads as a missing dependency                      when a working `python` is on PATH. Resolve the interpreter                      instead of naming one."
+                );
+            }
+        }
+    }
+
+    /// A venv's interpreter is at `bin/python` on Unix and `Scripts\python.exe`
+    /// on Windows. A context that names only the Unix layout sends the model to
+    /// a path that does not exist on the platform under test.
+    #[test]
+    fn every_office_context_names_the_windows_venv_interpreter() {
+        let windows_layout = r"Scripts\python.exe";
+        for (name, body) in office_skills() {
+            assert!(
+                body.contains(windows_layout),
+                "{name} must name the Windows venv interpreter ({windows_layout});                  `.office-venv/bin/python` does not exist there"
+            );
+        }
+    }
+
+    /// LibreOffice is the rendering path, and on Windows it is installed outside
+    /// PATH. A context that says only "find it on PATH" concludes no renderer
+    /// exists and silently downgrades to "visual verification not performed".
+    #[test]
+    fn a_context_that_looks_for_libreoffice_says_where_it_lives_on_windows() {
+        for (name, body) in office_skills() {
+            if !body.contains("soffice") {
+                continue;
+            }
+            assert!(
+                body.contains("Program Files") && body.contains("soffice.exe"),
+                "{name} looks for `soffice` but never says where it is on                  Windows, where it is almost never on PATH"
+            );
+        }
+    }
+}
