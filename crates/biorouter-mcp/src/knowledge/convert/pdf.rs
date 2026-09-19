@@ -139,6 +139,7 @@ fn python_pdfminer_extract_text(bytes: &[u8]) -> Result<String> {
         .arg(PYTHON_PDFMINER_SCRIPT)
         .arg(file.path());
     crate::developer::shell::strip_daemon_private_env_std(&mut command);
+    crate::developer::shell::no_console_window_std(&mut command);
     let output = command.output().context("run python pdfminer extractor")?;
 
     if !output.status.success() {

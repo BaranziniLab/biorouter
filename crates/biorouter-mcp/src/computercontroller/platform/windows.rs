@@ -15,6 +15,7 @@ impl SystemAutomation for WindowsAutomation {
             .arg(script)
             .env("BIOROUTER_TERMINAL", "1");
         crate::developer::shell::strip_daemon_private_env_std(&mut cmd);
+        crate::developer::shell::no_console_window_std(&mut cmd);
         let output = cmd.output()?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
 

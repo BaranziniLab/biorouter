@@ -960,6 +960,7 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
 /// alone. Nothing here needs a credential; if it ever does, pass it explicitly.
 pub(super) fn prepare_agent_drafter_child(command: &mut std::process::Command) {
     strip_daemon_private_env_std(command);
+    crate::developer::shell::no_console_window_std(command);
 }
 
 /// Absolute path to `printenv`, for the environment-probe shims in this

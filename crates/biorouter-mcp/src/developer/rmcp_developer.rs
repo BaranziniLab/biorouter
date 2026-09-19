@@ -94,6 +94,7 @@ fn git_context_block(cwd: &std::path::Path) -> String {
         let mut command = std::process::Command::new("git");
         command.args(args).current_dir(cwd);
         crate::developer::shell::strip_daemon_private_env_std(&mut command);
+        crate::developer::shell::no_console_window_std(&mut command);
         let out = command.output().ok()?;
         if !out.status.success() {
             return None;

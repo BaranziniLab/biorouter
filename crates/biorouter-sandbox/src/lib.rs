@@ -26,6 +26,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod console;
 pub mod docker;
 pub mod environment;
 pub mod local;

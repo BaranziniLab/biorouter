@@ -53,6 +53,7 @@ impl SandboxClient for LocalProcessSandbox {
             return Err(SandboxError::Exec("empty argv".into()));
         }
         let mut cmd = tokio::process::Command::new(&argv[0]);
+        crate::console::no_console_window(&mut cmd);
         cmd.args(&argv[1..])
             .current_dir(&self.spec.workspace)
             .kill_on_drop(true)

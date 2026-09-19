@@ -23,6 +23,11 @@ fn shell_command(command: &str) -> Command {
     use std::os::windows::process::CommandExt;
 
     let mut cmd = Command::new("cmd.exe");
+    // `biorouterd` has no console of its own, so an unflagged `cmd.exe` child
+    // opens a visible one. `run_command_hook` prepares this command again via
+    // `prepare_agent_child_command`; setting the flag here as well keeps the
+    // builder correct on its own terms, and the flag is idempotent.
+    crate::subprocess::configure_command_no_window(&mut cmd);
     cmd.args(["/D", "/S", "/C"]);
     // cmd.exe does not follow the C argv quoting convention used by
     // Command::arg. Pass its /C payload verbatim inside the outer quote pair
